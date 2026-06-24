@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Server: FastAPI",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${command:python.interpreterPath}",
+      "module": "uvicorn",
+      "args": ["main:app", "--reload", "--port", "8000"],
+      "cwd": "${workspaceFolder}/apps/server",
+      "jinja": true
+    },
+    {
+      "name": "Client: Next.js",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/apps/client"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full Stack (Front + Back)",
+      "configurations": ["Server: FastAPI", "Client: Next.js"]
+    }
+  ]
+}
