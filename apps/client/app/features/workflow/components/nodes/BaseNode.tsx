@@ -1,8 +1,17 @@
 import { Handle, Position, HandleProps } from '@xyflow/react';
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 
 import { cn } from '@/lib/utils';
-import { BaseNodeData } from '../../types/Nodes';
+import { getNodeDefinitionByType } from '../../config/nodeRegistry';
+import { useWorkflowStore } from '../../store/useWorkflowStore';
+import { AppNode, BaseNodeData } from '../../types/Nodes';
+import {
+  NODE_OUTPUT_DRAG_MIME,
+  getNodeOutputVariables,
+} from '../../utils/nodeVariablePorts';
+import { NodeInlinePanel } from './NodeInlinePanel';
+import { VisiblePropertySummary } from './VisiblePropertySummary';
 
 interface BaseNodeProps {
   id?: string;
@@ -25,6 +34,7 @@ interface BaseNodeProps {
 
   onHandlePlusClick?: (side: 'left' | 'right') => void;
   titleClassName?: string;
+  showDetailsToggle?: boolean;
 }
 
 export const SmartHandle: React.FC<
@@ -145,6 +155,7 @@ export const JigsawBackground = ({
 };
 
 export const BaseNode: React.FC<BaseNodeProps> = ({
+  id,
   data,
   children,
   showSourceHandle = true,
@@ -157,10 +168,62 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   sourceHandleId = 'source',
   targetHandleStyle,
   sourceHandleStyle,
-  titleClassName = 'truncate max-w-[140px]',
+  titleClassName = 'truncate max-w-[260px]',
+  showDetailsToggle = true,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const outputPanelRef = useRef<HTMLDivElement>(null);
+  const closeOutputPanelTimerRef = useRef<number | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [isNodeHovered, setIsNodeHovered] = useState(false);
+  const [isOutputPanelHovered, setIsOutputPanelHovered] = useState(false);
+  const [isDraggingOutput, setIsDraggingOutput] = useState(false);
+  const node = useWorkflowStore((state) =>
+    id ? (state.nodes.find((item) => item.id === id) as AppNode | undefined) : undefined,
+  );
+  const updateNodeData = useWorkflowStore((state) => state.updateNodeData);
+  const definition = getNodeDefinitionByType(node?.type || '');
+  const detailsExpanded = Boolean(data.detailsExpanded);
+  const outputVariables = useMemo(() => getNodeOutputVariables(node), [node]);
+
+  const categoryLabels = {
+    trigger: 'Trigger',
+    llm: 'LLM',
+    plugin: 'Plugin',
+    workflow: 'Workflow',
+    logic: 'Logic',
+    database: 'Database',
+    data: 'Data',
+  } as const;
+  const categoryLabel = definition
+    ? categoryLabels[definition.category]
+    : 'Node';
+  const description = data.description || definition?.description;
+  const isOutputPanelOpen =
+    isNodeHovered || isOutputPanelHovered || isDraggingOutput;
+
+  const clearOutputPanelCloseTimer = useCallback(() => {
+    if (!closeOutputPanelTimerRef.current) return;
+    window.clearTimeout(closeOutputPanelTimerRef.current);
+    closeOutputPanelTimerRef.current = null;
+  }, []);
+
+  const scheduleOutputPanelClose = useCallback(() => {
+    clearOutputPanelCloseTimer();
+    closeOutputPanelTimerRef.current = window.setTimeout(() => {
+      if (
+        ref.current?.matches(':hover') ||
+        outputPanelRef.current?.matches(':hover') ||
+        isDraggingOutput
+      ) {
+        closeOutputPanelTimerRef.current = null;
+        return;
+      }
+      setIsNodeHovered(false);
+      setIsOutputPanelHovered(false);
+      closeOutputPanelTimerRef.current = null;
+    }, 350);
+  }, [clearOutputPanelCloseTimer, isDraggingOutput]);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -196,6 +259,52 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    return () => clearOutputPanelCloseTimer();
+  }, [clearOutputPanelCloseTimer]);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const panelRect = outputPanelRef.current?.getBoundingClientRect();
+      const nodeRect = ref.current?.getBoundingClientRect();
+      if (!panelRect || !nodeRect) return;
+
+      const isInsidePanel =
+        event.clientX >= panelRect.left &&
+        event.clientX <= panelRect.right &&
+        event.clientY >= panelRect.top &&
+        event.clientY <= panelRect.bottom;
+      const isInsideNode =
+        event.clientX >= nodeRect.left &&
+        event.clientX <= nodeRect.right &&
+        event.clientY >= nodeRect.top &&
+        event.clientY <= nodeRect.bottom;
+
+      if (isInsidePanel) {
+        clearOutputPanelCloseTimer();
+        setIsOutputPanelHovered(true);
+        return;
+      }
+
+      if (isInsideNode) {
+        clearOutputPanelCloseTimer();
+        return;
+      }
+
+      if (isOutputPanelOpen && !isDraggingOutput) {
+        scheduleOutputPanelClose();
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, [
+    clearOutputPanelCloseTimer,
+    isDraggingOutput,
+    isOutputPanelOpen,
+    scheduleOutputPanelClose,
+  ]);
+
   const getHandleStyle = (side: 'left' | 'right') => {
     if (side === 'left') {
       return { left: '-20px', ...targetHandleStyle };
@@ -204,11 +313,34 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
     }
   };
 
+  const handleDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!showDetailsToggle || !node) return;
+
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest(
+        'button, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [draggable="true"], .nodrag',
+      )
+    ) {
+      return;
+    }
+
+    event.stopPropagation();
+    updateNodeData(node.id, { detailsExpanded: !detailsExpanded });
+  };
+
   return (
     <div
       ref={ref}
+      onMouseEnter={() => {
+        clearOutputPanelCloseTimer();
+        setIsNodeHovered(true);
+      }}
+      onMouseLeave={scheduleOutputPanelClose}
+      onDoubleClick={handleDoubleClick}
       className={cn(
-        'relative group min-w-[320px] min-h-[150px] p-7 transition-all',
+        'relative group w-[420px] min-h-[150px] p-7 transition-all',
         className,
       )}
       style={{ isolation: 'isolate', overflow: 'visible' }}
@@ -220,7 +352,73 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
         status={data.status}
       />
 
+      {outputVariables.length > 0 && (
+        <div
+          ref={outputPanelRef}
+          onMouseEnter={() => {
+            clearOutputPanelCloseTimer();
+            setIsOutputPanelHovered(true);
+          }}
+          onMouseLeave={scheduleOutputPanelClose}
+          className={cn(
+            'nodrag absolute bottom-7 left-[calc(100%+12px)] z-40 w-56 transition-opacity duration-150',
+            isOutputPanelOpen
+              ? 'pointer-events-auto opacity-100'
+              : 'pointer-events-none opacity-0',
+          )}
+        >
+          <div className="rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
+            <div className="mb-2 px-1 text-[10px] font-semibold uppercase text-gray-400">
+              Outputs
+            </div>
+            <div className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+              {outputVariables.map((output) => (
+                <div
+                  key={`${output.sourceNodeId}-${output.key}`}
+                  draggable
+                  onDragStart={(event) => {
+                    clearOutputPanelCloseTimer();
+                    setIsDraggingOutput(true);
+                    event.dataTransfer.effectAllowed = 'copy';
+                    event.dataTransfer.setData(
+                      NODE_OUTPUT_DRAG_MIME,
+                      JSON.stringify(output),
+                    );
+                  }}
+                  onDragEnd={() => setIsDraggingOutput(false)}
+                  className="cursor-grab rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-700 shadow-sm active:cursor-grabbing"
+                  title={`${output.label} (${output.sourceTitle}.${output.key})`}
+                >
+                  <div className="truncate font-semibold text-gray-800">
+                    {output.label || output.key}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="relative z-10">
+        {showDetailsToggle && node && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              updateNodeData(node.id, { detailsExpanded: !detailsExpanded });
+            }}
+            className="nodrag absolute right-0 top-0 z-20 flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800"
+            title={detailsExpanded ? '상세 접기' : '상세 보기'}
+            aria-label={detailsExpanded ? '상세 접기' : '상세 보기'}
+          >
+            {detailsExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+          </button>
+        )}
+
         {showTargetHandle && (
           <SmartHandle
             id={targetHandleId}
@@ -233,33 +431,48 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
           />
         )}
 
-        <div className="mb-4 flex items-center gap-4">
+        <div className="mb-4 flex items-start gap-4 pr-8">
           {icon && (
             <div
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white shadow-sm"
+              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-white shadow-sm"
               style={{ backgroundColor: iconColor }}
             >
               {React.isValidElement(icon) &&
-                React.cloneElement(icon as React.ReactElement<any>, {
-                  className: 'w-7 h-7',
+                React.cloneElement(icon as React.ReactElement<{ className?: string }>, {
+                  className: 'w-8 h-8',
                 })}
             </div>
           )}
 
-          <div className="flex flex-col">
+          <div className="flex min-w-0 flex-col">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              {categoryLabel}
+            </div>
             <h3
               className={cn(
-                'text-lg font-bold text-gray-900 leading-none mb-1',
+                'text-xl font-bold text-gray-900 leading-tight mb-1',
                 titleClassName,
               )}
               title={data.title}
             >
               {data.title || 'Untitled Node'}
             </h3>
+            {description && (
+              <p
+                className="line-clamp-2 text-[13px] leading-snug text-gray-500"
+                title={String(description)}
+              >
+                {String(description)}
+              </p>
+            )}
           </div>
         </div>
 
-        <div className="text-sm">{children}</div>
+        <div className="min-w-0 max-w-full text-sm">{children}</div>
+
+        {!detailsExpanded && node && <VisiblePropertySummary node={node} />}
+
+        {detailsExpanded && node && <NodeInlinePanel node={node} />}
 
         {showSourceHandle && (
           <SmartHandle

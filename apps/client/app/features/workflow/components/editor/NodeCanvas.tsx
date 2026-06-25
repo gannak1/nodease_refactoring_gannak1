@@ -1,13 +1,6 @@
 'use client';
 
-import {
-  Sliders,
-  Plus,
-  StickyNote,
-  Play,
-  Trash2,
-  Settings,
-} from 'lucide-react';
+import { Plus, StickyNote, Play, Trash2, Settings } from 'lucide-react';
 import { NodeSelector } from './NodeSelector';
 import { LogTab } from './tabs/LogTab';
 import { MonitoringTab } from './tabs/MonitoringTab';
@@ -37,37 +30,17 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
-import { WorkflowNodeData, Node } from '../../types/Nodes';
+import { Node, WorkflowNodeData } from '../../types/Nodes';
 import { nodeTypes as coreNodeTypes } from '../nodes';
 import { PuzzleEdge } from '../nodes/edges/PuzzleEdge';
 import { CustomConnectionLine } from '../nodes/edges/CustomConnectionLine';
 import NotePost from './NotePost';
 import BottomPanel from './BottomPanel';
-import NodeDetailsPanel from './NodeDetailsPanel';
-import { getNodeDefinitionByType } from '../../config/nodeRegistry';
-import { StartNodePanel } from '../nodes/start/components/StartNodePanel';
-import { AnswerNodePanel } from '../nodes/answer/components/AnswerNodePanel';
-import { HttpRequestNodePanel } from '../nodes/http/components/HttpRequestNodePanel';
-import { SlackPostNodePanel } from '../nodes/slack/components/SlackPostNodePanel';
-import { CodeNodePanel } from '../nodes/code/components/CodeNodePanel';
-import { ConditionNodePanel } from '../nodes/condition/components/ConditionNodePanel';
-import { LLMNodePanel } from '../nodes/llm/components/LLMNodePanel';
-import { TemplateNodePanel } from '../nodes/template/components/TemplateNodePanel';
-import { WorkflowNodePanel } from '../nodes/workflow/components/WorkflowNodePanel';
-import { GithubNodePanel } from '../nodes/github/components/GithubNodePanel';
-import { MailNodePanel } from '../nodes/mail/components/MailNodePanel';
-import { LoopNodePanel } from '../nodes/loop/components/LoopNodePanel';
 import { AppSearchModal } from '../modals/AppSearchModal';
 import { useKeyboardShortcut } from '../../hooks/useKeyboardShortcut';
 import { useCanvasKeyboardShortcuts } from '../../hooks/useCanvasKeyboardShortcuts';
 import { App } from '@/app/features/app/api/appApi';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
-import { FileExtractionNodePanel } from '../nodes/file_extraction/components/FileExtractionNodePanel';
-import { VariableExtractionNodePanel } from '../nodes/variable_extraction/components/VariableExtractionNodePanel';
-import { WebhookTriggerNodePanel } from '../nodes/webhook/components/WebhookTriggerNodePanel';
-import { ScheduleTriggerNodePanel } from '../nodes/schedule/components/ScheduleTriggerNodePanel';
-import { LLMParameterSidePanel } from '../nodes/llm/components/LLMParameterSidePanel';
-import { LLMReferenceSidePanel } from '../nodes/llm/components/LLMReferenceSidePanel';
 import { useDragConnectionPreview } from '../../hooks/useDragConnectionPreview';
 import { DragConnectionOverlay } from './DragConnectionOverlay';
 import { SettingsSidebar } from './SettingsSidebar';
@@ -79,6 +52,13 @@ interface NodeCanvasProps {
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
 }
+
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 1.6;
+const DEFAULT_NODE_SIZE = {
+  width: 420,
+  height: 150,
+};
 
 export default function NodeCanvas({
   viewMode,
@@ -119,7 +99,7 @@ export default function NodeCanvas({
     deleteElements,
   } = useReactFlow();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [selectedNodeType, setSelectedNodeType] = useState<string | null>(null);
+  const [, setSelectedNodeType] = useState<string | null>(null);
   const [searchModalContext, setSearchModalContext] = useState<{
     isOpen: boolean;
     position?: { x: number; y: number };
@@ -128,6 +108,7 @@ export default function NodeCanvas({
   const [isRefPanelOpen, setIsRefPanelOpen] = useState(false);
   const [isNodeLibraryOpen, setIsNodeLibraryOpen] = useState(true);
   const reactFlowWrapperRef = useRef<HTMLDivElement>(null);
+  const hoveredNodeIdRef = useRef<string | null>(null);
   const backgroundGap = getSnapBackgroundGap(snapGridSize);
 
   // Drag connection preview
@@ -266,19 +247,6 @@ export default function NodeCanvas({
     { preventDefault: true },
   );
 
-  useEffect(() => {
-    const handleOpenRefPanel = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.nodeId === selectedNodeId) {
-        setIsRefPanelOpen((prev) => !prev);
-        setIsParamPanelOpen(false);
-      }
-    };
-    window.addEventListener('openLLMReferencePanel', handleOpenRefPanel);
-    return () =>
-      window.removeEventListener('openLLMReferencePanel', handleOpenRefPanel);
-  }, [selectedNodeId]);
-
   // 설정, 버전 기록, 테스트 패널이 열리면 노드 상세 패널과 배포 드롭다운 닫기
   useEffect(() => {
     if (isSettingsOpen || isVersionHistoryOpen || isTestPanelOpen) {
@@ -384,6 +352,84 @@ export default function NodeCanvas({
     [activeWorkflowId, updateWorkflowViewport],
   );
 
+  const handleNodeMouseEnter = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      hoveredNodeIdRef.current = node.id;
+    },
+    [],
+  );
+
+  const handleNodeMouseLeave = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      if (hoveredNodeIdRef.current === node.id) {
+        hoveredNodeIdRef.current = null;
+      }
+    },
+    [],
+  );
+
+  const handleNodeWheelZoom = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      const hoveredNodeId = hoveredNodeIdRef.current;
+      if (!hoveredNodeId) return;
+
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(
+          'input, textarea, select, [contenteditable="true"], .nowheel',
+        )
+      ) {
+        return;
+      }
+
+      const hoveredNode = nodes.find((node) => node.id === hoveredNodeId);
+      if (!hoveredNode) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const viewport = getViewport();
+      const measuredNode = hoveredNode as Node & {
+        measured?: { width?: number; height?: number };
+        width?: number;
+        height?: number;
+      };
+      const nodeWidth =
+        measuredNode.measured?.width ??
+        measuredNode.width ??
+        DEFAULT_NODE_SIZE.width;
+      const nodeHeight =
+        measuredNode.measured?.height ??
+        measuredNode.height ??
+        DEFAULT_NODE_SIZE.height;
+      const nodeCenter = {
+        x: hoveredNode.position.x + nodeWidth / 2,
+        y: hoveredNode.position.y + nodeHeight / 2,
+      };
+      const screenCenter = {
+        x: nodeCenter.x * viewport.zoom + viewport.x,
+        y: nodeCenter.y * viewport.zoom + viewport.y,
+      };
+      const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+      const nextZoom = Math.min(
+        MAX_ZOOM,
+        Math.max(MIN_ZOOM, viewport.zoom * zoomFactor),
+      );
+
+      if (nextZoom === viewport.zoom) return;
+
+      const nextViewport = {
+        x: screenCenter.x - nodeCenter.x * nextZoom,
+        y: screenCenter.y - nodeCenter.y * nextZoom,
+        zoom: nextZoom,
+      };
+
+      setViewport(nextViewport, { duration: 80 });
+      updateWorkflowViewport(activeWorkflowId, nextViewport);
+    },
+    [activeWorkflowId, getViewport, nodes, setViewport, updateWorkflowViewport],
+  );
+
   useEffect(() => {
     if (isVersionHistoryOpen || isSettingsOpen) {
       setSelectedNodeId(null);
@@ -405,18 +451,15 @@ export default function NodeCanvas({
           toggleTestPanel();
         }
 
-        if (selectedNodeId !== node.id) {
-          setIsParamPanelOpen(false);
-          setIsRefPanelOpen(false);
-        }
         // 메인 노드 클릭 시 내부 노드 선택 해제
         clearInnerNodeSelection();
-        setSelectedNodeId(node.id);
-        setSelectedNodeType(node.type);
+        setSelectedNodeId(null);
+        setSelectedNodeType(null);
+        setIsParamPanelOpen(false);
+        setIsRefPanelOpen(false);
       }
     },
     [
-      selectedNodeId,
       isVersionHistoryOpen,
       toggleVersionHistory,
       isSettingsOpen,
@@ -532,31 +575,6 @@ export default function NodeCanvas({
     closePanels: closeCanvasPanels,
     toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
   });
-
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeId) return null;
-    return nodes.find((n) => n.id === selectedNodeId);
-  }, [selectedNodeId, nodes]);
-
-  const panelHeader = useMemo(() => {
-    if (!selectedNodeType) return undefined;
-    const def = getNodeDefinitionByType(selectedNodeType);
-    if (selectedNodeType === 'workflowNode' && selectedNode) {
-      return {
-        icon: (selectedNode.data as unknown as WorkflowNodeData).icon || '🔄',
-        title:
-          (selectedNode.data as unknown as WorkflowNodeData).title ||
-          'Workflow Module',
-        description: 'Imported Workflow Module',
-      };
-    }
-
-    return {
-      icon: def?.icon || '⬜️',
-      title: def?.name || 'Node',
-      description: def?.description,
-    };
-  }, [selectedNodeType, selectedNode]);
 
   const reactFlowConfig = useMemo(() => {
     if (interactiveMode === 'touchpad') {
@@ -721,6 +739,7 @@ export default function NodeCanvas({
                 onContextMenu={(e) => e.preventDefault()}
                 onDragOver={handleDragOver}
                 onDrop={onDrop}
+                onWheelCapture={handleNodeWheelZoom}
               >
                 <ReactFlow
                   nodes={nodes}
@@ -730,6 +749,8 @@ export default function NodeCanvas({
                   onConnect={onConnect}
                   onMoveEnd={handleMoveEnd}
                   onNodeClick={handleNodeClick}
+                  onNodeMouseEnter={handleNodeMouseEnter}
+                  onNodeMouseLeave={handleNodeMouseLeave}
                   onPaneContextMenu={onPaneContextMenu}
                   onNodeContextMenu={onNodeContextMenu}
                   onEdgeContextMenu={onEdgeContextMenu}
@@ -738,8 +759,8 @@ export default function NodeCanvas({
                   defaultEdgeOptions={defaultEdgeOptions}
                   connectionLineComponent={CustomConnectionLine}
                   defaultViewport={{ x: 0, y: 0, zoom: 0.8 }}
-                  minZoom={0.4}
-                  maxZoom={1.6}
+                  minZoom={MIN_ZOOM}
+                  maxZoom={MAX_ZOOM}
                   attributionPosition="bottom-right"
                   className="bg-gray-100"
                   {...reactFlowConfig}
@@ -927,160 +948,11 @@ export default function NodeCanvas({
                 {/* 플로팅 하단 패널 */}
                 <BottomPanel
                   onCenterNodes={handleAutoLayout}
-                  isPanelOpen={!!selectedNodeId}
+                  isPanelOpen={false}
                   onOpenAppSearch={() =>
                     setSearchModalContext({ isOpen: true })
                   }
                 />
-
-                {/* [LLM] 파라미터 사이드 패널 */}
-                {isParamPanelOpen &&
-                  selectedNodeType === 'llmNode' &&
-                  selectedNode && (
-                    <LLMParameterSidePanel
-                      nodeId={selectedNode.id}
-                      data={selectedNode.data as any}
-                      onClose={() => setIsParamPanelOpen(false)}
-                    />
-                  )}
-
-                {/* 노드 상세 패널 */}
-                {(selectedNodeId || selectedInnerNode) && (
-                  <NodeDetailsPanel
-                    nodeId={selectedNodeId}
-                    onClose={handleClosePanel}
-                    header={panelHeader}
-                    headerActions={
-                      selectedNodeType === 'llmNode' ? (
-                        <button
-                          onClick={() => {
-                            setIsRefPanelOpen(false);
-                            setIsParamPanelOpen((prev) => !prev);
-                          }}
-                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
-                            isParamPanelOpen
-                              ? 'bg-blue-100 text-blue-600'
-                              : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-                          }`}
-                          title="LLM 파라미터 설정"
-                        >
-                          <Sliders className="w-3.5 h-3.5" />
-                          <span>파라미터</span>
-                        </button>
-                      ) : undefined
-                    }
-                  >
-                    {selectedNode && selectedNodeType === 'startNode' && (
-                      <StartNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'answerNode' && (
-                      <AnswerNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'httpRequestNode' && (
-                      <HttpRequestNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'slackPostNode' && (
-                      <SlackPostNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'codeNode' && (
-                      <CodeNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'conditionNode' && (
-                      <ConditionNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'llmNode' && (
-                      <LLMNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'templateNode' && (
-                      <TemplateNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'workflowNode' && (
-                      <WorkflowNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode &&
-                      selectedNodeType === 'fileExtractionNode' && (
-                        <FileExtractionNodePanel
-                          nodeId={selectedNode.id}
-                          data={selectedNode.data as any}
-                        />
-                      )}
-                    {selectedNode &&
-                      selectedNodeType === 'variableExtractionNode' && (
-                        <VariableExtractionNodePanel
-                          nodeId={selectedNode.id}
-                          data={selectedNode.data as any}
-                        />
-                      )}
-                    {selectedNode && selectedNodeType === 'webhookTrigger' && (
-                      <WebhookTriggerNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'scheduleTrigger' && (
-                      <ScheduleTriggerNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'githubNode' && (
-                      <GithubNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'mailNode' && (
-                      <MailNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                    {selectedNode && selectedNodeType === 'loopNode' && (
-                      <LoopNodePanel
-                        nodeId={selectedNode.id}
-                        data={selectedNode.data as any}
-                      />
-                    )}
-                  </NodeDetailsPanel>
-                )}
-
-                {/* [LLM] Reference Side Panel */}
-                {isRefPanelOpen &&
-                  selectedNodeType === 'llmNode' &&
-                  selectedNode && (
-                    <LLMReferenceSidePanel
-                      nodeId={selectedNode.id}
-                      data={selectedNode.data as any}
-                      onClose={() => setIsRefPanelOpen(false)}
-                    />
-                  )}
 
                 {/* Context Menu UI */}
                 {contextMenu && (

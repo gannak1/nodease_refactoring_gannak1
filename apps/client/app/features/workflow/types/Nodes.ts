@@ -5,6 +5,7 @@ export interface BaseNodeData {
   title: string;
   description?: string;
   displayNumber?: number;
+  visibleProperties?: string[];
   // UI 표시용 상태 필드 (실행 중 시각적 피드백)
   selected?: boolean; // 노드 선택 여부
   status?: 'idle' | 'running' | 'success' | 'failure'; // 실행 상태 (UI용)
