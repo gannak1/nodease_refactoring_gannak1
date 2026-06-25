@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentResponse
@@ -14,7 +15,7 @@ router = APIRouter()
 
 
 @router.post("", response_model=DeploymentResponse)
-@audit("workflow.deploy")
+@audit(AuditAction.WORKFLOW_DEPLOY)
 def create_deployment(
     deployment_in: DeploymentCreate,
     db: Session = Depends(get_db),
@@ -133,7 +134,7 @@ def get_deployment_info_public(
 
 
 @router.patch("/{deployment_id}/toggle", response_model=DeploymentResponse)
-@audit("deployment.toggle", target_param="deployment_id")
+@audit(AuditAction.DEPLOYMENT_TOGGLE, target_param="deployment_id")
 def toggle_deployment(
     deployment_id: str,
     db: Session = Depends(get_db),
@@ -149,7 +150,7 @@ def toggle_deployment(
 
 
 @router.delete("/{deployment_id}")
-@audit("deployment.delete", target_param="deployment_id")
+@audit(AuditAction.DEPLOYMENT_DELETE, target_param="deployment_id")
 def delete_deployment(
     deployment_id: str,
     db: Session = Depends(get_db),

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.auth.oauth import oauth
 from apps.gateway.services.auth_service import AuthService
 from apps.shared.audit import record_audit
+from apps.shared.audit.actions import AuditAction
 from apps.shared.db.session import get_db
 from apps.shared.schemas.auth import LoginRequest, LoginResponse, SignupRequest
 
@@ -102,10 +103,10 @@ def signup(
     try:
         result = AuthService.signup(db, request)
     except Exception as e:
-        _record_auth_failure("user.signup_failed", request_obj, request.email, e)
+        _record_auth_failure(AuditAction.USER_SIGNUP_FAILED, request_obj, request.email, e)
         raise
 
-    _record_auth_success("user.signup", request_obj, result.user)
+    _record_auth_success(AuditAction.USER_SIGNUP, request_obj, result.user)
 
     # 환경 감지 및 쿠키 도메인 설정
     is_production, cookie_domain = _get_cookie_config(request_obj)
@@ -153,10 +154,10 @@ def login(
     try:
         result = AuthService.login(db, request)
     except Exception as e:
-        _record_auth_failure("user.login_failed", request_obj, request.email, e)
+        _record_auth_failure(AuditAction.USER_LOGIN_FAILED, request_obj, request.email, e)
         raise
 
-    _record_auth_success("user.login", request_obj, result.user)
+    _record_auth_success(AuditAction.USER_LOGIN, request_obj, result.user)
 
     # 환경 감지 및 쿠키 도메인 설정
     is_production, cookie_domain = _get_cookie_config(request_obj)
@@ -197,7 +198,7 @@ def logout(request_obj: Request, response: Response):
 
     # 로그아웃은 actor를 시그니처에서 알 수 없어(쿠키 삭제 시점) actor_id 없이 기록한다.
     record_audit(
-        action="user.logout",
+        action=AuditAction.USER_LOGOUT,
         category="action",
         actor_type="user",
         metadata=_request_meta(request_obj),
@@ -299,7 +300,7 @@ async def auth_google_callback(
     # 자체 JWT 토큰 생성
     access_token = AuthService.create_jwt_token(str(user.id))
 
-    _record_auth_success("user.login", request, user, provider="google")
+    _record_auth_success(AuditAction.USER_LOGIN, request, user, provider="google")
 
     # 쿠키 설정
     is_production, cookie_domain = _get_cookie_config(request)

@@ -31,6 +31,7 @@ from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
+from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import (
@@ -50,7 +51,7 @@ router = APIRouter()
 @router.post(
     "", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED
 )
-@audit("knowledge.create")
+@audit(AuditAction.KNOWLEDGE_CREATE)
 def create_knowledge_base(
     kb_in: KnowledgeBaseCreate,
     db: Session = Depends(get_db),
@@ -182,7 +183,7 @@ def get_knowledge_base(
 
 
 @router.patch("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
-@audit("knowledge.update", target_param="kb_id")
+@audit(AuditAction.KNOWLEDGE_UPDATE, target_param="kb_id")
 def update_knowledge_base(
     kb_id: UUID,
     update_data: KnowledgeUpdate,
@@ -227,7 +228,7 @@ def update_knowledge_base(
 
 
 @router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
-@audit("knowledge.delete", target_param="kb_id")
+@audit(AuditAction.KNOWLEDGE_DELETE, target_param="kb_id")
 def delete_knowledge_base(
     kb_id: UUID,
     db: Session = Depends(get_db),
@@ -488,7 +489,7 @@ def get_document_content(
 @router.post(
     "/{kb_id}/documents/{document_id}/process", status_code=status.HTTP_202_ACCEPTED
 )
-@audit("document.upload", target_param="document_id")
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
 async def process_document(
     kb_id: UUID,
     document_id: UUID,

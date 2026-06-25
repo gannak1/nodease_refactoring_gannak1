@@ -33,17 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 def _find_user(kwargs) -> Optional[User]:
-    for value in kwargs.values():
-        if isinstance(value, User):
-            return value
-    return None
+    return next((value for value in kwargs.values() if isinstance(value, User)), None)
 
 
 def _find_request(kwargs) -> Optional[Request]:
-    for value in kwargs.values():
-        if isinstance(value, Request):
-            return value
-    return None
+    return next((value for value in kwargs.values() if isinstance(value, Request)), None)
 
 
 def _build_actor(user: Optional[User]):
@@ -70,9 +64,9 @@ def _request_metadata(request: Optional[Request]) -> dict:
 def audit(action: str, *, target_param: Optional[str] = None, target_type: Optional[str] = None):
     """
     Args:
-        action: 기록할 행동 이름 (예: "workflow.deploy")
-        target_param: target_id를 담은 핸들러 인자 이름 (예: "workflow_id")
-        target_type: 대상 리소스 종류 (예: "workflow"). 생략 시 action의 접두사 사용.
+        action: 기록할 행동 타입. AuditAction 상수를 넘긴다(예: AuditAction.WORKFLOW_DEPLOY).
+        target_param: target_id를 담은 핸들러 인자 이름(예: "workflow_id").
+        target_type: 대상 리소스 타입(예: "workflow"). 생략 시 action의 접두사를 사용한다.
     """
 
     def decorator(func):

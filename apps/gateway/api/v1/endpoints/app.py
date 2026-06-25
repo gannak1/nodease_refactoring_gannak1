@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.utils.audit import audit
+from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.app import AppCreateRequest, AppResponse, AppUpdateRequest
@@ -14,7 +15,7 @@ router = APIRouter()
 
 
 @router.patch("/{app_id}", response_model=AppResponse)
-@audit("app.update", target_param="app_id")
+@audit(AuditAction.APP_UPDATE, target_param="app_id")
 def update_app(
     app_id: str,
     request: AppUpdateRequest,
@@ -36,7 +37,7 @@ def update_app(
 
 
 @router.post("", response_model=AppResponse)
-@audit("app.create")
+@audit(AuditAction.APP_CREATE)
 def create_app(
     request: AppCreateRequest,
     db: Session = Depends(get_db),
@@ -93,7 +94,7 @@ def get_app(
 
 
 @router.post("/{app_id}/clone", response_model=AppResponse)
-@audit("app.clone", target_param="app_id")
+@audit(AuditAction.APP_CLONE, target_param="app_id")
 def clone_app(
     app_id: str,
     db: Session = Depends(get_db),
@@ -112,7 +113,7 @@ def clone_app(
 
 
 @router.delete("/{app_id}")
-@audit("app.delete", target_param="app_id")
+@audit(AuditAction.APP_DELETE, target_param="app_id")
 def delete_app(
     app_id: str,
     db: Session = Depends(get_db),

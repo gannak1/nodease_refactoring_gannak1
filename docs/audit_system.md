@@ -201,7 +201,7 @@ record_audit(
 | `deployment.py` | `workflow.deploy`, `deployment.toggle`, `deployment.delete` |
 | `connectors.py` | `connection.create` |
 | `llm.py` | `credential.create`, `credential.delete`, `model.pricing_update` |
-| `knowledge.py` | `knowledge.create`, `knowledge.update`, `knowledge.delete`, `document.upload`(process) |
+| `knowledge.py` | `knowledge.create`, `knowledge.update`, `knowledge.delete`, `document.process` |
 | `rag.py` | `document.upload`, `document.delete` |
 
 미부착 라우트는 대부분 조회(GET)·위저드·실행(run/webhook, 기존 `WorkflowRun`이 추적) 등 감사 대상이 아닌 것들이다.
@@ -266,10 +266,10 @@ ORDER BY occurred_at DESC;
 `user.invite`/`user.role_change`는 `users.py`가 비어 있어 부착 대상이 없습니다.
 (추측으로 만들지 않고 라우트 생성 시 부착)
 
-### 8-3. `document.upload` 의미 중복
+### 8-3. 문서 동기화 감사 미적용
 
-`knowledge.py`(문서 처리/재처리)와 `rag.py`(신규 업로드)가 둘 다 `document.upload`로
-기록됩니다. 의미 구분이 필요하면 knowledge 쪽을 `document.process`로 분리하는 것을 권장.
+`knowledge.py`의 문서 동기화(`/{kb_id}/documents/{document_id}/sync`)는 아직 별도
+감사 action이 없습니다. 필요하면 `document.sync`로 부착합니다.
 
 ### 8-4. run.py 접근 감사 미적용
 
