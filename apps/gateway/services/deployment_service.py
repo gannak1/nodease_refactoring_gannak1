@@ -270,7 +270,7 @@ class DeploymentService:
             db.query(App, WorkflowDeployment)
             .join(WorkflowDeployment, App.active_deployment_id == WorkflowDeployment.id)
             .filter(WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE)
-            .filter(WorkflowDeployment.is_active == True)
+            .filter(WorkflowDeployment.is_active.is_(True))
             .filter(App.created_by == user_id)  # [NEW] 내 앱만 조회
         )
 
@@ -372,6 +372,7 @@ class DeploymentService:
             execution_context = {
                 "user_id": str(app.created_by),  # UUID를 문자열로 변환 (JSON 직렬화)
                 "workflow_id": str(app.workflow_id) if app.workflow_id else None,
+                "app_id": str(app.id),
                 "trigger_mode": "app",  # 실행 모드 (앱 배포 실행)
                 "deployment_id": str(deployment.id),
                 "workflow_version": deployment.version,
@@ -687,7 +688,7 @@ class DeploymentService:
                 .filter(
                     WorkflowDeployment.app_id == app.id,
                     WorkflowDeployment.id != deployment_id,
-                    WorkflowDeployment.is_active == True,
+                    WorkflowDeployment.is_active.is_(True),
                 )
                 .order_by(WorkflowDeployment.version.desc())
                 .first()

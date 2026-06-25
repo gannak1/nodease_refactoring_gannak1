@@ -60,6 +60,7 @@ class WorkflowEngine:
         self.execution_context = dict(execution_context) if execution_context else {}
         self.workflow_timeout = workflow_timeout
         self.start_time = 0.0
+        self._node_sequence = 0
 
         if db is not None:
             self.execution_context["db"] = db
@@ -381,6 +382,8 @@ class WorkflowEngine:
 
         node_options_snapshot = None
         log_id = None
+        self._node_sequence += 1
+        sequence = self._node_sequence
 
         if not self.is_subworkflow:
             node_options_snapshot = self._extract_node_options(node_schema)
@@ -389,6 +392,7 @@ class WorkflowEngine:
                 node_schema.type,
                 inputs,
                 process_data=node_options_snapshot,
+                sequence=sequence,
             )
 
         # Redis Pub/Sub 이벤트 발행
@@ -428,6 +432,7 @@ class WorkflowEngine:
                         log_id,
                         node_options_snapshot,
                         started_at,
+                        sequence,
                     )
 
             except gevent.Timeout:
@@ -475,6 +480,7 @@ class WorkflowEngine:
         log_id=None,
         node_options_snapshot=None,
         started_at=None,
+        sequence=None,
     ):
         """
         개별 노드를 실행하는 작업
@@ -484,6 +490,18 @@ class WorkflowEngine:
         try:
             # 노드 실행 (핵심) - 동기 실행
             result = node_instance.execute(inputs)
+            from datetime import datetime, timezone
+
+            finished_at = datetime.now(timezone.utc)
+            trace_metadata = self._build_node_trace_metadata(
+                node_schema.type,
+                node_instance,
+                result,
+                node_options_snapshot,
+                started_at,
+                finished_at,
+            )
+            trace_payloads = self._collect_node_trace_payloads(node_instance)
 
             # 노드 완료 로깅
             if not self.is_subworkflow:
@@ -495,12 +513,21 @@ class WorkflowEngine:
                     inputs=inputs,
                     process_data=node_options_snapshot,
                     started_at=started_at,
+                    trace_metadata=trace_metadata,
+                    trace_payloads=trace_payloads,
+                    sequence=sequence,
                 )
 
             return result
 
         except Exception as e:
             error_msg = str(e)
+            from datetime import datetime, timezone
+
+            finished_at = datetime.now(timezone.utc)
+            trace_metadata = self._build_error_trace_metadata(
+                node_schema.type, started_at, finished_at, error_msg
+            )
             if not self.is_subworkflow:
                 self.logger.update_node_log_error(
                     log_id,
@@ -510,8 +537,141 @@ class WorkflowEngine:
                     inputs=inputs,
                     process_data=node_options_snapshot,
                     started_at=started_at,
+                    trace_metadata=trace_metadata,
+                    sequence=sequence,
                 )
             raise e
+
+    def _collect_node_trace_payloads(self, node_instance) -> list[dict[str, Any]]:
+        payloads = getattr(node_instance, "_trace_payloads", []) or []
+        if hasattr(node_instance, "_trace_payloads"):
+            node_instance._trace_payloads = []
+        return payloads
+
+    def _build_error_trace_metadata(
+        self, node_type: str, started_at, finished_at, error_message: str
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "error": {
+                "type": "node_error",
+                "message": error_message,
+            }
+        }
+        if started_at and finished_at:
+            metadata["latency_ms"] = int(
+                (finished_at - started_at).total_seconds() * 1000
+            )
+        if "guardrail" in node_type.lower():
+            metadata["guardrail"] = {
+                "type": "moduly_guardrail",
+                "decision": "errored",
+                "blocked": False,
+                "reason_code": "node_error",
+                "reason_redacted": error_message,
+                "latency_ms": metadata.get("latency_ms"),
+            }
+        return metadata
+
+    def _build_node_trace_metadata(
+        self,
+        node_type: str,
+        node_instance,
+        result: Any,
+        process_data: Optional[Dict[str, Any]],
+        started_at,
+        finished_at,
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = self._json_safe(
+            dict(getattr(node_instance, "_trace_metadata", {}) or {})
+        )
+        latency_ms = (
+            int((finished_at - started_at).total_seconds() * 1000)
+            if started_at and finished_at
+            else None
+        )
+        result_dict = result if isinstance(result, dict) else {}
+        process_data = process_data or {}
+
+        if node_type == "llmNode":
+            usage = result_dict.get("usage") or {}
+            llm_metadata = dict(metadata.get("llm") or {})
+            llm_metadata.update(
+                {
+                    "provider": process_data.get("provider"),
+                    "model": result_dict.get("model") or process_data.get("model"),
+                    "credential_id": process_data.get("credential_id"),
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens")
+                    or usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+                    "total_cost": result_dict.get("cost", 0.0),
+                    "latency_ms": latency_ms,
+                    "retry_count": 0,
+                }
+            )
+            metadata["llm"] = llm_metadata
+            knowledge = (result_dict.get("metadata") or {}).get("knowledge_search")
+            if knowledge:
+                metadata["rag"] = {
+                    "retrieval_results": self._json_safe(knowledge),
+                    "latency_ms": latency_ms,
+                }
+
+        elif node_type == "httpRequestNode":
+            http_metadata = dict(metadata.get("http") or {})
+            http_metadata.setdefault("latency_ms", latency_ms)
+            metadata["http"] = http_metadata
+
+        elif node_type == "codeNode":
+            sandbox_metadata = dict(metadata.get("sandbox") or {})
+            sandbox_metadata.update(
+                {
+                    "execution_time_ms": result_dict.get("execution_time_ms", latency_ms),
+                    "exit_code": result_dict.get("exit_code"),
+                    "timeout": bool(result_dict.get("timeout", False)),
+                    "latency_ms": latency_ms,
+                }
+            )
+            metadata["sandbox"] = sandbox_metadata
+
+        elif node_type == "workflowNode":
+            workflow_metadata = dict(metadata.get("workflow") or {})
+            workflow_metadata.setdefault("latency_ms", latency_ms)
+            metadata["workflow"] = workflow_metadata
+
+        elif "guardrail" in node_type.lower():
+            guardrail_metadata = dict(metadata.get("guardrail") or {})
+            guardrail_metadata.update(
+                {
+                    "type": "moduly_guardrail",
+                    "decision": result_dict.get("decision"),
+                    "blocked": bool(result_dict.get("blocked", False)),
+                    "policy_id": result_dict.get("policy_id"),
+                    "rule_id": result_dict.get("rule_id"),
+                    "reason_code": result_dict.get("reason_code"),
+                    "reason_redacted": result_dict.get("reason_redacted"),
+                    "severity": result_dict.get("severity"),
+                    "latency_ms": latency_ms,
+                }
+            )
+            metadata["guardrail"] = guardrail_metadata
+
+        if latency_ms is not None:
+            metadata["latency_ms"] = latency_ms
+        return metadata
+
+    def _json_safe(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): self._json_safe(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._json_safe(item) for item in value]
+        if hasattr(value, "model_dump"):
+            return self._json_safe(value.model_dump())
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
 
     # ================================================================
     # 그래프 검증 메서드

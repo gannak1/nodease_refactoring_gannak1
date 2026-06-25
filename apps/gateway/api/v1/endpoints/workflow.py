@@ -495,6 +495,7 @@ def get_draft_workflow(
 @router.post("/{workflow_id}/execute")
 async def execute_workflow(
     workflow_id: str,
+    request: Request,
     user_input: dict = {},
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -528,7 +529,10 @@ async def execute_workflow(
         execution_context = {
             "user_id": str(current_user.id),
             "workflow_id": workflow_id,
+            "app_id": str(workflow.app_id),
             "memory_mode": memory_mode_enabled,
+            "request_id": request.headers.get("x-request-id"),
+            "correlation_id": request.headers.get("x-correlation-id"),
         }
 
         # Celery 태스크 호출 (workflow.execute)
@@ -612,7 +616,7 @@ async def stream_workflow(
             user_input = body if isinstance(body, dict) else {}
             if isinstance(user_input, dict):
                 memory_mode_enabled = bool(user_input.pop("memory_mode", False))
-        except:
+        except Exception:
             user_input = {}
 
     # 3. 데이터 조회
@@ -629,8 +633,11 @@ async def stream_workflow(
     execution_context = {
         "user_id": str(current_user.id),
         "workflow_id": workflow_id,
+        "app_id": str(workflow.app_id),
         "memory_mode": memory_mode_enabled,
         "trigger_mode": "manual",  # 테스트 실행
+        "request_id": request.headers.get("x-request-id"),
+        "correlation_id": request.headers.get("x-correlation-id"),
     }
 
     # 6. Redis Pub/Sub 구독 및 SSE 스트리밍

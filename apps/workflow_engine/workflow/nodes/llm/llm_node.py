@@ -315,6 +315,30 @@ class LLMNode(Node[LLMNodeData]):
                 except Exception as e:
                     logger.error(f"[LLMNode] Cost calculation/logging failed: {e}")
 
+            self._trace_payloads = [
+                {
+                    "payload_kind": "prompt",
+                    "payload": {"messages": messages},
+                    "scope": "span",
+                },
+                {
+                    "payload_kind": "completion",
+                    "payload": {"text": text},
+                    "scope": "span",
+                },
+            ]
+            if knowledge_context:
+                self._trace_payloads.append(
+                    {
+                        "payload_kind": "retrieved_context",
+                        "payload": {
+                            "context": knowledge_context,
+                            "metadata": knowledge_metadata,
+                        },
+                        "scope": "span",
+                    }
+                )
+
             return {
                 "text": text,
                 "usage": usage,
@@ -580,13 +604,19 @@ class LLMNode(Node[LLMNodeData]):
             # 예: [파일명] 내용...
             context_parts.append(f"[파일: {chunk.filename}]\n{chunk.content}")
 
-            # 메타데이터 직렬화
-            meta = chunk.dict()
-            for key, value in list(meta.items()):
-                if isinstance(value, uuid.UUID):
-                    meta[key] = str(value)
-            meta["knowledge_base_id"] = str(kb_id)
-            metadata_list.append(meta)
+            metadata_list.append(self._knowledge_trace_metadata(kb_id, chunk))
 
         combined_context = "\n\n".join(context_parts)
         return combined_context, metadata_list
+
+    def _knowledge_trace_metadata(
+        self, knowledge_base_id: str, chunk: ChunkPreview
+    ) -> Dict[str, Any]:
+        """추적 메타데이터에는 검색 출처 식별 정보만 남깁니다."""
+        return {
+            "knowledge_base_id": str(knowledge_base_id),
+            "document_id": str(chunk.document_id),
+            "filename": chunk.filename,
+            "page_number": chunk.page_number,
+            "similarity_score": chunk.similarity_score,
+        }

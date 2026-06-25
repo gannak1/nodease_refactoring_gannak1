@@ -7,6 +7,7 @@ Log System Celery 태스크
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from apps.shared.celery_app import celery_app
@@ -35,6 +36,7 @@ from apps.shared.db.models.workflow_run import (
     NodeRunStatus,
     RunStatus,
     RunTriggerMode,
+    TracePayload,
     WorkflowNodeRun,
     WorkflowRun,
 )
@@ -75,6 +77,58 @@ def _deserialize_datetime(value):
     return value
 
 
+def _resolve_app_id(session, workflow_id, deployment_id=None):
+    if deployment_id:
+        deployment = (
+            session.query(WorkflowDeployment)
+            .filter(WorkflowDeployment.id == deployment_id)
+            .first()
+        )
+        if deployment and deployment.app_id:
+            return deployment.app_id
+
+    workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if workflow and workflow.app_id:
+        return workflow.app_id
+    return None
+
+
+def _insert_trace_payloads(session, workflow_run_id, payload_records):
+    for record in payload_records or []:
+        payload_id = _deserialize_uuid(record.get("id"))
+        if not payload_id:
+            continue
+        exists = session.query(TracePayload.id).filter(TracePayload.id == payload_id).first()
+        if exists:
+            continue
+        payload = TracePayload(
+            id=payload_id,
+            workflow_run_id=workflow_run_id,
+            workflow_node_run_id=_deserialize_uuid(record.get("workflow_node_run_id"))
+            if record.get("workflow_node_run_id")
+            else None,
+            scope=record.get("scope") or "trace",
+            payload_kind=record.get("payload_kind") or "input",
+            sequence=record.get("sequence"),
+            attempt=record.get("attempt") or 1,
+            redacted_payload=record.get("redacted_payload"),
+            raw_payload_encrypted=record.get("raw_payload_encrypted"),
+            raw_payload_hash=record.get("raw_payload_hash"),
+            redaction_applied=bool(record.get("redaction_applied")),
+            pii_detected=bool(record.get("pii_detected")),
+            secret_detected=bool(record.get("secret_detected")),
+            redaction_metadata=record.get("redaction_metadata"),
+            storage_mode=record.get("storage_mode") or "redacted_only",
+            retention_expires_at=_deserialize_datetime(record.get("retention_expires_at"))
+            if record.get("retention_expires_at")
+            else None,
+            created_at=_deserialize_datetime(record.get("created_at"))
+            if record.get("created_at")
+            else datetime.now(timezone.utc),
+        )
+        session.add(payload)
+
+
 @celery_app.task(name="log.create_run", bind=True, max_retries=3)
 def create_run_log(self, data: Dict[str, Any]):
     """워크플로우 실행 로그 생성"""
@@ -113,19 +167,43 @@ def create_run_log(self, data: Dict[str, Any]):
             if data.get("deployment_id")
             else None
         )
+        app_id = (
+            _deserialize_uuid(data.get("app_id"))
+            if data.get("app_id")
+            else _resolve_app_id(session, workflow_id, deployment_id)
+        )
 
         run_log = WorkflowRun(
             id=run_id,
             workflow_id=workflow_id,
+            app_id=app_id,
             user_id=user_id,
             status=RunStatus.RUNNING,
             trigger_mode=normalized_trigger,
             inputs=data.get("user_input") or {},
-            started_at=data["started_at"],
+            started_at=_deserialize_datetime(data["started_at"]),
             deployment_id=deployment_id,
             workflow_version=data.get("workflow_version"),
+            correlation_id=data.get("correlation_id"),
+            request_id=data.get("request_id"),
+            workflow_task_id=data.get("workflow_task_id"),
+            trace_metadata=data.get("trace_metadata") or {},
+            redaction_applied=bool(data.get("redaction_applied")),
+            pii_detected=bool(data.get("pii_detected")),
+            redaction_policy_id=_deserialize_uuid(data.get("redaction_policy_id"))
+            if data.get("redaction_policy_id")
+            else None,
+            retention_policy_id=_deserialize_uuid(data.get("retention_policy_id"))
+            if data.get("retention_policy_id")
+            else None,
+            visibility_policy_id=_deserialize_uuid(data.get("visibility_policy_id"))
+            if data.get("visibility_policy_id")
+            else None,
+            payload_storage_mode=data.get("payload_storage_mode") or "redacted_only",
         )
         session.add(run_log)
+        session.flush()
+        _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
 
         return {"status": "success", "run_id": str(run_id)}
@@ -163,6 +241,13 @@ def update_run_log_finish(self, data: Dict[str, Any]):
 
         run_log.status = RunStatus.SUCCESS
         run_log.outputs = data["outputs"]
+        run_log.redaction_applied = run_log.redaction_applied or bool(
+            data.get("redaction_applied")
+        )
+        run_log.pii_detected = run_log.pii_detected or bool(data.get("pii_detected"))
+        run_log.payload_storage_mode = (
+            data.get("payload_storage_mode") or run_log.payload_storage_mode
+        )
         finished_at = _deserialize_datetime(data["finished_at"])
         run_log.finished_at = finished_at
 
@@ -185,6 +270,7 @@ def update_run_log_finish(self, data: Dict[str, Any]):
             run_log.total_tokens = stats.total_tokens or 0
             run_log.total_cost = stats.total_cost or 0.0
 
+        _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
 
         return {"status": "success", "run_id": str(run_id)}
@@ -265,16 +351,45 @@ def create_node_log(self, data: Dict[str, Any]):
             inputs=data.get("inputs") or {},
             process_data=data.get("process_data") or {},
             started_at=_deserialize_datetime(data["started_at"]),
+            redaction_applied=bool(data.get("redaction_applied")),
+            pii_detected=bool(data.get("pii_detected")),
+            redaction_policy_id=_deserialize_uuid(data.get("redaction_policy_id"))
+            if data.get("redaction_policy_id")
+            else None,
+            sequence=data.get("sequence"),
+            retry_count=data.get("retry_count") or 0,
         )
         session.add(node_run)
+        session.flush()
+        _insert_trace_payloads(session, workflow_run_id, data.get("trace_payloads") or [])
         session.commit()
 
         return {"status": "success", "node_id": data["node_id"]}
 
-    except IntegrityError:
+    except IntegrityError as e:
         session.rollback()
         # [NEW] 중복 키 오류(이미 존재함)는 성공으로 간주 (Idempotency)
-        # 이미 생성되었다면 OK
+        # 이미 생성되었다면 생성 작업이 가진 입력 페이로드만 보존
+        try:
+            workflow_run_id = _deserialize_uuid(data["workflow_run_id"])
+            node_run_id = _deserialize_uuid(data.get("id"))
+            existing_node = (
+                session.query(WorkflowNodeRun.id)
+                .filter(WorkflowNodeRun.id == node_run_id)
+                .first()
+            )
+            if not existing_node:
+                raise e
+            _insert_trace_payloads(
+                session, workflow_run_id, data.get("trace_payloads") or []
+            )
+            session.commit()
+        except Exception as payload_error:
+            session.rollback()
+            logger.error("[Log-System] create_node_log duplicate payload 보존 실패")
+            raise self.retry(
+                exc=payload_error, countdown=min(2 ** (self.request.retries + 1), 30)
+            )
         return {"status": "success", "node_id": data["node_id"], "duplicated": True}
     except Exception as e:
         session.rollback()
@@ -339,6 +454,16 @@ def update_node_log_finish(self, data: Dict[str, Any]):
                 outputs=outputs,
                 started_at=started_at,
                 finished_at=finished_at,
+                duration=data.get("duration")
+                if data.get("duration") is not None
+                else (finished_at - started_at).total_seconds()
+                if started_at and finished_at
+                else None,
+                trace_metadata=data.get("trace_metadata") or {},
+                redaction_applied=bool(data.get("redaction_applied")),
+                pii_detected=bool(data.get("pii_detected")),
+                sequence=data.get("sequence"),
+                retry_count=data.get("retry_count") or 0,
             )
             session.add(node_run)
             logger.info(f"[Log-System] Upsert: 노드 로그 직접 생성 (log_id={log_id})")
@@ -347,7 +472,20 @@ def update_node_log_finish(self, data: Dict[str, Any]):
             node_run.status = NodeRunStatus.SUCCESS
             node_run.outputs = outputs
             node_run.finished_at = finished_at
+            node_run.duration = data.get("duration") or (
+                (finished_at - node_run.started_at).total_seconds()
+                if node_run.started_at and finished_at
+                else node_run.duration
+            )
+            node_run.trace_metadata = data.get("trace_metadata") or node_run.trace_metadata
+            node_run.redaction_applied = node_run.redaction_applied or bool(
+                data.get("redaction_applied")
+            )
+            node_run.pii_detected = node_run.pii_detected or bool(data.get("pii_detected"))
+            node_run.sequence = node_run.sequence or data.get("sequence")
+            node_run.retry_count = data.get("retry_count") or node_run.retry_count
 
+        _insert_trace_payloads(session, workflow_run_id, data.get("trace_payloads") or [])
         session.commit()
 
         return {"status": "success", "node_id": data["node_id"]}
@@ -415,6 +553,14 @@ def update_node_log_error(self, data: Dict[str, Any]):
                 error_message=data["error_message"],
                 started_at=started_at,
                 finished_at=finished_at,
+                duration=data.get("duration")
+                if data.get("duration") is not None
+                else (finished_at - started_at).total_seconds()
+                if started_at and finished_at
+                else None,
+                trace_metadata=data.get("trace_metadata") or {},
+                sequence=data.get("sequence"),
+                retry_count=data.get("retry_count") or 0,
             )
             session.add(node_run)
             logger.info(
@@ -425,6 +571,14 @@ def update_node_log_error(self, data: Dict[str, Any]):
             node_run.status = NodeRunStatus.FAILED
             node_run.error_message = data["error_message"]
             node_run.finished_at = finished_at
+            node_run.duration = data.get("duration") or (
+                (finished_at - node_run.started_at).total_seconds()
+                if node_run.started_at and finished_at
+                else node_run.duration
+            )
+            node_run.trace_metadata = data.get("trace_metadata") or node_run.trace_metadata
+            node_run.sequence = node_run.sequence or data.get("sequence")
+            node_run.retry_count = data.get("retry_count") or node_run.retry_count
 
         session.commit()
 
@@ -441,5 +595,28 @@ def update_node_log_error(self, data: Dict[str, Any]):
         session.rollback()
         logger.error(f"[Log-System] update_node_log_error 실패: {e}")
         raise self.retry(exc=e, countdown=min(2**self.request.retries, 30))
+    finally:
+        session.close()
+
+
+@celery_app.task(name="log.trace_retention_purge", bind=True, max_retries=3)
+def trace_retention_purge(self, data: Dict[str, Any]):
+    """보관 정책 기반 추적 정리 실행."""
+    from apps.shared.services.tracing.retention import TraceRetentionService
+
+    session = SessionLocal()
+    try:
+        result = TraceRetentionService.purge(
+            session,
+            scope_type=data.get("scope_type") or "global",
+            scope_id=data.get("scope_id"),
+            dry_run=bool(data.get("dry_run", True)),
+            limit=int(data.get("limit") or 1000),
+        )
+        return {"status": "success", "result": result}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[Log-System] trace_retention_purge 실패: {e}")
+        raise self.retry(exc=e, countdown=2**self.request.retries)
     finally:
         session.close()

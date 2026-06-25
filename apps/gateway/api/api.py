@@ -13,6 +13,7 @@ from apps.gateway.api.v1.endpoints import (
     rag,
     run,
     template_wizard,
+    tracing,
     webhook,
     workflow,
 )
@@ -57,3 +58,6 @@ api_router.include_router(run.router, tags=["run"])
 
 # Webhook (External Trigger)
 api_router.include_router(webhook.router, tags=["webhook"])
+
+# 추적 (워크플로우 단위 추적/스팬/페이로드 API)
+api_router.include_router(tracing.router, tags=["tracing"])
