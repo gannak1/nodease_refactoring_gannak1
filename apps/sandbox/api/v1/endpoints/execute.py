@@ -23,7 +23,7 @@ class ExecuteRequest(BaseModel):
     priority: Optional[str] = Field(default=None, description="우선순위 (high, normal, low), None이면 SJF 기반 자동 결정")
     trigger_type: Optional[str] = Field(default=None, description="트리거 유형 (manual, schedule, webhook, batch)，첫 실행 시 fallback 우선순위 결정용")
     enable_network: bool = Field(default=False, description="네트워크 허용 여부")
-    tenant_id: Optional[str] = Field(default=None, description="테넌트 ID, 지금은 user_id (공정 스케줄링용)")
+    organization_id: Optional[str] = Field(default=None, description="조직 ID, 지금은 user_id (공정 스케줄링용)")
 
 
 class ExecuteResponse(BaseModel):
@@ -96,7 +96,7 @@ async def execute_code(request: ExecuteRequest):
             priority=priority,
             trigger_mode=trigger_mode,
             enable_network=request.enable_network,
-            tenant_id=request.tenant_id,
+            organization_id=request.organization_id,
         )
         
         return ExecuteResponse(

@@ -35,7 +35,7 @@ class WorkflowService:
 
         # 새 워크플로우 생성
         workflow = Workflow(
-            tenant_id=user_id,
+            organization_id=user_id,
             app_id=request.app_id,
             created_by=user_id,
             graph={

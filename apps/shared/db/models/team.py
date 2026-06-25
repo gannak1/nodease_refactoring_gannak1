@@ -17,7 +17,7 @@ class TeamPermission(Base):
     __tablename__ = "team_permission"
     # 조직 아이디의 이름은 중복 불가
     __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_permission_team_tenant_name"),
+        UniqueConstraint("organization_id", "name", name="uq_permission_team_organization_name"),
     )
 
     # 고유 ID
@@ -29,11 +29,12 @@ class TeamPermission(Base):
     )
 
     # 조직 ID, team ID에 FK
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True
     )
     # 태그 이름
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # 설명, 생략가능
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -81,6 +82,7 @@ class TeamPermission(Base):
     can_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 워크플로우 태그 관리 권한, 태그 이름 수정, 태그 권한값 변경, 태그 비활성화
     can_manage_tag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_assign_tag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 워크플로우 태그 부여 권한, 팀이나 사용자에게 해당 태그를 부여
     can_assign_tag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

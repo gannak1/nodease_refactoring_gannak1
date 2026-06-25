@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class Organization(Base):
     __tablename__ = "organization"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_teams_tenant_name"),
+        UniqueConstraint("parent_id", "name", name="uq_organization_parent_name"),
     )
 
     # 고유 ID
@@ -26,8 +26,8 @@ class Organization(Base):
         nullable=False,
     )
     # 상위 조직 ID
-    parent_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True, 
+    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True, 
     )
     # 조직 이름
     name: Mapped[str] = mapped_column(String(255), nullable=False)

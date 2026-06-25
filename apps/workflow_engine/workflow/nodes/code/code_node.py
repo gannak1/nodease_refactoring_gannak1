@@ -54,7 +54,7 @@ class CodeNode(Node[CodeNodeData]):
                 return {"error": f"Invalid variable source format: {inp.source}"}
 
         # 2. 샌드박스에서 코드 실행
-        tenant_id = (
+        organization_id = (
             self.execution_context.get("user_id") if self.execution_context else None
         )
         trigger_mode = (
@@ -68,7 +68,7 @@ class CodeNode(Node[CodeNodeData]):
             inputs=code_inputs,
             timeout=self.data.timeout,
             trigger_type=trigger_mode,
-            tenant_id=tenant_id,
+            organization_id=organization_id,
         )
 
         return result

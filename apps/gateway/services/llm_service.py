@@ -704,7 +704,7 @@ class LLMService:
         우선순위:
         1. llm_rel_credential_models에서 명시적 권한 확인 (fail-closed)
         """
-        # TODO: Tenant 스키마 도입 시 tenant_id 지원 추가.
+        # TODO: Organization 스키마 도입 시 organization_id 지원 추가.
         # 현재는 user_id만 필터링합니다.
 
         # 1. 프로바이더를 알기 위해 모델 조회
