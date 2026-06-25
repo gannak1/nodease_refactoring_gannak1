@@ -37,6 +37,19 @@ except ValueError:
     RAW_PAYLOAD_AUDIT_FAILURES = None
 
 try:
+    RAW_PAYLOAD_ENCRYPT_FAILURES = (
+        PrometheusCounter(
+            "tracing_raw_payload_encrypt_failures_total",
+            "Raw trace payload encryption failure count.",
+            ["payload_kind", "scope"],
+        )
+        if PrometheusCounter
+        else None
+    )
+except ValueError:
+    RAW_PAYLOAD_ENCRYPT_FAILURES = None
+
+try:
     TRACE_ACCESS_CONTEXT_FAILURES = (
         PrometheusCounter(
             "tracing_access_context_failures_total",
@@ -85,6 +98,38 @@ class TraceObservabilityService:
                 "payload_kind": payload_kind,
                 "scope": scope,
                 "storage_mode": cls._safe_str(getattr(payload, "storage_mode", None)),
+                "error_type": type(error).__name__ if error else "unknown",
+            },
+        )
+
+    @classmethod
+    def record_raw_payload_encryption_failed(
+        cls,
+        payload_kind: str,
+        scope: str,
+        workflow_node_run_id: Any = None,
+        error: Optional[Exception] = None,
+    ) -> None:
+        safe_kind = str(payload_kind or "unknown")
+        safe_scope = str(scope or "unknown")
+        cls._local_counters[
+            ("raw_payload_encryption_failed", safe_kind, safe_scope)
+        ] += 1
+
+        if RAW_PAYLOAD_ENCRYPT_FAILURES is not None:
+            RAW_PAYLOAD_ENCRYPT_FAILURES.labels(
+                payload_kind=safe_kind,
+                scope=safe_scope,
+            ).inc()
+
+        # 암호화 실패 로그에는 원문, 암호문, 키, 예외 메시지를 남기지 않습니다.
+        logger.error(
+            "tracing.raw_payload_encryption_failed",
+            extra={
+                "event": "tracing.raw_payload_encryption_failed",
+                "span_id": cls._safe_str(workflow_node_run_id),
+                "payload_kind": safe_kind,
+                "scope": safe_scope,
                 "error_type": type(error).__name__ if error else "unknown",
             },
         )

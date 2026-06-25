@@ -10,9 +10,12 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.services.tracing.access import VIEW_RAW, TraceAccessService
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.payload import TracePayloadService
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
+
+TRACE_LIST_SCAN_LIMIT = 5000
 
 
 class TraceQueryService:
@@ -64,8 +67,9 @@ class TraceQueryService:
         page_items: list[WorkflowRun] = []
 
         # 권한 판정은 Python 정책 로직이 필요하므로 DB에서 제한된 배치만 가져와 순회합니다.
-        while True:
-            candidates = ordered_query.offset(scanned).limit(batch_size).all()
+        while scanned < TRACE_LIST_SCAN_LIMIT:
+            current_batch_size = min(batch_size, TRACE_LIST_SCAN_LIMIT - scanned)
+            candidates = ordered_query.offset(scanned).limit(current_batch_size).all()
             if not candidates:
                 break
             scanned += len(candidates)
@@ -76,9 +80,19 @@ class TraceQueryService:
                     page_items.append(run)
                 visible_total += 1
 
+        remaining_candidates_exist = False
+        if scanned >= TRACE_LIST_SCAN_LIMIT:
+            remaining_candidates_exist = (
+                ordered_query.offset(scanned).limit(1).first() is not None
+            )
+        scan_limit_reached = scanned >= TRACE_LIST_SCAN_LIMIT and remaining_candidates_exist
+        has_more = scan_limit_reached or visible_total > offset + len(page_items)
         return {
             "total": visible_total,
             "items": [TraceQueryService.trace_summary(run) for run in page_items],
+            "has_more": has_more,
+            "total_is_estimated": scan_limit_reached,
+            "scan_limit_reached": scan_limit_reached,
         }
 
     @staticmethod
@@ -408,8 +422,11 @@ class TraceQueryService:
             {
                 "inputs": None if view_level == "metadata" else run.inputs,
                 "outputs": None if view_level == "metadata" else run.outputs,
-                "error_message": run.error_message,
-                "trace_metadata": run.trace_metadata or {},
+                # error_message는 호환 필드이며 metadata view에서는 노출하지 않습니다.
+                "error_message": None if view_level == "metadata" else run.error_message,
+                "trace_metadata": TraceMetadataSanitizer.sanitize_run_metadata(
+                    run.trace_metadata or {}
+                ),
                 "spans": [],
                 "payloads": [],
             }
@@ -442,7 +459,9 @@ class TraceQueryService:
             "outputs": span.outputs if include_io else None,
             # process_data는 노드 설정/중간값을 포함할 수 있어 메타데이터 조회에서는 숨깁니다.
             "process_data": None if view_level == "metadata" else span.process_data,
-            "trace_metadata": span.trace_metadata or {},
+            "trace_metadata": TraceMetadataSanitizer.sanitize_span_metadata(
+                span.node_type, span.trace_metadata or {}
+            ),
             "redaction_applied": span.redaction_applied,
             "pii_detected": span.pii_detected,
             "sequence": span.sequence,

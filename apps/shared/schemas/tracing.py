@@ -32,6 +32,9 @@ class TraceSummarySchema(BaseModel):
 class TraceListResponse(BaseModel):
     total: int
     items: List[TraceSummarySchema]
+    has_more: bool = False
+    total_is_estimated: bool = False
+    scan_limit_reached: bool = False
 
 
 class TraceSpanSchema(BaseModel):

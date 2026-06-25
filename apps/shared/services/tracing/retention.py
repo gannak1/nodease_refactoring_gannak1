@@ -7,6 +7,7 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.policy import (
     SCOPE_APP,
     SCOPE_GLOBAL,
@@ -150,11 +151,15 @@ class TraceRetentionService:
             run.outputs = PURGED_MARKER
             run.error_message = None
             trace_metadata = run.trace_metadata or {}
-            trace_metadata["retention"] = {
-                "purged_at": now.isoformat(),
-                "action": retention.retention_action,
-            }
-            run.trace_metadata = trace_metadata
+            trace_metadata["retention"] = TraceMetadataSanitizer.sanitize_retention_metadata(
+                {
+                    "purged_at": now.isoformat(),
+                    "action": retention.retention_action,
+                }
+            )
+            run.trace_metadata = TraceMetadataSanitizer.sanitize_run_metadata(
+                trace_metadata
+            )
             # 실행 단위 정리도 표시값을 남겨 같은 trace를 반복 집계하지 않습니다.
             run.retention_purged_at = now
             node_runs = (

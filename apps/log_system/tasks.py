@@ -41,6 +41,7 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
@@ -187,7 +188,9 @@ def create_run_log(self, data: Dict[str, Any]):
             correlation_id=data.get("correlation_id"),
             request_id=data.get("request_id"),
             workflow_task_id=data.get("workflow_task_id"),
-            trace_metadata=data.get("trace_metadata") or {},
+            trace_metadata=TraceMetadataSanitizer.sanitize_run_metadata(
+                data.get("trace_metadata") or {}
+            ),
             redaction_applied=bool(data.get("redaction_applied")),
             pii_detected=bool(data.get("pii_detected")),
             redaction_policy_id=_deserialize_uuid(data.get("redaction_policy_id"))
@@ -459,7 +462,10 @@ def update_node_log_finish(self, data: Dict[str, Any]):
                 else (finished_at - started_at).total_seconds()
                 if started_at and finished_at
                 else None,
-                trace_metadata=data.get("trace_metadata") or {},
+                trace_metadata=TraceMetadataSanitizer.sanitize_span_metadata(
+                    data.get("node_type", "unknown"),
+                    data.get("trace_metadata") or {},
+                ),
                 redaction_applied=bool(data.get("redaction_applied")),
                 pii_detected=bool(data.get("pii_detected")),
                 sequence=data.get("sequence"),
@@ -477,7 +483,11 @@ def update_node_log_finish(self, data: Dict[str, Any]):
                 if node_run.started_at and finished_at
                 else node_run.duration
             )
-            node_run.trace_metadata = data.get("trace_metadata") or node_run.trace_metadata
+            sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+                data.get("node_type") or node_run.node_type,
+                data.get("trace_metadata") or {},
+            )
+            node_run.trace_metadata = sanitized_metadata or node_run.trace_metadata
             node_run.redaction_applied = node_run.redaction_applied or bool(
                 data.get("redaction_applied")
             )
@@ -558,7 +568,10 @@ def update_node_log_error(self, data: Dict[str, Any]):
                 else (finished_at - started_at).total_seconds()
                 if started_at and finished_at
                 else None,
-                trace_metadata=data.get("trace_metadata") or {},
+                trace_metadata=TraceMetadataSanitizer.sanitize_span_metadata(
+                    data.get("node_type", "unknown"),
+                    data.get("trace_metadata") or {},
+                ),
                 sequence=data.get("sequence"),
                 retry_count=data.get("retry_count") or 0,
             )
@@ -576,7 +589,11 @@ def update_node_log_error(self, data: Dict[str, Any]):
                 if node_run.started_at and finished_at
                 else node_run.duration
             )
-            node_run.trace_metadata = data.get("trace_metadata") or node_run.trace_metadata
+            sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+                data.get("node_type") or node_run.node_type,
+                data.get("trace_metadata") or {},
+            )
+            node_run.trace_metadata = sanitized_metadata or node_run.trace_metadata
             node_run.sequence = node_run.sequence or data.get("sequence")
             node_run.retry_count = data.get("retry_count") or node_run.retry_count
 

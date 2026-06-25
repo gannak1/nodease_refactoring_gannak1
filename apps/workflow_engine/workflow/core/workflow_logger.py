@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.payload import TracePayloadService
 from apps.shared.services.tracing.policy import TracePolicyService
 from apps.shared.services.tracing.redaction import TraceRedactionService
@@ -244,7 +245,9 @@ class WorkflowLogger:
             "request_id": execution_context.get("request_id"),
             "workflow_task_id": execution_context.get("workflow_task_id"),
             "trace_payloads": payload_records,
-            "trace_metadata": execution_context.get("trace_metadata") or {},
+            "trace_metadata": TraceMetadataSanitizer.sanitize_run_metadata(
+                execution_context.get("trace_metadata") or {}
+            ),
             "redaction_applied": summary["redaction_applied"],
             "pii_detected": summary["pii_detected"],
             "redaction_policy_id": policy_context["redaction"].id,
@@ -411,6 +414,9 @@ class WorkflowLogger:
         enriched_metadata = self._metadata_with_payload_refs(
             trace_metadata, payload_records
         )
+        sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_type, enriched_metadata
+        )
 
         data = {
             "log_id": log_id,
@@ -428,7 +434,7 @@ class WorkflowLogger:
                 if started_at
                 else None
             ),
-            "trace_metadata": enriched_metadata,
+            "trace_metadata": sanitized_metadata,
             "trace_payloads": payload_records,
             "redaction_applied": summary["redaction_applied"],
             "pii_detected": summary["pii_detected"],
@@ -481,7 +487,9 @@ class WorkflowLogger:
                 if started_at
                 else None
             ),
-            "trace_metadata": trace_metadata or {},
+            "trace_metadata": TraceMetadataSanitizer.sanitize_span_metadata(
+                node_type, trace_metadata or {}
+            ),
             "sequence": sequence,
             "retry_count": retry_count,
         }

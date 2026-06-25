@@ -119,3 +119,42 @@ def test_raw_payload_decryption_failure_logs_and_increments_metric(
     assert "tracing.raw_payload_decryption_failed" in caplog.text
     assert "encrypted-value" not in caplog.text
     assert "복호화 실패" not in caplog.text
+
+
+def test_raw_payload_encryption_failure_logs_and_keeps_redacted_only(
+    monkeypatch, caplog
+):
+    from apps.shared.utils.encryption import encryption_manager
+
+    def fail_encrypt(plain_text):
+        raise ValueError("암호화 실패")
+
+    monkeypatch.setenv("ENCRYPTION_KEY", "exists-but-invalid-for-test")
+    monkeypatch.setattr(encryption_manager, "encrypt", fail_encrypt)
+    TraceObservabilityService.reset_local_counters()
+    caplog.set_level(
+        logging.ERROR, logger="apps.shared.services.tracing.observability"
+    )
+
+    records = TracePayloadService.prepare_payload_records(
+        [{"payload_kind": "output", "payload": {"value": "secret raw value"}}],
+        redaction_policy=ResolvedRedactionPolicy(
+            raw_payload_storage_enabled=True,
+            store_redacted_copy_only=False,
+        ),
+        retention_policy=ResolvedRetentionPolicy(),
+        default_scope="span",
+        default_node_run_id=uuid.uuid4(),
+    )
+
+    assert records[0]["raw_payload_encrypted"] is None
+    assert records[0]["storage_mode"] == "redacted_only"
+    assert (
+        TraceObservabilityService.get_local_counter(
+            "raw_payload_encryption_failed", "output", "span"
+        )
+        == 1
+    )
+    assert "tracing.raw_payload_encryption_failed" in caplog.text
+    assert "secret raw value" not in caplog.text
+    assert "암호화 실패" not in caplog.text

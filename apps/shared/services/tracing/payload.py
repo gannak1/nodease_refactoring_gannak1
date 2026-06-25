@@ -44,14 +44,25 @@ class TracePayloadService:
         return bool(os.getenv("ENCRYPTION_KEY"))
 
     @staticmethod
-    def _encrypt_raw_payload(payload: Any) -> Optional[str]:
+    def _encrypt_raw_payload(
+        payload: Any,
+        payload_kind: str = "unknown",
+        scope: str = "unknown",
+        workflow_node_run_id: Any = None,
+    ) -> Optional[str]:
         if not TracePayloadService.raw_encryption_available():
             return None
         try:
             from apps.shared.utils.encryption import encryption_manager
 
             return encryption_manager.encrypt(_canonical_json(payload))
-        except Exception:
+        except Exception as error:
+            TraceObservabilityService.record_raw_payload_encryption_failed(
+                payload_kind=payload_kind,
+                scope=scope,
+                workflow_node_run_id=workflow_node_run_id,
+                error=error,
+            )
             return None
 
     @staticmethod
@@ -128,7 +139,12 @@ class TracePayloadService:
                 and not redaction.failed
             )
             if raw_allowed:
-                raw_payload_encrypted = TracePayloadService._encrypt_raw_payload(payload)
+                raw_payload_encrypted = TracePayloadService._encrypt_raw_payload(
+                    payload,
+                    payload_kind=payload_kind,
+                    scope=scope,
+                    workflow_node_run_id=node_run_id,
+                )
                 if raw_payload_encrypted:
                     storage_mode = "raw_and_redacted"
 

@@ -16,83 +16,9 @@ from sqlalchemy.orm import Session
 from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
-
-TRACE_METADATA_DENYLIST_KEYS = {
-    "access_token",
-    "api_key",
-    "apikey",
-    "authorization",
-    "body",
-    "chunk",
-    "completion",
-    "content",
-    "cookie",
-    "credential",
-    "credentials",
-    "headers",
-    "input",
-    "inputs",
-    "message",
-    "messages",
-    "output",
-    "outputs",
-    "password",
-    "prompt",
-    "query",
-    "raw",
-    "refresh_token",
-    "request",
-    "response",
-    "secret",
-    "set_cookie",
-    "text",
-    "token",
-    "url",
-}
-TRACE_METADATA_ALLOWED_TOP_LEVEL = {
-    "llmNode": {"llm", "rag"},
-    "httpRequestNode": {"http"},
-    "slackPostNode": {"http"},
-    "codeNode": {"sandbox"},
-    "workflowNode": {"workflow"},
-}
-TRACE_METADATA_ALLOWED_NESTED = {
-    "http": {
-        "host",
-        "latency_ms",
-        "method",
-        "path",
-        "request_size",
-        "response_size",
-        "retry_count",
-        "status_code",
-    },
-    "sandbox": {"execution_time_ms", "exit_code", "latency_ms", "timeout"},
-    "workflow": {"latency_ms"},
-    "llm": {
-        "completion_payload_id",
-        "completion_tokens",
-        "credential_id",
-        "latency_ms",
-        "model",
-        "prompt_payload_id",
-        "prompt_tokens",
-        "provider",
-        "retry_count",
-        "total_cost",
-        "total_tokens",
-    },
-    "rag": {"latency_ms", "retrieval_results", "retrieved_context_payload_id"},
-}
-RAG_METADATA_ALLOWED_KEYS = {
-    "document_id",
-    "filename",
-    "knowledge_base_id",
-    "page_number",
-    "similarity_score",
-}
 
 
 class WorkflowEngine:
@@ -719,7 +645,7 @@ class WorkflowEngine:
                 "reason_redacted": safe_error_code,
                 "latency_ms": metadata.get("latency_ms"),
             }
-        return self._sanitize_metadata_for_storage(metadata)
+        return TraceMetadataSanitizer.sanitize_span_metadata(node_type, metadata)
 
     @staticmethod
     def _error_code(error: Exception) -> str:
@@ -736,8 +662,8 @@ class WorkflowEngine:
         started_at,
         finished_at,
     ) -> Dict[str, Any]:
-        metadata: Dict[str, Any] = self._node_trace_metadata_allowlist(
-            node_type, dict(getattr(node_instance, "_trace_metadata", {}) or {})
+        metadata: Dict[str, Any] = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_type, getattr(node_instance, "_trace_metadata", {}) or {}
         )
         latency_ms = (
             int((finished_at - started_at).total_seconds() * 1000)
@@ -770,7 +696,9 @@ class WorkflowEngine:
             if knowledge:
                 # knowledge_search는 LLM 노드에서 본문이 제거된 허용 목록 메타데이터만 전달됩니다.
                 metadata["rag"] = {
-                    "retrieval_results": self._sanitize_rag_metadata(knowledge),
+                    "retrieval_results": TraceMetadataSanitizer.sanitize_rag_metadata(
+                        knowledge
+                    ),
                     "latency_ms": latency_ms,
                 }
 
@@ -815,83 +743,7 @@ class WorkflowEngine:
 
         if latency_ms is not None:
             metadata["latency_ms"] = latency_ms
-        return self._sanitize_metadata_for_storage(metadata)
-
-    def _node_trace_metadata_allowlist(
-        self, node_type: str, metadata: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        allowed_top_level = TRACE_METADATA_ALLOWED_TOP_LEVEL.get(node_type, set())
-        safe_metadata = self._json_safe(metadata)
-        if not isinstance(safe_metadata, dict):
-            return {}
-
-        filtered: Dict[str, Any] = {}
-        for key, value in safe_metadata.items():
-            if key not in allowed_top_level or self._is_denied_metadata_key(key):
-                continue
-            filtered_value = self._sanitize_metadata_value(
-                value, TRACE_METADATA_ALLOWED_NESTED.get(key)
-            )
-            if filtered_value is not None:
-                filtered[key] = filtered_value
-        return filtered
-
-    def _sanitize_rag_metadata(self, value: Any) -> Any:
-        safe_value = self._json_safe(value)
-        if isinstance(safe_value, list):
-            return [self._sanitize_rag_metadata(item) for item in safe_value]
-        if isinstance(safe_value, dict):
-            return {
-                key: safe_value.get(key)
-                for key in RAG_METADATA_ALLOWED_KEYS
-                if key in safe_value and not self._is_denied_metadata_key(key)
-            }
-        return safe_value
-
-    def _sanitize_metadata_for_storage(self, value: Any) -> Any:
-        return self._sanitize_metadata_value(value, allowed_keys=None)
-
-    def _sanitize_metadata_value(
-        self, value: Any, allowed_keys: Optional[set[str]] = None
-    ) -> Any:
-        safe_value = self._json_safe(value)
-        if isinstance(safe_value, dict):
-            sanitized: Dict[str, Any] = {}
-            for key, child in safe_value.items():
-                if self._is_denied_metadata_key(key):
-                    continue
-                if allowed_keys is not None and key not in allowed_keys:
-                    continue
-                sanitized_child = self._sanitize_metadata_value(child, allowed_keys=None)
-                if sanitized_child is not None:
-                    sanitized[key] = sanitized_child
-            return sanitized
-        if isinstance(safe_value, list):
-            sanitized_items = []
-            for item in safe_value:
-                sanitized_item = self._sanitize_metadata_value(item, allowed_keys=None)
-                if sanitized_item is not None:
-                    sanitized_items.append(sanitized_item)
-            return sanitized_items
-        return safe_value
-
-    @staticmethod
-    def _is_denied_metadata_key(key: Any) -> bool:
-        normalized = str(key).strip().lower().replace("-", "_")
-        return normalized in TRACE_METADATA_DENYLIST_KEYS
-
-    def _json_safe(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            return {str(k): self._json_safe(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._json_safe(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._json_safe(item) for item in value]
-        if hasattr(value, "model_dump"):
-            return self._json_safe(value.model_dump())
-        if isinstance(value, uuid.UUID):
-            return str(value)
-        return value
+        return TraceMetadataSanitizer.sanitize_span_metadata(node_type, metadata)
 
     # ================================================================
     # 그래프 검증 메서드
