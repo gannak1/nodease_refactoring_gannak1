@@ -14,7 +14,7 @@ class AppService:
         db: Session,
         request: AppCreateRequest,
         user_id: str,
-        tenant_id: str = None,
+        organization_id: str = None,
     ):
         """
         새로운 앱을 생성합니다.
@@ -23,14 +23,14 @@ class AppService:
             db: 데이터베이스 세션
             request: 앱 생성 요청 데이터
             user_id: 생성자 ID (필수)
-            tenant_id: 테넌트 ID (선택, 기본값은 user_id)
+            organization_id: 테넌트 ID (선택, 기본값은 user_id)
 
         Returns:
             생성된 App 객체
         """
-        # tenant_id가 없으면 user_id를 사용 (유저별 분리)
-        if not tenant_id:
-            tenant_id = user_id
+        # organization_id가 없으면 user_id를 사용 (유저별 분리)
+        if not organization_id:
+            organization_id = user_id
 
         # url_slug, auth_secret 생성
         url_slug = AppService._generate_url_slug(db, request.name)
@@ -39,14 +39,14 @@ class AppService:
         # 이름 중복 체크
         if (
             db.query(App)
-            .filter(App.tenant_id == tenant_id, App.name == request.name)
+            .filter(App.organization_id == organization_id, App.name == request.name)
             .first()
         ):
             raise ValueError("App with this name already exists.")
 
         # App 생성
         app = App(
-            tenant_id=tenant_id,
+            organization_id=organization_id,
             name=request.name,
             description=request.description,
             icon=request.icon.model_dump(),
@@ -60,7 +60,7 @@ class AppService:
 
         # 기본 워크플로우 생성
         workflow = Workflow(
-            tenant_id=tenant_id,
+            organization_id=organization_id,
             app_id=app.id,
             created_by=user_id,
         )
@@ -219,7 +219,7 @@ class AppService:
             if (
                 db.query(App)
                 .filter(
-                    App.tenant_id == app.tenant_id,
+                    App.organization_id == app.organization_id,
                     App.name == request.name,
                     App.id != app_id,
                 )
@@ -278,7 +278,7 @@ class AppService:
         new_secret = secrets.token_urlsafe(32)
 
         new_app = App(
-            tenant_id=user_id,  # 복제하는 사람의 tenant_id (user_id와 동일 가정)
+            organization_id=user_id,  # 복제하는 사람의 organization_id (user_id와 동일 가정)
             name=f"{source_app.name} (복사본)",
             description=source_app.description,
             icon=new_icon,
@@ -304,7 +304,7 @@ class AppService:
         graph_data = {k: v for k, v in cleaned_snapshot.items() if k != "features"}
 
         new_workflow = Workflow(
-            tenant_id=user_id,
+            organization_id=user_id,
             app_id=new_app.id,
             created_by=user_id,
             # 스냅샷 기반 데이터 설정

@@ -27,8 +27,8 @@ class App(Base):
         default=uuid.uuid4,
         nullable=False,
     )
-    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),ForeignKey("organization.id"), nullable=True, index=True
     )
 
     # === 앱 정보 필드 ===

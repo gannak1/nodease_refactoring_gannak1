@@ -151,9 +151,11 @@ class LLMCredential(Base):
         nullable=False,
         index=True,
     )
-    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
+        ForeignKey("organization.id"),
         nullable=True,
+        index=True,
     )
     credential_name: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_config: Mapped[str] = mapped_column(
@@ -242,8 +244,8 @@ class LLMUsageLog(Base):
         nullable=False,
         index=True,
     )
-    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True,
     )
     credential_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
