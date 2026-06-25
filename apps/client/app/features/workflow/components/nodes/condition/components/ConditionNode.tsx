@@ -54,6 +54,7 @@ export const ConditionNode = memo(
                     id={caseItem.id}
                     className="!absolute !right-[-36px]"
                     style={{ top: '50%', transform: 'translateY(-50%)' }}
+                    displayNumber={data.displayNumber}
                   />
                 </div>
               );
@@ -80,6 +81,7 @@ export const ConditionNode = memo(
                 id="default"
                 className="!absolute !right-[-36px]"
                 style={{ top: '50%', transform: 'translateY(-50%)' }}
+                displayNumber={data.displayNumber}
               />
             </div>
           </div>
