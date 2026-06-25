@@ -34,11 +34,15 @@ const resetStore = () => useWorkflowStore.setState(initialState, true);
 // 테스트용 Fixture 데이터
 // ============================================================================
 
-const createMockNode = (id: string, type: string = 'startNode'): Node => ({
+const createMockNode = (
+  id: string,
+  type: Node['type'] = 'startNode',
+  position = { x: 0, y: 0 },
+): Node => ({
   id,
   type,
-  position: { x: 0, y: 0 },
-  data: { title: `Node ${id}` },
+  position,
+  data: { title: `Node ${id}` } as any,
 });
 
 const createMockEdge = (id: string, source: string, target: string): Edge => ({
@@ -111,6 +115,138 @@ describe('노드 추가/삭제 테스트', () => {
 
     const state = useWorkflowStore.getState();
     expect(state.nodes[0].position).toEqual({ x: 100, y: 200 });
+  });
+
+  it('기본 10px grid snap으로 노드 위치를 보정한다', () => {
+    useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 104, y: 207 },
+      },
+    ]);
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].position).toEqual({ x: 100, y: 210 });
+  });
+
+  it.each([
+    {
+      gridSize: 5 as const,
+      position: { x: 103, y: 207 },
+      expected: { x: 105, y: 205 },
+    },
+    {
+      gridSize: 20 as const,
+      position: { x: 111, y: 231 },
+      expected: { x: 120, y: 240 },
+    },
+  ])(
+    '$gridSize px grid snap으로 노드 위치를 보정한다',
+    ({ gridSize, position, expected }) => {
+      useWorkflowStore.getState().setSnapGridSize(gridSize);
+      useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+
+      useWorkflowStore.getState().onNodesChange([
+        {
+          type: 'position',
+          id: 'node-1',
+          position,
+        },
+      ]);
+
+      const state = useWorkflowStore.getState();
+      expect(state.nodes[0].position).toEqual(expected);
+    },
+  );
+
+  it('snap 설정이 off면 노드 위치를 보정하지 않는다', () => {
+    useWorkflowStore.getState().setSnapGridSize('off');
+    useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 104, y: 207 },
+      },
+    ]);
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].position).toEqual({ x: 104, y: 207 });
+  });
+
+  it('Alt로 snap이 임시 해제되면 노드 위치를 보정하지 않는다', () => {
+    useWorkflowStore.getState().setSnapTemporarilyDisabled(true);
+    useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 104, y: 207 },
+      },
+    ]);
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].position).toEqual({ x: 104, y: 207 });
+  });
+
+  it('여러 노드 이동 시 그룹 origin의 snap delta로 상대 위치를 유지한다', () => {
+    useWorkflowStore.getState().setNodes([
+      createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
+      createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
+    ]);
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 16, y: 23 },
+      },
+      {
+        type: 'position',
+        id: 'node-2',
+        position: { x: 31, y: 48 },
+      },
+    ]);
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].position).toEqual({ x: 20, y: 20 });
+    expect(state.nodes[1].position).toEqual({ x: 35, y: 45 });
+  });
+
+  it('positionChanges 순서가 노드 순서와 달라도 그룹 상대 위치를 유지한다', () => {
+    useWorkflowStore.getState().setNodes([
+      createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
+      createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
+      createMockNode('node-3', 'codeNode', { x: 41, y: 11 }),
+    ]);
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-3',
+        position: { x: 54, y: 27 },
+      },
+      {
+        type: 'position',
+        id: 'node-2',
+        position: { x: 31, y: 48 },
+      },
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 16, y: 23 },
+      },
+    ]);
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].position).toEqual({ x: 20, y: 20 });
+    expect(state.nodes[1].position).toEqual({ x: 35, y: 45 });
+    expect(state.nodes[2].position).toEqual({ x: 58, y: 24 });
   });
 });
 
@@ -230,7 +366,7 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
   it('setEnvVariables로 환경 변수를 설정할 수 있다', () => {
     useWorkflowStore.getState().setEnvVariables([
       { id: 'env-1', key: 'API_KEY', value: 'key123', type: 'string' },
-      { id: 'env-2', key: 'DEBUG', value: 'true', type: 'boolean' },
+      { id: 'env-2', key: 'DEBUG', value: 'true', type: 'string' },
     ]);
 
     const state = useWorkflowStore.getState();

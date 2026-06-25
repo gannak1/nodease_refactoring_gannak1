@@ -2,6 +2,7 @@
 
 import { useCallback, useState, useEffect, useRef } from 'react';
 import { useReactFlow } from '@xyflow/react';
+import { Grid2X2 } from 'lucide-react';
 import {
   TouchpadIcon,
   MousePointerIcon,
@@ -11,7 +12,11 @@ import {
   ChevronDownIcon,
   ArrowsInIcon,
 } from '../nodes/icons';
-import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import {
+  type SnapGridSize,
+  useWorkflowStore,
+} from '@/app/features/workflow/store/useWorkflowStore';
+import { SNAP_GRID_SIZE_OPTIONS } from '../../utils/gridSnap';
 import { type NoteNode } from '../../types/Nodes';
 
 interface BottomPanelProps {
@@ -23,7 +28,6 @@ interface BottomPanelProps {
 export default function BottomPanel({
   onCenterNodes,
   isPanelOpen = false,
-  onOpenAppSearch,
 }: BottomPanelProps) {
   const {
     interactiveMode,
@@ -32,6 +36,9 @@ export default function BottomPanel({
     setNodes,
     toggleFullscreen,
     isFullscreen,
+    snapGridSize,
+    setSnapGridSize,
+    isSnapTemporarilyDisabled,
   } = useWorkflowStore();
   const {
     screenToFlowPosition,
@@ -43,9 +50,9 @@ export default function BottomPanel({
   } = useReactFlow();
 
   // 한 번에 하나의 모달만 열리도록 관리하는 상태
-  const [openModal, setOpenModal] = useState<'interactive' | 'zoom' | null>(
-    null,
-  );
+  const [openModal, setOpenModal] = useState<
+    'interactive' | 'zoom' | 'snap' | null
+  >(null);
   const [isAddingNote, setIsAddingNote] = useState(false);
   const [notePosition, setNotePosition] = useState({ x: 0, y: 0 });
   const [currentZoom, setCurrentZoom] = useState(100);
@@ -53,6 +60,7 @@ export default function BottomPanel({
   // 외부 클릭 감지를 위한 모달 Refs
   const interactiveModalRef = useRef<HTMLDivElement>(null);
   const zoomModalRef = useRef<HTMLDivElement>(null);
+  const snapModalRef = useRef<HTMLDivElement>(null);
 
   // 뷰포트 변경 시 줌 레벨 업데이트
   useEffect(() => {
@@ -81,9 +89,11 @@ export default function BottomPanel({
         interactiveModalRef.current.contains(target);
       const isInsideZoom =
         zoomModalRef.current && zoomModalRef.current.contains(target);
+      const isInsideSnap =
+        snapModalRef.current && snapModalRef.current.contains(target);
 
       // 모달 내부 클릭이 아니면 현재 모달 닫기
-      if (!isInsideInteractive && !isInsideZoom) {
+      if (!isInsideInteractive && !isInsideZoom && !isInsideSnap) {
         setOpenModal(null);
       }
     };
@@ -185,6 +195,25 @@ export default function BottomPanel({
   const toggleZoomModal = useCallback(() => {
     setOpenModal((prev) => (prev === 'zoom' ? null : 'zoom'));
   }, []);
+
+  const toggleSnapModal = useCallback(() => {
+    setOpenModal((prev) => (prev === 'snap' ? null : 'snap'));
+  }, []);
+
+  const selectSnapGridSize = useCallback(
+    (size: SnapGridSize) => {
+      setSnapGridSize(size);
+      setOpenModal(null);
+    },
+    [setSnapGridSize],
+  );
+  const isSnapOpen = openModal === 'snap';
+  const snapLabel =
+    snapGridSize === 'off'
+      ? 'Move off'
+      : isSnapTemporarilyDisabled
+        ? `Move ${snapGridSize}px paused`
+        : `Move ${snapGridSize}px`;
 
   const handleZoomIn = useCallback(() => {
     zoomIn();
@@ -434,6 +463,54 @@ export default function BottomPanel({
                 >
                   Zoom to 200%
                 </button>
+              </div>
+            )}
+          </div>
+
+          <div className="w-px h-6 bg-gray-200" />
+
+          {/* Grid Snap 설정 */}
+          <div className="relative" ref={snapModalRef}>
+            <button
+              onClick={toggleSnapModal}
+              className={`px-2 py-1.5 flex items-center gap-1 hover:bg-gray-100 rounded transition-colors ${
+                snapGridSize === 'off' ? 'text-gray-500' : 'text-gray-700'
+              }`}
+              title="Move snap"
+              aria-haspopup="menu"
+              aria-expanded={isSnapOpen}
+              aria-label={`Move snap setting: ${snapLabel}`}
+            >
+              <Grid2X2 className="w-4 h-4" />
+              <span className="text-sm font-medium">
+                {snapLabel}
+              </span>
+              <ChevronDownIcon className="w-3 h-3" />
+            </button>
+
+            {isSnapOpen && (
+              <div
+                className="absolute bottom-full left-0 mb-2 w-[160px] bg-white rounded-lg shadow-2xl border border-gray-200 py-2"
+                role="menu"
+                aria-label="Move snap grid size"
+              >
+                {SNAP_GRID_SIZE_OPTIONS.map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => selectSnapGridSize(size)}
+                    aria-pressed={snapGridSize === size}
+                    aria-current={snapGridSize === size ? 'true' : undefined}
+                    role="menuitemradio"
+                    aria-checked={snapGridSize === size}
+                    className={`w-full px-4 py-2 text-left text-sm transition-colors ${
+                      snapGridSize === size
+                        ? 'bg-blue-50 text-blue-600 font-medium'
+                        : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    {size === 'off' ? 'Move off' : `Move ${size}px grid`}
+                  </button>
+                ))}
               </div>
             )}
           </div>
