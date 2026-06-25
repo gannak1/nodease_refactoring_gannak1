@@ -1,9 +1,10 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { HelpCircle } from 'lucide-react';
+import { isMockWorkflowPath } from '@/app/features/workflow/utils/mockMode';
 
 type MemoryModeModalsProps = {
   showMemoryConfirm: boolean;
@@ -150,7 +151,13 @@ export function MemoryModeToggle({
   );
 }
 
-export function useMemoryMode(router = useRouter(), toaster = toast) {
+export function useMemoryMode(
+  routerOverride?: ReturnType<typeof useRouter>,
+  toaster = toast,
+) {
+  const defaultRouter = useRouter();
+  const router = routerOverride ?? defaultRouter;
+  const pathname = usePathname();
   const [isMemoryModeEnabled, setIsMemoryModeEnabled] = useState(false);
   const [showMemoryConfirm, setShowMemoryConfirm] = useState(false);
   const [showKeyPrompt, setShowKeyPrompt] = useState(false);
@@ -163,6 +170,11 @@ export function useMemoryMode(router = useRouter(), toaster = toast) {
   // 키 상태 조회 (최소 침습)
   useEffect(() => {
     const fetchKeyStatus = async () => {
+      if (isMockWorkflowPath(pathname)) {
+        setHasProviderKey(true);
+        return;
+      }
+
       try {
         const res = await fetch('/api/v1/llm/credentials', {
           credentials: 'include',
@@ -176,7 +188,7 @@ export function useMemoryMode(router = useRouter(), toaster = toast) {
       }
     };
     fetchKeyStatus();
-  }, []);
+  }, [pathname]);
 
   // 키 해제 시 자동 OFF
   useEffect(() => {
