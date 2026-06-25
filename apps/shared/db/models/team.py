@@ -41,12 +41,12 @@ class TeamPermission(Base):
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
-    # creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
+    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
     # 태그를 관리하는 사용자 ID
     managed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
-    # manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
+    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
 
     # 태그 활성화 여부, 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

@@ -24,17 +24,20 @@ class Organization(Base):
         default=uuid.uuid4,
         nullable=False,
     )
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, index=True
+    parent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True, 
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
+    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
+
     managed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
+    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -51,6 +54,3 @@ class Organization(Base):
     deactivated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-
-    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
-    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
