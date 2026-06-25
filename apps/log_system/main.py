@@ -41,6 +41,7 @@ else:
     load_dotenv()
 
 # Celery 앱 import (tasks 모듈이 자동으로 등록됨)
+from apps.log_system import audit_tasks  # noqa: F401 - audit.record 태스크 등록
 from apps.log_system import tasks  # noqa: F401 - Celery 태스크 등록
 from apps.shared.celery_app import celery_app
 

@@ -1,5 +1,7 @@
 import json
+import time
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 import httpx
 from jinja2 import Environment
@@ -98,6 +100,8 @@ class HttpRequestNode(Node[HttpRequestNodeData]):  # Node 상속
         # 4. HTTP 요청 실행 (동기 - gevent 호환)
         method = data.method.value
         timeout = data.timeout / 1000.0  # ms -> seconds
+        parsed_url = urlparse(url)
+        request_started = time.perf_counter()
 
         try:
             # [GEVENT] 동기 httpx.Client 사용
@@ -135,6 +139,48 @@ class HttpRequestNode(Node[HttpRequestNodeData]):  # Node 상속
                     response_body = response.json()
                 except json.JSONDecodeError:
                     response_body = response.text
+
+                latency_ms = int((time.perf_counter() - request_started) * 1000)
+                request_size = len(body.encode("utf-8")) if isinstance(body, str) else 0
+                response_content = getattr(response, "content", None)
+                if response_content is None:
+                    response_content = json.dumps(
+                        response_body, ensure_ascii=False, default=str
+                    ).encode("utf-8")
+                response_size = len(response_content or b"")
+                self._trace_metadata = {
+                    "http": {
+                        "method": method,
+                        "host": parsed_url.netloc,
+                        "path": parsed_url.path or "/",
+                        "status_code": response.status_code,
+                        "latency_ms": latency_ms,
+                        "request_size": request_size,
+                        "response_size": response_size,
+                        "retry_count": 0,
+                    }
+                }
+                self._trace_payloads = [
+                    {
+                        "payload_kind": "http_request",
+                        "payload": {
+                            "method": method,
+                            "url": url,
+                            "headers": headers,
+                            "body": body,
+                        },
+                        "scope": "span",
+                    },
+                    {
+                        "payload_kind": "http_response",
+                        "payload": {
+                            "status_code": response.status_code,
+                            "headers": dict(response.headers),
+                            "body": response_body,
+                        },
+                        "scope": "span",
+                    },
+                ]
 
                 return {
                     "status": response.status_code,

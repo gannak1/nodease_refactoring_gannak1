@@ -75,16 +75,15 @@ class LLMNode(Node[LLMNodeData]):
         self.data.validate()
 
         # STEP 2. 모델 준비 ----------------------------------------------------
-        # [FIX] 세션 라이프사이클 개선
-        # execution_context에서 db 세션 가져오기 (WorkflowEngine이 주입함)
-        db_session = self.execution_context.get("db")
+        # 노드 실행마다 짧은 독립 세션을 우선 사용해 병렬 greenlet 간 세션 공유를 피합니다.
+        db_session = None
         temp_session = None
         client_override = getattr(self, "_client_override", None)
 
-        # 세션이 없으면 새로 생성
-        if db_session is None and not client_override:
-            temp_session = SessionLocal()
-            db_session = temp_session
+        if not client_override:
+            db_session, should_close_session = self._borrow_db_session()
+            if should_close_session:
+                temp_session = db_session
 
         try:
             if client_override:
@@ -315,6 +314,30 @@ class LLMNode(Node[LLMNodeData]):
                 except Exception as e:
                     logger.error(f"[LLMNode] Cost calculation/logging failed: {e}")
 
+            self._trace_payloads = [
+                {
+                    "payload_kind": "prompt",
+                    "payload": {"messages": messages},
+                    "scope": "span",
+                },
+                {
+                    "payload_kind": "completion",
+                    "payload": {"text": text},
+                    "scope": "span",
+                },
+            ]
+            if knowledge_context:
+                self._trace_payloads.append(
+                    {
+                        "payload_kind": "retrieved_context",
+                        "payload": {
+                            "context": knowledge_context,
+                            "metadata": knowledge_metadata,
+                        },
+                        "scope": "span",
+                    }
+                )
+
             return {
                 "text": text,
                 "usage": usage,
@@ -397,12 +420,7 @@ class LLMNode(Node[LLMNodeData]):
         except Exception:
             return None
 
-        # [FIX] 세션 최적화: execution_context의 세션 우선 사용
-        db_session = self.execution_context.get("db")
-        is_temp_session = False
-        if not db_session:
-            db_session = SessionLocal()
-            is_temp_session = True
+        db_session, is_temp_session = self._borrow_db_session()
 
         try:
             current_run_id = self.execution_context.get("workflow_run_id")
@@ -479,6 +497,15 @@ class LLMNode(Node[LLMNodeData]):
             # [FIX] 임시 세션일 때만 닫음
             if is_temp_session:
                 db_session.close()
+
+    def _borrow_db_session(self):
+        session_factory = self.execution_context.get("db_session_factory")
+        if callable(session_factory):
+            return session_factory(), True
+        legacy_session = self.execution_context.get("db")
+        if legacy_session is not None:
+            return legacy_session, False
+        return SessionLocal(), True
 
     def _shorten(self, payload: Any, limit: int = 360) -> str:
         """LLM 히스토리 문자열을 과하지 않게 자르는 헬퍼 (한국어 포함)"""
@@ -580,13 +607,19 @@ class LLMNode(Node[LLMNodeData]):
             # 예: [파일명] 내용...
             context_parts.append(f"[파일: {chunk.filename}]\n{chunk.content}")
 
-            # 메타데이터 직렬화
-            meta = chunk.dict()
-            for key, value in list(meta.items()):
-                if isinstance(value, uuid.UUID):
-                    meta[key] = str(value)
-            meta["knowledge_base_id"] = str(kb_id)
-            metadata_list.append(meta)
+            metadata_list.append(self._knowledge_trace_metadata(kb_id, chunk))
 
         combined_context = "\n\n".join(context_parts)
         return combined_context, metadata_list
+
+    def _knowledge_trace_metadata(
+        self, knowledge_base_id: str, chunk: ChunkPreview
+    ) -> Dict[str, Any]:
+        """추적 메타데이터에는 검색 출처 식별 정보만 남깁니다."""
+        return {
+            "knowledge_base_id": str(knowledge_base_id),
+            "document_id": str(chunk.document_id),
+            "filename": chunk.filename,
+            "page_number": chunk.page_number,
+            "similarity_score": chunk.similarity_score,
+        }

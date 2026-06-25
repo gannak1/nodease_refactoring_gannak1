@@ -19,6 +19,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from apps.shared.celery_app import celery_app
+from apps.shared.db.session import SessionLocal
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
+from apps.shared.services.tracing.payload import TracePayloadService
+from apps.shared.services.tracing.policy import TracePolicyService
+from apps.shared.services.tracing.redaction import TraceRedactionService
 
 
 class WorkflowLogger:
@@ -42,6 +47,8 @@ class WorkflowLogger:
             db: SQLAlchemy 세션 (하위 호환성을 위해 유지, 실제로는 사용하지 않음)
         """
         self.workflow_run_id: Optional[uuid.UUID] = None
+        self.app_id: Optional[str] = None
+        self._policy_cache: Dict[str, Any] = {}
 
     def _serialize_for_celery(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Celery 태스크용 데이터 직렬화 (UUID, datetime 변환)"""
@@ -53,9 +60,113 @@ class WorkflowLogger:
                 serialized[key] = value.isoformat()
             elif isinstance(value, dict):
                 serialized[key] = self._serialize_for_celery(value)
+            elif isinstance(value, (list, tuple)):
+                serialized[key] = [
+                    self._serialize_for_celery(item)
+                    if isinstance(item, dict)
+                    else str(item)
+                    if isinstance(item, (uuid.UUID, datetime))
+                    else item
+                    for item in value
+                ]
             else:
                 serialized[key] = value
         return serialized
+
+    def _policy_context(self, app_id: Optional[str] = None):
+        cache_key = str(app_id or "global")
+        if cache_key in self._policy_cache:
+            return self._policy_cache[cache_key]
+
+        session = None
+        try:
+            session = SessionLocal()
+            context = {
+                "redaction": TracePolicyService.resolve_redaction_policy(
+                    session, app_id=app_id
+                ),
+                "retention": TracePolicyService.resolve_retention_policy(
+                    session, app_id=app_id
+                ),
+                "visibility": TracePolicyService.resolve_visibility_policy(
+                    session, app_id=app_id
+                ),
+                "payload_capture_enabled": True,
+            }
+        except Exception:
+            # 정책 해석 실패 시 페이로드 수집은 닫고, 호환 컬럼만 기본 마스킹으로 저장합니다.
+            context = {
+                "redaction": TracePolicyService.fail_closed_redaction_policy(),
+                "retention": TracePolicyService.bootstrap_retention_policy(),
+                "visibility": TracePolicyService.bootstrap_visibility_policy(),
+                "payload_capture_enabled": False,
+            }
+        finally:
+            if session is not None:
+                session.close()
+
+        self._policy_cache[cache_key] = context
+        return context
+
+    def _prepare_payloads(
+        self,
+        payloads: list[dict[str, Any]],
+        default_scope: str,
+        app_id: Optional[str] = None,
+        default_node_run_id: Optional[uuid.UUID] = None,
+    ):
+        context = self._policy_context(app_id)
+        if not context.get("payload_capture_enabled", True):
+            # 실행은 유지하되 추적 페이로드 행은 만들지 않는 보수적 차단 경로입니다.
+            return [], TracePayloadService.summarize_payload_records([]), context
+        records = TracePayloadService.prepare_payload_records(
+            payloads=payloads,
+            redaction_policy=context["redaction"],
+            retention_policy=context["retention"],
+            default_scope=default_scope,
+            default_node_run_id=default_node_run_id,
+        )
+        summary = TracePayloadService.summarize_payload_records(records)
+        return records, summary, context
+
+    def _redact_compat_value(
+        self,
+        value: Any,
+        payload_kind: str,
+        app_id: Optional[str] = None,
+    ) -> Any:
+        policy = self._policy_context(app_id)["redaction"]
+        return TraceRedactionService.redact_payload(
+            value, policy=policy, payload_kind=payload_kind
+        ).redacted_payload
+
+    def _metadata_with_payload_refs(
+        self,
+        trace_metadata: Optional[Dict[str, Any]],
+        payload_records: list[dict[str, Any]],
+    ) -> Dict[str, Any]:
+        metadata = dict(trace_metadata or {})
+        references = TracePayloadService.payload_references(payload_records)
+        # 메타데이터에는 페이로드 본문 대신 식별자 참조만 남겨 조회/접근 정책 경계를 유지합니다.
+        mapping = {
+            "prompt": ("llm", "prompt_payload_id"),
+            "completion": ("llm", "completion_payload_id"),
+            "retrieved_context": ("rag", "retrieved_context_payload_id"),
+            "http_request": ("http", "request_payload_id"),
+            "http_response": ("http", "response_payload_id"),
+            "stdout": ("sandbox", "stdout_payload_id"),
+            "stderr": ("sandbox", "stderr_payload_id"),
+            "guardrail_reason": ("guardrail", "reason_payload_id"),
+        }
+        for payload_kind, payload_id in references.items():
+            target = mapping.get(payload_kind)
+            if not target:
+                continue
+            section, field = target
+            section_value = dict(metadata.get(section) or {})
+            section_value[field] = payload_id
+            metadata[section] = section_value
+        return metadata
 
     def _submit_log(self, task_name: str, data: Dict[str, Any], countdown: float = 0):
         """
@@ -104,16 +215,45 @@ class WorkflowLogger:
         else:
             run_id = uuid.uuid4()
         self.workflow_run_id = run_id
+        self.app_id = execution_context.get("app_id")
+
+        payload_records, summary, policy_context = self._prepare_payloads(
+            [{"payload_kind": "input", "payload": user_input, "scope": "trace"}],
+            default_scope="trace",
+            app_id=self.app_id,
+        )
+        redacted_input = (
+            payload_records[0]["redacted_payload"] if payload_records else user_input
+        )
+        if not payload_records:
+            # 페이로드 수집이 닫힌 경우에도 기존 로그 UI용 입력값은 마스킹 후 저장합니다.
+            redacted_input = self._redact_compat_value(
+                user_input, payload_kind="input", app_id=self.app_id
+            )
 
         data = {
             "run_id": run_id,
             "workflow_id": workflow_id,
+            "app_id": self.app_id,
             "user_id": user_id,
-            "user_input": user_input,
+            "user_input": redacted_input,
             "is_deployed": is_deployed,
             "trigger_mode": execution_context.get("trigger_mode"),
             "deployment_id": execution_context.get("deployment_id"),
             "workflow_version": execution_context.get("workflow_version"),
+            "correlation_id": execution_context.get("correlation_id"),
+            "request_id": execution_context.get("request_id"),
+            "workflow_task_id": execution_context.get("workflow_task_id"),
+            "trace_payloads": payload_records,
+            "trace_metadata": TraceMetadataSanitizer.sanitize_run_metadata(
+                execution_context.get("trace_metadata") or {}
+            ),
+            "redaction_applied": summary["redaction_applied"],
+            "pii_detected": summary["pii_detected"],
+            "redaction_policy_id": policy_context["redaction"].id,
+            "retention_policy_id": policy_context["retention"].id,
+            "visibility_policy_id": policy_context["visibility"].id,
+            "payload_storage_mode": summary["payload_storage_mode"],
             "started_at": datetime.now(timezone.utc),
         }
         self._submit_log("log.create_run", data)
@@ -124,9 +264,26 @@ class WorkflowLogger:
         if not self.workflow_run_id:
             return
 
+        payload_records, summary, _ = self._prepare_payloads(
+            [{"payload_kind": "output", "payload": outputs, "scope": "trace"}],
+            default_scope="trace",
+            app_id=self.app_id,
+        )
+        redacted_outputs = (
+            payload_records[0]["redacted_payload"] if payload_records else outputs
+        )
+        if not payload_records:
+            redacted_outputs = self._redact_compat_value(
+                outputs, payload_kind="output", app_id=self.app_id
+            )
+
         data = {
             "run_id": self.workflow_run_id,
-            "outputs": outputs,
+            "outputs": redacted_outputs,
+            "trace_payloads": payload_records,
+            "redaction_applied": summary["redaction_applied"],
+            "pii_detected": summary["pii_detected"],
+            "payload_storage_mode": summary["payload_storage_mode"],
             "finished_at": datetime.now(timezone.utc),
         }
         self._submit_log("log.update_run_finish", data)
@@ -136,9 +293,13 @@ class WorkflowLogger:
         if not self.workflow_run_id:
             return
 
+        redacted_error = self._redact_compat_value(
+            error_message, payload_kind="error", app_id=self.app_id
+        )
+
         data = {
             "run_id": self.workflow_run_id,
-            "error_message": error_message,
+            "error_message": redacted_error,
             "finished_at": datetime.now(timezone.utc),
         }
         self._submit_log("log.update_run_error", data)
@@ -149,6 +310,8 @@ class WorkflowLogger:
         node_type: str,
         inputs: Dict[str, Any],
         process_data: Optional[Dict[str, Any]] = None,
+        sequence: Optional[int] = None,
+        retry_count: int = 0,
     ) -> Optional[uuid.UUID]:
         """노드 실행 로그 생성"""
         if not self.workflow_run_id:
@@ -156,14 +319,43 @@ class WorkflowLogger:
 
         # [FIX] Deterministic Log ID 생성
         log_id = uuid.uuid4()
+        payload_records, summary, policy_context = self._prepare_payloads(
+            [
+                {
+                    "payload_kind": "input",
+                    "payload": inputs,
+                    "scope": "span",
+                    "workflow_node_run_id": log_id,
+                }
+            ],
+            default_scope="span",
+            app_id=self.app_id,
+            default_node_run_id=log_id,
+        )
+        redacted_inputs = (
+            payload_records[0]["redacted_payload"] if payload_records else inputs
+        )
+        if not payload_records:
+            redacted_inputs = self._redact_compat_value(
+                inputs, payload_kind="input", app_id=self.app_id
+            )
+        redacted_process_data = self._redact_compat_value(
+            process_data or {}, payload_kind="process_data", app_id=self.app_id
+        )
 
         data = {
             "id": log_id,  # [NEW] PK를 미리 생성하여 전달
             "workflow_run_id": self.workflow_run_id,
             "node_id": node_id,
             "node_type": node_type,
-            "inputs": inputs,
-            "process_data": process_data or {},
+            "inputs": redacted_inputs,
+            "process_data": redacted_process_data or {},
+            "trace_payloads": payload_records,
+            "redaction_applied": summary["redaction_applied"],
+            "pii_detected": summary["pii_detected"],
+            "redaction_policy_id": policy_context["redaction"].id,
+            "sequence": sequence,
+            "retry_count": retry_count,
             "started_at": datetime.now(timezone.utc),
         }
         # [FIX] 0.3초 딜레이: 부모 WorkflowRun이 먼저 생성되도록 대기
@@ -179,22 +371,75 @@ class WorkflowLogger:
         inputs: Dict[str, Any] = None,
         process_data: Dict[str, Any] = None,
         started_at: datetime = None,
+        trace_metadata: Dict[str, Any] = None,
+        trace_payloads: list[dict[str, Any]] = None,
+        sequence: Optional[int] = None,
+        retry_count: int = 0,
     ):
         """노드 실행 완료 로그 업데이트 (Upsert 패턴 지원)"""
         if not self.workflow_run_id or not log_id:
             return
 
+        normalized_outputs = outputs if isinstance(outputs, dict) else {"result": outputs}
+        payload_items = [
+            {
+                "payload_kind": "output",
+                "payload": normalized_outputs,
+                "scope": "span",
+                "workflow_node_run_id": log_id,
+            }
+        ]
+        payload_items.extend(trace_payloads or [])
+        payload_records, summary, _ = self._prepare_payloads(
+            payload_items,
+            default_scope="span",
+            app_id=self.app_id,
+            default_node_run_id=log_id,
+        )
+        redacted_outputs = (
+            payload_records[0]["redacted_payload"]
+            if payload_records
+            else normalized_outputs
+        )
+        if not payload_records:
+            redacted_outputs = self._redact_compat_value(
+                normalized_outputs, payload_kind="output", app_id=self.app_id
+            )
+        redacted_inputs = self._redact_compat_value(
+            inputs or {}, payload_kind="input", app_id=self.app_id
+        )
+        redacted_process_data = self._redact_compat_value(
+            process_data or {}, payload_kind="process_data", app_id=self.app_id
+        )
+        enriched_metadata = self._metadata_with_payload_refs(
+            trace_metadata, payload_records
+        )
+        sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_type, enriched_metadata
+        )
+
         data = {
             "log_id": log_id,
             "workflow_run_id": self.workflow_run_id,
             "node_id": node_id,
-            "outputs": outputs,
+            "outputs": redacted_outputs,
             "finished_at": datetime.now(timezone.utc),
             # [NEW] Upsert용 추가 정보 (레코드가 없을 때 생성에 사용)
             "node_type": node_type,
-            "inputs": inputs or {},
-            "process_data": process_data or {},
+            "inputs": redacted_inputs or {},
+            "process_data": redacted_process_data or {},
             "started_at": started_at,
+            "duration": (
+                (datetime.now(timezone.utc) - started_at).total_seconds()
+                if started_at
+                else None
+            ),
+            "trace_metadata": sanitized_metadata,
+            "trace_payloads": payload_records,
+            "redaction_applied": summary["redaction_applied"],
+            "pii_detected": summary["pii_detected"],
+            "sequence": sequence,
+            "retry_count": retry_count,
         }
         # [FIX] 0.3초 딜레이: 부모 WorkflowRun이 먼저 생성되도록 대기
         self._submit_log("log.update_node_finish", data, countdown=0.3)
@@ -208,22 +453,45 @@ class WorkflowLogger:
         inputs: Dict[str, Any] = None,
         process_data: Dict[str, Any] = None,
         started_at: datetime = None,
+        trace_metadata: Dict[str, Any] = None,
+        sequence: Optional[int] = None,
+        retry_count: int = 0,
     ):
         """노드 실행 에러 로그 업데이트 (Upsert 패턴 지원)"""
         if not self.workflow_run_id or not log_id:
             return
 
+        redacted_inputs = self._redact_compat_value(
+            inputs or {}, payload_kind="input", app_id=self.app_id
+        )
+        redacted_process_data = self._redact_compat_value(
+            process_data or {}, payload_kind="process_data", app_id=self.app_id
+        )
+        redacted_error = self._redact_compat_value(
+            error_message, payload_kind="error", app_id=self.app_id
+        )
+
         data = {
             "log_id": log_id,
             "workflow_run_id": self.workflow_run_id,
             "node_id": node_id,
-            "error_message": error_message,
+            "error_message": redacted_error,
             "finished_at": datetime.now(timezone.utc),
             # [NEW] Upsert용 추가 정보 (레코드가 없을 때 생성에 사용)
             "node_type": node_type,
-            "inputs": inputs or {},
-            "process_data": process_data or {},
+            "inputs": redacted_inputs or {},
+            "process_data": redacted_process_data or {},
             "started_at": started_at,
+            "duration": (
+                (datetime.now(timezone.utc) - started_at).total_seconds()
+                if started_at
+                else None
+            ),
+            "trace_metadata": TraceMetadataSanitizer.sanitize_span_metadata(
+                node_type, trace_metadata or {}
+            ),
+            "sequence": sequence,
+            "retry_count": retry_count,
         }
         # [FIX] 0.3초 딜레이: 부모 WorkflowRun이 먼저 생성되도록 대기
         self._submit_log("log.update_node_error", data, countdown=0.3)
