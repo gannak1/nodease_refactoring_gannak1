@@ -15,12 +15,92 @@ from sqlalchemy.orm import Session
 
 from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
+from apps.shared.db.session import SessionLocal
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
+
+TRACE_METADATA_DENYLIST_KEYS = {
+    "access_token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "body",
+    "chunk",
+    "completion",
+    "content",
+    "cookie",
+    "credential",
+    "credentials",
+    "headers",
+    "input",
+    "inputs",
+    "message",
+    "messages",
+    "output",
+    "outputs",
+    "password",
+    "prompt",
+    "query",
+    "raw",
+    "refresh_token",
+    "request",
+    "response",
+    "secret",
+    "set_cookie",
+    "text",
+    "token",
+    "url",
+}
+TRACE_METADATA_ALLOWED_TOP_LEVEL = {
+    "llmNode": {"llm", "rag"},
+    "httpRequestNode": {"http"},
+    "slackPostNode": {"http"},
+    "codeNode": {"sandbox"},
+    "workflowNode": {"workflow"},
+}
+TRACE_METADATA_ALLOWED_NESTED = {
+    "http": {
+        "host",
+        "latency_ms",
+        "method",
+        "path",
+        "request_size",
+        "response_size",
+        "retry_count",
+        "status_code",
+    },
+    "sandbox": {"execution_time_ms", "exit_code", "latency_ms", "timeout"},
+    "workflow": {"latency_ms"},
+    "llm": {
+        "completion_payload_id",
+        "completion_tokens",
+        "credential_id",
+        "latency_ms",
+        "model",
+        "prompt_payload_id",
+        "prompt_tokens",
+        "provider",
+        "retry_count",
+        "total_cost",
+        "total_tokens",
+    },
+    "rag": {"latency_ms", "retrieval_results", "retrieved_context_payload_id"},
+}
+RAG_METADATA_ALLOWED_KEYS = {
+    "document_id",
+    "filename",
+    "knowledge_base_id",
+    "page_number",
+    "similarity_score",
+}
 
 
 class WorkflowEngine:
     """노드와 엣지를 받아서 전체 워크플로우 실행을 담당하는 엔진 (Gevent 기반)"""
+
+    @staticmethod
+    def _default_session_factory() -> Session:
+        return SessionLocal()
 
     def __init__(
         self,
@@ -51,6 +131,17 @@ class WorkflowEngine:
         if isinstance(graph, dict):
             nodes = [NodeSchema(**node) for node in graph.get("nodes", [])]
             edges = [EdgeSchema(**edge) for edge in graph.get("edges", [])]
+        elif isinstance(graph, tuple) and len(graph) == 2:
+            nodes = [
+                node if isinstance(node, NodeSchema) else NodeSchema(**node)
+                for node in graph[0]
+            ]
+            edges = [
+                edge if isinstance(edge, EdgeSchema) else EdgeSchema(**edge)
+                for edge in graph[1]
+            ]
+        else:
+            raise ValueError("워크플로우 graph는 dict 또는 (nodes, edges) tuple이어야 합니다.")
 
         self.is_deployed = is_deployed
         self.node_schemas = {node.id: node for node in nodes}
@@ -62,10 +153,9 @@ class WorkflowEngine:
         self.start_time = 0.0
         self._node_sequence = 0
 
-        if db is not None:
-            self.execution_context["db"] = db
-        elif "db" not in self.execution_context:
-            pass
+        self.execution_context.pop("db", None)
+        if "db_session_factory" not in self.execution_context:
+            self.execution_context["db_session_factory"] = self._default_session_factory
 
         # [PERF] 그래프 구조 사전 계산
         self.adjacency_list = {}
@@ -220,6 +310,7 @@ class WorkflowEngine:
 
         # [GEVENT] Greenlet 관리
         running_greenlets = {}  # {greenlet: node_id}
+        running_nodes: Dict[str, Dict[str, Any]] = {}
 
         # [GEVENT] Pool for concurrency control
         max_concurrent_tasks = 10
@@ -238,6 +329,7 @@ class WorkflowEngine:
                 start_node,
                 results,
                 running_greenlets,
+                running_nodes,
                 stream_mode,
                 pool,
                 event_queue,
@@ -247,6 +339,8 @@ class WorkflowEngine:
                 # 전체 타임아웃 체크
                 elapsed_time = time.time() - self.start_time
                 if elapsed_time > self.workflow_timeout:
+                    timeout_error = TimeoutError("workflow_timeout")
+                    self._mark_running_nodes_timeout(running_nodes, timeout_error)
                     for g in running_greenlets:
                         g.kill()
 
@@ -277,6 +371,7 @@ class WorkflowEngine:
 
                 for greenlet, node_id in completed:
                     del running_greenlets[greenlet]
+                    running_nodes.pop(node_id, None)
                     executed_nodes.add(node_id)
 
                     try:
@@ -285,15 +380,6 @@ class WorkflowEngine:
                         results[node_id] = node_result
 
                     except Exception as e:
-                        error_msg = str(e)
-                        self.logger.update_run_log_error(error_msg)
-
-                        if stream_mode:
-                            yield {
-                                "type": "error",
-                                "data": {"node_id": node_id, "message": error_msg},
-                            }
-
                         for g in running_greenlets:
                             g.kill()
 
@@ -313,6 +399,7 @@ class WorkflowEngine:
                                 next_node_id,
                                 results,
                                 running_greenlets,
+                                running_nodes,
                                 stream_mode,
                                 pool,
                                 event_queue,
@@ -361,7 +448,14 @@ class WorkflowEngine:
                 yield {"type": "error", "data": {"message": error_msg}}
 
     def _submit_node(
-        self, node_id, results, running_greenlets, stream_mode, pool, event_queue
+        self,
+        node_id,
+        results,
+        running_greenlets,
+        running_nodes,
+        stream_mode,
+        pool,
+        event_queue,
     ):
         """
         개별 노드를 실행하기 위해 Greenlet 생성
@@ -394,6 +488,14 @@ class WorkflowEngine:
                 process_data=node_options_snapshot,
                 sequence=sequence,
             )
+            running_nodes[node_id] = {
+                "log_id": log_id,
+                "node_type": node_schema.type,
+                "inputs": inputs,
+                "process_data": node_options_snapshot,
+                "started_at": started_at,
+                "sequence": sequence,
+            }
 
         # Redis Pub/Sub 이벤트 발행
         run_id = self.execution_context.get("workflow_run_id")
@@ -436,13 +538,14 @@ class WorkflowEngine:
                     )
 
             except gevent.Timeout:
-                raise TimeoutError(
-                    f"Node '{node_id}' ({node_schema.type}) timed out after {node_timeout} seconds."
-                )
+                timeout_error = TimeoutError("node_timeout")
+                self._mark_node_timeout(node_id, running_nodes, timeout_error)
+                raise timeout_error
 
             # node_finish 이벤트 발행
             run_id = self.execution_context.get("workflow_run_id")
             if run_id and not self.is_subworkflow:
+                # 실시간 이벤트는 실행자용 실시간 출력이며 추적 메타데이터의 기준 저장소로 쓰지 않습니다.
                 publish_workflow_event(
                     run_id,
                     "node_finish",
@@ -454,6 +557,7 @@ class WorkflowEngine:
                 )
 
             if stream_mode and event_queue:
+                # SSE 이벤트도 실행자용 실시간 출력 경계이며 추적 페이로드 접근제어를 대체하지 않습니다.
                 event_queue.put(
                     {
                         "type": "node_finish",
@@ -470,6 +574,43 @@ class WorkflowEngine:
         # [GEVENT] Pool.spawn()으로 Greenlet 생성
         greenlet = pool.spawn(_execute_with_event)
         running_greenlets[greenlet] = node_id
+
+    def _mark_running_nodes_timeout(
+        self, running_nodes: Dict[str, Dict[str, Any]], error: Exception
+    ) -> None:
+        for node_id in list(running_nodes):
+            self._mark_node_timeout(node_id, running_nodes, error)
+
+    def _mark_node_timeout(
+        self, node_id: str, running_nodes: Dict[str, Dict[str, Any]], error: Exception
+    ) -> None:
+        if self.is_subworkflow:
+            return
+        node_info = running_nodes.pop(node_id, None)
+        if not node_info:
+            return
+        from datetime import datetime, timezone
+
+        finished_at = datetime.now(timezone.utc)
+        safe_error_code = self._error_code(error)
+        trace_metadata = self._build_error_trace_metadata(
+            node_info["node_type"],
+            node_info.get("started_at"),
+            finished_at,
+            error,
+            error_code=safe_error_code,
+        )
+        self.logger.update_node_log_error(
+            node_info.get("log_id"),
+            node_id,
+            safe_error_code,
+            node_type=node_info["node_type"],
+            inputs=node_info.get("inputs"),
+            process_data=node_info.get("process_data"),
+            started_at=node_info.get("started_at"),
+            trace_metadata=trace_metadata,
+            sequence=node_info.get("sequence"),
+        )
 
     def _execute_node_task(
         self,
@@ -526,7 +667,7 @@ class WorkflowEngine:
 
             finished_at = datetime.now(timezone.utc)
             trace_metadata = self._build_error_trace_metadata(
-                node_schema.type, started_at, finished_at, error_msg
+                node_schema.type, started_at, finished_at, e
             )
             if not self.is_subworkflow:
                 self.logger.update_node_log_error(
@@ -550,12 +691,19 @@ class WorkflowEngine:
         return payloads
 
     def _build_error_trace_metadata(
-        self, node_type: str, started_at, finished_at, error_message: str
+        self,
+        node_type: str,
+        started_at,
+        finished_at,
+        error: Exception,
+        error_code: Optional[str] = None,
     ) -> Dict[str, Any]:
+        safe_error_code = error_code or self._error_code(error)
         metadata: Dict[str, Any] = {
             "error": {
                 "type": "node_error",
-                "message": error_message,
+                "error_type": type(error).__name__,
+                "error_code": safe_error_code,
             }
         }
         if started_at and finished_at:
@@ -567,11 +715,17 @@ class WorkflowEngine:
                 "type": "moduly_guardrail",
                 "decision": "errored",
                 "blocked": False,
-                "reason_code": "node_error",
-                "reason_redacted": error_message,
+                "reason_code": safe_error_code,
+                "reason_redacted": safe_error_code,
                 "latency_ms": metadata.get("latency_ms"),
             }
-        return metadata
+        return self._sanitize_metadata_for_storage(metadata)
+
+    @staticmethod
+    def _error_code(error: Exception) -> str:
+        if isinstance(error, TimeoutError):
+            return "timeout"
+        return "node_error"
 
     def _build_node_trace_metadata(
         self,
@@ -582,8 +736,8 @@ class WorkflowEngine:
         started_at,
         finished_at,
     ) -> Dict[str, Any]:
-        metadata: Dict[str, Any] = self._json_safe(
-            dict(getattr(node_instance, "_trace_metadata", {}) or {})
+        metadata: Dict[str, Any] = self._node_trace_metadata_allowlist(
+            node_type, dict(getattr(node_instance, "_trace_metadata", {}) or {})
         )
         latency_ms = (
             int((finished_at - started_at).total_seconds() * 1000)
@@ -616,7 +770,7 @@ class WorkflowEngine:
             if knowledge:
                 # knowledge_search는 LLM 노드에서 본문이 제거된 허용 목록 메타데이터만 전달됩니다.
                 metadata["rag"] = {
-                    "retrieval_results": self._json_safe(knowledge),
+                    "retrieval_results": self._sanitize_rag_metadata(knowledge),
                     "latency_ms": latency_ms,
                 }
 
@@ -661,7 +815,70 @@ class WorkflowEngine:
 
         if latency_ms is not None:
             metadata["latency_ms"] = latency_ms
-        return metadata
+        return self._sanitize_metadata_for_storage(metadata)
+
+    def _node_trace_metadata_allowlist(
+        self, node_type: str, metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        allowed_top_level = TRACE_METADATA_ALLOWED_TOP_LEVEL.get(node_type, set())
+        safe_metadata = self._json_safe(metadata)
+        if not isinstance(safe_metadata, dict):
+            return {}
+
+        filtered: Dict[str, Any] = {}
+        for key, value in safe_metadata.items():
+            if key not in allowed_top_level or self._is_denied_metadata_key(key):
+                continue
+            filtered_value = self._sanitize_metadata_value(
+                value, TRACE_METADATA_ALLOWED_NESTED.get(key)
+            )
+            if filtered_value is not None:
+                filtered[key] = filtered_value
+        return filtered
+
+    def _sanitize_rag_metadata(self, value: Any) -> Any:
+        safe_value = self._json_safe(value)
+        if isinstance(safe_value, list):
+            return [self._sanitize_rag_metadata(item) for item in safe_value]
+        if isinstance(safe_value, dict):
+            return {
+                key: safe_value.get(key)
+                for key in RAG_METADATA_ALLOWED_KEYS
+                if key in safe_value and not self._is_denied_metadata_key(key)
+            }
+        return safe_value
+
+    def _sanitize_metadata_for_storage(self, value: Any) -> Any:
+        return self._sanitize_metadata_value(value, allowed_keys=None)
+
+    def _sanitize_metadata_value(
+        self, value: Any, allowed_keys: Optional[set[str]] = None
+    ) -> Any:
+        safe_value = self._json_safe(value)
+        if isinstance(safe_value, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, child in safe_value.items():
+                if self._is_denied_metadata_key(key):
+                    continue
+                if allowed_keys is not None and key not in allowed_keys:
+                    continue
+                sanitized_child = self._sanitize_metadata_value(child, allowed_keys=None)
+                if sanitized_child is not None:
+                    sanitized[key] = sanitized_child
+            return sanitized
+        if isinstance(safe_value, list):
+            sanitized_items = []
+            for item in safe_value:
+                sanitized_item = self._sanitize_metadata_value(item, allowed_keys=None)
+                if sanitized_item is not None:
+                    sanitized_items.append(sanitized_item)
+            return sanitized_items
+        return safe_value
+
+    @staticmethod
+    def _is_denied_metadata_key(key: Any) -> bool:
+        normalized = str(key).strip().lower().replace("-", "_")
+        return normalized in TRACE_METADATA_DENYLIST_KEYS
 
     def _json_safe(self, value: Any) -> Any:
         if isinstance(value, dict):

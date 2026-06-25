@@ -75,16 +75,15 @@ class LLMNode(Node[LLMNodeData]):
         self.data.validate()
 
         # STEP 2. 모델 준비 ----------------------------------------------------
-        # [FIX] 세션 라이프사이클 개선
-        # execution_context에서 db 세션 가져오기 (WorkflowEngine이 주입함)
-        db_session = self.execution_context.get("db")
+        # 노드 실행마다 짧은 독립 세션을 우선 사용해 병렬 greenlet 간 세션 공유를 피합니다.
+        db_session = None
         temp_session = None
         client_override = getattr(self, "_client_override", None)
 
-        # 세션이 없으면 새로 생성
-        if db_session is None and not client_override:
-            temp_session = SessionLocal()
-            db_session = temp_session
+        if not client_override:
+            db_session, should_close_session = self._borrow_db_session()
+            if should_close_session:
+                temp_session = db_session
 
         try:
             if client_override:
@@ -421,12 +420,7 @@ class LLMNode(Node[LLMNodeData]):
         except Exception:
             return None
 
-        # [FIX] 세션 최적화: execution_context의 세션 우선 사용
-        db_session = self.execution_context.get("db")
-        is_temp_session = False
-        if not db_session:
-            db_session = SessionLocal()
-            is_temp_session = True
+        db_session, is_temp_session = self._borrow_db_session()
 
         try:
             current_run_id = self.execution_context.get("workflow_run_id")
@@ -503,6 +497,15 @@ class LLMNode(Node[LLMNodeData]):
             # [FIX] 임시 세션일 때만 닫음
             if is_temp_session:
                 db_session.close()
+
+    def _borrow_db_session(self):
+        session_factory = self.execution_context.get("db_session_factory")
+        if callable(session_factory):
+            return session_factory(), True
+        legacy_session = self.execution_context.get("db")
+        if legacy_session is not None:
+            return legacy_session, False
+        return SessionLocal(), True
 
     def _shorten(self, payload: Any, limit: int = 360) -> str:
         """LLM 히스토리 문자열을 과하지 않게 자르는 헬퍼 (한국어 포함)"""
