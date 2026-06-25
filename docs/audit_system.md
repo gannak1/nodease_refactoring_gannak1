@@ -33,7 +33,7 @@
 | `apps/shared/alembic/versions/a1b2c3d4e5f6_add_audit_logs_table.py` | `audit_logs` 테이블 마이그레이션 |
 | `apps/shared/audit/logger.py` | `record_audit()` — 감사 이벤트 발행(직렬화 + `send_task`) |
 | `apps/shared/audit/context.py` | 요청 단위 actor 전파용 `contextvar` |
-| `apps/shared/audit/listeners.py` | 계층 B — ORM `before_flush`/`after_flush` 리스너 + 마스킹 |
+| `apps/shared/audit/listeners.py` | 계층 B — ORM flush/commit/rollback 리스너 + 마스킹 |
 | `apps/log_system/audit_tasks.py` | `audit.record` Celery 소비자 태스크 (DB 저장) |
 | `apps/gateway/utils/audit.py` | 계층 A — `@audit` 데코레이터 |
 
@@ -74,6 +74,12 @@
 - **추적 대상 모델**: `App`, `Connection`, `LLMCredential`, `KnowledgeBase`, `User`
 - **before/after**: SQLAlchemy 네이티브 attribute history로 **변경된 컬럼만** 산출
   (jsondiff 미사용 — ORM이 컬럼별 old/new를 이미 추적)
+- **발행 시점**: `before_flush`에서 캡처하고 `after_commit`에서 발행합니다.
+  rollback되면 후보 로그를 버려 실제 반영되지 않은 변경은 기록하지 않습니다.
+- **동일 트랜잭션 병합**: 같은 객체가 commit 전 여러 번 flush되면 중간 상태를
+  독립 로그로 남기지 않고 최종 commit 기준 이벤트로 병합합니다.
+- **nested transaction**: savepoint 단위 감사는 아직 지원하지 않습니다. nested
+  transaction이 감지되면 해당 트랜잭션의 계층 B 감사 후보를 버립니다.
 - **action**: `{target_type}.{created|updated|deleted}` (예: `connection.updated`)
 - **actor**: 요청 컨텍스트(contextvar)에서 가져오며, 없으면 `system`
 
@@ -293,6 +299,10 @@ ORDER BY occurred_at DESC;
   기록 후 재전파.
 - **계층 B 마스킹**(런타임): `Connection`/`LLMCredential` 민감 필드가 `***changed***`로
   치환되고 일반 필드는 보존됨.
+- **계층 B 트랜잭션 경계**(단위 테스트): flush 후에는 발행하지 않고 commit 이후에만
+  발행하며, rollback 시 후보 로그를 폐기함.
+- **계층 B 이벤트 라이프사이클**(SQLAlchemy Session 테스트): 실제 Session에서
+  commit/rollback, multi-flush 병합, nested transaction 생략을 확인함.
 
 실제 DB·Redis 환경에서 추가로 확인 권장:
 

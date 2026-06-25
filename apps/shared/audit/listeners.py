@@ -7,7 +7,8 @@
 - actor는 요청 컨텍스트(contextvar)에서 가져오며, 없으면 system으로 기록한다.
 
 발행 자체가 본 트랜잭션을 막지 않도록, 캡처는 before_flush(변경값 확정 시점),
-발행은 after_flush(INSERT PK 확정 시점)에서 수행하고 전 구간을 try/except로 감싼다.
+PK 보정은 after_flush, 발행은 after_commit에서 수행한다. rollback 시 후보를 버린다.
+Nested transaction(savepoint)은 계층 B 감사 대상에서 보수적으로 제외한다.
 """
 
 import logging
@@ -49,6 +50,7 @@ SENSITIVE_FIELDS = {
     KnowledgeBase: set(),
 }
 
+
 def _mask(model_cls, key, value):
     if key in SENSITIVE_FIELDS.get(model_cls, set()):
         return _MASK
@@ -87,8 +89,45 @@ def _model_of(obj):
     return None
 
 
+def _discard_buffers(session):
+    session.info.pop("_audit_pending", None)
+    session.info.pop("_audit_ready", None)
+
+
+def _disable_for_nested_transaction(session):
+    # ponytail: savepoint별 버퍼는 실제 사용처가 생기면 추가한다.
+    session.info["_audit_disabled_nested"] = True
+    _discard_buffers(session)
+    logger.warning("[Audit] nested transaction 감지는 계층 B 감사를 건너뜁니다")
+
+
+def _merge_ready(existing, event):
+    if existing["op"] == "created":
+        if event["op"] == "deleted":
+            return None
+        if event["after"]:
+            existing["after"].update(event["after"])
+        return existing
+
+    if existing["op"] == "updated":
+        if event["op"] == "updated":
+            existing["after"].update(event["after"])
+            return existing
+        if event["op"] == "deleted":
+            before = dict(event["before"] or {})
+            before.update(existing["before"] or {})
+            event["before"] = before
+            return event
+
+    return event
+
+
 def _before_flush(session, flush_context, instances):
-    """변경값을 캡처해 세션에 임시 보관(발행은 after_flush에서)."""
+    """변경값을 캡처해 세션에 임시 보관한다."""
+    if session.in_nested_transaction():
+        _disable_for_nested_transaction(session)
+        return
+
     try:
         pending = session.info.setdefault("_audit_pending", [])
 
@@ -121,7 +160,11 @@ def _before_flush(session, flush_context, instances):
 
 
 def _after_flush(session, flush_context):
-    """PK 확정 후 감사 이벤트를 발행하고 임시 보관분을 비운다."""
+    """PK 확정 후 commit 시 발행할 payload를 준비한다."""
+    if session.info.get("_audit_disabled_nested"):
+        _discard_buffers(session)
+        return
+
     pending = session.info.pop("_audit_pending", None)
     if not pending:
         return
@@ -132,24 +175,68 @@ def _after_flush(session, flush_context):
     else:
         actor_id, actor_type, snapshot = None, "system", {}
 
+    ready = session.info.setdefault("_audit_ready", {})
     for obj, model_cls, op, before, after in pending:
         try:
             target_type = TRACKED_MODELS[model_cls]
             target_id = getattr(obj, "id", None)
+            if op == "created" and after is not None and "id" in after:
+                after["id"] = target_id
             metadata = {"actor": snapshot} if snapshot else {}
-            record_audit(
-                action=f"{target_type}.{op}",
-                category="data_change",
-                actor_id=actor_id,
-                actor_type=actor_type,
-                target_type=target_type,
-                target_id=target_id,
-                before=before,
-                after=after,
-                metadata=metadata,
-            )
+            event = {
+                "op": op,
+                "action": f"{target_type}.{op}",
+                "category": "data_change",
+                "actor_id": actor_id,
+                "actor_type": actor_type,
+                "target_type": target_type,
+                "target_id": target_id,
+                "before": before,
+                "after": after,
+                "metadata": metadata,
+            }
+            key = (model_cls, id(obj))
+            merged = _merge_ready(ready.get(key), event) if key in ready else event
+            if merged is None:
+                ready.pop(key, None)
+            else:
+                merged["action"] = f"{target_type}.{merged['op']}"
+                ready[key] = merged
         except Exception as e:  # noqa: BLE001
-            logger.error(f"[Audit] after_flush 발행 실패: {e}")
+            logger.error(f"[Audit] after_flush payload 준비 실패: {e}")
+
+
+def _after_commit(session):
+    """트랜잭션이 확정된 뒤 감사 이벤트를 발행한다."""
+    if session.info.pop("_audit_disabled_nested", None):
+        _discard_buffers(session)
+        return
+
+    ready = session.info.pop("_audit_ready", None)
+    if not ready:
+        return
+
+    for event in ready.values():
+        event.pop("op", None)
+        try:
+            record_audit(**event)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[Audit] after_commit 발행 실패: {e}")
+
+
+def _after_rollback(session):
+    """롤백된 변경의 감사 후보를 폐기한다."""
+    _discard_buffers(session)
+    session.info.pop("_audit_disabled_nested", None)
+
+
+def _after_soft_rollback(session, previous_transaction):
+    """savepoint rollback도 보수적으로 계층 B 감사를 비활성화한다."""
+    if getattr(previous_transaction, "nested", False):
+        session.info["_audit_disabled_nested"] = True
+    else:
+        session.info.pop("_audit_disabled_nested", None)
+    _discard_buffers(session)
 
 
 _registered = False
@@ -164,5 +251,8 @@ def register_audit_listeners():
 
     event.listen(Session, "before_flush", _before_flush)
     event.listen(Session, "after_flush", _after_flush)
+    event.listen(Session, "after_commit", _after_commit)
+    event.listen(Session, "after_rollback", _after_rollback)
+    event.listen(Session, "after_soft_rollback", _after_soft_rollback)
     _registered = True
     logger.info("[Audit] ORM 변경 이력 리스너 등록 완료")
