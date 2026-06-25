@@ -41,15 +41,15 @@ class TeamPermission(Base):
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
-    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
     # 태그를 관리하는 사용자 ID
     managed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
-    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
 
     # 태그 활성화 여부, 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 워크스페이스 생성 시 자동 추가 여부, 
+    is_auto_add: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # 태그가 만들어진 시간
     created_at: Mapped[datetime] = mapped_column(
@@ -83,3 +83,7 @@ class TeamPermission(Base):
     can_manage_tag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 워크플로우 태그 부여 권한, 팀이나 사용자에게 해당 태그를 부여
     can_assign_tag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # 연관관계 매핑
+    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
+    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])

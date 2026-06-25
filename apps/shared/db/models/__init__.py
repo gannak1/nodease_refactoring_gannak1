@@ -20,6 +20,7 @@ from apps.shared.db.models.llm import (
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.team import TeamPermission
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.user_team_permission import UserTeamPermission
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -40,6 +41,7 @@ __all__ = [
     "Schedule",
     "Organization",
     "TeamPermission",
+    "UserTeamPermission",
     "Workflow",
     "WorkflowDeployment",
     "WorkflowNodeRun",
