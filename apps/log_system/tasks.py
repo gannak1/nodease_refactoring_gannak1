@@ -113,7 +113,6 @@ def _insert_trace_payloads(session, workflow_run_id, payload_records):
             attempt=record.get("attempt") or 1,
             redacted_payload=record.get("redacted_payload"),
             raw_payload_encrypted=record.get("raw_payload_encrypted"),
-            raw_payload_hash=record.get("raw_payload_hash"),
             redaction_applied=bool(record.get("redaction_applied")),
             pii_detected=bool(record.get("pii_detected")),
             secret_detected=bool(record.get("secret_detected")),

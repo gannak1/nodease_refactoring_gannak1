@@ -25,15 +25,18 @@ class TraceRetentionService:
 
     @staticmethod
     def expired_payload_condition(now, redacted_cutoff, prompt_cutoff):
-        return or_(
-            TracePayload.retention_expires_at <= now,
-            and_(
-                TracePayload.payload_kind.notin_(PROMPT_COMPLETION_KINDS),
-                TracePayload.created_at <= redacted_cutoff,
-            ),
-            and_(
-                TracePayload.payload_kind.in_(PROMPT_COMPLETION_KINDS),
-                TracePayload.created_at <= prompt_cutoff,
+        return and_(
+            TracePayload.retention_purged_at.is_(None),
+            or_(
+                TracePayload.retention_expires_at <= now,
+                and_(
+                    TracePayload.payload_kind.notin_(PROMPT_COMPLETION_KINDS),
+                    TracePayload.created_at <= redacted_cutoff,
+                ),
+                and_(
+                    TracePayload.payload_kind.in_(PROMPT_COMPLETION_KINDS),
+                    TracePayload.created_at <= prompt_cutoff,
+                ),
             ),
         )
 
@@ -90,6 +93,7 @@ class TraceRetentionService:
         )
         expired_runs = (
             run_query.filter(
+                WorkflowRun.retention_purged_at.is_(None),
                 or_(
                     (WorkflowRun.status == RunStatus.FAILED)
                     & (WorkflowRun.started_at <= failed_cutoff),
@@ -115,7 +119,6 @@ class TraceRetentionService:
 
         for payload in raw_payloads:
             payload.raw_payload_encrypted = None
-            payload.raw_payload_hash = None
             if payload.storage_mode == "raw_and_redacted":
                 payload.storage_mode = "redacted_only"
 
@@ -125,8 +128,9 @@ class TraceRetentionService:
             else:
                 payload.redacted_payload = PURGED_MARKER
                 payload.raw_payload_encrypted = None
-                payload.raw_payload_hash = None
                 payload.storage_mode = "metadata_only"
+                payload.retention_expires_at = None
+                payload.retention_purged_at = now
                 payload.redaction_metadata = {
                     **(payload.redaction_metadata or {}),
                     "retention": {
@@ -148,6 +152,7 @@ class TraceRetentionService:
                 "action": retention.retention_action,
             }
             run.trace_metadata = trace_metadata
+            run.retention_purged_at = now
             node_runs = (
                 db.query(WorkflowNodeRun)
                 .filter(WorkflowNodeRun.workflow_run_id == run.id)

@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -147,6 +148,9 @@ class WorkflowRun(Base):
     )
     payload_storage_mode: Mapped[str] = mapped_column(
         String(32), nullable=False, default="redacted_only"
+    )
+    retention_purged_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
     )
 
     # === 비용/토큰 집계 (Denormalized) ===
@@ -401,6 +405,25 @@ class TracePayload(Base):
     """추가 전용 추적/스팬 페이로드 저장소."""
 
     __tablename__ = "trace_payloads"
+    __table_args__ = (
+        Index(
+            "ix_trace_payloads_latest_view",
+            "workflow_run_id",
+            "scope",
+            "workflow_node_run_id",
+            "payload_kind",
+            "created_at",
+            "sequence",
+            "attempt",
+        ),
+        Index(
+            "ix_trace_payloads_retention_scan",
+            "retention_purged_at",
+            "payload_kind",
+            "created_at",
+            "retention_expires_at",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
@@ -423,7 +446,6 @@ class TracePayload(Base):
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     redacted_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     raw_payload_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    raw_payload_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     redaction_applied: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
@@ -434,6 +456,9 @@ class TracePayload(Base):
         String(32), nullable=False, default="redacted_only"
     )
     retention_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    retention_purged_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -470,8 +495,11 @@ class TracePayloadAccessEvent(Base):
         nullable=False,
         index=True,
     )
-    actor_user_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_user_ref: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, index=True
     )
     view_level: Mapped[str] = mapped_column(String(32), nullable=False)
     allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)

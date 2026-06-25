@@ -433,7 +433,7 @@ class TraceQueryService:
             "duration": span.duration,
             "inputs": span.inputs if include_io else None,
             "outputs": span.outputs if include_io else None,
-            "process_data": span.process_data,
+            "process_data": None if view_level == "metadata" else span.process_data,
             "trace_metadata": span.trace_metadata or {},
             "redaction_applied": span.redaction_applied,
             "pii_detected": span.pii_detected,

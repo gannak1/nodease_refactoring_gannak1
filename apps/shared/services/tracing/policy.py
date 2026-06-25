@@ -199,10 +199,23 @@ class TracePolicyService:
         )
 
     @staticmethod
-    def get_policy(db: Session, model: Type, scope_type: str, scope_id: Any = None):
+    def validate_policy_scope(scope_type: str, scope_id: Any = None) -> Optional[uuid.UUID]:
         if scope_type not in VALID_SCOPE_TYPES:
             raise ValueError("Invalid policy scope_type")
         scope_uuid = _coerce_uuid(scope_id)
+        if scope_type == SCOPE_GLOBAL:
+            if scope_id is not None:
+                raise ValueError("global_scope_must_not_have_scope_id")
+            return None
+        if scope_type == SCOPE_APP:
+            if scope_uuid is None:
+                raise ValueError("app_scope_requires_scope_id")
+            return scope_uuid
+        raise ValueError("organization_scope_policy_not_supported")
+
+    @staticmethod
+    def get_policy(db: Session, model: Type, scope_type: str, scope_id: Any = None):
+        scope_uuid = TracePolicyService.validate_policy_scope(scope_type, scope_id)
         query = db.query(model).filter(model.scope_type == scope_type)
         if scope_uuid is None:
             query = query.filter(model.scope_id.is_(None))
@@ -219,9 +232,7 @@ class TracePolicyService:
         values: dict[str, Any],
         updated_by: Any,
     ):
-        if scope_type not in VALID_SCOPE_TYPES:
-            raise ValueError("Invalid policy scope_type")
-        scope_uuid = _coerce_uuid(scope_id)
+        scope_uuid = TracePolicyService.validate_policy_scope(scope_type, scope_id)
         existing = TracePolicyService.get_policy(db, model, scope_type, scope_uuid)
         if existing is None:
             existing = model(scope_type=scope_type, scope_id=scope_uuid)

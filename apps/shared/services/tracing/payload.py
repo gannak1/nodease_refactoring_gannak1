@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import uuid
@@ -99,7 +98,6 @@ class TracePayloadService:
                         "attempt": attempt,
                         "redacted_payload": None,
                         "raw_payload_encrypted": None,
-                        "raw_payload_hash": None,
                         "redaction_applied": False,
                         "pii_detected": False,
                         "secret_detected": False,
@@ -120,7 +118,6 @@ class TracePayloadService:
                 payload_kind=payload_kind,
             )
             raw_payload_encrypted = None
-            raw_payload_hash = None
             storage_mode = "redacted_only"
 
             raw_allowed = (
@@ -132,9 +129,6 @@ class TracePayloadService:
             if raw_allowed:
                 raw_payload_encrypted = TracePayloadService._encrypt_raw_payload(payload)
                 if raw_payload_encrypted:
-                    raw_payload_hash = hashlib.sha256(
-                        _canonical_json(payload).encode("utf-8")
-                    ).hexdigest()
                     storage_mode = "raw_and_redacted"
 
             payload_id = uuid.uuid4()
@@ -148,7 +142,6 @@ class TracePayloadService:
                     "attempt": attempt,
                     "redacted_payload": _json_safe(redaction.redacted_payload),
                     "raw_payload_encrypted": raw_payload_encrypted,
-                    "raw_payload_hash": raw_payload_hash,
                     "redaction_applied": redaction.redaction_applied,
                     "pii_detected": redaction.pii_detected,
                     "secret_detected": redaction.secret_detected,

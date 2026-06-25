@@ -20,5 +20,6 @@ def test_prompt_completion_retention_condition_is_separate_from_redacted_payload
         )
     )
 
+    assert "trace_payloads.retention_purged_at IS NULL" in sql
     assert "trace_payloads.payload_kind NOT IN ('prompt', 'completion')" in sql
     assert "trace_payloads.payload_kind IN ('prompt', 'completion')" in sql

@@ -25,6 +25,7 @@ def test_payload_records_store_redacted_copy_without_raw_by_default():
     assert len(records) == 1
     assert records[0]["redacted_payload"]["email"] == "[REDACTED]"
     assert records[0]["raw_payload_encrypted"] is None
+    assert "raw_payload_hash" not in records[0]
     assert records[0]["storage_mode"] == "redacted_only"
 
 

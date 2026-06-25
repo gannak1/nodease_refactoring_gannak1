@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -26,6 +27,14 @@ def _same_uuid(left: Any, right: Any) -> bool:
         return uuid.UUID(str(left)) == uuid.UUID(str(right))
     except (TypeError, ValueError):
         return False
+
+
+def _actor_user_ref(actor_user_id: Any) -> Optional[str]:
+    try:
+        value = str(uuid.UUID(str(actor_user_id)))
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(f"trace-actor:{value}".encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -174,6 +183,7 @@ class TraceAccessService:
                 payload_id=payload_id,
                 workflow_run_id=workflow_run_id,
                 actor_user_id=actor_user_id,
+                actor_user_ref=_actor_user_ref(actor_user_id),
                 view_level=view_level,
                 allowed=allowed,
                 reason_code=reason_code,

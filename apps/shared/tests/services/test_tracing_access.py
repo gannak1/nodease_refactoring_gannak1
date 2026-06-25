@@ -125,3 +125,66 @@ def test_llm_span_hides_io_without_prompt_completion_policy(monkeypatch):
 
     assert detail["inputs"] is None
     assert detail["outputs"] is None
+
+
+def test_metadata_span_hides_process_data():
+    span = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_run_id=uuid.uuid4(),
+        node_id="http-1",
+        node_type="httpRequestNode",
+        status="success",
+        started_at=None,
+        finished_at=None,
+        duration=None,
+        inputs={"url": "https://example.test"},
+        outputs={"status": 200},
+        process_data={"credential_id": str(uuid.uuid4())},
+        trace_metadata={},
+        redaction_applied=True,
+        pii_detected=False,
+        sequence=1,
+        retry_count=0,
+    )
+
+    detail = TraceQueryService.span_detail(span, view_level="metadata")
+
+    assert detail["inputs"] is None
+    assert detail["outputs"] is None
+    assert detail["process_data"] is None
+
+
+def test_raw_access_event_keeps_actor_ref(monkeypatch):
+    events = []
+
+    class FakeSession:
+        def add(self, event):
+            events.append(event)
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    actor_id = uuid.uuid4()
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.SessionLocal", lambda: FakeSession()
+    )
+
+    TraceAccessService.record_payload_access_event(
+        None,
+        workflow_run_id=uuid.uuid4(),
+        actor_user_id=actor_id,
+        view_level="raw",
+        allowed=True,
+        reason_code="system_admin_raw",
+        payload_id=uuid.uuid4(),
+    )
+
+    assert events[0].actor_user_id == actor_id
+    assert events[0].actor_user_ref
+    assert str(actor_id) not in events[0].actor_user_ref
