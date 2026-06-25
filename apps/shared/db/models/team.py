@@ -10,6 +10,7 @@ from apps.shared.db.base import Base
 
 if TYPE_CHECKING:
     from apps.shared.db.models.user import User
+    from apps.shared.db.models.organization import Organization
 
 
 class TeamPermission(Base):
@@ -29,7 +30,7 @@ class TeamPermission(Base):
 
     # 조직 ID, team ID에 FK
     tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
     )
     # 태그 이름
     name: Mapped[str] = mapped_column(String(255), nullable=False)
