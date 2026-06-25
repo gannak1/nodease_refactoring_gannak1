@@ -202,6 +202,7 @@ record_audit(
 
 | 파일 | action |
 |---|---|
+| `main.py` (명시적) | `auth.permission_denied` |
 | `auth.py` (명시적) | `user.login`(이메일/구글), `user.login_failed`, `user.logout`, `user.signup`, `user.signup_failed` |
 | `app.py` | `app.create`, `app.update`, `app.delete`, `app.clone` |
 | `workflow.py` | `workflow.create`, `workflow.update`(draft) |
