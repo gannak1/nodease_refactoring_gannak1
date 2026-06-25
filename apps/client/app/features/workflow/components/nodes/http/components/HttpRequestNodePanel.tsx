@@ -12,10 +12,15 @@ import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
-import { AlertTriangle } from 'lucide-react';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
 import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
+import {
+  DraggedOutputVariable,
+  getTokenLabelMap,
+  upsertNamedSelector,
+} from '@/app/features/workflow/utils/nodeVariablePorts';
+import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 
 // 노드 실행 필수 요건 체크
 // 1. URL이 입력되어 있어야 함
@@ -176,12 +181,30 @@ export function HttpRequestNodePanel({
   );
 
   const handleUpdateVariable = useCallback(
-    (index: number, key: keyof HttpVariable, value: any) => {
+    (index: number, key: keyof HttpVariable, value: string | string[]) => {
       const newVars = [...(data.referenced_variables || [])];
       newVars[index] = { ...newVars[index], [key]: value };
       updateNodeData(nodeId, { referenced_variables: newVars });
     },
     [data.referenced_variables, nodeId, updateNodeData],
+  );
+
+  const handleTextDropOutput = useCallback(
+    (output: DraggedOutputVariable) => {
+      updateNodeData(nodeId, {
+        referenced_variables: upsertNamedSelector(
+          data.referenced_variables,
+          output,
+          'value_selector',
+        ),
+      });
+    },
+    [data.referenced_variables, nodeId, updateNodeData],
+  );
+
+  const tokenLabels = useMemo(
+    () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
+    [data.referenced_variables, upstreamNodes],
   );
 
   // 자동완성 핸들러
@@ -211,7 +234,8 @@ export function HttpRequestNodePanel({
   const insertVariable = (varName: string) => {
     if (!activeField) return;
 
-    const currentValue = (data as any)[activeField] || '';
+    const currentValue =
+      activeField === 'url' ? data.url || '' : data.body || '';
     const ref = activeField === 'url' ? urlRef : bodyRef;
     const input = ref.current;
 
@@ -264,6 +288,8 @@ export function HttpRequestNodePanel({
           onChange={(e) => handleUpdateData('url', e.target.value)}
           onKeyUp={(e) => handleKeyUp(e, 'url')}
           autoComplete="off"
+          data-variable-drop-enabled="true"
+          data-variable-drop-field="url"
           rows={1}
         />
       </div>
@@ -445,13 +471,14 @@ export function HttpRequestNodePanel({
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-500">Content-Type: JSON</span>
             </div>
-            <textarea
-              ref={bodyRef}
-              className="w-full h-32 rounded border border-gray-300 p-2 text-xs font-mono focus:outline-none focus:border-blue-500 resize-y"
+            <VariableTokenEditor
+              className="min-h-32 font-mono text-xs"
               placeholder='{"key": "value"}'
               value={data.body || ''}
-              onChange={(e) => handleUpdateData('body', e.target.value)}
-              onKeyUp={(e) => handleKeyUp(e, 'body')}
+              onChange={(value) => handleUpdateData('body', value)}
+              onDropOutput={handleTextDropOutput}
+              tokenLabels={tokenLabels}
+              ariaLabel="HTTP Body"
             />
             <div className="text-[10px] text-gray-500">
               💡 <code>{'{{variable}}'}</code> 문법 사용 가능

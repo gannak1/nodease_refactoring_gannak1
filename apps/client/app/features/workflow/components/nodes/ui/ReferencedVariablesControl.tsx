@@ -234,7 +234,7 @@ export const ReferencedVariablesControl: React.FC<
                   <div className="flex-[3]">
                     <input
                       type="text"
-                      className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-blue-600 placeholder:font-normal placeholder:text-gray-300 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/20"
+                      className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-blue-600 placeholder:font-normal placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/20"
                       placeholder={placeholder}
                       value={variable.name}
                       onChange={(e) => onUpdate(index, 'name', e.target.value)}

@@ -380,7 +380,7 @@ export function ConditionNodePanel({ nodeId, data }: ConditionNodePanelProps) {
                               </div>
                             ) : (
                               <input
-                                className="w-1/2 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium text-gray-700 placeholder:font-normal placeholder:text-gray-400 focus:border-blue-500 focus:bg-white focus:outline-none transition-colors"
+                                className="w-1/2 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium text-gray-700 placeholder:font-normal placeholder:text-gray-500 focus:border-blue-500 focus:bg-white focus:outline-none transition-colors"
                                 placeholder="변수 키"
                                 value={condition.variable_selector?.[1] || ''}
                                 onChange={(e) => {
@@ -418,7 +418,7 @@ export function ConditionNodePanel({ nodeId, data }: ConditionNodePanelProps) {
 
                           {/* Value Input */}
                           <input
-                            className="w-full rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium text-gray-700 placeholder:font-normal placeholder:text-gray-400 focus:border-blue-500 focus:bg-white focus:outline-none transition-colors"
+                            className="w-full rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium text-gray-700 placeholder:font-normal placeholder:text-gray-500 focus:border-blue-500 focus:bg-white focus:outline-none transition-colors"
                             placeholder="비교할 값"
                             value={condition.value}
                             onChange={(e) =>

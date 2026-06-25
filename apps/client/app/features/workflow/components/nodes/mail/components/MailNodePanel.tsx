@@ -6,7 +6,6 @@ import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
-import { AlertTriangle } from 'lucide-react';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
 import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 
@@ -145,7 +144,7 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
   );
 
   const handleUpdateVariable = useCallback(
-    (index: number, field: 'name' | 'value_selector', value: any) => {
+    (index: number, field: 'name' | 'value_selector', value: string | string[]) => {
       const newVars = [...(data.referenced_variables || [])];
       newVars[index] = { ...newVars[index], [field]: value };
       handleUpdateData('referenced_variables', newVars);
@@ -365,6 +364,8 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
               value={data.keyword || ''}
               onChange={(e) => handleUpdateData('keyword', e.target.value)}
               onKeyUp={handleKeyUp}
+              data-variable-drop-enabled="true"
+              data-variable-drop-field="keyword"
             />
             <p className="text-[10px] text-gray-500">
               💡 <code>{'{{variable}}'}</code> 문법 사용 가능

@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 
-import { LLMNodeData } from '../../../../types/Nodes';
+import { LLMNodeData, LLMVariable } from '../../../../types/Nodes';
+import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
+import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
-import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { HelpCircle, BookOpen, MousePointerClick, Wand2 } from 'lucide-react';
 import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
+import { HelpCircle, BookOpen, MousePointerClick, Wand2 } from 'lucide-react';
 import { PromptWizardModal } from '../../../modals/PromptWizardModal';
 import { ModelSelectDropdown } from './ModelSelectDropdown';
 import {
@@ -17,6 +22,13 @@ import {
   sanitizeSelectedKnowledgeBases,
   isSameKnowledgeSelection,
 } from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
+import {
+  DraggedOutputVariable,
+  getTokenLabelMap,
+  upsertNamedSelector,
+} from '@/app/features/workflow/utils/nodeVariablePorts';
+import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
+import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -33,50 +45,53 @@ interface LLMNodePanelProps {
   data: LLMNodeData;
 }
 
+type PromptHelpId = 'fallback' | 'system' | 'user' | 'assistant';
+
+const HelpPopover = ({
+  id,
+  activeHelp,
+  onToggle,
+  children,
+  widthClassName = 'w-48',
+}: {
+  id: PromptHelpId;
+  activeHelp: PromptHelpId | null;
+  onToggle: (id: PromptHelpId) => void;
+  children: React.ReactNode;
+  widthClassName?: string;
+}) => {
+  const isOpen = activeHelp === id;
+
+  return (
+    <div className="relative inline-block ml-1">
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle(id);
+        }}
+        className="nodrag flex h-4 w-4 items-center justify-center rounded-full text-gray-400 transition-colors hover:text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
+        aria-label="도움말 보기"
+        aria-expanded={isOpen}
+      >
+        <HelpCircle className="w-3 h-3" />
+      </button>
+      {isOpen && (
+        <div
+          className={`absolute left-0 top-5 z-50 rounded-lg border border-gray-200 bg-white p-2 text-[11px] text-gray-600 shadow-lg ${widthClassName}`}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {children}
+          <div className="absolute -top-1 left-2 h-2 w-2 rotate-45 border-l border-t border-gray-200 bg-white" />
+        </div>
+      )}
+    </div>
+  );
+};
 
 // 노드 실행 필수 요건 체크
 // 1. 시스템 프롬프트 또는 사용자 프롬프트 중 하나 이상 입력되어야 함
 // 2. 모델이 선택되어야 함
-
-const getCaretCoordinates = (
-  element: HTMLTextAreaElement,
-  position: number,
-) => {
-  const div = document.createElement('div');
-  const style = window.getComputedStyle(element);
-
-  // Copy styles
-  Array.from(style).forEach((prop) => {
-    div.style.setProperty(prop, style.getPropertyValue(prop));
-  });
-
-  div.style.position = 'absolute';
-  div.style.visibility = 'hidden';
-  div.style.whiteSpace = 'pre-wrap';
-  div.style.top = '0';
-  div.style.left = '0';
-
-  // 가장 간단하게:
-  const textContent = element.value.substring(0, position);
-  div.innerHTML =
-    textContent.replace(/\n/g, '<br>') + '<span id="caret-marker">|</span>';
-
-  document.body.appendChild(div);
-
-  const marker = div.querySelector('#caret-marker');
-  const coordinates = {
-    top: marker
-      ? marker.getBoundingClientRect().top - div.getBoundingClientRect().top
-      : 0,
-    left: marker
-      ? marker.getBoundingClientRect().left - div.getBoundingClientRect().left
-      : 0,
-    height: parseInt(style.lineHeight) || 20,
-  };
-
-  document.body.removeChild(div);
-  return coordinates;
-};
 
 const isChatModelOption = (model: ModelOption) => {
   const id = model.model_id_for_api_call.toLowerCase();
@@ -192,15 +207,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
   }, []);
   const { updateNodeData, nodes, edges } = useWorkflowStore();
 
-  const systemPromptRef = useRef<HTMLTextAreaElement>(null);
-  const userPromptRef = useRef<HTMLTextAreaElement>(null);
-  const assistantPromptRef = useRef<HTMLTextAreaElement>(null);
-
-  const [activePromptField, setActivePromptField] = useState<
-    'system_prompt' | 'user_prompt' | 'assistant_prompt' | null
-  >(null);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [suggestionPos, setSuggestionPos] = useState({ top: 0, left: 0 });
+  const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -217,6 +224,10 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     setWizardField(field);
     setWizardOpen(true);
   };
+
+  const toggleHelp = useCallback((id: PromptHelpId) => {
+    setActiveHelp((current) => (current === id ? null : id));
+  }, []);
 
   // 마법사에서 적용된 프롬프트 처리
   const handleApplyImproved = (improvedPrompt: string) => {
@@ -266,13 +277,10 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     });
   }, [fallbackCandidates, data.model_id, selectedModel]);
   const fallbackDisabled = !data.model_id?.trim();
-
-  // 1. 상위 노드
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
   );
-
 
   const validationErrors = useMemo(() => {
     const allPrompts =
@@ -304,12 +312,6 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     data.assistant_prompt,
     data.referenced_variables,
   ]);
-
-
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables]
-  );
 
 
   const allPromptsEmpty = useMemo(() => {
@@ -346,7 +348,8 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     if (!parameters || !Object.prototype.hasOwnProperty.call(parameters, 'top_p')) {
       return parameters;
     }
-    const { top_p, ...rest } = parameters;
+    const rest = { ...parameters };
+    delete rest.top_p;
     return rest;
   };
 
@@ -379,93 +382,56 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
   }, [data.model_id, data.parameters, isAnthropicModelId, nodeId, updateNodeData]);
 
   const handleFieldChange = useCallback(
-    (field: keyof LLMNodeData, value: any) => {
+    (field: keyof LLMNodeData, value: unknown) => {
       updateNodeData(nodeId, { [field]: value });
     },
     [nodeId, updateNodeData],
   );
 
-  const handleAddVariable = () => {
-    handleFieldChange('referenced_variables', [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ]);
-  };
-
-  const handleRemoveVariable = (index: number) => {
-    const newVars = [...(data.referenced_variables || [])];
-    newVars.splice(index, 1);
-    handleFieldChange('referenced_variables', newVars);
-  };
-
-  const handleUpdateVariable = (
-    index: number,
-    field: 'name' | 'value_selector',
-    value: any,
-  ) => {
-    const newVars = [...(data.referenced_variables || [])];
-    newVars[index] = { ...newVars[index], [field]: value };
-    handleFieldChange('referenced_variables', newVars);
-  };
-
-  // 프롬프트 핸들러 (handleFieldChange는 위에 정의됨, handleKeyUp 필요)
-  const handleKeyUp = (
-    e: React.KeyboardEvent<HTMLTextAreaElement>,
-    field: 'system_prompt' | 'user_prompt' | 'assistant_prompt',
-  ) => {
-    const target = e.target as HTMLTextAreaElement;
-    const value = target.value;
-    const selectionEnd = target.selectionEnd;
-
-    setActivePromptField(field);
-
-    if (value.substring(selectionEnd - 2, selectionEnd) === '{{') {
-      const coords = getCaretCoordinates(target, selectionEnd);
-
-      setSuggestionPos({
-        top: target.offsetTop + coords.top + coords.height, // Line height 아래
-        left: target.offsetLeft + coords.left,
+  const handlePromptDropOutput = useCallback(
+    (output: DraggedOutputVariable) => {
+      updateNodeData(nodeId, {
+        referenced_variables: upsertNamedSelector(
+          data.referenced_variables,
+          output,
+          'value_selector',
+        ),
       });
-      setShowSuggestions(true);
-    } else {
-      setShowSuggestions(false);
-    }
-  };
+    },
+    [data.referenced_variables, nodeId, updateNodeData],
+  );
 
-  // insertVariable: varName을 삽입 (예: {{ topic }})
-  const insertVariable = (varName: string) => {
-    if (!activePromptField) return;
+  const tokenLabels = useMemo(
+    () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
+    [data.referenced_variables, upstreamNodes],
+  );
 
-    const currentValue = (data as any)[activePromptField] || '';
+  const handleRemoveVariable = useCallback(
+    (index: number) => {
+      const nextVariables = [...(data.referenced_variables || [])];
+      nextVariables.splice(index, 1);
+      updateNodeData(nodeId, { referenced_variables: nextVariables });
+    },
+    [data.referenced_variables, nodeId, updateNodeData],
+  );
 
-    const refMap = {
-      system_prompt: systemPromptRef,
-      user_prompt: userPromptRef,
-      assistant_prompt: assistantPromptRef,
-    };
-    const textarea = refMap[activePromptField]?.current;
+  const handleUpdateVariable = useCallback(
+    (
+      index: number,
+      field: keyof LLMVariable,
+      value: string | string[],
+    ) => {
+      const nextVariables = [...(data.referenced_variables || [])];
+      nextVariables[index] = { ...nextVariables[index], [field]: value };
+      updateNodeData(nodeId, { referenced_variables: nextVariables });
+    },
+    [data.referenced_variables, nodeId, updateNodeData],
+  );
 
-    if (!textarea) return;
-
-    const selectionEnd = textarea.selectionEnd;
-    const lastOpen = currentValue.lastIndexOf('{{', selectionEnd);
-
-    if (lastOpen !== -1) {
-      const prefix = currentValue.substring(0, lastOpen);
-      const suffix = currentValue.substring(selectionEnd);
-
-      const newValue = `${prefix}{{ ${varName} }}${suffix}`;
-
-      handleFieldChange(activePromptField, newValue);
-      setShowSuggestions(false);
-
-      setTimeout(() => {
-        const newCursorPos = prefix.length + varName.length + 5; // {{ var }} 길이 보정
-        textarea.focus();
-        textarea.setSelectionRange(newCursorPos, newCursorPos);
-      }, 0);
-    }
-  };
+  const incompleteVariables = useMemo(
+    () => getIncompleteVariables(data.referenced_variables),
+    [data.referenced_variables],
+  );
 
   // 사용자가 사용 가능한 모델 가져오기
   useEffect(() => {
@@ -482,11 +448,9 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
         if (res.ok) {
           const json = await res.json();
           setModelOptions(json);
-        } else {
-          console.error('Failed to fetch LLM models');
         }
-      } catch (err) {
-        console.error('Error fetching LLM models', err);
+      } catch {
+        setModelOptions([]);
       } finally {
         setLoadingModels(false);
       }
@@ -511,8 +475,8 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
         ) {
           updateNodeData(nodeId, { knowledgeBases: nextSelected });
         }
-      } catch (err) {
-        console.error('[LLMNodePanel] Failed to sync knowledge bases', err);
+      } catch {
+        // 지식 베이스 동기화 실패는 노드 편집 자체를 막지 않습니다.
       }
     };
 
@@ -520,13 +484,38 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     return () => {
       active = false;
     };
-  }, [nodeId]);
+  }, [data.knowledgeBases, nodeId, updateNodeData]);
+
+  useEffect(() => {
+    if (!activeHelp) return;
+
+    const closeHelp = () => setActiveHelp(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeHelp();
+    };
+
+    window.addEventListener('click', closeHelp);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', closeHelp);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeHelp]);
 
   return (
     <div className="flex flex-col gap-2">
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>
         <div className="flex flex-col gap-2">
+          <div className="flex items-center">
+            <label className="text-xs font-semibold text-gray-700">
+              기본 모델
+            </label>
+            <PropertyVisibilityToggle
+              nodeId={nodeId}
+              propertyKey="model_id"
+            />
+          </div>
           {loadingModels ? (
             <div className="text-xs text-gray-400">모델 로딩 중...</div>
           ) : modelOptions.length > 0 ? (
@@ -543,14 +532,15 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                   <label className="text-xs font-semibold text-gray-700">
                     대체 모델
                   </label>
-                  <div className="group relative inline-block">
-                    <HelpCircle className="w-3 h-3 text-gray-400 cursor-help" />
-                    <div className="absolute z-50 hidden group-hover:block w-60 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5">
-                      기본 모델 호출이 실패하거나 타임아웃될 때 대신 사용할
-                      모델입니다.
-                      <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
-                    </div>
-                  </div>
+                  <HelpPopover
+                    id="fallback"
+                    activeHelp={activeHelp}
+                    onToggle={toggleHelp}
+                    widthClassName="w-60"
+                  >
+                    기본 모델 호출이 실패하거나 타임아웃될 때 대신 사용할
+                    모델입니다.
+                  </HelpPopover>
                 </div>
                 <div className="relative group">
                   <ModelSelectDropdown
@@ -595,24 +585,6 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
             </div>
           )}
         </div>
-      </CollapsibleSection>
-
-      {/* 2. 변수 매핑 */}
-      <CollapsibleSection title="입력변수" showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title="" // CollapsibleSection 내부에 타이틀이 있으므로 숨김
-          description="프롬프트에서 사용할 변수를 정의하고, 이전 노드의 출력값과 연결하세요."
-        />
-        
-
-        {incompleteVariables.length > 0 && (
-          <IncompleteVariablesAlert variables={incompleteVariables} />
-        )}
       </CollapsibleSection>
 
       {/* 2.5 지식 베이스 버튼 (지식 베이스 그룹 통합) */}
@@ -694,14 +666,18 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 <label className="text-xs font-semibold text-gray-700">
                   시스템 프롬프트
                 </label>
-                <div className="group relative inline-block ml-1">
-                  <HelpCircle className="w-3 h-3 text-gray-400 cursor-help" />
-                  <div className="absolute z-50 hidden group-hover:block w-48 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5">
-                    AI의 역할, 성격, 행동 규칙을 정의합니다. 모든 대화에
-                    일관되게 적용됩니다.
-                    <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
-                  </div>
-                </div>
+                <PropertyVisibilityToggle
+                  nodeId={nodeId}
+                  propertyKey="system_prompt"
+                />
+                <HelpPopover
+                  id="system"
+                  activeHelp={activeHelp}
+                  onToggle={toggleHelp}
+                >
+                  AI의 역할, 성격, 행동 규칙을 정의합니다. 모든 대화에
+                  일관되게 적용됩니다.
+                </HelpPopover>
               </div>
               <div className="group/wizard relative">
                 <button
@@ -719,15 +695,14 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 </div>
               </div>
             </div>
-            <textarea
-              ref={systemPromptRef}
-              className="w-full h-24 rounded border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none resize-y"
+            <VariableTokenEditor
+              className="min-h-24"
+              ariaLabel="시스템 프롬프트"
               placeholder="예: 너는 친절하고 전문적인 고객 상담 AI입니다. 항상 존댓말을 사용하고, 정확하고 간결하게 답변해주세요."
               value={data.system_prompt || ''}
-              onChange={(e) =>
-                handleFieldChange('system_prompt', e.target.value)
-              }
-              onKeyUp={(e) => handleKeyUp(e, 'system_prompt')}
+              onChange={(value) => handleFieldChange('system_prompt', value)}
+              onDropOutput={handlePromptDropOutput}
+              tokenLabels={tokenLabels}
             />
           </div>
 
@@ -737,14 +712,18 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 <label className="text-xs font-semibold text-gray-700">
                   사용자 프롬프트
                 </label>
-                <div className="group relative inline-block ml-1">
-                  <HelpCircle className="w-3 h-3 text-gray-400 cursor-help" />
-                  <div className="absolute z-50 hidden group-hover:block w-48 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5">
-                    사용자가 AI에게 보내는 질문이나 요청입니다. {'{{ 변수명 }}'}{' '}
-                    형식으로 동적 값을 삽입할 수 있습니다.
-                    <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
-                  </div>
-                </div>
+                <PropertyVisibilityToggle
+                  nodeId={nodeId}
+                  propertyKey="user_prompt"
+                />
+                <HelpPopover
+                  id="user"
+                  activeHelp={activeHelp}
+                  onToggle={toggleHelp}
+                >
+                  사용자가 AI에게 보내는 질문이나 요청입니다. {'{{ 변수명 }}'}{' '}
+                  형식으로 동적 값을 삽입할 수 있습니다.
+                </HelpPopover>
               </div>
               <div className="group/wizard relative">
                 <button
@@ -762,13 +741,14 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 </div>
               </div>
             </div>
-            <textarea
-              ref={userPromptRef}
-              className="w-full h-32 rounded border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none resize-y"
+            <VariableTokenEditor
+              className="min-h-32"
+              ariaLabel="사용자 프롬프트"
               placeholder={`예: 다음 내용을 한국어로 3줄 요약해줘:\n\n{{ content }}`}
               value={data.user_prompt || ''}
-              onChange={(e) => handleFieldChange('user_prompt', e.target.value)}
-              onKeyUp={(e) => handleKeyUp(e, 'user_prompt')}
+              onChange={(value) => handleFieldChange('user_prompt', value)}
+              onDropOutput={handlePromptDropOutput}
+              tokenLabels={tokenLabels}
             />
           </div>
 
@@ -778,14 +758,18 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 <label className="text-xs font-semibold text-gray-700">
                   어시스턴트 프롬프트
                 </label>
-                <div className="group relative inline-block ml-1">
-                  <HelpCircle className="w-3 h-3 text-gray-400 cursor-help" />
-                  <div className="absolute z-50 hidden group-hover:block w-48 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5">
-                    AI 응답의 시작 부분을 미리 지정합니다. 특정 형식이나 톤으로
-                    응답을 유도할 때 유용합니다.
-                    <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
-                  </div>
-                </div>
+                <PropertyVisibilityToggle
+                  nodeId={nodeId}
+                  propertyKey="assistant_prompt"
+                />
+                <HelpPopover
+                  id="assistant"
+                  activeHelp={activeHelp}
+                  onToggle={toggleHelp}
+                >
+                  AI 응답의 시작 부분을 미리 지정합니다. 특정 형식이나 톤으로
+                  응답을 유도할 때 유용합니다.
+                </HelpPopover>
               </div>
               <div className="group/wizard relative">
                 <button
@@ -803,50 +787,38 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 </div>
               </div>
             </div>
-            <textarea
-              ref={assistantPromptRef}
-              className="w-full h-24 rounded border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none resize-y"
+            <VariableTokenEditor
+              className="min-h-24"
+              ariaLabel="어시스턴트 프롬프트"
               placeholder="예: 분석 결과를 다음과 같이 정리하겠습니다:"
               value={data.assistant_prompt || ''}
-              onChange={(e) =>
-                handleFieldChange('assistant_prompt', e.target.value)
-              }
-              onKeyUp={(e) => handleKeyUp(e, 'assistant_prompt')}
+              onChange={(value) => handleFieldChange('assistant_prompt', value)}
+              onDropOutput={handlePromptDropOutput}
+              tokenLabels={tokenLabels}
             />
           </div>
-
-          {showSuggestions && (
-            <div
-              className="absolute z-10 w-48 rounded border border-gray-200 bg-white shadow-lg"
-              style={{
-                top: suggestionPos.top,
-                left: suggestionPos.left,
-              }}
-            >
-              {(data.referenced_variables || []).length > 0 ? (
-                (data.referenced_variables || []).map((v, i) => (
-                  <button
-                    key={i}
-                    className="block w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
-                    onClick={() => insertVariable(v.name)}
-                  >
-                    {v.name || '(이름 없음)'}
-                  </button>
-                ))
-              ) : (
-                <div className="px-4 py-2 text-sm text-gray-400">
-                  등록된 입력변수가 없습니다.
-                </div>
-              )}
-            </div>
-          )}
-
-
 
           {validationErrors.length > 0 && (
             <UnregisteredVariablesAlert variables={validationErrors} />
           )}
         </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="사용 중인 변수" showDivider>
+        <ReferencedVariablesControl
+          variables={data.referenced_variables || []}
+          upstreamNodes={upstreamNodes}
+          onUpdate={handleUpdateVariable}
+          onAdd={() => undefined}
+          onRemove={handleRemoveVariable}
+          title=""
+          description="프롬프트에 드롭한 출력 변수의 연결을 확인하고 잘못된 연결을 수정하세요."
+          showAddButton={false}
+          emptyMessage="프롬프트에서 사용 중인 변수가 없습니다."
+        />
+        {incompleteVariables.length > 0 && (
+          <IncompleteVariablesAlert variables={incompleteVariables} />
+        )}
       </CollapsibleSection>
 
       {/* 프롬프트 마법사 모달 */}
