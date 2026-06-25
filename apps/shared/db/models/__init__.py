@@ -22,7 +22,15 @@ from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
-from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
+from apps.shared.db.models.workflow_run import (
+    TracePayload,
+    TracePayloadAccessEvent,
+    TraceRedactionPolicy,
+    TraceRetentionPolicy,
+    TraceVisibilityPolicy,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
 
 __all__ = [
     "User",
@@ -42,4 +50,9 @@ __all__ = [
     "WorkflowDeployment",
     "WorkflowNodeRun",
     "WorkflowRun",
+    "TracePayload",
+    "TracePayloadAccessEvent",
+    "TraceRedactionPolicy",
+    "TraceRetentionPolicy",
+    "TraceVisibilityPolicy",
 ]

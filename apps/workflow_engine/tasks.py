@@ -108,6 +108,9 @@ def execute_deployed_workflow(
 
         graph = deployment.graph_data
         execution_context["workflow_id"] = workflow_id
+        execution_context["app_id"] = str(deployment.app_id)
+        execution_context["deployment_id"] = str(deployment.id)
+        execution_context["workflow_version"] = deployment.version
 
         sync_result = {}
         try:
@@ -172,6 +175,10 @@ def execute_by_deployment(
 
         if not deployment.graph_snapshot:
             raise ValueError(f"배포 그래프 데이터가 없습니다: {deployment_id}")
+
+        execution_context["app_id"] = str(deployment.app_id)
+        execution_context["deployment_id"] = str(deployment.id)
+        execution_context["workflow_version"] = deployment.version
 
         sync_result = {}
         try:
