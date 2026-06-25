@@ -7,6 +7,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.audit import audit
 from apps.gateway.services.llm_service import LLMService
 from apps.shared.db.models.llm import LLMModel, LLMProvider, LLMUsageLog
 from apps.shared.db.models.user import User
@@ -78,6 +79,7 @@ def get_my_credentials(
 
 
 @router.post("/credentials", response_model=LLMCredentialResponse)
+@audit("credential.create")
 def register_credential(
     request: LLMCredentialCreate,
     db: Session = Depends(get_db),
@@ -95,6 +97,7 @@ def register_credential(
 
 
 @router.delete("/credentials/{credential_id}")
+@audit("credential.delete", target_param="credential_id")
 def delete_credential(
     credential_id: UUID,
     db: Session = Depends(get_db),
@@ -209,6 +212,7 @@ def sync_system_pricing(
 
 
 @router.put("/models/{model_id}/pricing")
+@audit("model.pricing_update", target_param="model_id")
 def update_model_pricing(
     model_id: UUID,
     pricing: LLMModelPricingUpdate,

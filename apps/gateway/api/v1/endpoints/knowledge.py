@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
@@ -49,6 +50,7 @@ router = APIRouter()
 @router.post(
     "", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED
 )
+@audit("knowledge.create")
 def create_knowledge_base(
     kb_in: KnowledgeBaseCreate,
     db: Session = Depends(get_db),
@@ -180,6 +182,7 @@ def get_knowledge_base(
 
 
 @router.patch("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit("knowledge.update", target_param="kb_id")
 def update_knowledge_base(
     kb_id: UUID,
     update_data: KnowledgeUpdate,
@@ -224,6 +227,7 @@ def update_knowledge_base(
 
 
 @router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit("knowledge.delete", target_param="kb_id")
 def delete_knowledge_base(
     kb_id: UUID,
     db: Session = Depends(get_db),
@@ -484,6 +488,7 @@ def get_document_content(
 @router.post(
     "/{kb_id}/documents/{document_id}/process", status_code=status.HTTP_202_ACCEPTED
 )
+@audit("document.upload", target_param="document_id")
 async def process_document(
     kb_id: UUID,
     document_id: UUID,

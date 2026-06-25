@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.audit import audit
 from apps.gateway.core.config import settings
 
 # from services.ingestion_local_service import IngestionService
@@ -103,6 +104,7 @@ async def generate_presigned_url(
 
 
 @router.post("/upload", response_model=IngestionResponse)
+@audit("document.upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None, alias="file"),
@@ -292,6 +294,7 @@ async def confirm_document_parsing(
 
 
 @router.delete("/document/{document_id}")
+@audit("document.delete", target_param="document_id")
 def delete_document(
     document_id: UUID,
     db: Session = Depends(get_db),
