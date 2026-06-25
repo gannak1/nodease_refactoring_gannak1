@@ -27,6 +27,13 @@ import {
   createNumberedNode,
   NODE_NUMBER_FEATURE_KEY,
 } from '../utils/nodeNumbering';
+import {
+  DEFAULT_SNAP_GRID_SIZE,
+  type SnapGridSize,
+  snapPositionChanges,
+} from '../utils/gridSnap';
+
+export type { SnapGridSize } from '../utils/gridSnap';
 
 export interface Workflow {
   id: string;
@@ -51,6 +58,8 @@ type WorkflowState = {
   projectDescription: string;
   projectApp: App | null; // Full app object for editing
   interactiveMode: 'mouse' | 'touchpad'; // 입력 모드 (마우스/터치패드)
+  snapGridSize: SnapGridSize;
+  isSnapTemporarilyDisabled: boolean;
   isFullscreen: boolean;
 
   // === 설정 패널 상태 ===
@@ -112,6 +121,8 @@ type WorkflowState = {
   setProjectInfo: (name: string, icon: AppIcon, description?: string) => void;
   setProjectApp: (app: App) => void;
   setInteractiveMode: (mode: 'mouse' | 'touchpad') => void;
+  setSnapGridSize: (size: SnapGridSize) => void;
+  setSnapTemporarilyDisabled: (disabled: boolean) => void;
   toggleFullscreen: () => void;
   addWorkflow: (
     workflow: Omit<Workflow, 'id'>,
@@ -190,6 +201,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   projectDescription: '',
   projectApp: null,
   interactiveMode: 'mouse',
+  snapGridSize: DEFAULT_SNAP_GRID_SIZE,
+  isSnapTemporarilyDisabled: false,
   isFullscreen: false,
 
   // === 설정 패널 상태 (초기값) ===
@@ -265,10 +278,15 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   onNodesChange: (changes: NodeChange[]) => {
     const currentNodes = get().nodes || [];
+    const { snapGridSize, isSnapTemporarilyDisabled } = get();
     // DB에 deletable:false로 저장된 노드도 삭제 가능하도록 속성 제거
     // TODO: 데이터 마이그레이션 후 제거 필요
     const deletableNodes = currentNodes.map(removeLegacyDeletableFlag);
-    const newNodes = applyNodeChanges(changes, deletableNodes);
+    const positionChanges =
+      snapGridSize === 'off' || isSnapTemporarilyDisabled
+        ? changes
+        : snapPositionChanges(changes, deletableNodes, snapGridSize);
+    const newNodes = applyNodeChanges(positionChanges, deletableNodes);
     get().setNodes(newNodes as Node[]);
   },
 
@@ -300,6 +318,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }),
 
   setInteractiveMode: (mode) => set({ interactiveMode: mode }),
+
+  setSnapGridSize: (snapGridSize) => set({ snapGridSize }),
+
+  setSnapTemporarilyDisabled: (isSnapTemporarilyDisabled) =>
+    set({ isSnapTemporarilyDisabled }),
 
   toggleFullscreen: () =>
     set((state) => ({ isFullscreen: !state.isFullscreen })),

@@ -72,6 +72,7 @@ import { DragConnectionOverlay } from './DragConnectionOverlay';
 import { SettingsSidebar } from './SettingsSidebar';
 import { VersionHistorySidebar } from './VersionHistorySidebar';
 import { TestSidebar } from './TestSidebar';
+import { getSnapBackgroundGap } from '../../utils/gridSnap';
 
 interface NodeCanvasProps {
   viewMode: ViewMode;
@@ -105,6 +106,8 @@ export default function NodeCanvas({
     toggleTestPanel,
     clearInnerNodeSelection,
     selectedInnerNode,
+    snapGridSize,
+    setSnapTemporarilyDisabled,
   } = useWorkflowStore();
 
   const {
@@ -123,6 +126,8 @@ export default function NodeCanvas({
   const [isParamPanelOpen, setIsParamPanelOpen] = useState(false);
   const [isRefPanelOpen, setIsRefPanelOpen] = useState(false);
   const [isNodeLibraryOpen, setIsNodeLibraryOpen] = useState(true);
+  const reactFlowWrapperRef = useRef<HTMLDivElement>(null);
+  const backgroundGap = getSnapBackgroundGap(snapGridSize);
 
   // Drag connection preview
   const {
@@ -222,6 +227,35 @@ export default function NodeCanvas({
       setIsNodeLibraryOpen(true);
     }
   }, [isFullscreen, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'edit' || !reactFlowWrapperRef.current) {
+      setSnapTemporarilyDisabled(false);
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Alt') {
+        setSnapTemporarilyDisabled(true);
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Alt') {
+        setSnapTemporarilyDisabled(false);
+      }
+    };
+    const handleBlur = () => setSnapTemporarilyDisabled(false);
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+      setSnapTemporarilyDisabled(false);
+    };
+  }, [setSnapTemporarilyDisabled, viewMode]);
 
   useKeyboardShortcut(
     ['Meta', 'k'],
@@ -612,6 +646,7 @@ export default function NodeCanvas({
 
               {/* ReactFlow 캔버스 */}
               <div
+                ref={reactFlowWrapperRef}
                 className="w-full h-full relative"
                 onContextMenu={(e) => e.preventDefault()}
                 onDragOver={handleDragOver}
@@ -641,7 +676,7 @@ export default function NodeCanvas({
                 >
                   <Background
                     variant={BackgroundVariant.Dots}
-                    gap={16}
+                    gap={backgroundGap}
                     size={1}
                     color="#d1d5db"
                   />
