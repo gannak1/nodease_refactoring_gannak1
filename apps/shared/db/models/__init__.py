@@ -8,6 +8,12 @@ Celery Worker에서 모델을 import할 때 순서 문제를 방지합니다.
 # User 모델 먼저 import (다른 모델에서 참조)
 # 나머지 모델 import
 from apps.shared.db.models.app import App
+from apps.shared.db.models.audit_log import (
+    ActorType,
+    AuditCategory,
+    AuditLog,
+    AuditStatus,
+)
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
 from apps.shared.db.models.llm import (
@@ -26,6 +32,10 @@ from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 __all__ = [
     "User",
     "App",
+    "AuditLog",
+    "ActorType",
+    "AuditCategory",
+    "AuditStatus",
     "Connection",
     "Document",
     "DocumentChunk",

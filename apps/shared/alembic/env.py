@@ -31,6 +31,7 @@ from apps.shared.db.base import Base
 # models/__init__.py에서 모든 모델을 한 번에 import
 from apps.shared.db.models import (  # noqa: F401
     App,
+    AuditLog,
     Connection,
     Document,
     DocumentChunk,
