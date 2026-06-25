@@ -1,9 +1,11 @@
 # .env 파일을 기본값으로 로드 ( 개발 환경 )
 import logging
 import sys
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
+from fastapi import Request
 
 # ===================================================
 # 로깅 설정 (FastAPI 시작 전 )
@@ -39,8 +41,32 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from apps.gateway.api.api import api_router
 from apps.gateway.lifespan import lifespan  # Import lifespan from module
+from apps.shared.audit.context import (
+    clear_current_metadata,
+    set_current_metadata,
+)
 
 app = FastAPI(title="Moduly Gateway API", lifespan=lifespan)
+
+
+# 요청별 request_id를 보장하고 audit 로그용 요청 metadata를 전파한다.
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    token = set_current_metadata(
+        {
+            "ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent"),
+            "request_id": request_id,
+        }
+    )
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        clear_current_metadata(token)
 
 origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 origins = origins_str.split(",")

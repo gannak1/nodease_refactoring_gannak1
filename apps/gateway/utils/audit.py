@@ -24,6 +24,7 @@ from fastapi import Request
 from apps.shared.audit.context import (
     AuditActor,
     clear_current_actor,
+    get_current_metadata,
     set_current_actor,
 )
 from apps.shared.audit.logger import record_audit
@@ -52,12 +53,13 @@ def _build_actor(user: Optional[User]):
 
 
 def _request_metadata(request: Optional[Request]) -> dict:
+    meta = get_current_metadata()
     if request is None:
-        return {}
-    meta = {}
-    if request.client:
+        return meta
+    if request.client and "ip" not in meta:
         meta["ip"] = request.client.host
-    meta["user_agent"] = request.headers.get("user-agent")
+    meta.setdefault("user_agent", request.headers.get("user-agent"))
+    meta.setdefault("request_id", getattr(request.state, "request_id", None))
     return meta
 
 

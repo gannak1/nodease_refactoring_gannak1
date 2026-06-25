@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
+from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.audit import listeners
 
 
@@ -68,6 +69,39 @@ def test_data_change_audit_discards_real_rollback(monkeypatch, session_factory):
     session.rollback()
 
     assert calls == []
+
+
+def test_data_change_audit_includes_request_metadata(monkeypatch, session_factory):
+    calls = []
+    monkeypatch.setattr(listeners, "record_audit", lambda **event: calls.append(event))
+
+    token = set_current_metadata(
+        {"ip": "127.0.0.1", "user_agent": "test-agent", "request_id": "req-test"}
+    )
+    try:
+        session = session_factory()
+        session.add(AuditThing(name="draft"))
+        session.commit()
+    finally:
+        clear_current_metadata(token)
+
+    assert calls == [
+        {
+            "action": "thing.created",
+            "category": "data_change",
+            "actor_id": None,
+            "actor_type": "system",
+            "target_type": "thing",
+            "target_id": 1,
+            "before": None,
+            "after": {"id": 1, "name": "draft"},
+            "metadata": {
+                "ip": "127.0.0.1",
+                "user_agent": "test-agent",
+                "request_id": "req-test",
+            },
+        }
+    ]
 
 
 def test_data_change_audit_coalesces_multiple_flushes_before_commit(

@@ -8,6 +8,7 @@ from apps.gateway.auth.oauth import oauth
 from apps.gateway.services.auth_service import AuthService
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.session import get_db
 from apps.shared.schemas.auth import LoginRequest, LoginResponse, SignupRequest
 
@@ -16,10 +17,12 @@ router = APIRouter()
 
 def _request_meta(request: Request) -> dict:
     """감사 로그용 요청 메타데이터(ip, user_agent)."""
-    return {
-        "ip": request.client.host if request.client else None,
-        "user_agent": request.headers.get("user-agent"),
-    }
+    meta = get_current_metadata()
+    if request.client and "ip" not in meta:
+        meta["ip"] = request.client.host
+    meta.setdefault("user_agent", request.headers.get("user-agent"))
+    meta.setdefault("request_id", getattr(request.state, "request_id", None))
+    return meta
 
 
 def _user_snapshot(user) -> dict:

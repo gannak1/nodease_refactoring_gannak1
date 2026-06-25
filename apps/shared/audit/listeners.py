@@ -16,7 +16,7 @@ import logging
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
-from apps.shared.audit.context import get_current_actor
+from apps.shared.audit.context import get_current_actor, get_current_metadata
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.app import App
 from apps.shared.db.models.connection import Connection
@@ -182,7 +182,9 @@ def _after_flush(session, flush_context):
             target_id = getattr(obj, "id", None)
             if op == "created" and after is not None and "id" in after:
                 after["id"] = target_id
-            metadata = {"actor": snapshot} if snapshot else {}
+            metadata = get_current_metadata()
+            if snapshot:
+                metadata["actor"] = snapshot
             event = {
                 "op": op,
                 "action": f"{target_type}.{op}",

@@ -1,7 +1,6 @@
 # Audit System — 구현 방식 및 사용법
 
 사용자 작업 감사(Audit) 시스템의 **실제 구현**과 **사용법**을 정리한 문서입니다.
-설계 배경은 [`spec.md`](./spec.md), 구현 순서는 [`plan.md`](./plan.md)를 참고하세요.
 
 ---
 
@@ -16,7 +15,7 @@
 `log_system`의 **Celery 비동기 패턴**을 재사용해 **본 요청(트랜잭션)을 막지 않습니다.**
 
 ```
-호출부(@audit / 명시적 record / ORM 리스너)
+호출부(@audit / 명시적 record_audit / ORM 리스너)
       → record_audit()
       → celery_app.send_task("audit.record", data)   # 비동기, 비차단
       → log_system 워커(audit_tasks.record_audit_log)
@@ -31,11 +30,13 @@
 |---|---|
 | `apps/shared/db/models/audit_log.py` | `AuditLog` 모델 + `ActorType` / `AuditCategory` / `AuditStatus` Enum |
 | `apps/shared/alembic/versions/a1b2c3d4e5f6_add_audit_logs_table.py` | `audit_logs` 테이블 마이그레이션 |
+| `apps/shared/audit/actions.py` | 계층 A action 상수(`AuditAction`) |
 | `apps/shared/audit/logger.py` | `record_audit()` — 감사 이벤트 발행(직렬화 + `send_task`) |
-| `apps/shared/audit/context.py` | 요청 단위 actor 전파용 `contextvar` |
+| `apps/shared/audit/context.py` | 요청 단위 actor/metadata 전파용 `contextvar` |
 | `apps/shared/audit/listeners.py` | 계층 B — ORM flush/commit/rollback 리스너 + 마스킹 |
 | `apps/log_system/audit_tasks.py` | `audit.record` Celery 소비자 태스크 (DB 저장) |
 | `apps/gateway/utils/audit.py` | 계층 A — `@audit` 데코레이터 |
+| `apps/gateway/main.py` | `X-Request-ID` 보장 미들웨어 |
 
 **배선(기존 파일 수정)**
 
@@ -43,6 +44,7 @@
 - `apps/shared/celery_app.py` — `audit.*` → `log` 큐 라우팅
 - `apps/log_system/main.py` — `audit_tasks` import(태스크 등록)
 - `apps/gateway/lifespan.py` — 부팅 시 ORM 리스너 등록
+- `apps/gateway/main.py` — 요청별 `request.state.request_id` 설정, 요청 metadata contextvar 설정, 응답 헤더 반환
 
 ---
 
@@ -119,14 +121,18 @@ SENSITIVE_FIELDS = {
 `user: User = Depends(get_current_user)`가 있는 엔드포인트에 부착합니다.
 actor/ip/user_agent/status는 자동 수집되고, 요청 동안 actor를 contextvar에 세팅하므로
 **같은 요청이 일으킨 데이터 변경(계층 B)에도 actor가 함께 붙습니다.**
+`X-Request-ID` 헤더가 있으면 그대로 사용하고, 없으면 gateway가 UUID를 생성해
+`request_id` metadata와 응답 헤더에 넣습니다. `Request` 인자가 없는 audited endpoint와
+계층 B ORM 변경 로그도 middleware가 세팅한 contextvar에서 `ip`, `user_agent`, `request_id`를 읽습니다.
 
 ```python
+from apps.shared.audit.actions import AuditAction
 from apps.gateway.utils.audit import audit
 
-@router.delete("/workflows/{workflow_id}")
-@audit("workflow.delete", target_param="workflow_id")
-def delete_workflow(
-    workflow_id: str,
+@router.delete("/{app_id}")
+@audit(AuditAction.APP_DELETE, target_param="app_id")
+def delete_app(
+    app_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -134,9 +140,9 @@ def delete_workflow(
 ```
 
 - 데코레이터는 **라우터 데코레이터 아래**에 둡니다(`@router.x` 다음 줄).
-- `action`: 기록할 행동 이름.
+- `action`: 기록할 행동 타입. `AuditAction` 상수를 사용합니다.
 - `target_param`: target_id를 담은 인자 이름(경로/쿼리 파라미터). 생략 가능.
-- `target_type`: 생략 시 `action`의 접두사(`workflow.delete` → `workflow`)를 사용.
+- `target_type`: 생략 시 `action`의 접두사(`app.delete` → `app`)를 사용.
 - 핸들러가 예외를 던지면 `status="failure"`로 기록 후 예외를 그대로 재전파합니다.
 
 ### 5-2. 인증 전 엔드포인트(로그인 등): 명시적 호출
@@ -146,6 +152,7 @@ def delete_workflow(
 
 ```python
 from apps.shared.audit import record_audit
+from apps.shared.audit.actions import AuditAction
 
 @router.post("/login")
 def login(request_obj: Request, request: LoginRequest, ...):
@@ -153,7 +160,7 @@ def login(request_obj: Request, request: LoginRequest, ...):
         result = AuthService.login(db, request)
     except Exception as e:
         record_audit(
-            action="user.login_failed",
+            action=AuditAction.USER_LOGIN_FAILED,
             category="action",
             actor_type="system",
             status="failure",
@@ -162,7 +169,7 @@ def login(request_obj: Request, request: LoginRequest, ...):
         raise
 
     record_audit(
-        action="user.login",
+        action=AuditAction.USER_LOGIN,
         category="action",
         actor_id=result.user.id,
         actor_type="user",
@@ -191,7 +198,7 @@ record_audit(
 
 > 발행 실패가 본 요청을 막지 않도록 `record_audit()` 내부는 모든 예외를 잡아 로깅만 합니다.
 
-### 5-3. 현재 부착 현황 (25건)
+### 5-3. 현재 부착 현황
 
 | 파일 | action |
 |---|---|
@@ -260,7 +267,7 @@ ORDER BY occurred_at DESC;
   권한 모델이 도입되면: ① 해당 엔드포인트에 admin 의존성 추가 → audit actor 자동 채워짐,
   ② spec의 `user.role_change`가 의미를 갖게 됨, ③ 계층 B의 `User` 권한 필드 추적 강화.
 
-### 8-2. 엔드포인트가 없어 미부착인 spec 행동
+### 8-2. 엔드포인트가 없어 미부착인 후보 행동
 
 `workflow.delete`, `connection.delete`, `credential.update`는 해당 라우트가 아직 없고,
 `user.invite`/`user.role_change`는 `users.py`가 비어 있어 부착 대상이 없습니다.
@@ -276,7 +283,7 @@ ORDER BY occurred_at DESC;
 배포 실행(`run.py`)은 로그인 유저가 아니라 `app.auth_secret`(공유 시크릿) 또는 익명으로
 호출되어 `@audit` 대상이 아닙니다. "실행 사실"은 기존 `WorkflowRun`이 추적하나, **외부
 호출자 IP·인증 실패(시크릿 brute-force) 같은 보안 접근 감사는 미적용**입니다. 필요 시
-명시적 `record()`(`deployment.run` / `deployment.run_denied`)와 `ActorType`에
+명시적 `record_audit()`(`deployment.run` / `deployment.run_denied`)와 `ActorType`에
 `api`/`anonymous` 추가로 확장할 수 있습니다.
 
 ### 8-5. 기타 제약
@@ -284,7 +291,7 @@ ORDER BY occurred_at DESC;
 - **리스너 등록 범위**: 현재 **gateway**에만 등록. 워커가 추적 대상 모델을 직접
   변경하는 경우 해당 워커에도 `register_audit_listeners()` 호출이 필요합니다.
 - **범위 밖**(추후): 위변조 방지(해시 체인), 조회 API/대시보드, 보관 정책·파티셔닝,
-  검색엔진 미러링. (spec 8장)
+  검색엔진 미러링.
 
 ---
 
@@ -295,7 +302,7 @@ ORDER BY occurred_at DESC;
 - **마이그레이션**: alembic 단일 head 연결 확인, 오프라인 SQL로 `audit_logs` 테이블·
   enum·인덱스·`ON DELETE SET NULL` FK DDL 및 다운그레이드 렌더링 확인.
 - **계층 A 데코레이터**(런타임 스모크): FastAPI 시그니처 보존(의존성 주입 유지),
-  record 발행 시 actor 스냅샷·target·ip 포함, contextvar 세팅/정리, 예외 시 `failure`
+  `record_audit` 발행 시 actor 스냅샷·target·ip 포함, contextvar 세팅/정리, 예외 시 `failure`
   기록 후 재전파.
 - **계층 B 마스킹**(런타임): `Connection`/`LLMCredential` 민감 필드가 `***changed***`로
   치환되고 일반 필드는 보존됨.
