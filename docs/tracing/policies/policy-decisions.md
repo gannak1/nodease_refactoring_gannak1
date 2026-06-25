@@ -89,6 +89,47 @@ workflow_runs.deployment_id
 - 자동 redacted downgrade는 명시 정책이 있을 때만 허용한다.
 - raw payload 조회 시도는 허용/차단 모두 기록한다.
 
+### RBAC team permission 연동
+
+Context:
+
+- `organization`, `team_permission`, `user_team_permissions`, `workflow_team_permissions` 모델이 추가되었다.
+- Tracing 접근 제어는 controller가 아니라 `TraceAccessService`와 `TraceRbacService` 경계에서 수행해야 한다.
+- raw payload는 강한 권한과 visibility policy를 동시에 만족할 때만 열어야 한다.
+
+Options considered:
+
+- `team_permission.auth_state = admin`을 전역 tracing system admin으로 승격한다.
+- team permission은 workflow/app 범위 권한으로만 해석하고, 전역 system admin은 별도 경계를 유지한다.
+- RBAC 연결을 후속으로 미루고 기존 app owner만 유지한다.
+
+Final decision:
+
+- team permission은 workflow scoped tracing 권한으로만 해석한다.
+- `read`는 metadata view 조회만 허용한다.
+- `write`, `execute`, `admin`은 visibility policy가 허용할 때 redacted payload view를 허용한다.
+- `admin`은 visibility policy가 허용할 때 raw payload view를 허용한다.
+- `team_permission.auth_state = admin`은 global/organization/app policy 변경 권한을 주지 않는다.
+
+Rationale:
+
+- team permission은 특정 workflow와 연결되는 모델이므로 전역 system admin으로 승격하면 권한 범위가 과도하게 넓어진다.
+- raw payload는 원문성 데이터이므로 RBAC 권한과 visibility policy를 모두 만족해야 한다.
+- 기존 app owner 판별(`apps.created_by`)과 system admin provider 경계를 유지하면 기존 API와 운영 정책을 깨지 않는다.
+
+Affected files:
+
+- `apps/shared/services/tracing/rbac.py`
+- `apps/shared/services/tracing/access.py`
+- `apps/shared/tests/services/test_tracing_access.py`
+- `docs/tracing/policies/access-control-policy.md`
+- `docs/data-model/system-data-model-design.md`
+
+Follow-up review notes:
+
+- 전역 system admin 모델이 별도 확정되면 `TraceRbacProvider.is_system_admin()` 구현을 교체한다.
+- payload kind별 더 세분화된 RBAC 정책이 필요하면 `auth_state`만으로 판단하지 않고 별도 policy column 또는 mapping table을 추가 검토한다.
+
 ## Policy scope
 
 정책 우선순위:

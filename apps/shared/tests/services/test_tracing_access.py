@@ -33,7 +33,7 @@ def test_run_user_id_does_not_grant_app_owner_access(monkeypatch):
     monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
     monkeypatch.setattr(
         "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
-        lambda db, app_id=None: ResolvedVisibilityPolicy(),
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(),
     )
 
     decision = TraceAccessService.check_trace_access(None, run, user)
@@ -54,7 +54,7 @@ def test_app_owner_metadata_access_uses_app_relationship(monkeypatch):
     monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: True)
     monkeypatch.setattr(
         "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
-        lambda db, app_id=None: ResolvedVisibilityPolicy(),
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(),
     )
 
     decision = TraceAccessService.check_trace_access(None, run, user)
@@ -80,7 +80,7 @@ def test_raw_access_denied_by_default_for_system_admin(monkeypatch):
     monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
     monkeypatch.setattr(
         "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
-        lambda db, app_id=None: ResolvedVisibilityPolicy(),
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(),
     )
 
     decision = TraceAccessService.check_trace_access(None, run, user, view_level="raw")
@@ -138,7 +138,7 @@ def test_system_admin_policy_takes_priority_over_owner_policy(monkeypatch):
     monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: True)
     monkeypatch.setattr(
         "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
-        lambda db, app_id=None: ResolvedVisibilityPolicy(
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(
             owner_raw_payload_access_enabled=True,
             admin_raw_payload_access_enabled=False,
         ),
@@ -156,6 +156,225 @@ def test_system_admin_requires_rbac_provider():
     user = SimpleNamespace(id=uuid.uuid4(), role="admin", is_system_admin=True)
 
     assert TraceAccessService.is_system_admin(None, user) is False
+
+
+def test_trace_rbac_service_selects_highest_workflow_auth_state():
+    class FakeQuery:
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [("read",), ("execute",), ("unknown",)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    auth_state = TraceRbacService.get_workflow_auth_state(
+        FakeDb(),
+        SimpleNamespace(id=uuid.uuid4()),
+        workflow_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert auth_state == "execute"
+
+
+def test_rbac_read_grants_metadata_access(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=workflow_id)
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(),
+    )
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        TraceAccessService,
+        "resolve_trace_organization_id",
+        lambda db, trace, app, workflow: organization_id,
+    )
+    monkeypatch.setattr(
+        TraceRbacService,
+        "get_workflow_auth_state",
+        lambda db, actor, workflow, organization_id=None: "read",
+    )
+
+    decision = TraceAccessService.check_trace_access(None, run, user)
+
+    assert decision.allowed is True
+    assert decision.reason_code == "rbac_metadata"
+    assert decision.rbac_auth_state == "read"
+
+
+def test_rbac_read_does_not_grant_redacted_payload(monkeypatch):
+    app_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(
+            owner_redacted_payload_access_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(
+        TraceRbacService,
+        "get_workflow_auth_state",
+        lambda db, actor, workflow, organization_id=None: "read",
+    )
+
+    decision = TraceAccessService.check_trace_access(
+        None, run, user, view_level="redacted"
+    )
+
+    assert decision.allowed is False
+    assert decision.reason_code == "rbac_redacted_payload_access_disabled"
+
+
+def test_rbac_write_grants_redacted_payload_when_policy_allows(monkeypatch):
+    app_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(
+            owner_redacted_payload_access_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(
+        TraceRbacService,
+        "get_workflow_auth_state",
+        lambda db, actor, workflow, organization_id=None: "write",
+    )
+
+    decision = TraceAccessService.check_trace_access(
+        None, run, user, view_level="redacted"
+    )
+
+    assert decision.allowed is True
+    assert decision.reason_code == "rbac_redacted"
+
+
+def test_rbac_admin_raw_access_still_requires_visibility_policy(monkeypatch):
+    app_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(
+            owner_raw_payload_access_enabled=False,
+        ),
+    )
+    monkeypatch.setattr(
+        TraceRbacService,
+        "get_workflow_auth_state",
+        lambda db, actor, workflow, organization_id=None: "admin",
+    )
+
+    decision = TraceAccessService.check_trace_access(None, run, user, view_level="raw")
+
+    assert decision.allowed is False
+    assert decision.reason_code == "rbac_raw_payload_access_disabled"
+
+
+def test_rbac_admin_raw_access_allowed_when_policy_allows(monkeypatch):
+    app_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(
+            owner_raw_payload_access_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(
+        TraceRbacService,
+        "get_workflow_auth_state",
+        lambda db, actor, workflow, organization_id=None: "admin",
+    )
+
+    decision = TraceAccessService.check_trace_access(None, run, user, view_level="raw")
+
+    assert decision.allowed is True
+    assert decision.reason_code == "rbac_raw"
+
+
+def test_rbac_lookup_failure_does_not_open_regular_user_access(monkeypatch):
+    app_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        lambda db, app_id=None, organization_id=None: ResolvedVisibilityPolicy(),
+    )
+
+    def raise_rbac_error(db, actor, workflow, organization_id=None):
+        raise RuntimeError("rbac unavailable")
+
+    monkeypatch.setattr(
+        TraceRbacService,
+        "get_workflow_auth_state",
+        raise_rbac_error,
+    )
+
+    decision = TraceAccessService.check_trace_access(None, run, user)
+
+    assert decision.allowed is False
+    assert decision.reason_code == "regular_user_trace_access_denied"
+    assert (
+        TraceObservabilityService.get_local_counter(
+            "trace_access_context_failed",
+            "rbac_context_unavailable",
+            "all",
+        )
+        == 1
+    )
+
+
+def test_visibility_policy_receives_resolved_organization_id(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=workflow_id)
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    def resolve_visibility_policy(db, app_id=None, organization_id=None):
+        captured["app_id"] = app_id
+        captured["organization_id"] = organization_id
+        return ResolvedVisibilityPolicy()
+
+    monkeypatch.setattr(
+        "apps.shared.services.tracing.access.TracePolicyService.resolve_visibility_policy",
+        resolve_visibility_policy,
+    )
+    monkeypatch.setattr(TraceAccessService, "is_app_owner", lambda db, app, actor: False)
+    monkeypatch.setattr(
+        TraceAccessService,
+        "resolve_trace_organization_id",
+        lambda db, trace, app, workflow: organization_id,
+    )
+
+    TraceAccessService.check_trace_access(None, run, user)
+
+    assert captured["app_id"] == app_id
+    assert captured["organization_id"] == organization_id
 
 
 def test_llm_span_hides_io_without_prompt_completion_policy(monkeypatch):

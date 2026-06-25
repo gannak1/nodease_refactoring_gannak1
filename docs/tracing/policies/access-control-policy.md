@@ -163,7 +163,15 @@ Tracing은 다음 interface만 기대한다.
 - 현재 사용자가 redacted payload를 조회할 수 있는지 확인
 - 현재 사용자가 raw payload를 조회할 수 있는지 확인
 
-1차 구현의 기본 app owner 판별은 `apps.created_by`를 사용한다. `team_permission.auth_state` 기반 공동 소유권과 payload view별 세부 권한은 후속 RBAC 연동에서 추가한다.
+1차 구현의 기본 app owner 판별은 `apps.created_by`를 사용한다. 추가로 `team_permission.auth_state` 기반 workflow scoped RBAC 접근을 지원한다.
+
+RBAC 권한 매핑:
+
+- `read`: metadata view 조회 가능
+- `write`, `execute`, `admin`: visibility policy가 허용하면 redacted payload view 조회 가능
+- `admin`: visibility policy가 허용하면 raw payload view 조회 가능
+
+team permission의 `admin`은 workflow/app 범위 권한으로만 해석한다. 전역 tracing system admin으로 승격하지 않는다. global/organization/app policy 변경 권한은 별도 system admin 경계를 계속 사용한다.
 
 ## Access event 기록 범위
 

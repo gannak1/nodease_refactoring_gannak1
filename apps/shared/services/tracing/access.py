@@ -59,18 +59,22 @@ class TraceAccessDecision:
     app_id: Optional[uuid.UUID] = None
     is_system_admin: bool = False
     is_app_owner: bool = False
+    rbac_auth_state: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class TraceAccessContext:
     app_id: Optional[uuid.UUID]
+    workflow_id: Optional[uuid.UUID]
+    organization_id: Optional[uuid.UUID]
     visibility: ResolvedVisibilityPolicy
     is_system_admin: bool
     is_app_owner: bool
+    rbac_auth_state: Optional[str] = None
 
 
 class TraceAccessService:
-    """향후 RBAC 연동을 위한 추적 접근 제어 경계."""
+    """추적 접근 정책과 RBAC 결과를 조합하는 접근 제어 경계."""
 
     @staticmethod
     def is_system_admin(db: Session, user: Any) -> bool:
@@ -104,6 +108,46 @@ class TraceAccessService:
         return bool(app and _same_uuid(app.created_by, getattr(user, "id", None)))
 
     @staticmethod
+    def resolve_trace_workflow_id(
+        db: Session, run: WorkflowRun, app_id: Optional[uuid.UUID]
+    ) -> Optional[uuid.UUID]:
+        workflow_id = getattr(run, "workflow_id", None)
+        if workflow_id:
+            try:
+                return uuid.UUID(str(workflow_id))
+            except (TypeError, ValueError):
+                return None
+
+        if app_id is None or db is None:
+            return None
+        app = db.query(App).filter(App.id == app_id).first()
+        if app and app.workflow_id:
+            return app.workflow_id
+        return None
+
+    @staticmethod
+    def resolve_trace_organization_id(
+        db: Session,
+        run: WorkflowRun,
+        app_id: Optional[uuid.UUID],
+        workflow_id: Optional[uuid.UUID],
+    ) -> Optional[uuid.UUID]:
+        if db is None:
+            return None
+
+        if app_id is not None:
+            app = db.query(App).filter(App.id == app_id).first()
+            if app and app.organization_id:
+                return app.organization_id
+
+        if workflow_id is not None:
+            workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+            if workflow and workflow.organization_id:
+                return workflow.organization_id
+
+        return None
+
+    @staticmethod
     def check_trace_access(
         db: Session,
         run: WorkflowRun,
@@ -131,7 +175,9 @@ class TraceAccessService:
                 context, view_level, is_prompt_completion
             )
 
-        return TraceAccessService._regular_user_decision(context)
+        return TraceAccessService._rbac_decision(
+            context, view_level, is_prompt_completion
+        )
 
     @staticmethod
     def _resolve_context(
@@ -146,7 +192,24 @@ class TraceAccessService:
             return TraceAccessDecision(False, "trace_app_context_unavailable")
 
         try:
-            visibility = TracePolicyService.resolve_visibility_policy(db, app_id=app_id)
+            workflow_id = TraceAccessService.resolve_trace_workflow_id(db, run, app_id)
+            organization_id = TraceAccessService.resolve_trace_organization_id(
+                db, run, app_id, workflow_id
+            )
+        except Exception as error:
+            TraceObservabilityService.record_trace_access_context_failed(
+                "trace_resource_context_unavailable", app_id=app_id, error=error
+            )
+            return TraceAccessDecision(
+                False, "trace_resource_context_unavailable", app_id
+            )
+
+        try:
+            visibility = TracePolicyService.resolve_visibility_policy(
+                db,
+                app_id=app_id,
+                organization_id=organization_id,
+            )
         except Exception as error:
             TraceObservabilityService.record_trace_access_context_failed(
                 "visibility_policy_unavailable", app_id=app_id, error=error
@@ -169,11 +232,28 @@ class TraceAccessService:
                 is_system_admin=is_admin,
             )
 
+        try:
+            rbac_auth_state = TraceRbacService.get_workflow_auth_state(
+                db,
+                user,
+                workflow_id,
+                organization_id=organization_id,
+            )
+        except Exception as error:
+            # RBAC 조회 실패는 추가 권한을 열지 않는 방식으로 닫고, 기본 owner/admin 판단은 유지합니다.
+            TraceObservabilityService.record_trace_access_context_failed(
+                "rbac_context_unavailable", app_id=app_id, error=error
+            )
+            rbac_auth_state = None
+
         return TraceAccessContext(
             app_id=app_id,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
             visibility=visibility,
             is_system_admin=is_admin,
             is_app_owner=is_owner,
+            rbac_auth_state=rbac_auth_state,
         )
 
     @staticmethod
@@ -190,6 +270,7 @@ class TraceAccessService:
                 context.app_id,
                 True,
                 context.is_app_owner,
+                context.rbac_auth_state,
             )
         if not visibility.admin_raw_payload_access_enabled:
             return TraceAccessDecision(
@@ -198,6 +279,7 @@ class TraceAccessService:
                 context.app_id,
                 True,
                 context.is_app_owner,
+                context.rbac_auth_state,
             )
         if is_prompt_completion and not visibility.admin_prompt_completion_access_enabled:
             return TraceAccessDecision(
@@ -206,9 +288,15 @@ class TraceAccessService:
                 context.app_id,
                 True,
                 context.is_app_owner,
+                context.rbac_auth_state,
             )
         return TraceAccessDecision(
-            True, "system_admin_raw", context.app_id, True, context.is_app_owner
+            True,
+            "system_admin_raw",
+            context.app_id,
+            True,
+            context.is_app_owner,
+            context.rbac_auth_state,
         )
 
     @staticmethod
@@ -220,7 +308,12 @@ class TraceAccessService:
         visibility = context.visibility
         if visibility.deny_owner_trace_access:
             return TraceAccessDecision(
-                False, "owner_trace_access_denied", context.app_id, False, True
+                False,
+                "owner_trace_access_denied",
+                context.app_id,
+                False,
+                True,
+                context.rbac_auth_state,
             )
         if view_level == VIEW_METADATA:
             return TraceAccessDecision(
@@ -231,6 +324,7 @@ class TraceAccessService:
                 context.app_id,
                 False,
                 True,
+                context.rbac_auth_state,
             )
         if view_level == VIEW_REDACTED:
             if (
@@ -243,6 +337,7 @@ class TraceAccessService:
                     context.app_id,
                     False,
                     True,
+                    context.rbac_auth_state,
                 )
             return TraceAccessDecision(
                 visibility.owner_redacted_payload_access_enabled,
@@ -252,6 +347,7 @@ class TraceAccessService:
                 context.app_id,
                 False,
                 True,
+                context.rbac_auth_state,
             )
         if is_prompt_completion and not visibility.owner_prompt_completion_access_enabled:
             return TraceAccessDecision(
@@ -260,6 +356,7 @@ class TraceAccessService:
                 context.app_id,
                 False,
                 True,
+                context.rbac_auth_state,
             )
         return TraceAccessDecision(
             visibility.owner_raw_payload_access_enabled,
@@ -269,12 +366,84 @@ class TraceAccessService:
             context.app_id,
             False,
             True,
+            context.rbac_auth_state,
         )
 
     @staticmethod
-    def _regular_user_decision(context: TraceAccessContext) -> TraceAccessDecision:
+    def _rbac_decision(
+        context: TraceAccessContext,
+        view_level: str,
+        is_prompt_completion: bool,
+    ) -> TraceAccessDecision:
+        visibility = context.visibility
+        auth_state = context.rbac_auth_state
+
+        if not auth_state:
+            return TraceAccessDecision(
+                False,
+                "regular_user_trace_access_denied",
+                context.app_id,
+                rbac_auth_state=auth_state,
+            )
+        if visibility.deny_owner_trace_access:
+            return TraceAccessDecision(
+                False,
+                "rbac_trace_access_denied",
+                context.app_id,
+                rbac_auth_state=auth_state,
+            )
+        if view_level == VIEW_METADATA:
+            allowed = (
+                visibility.owner_trace_access_enabled
+                and TraceRbacService.auth_state_at_least(auth_state, "read")
+            )
+            return TraceAccessDecision(
+                allowed,
+                "rbac_metadata"
+                if allowed
+                else "rbac_metadata_access_disabled",
+                context.app_id,
+                rbac_auth_state=auth_state,
+            )
+        if view_level == VIEW_REDACTED:
+            if (
+                is_prompt_completion
+                and not visibility.owner_prompt_completion_access_enabled
+            ):
+                return TraceAccessDecision(
+                    False,
+                    "rbac_prompt_completion_access_disabled",
+                    context.app_id,
+                    rbac_auth_state=auth_state,
+                )
+            allowed = (
+                visibility.owner_redacted_payload_access_enabled
+                and TraceRbacService.auth_state_at_least(auth_state, "write")
+            )
+            return TraceAccessDecision(
+                allowed,
+                "rbac_redacted"
+                if allowed
+                else "rbac_redacted_payload_access_disabled",
+                context.app_id,
+                rbac_auth_state=auth_state,
+            )
+        if is_prompt_completion and not visibility.owner_prompt_completion_access_enabled:
+            return TraceAccessDecision(
+                False,
+                "rbac_prompt_completion_access_disabled",
+                context.app_id,
+                rbac_auth_state=auth_state,
+            )
+        allowed = (
+            visibility.owner_raw_payload_access_enabled
+            and TraceRbacService.auth_state_at_least(auth_state, "admin")
+        )
         return TraceAccessDecision(
-            False, "regular_user_trace_access_denied", context.app_id
+            allowed,
+            "rbac_raw" if allowed else "rbac_raw_payload_access_disabled",
+            context.app_id,
+            rbac_auth_state=auth_state,
         )
 
     @staticmethod

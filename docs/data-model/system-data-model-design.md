@@ -229,7 +229,7 @@ Tracing 관점:
 - policy scope는 `global`, `organization`, `app`을 지원한다.
 - organization scope policy는 `organization_id`를 기준으로 해석한다.
 - RBAC 모델은 존재하지만 Tracing 1차 구현의 기본 app owner 판별은 `apps.created_by`를 사용한다.
-- team permission 기반 공동 소유권과 세부 payload 권한 연동은 `TraceRbacService` 경계에서 후속 통합한다.
+- team permission 기반 workflow scoped trace 조회 권한은 `TraceRbacService` 경계에서 통합한다.
 
 ## Audit 모델
 
@@ -311,7 +311,7 @@ workflow_runs.deployment_id
 
 - `workflow_runs.user_id`는 실행자 식별에만 사용한다.
 - `apps.created_by`는 1차 구현의 기본 app owner다.
-- organization/team permission 기반 공동 소유권은 RBAC 연동 단계에서 `TraceRbacService`를 통해 추가한다.
+- organization/team permission 기반 workflow scoped 접근은 `TraceRbacService`를 통해 추가한다.
 - system admin deny 정책은 app owner 권한보다 우선한다.
 
 ## Tracing 확장 모델
@@ -541,7 +541,7 @@ Moduly Guardrail node는 일반 span으로 저장한다.
 
 ## 후속 확장 후보
 
-- Trace visibility policy와 organization/team permission 연동
+- Trace visibility policy와 organization/team permission의 세부 관리 UI 연동
 - OpenTelemetry span id와 domain span id 매핑
 - trace summary materialized view
 - retention purge worker
