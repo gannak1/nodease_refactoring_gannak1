@@ -13,18 +13,8 @@ import { LogTab } from './tabs/LogTab';
 import { MonitoringTab } from './tabs/MonitoringTab';
 import NodeLibrarySidebar from './NodeLibrarySidebar';
 import { ViewMode } from './EditorViewSwitcher';
-import {
-  type NodeDefinition,
-  getNodeDefinition,
-} from '../../config/nodeRegistry';
-import { NoteNode, AppNode } from '../../types/Nodes';
-import {
-  findFirstAvailableHandle,
-  createNewCaseForConnection,
-} from '../../utils/conditionNodeHelpers';
 import { calculateAutoLayout } from '../../utils/layoutHelpers';
 import { useDeployment } from '../../hooks/useDeployment';
-import { arrangeConditionNodeChildren } from '../../utils/arrangeConditionNodes';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useNodeCreation } from '../../hooks/useNodeCreation';
 import { MemoryModeToggle, useMemoryMode } from './memory/MemoryModeControls';
@@ -104,11 +94,9 @@ export default function NodeCanvas({
     updateWorkflowViewport,
     setNodes,
     updateNodeData,
+    addNode,
     isVersionHistoryOpen,
     toggleVersionHistory,
-    projectName,
-    projectIcon,
-    projectDescription,
     isFullscreen,
     setEdges,
     isSettingsOpen,
@@ -212,16 +200,12 @@ export default function NodeCanvas({
     handleTestRunFromContext,
     handleSelectNodeFromContext,
   } = useContextMenu({
-    nodes,
-    setNodes,
     triggerWorkflowRun: useWorkflowStore.getState().triggerWorkflowRun,
     setSearchModalContext,
   });
 
   // Node creation hook
   const { onDrop, handleAddNodeFromLibrary } = useNodeCreation({
-    nodes,
-    setNodes,
     edges,
     setEdges,
     previewState,
@@ -278,7 +262,7 @@ export default function NodeCanvas({
 
   const handleSelectApp = useCallback(
     async (app: App & { active_deployment_id?: string; version?: number }) => {
-      const newNode: Node = {
+      const baseNode: Node = {
         id: `workflow-${Date.now()}`,
         type: 'workflowNode',
         position:
@@ -301,8 +285,7 @@ export default function NodeCanvas({
           outputs: [],
         } as WorkflowNodeData,
       };
-
-      setNodes([...nodes, newNode]);
+      const newNode = addNode(baseNode);
       setSearchModalContext({ isOpen: false });
 
       if (app.active_deployment_id) {
@@ -321,11 +304,10 @@ export default function NodeCanvas({
       }
     },
     [
-      nodes,
-      setNodes,
       screenToFlowPosition,
       updateNodeData,
       searchModalContext.position,
+      addNode,
     ],
   );
 

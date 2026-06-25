@@ -23,13 +23,11 @@ interface BottomPanelProps {
 export default function BottomPanel({
   onCenterNodes,
   isPanelOpen = false,
-  onOpenAppSearch,
 }: BottomPanelProps) {
   const {
     interactiveMode,
     setInteractiveMode,
-    nodes,
-    setNodes,
+    addNode,
     toggleFullscreen,
     isFullscreen,
   } = useWorkflowStore();
@@ -148,7 +146,7 @@ export default function BottomPanel({
         },
       };
 
-      setNodes([...nodes, newNote]);
+      addNode(newNote);
       setIsAddingNote(false);
     };
 
@@ -167,7 +165,7 @@ export default function BottomPanel({
       window.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleEscape);
     };
-  }, [isAddingNote, nodes, setNodes, screenToFlowPosition]);
+  }, [isAddingNote, addNode, screenToFlowPosition]);
 
   const handleFullscreen = useCallback(() => {
     toggleFullscreen();

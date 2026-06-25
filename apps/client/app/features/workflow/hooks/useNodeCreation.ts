@@ -7,10 +7,9 @@ import {
   createNewCaseForConnection,
 } from '../utils/conditionNodeHelpers';
 import { arrangeConditionNodeChildren } from '../utils/arrangeConditionNodes';
+import { useWorkflowStore } from '../store/useWorkflowStore';
 
 interface UseNodeCreationProps {
-  nodes: AppNode[];
-  setNodes: (nodes: AppNode[]) => void;
   edges: Edge[];
   setEdges: (edges: Edge[]) => void;
   previewState: {
@@ -26,8 +25,6 @@ interface UseNodeCreationProps {
 }
 
 export function useNodeCreation({
-  nodes,
-  setNodes,
   edges,
   setEdges,
   previewState,
@@ -35,6 +32,7 @@ export function useNodeCreation({
   setSearchModalContext,
 }: UseNodeCreationProps) {
   const { screenToFlowPosition } = useReactFlow();
+  const addNode = useWorkflowStore((state) => state.addNode);
 
   // Handle node drop from library
   const onDrop = useCallback(
@@ -61,15 +59,12 @@ export function useNodeCreation({
         return;
       }
 
-      // Remove ghost node and create real node
-      const filteredNodes = nodes.filter((n) => n.id !== 'GHOST');
-
-      const newNode: AppNode = {
+      const baseNode = {
         id: `${nodeDef.id}-${Date.now()}`,
-        type: nodeDef.type as any,
-        data: nodeDef.defaultData() as any,
+        type: nodeDef.type,
+        data: nodeDef.defaultData(),
         position,
-      };
+      } as unknown as AppNode;
 
       // Auto-connect if there's a nearest node
       let sourceHandle: string | undefined;
@@ -97,47 +92,46 @@ export function useNodeCreation({
         }
       }
 
-      // Update nodes: add new node and update condition node if needed
-      let nodesToSet: AppNode[];
-      if (updatedConditionNode) {
-        const updatedNodes = filteredNodes.map((node) =>
-          node.id === updatedConditionNode!.id ? updatedConditionNode! : node,
-        );
-        nodesToSet = [...updatedNodes, newNode];
-      } else {
-        nodesToSet = [...filteredNodes, newNode];
-      }
+      const newNode = addNode(baseNode, (currentNodes, numberedNode) => {
+        const filteredNodes = currentNodes.filter((n) => n.id !== 'GHOST');
+        let nodesToSet: AppNode[];
 
-      // If connected to a condition node, arrange all its children
-      if (
-        previewState.nearestNode &&
-        previewState.nearestNode.type === 'conditionNode'
-      ) {
-        // Create temporary edges array to include the new edge
-        const tempEdges = previewState.nearestNode
-          ? [
-              ...edges,
-              {
-                id: `temp-${Date.now()}`,
-                source: previewState.isRight
-                  ? previewState.nearestNode.id
-                  : newNode.id,
-                target: previewState.isRight
-                  ? newNode.id
-                  : previewState.nearestNode.id,
-                sourceHandle: sourceHandle || undefined,
-              },
-            ]
-          : edges;
+        if (updatedConditionNode) {
+          const updatedNodes = filteredNodes.map((node) =>
+            node.id === updatedConditionNode!.id ? updatedConditionNode! : node,
+          );
+          nodesToSet = [...updatedNodes, numberedNode];
+        } else {
+          nodesToSet = [...filteredNodes, numberedNode];
+        }
 
-        nodesToSet = arrangeConditionNodeChildren(
-          updatedConditionNode || previewState.nearestNode,
-          nodesToSet,
-          tempEdges as Edge[],
-        );
-      }
+        if (
+          previewState.nearestNode &&
+          previewState.nearestNode.type === 'conditionNode'
+        ) {
+          const tempEdges = [
+            ...edges,
+            {
+              id: `temp-${Date.now()}`,
+              source: previewState.isRight
+                ? previewState.nearestNode.id
+                : numberedNode.id,
+              target: previewState.isRight
+                ? numberedNode.id
+                : previewState.nearestNode.id,
+              sourceHandle: sourceHandle || undefined,
+            },
+          ];
 
-      setNodes(nodesToSet);
+          nodesToSet = arrangeConditionNodeChildren(
+            updatedConditionNode || previewState.nearestNode,
+            nodesToSet,
+            tempEdges as Edge[],
+          );
+        }
+
+        return nodesToSet;
+      });
 
       // Create edge if there's a nearest node
       if (previewState.nearestNode) {
@@ -161,13 +155,12 @@ export function useNodeCreation({
     },
     [
       screenToFlowPosition,
-      setNodes,
-      nodes,
       resetPreview,
       previewState,
       setEdges,
       edges,
       setSearchModalContext,
+      addNode,
     ],
   );
 
@@ -182,16 +175,15 @@ export function useNodeCreation({
         y: window.innerHeight / 2,
       });
 
-      const newNode: AppNode = {
+      const baseNode = {
         id: `${nodeDef.id}-${Date.now()}`,
-        type: nodeDef.type as any,
-        data: nodeDef.defaultData() as any,
+        type: nodeDef.type,
+        data: nodeDef.defaultData(),
         position: centerPos,
-      };
-
-      setNodes([...nodes, newNode]);
+      } as unknown as AppNode;
+      addNode(baseNode);
     },
-    [screenToFlowPosition, setNodes, nodes],
+    [screenToFlowPosition, addNode],
   );
 
   return {
