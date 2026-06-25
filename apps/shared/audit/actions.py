@@ -12,6 +12,7 @@ class AuditAction:
     USER_LOGIN = "user.login"
     USER_LOGIN_FAILED = "user.login_failed"
     USER_LOGOUT = "user.logout"
+    AUTH_PERMISSION_DENIED = "auth.permission_denied"
 
     # 앱/워크플로우/배포: 사용자가 워크플로우 운영 단위에서 수행한 행동.
     APP_CREATE = "app.create"

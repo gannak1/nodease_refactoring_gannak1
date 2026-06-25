@@ -34,15 +34,19 @@ else:
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from apps.gateway.api.api import api_router
 from apps.gateway.lifespan import lifespan  # Import lifespan from module
+from apps.shared.audit import record_audit
+from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import (
     clear_current_metadata,
+    get_current_metadata,
     set_current_metadata,
 )
 
@@ -67,6 +71,30 @@ async def add_request_id(request: Request, call_next):
         return response
     finally:
         clear_current_metadata(token)
+
+
+@app.exception_handler(HTTPException)
+async def audit_permission_denied(request: Request, exc: HTTPException):
+    if request.method != "OPTIONS" and exc.status_code in (401, 403):
+        record_audit(
+            action=AuditAction.AUTH_PERMISSION_DENIED,
+            category="action",
+            actor_type="system",
+            status="failure",
+            metadata={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": exc.status_code,
+                "detail": str(exc.detail),
+                **get_current_metadata(),
+            },
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
 
 origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 origins = origins_str.split(",")
