@@ -28,18 +28,26 @@ interface BaseNodeProps {
 }
 
 export const SmartHandle: React.FC<
-  HandleProps & { className?: string; showPlusButton?: boolean }
-> = ({ className, showPlusButton = true, ...props }) => {
+  HandleProps & {
+    className?: string;
+    displayNumber?: number;
+    showPlusButton?: boolean;
+  }
+> = ({ className, displayNumber, showPlusButton = true, ...props }) => {
   return (
     <Handle
       {...props}
       className={cn(
         // 히트 영역은 투명하게 유지하되, 드래그하기 쉽도록 크기 확보
-        '!w-6 !h-6 !bg-transparent !border-0 rounded-full z-50 flex items-center justify-center',
+        '!w-8 !h-8 !bg-transparent !border-0 rounded-full z-50 flex items-center justify-center',
         className,
       )}
     >
-      {showPlusButton && (
+      {typeof displayNumber === 'number' ? (
+        <div className="flex h-8 min-w-8 items-center justify-center rounded-full border-2 border-white bg-gray-900 px-2 text-xs font-bold tabular-nums text-white shadow-md">
+          {displayNumber}
+        </div>
+      ) : showPlusButton ? (
         <>
           {/* 호버 시 나타나는 플러스 버튼 */}
           <div
@@ -70,7 +78,7 @@ export const SmartHandle: React.FC<
             />
           </div>
         </>
-      )}
+      ) : null}
     </Handle>
   );
 };
@@ -220,6 +228,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
             position={Position.Left}
             className="-ml-2"
             style={getHandleStyle('left')}
+            displayNumber={data.displayNumber}
             showPlusButton={showTargetHandle}
           />
         )}
@@ -238,7 +247,13 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
           )}
 
           <div className="flex flex-col">
-            <h3 className={cn("text-lg font-bold text-gray-900 leading-none mb-1", titleClassName)} title={data.title}>
+            <h3
+              className={cn(
+                'text-lg font-bold text-gray-900 leading-none mb-1',
+                titleClassName,
+              )}
+              title={data.title}
+            >
               {data.title || 'Untitled Node'}
             </h3>
           </div>
@@ -253,6 +268,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
             position={Position.Right}
             className="-mr-2"
             style={getHandleStyle('right')}
+            displayNumber={data.displayNumber}
             showPlusButton={showSourceHandle}
           />
         )}

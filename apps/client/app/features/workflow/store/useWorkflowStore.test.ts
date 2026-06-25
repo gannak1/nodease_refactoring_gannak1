@@ -13,6 +13,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useWorkflowStore } from './useWorkflowStore';
+import { workflowApi } from '../api/workflowApi';
+import type { DeploymentResponse } from '../types/Deployment';
 import type { Node } from '../types/Workflow';
 import type { Edge, Connection } from '@xyflow/react';
 
@@ -28,7 +30,10 @@ vi.mock('../api/workflowApi', () => ({
 
 // 테스트용 초기 상태 저장 및 리셋 헬퍼
 const initialState = useWorkflowStore.getState();
-const resetStore = () => useWorkflowStore.setState(initialState, true);
+const resetStore = () => {
+  vi.clearAllMocks();
+  useWorkflowStore.setState(initialState, true);
+};
 
 // ============================================================================
 // 테스트용 Fixture 데이터
@@ -36,14 +41,15 @@ const resetStore = () => useWorkflowStore.setState(initialState, true);
 
 const createMockNode = (
   id: string,
-  type: Node['type'] = 'startNode',
+  type: NonNullable<Node['type']> = 'startNode',
   position = { x: 0, y: 0 },
-): Node => ({
-  id,
-  type,
-  position,
-  data: { title: `Node ${id}` } as any,
-});
+): Node =>
+  ({
+    id,
+    type,
+    position,
+    data: { title: `Node ${id}` } as Node['data'],
+  }) as Node;
 
 const createMockEdge = (id: string, source: string, target: string): Edge => ({
   id,
@@ -352,7 +358,7 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.nodes).toHaveLength(2);
     expect(state.edges).toHaveLength(1);
-    expect(state.features).toEqual({ key: 'value' });
+    expect(state.features).toMatchObject({ key: 'value' });
     expect(state.envVariables).toHaveLength(1);
   });
 
@@ -361,6 +367,10 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
 
     const state = useWorkflowStore.getState();
     expect(state.features).toEqual({ debug: true, logging: false });
+    expect(state.workflows[0].features).toEqual({
+      debug: true,
+      logging: false,
+    });
   });
 
   it('setEnvVariables로 환경 변수를 설정할 수 있다', () => {
@@ -393,12 +403,14 @@ describe('워크플로우 관리 테스트', () => {
           appId: 'app-1',
           nodes: [createMockNode('n1')],
           edges: [],
+          features: { nextNodeDisplayNumber: 10 },
         },
         {
           id: 'wf-2',
           appId: 'app-1',
           nodes: [createMockNode('n2')],
           edges: [],
+          features: { nextNodeDisplayNumber: 20 },
         },
       ],
       activeWorkflowId: 'wf-1',
@@ -410,13 +422,147 @@ describe('워크플로우 관리 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.activeWorkflowId).toBe('wf-2');
     expect(state.nodes[0].id).toBe('n2');
+    expect(state.features.nextNodeDisplayNumber).toBe(20);
+  });
+
+  it('setActiveWorkflowIdSafe는 로드된 대상 워크플로우의 nodes/edges/features를 반영한다', () => {
+    useWorkflowStore.setState({
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [createMockNode('n1')],
+          edges: [],
+          features: { nextNodeDisplayNumber: 10 },
+        },
+        {
+          id: 'wf-2',
+          appId: 'app-1',
+          nodes: [createMockNode('n2')],
+          edges: [],
+          features: { nextNodeDisplayNumber: 20 },
+        },
+      ],
+      activeWorkflowId: 'wf-1',
+      nodes: [createMockNode('draft-node')],
+      edges: [createMockEdge('edge-1', 'draft-node', 'n1')],
+      features: { nextNodeDisplayNumber: 10 },
+    });
+
+    useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-2');
+
+    const state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('wf-2');
+    expect(state.nodes[0].id).toBe('n2');
+    expect(state.edges).toEqual([]);
+    expect(state.features.nextNodeDisplayNumber).toBe(20);
+  });
+
+  it('setActiveWorkflowIdSafe는 대상 workflow가 없으면 id만 변경한다', () => {
+    const currentNodes = [createMockNode('draft-node')];
+    const currentEdges = [createMockEdge('edge-1', 'draft-node', 'n1')];
+
+    useWorkflowStore.setState({
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [createMockNode('n1')],
+          edges: [],
+          features: { nextNodeDisplayNumber: 10 },
+        },
+      ],
+      activeWorkflowId: 'wf-1',
+      nodes: currentNodes,
+      edges: currentEdges,
+      features: { nextNodeDisplayNumber: 10 },
+    });
+
+    useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-missing');
+
+    const state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('wf-missing');
+    expect(state.nodes).toBe(currentNodes);
+    expect(state.edges).toBe(currentEdges);
+    expect(state.features.nextNodeDisplayNumber).toBe(10);
+  });
+
+  it('inactive workflow 데이터가 먼저 로드된 뒤 safe active 전환 시 화면 store에 반영한다', () => {
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [createMockNode('wf-1-node')],
+          edges: [],
+          features: { nextNodeDisplayNumber: 10 },
+        },
+        {
+          id: 'wf-2',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [createMockNode('wf-1-node')],
+      edges: [],
+      features: { nextNodeDisplayNumber: 10 },
+    });
+
+    const wf2Nodes = [createMockNode('wf-2-node', 'answerNode')];
+    const wf2Edges = [createMockEdge('wf-2-edge', 'wf-2-node', 'wf-2-node')];
+
+    useWorkflowStore.getState().setWorkflowData(
+      {
+        nodes: wf2Nodes,
+        edges: wf2Edges,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        features: { nextNodeDisplayNumber: 42 },
+      },
+      'wf-2',
+    );
+
+    let state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('wf-1');
+    expect(state.nodes[0].id).toBe('wf-1-node');
+    expect(state.features.nextNodeDisplayNumber).toBe(10);
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'wf-2')?.features
+        .nextNodeDisplayNumber,
+    ).toBe(43);
+
+    useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-2');
+
+    state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('wf-2');
+    expect(state.nodes[0].id).toBe('wf-2-node');
+    expect(state.edges[0].id).toBe('wf-2-edge');
+    expect(state.features.nextNodeDisplayNumber).toBe(43);
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'wf-1')?.features
+        .nextNodeDisplayNumber,
+    ).toBe(10);
   });
 
   it('deleteWorkflow로 워크플로우를 삭제할 수 있다', () => {
     useWorkflowStore.setState({
       workflows: [
-        { id: 'wf-1', appId: 'app-1', nodes: [], edges: [] },
-        { id: 'wf-2', appId: 'app-1', nodes: [], edges: [] },
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 10 },
+        },
+        {
+          id: 'wf-2',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 20 },
+        },
       ],
       activeWorkflowId: 'wf-1',
     });
@@ -428,6 +574,7 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.workflows[0].id).toBe('wf-2');
     // 삭제된 워크플로우가 활성이었으면 다른 워크플로우로 전환
     expect(state.activeWorkflowId).toBe('wf-2');
+    expect(state.features.nextNodeDisplayNumber).toBe(20);
   });
 
   it('updateWorkflowViewport로 뷰포트를 업데이트할 수 있다', () => {
@@ -438,6 +585,7 @@ describe('워크플로우 관리 테스트', () => {
           appId: 'app-1',
           nodes: [],
           edges: [],
+          features: { nextNodeDisplayNumber: 1 },
           viewport: { x: 0, y: 0, zoom: 1 },
         },
       ],
@@ -449,6 +597,112 @@ describe('워크플로우 관리 테스트', () => {
 
     const state = useWorkflowStore.getState();
     expect(state.workflows[0].viewport).toEqual({ x: 50, y: 100, zoom: 2 });
+  });
+
+  it('addNode는 현재 nodes/features를 읽어 번호와 workflow features를 함께 갱신한다', () => {
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [createMockNode('n1')],
+          edges: [],
+          features: { nextNodeDisplayNumber: 3 },
+        },
+      ],
+      nodes: [
+        {
+          id: 'n1',
+          type: 'startNode',
+          position: { x: 0, y: 0 },
+          data: {
+            title: 'Node n1',
+            triggerType: 'manual',
+            variables: [],
+            displayNumber: 1,
+          },
+        } as Node,
+      ],
+      features: { nextNodeDisplayNumber: 3 },
+    });
+
+    const added = useWorkflowStore
+      .getState()
+      .addNode(createMockNode('n2', 'answerNode'));
+
+    const state = useWorkflowStore.getState();
+    expect(added.data.displayNumber).toBe(3);
+    expect(state.nodes[1].data.displayNumber).toBe(3);
+    expect(state.features.nextNodeDisplayNumber).toBe(4);
+    expect(state.workflows[0].features.nextNodeDisplayNumber).toBe(4);
+  });
+
+  it('restoreVersion은 snapshot 번호를 보정한 뒤 draft와 store에 반영한다', async () => {
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+    });
+
+    const version = {
+      id: 'deployment-1',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-06-25T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [
+          createMockNode('n1', 'startNode'),
+          createMockNode('n2', 'answerNode'),
+          createMockNode('note-1', 'note'),
+        ],
+        edges: [],
+        features: { nextNodeDisplayNumber: 1 },
+      },
+    } as DeploymentResponse;
+
+    await useWorkflowStore.getState().restoreVersion(version);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'n1',
+            data: expect.objectContaining({ displayNumber: 1 }),
+          }),
+          expect.objectContaining({
+            id: 'n2',
+            data: expect.objectContaining({ displayNumber: 2 }),
+          }),
+          expect.objectContaining({
+            id: 'note-1',
+            data: expect.not.objectContaining({
+              displayNumber: expect.any(Number),
+            }),
+          }),
+        ]),
+        features: expect.objectContaining({ nextNodeDisplayNumber: 3 }),
+      }),
+    );
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.data.displayNumber)).toEqual([
+      1,
+      2,
+      undefined,
+    ]);
+    expect(state.features.nextNodeDisplayNumber).toBe(3);
   });
 });
 

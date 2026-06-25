@@ -95,6 +95,7 @@ export default function NodeCanvas({
     updateWorkflowViewport,
     setNodes,
     updateNodeData,
+    addNode,
     isVersionHistoryOpen,
     toggleVersionHistory,
     isFullscreen,
@@ -204,16 +205,12 @@ export default function NodeCanvas({
     handleTestRunFromContext,
     handleSelectNodeFromContext,
   } = useContextMenu({
-    nodes,
-    setNodes,
     triggerWorkflowRun: useWorkflowStore.getState().triggerWorkflowRun,
     setSearchModalContext,
   });
 
   // Node creation hook
   const { onDrop, handleAddNodeFromLibrary } = useNodeCreation({
-    nodes,
-    setNodes,
     edges,
     setEdges,
     previewState,
@@ -299,7 +296,7 @@ export default function NodeCanvas({
 
   const handleSelectApp = useCallback(
     async (app: App & { active_deployment_id?: string; version?: number }) => {
-      const newNode: Node = {
+      const baseNode: Node = {
         id: `workflow-${Date.now()}`,
         type: 'workflowNode',
         position:
@@ -322,8 +319,7 @@ export default function NodeCanvas({
           outputs: [],
         } as WorkflowNodeData,
       };
-
-      setNodes([...nodes, newNode]);
+      const newNode = addNode(baseNode);
       setSearchModalContext({ isOpen: false });
 
       if (app.active_deployment_id) {
@@ -342,11 +338,10 @@ export default function NodeCanvas({
       }
     },
     [
-      nodes,
-      setNodes,
       screenToFlowPosition,
       updateNodeData,
       searchModalContext.position,
+      addNode,
     ],
   );
 

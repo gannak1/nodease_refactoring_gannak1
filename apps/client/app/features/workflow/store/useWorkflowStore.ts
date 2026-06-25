@@ -23,6 +23,11 @@ import { create } from 'zustand';
 import { DEFAULT_NODES } from '../constants';
 import { workflowApi } from '../api/workflowApi';
 import {
+  assignMissingNodeDisplayNumbers,
+  createNumberedNode,
+  NODE_NUMBER_FEATURE_KEY,
+} from '../utils/nodeNumbering';
+import {
   DEFAULT_SNAP_GRID_SIZE,
   type SnapGridSize,
   snapPositionChanges,
@@ -35,6 +40,7 @@ export interface Workflow {
   appId: string;
   nodes: Node[];
   edges: Edge[];
+  features: Features;
   viewport?: {
     x: number;
     y: number;
@@ -84,6 +90,10 @@ type WorkflowState = {
   onConnect: OnConnect;
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
+  addNode: <T extends Node>(
+    node: T,
+    buildNodes?: (nodes: Node[], node: T) => Node[],
+  ) => T;
 
   // === Inner Node Selection (for Loop/Workflow nodes) ===
   selectedInnerNode: { parentNodeId: string; nodeId: string } | null;
@@ -154,6 +164,19 @@ type WorkflowState = {
   ) => void;
 };
 
+const removeLegacyDeletableFlag = (node: Node): Node => {
+  const nodeWithoutDeletable = { ...node } as Node & { deletable?: unknown };
+  delete nodeWithoutDeletable.deletable;
+  return nodeWithoutDeletable;
+};
+
+const createInitialFeatures = (): Features => ({
+  [NODE_NUMBER_FEATURE_KEY]: 1,
+});
+const createDefaultFeatures = (): Features => ({
+  [NODE_NUMBER_FEATURE_KEY]: 2,
+});
+
 // Initial data
 const initialNodes: Node[] = DEFAULT_NODES;
 const initialEdges: Edge[] = [];
@@ -164,6 +187,7 @@ const initialWorkflows: Workflow[] = [
     appId: '',
     nodes: initialNodes,
     edges: initialEdges,
+    features: createDefaultFeatures(),
     viewport: { x: 0, y: 0, zoom: 1 },
   },
 ];
@@ -199,7 +223,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   // === 그래프 데이터 ===
   nodes: initialNodes,
   edges: initialEdges,
-  features: {},
+  features: createDefaultFeatures(),
   envVariables: [],
   runtimeVariables: [],
 
@@ -223,16 +247,41 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     set({ edges, workflows: updatedWorkflows });
   },
 
+  addNode: (node, buildNodes) => {
+    const { nodes, features, workflows, activeWorkflowId } = get();
+    const { node: numberedNode, nextNodeDisplayNumber } = createNumberedNode(
+      node,
+      nodes,
+      features,
+    );
+    const nextFeatures = {
+      ...features,
+      [NODE_NUMBER_FEATURE_KEY]: nextNodeDisplayNumber,
+    };
+    const nextNodes = buildNodes
+      ? buildNodes(nodes, numberedNode)
+      : [...nodes, numberedNode];
+    const updatedWorkflows = workflows.map((w) =>
+      w.id === activeWorkflowId
+        ? { ...w, nodes: nextNodes, features: nextFeatures }
+        : w,
+    );
+
+    set({
+      nodes: nextNodes,
+      features: nextFeatures,
+      workflows: updatedWorkflows,
+    });
+
+    return numberedNode;
+  },
+
   onNodesChange: (changes: NodeChange[]) => {
     const currentNodes = get().nodes || [];
     const { snapGridSize, isSnapTemporarilyDisabled } = get();
     // DB에 deletable:false로 저장된 노드도 삭제 가능하도록 속성 제거
     // TODO: 데이터 마이그레이션 후 제거 필요
-    const deletableNodes = currentNodes.map((node) => {
-      const rest = { ...node } as Node & { deletable?: unknown };
-      delete rest.deletable;
-      return rest;
-    });
+    const deletableNodes = currentNodes.map(removeLegacyDeletableFlag);
     const positionChanges =
       snapGridSize === 'off' || isSnapTemporarilyDisabled
         ? changes
@@ -336,24 +385,38 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     try {
       // 1. 스냅샷 데이터로 현재 드래프트 업데이트 API 호출
       const snapshot = version.graph_snapshot;
+      const snapshotFeatures =
+        'features' in snapshot ? (snapshot.features as Features) : {};
+      const normalized = assignMissingNodeDisplayNumbers(
+        (snapshot.nodes || []) as Node[],
+        snapshotFeatures || {},
+      );
+
       await workflowApi.syncDraftWorkflow(activeWorkflowId, {
-        nodes: snapshot.nodes || [],
+        nodes: normalized.nodes,
         edges: snapshot.edges || [],
         viewport: { x: 0, y: 0, zoom: 1 }, // 뷰포트는 초기화하거나 스냅샷에서 가져옴
+        features: normalized.features,
       });
 
       // 2. Store, local state 업데이트
       const { workflows } = get();
       const updatedWorkflows = workflows.map((w) =>
         w.id === activeWorkflowId
-          ? { ...w, nodes: snapshot.nodes || [], edges: snapshot.edges || [] }
+          ? {
+              ...w,
+              nodes: normalized.nodes,
+              edges: snapshot.edges || [],
+              features: normalized.features,
+            }
           : w,
       );
 
       set({
         workflows: updatedWorkflows,
-        nodes: snapshot.nodes || [],
+        nodes: normalized.nodes,
         edges: snapshot.edges || [],
+        features: normalized.features,
         previewingVersion: null, // 미리보기 종료
       });
     } catch (error) {
@@ -375,6 +438,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         appId: created.app_id,
         nodes: [],
         edges: [],
+        features: createInitialFeatures(),
         viewport: { x: 0, y: 0, zoom: 1 },
       };
 
@@ -402,11 +466,19 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           appId: w.app_id,
           nodes: existing?.nodes?.length ? existing.nodes : [],
           edges: existing?.edges?.length ? existing.edges : [],
+          features: existing?.features || createInitialFeatures(),
           viewport: existing?.viewport || { x: 0, y: 0, zoom: 1 },
         };
       });
 
-      set({ workflows: formattedWorkflows });
+      const activeWorkflow = formattedWorkflows.find(
+        (w) => w.id === get().activeWorkflowId,
+      );
+
+      set({
+        workflows: formattedWorkflows,
+        ...(activeWorkflow ? { features: activeWorkflow.features } : {}),
+      });
     } catch (error) {
       console.error('Failed to load workflows:', error);
       throw error;
@@ -420,15 +492,32 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         activeWorkflowId: id,
         nodes: workflow.nodes,
         edges: workflow.edges,
+        features: workflow.features,
       });
     }
   },
 
   // **안전한 활성 워크플로우 ID 설정**
-  // 기존 setActiveWorkflow와 달리, 노드나 엣지 데이터를 덮어쓰지 않고 ID만 변경합니다.
-  // 새로고침 시 데이터가 로드되기 전에 빈 상태로 초기화되는 것을 방지하기 위해 사용합니다.
+  // 대상 워크플로우 데이터가 로드되어 있으면 화면 store도 함께 전환합니다.
+  // 아직 로드 전이면 ID만 바꿔 초기 빈 데이터로 화면을 덮어쓰지 않습니다.
   setActiveWorkflowIdSafe: (id: string) => {
-    set({ activeWorkflowId: id });
+    const workflow = get().workflows.find((w) => w.id === id);
+
+    if (!workflow) {
+      set({ activeWorkflowId: id });
+      return;
+    }
+
+    const hasLoadedWorkflowData =
+      workflow.nodes.length > 0 || workflow.edges.length > 0;
+
+    set({
+      activeWorkflowId: id,
+      features: workflow.features,
+      ...(hasLoadedWorkflowData
+        ? { nodes: workflow.nodes, edges: workflow.edges }
+        : {}),
+    });
   },
 
   deleteWorkflow: (id) => {
@@ -442,6 +531,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         activeWorkflowId: newActive.id,
         nodes: newActive.nodes,
         edges: newActive.edges,
+        features: newActive.features,
       });
     } else {
       set({ workflows: filteredWorkflows });
@@ -486,7 +576,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   // === API 동기화 액션 ===
-  setFeatures: (features) => set({ features }),
+  setFeatures: (features) => {
+    const { workflows, activeWorkflowId } = get();
+    const updatedWorkflows = workflows.map((w) =>
+      w.id === activeWorkflowId ? { ...w, features } : w,
+    );
+    set({ features, workflows: updatedWorkflows });
+  },
   setEnvVariables: (envVariables) => set({ envVariables }),
   setRuntimeVariables: (runtimeVariables) => set({ runtimeVariables }),
 
@@ -537,16 +633,24 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   setWorkflowData: (data: any, workflowId?: string) => {
-    set({
-      nodes: data.nodes || [],
-      edges: data.edges || [],
-      features: data.features || {},
-      envVariables: data.envVariables || [],
-      runtimeVariables: data.runtimeVariables || [],
-    });
+    const normalized = assignMissingNodeDisplayNumbers(
+      (data.nodes || []) as Node[],
+      data.features || {},
+    );
 
     const { activeWorkflowId, workflows } = get();
     const targetId = workflowId || activeWorkflowId;
+    const isActiveTarget = targetId === activeWorkflowId;
+
+    if (isActiveTarget) {
+      set({
+        nodes: normalized.nodes,
+        edges: data.edges || [],
+        features: normalized.features,
+        envVariables: data.envVariables || [],
+        runtimeVariables: data.runtimeVariables || [],
+      });
+    }
 
     if (targetId) {
       const exists = workflows.some((w) => w.id === targetId);
@@ -557,8 +661,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           w.id === targetId
             ? {
                 ...w,
-                nodes: data.nodes || [],
+                nodes: normalized.nodes,
                 edges: data.edges || [],
+                features: normalized.features,
                 ...(data.viewport ? { viewport: data.viewport } : {}),
               }
             : w,
@@ -569,8 +674,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           {
             id: targetId,
             appId: '',
-            nodes: data.nodes || [],
+            nodes: normalized.nodes,
             edges: data.edges || [],
+            features: normalized.features,
             viewport: data.viewport || { x: 0, y: 0, zoom: 1 },
           },
         ];
