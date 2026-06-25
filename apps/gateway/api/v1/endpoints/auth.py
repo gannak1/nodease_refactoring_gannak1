@@ -6,10 +6,57 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.oauth import oauth
 from apps.gateway.services.auth_service import AuthService
+from apps.shared.audit import record_audit
 from apps.shared.db.session import get_db
 from apps.shared.schemas.auth import LoginRequest, LoginResponse, SignupRequest
 
 router = APIRouter()
+
+
+def _request_meta(request: Request) -> dict:
+    """감사 로그용 요청 메타데이터(ip, user_agent)."""
+    return {
+        "ip": request.client.host if request.client else None,
+        "user_agent": request.headers.get("user-agent"),
+    }
+
+
+def _user_snapshot(user) -> dict:
+    return {"id": str(user.id), "email": user.email, "name": user.name}
+
+
+def _record_auth_success(
+    action: str,
+    request: Request,
+    user,
+    **metadata,
+) -> None:
+    record_audit(
+        action=action,
+        category="action",
+        actor_id=user.id,
+        actor_type="user",
+        metadata={
+            **metadata,
+            "actor": _user_snapshot(user),
+            **_request_meta(request),
+        },
+    )
+
+
+def _record_auth_failure(
+    action: str,
+    request: Request,
+    email: str,
+    error: Exception,
+) -> None:
+    record_audit(
+        action=action,
+        category="action",
+        actor_type="system",
+        status="failure",
+        metadata={"email": email, "error": str(error), **_request_meta(request)},
+    )
 
 
 def _get_cookie_config(request: Request) -> tuple[bool, str | None]:
@@ -52,7 +99,13 @@ def signup(
     Returns:
         LoginResponse: 사용자 정보 + JWT 토큰
     """
-    result = AuthService.signup(db, request)
+    try:
+        result = AuthService.signup(db, request)
+    except Exception as e:
+        _record_auth_failure("user.signup_failed", request_obj, request.email, e)
+        raise
+
+    _record_auth_success("user.signup", request_obj, result.user)
 
     # 환경 감지 및 쿠키 도메인 설정
     is_production, cookie_domain = _get_cookie_config(request_obj)
@@ -97,7 +150,13 @@ def login(
     Returns:
         LoginResponse: 사용자 정보 + JWT 토큰
     """
-    result = AuthService.login(db, request)
+    try:
+        result = AuthService.login(db, request)
+    except Exception as e:
+        _record_auth_failure("user.login_failed", request_obj, request.email, e)
+        raise
+
+    _record_auth_success("user.login", request_obj, result.user)
 
     # 환경 감지 및 쿠키 도메인 설정
     is_production, cookie_domain = _get_cookie_config(request_obj)
@@ -135,6 +194,14 @@ def logout(request_obj: Request, response: Response):
         delete_params["domain"] = cookie_domain
 
     response.delete_cookie(**delete_params)
+
+    # 로그아웃은 actor를 시그니처에서 알 수 없어(쿠키 삭제 시점) actor_id 없이 기록한다.
+    record_audit(
+        action="user.logout",
+        category="action",
+        actor_type="user",
+        metadata=_request_meta(request_obj),
+    )
     return {"message": "Logged out successfully"}
 
 
@@ -231,6 +298,8 @@ async def auth_google_callback(
 
     # 자체 JWT 토큰 생성
     access_token = AuthService.create_jwt_token(str(user.id))
+
+    _record_auth_success("user.login", request, user, provider="google")
 
     # 쿠키 설정
     is_production, cookie_domain = _get_cookie_config(request)
