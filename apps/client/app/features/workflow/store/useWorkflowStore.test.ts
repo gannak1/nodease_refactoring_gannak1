@@ -13,8 +13,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useWorkflowStore } from './useWorkflowStore';
-import type { Node } from '../types/Workflow';
+import type { AnswerNode, CodeNode, Node, StartNode } from '../types/Workflow';
 import type { Edge, Connection } from '@xyflow/react';
+import { DEFAULT_NODES } from '../constants';
 
 // API 모킹
 vi.mock('../api/workflowApi', () => ({
@@ -34,12 +35,59 @@ const resetStore = () => useWorkflowStore.setState(initialState, true);
 // 테스트용 Fixture 데이터
 // ============================================================================
 
-const createMockNode = (id: string, type: string = 'startNode'): Node => ({
+const createStartNode = (
+  id: string,
+  data: Partial<StartNode['data']> & Record<string, unknown> = {},
+): StartNode => ({
   id,
-  type,
+  type: 'startNode',
   position: { x: 0, y: 0 },
-  data: { title: `Node ${id}` },
+  data: {
+    title: `Node ${id}`,
+    triggerType: 'manual',
+    variables: [],
+    ...data,
+  },
 });
+
+const createAnswerNode = (
+  id: string,
+  data: Partial<AnswerNode['data']> & Record<string, unknown> = {},
+): AnswerNode => ({
+  id,
+  type: 'answerNode',
+  position: { x: 0, y: 0 },
+  data: {
+    title: `Node ${id}`,
+    outputs: [],
+    ...data,
+  },
+});
+
+const createCodeNode = (
+  id: string,
+  data: Partial<CodeNode['data']> & Record<string, unknown> = {},
+): CodeNode => ({
+  id,
+  type: 'codeNode',
+  position: { x: 0, y: 0 },
+  data: {
+    title: `Node ${id}`,
+    code: 'def main(inputs):\n    return {}',
+    inputs: [],
+    timeout: 10,
+    ...data,
+  },
+});
+
+const createMockNode = (
+  id: string,
+  type: 'startNode' | 'answerNode' | 'codeNode' = 'startNode',
+): Node => {
+  if (type === 'answerNode') return createAnswerNode(id);
+  if (type === 'codeNode') return createCodeNode(id);
+  return createStartNode(id);
+};
 
 const createMockEdge = (id: string, source: string, target: string): Edge => ({
   id,
@@ -111,6 +159,356 @@ describe('노드 추가/삭제 테스트', () => {
 
     const state = useWorkflowStore.getState();
     expect(state.nodes[0].position).toEqual({ x: 100, y: 200 });
+  });
+});
+
+// ============================================================================
+// 1-1. 캔버스 히스토리/클립보드 테스트
+// ============================================================================
+
+describe('캔버스 히스토리/클립보드 테스트', () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it('undo/redo로 그래프 변경을 되돌리고 다시 적용할 수 있다', () => {
+    useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+    useWorkflowStore
+      .getState()
+      .setNodes([createMockNode('node-1'), createMockNode('node-2')]);
+
+    useWorkflowStore.getState().undo();
+    expect(useWorkflowStore.getState().nodes).toHaveLength(1);
+    expect(useWorkflowStore.getState().nodes[0].id).toBe('node-1');
+
+    useWorkflowStore.getState().redo();
+    expect(useWorkflowStore.getState().nodes).toHaveLength(2);
+    expect(useWorkflowStore.getState().nodes[1].id).toBe('node-2');
+  });
+
+  it('선택 변경은 undo 스택에 기록하지 않는다', () => {
+    useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+    useWorkflowStore.getState().onNodesChange([
+      { type: 'select', id: 'node-1', selected: true },
+    ]);
+
+    useWorkflowStore.getState().undo();
+    expect(useWorkflowStore.getState().nodes).toHaveLength(
+      DEFAULT_NODES.length,
+    );
+  });
+
+  it('선택 노드를 복사하고 붙여넣을 때 새 ID와 오프셋 위치를 부여한다', () => {
+    const selectedNode = {
+      ...createMockNode('node-1'),
+      selected: true,
+      position: { x: 10, y: 20 },
+    };
+    useWorkflowStore.getState().setNodes([selectedNode]);
+
+    useWorkflowStore.getState().copySelectedNodes();
+    useWorkflowStore.getState().pasteCopiedNodes();
+
+    const pastedNode = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id !== 'node-1');
+
+    expect(useWorkflowStore.getState().nodes).toHaveLength(2);
+    expect(pastedNode?.id).toContain('node-1-copy-');
+    expect(pastedNode?.selected).toBe(true);
+    expect(pastedNode?.position).toEqual({ x: 50, y: 60 });
+  });
+
+  it('붙여넣은 노드 데이터의 내부 노드 참조를 새 ID로 재매핑한다', () => {
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createMockNode('source-node'),
+        selected: true,
+        position: { x: 0, y: 0 },
+      },
+      {
+        ...createAnswerNode('target-node', {
+          title: 'Target',
+          value_selector: ['source-node', 'output'],
+        }),
+        selected: true,
+        position: { x: 100, y: 0 },
+      },
+    ]);
+
+    useWorkflowStore.getState().copySelectedNodes();
+    useWorkflowStore.getState().pasteCopiedNodes();
+
+    const pastedSource = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('source-node-copy-'));
+    const pastedTarget = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('target-node-copy-'));
+
+    expect(pastedTarget?.data.value_selector).toEqual([
+      pastedSource?.id,
+      'output',
+    ]);
+  });
+
+  it('붙여넣기 재매핑은 참조 필드만 바꾸고 사용자 텍스트와 displayNumber는 복제하지 않는다', () => {
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createStartNode('source-node', {
+          title: 'source-node',
+          description: 'source-node',
+          content: 'source-node',
+          displayNumber: 12,
+        }),
+        selected: true,
+      },
+      {
+        ...createAnswerNode('target-node', {
+          title: 'Target',
+          value_selector: ['source-node', 'output'],
+        }),
+        selected: true,
+      },
+    ]);
+
+    useWorkflowStore.getState().copySelectedNodes();
+    useWorkflowStore.getState().pasteCopiedNodes();
+
+    const pastedSource = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('source-node-copy-'));
+    const pastedTarget = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('target-node-copy-'));
+
+    expect(pastedSource?.data.title).toBe('source-node');
+    expect(pastedSource?.data.description).toBe('source-node');
+    expect(pastedSource?.data.content).toBe('source-node');
+    expect(pastedSource?.data.displayNumber).toBeUndefined();
+    expect(pastedTarget?.data.value_selector).toEqual([
+      pastedSource?.id,
+      'output',
+    ]);
+  });
+
+  it('selector 배열은 첫 번째 슬롯만 새 ID로 재매핑하고 이후 key 값은 보존한다', () => {
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createMockNode('source-node'),
+        selected: true,
+      },
+      {
+        ...createMockNode('target-node'),
+        selected: true,
+      },
+      {
+        ...createAnswerNode('consumer-node', {
+          title: 'Consumer',
+          value_selector: ['source-node', 'target-node'],
+        }),
+        selected: true,
+      },
+    ]);
+
+    useWorkflowStore.getState().duplicateSelectedNodes();
+
+    const duplicatedSource = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('source-node-copy-'));
+    const duplicatedConsumer = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('consumer-node-copy-'));
+
+    expect(duplicatedConsumer?.data.value_selector).toEqual([
+      duplicatedSource?.id,
+      'target-node',
+    ]);
+  });
+
+  it('선택 노드를 즉시 복제하고 클립보드 상태는 덮어쓰지 않는다', () => {
+    useWorkflowStore.getState().setNodes([
+      { ...createMockNode('clipboard-node'), selected: true },
+    ]);
+    useWorkflowStore.getState().copySelectedNodes();
+
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createStartNode('source-node', {
+          title: 'source-node',
+          description: 'source-node',
+          content: 'source-node',
+          name: 'source-node',
+          displayNumber: 12,
+        }),
+        selected: true,
+        position: { x: 10, y: 20 },
+      },
+      {
+        ...createAnswerNode('target-node', {
+          title: 'Target',
+          value_selector: ['source-node', 'output'],
+        }),
+        selected: true,
+        position: { x: 100, y: 20 },
+      },
+    ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-source-target', 'source-node', 'target-node'),
+      ]);
+
+    useWorkflowStore.getState().duplicateSelectedNodes();
+
+    const state = useWorkflowStore.getState();
+    const duplicatedSource = state.nodes.find((node) =>
+      node.id.startsWith('source-node-copy-'),
+    );
+    const duplicatedTarget = state.nodes.find((node) =>
+      node.id.startsWith('target-node-copy-'),
+    );
+    const duplicatedEdge = state.edges.find((edge) =>
+      edge.id.startsWith('edge-source-target-copy-'),
+    );
+
+    expect(state.nodes).toHaveLength(4);
+    expect(duplicatedSource?.selected).toBe(true);
+    expect(duplicatedTarget?.selected).toBe(true);
+    expect(duplicatedSource?.position).toEqual({ x: 50, y: 60 });
+    expect(duplicatedTarget?.position).toEqual({ x: 140, y: 60 });
+    expect(duplicatedEdge?.source).toBe(duplicatedSource?.id);
+    expect(duplicatedEdge?.target).toBe(duplicatedTarget?.id);
+    expect(duplicatedTarget?.data.value_selector).toEqual([
+      duplicatedSource?.id,
+      'output',
+    ]);
+    expect(duplicatedSource?.data.title).toBe('source-node');
+    expect(duplicatedSource?.data.description).toBe('source-node');
+    expect(duplicatedSource?.data.content).toBe('source-node');
+    expect(duplicatedSource?.data.name).toBe('source-node');
+    expect(duplicatedSource?.data.displayNumber).toBeUndefined();
+    expect(state.copiedNodes.map((node) => node.id)).toEqual([
+      'clipboard-node',
+    ]);
+  });
+
+  it('code node와 upstream node를 함께 복제하면 inputs[].source의 node id만 새 ID로 재매핑한다', () => {
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createStartNode('source-node'),
+        selected: true,
+      },
+      {
+        ...createCodeNode('code-node', {
+          inputs: [
+            { name: 'result', source: 'source-node.output' },
+            { name: 'external', source: 'external-node.output' },
+            { name: 'literal', source: 'plain-user-text' },
+          ],
+        }),
+        selected: true,
+      },
+    ]);
+
+    useWorkflowStore.getState().duplicateSelectedNodes();
+
+    const duplicatedSource = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('source-node-copy-'));
+    const duplicatedCode = useWorkflowStore
+      .getState()
+      .nodes.find(
+        (node): node is CodeNode =>
+          node.type === 'codeNode' && node.id.startsWith('code-node-copy-'),
+      );
+
+    expect(duplicatedCode?.data.inputs).toEqual([
+      { name: 'result', source: `${duplicatedSource?.id}.output` },
+      { name: 'external', source: 'external-node.output' },
+      { name: 'literal', source: 'plain-user-text' },
+    ]);
+  });
+
+  it('code node와 upstream node를 함께 붙여넣으면 inputs[].source의 node id만 새 ID로 재매핑한다', () => {
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createStartNode('source-node'),
+        selected: true,
+      },
+      {
+        ...createCodeNode('code-node', {
+          inputs: [{ name: 'result', source: 'source-node.output' }],
+        }),
+        selected: true,
+      },
+    ]);
+
+    useWorkflowStore.getState().copySelectedNodes();
+    useWorkflowStore.getState().pasteCopiedNodes();
+
+    const pastedSource = useWorkflowStore
+      .getState()
+      .nodes.find((node) => node.id.startsWith('source-node-copy-'));
+    const pastedCode = useWorkflowStore
+      .getState()
+      .nodes.find(
+        (node): node is CodeNode =>
+          node.type === 'codeNode' && node.id.startsWith('code-node-copy-'),
+      );
+
+    expect(pastedCode?.data.inputs).toEqual([
+      { name: 'result', source: `${pastedSource?.id}.output` },
+    ]);
+  });
+
+  it('드래그 중 position 변경은 드래그 시작 지점 하나만 undo 스냅샷으로 기록한다', () => {
+    useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 50, y: 50 },
+        dragging: true,
+      },
+    ]);
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 100, y: 100 },
+        dragging: false,
+      },
+    ]);
+
+    expect(useWorkflowStore.getState().nodes[0].position).toEqual({
+      x: 100,
+      y: 100,
+    });
+
+    useWorkflowStore.getState().undo();
+    expect(useWorkflowStore.getState().nodes[0].position).toEqual({
+      x: 0,
+      y: 0,
+    });
+  });
+
+  it('선택 노드를 삭제할 때 연결된 엣지도 함께 제거한다', () => {
+    useWorkflowStore.getState().setNodes([
+      { ...createMockNode('node-1'), selected: true },
+      createMockNode('node-2'),
+    ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([createMockEdge('edge-1', 'node-1', 'node-2')]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes).toHaveLength(1);
+    expect(state.nodes[0].id).toBe('node-2');
+    expect(state.edges).toHaveLength(0);
   });
 });
 
@@ -230,7 +628,7 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
   it('setEnvVariables로 환경 변수를 설정할 수 있다', () => {
     useWorkflowStore.getState().setEnvVariables([
       { id: 'env-1', key: 'API_KEY', value: 'key123', type: 'string' },
-      { id: 'env-2', key: 'DEBUG', value: 'true', type: 'boolean' },
+      { id: 'env-2', key: 'DEBUG', value: 'true', type: 'string' },
     ]);
 
     const state = useWorkflowStore.getState();

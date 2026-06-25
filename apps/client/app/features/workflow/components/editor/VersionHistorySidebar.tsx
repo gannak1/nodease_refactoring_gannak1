@@ -258,7 +258,13 @@ export function VersionHistorySidebar() {
 
       {/* 확인 모달 */}
       {confirmModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="배포 변경 확인"
+          data-canvas-shortcut-scope="blocked"
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+        >
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">
               {confirmModal.type === 'toggle'

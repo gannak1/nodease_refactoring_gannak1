@@ -13,18 +13,8 @@ import { LogTab } from './tabs/LogTab';
 import { MonitoringTab } from './tabs/MonitoringTab';
 import NodeLibrarySidebar from './NodeLibrarySidebar';
 import { ViewMode } from './EditorViewSwitcher';
-import {
-  type NodeDefinition,
-  getNodeDefinition,
-} from '../../config/nodeRegistry';
-import { NoteNode, AppNode } from '../../types/Nodes';
-import {
-  findFirstAvailableHandle,
-  createNewCaseForConnection,
-} from '../../utils/conditionNodeHelpers';
 import { calculateAutoLayout } from '../../utils/layoutHelpers';
 import { useDeployment } from '../../hooks/useDeployment';
-import { arrangeConditionNodeChildren } from '../../utils/arrangeConditionNodes';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useNodeCreation } from '../../hooks/useNodeCreation';
 import { MemoryModeToggle, useMemoryMode } from './memory/MemoryModeControls';
@@ -69,6 +59,7 @@ import { MailNodePanel } from '../nodes/mail/components/MailNodePanel';
 import { LoopNodePanel } from '../nodes/loop/components/LoopNodePanel';
 import { AppSearchModal } from '../modals/AppSearchModal';
 import { useKeyboardShortcut } from '../../hooks/useKeyboardShortcut';
+import { useCanvasKeyboardShortcuts } from '../../hooks/useCanvasKeyboardShortcuts';
 import { App } from '@/app/features/app/api/appApi';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { FileExtractionNodePanel } from '../nodes/file_extraction/components/FileExtractionNodePanel';
@@ -106,9 +97,6 @@ export default function NodeCanvas({
     updateNodeData,
     isVersionHistoryOpen,
     toggleVersionHistory,
-    projectName,
-    projectIcon,
-    projectDescription,
     isFullscreen,
     setEdges,
     isSettingsOpen,
@@ -417,6 +405,105 @@ export default function NodeCanvas({
     setIsRefPanelOpen(false);
   }, []);
 
+  const closeCanvasMenus = useCallback(() => {
+    if (searchModalContext.isOpen) {
+      setSearchModalContext({ isOpen: false });
+      return true;
+    }
+    if (showDeployDropdown) {
+      setShowDeployDropdown(false);
+      return true;
+    }
+    if (
+      contextMenu ||
+      nodeContextMenu ||
+      edgeContextMenu ||
+      isContextNodeSelectorOpen
+    ) {
+      handleCloseContextMenu();
+      setIsContextNodeSelectorOpen(false);
+      return true;
+    }
+    return false;
+  }, [
+    searchModalContext.isOpen,
+    showDeployDropdown,
+    setShowDeployDropdown,
+    contextMenu,
+    nodeContextMenu,
+    edgeContextMenu,
+    isContextNodeSelectorOpen,
+    handleCloseContextMenu,
+    setIsContextNodeSelectorOpen,
+  ]);
+
+  const closeCanvasPanels = useCallback(() => {
+    if (isParamPanelOpen || isRefPanelOpen || selectedNodeId) {
+      handleClosePanel();
+      return true;
+    }
+    if (selectedInnerNode) {
+      clearInnerNodeSelection();
+      return true;
+    }
+    if (isSettingsOpen) {
+      toggleSettings();
+      return true;
+    }
+    if (isVersionHistoryOpen) {
+      toggleVersionHistory();
+      return true;
+    }
+    if (isTestPanelOpen) {
+      toggleTestPanel();
+      return true;
+    }
+    return false;
+  }, [
+    isParamPanelOpen,
+    isRefPanelOpen,
+    selectedNodeId,
+    handleClosePanel,
+    selectedInnerNode,
+    clearInnerNodeSelection,
+    isSettingsOpen,
+    toggleSettings,
+    isVersionHistoryOpen,
+    toggleVersionHistory,
+    isTestPanelOpen,
+    toggleTestPanel,
+  ]);
+
+  const isCanvasShortcutScopeBlocked = useCallback(
+    () =>
+      searchModalContext.isOpen ||
+      showDeployFlowModal ||
+      showDeployDropdown ||
+      Boolean(
+        contextMenu ||
+          nodeContextMenu ||
+          edgeContextMenu ||
+          isContextNodeSelectorOpen,
+      ),
+    [
+      searchModalContext.isOpen,
+      showDeployFlowModal,
+      showDeployDropdown,
+      contextMenu,
+      nodeContextMenu,
+      edgeContextMenu,
+      isContextNodeSelectorOpen,
+    ],
+  );
+
+  useCanvasKeyboardShortcuts({
+    isEnabled: viewMode === 'edit',
+    isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
+    closeMenus: closeCanvasMenus,
+    closePanels: closeCanvasPanels,
+    toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
+  });
+
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
     return nodes.find((n) => n.id === selectedNodeId);
@@ -533,36 +620,6 @@ export default function NodeCanvas({
     deleteElements({ edges: [{ id: edgeContextMenu.edgeId }] });
     setEdgeContextMenu(null);
   }, [edgeContextMenu, deleteElements]);
-
-  // Delete 키 핸들러 (React Flow 내부 로직 사용)
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // input/textarea에서는 무시
-      if (
-        event.target instanceof HTMLInputElement ||
-        event.target instanceof HTMLTextAreaElement
-      ) {
-        return;
-      }
-
-      if (event.key === 'Delete') {
-        // 선택된 노드/엣지가 있으면 삭제
-        const selectedNodes = nodes.filter((n) => n.selected);
-        const selectedEdges = edges.filter((e) => e.selected);
-
-        if (selectedNodes.length > 0 || selectedEdges.length > 0) {
-          event.preventDefault();
-          deleteElements({
-            nodes: selectedNodes.map((n) => ({ id: n.id })),
-            edges: selectedEdges.map((e) => ({ id: e.id })),
-          });
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nodes, edges, deleteElements]);
 
   useEffect(() => {
     const handleClick = () => handleCloseContextMenu();
