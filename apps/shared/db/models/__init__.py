@@ -18,6 +18,8 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.tag import PermissionTag
+from apps.shared.db.models.team import Team
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -36,6 +38,8 @@ __all__ = [
     "LLMRelCredentialModel",
     "LLMUsageLog",
     "Schedule",
+    "Organization",
+    "TeamPermission",
     "Workflow",
     "WorkflowDeployment",
     "WorkflowNodeRun",
