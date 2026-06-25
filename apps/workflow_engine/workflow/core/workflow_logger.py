@@ -93,6 +93,7 @@ class WorkflowLogger:
                 "payload_capture_enabled": True,
             }
         except Exception:
+            # 정책 해석 실패 시 페이로드 수집은 닫고, 호환 컬럼만 기본 마스킹으로 저장합니다.
             context = {
                 "redaction": TracePolicyService.fail_closed_redaction_policy(),
                 "retention": TracePolicyService.bootstrap_retention_policy(),
@@ -115,6 +116,7 @@ class WorkflowLogger:
     ):
         context = self._policy_context(app_id)
         if not context.get("payload_capture_enabled", True):
+            # 실행은 유지하되 추적 페이로드 행은 만들지 않는 보수적 차단 경로입니다.
             return [], TracePayloadService.summarize_payload_records([]), context
         records = TracePayloadService.prepare_payload_records(
             payloads=payloads,
@@ -144,6 +146,7 @@ class WorkflowLogger:
     ) -> Dict[str, Any]:
         metadata = dict(trace_metadata or {})
         references = TracePayloadService.payload_references(payload_records)
+        # 메타데이터에는 페이로드 본문 대신 식별자 참조만 남겨 조회/접근 정책 경계를 유지합니다.
         mapping = {
             "prompt": ("llm", "prompt_payload_id"),
             "completion": ("llm", "completion_payload_id"),
@@ -222,6 +225,7 @@ class WorkflowLogger:
             payload_records[0]["redacted_payload"] if payload_records else user_input
         )
         if not payload_records:
+            # 페이로드 수집이 닫힌 경우에도 기존 로그 UI용 입력값은 마스킹 후 저장합니다.
             redacted_input = self._redact_compat_value(
                 user_input, payload_kind="input", app_id=self.app_id
             )

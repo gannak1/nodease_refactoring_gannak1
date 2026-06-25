@@ -34,6 +34,7 @@ def _actor_user_ref(actor_user_id: Any) -> Optional[str]:
         value = str(uuid.UUID(str(actor_user_id)))
     except (TypeError, ValueError):
         return None
+    # 사용자 삭제 후에도 감사 이벤트를 상관분석할 수 있도록 단방향 참조만 남깁니다.
     return hashlib.sha256(f"trace-actor:{value}".encode("utf-8")).hexdigest()
 
 
@@ -177,6 +178,7 @@ class TraceAccessService:
     ) -> None:
         if view_level != VIEW_RAW:
             return
+        # 원문 응답은 감사 기록과 분리될 수 없도록 독립 트랜잭션에 먼저 기록합니다.
         audit_db = SessionLocal()
         try:
             event = TracePayloadAccessEvent(

@@ -25,6 +25,7 @@ class TraceRetentionService:
 
     @staticmethod
     def expired_payload_condition(now, redacted_cutoff, prompt_cutoff):
+        # 비삭제 정리가 끝난 행은 예행 실행/반복 정리 후보에서 제외합니다.
         return and_(
             TracePayload.retention_purged_at.is_(None),
             or_(
@@ -74,6 +75,7 @@ class TraceRetentionService:
                 WorkflowRun.app_id == scope_id
             )
 
+        # 원문 보관 기간 만료는 마스킹 사본을 유지하고 암호문만 제거합니다.
         raw_payloads = (
             payload_query.filter(
                 TracePayload.raw_payload_encrypted.is_not(None),
@@ -130,6 +132,7 @@ class TraceRetentionService:
                 payload.raw_payload_encrypted = None
                 payload.storage_mode = "metadata_only"
                 payload.retention_expires_at = None
+                # 표시값을 남겨 요약/익명화 정리가 같은 페이로드를 반복 처리하지 않게 합니다.
                 payload.retention_purged_at = now
                 payload.redaction_metadata = {
                     **(payload.redaction_metadata or {}),
@@ -152,6 +155,7 @@ class TraceRetentionService:
                 "action": retention.retention_action,
             }
             run.trace_metadata = trace_metadata
+            # 실행 단위 정리도 표시값을 남겨 같은 trace를 반복 집계하지 않습니다.
             run.retention_purged_at = now
             node_runs = (
                 db.query(WorkflowNodeRun)

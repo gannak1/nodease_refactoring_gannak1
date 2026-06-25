@@ -101,6 +101,7 @@ def _insert_trace_payloads(session, workflow_run_id, payload_records):
         exists = session.query(TracePayload.id).filter(TracePayload.id == payload_id).first()
         if exists:
             continue
+        # 페이로드 레코드는 마스킹/보관 정책이 적용된 봉투 구조만 저장합니다.
         payload = TracePayload(
             id=payload_id,
             workflow_run_id=workflow_run_id,

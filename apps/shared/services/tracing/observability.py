@@ -10,6 +10,7 @@ except Exception:
     PrometheusCounter = None
 
 try:
+    # 공통 내보내기가 없어도 prometheus_client가 있으면 기본 저장소에 계수기를 등록합니다.
     RAW_PAYLOAD_DECRYPT_FAILURES = (
         PrometheusCounter(
             "tracing_raw_payload_decrypt_failures_total",
@@ -26,6 +27,7 @@ except ValueError:
 class TraceObservabilityService:
     """추적 전용 서버 로그와 메트릭을 기록하는 얇은 경계."""
 
+    # 테스트와 내보내기 부재 환경을 위한 프로세스 로컬 대체 계수기입니다.
     _local_counters: ClassVar[Counter[tuple[str, str, str]]] = Counter()
 
     @classmethod
@@ -44,6 +46,7 @@ class TraceObservabilityService:
                 scope=scope,
             ).inc()
 
+        # 로그에는 원문, 암호문, 해시, 예외 메시지를 넣지 않습니다.
         logger.error(
             "tracing.raw_payload_decryption_failed",
             extra={

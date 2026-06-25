@@ -19,6 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # 비삭제 보관 정리가 같은 실행을 반복 처리하지 않도록 표시 컬럼을 추가합니다.
     op.add_column(
         "workflow_runs",
         sa.Column("retention_purged_at", sa.DateTime(timezone=True), nullable=True),
@@ -40,7 +41,9 @@ def upgrade() -> None:
         ["retention_purged_at"],
         unique=False,
     )
+    # 사용처 없는 원문 페이로드 해시는 저엔트로피 페이로드 단서가 될 수 있어 제거합니다.
     op.drop_column("trace_payloads", "raw_payload_hash")
+    # 최신 조회의 그룹/정렬 조합을 보조합니다.
     op.create_index(
         "ix_trace_payloads_latest_view",
         "trace_payloads",
@@ -55,12 +58,14 @@ def upgrade() -> None:
         ],
         unique=False,
     )
+    # 보관 정리 후보 스캔에서 페이로드 종류별 만료 조건을 빠르게 좁힙니다.
     op.create_index(
         "ix_trace_payloads_retention_scan",
         "trace_payloads",
         ["retention_purged_at", "payload_kind", "created_at", "retention_expires_at"],
         unique=False,
     )
+    # 원문 암호문 제거 작업은 암호문이 있는 행만 스캔하도록 부분 인덱스를 둡니다.
     op.create_index(
         "ix_trace_payloads_raw_retention",
         "trace_payloads",
@@ -74,6 +79,7 @@ def upgrade() -> None:
         "trace_payload_access_events",
         type_="foreignkey",
     )
+    # 사용자 삭제 후에도 원문 접근 감사 이벤트 자체는 보존합니다.
     op.alter_column(
         "trace_payload_access_events",
         "actor_user_id",

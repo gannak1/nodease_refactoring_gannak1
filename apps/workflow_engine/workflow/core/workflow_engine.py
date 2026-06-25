@@ -545,6 +545,7 @@ class WorkflowEngine:
     def _collect_node_trace_payloads(self, node_instance) -> list[dict[str, Any]]:
         payloads = getattr(node_instance, "_trace_payloads", []) or []
         if hasattr(node_instance, "_trace_payloads"):
+            # 노드 인스턴스 재사용 시 같은 추가 전용 페이로드가 중복 수집되지 않게 비웁니다.
             node_instance._trace_payloads = []
         return payloads
 
@@ -595,6 +596,7 @@ class WorkflowEngine:
         if node_type == "llmNode":
             usage = result_dict.get("usage") or {}
             llm_metadata = dict(metadata.get("llm") or {})
+            # LLM 메타데이터는 비용/모델 식별용 요약만 담고 프롬프트/완성 원문은 페이로드로 분리합니다.
             llm_metadata.update(
                 {
                     "provider": process_data.get("provider"),
@@ -612,6 +614,7 @@ class WorkflowEngine:
             metadata["llm"] = llm_metadata
             knowledge = (result_dict.get("metadata") or {}).get("knowledge_search")
             if knowledge:
+                # knowledge_search는 LLM 노드에서 본문이 제거된 허용 목록 메타데이터만 전달됩니다.
                 metadata["rag"] = {
                     "retrieval_results": self._json_safe(knowledge),
                     "latency_ms": latency_ms,

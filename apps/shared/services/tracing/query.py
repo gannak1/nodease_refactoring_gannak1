@@ -63,6 +63,7 @@ class TraceQueryService:
         visible_total = 0
         page_items: list[WorkflowRun] = []
 
+        # 권한 판정은 Python 정책 로직이 필요하므로 DB에서 제한된 배치만 가져와 순회합니다.
         while True:
             candidates = ordered_query.offset(scanned).limit(batch_size).all()
             if not candidates:
@@ -190,6 +191,7 @@ class TraceQueryService:
         safe_limit = max(1, min(limit, 1000))
         offset = max(page - 1, 0) * safe_limit
         if not history:
+            # 추가 전용 페이로드 중 논리 페이로드별 최신 행만 DB 창 함수로 선택합니다.
             ranked_payloads = query.with_entities(
                 TracePayload.id.label("payload_id"),
                 func.row_number()
@@ -433,6 +435,7 @@ class TraceQueryService:
             "duration": span.duration,
             "inputs": span.inputs if include_io else None,
             "outputs": span.outputs if include_io else None,
+            # process_data는 노드 설정/중간값을 포함할 수 있어 메타데이터 조회에서는 숨깁니다.
             "process_data": None if view_level == "metadata" else span.process_data,
             "trace_metadata": span.trace_metadata or {},
             "redaction_applied": span.redaction_applied,

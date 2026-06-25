@@ -177,6 +177,7 @@ class TraceRedactionService:
     ) -> str:
         redacted = value
 
+        # 비밀값 패턴은 정책의 마스킹 사용 여부와 무관하게 항상 적용합니다.
         for rule_id, pattern in SECRET_VALUE_RULES:
             if pattern.search(redacted):
                 redacted = pattern.sub(replacement, redacted)
@@ -216,6 +217,7 @@ class TraceRedactionService:
             redacted: dict[str, Any] = {}
             for key, child_value in value.items():
                 child_path = f"{path}.{key}"
+                # 비밀값 키는 정책의 마스킹 사용 여부와 무관하게 항상 마스킹합니다.
                 if TraceRedactionService._is_sensitive_key(str(key), policy) or TraceRedactionService._path_matches(child_path, policy):
                     redacted[key] = replacement
                     TraceRedactionService._record(

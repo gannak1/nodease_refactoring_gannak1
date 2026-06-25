@@ -200,6 +200,7 @@ class TracePolicyService:
 
     @staticmethod
     def validate_policy_scope(scope_type: str, scope_id: Any = None) -> Optional[uuid.UUID]:
+        # 1차 구현에서는 명확한 전역/앱 범위만 관리 API에서 허용합니다.
         if scope_type not in VALID_SCOPE_TYPES:
             raise ValueError("Invalid policy scope_type")
         scope_uuid = _coerce_uuid(scope_id)

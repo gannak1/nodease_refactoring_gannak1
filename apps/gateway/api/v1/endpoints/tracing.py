@@ -47,6 +47,7 @@ def _raise_for_service_error(error: Exception):
 
 
 def _require_system_admin(db: Session, current_user: User):
+    # 시스템 관리자 판별은 User/RBAC 제공자 경계로 위임합니다.
     if not TraceAccessService.is_system_admin(db, current_user):
         raise HTTPException(status_code=403, detail="system_admin_required")
 
@@ -222,6 +223,7 @@ def purge_trace_retention(
         except Exception as error:
             _raise_for_service_error(error)
 
+    # 실제 purge는 요청 스레드를 점유하지 않도록 Celery task로 위임합니다.
     task = celery_app.send_task(
         "log.trace_retention_purge",
         args=[

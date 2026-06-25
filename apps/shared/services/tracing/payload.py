@@ -120,6 +120,7 @@ class TracePayloadService:
             raw_payload_encrypted = None
             storage_mode = "redacted_only"
 
+            # 비밀값 탐지나 마스킹 실패가 있으면 정책이 허용해도 원문 저장을 열지 않습니다.
             raw_allowed = (
                 redaction_policy.raw_payload_storage_enabled
                 and not redaction_policy.store_redacted_copy_only
@@ -194,6 +195,7 @@ class TracePayloadService:
 
                 return json.loads(encryption_manager.decrypt(payload.raw_payload_encrypted))
             except Exception as error:
+                # 복호화 장애는 운영 신호로 남기되 원문/암호문/키 정보는 기록하지 않습니다.
                 TraceObservabilityService.record_raw_payload_decryption_failed(
                     payload, error
                 )
