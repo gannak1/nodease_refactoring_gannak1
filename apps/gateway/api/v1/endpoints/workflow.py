@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session, noload, selectinload
 from starlette.requests import Request
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.audit import audit
 from apps.gateway.services.workflow_service import WorkflowService
+from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
@@ -370,6 +372,7 @@ def get_workflow_stats(
 
 
 @router.post("", response_model=WorkflowResponse)
+@audit(AuditAction.WORKFLOW_CREATE)
 def create_workflow(
     request: WorkflowCreateRequest,
     db: Session = Depends(get_db),
@@ -445,6 +448,7 @@ def list_workflows_by_app(
 
 
 @router.post("/{workflow_id}/draft")
+@audit(AuditAction.WORKFLOW_UPDATE, target_param="workflow_id")
 def sync_draft_workflow(
     workflow_id: str,
     request: WorkflowDraftRequest,

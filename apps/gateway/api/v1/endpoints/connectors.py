@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.audit import audit
+from apps.shared.audit.actions import AuditAction
 from apps.gateway.utils.encryption import encryption_manager
 from apps.shared.connectors.postgres import PostgresConnector
 from apps.shared.db.models.connection import Connection
@@ -85,6 +87,7 @@ async def test_db_connection(request: DBConnectionTestRequest) -> Any:
 
 
 @router.post("", status_code=201)
+@audit(AuditAction.CONNECTION_CREATE)
 async def create_connection(
     request: DBConnectionTestRequest,
     db: Session = Depends(get_db),
