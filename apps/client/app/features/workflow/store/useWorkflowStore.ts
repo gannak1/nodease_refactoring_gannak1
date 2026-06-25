@@ -94,6 +94,14 @@ type WorkflowState = {
     node: T,
     buildNodes?: (nodes: Node[], node: T) => Node[],
   ) => T;
+  undo: () => void;
+  redo: () => void;
+  copySelectedNodes: () => void;
+  pasteCopiedNodes: () => void;
+  duplicateSelectedNodes: () => void;
+  hasSelectedElements: () => boolean;
+  deleteSelectedElements: () => void;
+  clearSelection: () => void;
 
   // === Inner Node Selection (for Loop/Workflow nodes) ===
   selectedInnerNode: { parentNodeId: string; nodeId: string } | null;
@@ -164,6 +172,185 @@ type WorkflowState = {
   ) => void;
 };
 
+type GraphSnapshot = {
+  nodes: Node[];
+  edges: Edge[];
+};
+
+const HISTORY_LIMIT = 50;
+const PASTE_OFFSET = 40;
+
+const cloneGraph = (nodes: Node[], edges: Edge[]): GraphSnapshot => ({
+  nodes: structuredClone(nodes),
+  edges: structuredClone(edges),
+});
+
+const syncActiveWorkflow = (
+  workflows: Workflow[],
+  activeWorkflowId: string,
+  nodes: Node[],
+  edges: Edge[],
+) =>
+  workflows.map((workflow) =>
+    workflow.id === activeWorkflowId ? { ...workflow, nodes, edges } : workflow,
+  );
+
+const shouldRecordEdgeChanges = (changes: EdgeChange[]) =>
+  changes.some((change) => change.type !== 'select');
+
+const isDraggingPositionChange = (change: NodeChange) =>
+  change.type === 'position' && 'dragging' in change && change.dragging === true;
+
+const shouldRecordCompletedNodeChanges = (changes: NodeChange[]) =>
+  changes.some(
+    (change) => change.type !== 'select' && !isDraggingPositionChange(change),
+  );
+
+const REFERENCE_FIELD_KEYS = new Set([
+  'value_selector',
+  'variable_selector',
+  'source_selector',
+  'target_selector',
+]);
+
+const remapSelectorValue = (
+  value: unknown,
+  idMap: Map<string, string>,
+): unknown => {
+  if (typeof value === 'string') {
+    return idMap.get(value) || value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      index === 0 ? remapSelectorValue(item, idMap) : item,
+    );
+  }
+  return value;
+};
+
+const remapCodeInputSource = (source: string, idMap: Map<string, string>) => {
+  const separatorIndex = source.indexOf('.');
+  if (separatorIndex <= 0) return source;
+
+  const nodeId = source.slice(0, separatorIndex);
+  const remappedNodeId = idMap.get(nodeId);
+  if (!remappedNodeId) return source;
+
+  return `${remappedNodeId}${source.slice(separatorIndex)}`;
+};
+
+const remapInputsArray = (
+  inputs: unknown[],
+  idMap: Map<string, string>,
+): unknown[] =>
+  inputs.map((input) => {
+    if (!input || typeof input !== 'object') {
+      return remapCopiedNodeReferences(input, idMap);
+    }
+
+    return Object.fromEntries(
+      Object.entries(input).map(([key, item]) => [
+        key,
+        key === 'source' && typeof item === 'string'
+          ? remapCodeInputSource(item, idMap)
+          : remapCopiedNodeReferences(item, idMap),
+      ]),
+    );
+  });
+
+const remapCopiedNodeReferences = (
+  value: unknown,
+  idMap: Map<string, string>,
+): unknown => {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      remapCopiedNodeReferences(item, idMap),
+    );
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        REFERENCE_FIELD_KEYS.has(key)
+          ? remapSelectorValue(item, idMap)
+          : key === 'inputs' && Array.isArray(item)
+            ? remapInputsArray(item, idMap)
+          : remapCopiedNodeReferences(item, idMap),
+      ]),
+    );
+  }
+  return value;
+};
+
+const preparePastedNodeData = (
+  data: Node['data'],
+  idMap: Map<string, string>,
+): Node['data'] => {
+  const remappedData = remapCopiedNodeReferences(data, idMap) as Node['data'] & {
+    displayNumber?: unknown;
+  };
+  delete remappedData.displayNumber;
+  return remappedData;
+};
+
+const getInternalEdges = (edges: Edge[], nodeIds: Set<string>) =>
+  edges.filter(
+    (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+  );
+
+const buildDuplicatedGraphElements = (
+  sourceNodes: Node[],
+  sourceEdges: Edge[],
+) => {
+  const idMap = new Map<string, string>();
+  const timestamp = Date.now();
+  sourceNodes.forEach((node, index) => {
+    idMap.set(node.id, `${node.id}-copy-${timestamp}-${index}`);
+  });
+
+  const duplicatedNodes = sourceNodes.map((node) => {
+    const newId = idMap.get(node.id);
+    return {
+      ...structuredClone(node),
+      id: newId || `${node.id}-copy-${timestamp}`,
+      data: preparePastedNodeData(node.data, idMap),
+      selected: true,
+      position: {
+        x: node.position.x + PASTE_OFFSET,
+        y: node.position.y + PASTE_OFFSET,
+      },
+    } as Node;
+  });
+
+  const duplicatedEdges = sourceEdges
+    .map((edge, index) => {
+      const source = idMap.get(edge.source);
+      const target = idMap.get(edge.target);
+      if (!source || !target) return null;
+      return {
+        ...structuredClone(edge),
+        id: `${edge.id}-copy-${timestamp}-${index}`,
+        source,
+        target,
+        selected: false,
+      } as Edge;
+    })
+    .filter((edge): edge is Edge => edge !== null);
+
+  return { duplicatedNodes, duplicatedEdges };
+};
+
+type InternalWorkflowState = WorkflowState & {
+  undoStack: GraphSnapshot[];
+  redoStack: GraphSnapshot[];
+  copiedNodes: Node[];
+  copiedEdges: Edge[];
+  pendingDragStartSnapshot: GraphSnapshot | null;
+};
+
 const removeLegacyDeletableFlag = (node: Node): Node => {
   const nodeWithoutDeletable = { ...node } as Node & { deletable?: unknown };
   delete nodeWithoutDeletable.deletable;
@@ -192,7 +379,7 @@ const initialWorkflows: Workflow[] = [
   },
 ];
 
-export const useWorkflowStore = create<WorkflowState>((set, get) => ({
+export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   // === Editor UI 상태 ===
   workflows: initialWorkflows,
   activeWorkflowId: initialWorkflows[0]?.id || '',
@@ -223,6 +410,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   // === 그래프 데이터 ===
   nodes: initialNodes,
   edges: initialEdges,
+  undoStack: [],
+  redoStack: [],
+  copiedNodes: [],
+  copiedEdges: [],
+  pendingDragStartSnapshot: null,
   features: createDefaultFeatures(),
   envVariables: [],
   runtimeVariables: [],
@@ -232,19 +424,41 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // === ReactFlow 액션 ===
   setNodes: (nodes) => {
-    const { workflows, activeWorkflowId } = get();
-    const updatedWorkflows = workflows.map((w) =>
-      w.id === activeWorkflowId ? { ...w, nodes } : w,
+    const { nodes: currentNodes, edges, workflows, activeWorkflowId } = get();
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      nodes,
+      edges,
     );
-    set({ nodes, workflows: updatedWorkflows });
+    set((state) => ({
+      nodes,
+      workflows: updatedWorkflows,
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(currentNodes, edges),
+      ],
+      redoStack: [],
+    }));
   },
 
   setEdges: (edges) => {
-    const { workflows, activeWorkflowId } = get();
-    const updatedWorkflows = workflows.map((w) =>
-      w.id === activeWorkflowId ? { ...w, edges } : w,
+    const { nodes, edges: currentEdges, workflows, activeWorkflowId } = get();
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      nodes,
+      edges,
     );
-    set({ edges, workflows: updatedWorkflows });
+    set((state) => ({
+      edges,
+      workflows: updatedWorkflows,
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(nodes, currentEdges),
+      ],
+      redoStack: [],
+    }));
   },
 
   addNode: (node, buildNodes) => {
@@ -278,7 +492,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   onNodesChange: (changes: NodeChange[]) => {
     const currentNodes = get().nodes || [];
+    const currentEdges = get().edges || [];
     const { snapGridSize, isSnapTemporarilyDisabled } = get();
+    const pendingDragStartSnapshot = get().pendingDragStartSnapshot;
     // DB에 deletable:false로 저장된 노드도 삭제 가능하도록 속성 제거
     // TODO: 데이터 마이그레이션 후 제거 필요
     const deletableNodes = currentNodes.map(removeLegacyDeletableFlag);
@@ -287,19 +503,281 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         ? changes
         : snapPositionChanges(changes, deletableNodes, snapGridSize);
     const newNodes = applyNodeChanges(positionChanges, deletableNodes);
-    get().setNodes(newNodes as Node[]);
+    const { workflows, activeWorkflowId } = get();
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      newNodes as Node[],
+      currentEdges,
+    );
+    const isDragging = changes.some(isDraggingPositionChange);
+    const shouldRecord = shouldRecordCompletedNodeChanges(changes);
+    const historySnapshot = pendingDragStartSnapshot
+      ? pendingDragStartSnapshot
+      : cloneGraph(currentNodes, currentEdges);
+
+    set((state) => ({
+      nodes: newNodes as Node[],
+      workflows: updatedWorkflows,
+      pendingDragStartSnapshot: isDragging
+        ? state.pendingDragStartSnapshot || cloneGraph(currentNodes, currentEdges)
+        : null,
+      ...(shouldRecord
+        ? {
+            undoStack: [
+              ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+              historySnapshot,
+            ],
+            redoStack: [],
+          }
+        : {}),
+    }));
   },
 
   onEdgesChange: (changes: EdgeChange[]) => {
     const currentEdges = get().edges || [];
+    const currentNodes = get().nodes || [];
     const newEdges = applyEdgeChanges(changes, currentEdges);
-    get().setEdges(newEdges);
+    const { workflows, activeWorkflowId } = get();
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      currentNodes,
+      newEdges,
+    );
+    set((state) => ({
+      edges: newEdges,
+      workflows: updatedWorkflows,
+      ...(shouldRecordEdgeChanges(changes)
+        ? {
+            undoStack: [
+              ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+              cloneGraph(currentNodes, currentEdges),
+            ],
+            redoStack: [],
+          }
+        : {}),
+    }));
   },
 
   onConnect: (connection: Connection) => {
     const currentEdges = get().edges || [];
+    const currentNodes = get().nodes || [];
     const newEdges = addEdge(connection, currentEdges);
-    get().setEdges(newEdges);
+    const { workflows, activeWorkflowId } = get();
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      currentNodes,
+      newEdges,
+    );
+    set((state) => ({
+      edges: newEdges,
+      workflows: updatedWorkflows,
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(currentNodes, currentEdges),
+      ],
+      redoStack: [],
+    }));
+  },
+
+  undo: () => {
+    const { undoStack, nodes, edges, activeWorkflowId } = get();
+    const previous = undoStack[undoStack.length - 1];
+    if (!previous) return;
+
+    const current = cloneGraph(nodes, edges);
+    set((state) => ({
+      nodes: previous.nodes,
+      edges: previous.edges,
+      workflows: syncActiveWorkflow(
+        state.workflows,
+        activeWorkflowId,
+        previous.nodes,
+        previous.edges,
+      ),
+      undoStack: undoStack.slice(0, -1),
+      redoStack: [
+        ...state.redoStack.slice(-(HISTORY_LIMIT - 1)),
+        current,
+      ],
+      pendingDragStartSnapshot: null,
+    }));
+  },
+
+  redo: () => {
+    const { redoStack, nodes, edges, activeWorkflowId } = get();
+    const next = redoStack[redoStack.length - 1];
+    if (!next) return;
+
+    const current = cloneGraph(nodes, edges);
+    set((state) => ({
+      nodes: next.nodes,
+      edges: next.edges,
+      workflows: syncActiveWorkflow(
+        state.workflows,
+        activeWorkflowId,
+        next.nodes,
+        next.edges,
+      ),
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        current,
+      ],
+      redoStack: redoStack.slice(0, -1),
+      pendingDragStartSnapshot: null,
+    }));
+  },
+
+  copySelectedNodes: () => {
+    const { nodes, edges } = get();
+    const selectedNodes = nodes.filter((node) => node.selected);
+    const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+    const selectedEdges = getInternalEdges(edges, selectedNodeIds);
+
+    set({
+      copiedNodes: structuredClone(selectedNodes),
+      copiedEdges: structuredClone(selectedEdges),
+    });
+  },
+
+  pasteCopiedNodes: () => {
+    const { copiedNodes, copiedEdges, nodes, edges, activeWorkflowId } = get();
+    if (copiedNodes.length === 0) return;
+
+    const { duplicatedNodes, duplicatedEdges } = buildDuplicatedGraphElements(
+      copiedNodes,
+      copiedEdges,
+    );
+
+    const nextNodes = [
+      ...nodes.map((node) => ({ ...node, selected: false }) as Node),
+      ...duplicatedNodes,
+    ];
+    const nextEdges = [
+      ...edges.map((edge) => ({ ...edge, selected: false })),
+      ...duplicatedEdges,
+    ];
+
+    set((state) => ({
+      nodes: nextNodes,
+      edges: nextEdges,
+      workflows: syncActiveWorkflow(
+        state.workflows,
+        activeWorkflowId,
+        nextNodes,
+        nextEdges,
+      ),
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(nodes, edges),
+      ],
+      redoStack: [],
+    }));
+  },
+
+  duplicateSelectedNodes: () => {
+    const { nodes, edges, activeWorkflowId } = get();
+    const selectedNodes = nodes.filter((node) => node.selected);
+    if (selectedNodes.length === 0) return;
+
+    const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+    const selectedEdges = getInternalEdges(edges, selectedNodeIds);
+    const { duplicatedNodes, duplicatedEdges } = buildDuplicatedGraphElements(
+      selectedNodes,
+      selectedEdges,
+    );
+
+    const nextNodes = [
+      ...nodes.map((node) => ({ ...node, selected: false }) as Node),
+      ...duplicatedNodes,
+    ];
+    const nextEdges = [
+      ...edges.map((edge) => ({ ...edge, selected: false })),
+      ...duplicatedEdges,
+    ];
+
+    set((state) => ({
+      nodes: nextNodes,
+      edges: nextEdges,
+      workflows: syncActiveWorkflow(
+        state.workflows,
+        activeWorkflowId,
+        nextNodes,
+        nextEdges,
+      ),
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(nodes, edges),
+      ],
+      redoStack: [],
+    }));
+  },
+
+  hasSelectedElements: () => {
+    const { nodes, edges } = get();
+    return (
+      nodes.some((node) => node.selected) ||
+      edges.some((edge) => edge.selected)
+    );
+  },
+
+  deleteSelectedElements: () => {
+    const { nodes, edges, activeWorkflowId } = get();
+    const selectedNodeIds = new Set(
+      nodes.filter((node) => node.selected).map((node) => node.id),
+    );
+    const selectedEdgeIds = new Set(
+      edges.filter((edge) => edge.selected).map((edge) => edge.id),
+    );
+
+    if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
+
+    const nextNodes = nodes.filter((node) => !selectedNodeIds.has(node.id));
+    const nextEdges = edges.filter(
+      (edge) =>
+        !selectedEdgeIds.has(edge.id) &&
+        !selectedNodeIds.has(edge.source) &&
+        !selectedNodeIds.has(edge.target),
+    );
+
+    set((state) => ({
+      nodes: nextNodes,
+      edges: nextEdges,
+      workflows: syncActiveWorkflow(
+        state.workflows,
+        activeWorkflowId,
+        nextNodes,
+        nextEdges,
+      ),
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(nodes, edges),
+      ],
+      redoStack: [],
+    }));
+  },
+
+  clearSelection: () => {
+    const { nodes, edges, workflows, activeWorkflowId } = get();
+    const nextNodes = nodes.map((node) =>
+      node.selected ? ({ ...node, selected: false } as Node) : node,
+    );
+    const nextEdges = edges.map((edge) =>
+      edge.selected ? { ...edge, selected: false } : edge,
+    );
+
+    set({
+      nodes: nextNodes,
+      edges: nextEdges,
+      workflows: syncActiveWorkflow(
+        workflows,
+        activeWorkflowId,
+        nextNodes,
+        nextEdges,
+      ),
+    });
   },
 
   setProjectInfo: (name, icon, description = '') =>
@@ -493,6 +971,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         nodes: workflow.nodes,
         edges: workflow.edges,
         features: workflow.features,
+        undoStack: [],
+        redoStack: [],
       });
     }
   },
@@ -504,7 +984,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const workflow = get().workflows.find((w) => w.id === id);
 
     if (!workflow) {
-      set({ activeWorkflowId: id });
+      set({ activeWorkflowId: id, undoStack: [], redoStack: [] });
       return;
     }
 
@@ -514,6 +994,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     set({
       activeWorkflowId: id,
       features: workflow.features,
+      undoStack: [],
+      redoStack: [],
       ...(hasLoadedWorkflowData
         ? { nodes: workflow.nodes, edges: workflow.edges }
         : {}),
@@ -649,6 +1131,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         features: normalized.features,
         envVariables: data.envVariables || [],
         runtimeVariables: data.runtimeVariables || [],
+        undoStack: [],
+        redoStack: [],
       });
     }
 

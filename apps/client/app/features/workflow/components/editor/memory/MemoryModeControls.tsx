@@ -26,7 +26,13 @@ function MemoryModeModals({
   return (
     <>
       {showMemoryConfirm && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="기억모드 비용 확인"
+          data-canvas-shortcut-scope="blocked"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4"
+        >
           <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-2">
               <div className="h-10 w-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
@@ -65,7 +71,13 @@ function MemoryModeModals({
       )}
 
       {showKeyPrompt && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="LLM Provider 키 등록 안내"
+          data-canvas-shortcut-scope="blocked"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4"
+        >
           <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-2">
               <div className="h-10 w-10 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center text-xl">

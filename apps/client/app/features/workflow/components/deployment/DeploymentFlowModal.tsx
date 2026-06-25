@@ -105,7 +105,13 @@ export function DeploymentFlowModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="배포"
+      data-canvas-shortcut-scope="blocked"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]"
+    >
       <div
         className={`relative bg-white rounded-lg shadow-xl w-full mx-4 flex flex-col overflow-hidden ${
           (deploymentType === 'api' || deploymentType === 'webhook') &&
