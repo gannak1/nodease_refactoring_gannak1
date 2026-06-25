@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
+from apps.shared.services.tracing.observability import TraceObservabilityService
 from apps.shared.services.tracing.policy import (
     ResolvedRedactionPolicy,
     ResolvedRetentionPolicy,
@@ -30,6 +31,10 @@ def _json_safe(value: Any) -> Any:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(_json_safe(value), sort_keys=True, ensure_ascii=False, default=str)
+
+
+class TracePayloadDecryptionError(RuntimeError):
+    """원문 페이로드 복호화 실패를 호출자에게 안전하게 알리는 예외."""
 
 
 class TracePayloadService:
@@ -195,6 +200,11 @@ class TracePayloadService:
                 from apps.shared.utils.encryption import encryption_manager
 
                 return json.loads(encryption_manager.decrypt(payload.raw_payload_encrypted))
-            except Exception:
-                raise RuntimeError("raw_payload_decryption_failed")
+            except Exception as error:
+                TraceObservabilityService.record_raw_payload_decryption_failed(
+                    payload, error
+                )
+                raise TracePayloadDecryptionError(
+                    "raw_payload_decryption_failed"
+                ) from error
         raise ValueError("Invalid payload view level")

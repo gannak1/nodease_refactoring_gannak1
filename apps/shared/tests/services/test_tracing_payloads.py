@@ -1,4 +1,13 @@
-from apps.shared.services.tracing.payload import TracePayloadService
+import logging
+import uuid
+from types import SimpleNamespace
+
+import pytest
+from apps.shared.services.tracing.observability import TraceObservabilityService
+from apps.shared.services.tracing.payload import (
+    TracePayloadDecryptionError,
+    TracePayloadService,
+)
 from apps.shared.services.tracing.policy import (
     ResolvedRedactionPolicy,
     ResolvedRetentionPolicy,
@@ -72,3 +81,40 @@ def test_secret_payload_never_gets_raw_storage_even_when_policy_allows_raw():
     assert records[0]["secret_detected"] is True
     assert records[0]["raw_payload_encrypted"] is None
     assert records[0]["redacted_payload"]["Authorization"] == "[REDACTED]"
+
+
+def test_raw_payload_decryption_failure_logs_and_increments_metric(
+    monkeypatch, caplog
+):
+    from apps.shared.utils.encryption import encryption_manager
+
+    def fail_decrypt(encrypted_text):
+        raise ValueError("복호화 실패")
+
+    payload = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_run_id=uuid.uuid4(),
+        workflow_node_run_id=uuid.uuid4(),
+        payload_kind="prompt",
+        scope="span",
+        storage_mode="raw_and_redacted",
+        raw_payload_encrypted="encrypted-value",
+    )
+    monkeypatch.setattr(encryption_manager, "decrypt", fail_decrypt)
+    TraceObservabilityService.reset_local_counters()
+    caplog.set_level(
+        logging.ERROR, logger="apps.shared.services.tracing.observability"
+    )
+
+    with pytest.raises(TracePayloadDecryptionError):
+        TracePayloadService.apply_view(payload, "raw")
+
+    assert (
+        TraceObservabilityService.get_local_counter(
+            "raw_payload_decryption_failed", "prompt", "span"
+        )
+        == 1
+    )
+    assert "tracing.raw_payload_decryption_failed" in caplog.text
+    assert "encrypted-value" not in caplog.text
+    assert "복호화 실패" not in caplog.text
