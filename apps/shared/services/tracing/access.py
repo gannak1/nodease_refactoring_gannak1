@@ -1,4 +1,6 @@
 import hashlib
+import hmac
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -11,7 +13,11 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
-from apps.shared.services.tracing.policy import TracePolicyService
+from apps.shared.services.tracing.observability import TraceObservabilityService
+from apps.shared.services.tracing.policy import (
+    ResolvedVisibilityPolicy,
+    TracePolicyService,
+)
 from apps.shared.services.tracing.rbac import TraceRbacService
 from sqlalchemy.orm import Session
 
@@ -20,6 +26,7 @@ VIEW_REDACTED = "redacted"
 VIEW_RAW = "raw"
 VALID_VIEW_LEVELS = {VIEW_METADATA, VIEW_REDACTED, VIEW_RAW}
 PROMPT_COMPLETION_KINDS = {"prompt", "completion"}
+TRACE_AUDIT_ACTOR_REF_SECRET_ENV = "TRACE_AUDIT_ACTOR_REF_SECRET"
 
 
 def _same_uuid(left: Any, right: Any) -> bool:
@@ -34,8 +41,15 @@ def _actor_user_ref(actor_user_id: Any) -> Optional[str]:
         value = str(uuid.UUID(str(actor_user_id)))
     except (TypeError, ValueError):
         return None
-    # 사용자 삭제 후에도 감사 이벤트를 상관분석할 수 있도록 단방향 참조만 남깁니다.
-    return hashlib.sha256(f"trace-actor:{value}".encode("utf-8")).hexdigest()
+    secret = os.getenv(TRACE_AUDIT_ACTOR_REF_SECRET_ENV)
+    if not secret:
+        return None
+    # 사용자 삭제 후에도 감사 이벤트를 상관분석할 수 있도록 HMAC 기반 단방향 참조만 남깁니다.
+    return hmac.new(
+        secret.encode("utf-8"),
+        f"trace-actor:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -45,6 +59,14 @@ class TraceAccessDecision:
     app_id: Optional[uuid.UUID] = None
     is_system_admin: bool = False
     is_app_owner: bool = False
+
+
+@dataclass(frozen=True)
+class TraceAccessContext:
+    app_id: Optional[uuid.UUID]
+    visibility: ResolvedVisibilityPolicy
+    is_system_admin: bool
+    is_app_owner: bool
 
 
 class TraceAccessService:
@@ -92,92 +114,183 @@ class TraceAccessService:
         if view_level not in VALID_VIEW_LEVELS:
             return TraceAccessDecision(False, "invalid_view_level")
 
-        app_id = TraceAccessService.resolve_trace_app_id(db, run)
-        visibility = TracePolicyService.resolve_visibility_policy(db, app_id=app_id)
-        is_admin = TraceAccessService.is_system_admin(db, user)
-        is_owner = TraceAccessService.is_app_owner(db, app_id, user)
+        context = TraceAccessService._resolve_context(db, run, user)
+        if isinstance(context, TraceAccessDecision):
+            return context
+
         is_prompt_completion = payload_kind in PROMPT_COMPLETION_KINDS
 
-        if is_admin:
-            if view_level in {VIEW_METADATA, VIEW_REDACTED}:
-                return TraceAccessDecision(True, "system_admin", app_id, True, is_owner)
-            if not visibility.admin_raw_payload_access_enabled:
-                return TraceAccessDecision(
-                    False, "admin_raw_payload_access_disabled", app_id, True, is_owner
-                )
-            if is_prompt_completion and not visibility.admin_prompt_completion_access_enabled:
-                return TraceAccessDecision(
-                    False,
-                    "admin_prompt_completion_access_disabled",
-                    app_id,
-                    True,
-                    is_owner,
-                )
-            return TraceAccessDecision(True, "system_admin_raw", app_id, True, is_owner)
+        if context.is_system_admin:
+            # 시스템 관리자와 앱 소유자가 동시에 참이면 시스템 관리자 정책을 우선 적용합니다.
+            return TraceAccessService._admin_decision(
+                context, view_level, is_prompt_completion
+            )
 
-        if is_owner:
-            if visibility.deny_owner_trace_access:
-                return TraceAccessDecision(
-                    False, "owner_trace_access_denied", app_id, False, True
-                )
-            if view_level == VIEW_METADATA:
-                return TraceAccessDecision(
-                    visibility.owner_trace_access_enabled,
-                    "app_owner" if visibility.owner_trace_access_enabled else "owner_metadata_disabled",
-                    app_id,
-                    False,
-                    True,
-                )
-            if view_level == VIEW_REDACTED:
-                if is_prompt_completion and not visibility.owner_prompt_completion_access_enabled:
-                    return TraceAccessDecision(
-                        False,
-                        "owner_prompt_completion_access_disabled",
-                        app_id,
-                        False,
-                        True,
-                    )
-                return TraceAccessDecision(
-                    visibility.owner_redacted_payload_access_enabled,
-                    "app_owner_redacted"
-                    if visibility.owner_redacted_payload_access_enabled
-                    else "owner_redacted_payload_access_disabled",
-                    app_id,
-                    False,
-                    True,
-                )
-            if is_prompt_completion and not visibility.owner_prompt_completion_access_enabled:
+        if context.is_app_owner:
+            return TraceAccessService._owner_decision(
+                context, view_level, is_prompt_completion
+            )
+
+        return TraceAccessService._regular_user_decision(context)
+
+    @staticmethod
+    def _resolve_context(
+        db: Session, run: WorkflowRun, user: Any
+    ) -> TraceAccessContext | TraceAccessDecision:
+        try:
+            app_id = TraceAccessService.resolve_trace_app_id(db, run)
+        except Exception as error:
+            TraceObservabilityService.record_trace_access_context_failed(
+                "trace_app_context_unavailable", error=error
+            )
+            return TraceAccessDecision(False, "trace_app_context_unavailable")
+
+        try:
+            visibility = TracePolicyService.resolve_visibility_policy(db, app_id=app_id)
+        except Exception as error:
+            TraceObservabilityService.record_trace_access_context_failed(
+                "visibility_policy_unavailable", app_id=app_id, error=error
+            )
+            return TraceAccessDecision(
+                False, "visibility_policy_unavailable", app_id
+            )
+
+        is_admin = TraceAccessService.is_system_admin(db, user)
+        try:
+            is_owner = TraceAccessService.is_app_owner(db, app_id, user)
+        except Exception as error:
+            TraceObservabilityService.record_trace_access_context_failed(
+                "app_owner_context_unavailable", app_id=app_id, error=error
+            )
+            return TraceAccessDecision(
+                False,
+                "app_owner_context_unavailable",
+                app_id,
+                is_system_admin=is_admin,
+            )
+
+        return TraceAccessContext(
+            app_id=app_id,
+            visibility=visibility,
+            is_system_admin=is_admin,
+            is_app_owner=is_owner,
+        )
+
+    @staticmethod
+    def _admin_decision(
+        context: TraceAccessContext,
+        view_level: str,
+        is_prompt_completion: bool,
+    ) -> TraceAccessDecision:
+        visibility = context.visibility
+        if view_level in {VIEW_METADATA, VIEW_REDACTED}:
+            return TraceAccessDecision(
+                True,
+                "system_admin",
+                context.app_id,
+                True,
+                context.is_app_owner,
+            )
+        if not visibility.admin_raw_payload_access_enabled:
+            return TraceAccessDecision(
+                False,
+                "admin_raw_payload_access_disabled",
+                context.app_id,
+                True,
+                context.is_app_owner,
+            )
+        if is_prompt_completion and not visibility.admin_prompt_completion_access_enabled:
+            return TraceAccessDecision(
+                False,
+                "admin_prompt_completion_access_disabled",
+                context.app_id,
+                True,
+                context.is_app_owner,
+            )
+        return TraceAccessDecision(
+            True, "system_admin_raw", context.app_id, True, context.is_app_owner
+        )
+
+    @staticmethod
+    def _owner_decision(
+        context: TraceAccessContext,
+        view_level: str,
+        is_prompt_completion: bool,
+    ) -> TraceAccessDecision:
+        visibility = context.visibility
+        if visibility.deny_owner_trace_access:
+            return TraceAccessDecision(
+                False, "owner_trace_access_denied", context.app_id, False, True
+            )
+        if view_level == VIEW_METADATA:
+            return TraceAccessDecision(
+                visibility.owner_trace_access_enabled,
+                "app_owner"
+                if visibility.owner_trace_access_enabled
+                else "owner_metadata_disabled",
+                context.app_id,
+                False,
+                True,
+            )
+        if view_level == VIEW_REDACTED:
+            if (
+                is_prompt_completion
+                and not visibility.owner_prompt_completion_access_enabled
+            ):
                 return TraceAccessDecision(
                     False,
                     "owner_prompt_completion_access_disabled",
-                    app_id,
+                    context.app_id,
                     False,
                     True,
                 )
             return TraceAccessDecision(
-                visibility.owner_raw_payload_access_enabled,
-                "app_owner_raw"
-                if visibility.owner_raw_payload_access_enabled
-                else "owner_raw_payload_access_disabled",
-                app_id,
+                visibility.owner_redacted_payload_access_enabled,
+                "app_owner_redacted"
+                if visibility.owner_redacted_payload_access_enabled
+                else "owner_redacted_payload_access_disabled",
+                context.app_id,
                 False,
                 True,
             )
+        if is_prompt_completion and not visibility.owner_prompt_completion_access_enabled:
+            return TraceAccessDecision(
+                False,
+                "owner_prompt_completion_access_disabled",
+                context.app_id,
+                False,
+                True,
+            )
+        return TraceAccessDecision(
+            visibility.owner_raw_payload_access_enabled,
+            "app_owner_raw"
+            if visibility.owner_raw_payload_access_enabled
+            else "owner_raw_payload_access_disabled",
+            context.app_id,
+            False,
+            True,
+        )
 
-        return TraceAccessDecision(False, "regular_user_trace_access_denied", app_id)
+    @staticmethod
+    def _regular_user_decision(context: TraceAccessContext) -> TraceAccessDecision:
+        return TraceAccessDecision(
+            False, "regular_user_trace_access_denied", context.app_id
+        )
 
     @staticmethod
     def record_payload_access_event(
-        db: Session,
+        _request_db: Session,
         workflow_run_id: Any,
         actor_user_id: Any,
         view_level: str,
         allowed: bool,
         reason_code: str,
         payload_id: Any = None,
-    ) -> None:
+        strict: bool = True,
+    ) -> bool:
+        """요청 세션 대신 감사 전용 세션으로 원문 조회 시도를 기록합니다."""
         if view_level != VIEW_RAW:
-            return
+            return True
         # 원문 응답은 감사 기록과 분리될 수 없도록 독립 트랜잭션에 먼저 기록합니다.
         audit_db = SessionLocal()
         try:
@@ -192,8 +305,18 @@ class TraceAccessService:
             )
             audit_db.add(event)
             audit_db.commit()
-        except Exception:
+            return True
+        except Exception as error:
             audit_db.rollback()
-            raise
+            TraceObservabilityService.record_raw_payload_audit_failed(
+                workflow_run_id=workflow_run_id,
+                payload_id=payload_id,
+                allowed=allowed,
+                reason_code=reason_code,
+                error=error,
+            )
+            if strict:
+                raise
+            return False
         finally:
             audit_db.close()

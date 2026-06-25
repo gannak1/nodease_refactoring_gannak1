@@ -23,6 +23,32 @@ try:
 except ValueError:
     RAW_PAYLOAD_DECRYPT_FAILURES = None
 
+try:
+    RAW_PAYLOAD_AUDIT_FAILURES = (
+        PrometheusCounter(
+            "tracing_raw_payload_audit_failures_total",
+            "Raw trace payload audit write failure count.",
+            ["allowed", "reason_code"],
+        )
+        if PrometheusCounter
+        else None
+    )
+except ValueError:
+    RAW_PAYLOAD_AUDIT_FAILURES = None
+
+try:
+    TRACE_ACCESS_CONTEXT_FAILURES = (
+        PrometheusCounter(
+            "tracing_access_context_failures_total",
+            "Trace access context resolution failure count.",
+            ["reason_code"],
+        )
+        if PrometheusCounter
+        else None
+    )
+except ValueError:
+    TRACE_ACCESS_CONTEXT_FAILURES = None
+
 
 class TraceObservabilityService:
     """추적 전용 서버 로그와 메트릭을 기록하는 얇은 경계."""
@@ -59,6 +85,66 @@ class TraceObservabilityService:
                 "payload_kind": payload_kind,
                 "scope": scope,
                 "storage_mode": cls._safe_str(getattr(payload, "storage_mode", None)),
+                "error_type": type(error).__name__ if error else "unknown",
+            },
+        )
+
+    @classmethod
+    def record_raw_payload_audit_failed(
+        cls,
+        workflow_run_id: Any,
+        payload_id: Any,
+        allowed: bool,
+        reason_code: str,
+        error: Optional[Exception] = None,
+    ) -> None:
+        allowed_label = "true" if allowed else "false"
+        safe_reason = str(reason_code or "unknown")
+        cls._local_counters[
+            ("raw_payload_audit_failed", allowed_label, safe_reason)
+        ] += 1
+
+        if RAW_PAYLOAD_AUDIT_FAILURES is not None:
+            RAW_PAYLOAD_AUDIT_FAILURES.labels(
+                allowed=allowed_label,
+                reason_code=safe_reason,
+            ).inc()
+
+        # 감사 실패 로그에도 행위자 식별자, 원문, 암호문, 예외 메시지는 남기지 않습니다.
+        logger.error(
+            "tracing.raw_payload_audit_failed",
+            extra={
+                "event": "tracing.raw_payload_audit_failed",
+                "trace_id": cls._safe_str(workflow_run_id),
+                "payload_id": cls._safe_str(payload_id),
+                "allowed": allowed,
+                "reason_code": safe_reason,
+                "error_type": type(error).__name__ if error else "unknown",
+            },
+        )
+
+    @classmethod
+    def record_trace_access_context_failed(
+        cls,
+        reason_code: str,
+        app_id: Any = None,
+        error: Optional[Exception] = None,
+    ) -> None:
+        safe_reason = str(reason_code or "unknown")
+        cls._local_counters[
+            ("trace_access_context_failed", safe_reason, "all")
+        ] += 1
+
+        if TRACE_ACCESS_CONTEXT_FAILURES is not None:
+            TRACE_ACCESS_CONTEXT_FAILURES.labels(reason_code=safe_reason).inc()
+
+        # 접근 판단 실패 로그에는 정책/DB 오류 유형만 남기고 상세 예외 메시지는 제외합니다.
+        logger.error(
+            "tracing.access_context_failed",
+            extra={
+                "event": "tracing.access_context_failed",
+                "app_id": cls._safe_str(app_id),
+                "reason_code": safe_reason,
                 "error_type": type(error).__name__ if error else "unknown",
             },
         )

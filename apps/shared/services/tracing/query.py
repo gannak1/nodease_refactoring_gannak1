@@ -108,6 +108,7 @@ class TraceQueryService:
                 view_level=view_level,
                 allowed=decision.allowed,
                 reason_code=decision.reason_code,
+                strict=decision.allowed,
             )
         if not decision.allowed:
             raise PermissionError(decision.reason_code)
@@ -170,6 +171,7 @@ class TraceQueryService:
                     view_level=view_level,
                     allowed=False,
                     reason_code=initial_decision.reason_code,
+                    strict=False,
                 )
             raise PermissionError(initial_decision.reason_code)
         if view_level == VIEW_RAW and not initial_decision.allowed:
@@ -180,6 +182,7 @@ class TraceQueryService:
                 view_level=view_level,
                 allowed=False,
                 reason_code=initial_decision.reason_code,
+                strict=False,
             )
             raise PermissionError(initial_decision.reason_code)
 
@@ -249,6 +252,7 @@ class TraceQueryService:
                     allowed=decision.allowed,
                     reason_code=decision.reason_code,
                     payload_id=payload.id,
+                    strict=decision.allowed,
                 )
             if decision.allowed:
                 allowed_payloads.append(payload)
@@ -358,6 +362,7 @@ class TraceQueryService:
                 allowed=decision.allowed,
                 reason_code=decision.reason_code,
                 payload_id=payload.id,
+                strict=decision.allowed,
             )
         if not decision.allowed:
             raise PermissionError(decision.reason_code)
