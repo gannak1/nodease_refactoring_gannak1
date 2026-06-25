@@ -21,11 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def _to_uuid(value) -> Optional[uuid.UUID]:
-    if value is None:
-        return None
-    if isinstance(value, uuid.UUID):
-        return value
     try:
+        if value is None or isinstance(value, uuid.UUID):
+            return value
         return uuid.UUID(str(value))
     except (ValueError, TypeError):
         return None

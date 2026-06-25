@@ -10,8 +10,6 @@ from apps.shared.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_TASK_NAME = "audit.record"
-
 
 def _serialize(value: Any) -> Any:
     """Celery JSON 직렬화를 위해 UUID/datetime/Enum/dict/list를 재귀 변환한다."""
@@ -59,6 +57,6 @@ def record_audit(
             "audit_metadata": metadata or {},
             "occurred_at": datetime.now(timezone.utc),
         }
-        celery_app.send_task(_TASK_NAME, args=[_serialize(data)])
+        celery_app.send_task("audit.record", args=[_serialize(data)])
     except Exception as e:  # noqa: BLE001 - 감사 발행은 절대 본 요청을 막지 않는다
         logger.error(f"[Audit] record 발행 실패 (action={action}): {e}")
