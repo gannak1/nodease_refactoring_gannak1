@@ -5,18 +5,22 @@ import {
   useState,
 } from 'react';
 
-import { LLMNodeData, LLMVariable } from '../../../../types/Nodes';
+import { LLMNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
-import { HelpCircle, BookOpen, MousePointerClick, Wand2 } from 'lucide-react';
+import {
+  HelpCircle,
+  BookOpen,
+  MousePointerClick,
+  Wand2,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { PromptWizardModal } from '../../../modals/PromptWizardModal';
 import { ModelSelectDropdown } from './ModelSelectDropdown';
+import { LLMParameterSidePanel } from './LLMParameterSidePanel';
 import {
   fetchEligibleKnowledgeBases,
   sanitizeSelectedKnowledgeBases,
@@ -24,6 +28,7 @@ import {
 } from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
 import {
   DraggedOutputVariable,
+  getDroppedOutputReferenceName,
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
@@ -208,6 +213,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
   const { updateNodeData, nodes, edges } = useWorkflowStore();
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
+  const [isParameterPanelOpen, setIsParameterPanelOpen] = useState(false);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -390,6 +396,11 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
 
   const handlePromptDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      );
       updateNodeData(nodeId, {
         referenced_variables: upsertNamedSelector(
           data.referenced_variables,
@@ -397,6 +408,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
           'value_selector',
         ),
       });
+      return referenceName;
     },
     [data.referenced_variables, nodeId, updateNodeData],
   );
@@ -404,33 +416,6 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
   const tokenLabels = useMemo(
     () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
     [data.referenced_variables, upstreamNodes],
-  );
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const nextVariables = [...(data.referenced_variables || [])];
-      nextVariables.splice(index, 1);
-      updateNodeData(nodeId, { referenced_variables: nextVariables });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
-  );
-
-  const handleUpdateVariable = useCallback(
-    (
-      index: number,
-      field: keyof LLMVariable,
-      value: string | string[],
-    ) => {
-      const nextVariables = [...(data.referenced_variables || [])];
-      nextVariables[index] = { ...nextVariables[index], [field]: value };
-      updateNodeData(nodeId, { referenced_variables: nextVariables });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
-  );
-
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
   );
 
   // 사용자가 사용 가능한 모델 가져오기
@@ -503,7 +488,37 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
   }, [activeHelp]);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative flex flex-col gap-2">
+      {isParameterPanelOpen && (
+        <div className="absolute right-[calc(100%+56px)] top-0 z-50">
+          <LLMParameterSidePanel
+            nodeId={nodeId}
+            data={data}
+            onClose={() => setIsParameterPanelOpen(false)}
+          />
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setIsParameterPanelOpen((current) => !current);
+          }}
+          className={`nodrag inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+            isParameterPanelOpen
+              ? 'border-blue-200 bg-blue-50 text-blue-700'
+              : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+          }`}
+          aria-expanded={isParameterPanelOpen}
+          aria-label="LLM 고급 설정 열기"
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          고급 설정
+        </button>
+      </div>
+
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>
         <div className="flex flex-col gap-2">
@@ -802,23 +817,6 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
             <UnregisteredVariablesAlert variables={validationErrors} />
           )}
         </div>
-      </CollapsibleSection>
-
-      <CollapsibleSection title="사용 중인 변수" showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={() => undefined}
-          onRemove={handleRemoveVariable}
-          title=""
-          description="프롬프트에 드롭한 출력 변수의 연결을 확인하고 잘못된 연결을 수정하세요."
-          showAddButton={false}
-          emptyMessage="프롬프트에서 사용 중인 변수가 없습니다."
-        />
-        {incompleteVariables.length > 0 && (
-          <IncompleteVariablesAlert variables={incompleteVariables} />
-        )}
       </CollapsibleSection>
 
       {/* 프롬프트 마법사 모달 */}

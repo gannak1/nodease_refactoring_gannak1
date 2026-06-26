@@ -1,13 +1,9 @@
 import { useCallback, useMemo, useState, useRef } from 'react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { MailNodeData, EmailProvider } from '../../../../types/Nodes';
-import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 
 interface MailNodePanelProps {
   nodeId: string;
@@ -86,17 +82,11 @@ const getCaretCoordinates = (
 };
 
 export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
-  const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const { updateNodeData } = useWorkflowStore();
 
   const keywordRef = useRef<HTMLTextAreaElement>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestionPos, setSuggestionPos] = useState({ top: 0, left: 0 });
-
-  // 상위 노드 가져오기
-  const upstreamNodes = useMemo(
-    () => getUpstreamNodes(nodeId, nodes, edges),
-    [nodeId, nodes, edges],
-  );
 
   const handleUpdateData = useCallback(
     (key: keyof MailNodeData, value: unknown) => {
@@ -126,32 +116,6 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
     [handleUpdateData],
   );
 
-  // 변수 핸들러
-  const handleAddVariable = useCallback(() => {
-    handleUpdateData('referenced_variables', [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ]);
-  }, [data.referenced_variables, handleUpdateData]);
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars.splice(index, 1);
-      handleUpdateData('referenced_variables', newVars);
-    },
-    [data.referenced_variables, handleUpdateData],
-  );
-
-  const handleUpdateVariable = useCallback(
-    (index: number, field: 'name' | 'value_selector', value: string | string[]) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars[index] = { ...newVars[index], [field]: value };
-      handleUpdateData('referenced_variables', newVars);
-    },
-    [data.referenced_variables, handleUpdateData],
-  );
-
   const emailMissing = useMemo(() => {
     return !data.email?.trim();
   }, [data.email]);
@@ -159,11 +123,6 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
   const passwordMissing = useMemo(() => {
     return !data.password?.trim();
   }, [data.password]);
-
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
-  );
 
   // 자동완성 핸들러
   const handleKeyUp = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -332,22 +291,6 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
             )}
           </div>
         </div>
-      </CollapsibleSection>
-
-      {/* 3. 참조 변수 */}
-      <CollapsibleSection title="입력변수" defaultOpen={false} showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title=""
-          description="검색 조건에서 사용할 입력변수를 등록하고, 이전 노드의 출력값과 연결하세요."
-        />
-
-        {/* [VALIDATION] 불완전한 변수 경고 */}
-        <IncompleteVariablesAlert variables={incompleteVariables} />
       </CollapsibleSection>
 
       {/* 4. 검색 옵션 */}

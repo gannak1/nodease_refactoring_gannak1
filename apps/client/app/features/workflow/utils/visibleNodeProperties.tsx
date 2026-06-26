@@ -354,7 +354,10 @@ export const getNextVisibleProperties = (
   return [...current, propertyKey];
 };
 
-export const renderTokenPreview = (value: string) => {
+export const renderTokenPreview = (
+  value: string,
+  tokenLabels: Record<string, string> = {},
+) => {
   const parts: React.ReactNode[] = [];
   const tokenPattern = /{{\s*([^}]+?)\s*}}/g;
   let lastIndex = 0;
@@ -364,12 +367,13 @@ export const renderTokenPreview = (value: string) => {
     if (match.index > lastIndex) {
       parts.push(value.slice(lastIndex, match.index));
     }
+    const tokenName = match[1].trim();
     parts.push(
       <span
-        key={`${match[1]}-${match.index}`}
-        className="inline-flex max-w-full items-center rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] font-semibold text-gray-800"
+        key={`${tokenName}-${match.index}`}
+        className="mx-0.5 inline-flex max-w-full items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800 shadow-sm align-baseline"
       >
-        {match[1].trim()}
+        {tokenLabels[tokenName] || tokenName}
       </span>,
     );
     lastIndex = match.index + match[0].length;

@@ -5,18 +5,15 @@ import {
   HttpRequestNodeData,
   HttpMethod,
   AuthType,
-  HttpVariable,
 } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import {
   DraggedOutputVariable,
+  getDroppedOutputReferenceName,
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
@@ -127,11 +124,6 @@ export function HttpRequestNodePanel({
     return Array.from(new Set(errors));
   }, [data.url, data.body, data.referenced_variables]);
 
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
-  );
-
   const handleUpdateData = useCallback(
     (key: keyof HttpRequestNodeData, value: unknown) => {
       updateNodeData(nodeId, { [key]: value });
@@ -162,35 +154,13 @@ export function HttpRequestNodePanel({
     [data.headers, nodeId, updateNodeData],
   );
 
-  // 변수 핸들러
-  const handleAddVariable = useCallback(() => {
-    const newVars = [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ];
-    updateNodeData(nodeId, { referenced_variables: newVars });
-  }, [data.referenced_variables, nodeId, updateNodeData]);
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars.splice(index, 1);
-      updateNodeData(nodeId, { referenced_variables: newVars });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
-  );
-
-  const handleUpdateVariable = useCallback(
-    (index: number, key: keyof HttpVariable, value: string | string[]) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars[index] = { ...newVars[index], [key]: value };
-      updateNodeData(nodeId, { referenced_variables: newVars });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
-  );
-
   const handleTextDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      );
       updateNodeData(nodeId, {
         referenced_variables: upsertNamedSelector(
           data.referenced_variables,
@@ -198,6 +168,7 @@ export function HttpRequestNodePanel({
           'value_selector',
         ),
       });
+      return referenceName;
     },
     [data.referenced_variables, nodeId, updateNodeData],
   );
@@ -298,39 +269,6 @@ export function HttpRequestNodePanel({
 
       <div className="border-b border-gray-200" />
 
-      {/* 2. 입력변수 */}
-      <CollapsibleSection
-        title="입력변수"
-        defaultOpen={true}
-        showDivider
-        icon={(expand) => (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              expand(); // 섹션 펼치기
-              handleAddVariable();
-            }}
-            className="p-1 hover:bg-gray-200 rounded transition-colors"
-            title="입력변수 추가"
-          >
-            <Plus className="w-3.5 h-3.5 text-gray-600" />
-          </button>
-        )}
-      >
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title=""
-          showAddButton={false}
-        />
-
-        {incompleteVariables.length > 0 && (
-          <IncompleteVariablesAlert variables={incompleteVariables} />
-        )}
-      </CollapsibleSection>
       <CollapsibleSection title="인증" showDivider>
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">

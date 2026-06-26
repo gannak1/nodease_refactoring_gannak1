@@ -1,16 +1,14 @@
 import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { Sparkles } from 'lucide-react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
-import { TemplateNodeData, TemplateVariable } from '../../../../types/Nodes';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
+import { TemplateNodeData } from '../../../../types/Nodes';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { TemplateWizardModal } from '../../../modals/TemplateWizardModal';
 import {
   DraggedOutputVariable,
+  getDroppedOutputReferenceName,
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
@@ -78,37 +76,13 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
     updateNodeData(nodeId, { template: value });
   };
 
-  // 변수 추가 핸들러
-  const handleAddVariable = () => {
-    const newVar: TemplateVariable = {
-      name: '',
-      value_selector: [],
-    };
-    updateNodeData(nodeId, {
-      variables: [...(data.variables || []), newVar],
-    });
-  };
-
-  // 변수 삭제 핸들러
-  const handleRemoveVariable = (index: number) => {
-    const newVars = [...(data.variables || [])];
-    newVars.splice(index, 1);
-    updateNodeData(nodeId, { variables: newVars });
-  };
-
-  // 변수 업데이트 핸들러
-  const handleUpdateVariable = (
-    index: number,
-    field: keyof TemplateVariable,
-    value: any,
-  ) => {
-    const newVars = [...(data.variables || [])];
-    newVars[index] = { ...newVars[index], [field]: value };
-    updateNodeData(nodeId, { variables: newVars });
-  };
-
   const handleTemplateDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.variables,
+        output,
+        'value_selector',
+      );
       updateNodeData(nodeId, {
         variables: upsertNamedSelector(
           data.variables,
@@ -116,6 +90,7 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
           'value_selector',
         ),
       });
+      return referenceName;
     },
     [data.variables, nodeId, updateNodeData],
   );
@@ -140,11 +115,6 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
   }, [data.template, data.variables]);
 
 
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.variables),
-    [data.variables]
-  );
-
   const tokenLabels = useMemo(
     () => getTokenLabelMap(data.variables, upstreamNodes),
     [data.variables, upstreamNodes],
@@ -152,23 +122,7 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
 
   return (
     <div className="flex flex-col gap-2">
-      {/* 1. 변수 매핑 */}
-      <CollapsibleSection title="입력변수" showDivider>
-        <ReferencedVariablesControl
-          variables={data.variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title=""
-          description="템플릿에서 사용할 입력변수를 정의하고, 이전 노드의 출력값과 연결하세요."
-        />
-        
-
-        <IncompleteVariablesAlert variables={incompleteVariables} />
-      </CollapsibleSection>
-
-      {/* 2. 템플릿 에디터 */}
+      {/* 템플릿 에디터 */}
       <CollapsibleSection title="템플릿" showDivider>
         <div className="flex flex-col gap-2 relative">
           {/* 헤더: 설명 + 마법사 버튼 */}

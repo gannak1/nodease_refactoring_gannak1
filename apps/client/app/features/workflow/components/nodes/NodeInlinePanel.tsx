@@ -4,6 +4,7 @@ import { AppNode } from '../../types/Nodes';
 import {
   NODE_OUTPUT_DRAG_MIME,
   applyDroppedOutputToNodeData,
+  getDroppedOutputTokenNameForNode,
   parseDraggedOutput,
 } from '../../utils/nodeVariablePorts';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
@@ -173,14 +174,15 @@ export const NodeInlinePanel = ({ node }: { node: AppNode }) => {
     event.preventDefault();
     event.stopPropagation();
 
-    insertTokenIntoTextField(textField, `{{${output.key}}}`);
+    const tokenName = getDroppedOutputTokenNameForNode(node, output);
+    insertTokenIntoTextField(textField, `{{${tokenName}}}`);
     const patch = applyDroppedOutputToNodeData(node, output);
     if (patch) updateNodeData(node.id, patch);
   };
 
   return (
     <div
-      className="nodrag nowheel mt-4 min-w-0 max-w-full overflow-hidden border-t border-gray-100 pt-4"
+      className="nodrag nowheel mt-4 min-w-0 max-w-full overflow-visible border-t border-gray-100 pt-4"
       onDragOverCapture={handleTextFieldDragOver}
       onDropCapture={handleTextFieldDrop}
     >

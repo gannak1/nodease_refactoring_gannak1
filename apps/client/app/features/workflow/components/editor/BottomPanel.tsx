@@ -220,14 +220,13 @@ export default function BottomPanel({
     const selectedExpandableNodes = expandableNodes.filter(
       (node) => node.selected,
     );
+    const shouldTargetSelection = selectedExpandableNodes.length > 1;
 
     return {
       detailTargetNodes:
-        selectedExpandableNodes.length > 0
-          ? selectedExpandableNodes
-          : expandableNodes,
+        shouldTargetSelection ? selectedExpandableNodes : expandableNodes,
       detailTargetLabel:
-        selectedExpandableNodes.length > 0 ? '선택 노드' : '전체 노드',
+        shouldTargetSelection ? '선택 노드' : '전체 노드',
     };
   }, [nodes]);
 

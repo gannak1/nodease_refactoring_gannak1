@@ -9,6 +9,7 @@ import {
   List,
   FileText,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { WorkflowVariable, VariableType } from '../../../../types/Nodes';
 
 interface VariableRowProps {
@@ -67,7 +68,12 @@ export const VariableRow = ({
   const SelectedIcon = selectedOption?.icon || Type;
 
   return (
-    <div className="group flex min-w-0 max-w-full flex-col gap-2 overflow-hidden rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-all hover:border-gray-300 hover:shadow-md">
+    <div
+      className={cn(
+        'group flex min-w-0 max-w-full flex-col gap-2 overflow-visible rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-all hover:border-gray-300 hover:shadow-md',
+        isTypeOpen && 'relative z-50',
+      )}
+    >
       {/* 아이템 헤더 */}
       <div className="flex min-w-0 items-center justify-between">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -118,7 +124,7 @@ export const VariableRow = ({
           </div>
 
           {/* 타입 선택 - 커스텀 드롭다운 */}
-          <div className="relative min-w-0 flex-1" ref={typeDropdownRef}>
+          <div className="relative z-10 min-w-0 flex-1" ref={typeDropdownRef}>
             {/* 트리거 버튼 */}
             <button
               type="button"
@@ -142,7 +148,7 @@ export const VariableRow = ({
 
             {/* 드롭다운 팝오버 */}
             {isTypeOpen && (
-              <div className="absolute z-50 mt-1 w-full bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden">
+              <div className="absolute left-0 top-full z-[80] mt-1 w-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
                 <div className="py-1">
                   {TYPE_OPTIONS.map((option) => {
                     const Icon = option.icon;

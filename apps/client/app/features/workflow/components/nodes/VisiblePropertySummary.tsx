@@ -1,10 +1,34 @@
 import { AppNode } from '../../types/Nodes';
+import { useWorkflowStore } from '../../store/useWorkflowStore';
+import { getUpstreamNodes } from '../../utils/getUpstreamNodes';
+import { getTokenLabelMap } from '../../utils/nodeVariablePorts';
 import {
   getVisiblePropertyDefinitions,
   renderTokenPreview,
 } from '../../utils/visibleNodeProperties';
 
+const getNodeTokenReferences = (node: AppNode) => {
+  const data = node.data as Record<string, unknown>;
+
+  switch (node.type) {
+    case 'templateNode':
+      return data.variables;
+    case 'workflowNode':
+    case 'loopNode':
+      return data.inputs;
+    default:
+      return data.referenced_variables;
+  }
+};
+
 export const VisiblePropertySummary = ({ node }: { node: AppNode }) => {
+  const nodes = useWorkflowStore((state) => state.nodes);
+  const edges = useWorkflowStore((state) => state.edges);
+  const upstreamNodes = getUpstreamNodes(node.id, nodes, edges) as AppNode[];
+  const tokenLabels = getTokenLabelMap(
+    getNodeTokenReferences(node),
+    upstreamNodes,
+  );
   const visibleKeys = Array.isArray(node.data.visibleProperties)
     ? node.data.visibleProperties
     : [];
@@ -28,7 +52,7 @@ export const VisiblePropertySummary = ({ node }: { node: AppNode }) => {
                 {item.label}:
               </div>
               <div className="line-clamp-2 min-w-0 break-words font-medium text-gray-800">
-                {renderTokenPreview(item.value)}
+                {renderTokenPreview(item.value, tokenLabels)}
               </div>
             </>
           ) : (
@@ -36,7 +60,7 @@ export const VisiblePropertySummary = ({ node }: { node: AppNode }) => {
               <span className="font-semibold text-gray-500">
                 {item.label}:{' '}
               </span>
-              {renderTokenPreview(item.value)}
+              {renderTokenPreview(item.value, tokenLabels)}
             </div>
           )}
         </div>

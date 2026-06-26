@@ -2,15 +2,13 @@ import { useCallback, useMemo } from 'react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { GithubNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
 import { ExternalLink } from 'lucide-react';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
 import {
   DraggedOutputVariable,
+  getDroppedOutputReferenceName,
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
@@ -43,34 +41,13 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
     [nodeId, updateNodeData],
   );
 
-  // 변수 핸들러
-  const handleAddVariable = useCallback(() => {
-    handleUpdateData('referenced_variables', [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ]);
-  }, [data.referenced_variables, handleUpdateData]);
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars.splice(index, 1);
-      handleUpdateData('referenced_variables', newVars);
-    },
-    [data.referenced_variables, handleUpdateData],
-  );
-
-  const handleUpdateVariable = useCallback(
-    (index: number, field: 'name' | 'value_selector', value: string | string[]) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars[index] = { ...newVars[index], [field]: value };
-      handleUpdateData('referenced_variables', newVars);
-    },
-    [data.referenced_variables, handleUpdateData],
-  );
-
   const handleCommentDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      );
       handleUpdateData(
         'referenced_variables',
         upsertNamedSelector(
@@ -79,6 +56,7 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
           'value_selector',
         ),
       );
+      return referenceName;
     },
     [data.referenced_variables, handleUpdateData],
   );
@@ -103,11 +81,6 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
   const prMissing = useMemo(() => {
     return !data.pr_number;
   }, [data.pr_number]);
-
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
-  );
 
   return (
     <div className="flex flex-col gap-2">
@@ -161,21 +134,6 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
             <ValidationAlert message="⚠️ API 토큰을 입력해주세요." />
           )}
         </div>
-      </CollapsibleSection>
-
-      {/* 3. 참조 변수 (LLM과 유사) */}
-      <CollapsibleSection title="입력변수" showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title="" // 내부 타이틀 숨김
-          description="이 섹션에서 입력변수를 등록하고, 이전 노드의 출력값과 연결하세요."
-        />
-
-        <IncompleteVariablesAlert variables={incompleteVariables} />
       </CollapsibleSection>
 
       {/* 3. 저장소 정보 */}

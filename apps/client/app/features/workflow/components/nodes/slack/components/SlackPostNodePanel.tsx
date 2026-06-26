@@ -2,16 +2,14 @@ import { DragEvent, useCallback, useEffect, useMemo } from 'react';
 import { HelpCircle, Plus, Trash2 } from 'lucide-react';
 
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
-import { HttpVariable, SlackPostNodeData } from '../../../../types/Nodes';
+import { SlackPostNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import {
   DraggedOutputVariable,
+  getDroppedOutputReferenceName,
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
@@ -99,11 +97,6 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     return Array.from(missing);
   }, [data.message, data.blocks, availableVariables]);
 
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
-  );
-
   const trimmedUrl = (data.url || '').trim();
   const isWebhookUrlValid = useMemo(() => {
     if (mode !== 'webhook') return true;
@@ -144,35 +137,13 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     [data.headers, nodeId, updateNodeData],
   );
 
-  // 참조 변수 핸들러
-  const handleAddVariable = useCallback(() => {
-    const newVars = [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ];
-    updateNodeData(nodeId, { referenced_variables: newVars });
-  }, [data.referenced_variables, nodeId, updateNodeData]);
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars.splice(index, 1);
-      updateNodeData(nodeId, { referenced_variables: newVars });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
-  );
-
-  const handleUpdateVariable = useCallback(
-    (index: number, key: keyof HttpVariable, value: string | string[]) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars[index] = { ...newVars[index], [key]: value };
-      updateNodeData(nodeId, { referenced_variables: newVars });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
-  );
-
   const handleTextDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      );
       updateNodeData(nodeId, {
         referenced_variables: upsertNamedSelector(
           data.referenced_variables,
@@ -180,6 +151,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
           'value_selector',
         ),
       });
+      return referenceName;
     },
     [data.referenced_variables, nodeId, updateNodeData],
   );
@@ -358,22 +330,6 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
           </CollapsibleSection>
         </>
       )}
-
-      <CollapsibleSection title="입력변수" showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title=""
-          description="메시지/블록에서 사용할 입력변수를 정의하고, 이전 노드의 출력값과 연결하세요."
-        />
-
-        {incompleteVariables.length > 0 && (
-          <IncompleteVariablesAlert variables={incompleteVariables} />
-        )}
-      </CollapsibleSection>
 
       <CollapsibleSection
         title="헤더 / 타임아웃"

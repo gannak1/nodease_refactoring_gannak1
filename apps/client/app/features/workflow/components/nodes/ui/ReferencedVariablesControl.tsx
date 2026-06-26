@@ -1,7 +1,7 @@
 import React from 'react';
 import { Plus, Trash2, ArrowRight } from 'lucide-react';
 import { AppNode } from '../../../types/Nodes';
-import { getNodeOutputs } from '../../../utils/getNodeOutputs';
+import { getNodeOutputVariables } from '../../../utils/nodeVariablePorts';
 import { RoundedSelect } from '../../ui/RoundedSelect';
 
 export interface ReferencedVariable {
@@ -141,7 +141,7 @@ export const ReferencedVariablesControl: React.FC<
           (n) => n.id === selectedSourceNodeId,
         );
         const availableOutputs = selectedNode
-          ? getNodeOutputs(selectedNode)
+          ? getNodeOutputVariables(selectedNode)
           : [];
 
         return (
@@ -207,9 +207,9 @@ export const ReferencedVariablesControl: React.FC<
                           : '출력값 선택',
                         value: '',
                       },
-                      ...availableOutputs.map((outKey: string) => ({
-                        label: outKey,
-                        value: outKey,
+                      ...availableOutputs.map((output) => ({
+                        label: output.label || output.key,
+                        value: output.key,
                       })),
                     ]}
                     disabled={!selectedSourceNodeId}
