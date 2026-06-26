@@ -3,7 +3,13 @@ import sys
 import types
 from pathlib import Path
 
-from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKeyConstraint,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 def _load_team_module():
@@ -93,6 +99,35 @@ def test_team_assignment_tables_have_composite_team_org_fk():
             "teams.id",
             "teams.organization_id",
         ]
+
+
+def test_team_options_and_flags_columns():
+    team = _load_team_module()
+    expected_check_names = {
+        team.Team: "ck_teams_flags_nonnegative",
+        team.TeamMembership: "ck_team_memberships_flags_nonnegative",
+        team.TeamWorkflowPermission: "ck_team_workflow_permissions_flags_nonnegative",
+        team.TeamKnowledgePermission: "ck_team_knowledge_permissions_flags_nonnegative",
+        team.TeamLLMPermission: "ck_team_llm_permissions_flags_nonnegative",
+        team.TeamAuditPermission: "ck_team_audit_permissions_flags_nonnegative",
+    }
+
+    for model, check_name in expected_check_names.items():
+        assert "option" not in model.__table__.columns
+
+        options_column = model.__table__.columns["options"]
+        assert isinstance(options_column.type, JSONB)
+        assert options_column.nullable is False
+
+        flags_column = model.__table__.columns["flags"]
+        assert isinstance(flags_column.type, BigInteger)
+        assert flags_column.nullable is False
+
+        assert any(
+            isinstance(constraint, CheckConstraint)
+            and constraint.name == check_name
+            for constraint in model.__table__.constraints
+        )
 
 
 def test_auth_state_is_only_on_resource_permission_tables():

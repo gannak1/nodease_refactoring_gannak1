@@ -23,6 +23,7 @@ from apps.gateway.core.config import settings
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
+from apps.gateway.services.organization_context import get_user_primary_organization_id
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
 from apps.shared.audit.actions import AuditAction
@@ -540,7 +541,7 @@ def _get_or_create_knowledge_base(
 
         new_kb = KnowledgeBase(
             user_id=user.id,
-            organization_id=user.organization_id,
+            organization_id=get_user_primary_organization_id(db, user.id),
             name=kb_name,
             description=description,
             embedding_model=ai_model,

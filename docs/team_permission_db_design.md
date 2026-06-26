@@ -10,6 +10,8 @@ Team 기반 권한 모델을 GitHub식 구조에 맞춰 정리한다.
 - Team 자체에는 `auth_state`를 두지 않는다.
 - 권한 단계는 리소스별 중간 테이블에 둔다.
 - Team이 속한 조직과 권한 row의 조직이 다르면 DB에서 저장을 막는다.
+- User의 Organization 소속은 `users.organization_id`가 아니라 `team_memberships`로 해석한다.
+- Organization 상하관계는 사용하지 않는다.
 
 ## 최종 이름
 
@@ -31,6 +33,8 @@ Team 기반 권한 모델을 GitHub식 구조에 맞춰 정리한다.
 | `id` | Team ID |
 | `organization_id` | Team 소유 조직 |
 | `name` | Team 이름 |
+| `options` | Team 설정값 |
+| `flags` | Team 상태 bitmask |
 | `description` | Team 설명 |
 | `created_by` | 생성자 |
 | `managed_by` | 관리자 |
@@ -56,6 +60,8 @@ Team을 어떤 조직 범위에 부여했는지 나타내는 공통 컬럼이다
 | `team_id` | 권한을 받는 Team |
 | `assigned_by` | 권한을 부여한 사용자 |
 | `assigned_at` | 권한 부여 시간 |
+| `options` | membership 또는 권한 row 설정값 |
+| `flags` | membership 또는 권한 row 상태 bitmask |
 
 ### TeamResourcePermissionMixin
 
@@ -94,6 +100,8 @@ admin
 | `team_id` | Team |
 | `assigned_by` | 부여자 |
 | `assigned_at` | 부여 시간 |
+| `options` | 멤버십 설정값 |
+| `flags` | 멤버십 상태 bitmask |
 
 ### team_workflow_permissions
 
@@ -108,6 +116,8 @@ Team이 어떤 Workflow에 어떤 권한을 가지는지 저장한다.
 | `auth_state` | Workflow 권한 단계 |
 | `assigned_by` | 부여자 |
 | `assigned_at` | 부여 시간 |
+| `options` | 권한 설정값 |
+| `flags` | 권한 row 상태 bitmask |
 
 ### team_knowledge_permissions
 
@@ -122,6 +132,8 @@ Team이 어떤 KnowledgeBase에 어떤 권한을 가지는지 저장한다.
 | `auth_state` | Knowledge 권한 단계 |
 | `assigned_by` | 부여자 |
 | `assigned_at` | 부여 시간 |
+| `options` | 권한 설정값 |
+| `flags` | 권한 row 상태 bitmask |
 
 ### team_llm_permissions
 
@@ -136,6 +148,8 @@ Team이 어떤 LLM Credential에 어떤 권한을 가지는지 저장한다.
 | `auth_state` | LLM 권한 단계 |
 | `assigned_by` | 부여자 |
 | `assigned_at` | 부여 시간 |
+| `options` | 권한 설정값 |
+| `flags` | 권한 row 상태 bitmask |
 
 ### team_audit_permissions
 
@@ -150,6 +164,8 @@ Team이 어떤 조직 범위의 Audit 데이터를 볼 수 있는지 저장한�
 | `auth_state` | Audit 권한 단계 |
 | `assigned_by` | 부여자 |
 | `assigned_at` | 부여 시간 |
+| `options` | 권한 설정값 |
+| `flags` | 권한 row 상태 bitmask |
 
 ## Composite FK
 
@@ -200,37 +216,21 @@ UNIQUE(id, organization_id)
 
 DB 제약은 무결성 방어용이고, 서비스 검사는 사용자에게 명확한 에러를 주기 위한 용도다.
 
-## Organization Structure
+## Organization Membership
 
-조직 계층 조회를 빠르게 하기 위해 `organization_structure` 테이블을 추가했다.
+`users.organization_id`는 사용하지 않는다.
 
-| 컬럼 | 의미 |
-| --- | --- |
-| `ancestor_id` | 상위 조직 |
-| `descendant_id` | 하위 조직 |
-| `depth` | 거리 |
-
-예시:
+User가 어떤 Organization에 속하는지는 다음 관계로 해석한다.
 
 ```text
-admin
-  -> company
-      -> department
+users.id
+  -> team_memberships.user_id
+  -> team_memberships.grantee_organization_id
 ```
 
-저장되는 row:
+`team_memberships.grantee_organization_id`는 composite FK로 `teams.organization_id`와 일치해야 하므로, TeamMembership만 봐도 사용자가 어떤 Organization의 Team에 속했는지 알 수 있다.
 
-```text
-ancestor_id   descendant_id   depth
-admin         admin           0
-admin         company         1
-admin         department      2
-company       company         0
-company       department      1
-department    department      0
-```
-
-상위 조직에서 하위 조직 리소스를 찾을 때 `organization_structure`를 사용한다.
+Organization 상하관계는 사용하지 않으므로 `organization.parent_id`와 `organization_structure`는 제거한다.
 
 ## Migration
 
@@ -239,6 +239,7 @@ department    department      0
 ```text
 c7d8e9f0a1b2_team_resource_permissions_and_organization_structure.py
 d8e9f0a1b2c3_rename_team_permission_tables.py
+f0a1b2c3d4e5_remove_user_org_hierarchy_add_options.py
 ```
 
 `c7d8e9f0a1b2`가 하는 일:
@@ -263,7 +264,13 @@ d8e9f0a1b2c3_rename_team_permission_tables.py
 - `workflow_team_permissions`를 `team_workflow_permissions`로 rename
 - 관련 PK, FK, unique constraint, composite FK, index 이름을 최종 이름으로 rename
 
+`f0a1b2c3d4e5`가 하는 일:
+
+- `users.organization_id` 제거
+- `organization.parent_id` 제거
+- `organization_structure` 제거
+- `organization`, `teams`, `team_memberships`, `team_*_permissions`에 `options JSONB`, `flags BIGINT` 추가
+
 ## 남은 결정 사항
 
-- AuditLog 자체에 `organization_id`를 둘지 여부
 - Admin bootstrap 로직을 어느 서비스 시작점에 넣을지 여부

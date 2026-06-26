@@ -3,15 +3,18 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from apps.shared.db.base import Base
@@ -39,6 +42,7 @@ class Team(Base):
             "organization_id",
             name="uq_teams_id_organization_id",
         ),
+        CheckConstraint("flags >= 0", name="ck_teams_flags_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -51,6 +55,12 @@ class Team(Base):
         UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    options: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    flags: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
@@ -120,6 +130,18 @@ class TeamAssignmentMixin:
         )
 
     @declared_attr
+    def options(cls) -> Mapped[dict]:
+        return mapped_column(
+            JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+        )
+
+    @declared_attr
+    def flags(cls) -> Mapped[int]:
+        return mapped_column(
+            BigInteger, nullable=False, default=0, server_default=text("0")
+        )
+
+    @declared_attr
     def grantee_organization(cls) -> Mapped["Organization"]:
         return relationship(
             "Organization",
@@ -159,6 +181,9 @@ class TeamMembership(TeamAssignmentMixin, Base):
             ["teams.id", "teams.organization_id"],
             name="fk_team_memberships_team_org",
         ),
+        CheckConstraint(
+            "flags >= 0", name="ck_team_memberships_flags_nonnegative"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -189,6 +214,9 @@ class TeamWorkflowPermission(TeamResourcePermissionMixin, Base):
             ["team_id", "grantee_organization_id"],
             ["teams.id", "teams.organization_id"],
             name="fk_team_workflow_permissions_team_org",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_team_workflow_permissions_flags_nonnegative"
         ),
     )
 
@@ -224,6 +252,9 @@ class TeamKnowledgePermission(TeamResourcePermissionMixin, Base):
             ["teams.id", "teams.organization_id"],
             name="fk_team_knowledge_permissions_team_org",
         ),
+        CheckConstraint(
+            "flags >= 0", name="ck_team_knowledge_permissions_flags_nonnegative"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -258,6 +289,9 @@ class TeamLLMPermission(TeamResourcePermissionMixin, Base):
             ["teams.id", "teams.organization_id"],
             name="fk_team_llm_permissions_team_org",
         ),
+        CheckConstraint(
+            "flags >= 0", name="ck_team_llm_permissions_flags_nonnegative"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -291,6 +325,9 @@ class TeamAuditPermission(TeamResourcePermissionMixin, Base):
             ["team_id", "grantee_organization_id"],
             ["teams.id", "teams.organization_id"],
             name="fk_team_audit_permissions_team_org",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_team_audit_permissions_flags_nonnegative"
         ),
     )
 

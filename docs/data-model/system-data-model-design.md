@@ -213,8 +213,8 @@ Tracing 관점:
 
 주요 구조:
 
-- `organization`: 조직 계층과 관리자를 저장한다. `parent_id`로 상위 조직을 연결할 수 있다.
-- `users.organization_id`: 사용자의 기본 조직을 저장한다.
+- `organization`: 조직 권한 경계와 관리자를 저장한다. 조직 상하관계는 사용하지 않는다.
+- User의 Organization 소속은 `users.organization_id`가 아니라 `team_memberships`를 통해 해석한다.
 - `apps.organization_id`: app이 속한 조직을 저장한다.
 - `workflows.organization_id`: workflow가 속한 조직을 저장한다.
 - `llm_credentials.organization_id`: credential이 속한 조직을 저장한다.
