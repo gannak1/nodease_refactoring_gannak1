@@ -65,6 +65,7 @@ def create_knowledge_base(
         name=kb_in.name,
         description=kb_in.description,
         embedding_model=kb_in.embedding_model,
+        organization_id=current_user.organization_id,
         user_id=current_user.id,
     )
     db.add(kb)
@@ -73,6 +74,7 @@ def create_knowledge_base(
 
     return KnowledgeBaseResponse(
         id=kb.id,
+        organization_id=kb.organization_id,
         name=kb.name,
         description=kb.description,
         document_count=0,
@@ -121,6 +123,7 @@ def list_knowledge_bases(
         response.append(
             KnowledgeBaseResponse(
                 id=kb.id,
+                organization_id=kb.organization_id,
                 name=kb.name,
                 description=kb.description,
                 document_count=doc_count,
@@ -173,6 +176,7 @@ def get_knowledge_base(
 
     return KnowledgeBaseDetailResponse(
         id=kb.id,
+        organization_id=kb.organization_id,
         name=kb.name,
         description=kb.description,
         document_count=len(doc_responses),
