@@ -15,6 +15,7 @@ class IngestionResponse(BaseModel):
 
 class KnowledgeBaseResponse(BaseModel):
     id: UUID
+    organization_id: Optional[UUID] = None
     name: str
     description: Optional[str] = None
     document_count: Optional[int] = None

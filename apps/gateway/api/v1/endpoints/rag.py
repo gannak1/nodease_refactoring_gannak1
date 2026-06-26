@@ -540,6 +540,7 @@ def _get_or_create_knowledge_base(
 
         new_kb = KnowledgeBase(
             user_id=user.id,
+            organization_id=user.organization_id,
             name=kb_name,
             description=description,
             embedding_model=ai_model,
