@@ -1,8 +1,21 @@
-from typing import Any, Protocol
+import uuid
+from typing import Any, Optional, Protocol
 
+from apps.shared.db.models.team import (
+    TeamPermission,
+    UserTeamPermissions,
+    WorkflowTeamPermission,
+)
 from sqlalchemy.orm import Session
 
 TRACE_SYSTEM_ADMIN_PERMISSION = "tracing.system_admin"
+TRACE_AUTH_STATE_RANK = {
+    "none": 0,
+    "read": 1,
+    "write": 2,
+    "execute": 3,
+    "admin": 4,
+}
 
 
 class TraceRbacProvider(Protocol):
@@ -20,7 +33,7 @@ class DenyAllTraceRbacProvider:
 
 
 class TraceRbacService:
-    """향후 사용자/RBAC 구현을 붙이기 위한 작은 통합 지점."""
+    """추적 접근 제어에서 실제 RBAC 모델을 조회하는 작은 통합 지점."""
 
     _provider: TraceRbacProvider = DenyAllTraceRbacProvider()
 
@@ -40,3 +53,79 @@ class TraceRbacService:
             return bool(cls._provider.is_system_admin(db, user))
         except Exception:
             return False
+
+    @classmethod
+    def get_workflow_auth_state(
+        cls,
+        db: Optional[Session],
+        user: Any,
+        workflow_id: Any,
+        organization_id: Any = None,
+    ) -> Optional[str]:
+        """사용자가 workflow에 대해 가진 가장 높은 team permission 권한을 반환합니다."""
+        user_id = cls._coerce_uuid(getattr(user, "id", None))
+        workflow_uuid = cls._coerce_uuid(workflow_id)
+        organization_uuid = cls._coerce_uuid(organization_id)
+        if db is None or user_id is None or workflow_uuid is None:
+            return None
+
+        query = (
+            db.query(TeamPermission.auth_state)
+            .join(
+                UserTeamPermissions,
+                UserTeamPermissions.team_permission_id == TeamPermission.id,
+            )
+            .join(
+                WorkflowTeamPermission,
+                WorkflowTeamPermission.team_permission_id == TeamPermission.id,
+            )
+            .filter(
+                UserTeamPermissions.user_id == user_id,
+                WorkflowTeamPermission.workflow_id == workflow_uuid,
+                TeamPermission.is_active.is_(True),
+                UserTeamPermissions.organization_id
+                == WorkflowTeamPermission.organization_id,
+                TeamPermission.organization_id
+                == WorkflowTeamPermission.organization_id,
+            )
+        )
+        if organization_uuid is not None:
+            query = query.filter(
+                WorkflowTeamPermission.organization_id == organization_uuid
+            )
+
+        best_state: Optional[str] = None
+        best_rank = TRACE_AUTH_STATE_RANK["none"]
+        for (auth_state,) in query.all():
+            normalized_state = cls.normalize_auth_state(auth_state)
+            rank = TRACE_AUTH_STATE_RANK[normalized_state]
+            if rank > best_rank:
+                best_state = normalized_state
+                best_rank = rank
+
+        return best_state
+
+    @classmethod
+    def auth_state_at_least(cls, auth_state: Any, minimum: str) -> bool:
+        normalized_state = cls.normalize_auth_state(auth_state)
+        normalized_minimum = cls.normalize_auth_state(minimum)
+        return (
+            TRACE_AUTH_STATE_RANK[normalized_state]
+            >= TRACE_AUTH_STATE_RANK[normalized_minimum]
+        )
+
+    @staticmethod
+    def normalize_auth_state(auth_state: Any) -> str:
+        value = str(auth_state or "none").lower()
+        if value not in TRACE_AUTH_STATE_RANK:
+            return "none"
+        return value
+
+    @staticmethod
+    def _coerce_uuid(value: Any) -> Optional[uuid.UUID]:
+        if value is None or isinstance(value, uuid.UUID):
+            return value
+        try:
+            return uuid.UUID(str(value))
+        except (TypeError, ValueError):
+            return None
