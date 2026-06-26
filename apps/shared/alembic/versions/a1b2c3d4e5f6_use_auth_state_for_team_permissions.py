@@ -1,6 +1,6 @@
 """Use auth_state for team permissions
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: b9c8d7e6f5a4
 Revises: f6b2c9d8e1a4
 Create Date: 2026-06-26 00:00:00.000000
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"
+revision: str = "b9c8d7e6f5a4"
 down_revision: Union[str, Sequence[str], None] = "f6b2c9d8e1a4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
