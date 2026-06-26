@@ -211,6 +211,77 @@ describe('nodeVariablePorts', () => {
     });
   });
 
+  it('answer node에 output을 drop하면 최종 반환값 매핑을 추가한다', () => {
+    const node = makeNode('answerNode', {
+      outputs: [],
+    });
+
+    expect(
+      applyDroppedOutputToNodeData(
+        node,
+        makeOutput({
+          key: 'text',
+          label: '응답 텍스트',
+          sourceNodeId: 'llm-node',
+          sourceTitle: 'LLM',
+        }),
+      ),
+    ).toEqual({
+      outputs: [
+        { variable: 'text', value_selector: ['llm-node', 'text'] },
+      ],
+    });
+  });
+
+  it('answer node에 같은 selector를 다시 drop하면 반환값을 중복 추가하지 않는다', () => {
+    const node = makeNode('answerNode', {
+      outputs: [
+        { variable: 'analysis', value_selector: ['llm-node', 'text'] },
+      ],
+    });
+
+    expect(
+      applyDroppedOutputToNodeData(
+        node,
+        makeOutput({
+          key: 'text',
+          label: '응답 텍스트',
+          sourceNodeId: 'llm-node',
+          sourceTitle: 'LLM',
+        }),
+      ),
+    ).toEqual({
+      outputs: [
+        { variable: 'analysis', value_selector: ['llm-node', 'text'] },
+      ],
+    });
+  });
+
+  it('answer node에 같은 key의 다른 output을 drop하면 반환 key 충돌을 피한다', () => {
+    const node = makeNode('answerNode', {
+      outputs: [
+        { variable: 'text', value_selector: ['llm-a', 'text'] },
+      ],
+    });
+
+    expect(
+      applyDroppedOutputToNodeData(
+        node,
+        makeOutput({
+          key: 'text',
+          label: '응답 텍스트',
+          sourceNodeId: 'llm-b',
+          sourceTitle: 'LLM B',
+        }),
+      ),
+    ).toEqual({
+      outputs: [
+        { variable: 'text', value_selector: ['llm-a', 'text'] },
+        { variable: 'text_2', value_selector: ['llm-b', 'text'] },
+      ],
+    });
+  });
+
   it('template/http 계열 출력 key를 workflow engine 반환값과 맞춘다', () => {
     const templateNode = makeNode('templateNode', {
       template: '',

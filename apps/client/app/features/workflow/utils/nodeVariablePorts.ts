@@ -551,6 +551,43 @@ const getDroppedOutputInputName = (
   output: DraggedOutputVariable,
 ) => getDroppedOutputReferenceName(list, output, 'value_selector');
 
+const getDroppedAnswerOutputName = (
+  list: unknown,
+  output: DraggedOutputVariable,
+) => {
+  const current = Array.isArray(list) ? list : [];
+  const matchedBySelector = current.find((item) => {
+    if (!item || typeof item !== 'object') return false;
+    return selectorsEqual(
+      (item as Record<string, unknown>).value_selector,
+      output,
+    );
+  });
+  const matchedName = String(
+    (matchedBySelector as Record<string, unknown> | undefined)?.variable || '',
+  ).trim();
+  if (matchedName) return matchedName;
+
+  const baseName = toSafeReferenceName(output.key);
+  const usedNames = new Set(
+    current
+      .map((item) =>
+        item && typeof item === 'object'
+          ? String((item as Record<string, unknown>).variable || '').trim()
+          : '',
+      )
+      .filter(Boolean),
+  );
+
+  if (!usedNames.has(baseName)) return baseName;
+
+  let suffix = 2;
+  while (usedNames.has(`${baseName}_${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseName}_${suffix}`;
+};
+
 export const getDroppedOutputTokenNameForNode = (
   node: AppNode,
   output: DraggedOutputVariable,
@@ -753,12 +790,32 @@ export const applyDroppedOutputToNodeData = (
     }
 
     case 'answerNode':
-      return {
-        outputs: [
-          ...(Array.isArray(data.outputs) ? data.outputs : []),
-          { variable: output.key, value_selector: selectorFor(output) },
-        ],
-      };
+      {
+        const current = Array.isArray(data.outputs) ? data.outputs : [];
+        const variable = getDroppedAnswerOutputName(current, output);
+        const nextItem = { variable, value_selector: selectorFor(output) };
+        const index = current.findIndex(
+          (item) =>
+            item &&
+            typeof item === 'object' &&
+            ((item as Record<string, unknown>).variable === variable ||
+              selectorsEqual(
+                (item as Record<string, unknown>).value_selector,
+                output,
+              )),
+        );
+
+        return {
+          outputs:
+            index >= 0
+              ? current.map((item, itemIndex) =>
+                  itemIndex === index
+                    ? { ...(item as object), ...nextItem }
+                    : item,
+                )
+              : [...current, nextItem],
+        };
+      }
 
     case 'variableExtractionNode':
       return {
