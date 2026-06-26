@@ -207,7 +207,7 @@ Tracing 관점:
 - retrieved chunk text 원문은 metadata에 복사하지 않고 `retrieved_context` payload 정책 대상이다.
 - `document_chunks.metadata.original_data`에는 민감 데이터가 있을 수 있으므로 trace로 복사할 때 redaction을 거친다.
 
-### `organization`, `team_permission`, `user_team_permissions`, `workflow_team_permissions`
+### `organization`, `teams`, `team_memberships`, `team_workflow_permissions`
 
 조직과 팀 권한을 표현하는 권한 모델이다.
 
@@ -219,10 +219,10 @@ Tracing 관점:
 - `workflows.organization_id`: workflow가 속한 조직을 저장한다.
 - `llm_credentials.organization_id`: credential이 속한 조직을 저장한다.
 - `llm_usage_logs.organization_id`: LLM 사용 로그가 속한 조직을 저장한다.
-- `team_permission`: 조직 안에서 사용할 권한 묶음을 저장한다.
-- `team_permission.auth_state`: `none`, `read`, `write`, `execute`, `admin` 중 하나의 권한 수준을 저장한다.
-- `user_team_permissions`: 사용자와 조직 내 팀 권한을 연결한다.
-- `workflow_team_permissions`: workflow와 조직 내 팀 권한을 연결한다.
+- `teams`: 조직 안에서 사용할 팀 또는 권한 그룹을 저장한다.
+- `team_memberships`: 사용자와 조직 내 팀을 연결한다.
+- `team_workflow_permissions`: workflow와 조직 내 팀을 연결하고, `auth_state`로 workflow 권한 수준을 저장한다.
+- `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`: 리소스별 team 권한 수준을 저장한다.
 
 Tracing 관점:
 

@@ -142,3 +142,6 @@ lerna-debug.log*
 
 # Evaluation generated reports
 tests/evaluation/reports/
+
+# 개인 폴더
+.ignore/
