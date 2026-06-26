@@ -7,12 +7,14 @@ export default function DashboardHomePage() {
   const router = useRouter();
 
   return (
-    <div className="min-h-full bg-white">
+    <div className="min-h-full bg-slate-50">
       {/* Hero Section */}
       <div className="max-w-7xl mx-auto px-8 py-16">
         <div className="text-center mb-16">
-          <h1 className="text-5xl font-bold text-gray-900 mb-6">환영합니다!</h1>
-          <p className="text-xl text-gray-600 max-w-2xl mx-auto">
+          <h1 className="mb-4 text-3xl font-black text-slate-950">
+            환영합니다
+          </h1>
+          <p className="mx-auto max-w-2xl text-base font-semibold text-slate-500">
             Moduly와 함께 모듈을 구축하고 자동화하세요
           </p>
         </div>
@@ -22,35 +24,35 @@ export default function DashboardHomePage() {
           {/* Create Module Card */}
           <button
             onClick={() => router.push('/dashboard/mymodule')}
-            className="group relative bg-white rounded-2xl p-8 border border-gray-100 shadow-sm hover:shadow-xl hover:border-blue-200 text-left h-full flex flex-col transition-all duration-300"
+            className="group relative flex h-full flex-col rounded-lg border border-slate-200 bg-white p-6 text-left shadow-sm transition-all duration-300 hover:border-slate-300 hover:shadow-md"
           >
             <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-              <ArrowRight className="w-5 h-5 text-blue-600" />
+              <ArrowRight className="h-5 w-5 text-slate-600" />
             </div>
             <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center mb-4">
               <Zap className="w-6 h-6 text-blue-600" />
             </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
-              내 모듈
-            </h3>
-            <p className="text-gray-600 text-sm">나만의 AI 모듈을 생성하세요</p>
+            <h3 className="mb-2 text-lg font-black text-slate-950">내 모듈</h3>
+            <p className="text-sm font-semibold text-slate-500">
+              나만의 AI 모듈을 생성하세요
+            </p>
           </button>
 
           {/* Explore Marketplace Card */}
           <button
             onClick={() => router.push('/dashboard/explore')}
-            className="group relative bg-white rounded-2xl p-8 border border-gray-100 shadow-sm hover:shadow-xl hover:border-purple-200 text-left h-full flex flex-col transition-all duration-300"
+            className="group relative flex h-full flex-col rounded-lg border border-slate-200 bg-white p-6 text-left shadow-sm transition-all duration-300 hover:border-slate-300 hover:shadow-md"
           >
             <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-              <ArrowRight className="w-5 h-5 text-purple-600" />
+              <ArrowRight className="h-5 w-5 text-slate-600" />
             </div>
             <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center mb-4">
               <Workflow className="w-6 h-6 text-purple-600" />
             </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            <h3 className="mb-2 text-lg font-black text-slate-950">
               마켓플레이스
             </h3>
-            <p className="text-gray-600 text-sm">
+            <p className="text-sm font-semibold text-slate-500">
               다른 사용자들이 만든 모듈을 탐색하세요
             </p>
           </button>
@@ -58,16 +60,16 @@ export default function DashboardHomePage() {
           {/* Statistics Card */}
           <button
             onClick={() => router.push('/dashboard/statistics')}
-            className="group relative bg-white rounded-2xl p-8 border border-gray-100 shadow-sm hover:shadow-xl hover:border-green-200 text-left h-full flex flex-col transition-all duration-300"
+            className="group relative flex h-full flex-col rounded-lg border border-slate-200 bg-white p-6 text-left shadow-sm transition-all duration-300 hover:border-slate-300 hover:shadow-md"
           >
             <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-              <ArrowRight className="w-5 h-5 text-green-600" />
+              <ArrowRight className="h-5 w-5 text-slate-600" />
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center mb-4">
               <BarChart3 className="w-6 h-6 text-green-600" />
             </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">통계</h3>
-            <p className="text-gray-600 text-sm">
+            <h3 className="mb-2 text-lg font-black text-slate-950">통계</h3>
+            <p className="text-sm font-semibold text-slate-500">
               사용 현황과 성과를 확인하세요
             </p>
           </button>
@@ -75,26 +77,26 @@ export default function DashboardHomePage() {
           {/* Knowledge DB Card */}
           <button
             onClick={() => router.push('/dashboard/knowledge')}
-            className="group relative bg-white rounded-2xl p-8 border border-gray-100 shadow-sm hover:shadow-xl hover:border-orange-200 text-left h-full flex flex-col transition-all duration-300"
+            className="group relative flex h-full flex-col rounded-lg border border-slate-200 bg-white p-6 text-left shadow-sm transition-all duration-300 hover:border-slate-300 hover:shadow-md"
           >
             <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-              <ArrowRight className="w-5 h-5 text-orange-600" />
+              <ArrowRight className="h-5 w-5 text-slate-600" />
             </div>
             <div className="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center mb-4">
               <BookOpen className="w-6 h-6 text-orange-600" />
             </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            <h3 className="mb-2 text-lg font-black text-slate-950">
               지식 관리
             </h3>
-            <p className="text-gray-600 text-sm">
+            <p className="text-sm font-semibold text-slate-500">
               AI가 참고할 자료를 업로드하세요
             </p>
           </button>
         </div>
 
         {/* Getting Started Section */}
-        <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">시작하기</h2>
+        <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-6 text-xl font-black text-slate-950">시작하기</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="flex gap-4">
               <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-semibold">

@@ -223,10 +223,10 @@ export default function BottomPanel({
     const shouldTargetSelection = selectedExpandableNodes.length > 1;
 
     return {
-      detailTargetNodes:
-        shouldTargetSelection ? selectedExpandableNodes : expandableNodes,
-      detailTargetLabel:
-        shouldTargetSelection ? '선택 노드' : '전체 노드',
+      detailTargetNodes: shouldTargetSelection
+        ? selectedExpandableNodes
+        : expandableNodes,
+      detailTargetLabel: shouldTargetSelection ? '선택 노드' : '전체 노드',
     };
   }, [nodes]);
 
@@ -293,25 +293,25 @@ export default function BottomPanel({
             : 'translateX(-50%)',
         }}
       >
-        <div className="flex items-center gap-1 bg-white rounded-lg shadow-lg border border-gray-200 px-2 py-1.5">
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 shadow-lg">
           {/* 인터랙티브 설정 */}
           <div className="relative" ref={interactiveModalRef}>
             <button
               onClick={handleInteractiveToggle}
-              className="p-2 hover:bg-gray-100 rounded transition-colors"
+              className="rounded p-2 transition-colors hover:bg-slate-100"
               title="Interactive settings"
             >
               {interactiveMode === 'touchpad' ? (
-                <TouchpadIcon className="w-4 h-4 text-gray-600" />
+                <TouchpadIcon className="h-4 w-4 text-slate-600" />
               ) : (
-                <MousePointerIcon className="w-4 h-4 text-gray-600" />
+                <MousePointerIcon className="h-4 w-4 text-slate-600" />
               )}
             </button>
 
             {/* 인터랙티브 모달 */}
             {openModal === 'interactive' && (
               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 pointer-events-auto">
-                <div className="bg-white rounded-lg shadow-2xl border border-gray-200 p-6 w-[480px]">
+                <div className="w-[480px] rounded-lg border border-slate-200 bg-white p-6 shadow-2xl">
                   <h3 className="text-lg font-semibold mb-4">Interactive</h3>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -431,21 +431,21 @@ export default function BottomPanel({
             )}
           </div>
 
-          <div className="w-px h-6 bg-gray-200" />
+          <div className="h-6 w-px bg-slate-200" />
 
           {/* 줌 컨트롤 */}
           <div className="relative" ref={zoomModalRef}>
             <button
               onClick={toggleZoomModal}
-              className="px-3 py-1.5 flex items-center gap-1 text-gray-700 hover:bg-gray-100 rounded transition-colors min-w-[60px] justify-center"
+              className="flex min-w-[60px] items-center justify-center gap-1 rounded px-3 py-1.5 text-slate-700 transition-colors hover:bg-slate-100"
             >
-              <span className="text-sm font-medium">{currentZoom}%</span>
+              <span className="text-sm font-semibold">{currentZoom}%</span>
               <ChevronDownIcon className="w-3 h-3" />
             </button>
 
             {/* 줌 모달 */}
             {openModal === 'zoom' && (
-              <div className="absolute bottom-full left-0 mb-2 w-[180px] bg-white rounded-lg shadow-2xl border border-gray-200 py-2">
+              <div className="absolute bottom-full left-0 mb-2 w-[180px] rounded-lg border border-slate-200 bg-white py-2 shadow-2xl">
                 <button
                   onClick={handleZoomOut}
                   className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 transition-colors"
@@ -494,14 +494,14 @@ export default function BottomPanel({
             )}
           </div>
 
-          <div className="w-px h-6 bg-gray-200" />
+          <div className="h-6 w-px bg-slate-200" />
 
           {/* Grid Snap 설정 */}
           <div className="relative" ref={snapModalRef}>
             <button
               onClick={toggleSnapModal}
-              className={`px-2 py-1.5 flex items-center gap-1 hover:bg-gray-100 rounded transition-colors ${
-                snapGridSize === 'off' ? 'text-gray-500' : 'text-gray-700'
+              className={`flex items-center gap-1 rounded px-2 py-1.5 transition-colors hover:bg-slate-100 ${
+                snapGridSize === 'off' ? 'text-slate-500' : 'text-slate-700'
               }`}
               title="Move snap"
               aria-haspopup="menu"
@@ -509,15 +509,13 @@ export default function BottomPanel({
               aria-label={`Move snap setting: ${snapLabel}`}
             >
               <Grid2X2 className="w-4 h-4" />
-              <span className="text-sm font-medium">
-                {snapLabel}
-              </span>
+              <span className="text-sm font-semibold">{snapLabel}</span>
               <ChevronDownIcon className="w-3 h-3" />
             </button>
 
             {isSnapOpen && (
               <div
-                className="absolute bottom-full left-0 mb-2 w-[160px] bg-white rounded-lg shadow-2xl border border-gray-200 py-2"
+                className="absolute bottom-full left-0 mb-2 w-[160px] rounded-lg border border-slate-200 bg-white py-2 shadow-2xl"
                 role="menu"
                 aria-label="Move snap grid size"
               >
@@ -542,64 +540,64 @@ export default function BottomPanel({
             )}
           </div>
 
-          <div className="w-px h-6 bg-gray-200" />
+          <div className="h-6 w-px bg-slate-200" />
 
           {/* 노드 상세 일괄 접기/펴기 */}
           <button
             onClick={() => setDetailsExpandedForTargetNodes(true)}
             disabled={detailTargetNodes.length === 0}
-            className="p-2 hover:bg-gray-100 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded p-2 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
             title={`${detailTargetLabel} 상세 펼치기`}
             aria-label={`${detailTargetLabel} 상세 펼치기`}
           >
-            <Maximize2 className="w-4 h-4 text-gray-600" />
+            <Maximize2 className="h-4 w-4 text-slate-600" />
           </button>
           <button
             onClick={() => setDetailsExpandedForTargetNodes(false)}
             disabled={detailTargetNodes.length === 0}
-            className="p-2 hover:bg-gray-100 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded p-2 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
             title={`${detailTargetLabel} 상세 접기`}
             aria-label={`${detailTargetLabel} 상세 접기`}
           >
-            <Minimize2 className="w-4 h-4 text-gray-600" />
+            <Minimize2 className="h-4 w-4 text-slate-600" />
           </button>
 
-          <div className="w-px h-6 bg-gray-200" />
+          <div className="h-6 w-px bg-slate-200" />
 
           {/* 노트 추가 */}
           <button
             onClick={handleAddNote}
-            className={`p-2 hover:bg-gray-100 rounded transition-colors ${
+            className={`rounded p-2 transition-colors hover:bg-slate-100 ${
               isAddingNote ? 'bg-blue-100' : ''
             }`}
             title="메모 추가"
           >
-            <NoteIcon className="w-4 h-4 text-gray-600" />
+            <NoteIcon className="h-4 w-4 text-slate-600" />
           </button>
 
-          <div className="w-px h-6 bg-gray-200" />
+          <div className="h-6 w-px bg-slate-200" />
 
           {/* 레이아웃 최적화 */}
           <button
             onClick={onCenterNodes}
-            className="p-2 hover:bg-gray-100 rounded transition-colors"
+            className="rounded p-2 transition-colors hover:bg-slate-100"
             title="레이아웃 최적화"
           >
-            <LayoutIcon className="w-4 h-4 text-gray-600" />
+            <LayoutIcon className="h-4 w-4 text-slate-600" />
           </button>
 
-          <div className="w-px h-6 bg-gray-200" />
+          <div className="h-6 w-px bg-slate-200" />
 
           {/* 전체화면 */}
           <button
             onClick={handleFullscreen}
-            className="p-2 hover:bg-gray-100 rounded transition-colors"
+            className="rounded p-2 transition-colors hover:bg-slate-100"
             title={isFullscreen ? '전체화면 종료' : '전체화면'}
           >
             {isFullscreen ? (
-              <ArrowsInIcon className="w-4 h-4 text-gray-600" />
+              <ArrowsInIcon className="h-4 w-4 text-slate-600" />
             ) : (
-              <FullscreenIcon className="w-4 h-4 text-gray-600" />
+              <FullscreenIcon className="h-4 w-4 text-slate-600" />
             )}
           </button>
         </div>

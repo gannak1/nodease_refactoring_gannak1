@@ -553,9 +553,9 @@ export default function NodeCanvas({
       showDeployDropdown ||
       Boolean(
         contextMenu ||
-          nodeContextMenu ||
-          edgeContextMenu ||
-          isContextNodeSelectorOpen,
+        nodeContextMenu ||
+        edgeContextMenu ||
+        isContextNodeSelectorOpen,
       ),
     [
       searchModalContext.isOpen,
@@ -689,9 +689,9 @@ export default function NodeCanvas({
   }, [runIdParam]);
 
   return (
-    <div className="flex-1 bg-white p-2 relative flex flex-col overflow-hidden">
+    <div className="relative flex flex-1 flex-col overflow-hidden bg-slate-50 p-3">
       {/* Main Content Area Container */}
-      <div className="flex-1 h-full rounded-xl bg-gray-100 flex flex-col overflow-hidden">
+      <div className="flex h-full flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
         {/* Tab Header Removed */}
 
         {/* Content Area */}
@@ -703,11 +703,11 @@ export default function NodeCanvas({
             }`}
           >
             {/* Node Library Sidebar */}
-            <div className="pl-2 pt-2 h-full flex flex-col">
+            <div className="flex h-full flex-col py-3 pl-3">
               <div
-                className={`flex-1 rounded-xl bg-white transition-all duration-300 ease-in-out z-20 ${
+                className={`z-20 flex-1 rounded-lg bg-white transition-all duration-300 ease-in-out ${
                   isNodeLibraryOpen
-                    ? 'w-64 border border-gray-200'
+                    ? 'w-64 border border-slate-200 shadow-sm'
                     : 'w-0 border-none'
                 }`}
               >
@@ -762,14 +762,14 @@ export default function NodeCanvas({
                   minZoom={MIN_ZOOM}
                   maxZoom={MAX_ZOOM}
                   attributionPosition="bottom-right"
-                  className="bg-gray-100"
+                  className="bg-slate-50"
                   {...reactFlowConfig}
                 >
                   <Background
                     variant={BackgroundVariant.Dots}
                     gap={backgroundGap}
                     size={1}
-                    color="#d1d5db"
+                    color="#cbd5e1"
                   />
                 </ReactFlow>
 
@@ -783,7 +783,7 @@ export default function NodeCanvas({
                 {/* Right: Action Buttons */}
                 <div className="absolute top-4 right-4 flex items-center gap-2 z-30">
                   {/* Group: Memory | Settings | Version | Publish */}
-                  <div className="h-9 flex items-center p-0.5 bg-white border border-gray-200 rounded-lg shadow-sm">
+                  <div className="flex h-9 items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
                     <div className="h-full flex items-center px-2">
                       <MemoryModeToggle
                         isEnabled={isMemoryModeEnabled}
@@ -792,23 +792,23 @@ export default function NodeCanvas({
                         onToggle={toggleMemoryMode}
                       />
                     </div>
-                    <div className="w-px h-4 bg-gray-200 mx-1" />
+                    <div className="mx-1 h-4 w-px bg-slate-200" />
                     <button
                       onClick={toggleSettings}
-                      className="h-full px-3 flex items-center gap-1.5 rounded-md transition-colors hover:bg-gray-100 text-gray-600 text-[13px] font-medium"
+                      className="flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950"
                     >
                       <Settings className="w-4 h-4" />
                       <span>설정</span>
                     </button>
-                    <div className="w-px h-4 bg-gray-200 mx-1" />
+                    <div className="mx-1 h-4 w-px bg-slate-200" />
                     <button
                       onClick={toggleVersionHistory}
-                      className="h-full px-3 flex items-center gap-1.5 rounded-md transition-colors hover:bg-gray-100 text-gray-600 text-[13px] font-medium"
+                      className="flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950"
                     >
                       <ClockIcon className="w-4 h-4" />
                       <span>버전</span>
                     </button>
-                    <div className="w-px h-4 bg-gray-200 mx-1" />
+                    <div className="mx-1 h-4 w-px bg-slate-200" />
                     {/* Publish Button (Inside Group) */}
                     <div className="relative h-full">
                       <button
@@ -817,7 +817,7 @@ export default function NodeCanvas({
                         className={`h-full px-3 flex items-center gap-1.5 rounded-md transition-colors text-[13px] font-medium ${
                           !canPublish
                             ? 'text-gray-400 cursor-not-allowed'
-                            : 'hover:bg-gray-100 text-gray-600'
+                            : 'hover:bg-slate-100 text-slate-600 hover:text-slate-950'
                         }`}
                       >
                         <span>게시하기</span>
@@ -845,7 +845,7 @@ export default function NodeCanvas({
                             className="fixed inset-0 z-10"
                             onClick={() => setShowDeployDropdown(false)}
                           />
-                          <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-20 text-left">
+                          <div className="absolute right-0 z-20 mt-2 w-64 rounded-lg border border-slate-200 bg-white py-2 text-left shadow-lg">
                             {/* Webhook Trigger Deployment */}
                             {startNode?.type === 'webhookTrigger' && (
                               <button
@@ -938,7 +938,7 @@ export default function NodeCanvas({
                   {/* Standalone: Test Button (Primary) */}
                   <button
                     onClick={toggleTestPanel}
-                    className="h-9 px-4 font-medium rounded-lg transition-colors flex items-center gap-1.5 text-[13px] shadow-sm bg-blue-600 hover:bg-blue-700 text-white"
+                    className="flex h-9 items-center gap-1.5 rounded-lg bg-slate-950 px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
                     테스트
