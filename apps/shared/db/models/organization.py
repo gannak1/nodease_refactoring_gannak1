@@ -3,15 +3,15 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Integer,
     String,
-    UniqueConstraint,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from apps.shared.db.base import Base
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class Organization(Base):
     __tablename__ = "organization"
     __table_args__ = (
-        UniqueConstraint("parent_id", "name", name="uq_organization_parent_name"),
+        CheckConstraint("flags >= 0", name="ck_organization_flags_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -32,13 +32,13 @@ class Organization(Base):
         default=uuid.uuid4,
         nullable=False,
     )
-    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organization.id"),
-        nullable=True,
-        index=True,
-    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    options: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    flags: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
@@ -64,40 +64,4 @@ class Organization(Base):
     creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
     manager: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[managed_by]
-    )
-
-
-class OrganizationStructure(Base):
-    """Closure table for fast organization ancestor/descendant lookups."""
-
-    __tablename__ = "organization_structure"
-    __table_args__ = (
-        CheckConstraint(
-            "depth >= 0",
-            name="ck_organization_structure_depth_nonnegative",
-        ),
-    )
-
-    ancestor_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organization.id"),
-        primary_key=True,
-        nullable=False,
-    )
-    descendant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organization.id"),
-        primary_key=True,
-        nullable=False,
-        index=True,
-    )
-    depth: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    ancestor: Mapped["Organization"] = relationship(
-        "Organization",
-        foreign_keys=[ancestor_id],
-    )
-    descendant: Mapped["Organization"] = relationship(
-        "Organization",
-        foreign_keys=[descendant_id],
     )

@@ -31,6 +31,7 @@ from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
+from apps.gateway.services.organization_context import get_user_primary_organization_id
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
@@ -65,7 +66,7 @@ def create_knowledge_base(
         name=kb_in.name,
         description=kb_in.description,
         embedding_model=kb_in.embedding_model,
-        organization_id=current_user.organization_id,
+        organization_id=get_user_primary_organization_id(db, current_user.id),
         user_id=current_user.id,
     )
     db.add(kb)

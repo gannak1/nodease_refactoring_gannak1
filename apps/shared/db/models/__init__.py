@@ -29,7 +29,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     TeamWorkflowPermission,
 )
-from apps.shared.db.models.organization import Organization, OrganizationStructure
+from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -58,7 +58,6 @@ __all__ = [
     "LLMUsageLog",
     "Schedule",
     "Organization",
-    "OrganizationStructure",
     "Team",
     "TeamAssignmentMixin",
     "TeamResourcePermissionMixin",

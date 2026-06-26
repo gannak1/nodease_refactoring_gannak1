@@ -301,6 +301,7 @@ async def auth_google_callback(
     )
 
     # 자체 JWT 토큰 생성
+    AuthService.mark_login_success(db, user)
     access_token = AuthService.create_jwt_token(str(user.id))
 
     _record_auth_success(AuditAction.USER_LOGIN, request, user, provider="google")

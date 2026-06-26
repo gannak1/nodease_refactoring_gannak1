@@ -29,8 +29,8 @@ class AppService:
             생성된 App 객체
         """
         # organization_id가 없으면 user_id를 사용 (유저별 분리)
-        if not organization_id:
-            organization_id = user_id
+        # if not organization_id:
+        #     organization_id = user_id
 
         # url_slug, auth_secret 생성
         url_slug = AppService._generate_url_slug(db, request.name)
