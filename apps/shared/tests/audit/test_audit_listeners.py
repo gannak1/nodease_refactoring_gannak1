@@ -4,6 +4,24 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.audit import listeners
+from apps.shared.db.models.connection import Connection
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.team import (
+    Team,
+    TeamAuditPermission,
+    TeamKnowledgePermission,
+    TeamLLMPermission,
+    TeamMembership,
+    TeamWorkflowPermission,
+)
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_run import (
+    TraceRedactionPolicy,
+    TraceRetentionPolicy,
+    TraceVisibilityPolicy,
+)
 
 
 class Base(DeclarativeBase):
@@ -15,6 +33,52 @@ class AuditThing(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String)
+
+
+def test_connection_audit_masks_endpoint_and_identity_fields():
+    assert listeners.SENSITIVE_FIELDS[Connection] >= {
+        "host",
+        "database",
+        "username",
+        "ssh_host",
+        "ssh_username",
+        "encrypted_password",
+        "encrypted_ssh_password",
+        "encrypted_ssh_private_key",
+    }
+
+
+def test_layer_b_tracks_security_and_deployment_models():
+    expected = {
+        Workflow: "workflow",
+        WorkflowDeployment: "workflow_deployment",
+        Schedule: "schedule",
+        Organization: "organization",
+        Team: "team",
+        TeamMembership: "team_membership",
+        TeamWorkflowPermission: "team_workflow_permission",
+        TeamKnowledgePermission: "team_knowledge_permission",
+        TeamLLMPermission: "team_llm_permission",
+        TeamAuditPermission: "team_audit_permission",
+        TraceRedactionPolicy: "trace_redaction_policy",
+        TraceRetentionPolicy: "trace_retention_policy",
+        TraceVisibilityPolicy: "trace_visibility_policy",
+    }
+    assert listeners.TRACKED_MODELS.items() >= expected.items()
+    assert listeners.TRACKED_OPS[Workflow] == {"created", "deleted"}
+
+
+def test_layer_b_masks_sensitive_json_columns():
+    assert listeners.SENSITIVE_FIELDS[Workflow] >= {
+        "graph",
+        "env_variables",
+        "runtime_variables",
+    }
+    assert listeners.SENSITIVE_FIELDS[WorkflowDeployment] >= {
+        "graph_snapshot",
+        "config",
+    }
+    assert listeners.SENSITIVE_FIELDS[TraceRedactionPolicy] >= {"regex_rules"}
 
 
 @pytest.fixture

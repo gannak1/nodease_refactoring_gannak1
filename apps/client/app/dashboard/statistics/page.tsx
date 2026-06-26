@@ -3,11 +3,12 @@
 import { useState } from 'react';
 import { MonitoringTab } from './components/MonitoringTab';
 import { LogTab } from './components/LogTab';
+import { AuditTab } from './components/AuditTab';
 
 export default function StatisticsPage() {
-  const [activeTab, setActiveTab] = useState<'monitoring' | 'logs'>(
-    'monitoring',
-  );
+  const [activeTab, setActiveTab] = useState<
+    'monitoring' | 'logs' | 'audit'
+  >('monitoring');
 
   return (
     <div className="p-8 bg-white min-h-full">
@@ -37,17 +38,33 @@ export default function StatisticsPage() {
           >
             로그
           </button>
+          <button
+            onClick={() => setActiveTab('audit')}
+            className={`whitespace-nowrap border-b-2 px-1 pb-4 text-sm font-medium transition-colors ${
+              activeTab === 'audit'
+                ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:border-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            감사 로그
+          </button>
         </nav>
       </div>
 
       {/* 탭 컨텐츠 */}
-      {activeTab === 'monitoring' ? (
+      {activeTab === 'monitoring' && (
         <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
           <MonitoringTab />
         </div>
-      ) : (
+      )}
+      {activeTab === 'logs' && (
         <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 h-[calc(100vh-200px)]">
           <LogTab />
+        </div>
+      )}
+      {activeTab === 'audit' && (
+        <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 h-[calc(100vh-200px)]">
+          <AuditTab />
         </div>
       )}
     </div>
