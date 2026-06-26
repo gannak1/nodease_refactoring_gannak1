@@ -149,9 +149,9 @@ metadata view에서는 `inputs`, `outputs`, `process_data`, `error_message`를 �
 Organization/team permission 모델은 다음 테이블을 기준으로 한다.
 
 - `organization`
-- `team_permission`
-- `user_team_permissions`
-- `workflow_team_permissions`
+- `teams`
+- `team_memberships`
+- `team_workflow_permissions`
 
 Tracing 1차 구현은 RBAC 모델을 직접 controller에서 조회하지 않는다. 접근 결정은 `TraceAccessService`와 `TraceRbacService` 경계에서 수행한다.
 
@@ -163,7 +163,7 @@ Tracing은 다음 interface만 기대한다.
 - 현재 사용자가 redacted payload를 조회할 수 있는지 확인
 - 현재 사용자가 raw payload를 조회할 수 있는지 확인
 
-1차 구현의 기본 app owner 판별은 `apps.created_by`를 사용한다. 추가로 `team_permission.auth_state` 기반 workflow scoped RBAC 접근을 지원한다.
+1차 구현의 기본 app owner 판별은 `apps.created_by`를 사용한다. 추가로 `team_workflow_permissions.auth_state` 기반 workflow scoped RBAC 접근을 지원한다.
 
 RBAC 권한 매핑:
 

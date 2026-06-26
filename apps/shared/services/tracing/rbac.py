@@ -1,11 +1,7 @@
 import uuid
 from typing import Any, Optional, Protocol
 
-from apps.shared.db.models.team import (
-    TeamPermission,
-    UserTeamPermissions,
-    WorkflowTeamPermission,
-)
+from apps.shared.db.models.team import Team, TeamMembership, TeamWorkflowPermission
 from sqlalchemy.orm import Session
 
 TRACE_SYSTEM_ADMIN_PERMISSION = "tracing.system_admin"
@@ -70,28 +66,28 @@ class TraceRbacService:
             return None
 
         query = (
-            db.query(TeamPermission.auth_state)
+            db.query(TeamWorkflowPermission.auth_state)
             .join(
-                UserTeamPermissions,
-                UserTeamPermissions.team_permission_id == TeamPermission.id,
+                TeamMembership,
+                TeamMembership.team_id == TeamWorkflowPermission.team_id,
             )
             .join(
-                WorkflowTeamPermission,
-                WorkflowTeamPermission.team_permission_id == TeamPermission.id,
+                Team,
+                Team.id == TeamWorkflowPermission.team_id,
             )
             .filter(
-                UserTeamPermissions.user_id == user_id,
-                WorkflowTeamPermission.workflow_id == workflow_uuid,
-                TeamPermission.is_active.is_(True),
-                UserTeamPermissions.organization_id
-                == WorkflowTeamPermission.organization_id,
-                TeamPermission.organization_id
-                == WorkflowTeamPermission.organization_id,
+                TeamMembership.user_id == user_id,
+                TeamWorkflowPermission.workflow_id == workflow_uuid,
+                Team.is_active.is_(True),
+                TeamMembership.grantee_organization_id
+                == TeamWorkflowPermission.grantee_organization_id,
+                Team.organization_id
+                == TeamWorkflowPermission.grantee_organization_id,
             )
         )
         if organization_uuid is not None:
             query = query.filter(
-                WorkflowTeamPermission.organization_id == organization_uuid
+                TeamWorkflowPermission.grantee_organization_id == organization_uuid
             )
 
         best_state: Optional[str] = None

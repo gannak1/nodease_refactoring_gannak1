@@ -2,25 +2,42 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from apps.shared.db.base import Base
 
 if TYPE_CHECKING:
+    from apps.shared.db.models.knowledge import KnowledgeBase
+    from apps.shared.db.models.llm import LLMCredential
     from apps.shared.db.models.organization import Organization
     from apps.shared.db.models.user import User
     from apps.shared.db.models.workflow import Workflow
 
 
-class TeamPermission(Base):
-    __tablename__ = "team_permission"
+class Team(Base):
+    """Team owned by one organization."""
+
+    __tablename__ = "teams"
     __table_args__ = (
         UniqueConstraint(
             "organization_id",
             "name",
-            name="uq_permission_team_organization_name",
+            name="uq_teams_organization_name",
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_teams_id_organization_id",
         ),
     )
 
@@ -58,20 +75,17 @@ class TeamPermission(Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Permission state: none, read, write, execute, admin.
-    auth_state: Mapped[str] = mapped_column(
-        String(50),
-        nullable=False,
-        default="none",
+    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
+    manager: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[managed_by]
     )
 
-    creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
-    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
 
+class TeamAssignmentMixin:
+    """Common assignment columns for team membership and resource permissions."""
 
-class TeamPermissionAssignmentMixin:
     @declared_attr
-    def organization_id(cls) -> Mapped[uuid.UUID]:
+    def grantee_organization_id(cls) -> Mapped[uuid.UUID]:
         return mapped_column(
             UUID(as_uuid=True),
             ForeignKey("organization.id"),
@@ -80,10 +94,10 @@ class TeamPermissionAssignmentMixin:
         )
 
     @declared_attr
-    def team_permission_id(cls) -> Mapped[uuid.UUID]:
+    def team_id(cls) -> Mapped[uuid.UUID]:
         return mapped_column(
             UUID(as_uuid=True),
-            ForeignKey("team_permission.id"),
+            ForeignKey("teams.id"),
             nullable=False,
             index=True,
         )
@@ -106,26 +120,44 @@ class TeamPermissionAssignmentMixin:
         )
 
     @declared_attr
-    def organization(cls) -> Mapped["Organization"]:
-        return relationship("Organization")
+    def grantee_organization(cls) -> Mapped["Organization"]:
+        return relationship(
+            "Organization",
+            foreign_keys=lambda: [cls.grantee_organization_id],
+        )
 
     @declared_attr
-    def team_permission(cls) -> Mapped["TeamPermission"]:
-        return relationship("TeamPermission")
+    def team(cls) -> Mapped["Team"]:
+        return relationship("Team", foreign_keys=lambda: [cls.team_id])
 
     @declared_attr
     def assigner(cls) -> Mapped["User"]:
         return relationship("User", foreign_keys=lambda: [cls.assigned_by])
 
 
-class UserTeamPermissions(TeamPermissionAssignmentMixin, Base):
-    __tablename__ = "user_team_permissions"
+class TeamResourcePermissionMixin(TeamAssignmentMixin):
+    """Common permission state for resource-specific team permission tables."""
+
+    @declared_attr
+    def auth_state(cls) -> Mapped[str]:
+        return mapped_column(String(50), nullable=False, default="none")
+
+
+class TeamMembership(TeamAssignmentMixin, Base):
+    """Membership: which user belongs to which team."""
+
+    __tablename__ = "team_memberships"
     __table_args__ = (
         UniqueConstraint(
-            "organization_id",
+            "grantee_organization_id",
             "user_id",
-            "team_permission_id",
-            name="uq_user_team_permissions_organization_user_permission",
+            "team_id",
+            name="uq_team_memberships_org_user_team",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_memberships_team_org",
         ),
     )
 
@@ -142,14 +174,21 @@ class UserTeamPermissions(TeamPermissionAssignmentMixin, Base):
     user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
 
 
-class WorkflowTeamPermission(TeamPermissionAssignmentMixin, Base):
-    __tablename__ = "workflow_team_permissions"
+class TeamWorkflowPermission(TeamResourcePermissionMixin, Base):
+    """Team permission for a workflow resource."""
+
+    __tablename__ = "team_workflow_permissions"
     __table_args__ = (
         UniqueConstraint(
-            "organization_id",
+            "grantee_organization_id",
             "workflow_id",
-            "team_permission_id",
-            name="uq_workflow_team_permissions_organization_workflow_team",
+            "team_id",
+            name="uq_team_workflow_permissions_org_workflow_team",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_workflow_permissions_team_org",
         ),
     )
 
@@ -167,3 +206,108 @@ class WorkflowTeamPermission(TeamPermissionAssignmentMixin, Base):
     )
 
     workflow: Mapped["Workflow"] = relationship("Workflow")
+
+
+class TeamKnowledgePermission(TeamResourcePermissionMixin, Base):
+    """Team permission for a knowledge base resource."""
+
+    __tablename__ = "team_knowledge_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "knowledge_base_id",
+            "team_id",
+            name="uq_team_knowledge_permissions_org_knowledge_team",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_knowledge_permissions_team_org",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id"),
+        nullable=False,
+        index=True,
+    )
+
+    knowledge_base: Mapped["KnowledgeBase"] = relationship("KnowledgeBase")
+
+
+class TeamLLMPermission(TeamResourcePermissionMixin, Base):
+    """Team permission for an LLM credential resource."""
+
+    __tablename__ = "team_llm_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "llm_credential_id",
+            "team_id",
+            name="uq_team_llm_permissions_org_credential_team",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_llm_permissions_team_org",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    llm_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_credentials.id"),
+        nullable=False,
+        index=True,
+    )
+
+    llm_credential: Mapped["LLMCredential"] = relationship("LLMCredential")
+
+
+class TeamAuditPermission(TeamResourcePermissionMixin, Base):
+    """Team permission for audit visibility over one target organization."""
+
+    __tablename__ = "team_audit_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "target_organization_id",
+            "team_id",
+            name="uq_team_audit_permissions_org_target_team",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_audit_permissions_team_org",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    target_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization.id"),
+        nullable=False,
+        index=True,
+    )
+
+    target_organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[target_organization_id],
+    )

@@ -93,13 +93,13 @@ workflow_runs.deployment_id
 
 Context:
 
-- `organization`, `team_permission`, `user_team_permissions`, `workflow_team_permissions` 모델이 추가되었다.
+- `organization`, `teams`, `team_memberships`, `team_workflow_permissions` 모델이 추가되었다.
 - Tracing 접근 제어는 controller가 아니라 `TraceAccessService`와 `TraceRbacService` 경계에서 수행해야 한다.
 - raw payload는 강한 권한과 visibility policy를 동시에 만족할 때만 열어야 한다.
 
 Options considered:
 
-- `team_permission.auth_state = admin`을 전역 tracing system admin으로 승격한다.
+- `team_workflow_permissions.auth_state = admin`을 전역 tracing system admin으로 승격한다.
 - team permission은 workflow/app 범위 권한으로만 해석하고, 전역 system admin은 별도 경계를 유지한다.
 - RBAC 연결을 후속으로 미루고 기존 app owner만 유지한다.
 
@@ -109,7 +109,7 @@ Final decision:
 - `read`는 metadata view 조회만 허용한다.
 - `write`, `execute`, `admin`은 visibility policy가 허용할 때 redacted payload view를 허용한다.
 - `admin`은 visibility policy가 허용할 때 raw payload view를 허용한다.
-- `team_permission.auth_state = admin`은 global/organization/app policy 변경 권한을 주지 않는다.
+- `team_workflow_permissions.auth_state = admin`은 global/organization/app policy 변경 권한을 주지 않는다.
 
 Rationale:
 
