@@ -22,7 +22,24 @@ from apps.shared.db.models.app import App
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.team import (
+    Team,
+    TeamAuditPermission,
+    TeamKnowledgePermission,
+    TeamLLMPermission,
+    TeamMembership,
+    TeamWorkflowPermission,
+)
 from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_run import (
+    TraceRedactionPolicy,
+    TraceRetentionPolicy,
+    TraceVisibilityPolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +51,55 @@ TRACKED_MODELS = {
     Connection: "connection",
     LLMCredential: "credential",
     KnowledgeBase: "knowledge",
+    Organization: "organization",
+    Schedule: "schedule",
+    Team: "team",
+    TeamMembership: "team_membership",
+    TeamWorkflowPermission: "team_workflow_permission",
+    TeamKnowledgePermission: "team_knowledge_permission",
+    TeamLLMPermission: "team_llm_permission",
+    TeamAuditPermission: "team_audit_permission",
+    TraceRedactionPolicy: "trace_redaction_policy",
+    TraceRetentionPolicy: "trace_retention_policy",
+    TraceVisibilityPolicy: "trace_visibility_policy",
     User: "user",
+    Workflow: "workflow",
+    WorkflowDeployment: "workflow_deployment",
+}
+
+TRACKED_OPS = {
+    Workflow: {"created", "deleted"},
 }
 
 # 모델별 민감 필드(평문 저장 금지)
 SENSITIVE_FIELDS = {
     App: {"auth_secret"},
     Connection: {
+        "database",
         "encrypted_password",
         "encrypted_ssh_password",
         "encrypted_ssh_private_key",
+        "host",
+        "ssh_host",
+        "ssh_username",
+        "username",
     },
     LLMCredential: {"encrypted_config"},
-    User: {"password"},
     KnowledgeBase: set(),
+    Organization: set(),
+    Schedule: set(),
+    Team: set(),
+    TeamMembership: set(),
+    TeamWorkflowPermission: set(),
+    TeamKnowledgePermission: set(),
+    TeamLLMPermission: set(),
+    TeamAuditPermission: set(),
+    TraceRedactionPolicy: {"regex_rules"},
+    TraceRetentionPolicy: set(),
+    TraceVisibilityPolicy: set(),
+    User: {"password"},
+    Workflow: {"env_variables", "graph", "runtime_variables"},
+    WorkflowDeployment: {"config", "graph_snapshot"},
 }
 
 
@@ -87,6 +139,10 @@ def _model_of(obj):
         if isinstance(obj, model_cls):
             return model_cls
     return None
+
+
+def _should_track(model_cls, op):
+    return op in TRACKED_OPS.get(model_cls, {"created", "updated", "deleted"})
 
 
 def _discard_buffers(session):
@@ -133,7 +189,7 @@ def _before_flush(session, flush_context, instances):
 
         for obj in session.new:
             model_cls = _model_of(obj)
-            if model_cls is None:
+            if model_cls is None or not _should_track(model_cls, "created"):
                 continue
             pending.append(
                 (obj, model_cls, "created", None, _all_columns(obj, model_cls))
@@ -141,7 +197,7 @@ def _before_flush(session, flush_context, instances):
 
         for obj in session.dirty:
             model_cls = _model_of(obj)
-            if model_cls is None:
+            if model_cls is None or not _should_track(model_cls, "updated"):
                 continue
             before, after = _changed_columns(obj, model_cls)
             if not before and not after:
@@ -150,7 +206,7 @@ def _before_flush(session, flush_context, instances):
 
         for obj in session.deleted:
             model_cls = _model_of(obj)
-            if model_cls is None:
+            if model_cls is None or not _should_track(model_cls, "deleted"):
                 continue
             pending.append(
                 (obj, model_cls, "deleted", _all_columns(obj, model_cls), None)
