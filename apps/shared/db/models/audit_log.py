@@ -28,6 +28,10 @@ class AuditStatus(str, Enum):
     FAILURE = "failure"
 
 
+def enum_values(enum_cls):
+    return [item.value for item in enum_cls]
+
+
 class AuditLog(Base):
     """
     사용자 작업 감사(Audit) 로그 테이블.
@@ -61,11 +65,14 @@ class AuditLog(Base):
         index=True,
     )
     actor_type: Mapped[ActorType] = mapped_column(
-        SQLEnum(ActorType, name="audit_actor_type"), nullable=False
+        SQLEnum(ActorType, name="audit_actor_type", values_callable=enum_values),
+        nullable=False,
     )
 
     category: Mapped[AuditCategory] = mapped_column(
-        SQLEnum(AuditCategory, name="audit_category"), nullable=False, index=True
+        SQLEnum(AuditCategory, name="audit_category", values_callable=enum_values),
+        nullable=False,
+        index=True,
     )
     action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
 
@@ -76,7 +83,7 @@ class AuditLog(Base):
     after: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     status: Mapped[AuditStatus] = mapped_column(
-        SQLEnum(AuditStatus, name="audit_status"),
+        SQLEnum(AuditStatus, name="audit_status", values_callable=enum_values),
         nullable=False,
         default=AuditStatus.SUCCESS,
     )
