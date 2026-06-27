@@ -1,9 +1,7 @@
 import { format } from 'date-fns';
 import { JsonDataDisplay } from './shared/JsonDataDisplay';
 import { ko } from 'date-fns/locale';
-import {
-  WorkflowRun,
-} from '@/app/features/workflow/types/Api';
+import { WorkflowRun } from '@/app/features/workflow/types/Api';
 import {
   CheckCircle2,
   XCircle,
@@ -13,7 +11,6 @@ import {
   AlertCircle,
   Upload,
   Download,
-  BookOpen,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { LogExecutionPath } from './detail-components/LogExecutionPath';
@@ -82,7 +79,6 @@ const OutputDataSection = ({ data }: { data: any }) => {
     </CollapsibleSection>
   );
 };
-
 
 export const LogDetail = ({
   run,
@@ -226,22 +222,32 @@ export const LogDetail = ({
                     }`}
                   >
                     <div className="flex justify-between items-center">
-                      <span className={`font-semibold flex items-center gap-1.5 ${displayInfo.color}`}>
+                      <span
+                        className={`font-semibold flex items-center gap-1.5 ${displayInfo.color}`}
+                      >
                         {displayInfo.icon}
                         {displayInfo.label}
                       </span>
-                      <span className={`text-[9px] px-1 py-0.5 rounded ${
-                        node.status === 'success' 
-                          ? 'bg-green-100 text-green-700' 
+                      <span
+                        className={`text-[9px] px-1 py-0.5 rounded ${
+                          node.status === 'success'
+                            ? 'bg-green-100 text-green-700'
+                            : node.status === 'running'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-red-100 text-red-700'
+                        }`}
+                      >
+                        {node.status === 'success'
+                          ? '✓'
                           : node.status === 'running'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-red-100 text-red-700'
-                      }`}>
-                        {node.status === 'success' ? '✓' : node.status === 'running' ? '...' : '✗'}
+                            ? '...'
+                            : '✗'}
                       </span>
                     </div>
                     {duration && (
-                      <div className="text-[10px] text-gray-400 mt-0.5">{duration}초</div>
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        {duration}초
+                      </div>
                     )}
                   </button>
                 );
@@ -266,7 +272,9 @@ export const LogDetail = ({
                     <h4 className="font-bold text-red-700 flex items-center gap-2 mb-1 text-sm">
                       <AlertCircle className="w-4 h-4" /> 에러
                     </h4>
-                    <p className="text-xs text-red-600">{selectedNode.error_message}</p>
+                    <p className="text-xs text-red-600">
+                      {selectedNode.error_message}
+                    </p>
                   </div>
                 )}
               </div>
@@ -318,11 +326,15 @@ export const LogDetail = ({
                           node.status === 'success'
                             ? 'bg-green-100 text-green-700'
                             : node.status === 'running'
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'bg-red-100 text-red-700'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-red-100 text-red-700'
                         }`}
                       >
-                        {node.status === 'success' ? '성공' : node.status === 'running' ? '진행중' : '실패'}
+                        {node.status === 'success'
+                          ? '성공'
+                          : node.status === 'running'
+                            ? '진행중'
+                            : '실패'}
                       </span>
                     </div>
                     {duration && (

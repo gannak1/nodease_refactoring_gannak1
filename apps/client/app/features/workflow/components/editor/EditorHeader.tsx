@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, X } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { isMockWorkflowId } from '../../utils/mockMode';
@@ -8,21 +8,22 @@ import { isMockWorkflowId } from '../../utils/mockMode';
 export default function EditorHeader() {
   const router = useRouter();
   const params = useParams();
-  const { projectApp } = useWorkflowStore();
+  const { projectApp, fullscreenNodeId, closeNodeFullscreen } =
+    useWorkflowStore();
   const isMockMode = isMockWorkflowId(params.id as string);
 
   return (
-    <header className="h-10 min-h-[40px] bg-white flex items-center px-4 justify-between relative z-50">
+    <header className="relative z-50 flex h-12 min-h-[48px] items-center justify-between border-b border-slate-200 bg-white px-5">
       {/* 1. Left: Breadcrumb */}
-      <nav className="flex items-center gap-2 text-sm ml-2">
+      <nav className="ml-2 flex items-center gap-2 text-sm">
         <button
           onClick={() => router.push('/dashboard/mymodule')}
-          className="text-gray-600 hover:text-gray-900 transition-colors"
+          className="font-semibold text-slate-500 transition-colors hover:text-slate-950"
         >
           내 모듈
         </button>
-        <ChevronRight className="w-4 h-4 text-gray-400" />
-        <span className="font-medium text-gray-900">
+        <ChevronRight className="h-4 w-4 text-slate-400" />
+        <span className="font-black text-slate-950">
           {projectApp?.name || '이름 없는 모듈'}
         </span>
         {isMockMode && (
@@ -31,6 +32,25 @@ export default function EditorHeader() {
           </span>
         )}
       </nav>
+
+      <div className="flex min-w-0 shrink-0 items-center gap-2">
+        <div
+          id="workflow-editor-header-actions"
+          className="flex min-w-0 items-center gap-2"
+        />
+
+        {fullscreenNodeId && (
+          <button
+            type="button"
+            onClick={closeNodeFullscreen}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800"
+            title="노드 상세 닫기 (Esc)"
+            aria-label="노드 상세 닫기"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
     </header>
   );
 }

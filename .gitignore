@@ -11,6 +11,9 @@ __pycache__/
 apps/client/.next/
 **/node_modules/
 
+# Local dev logs
+.dev-logs/
+
 # Environment
 .env
 .env.*

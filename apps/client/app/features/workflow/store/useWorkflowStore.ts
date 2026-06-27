@@ -75,6 +75,22 @@ type WorkflowState = {
   isTestPanelOpen: boolean;
   toggleTestPanel: () => void;
 
+  // === 노드 전체화면 설정(NDV) 상태 ===
+  fullscreenNodeId: string | null;
+  openNodeFullscreen: (nodeId: string) => void;
+  closeNodeFullscreen: () => void;
+  syncNodeFullscreenFromUrl: (nodeId: string | null) => void;
+
+  // === 번호 기반 빠른 연결 상태 ===
+  numberConnection: {
+    sourceNodeId: string;
+    sourceHandleId: string;
+    input: string;
+  } | null;
+  startNumberConnection: (sourceNodeId: string, sourceHandleId: string) => void;
+  updateNumberConnectionInput: (input: string) => void;
+  cancelNumberConnection: () => void;
+
   // === 그래프 데이터 (ReactFlow) ===
   nodes: Node[];
   edges: Edge[];
@@ -179,6 +195,31 @@ type GraphSnapshot = {
 
 const HISTORY_LIMIT = 50;
 const PASTE_OFFSET = 40;
+const NDV_NODE_QUERY_KEY = 'node';
+
+const updateNodeFullscreenUrl = (
+  nodeId: string | null,
+  mode: 'push' | 'replace',
+) => {
+  if (typeof window === 'undefined') return;
+
+  const url = new URL(window.location.href);
+  const currentNodeId = url.searchParams.get(NDV_NODE_QUERY_KEY);
+  if (currentNodeId === nodeId) return;
+
+  if (nodeId) {
+    url.searchParams.set(NDV_NODE_QUERY_KEY, nodeId);
+  } else {
+    url.searchParams.delete(NDV_NODE_QUERY_KEY);
+  }
+
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  if (mode === 'push') {
+    window.history.pushState(window.history.state, '', nextUrl);
+  } else {
+    window.history.replaceState(window.history.state, '', nextUrl);
+  }
+};
 
 const cloneGraph = (nodes: Node[], edges: Edge[]): GraphSnapshot => ({
   nodes: structuredClone(nodes),
@@ -199,7 +240,9 @@ const shouldRecordEdgeChanges = (changes: EdgeChange[]) =>
   changes.some((change) => change.type !== 'select');
 
 const isDraggingPositionChange = (change: NodeChange) =>
-  change.type === 'position' && 'dragging' in change && change.dragging === true;
+  change.type === 'position' &&
+  'dragging' in change &&
+  change.dragging === true;
 
 const shouldRecordCompletedNodeChanges = (changes: NodeChange[]) =>
   changes.some(
@@ -266,9 +309,7 @@ const remapCopiedNodeReferences = (
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) =>
-      remapCopiedNodeReferences(item, idMap),
-    );
+    return value.map((item) => remapCopiedNodeReferences(item, idMap));
   }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
@@ -278,7 +319,7 @@ const remapCopiedNodeReferences = (
           ? remapSelectorValue(item, idMap)
           : key === 'inputs' && Array.isArray(item)
             ? remapInputsArray(item, idMap)
-          : remapCopiedNodeReferences(item, idMap),
+            : remapCopiedNodeReferences(item, idMap),
       ]),
     );
   }
@@ -289,7 +330,10 @@ const preparePastedNodeData = (
   data: Node['data'],
   idMap: Map<string, string>,
 ): Node['data'] => {
-  const remappedData = remapCopiedNodeReferences(data, idMap) as Node['data'] & {
+  const remappedData = remapCopiedNodeReferences(
+    data,
+    idMap,
+  ) as Node['data'] & {
     displayNumber?: unknown;
   };
   delete remappedData.displayNumber;
@@ -297,9 +341,7 @@ const preparePastedNodeData = (
 };
 
 const getInternalEdges = (edges: Edge[], nodeIds: Set<string>) =>
-  edges.filter(
-    (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
-  );
+  edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 
 const buildDuplicatedGraphElements = (
   sourceNodes: Node[],
@@ -402,6 +444,10 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   // === 테스트 패널 상태 ===
   isTestPanelOpen: false,
+
+  // === 노드 전체화면 설정(NDV) 상태 ===
+  fullscreenNodeId: null,
+  numberConnection: null,
 
   runTrigger: 0,
   triggerWorkflowRun: () =>
@@ -520,7 +566,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       nodes: newNodes as Node[],
       workflows: updatedWorkflows,
       pendingDragStartSnapshot: isDragging
-        ? state.pendingDragStartSnapshot || cloneGraph(currentNodes, currentEdges)
+        ? state.pendingDragStartSnapshot ||
+          cloneGraph(currentNodes, currentEdges)
         : null,
       ...(shouldRecord
         ? {
@@ -574,6 +621,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       edges: newEdges,
       workflows: updatedWorkflows,
+      numberConnection: null,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(currentNodes, currentEdges),
@@ -598,10 +646,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         previous.edges,
       ),
       undoStack: undoStack.slice(0, -1),
-      redoStack: [
-        ...state.redoStack.slice(-(HISTORY_LIMIT - 1)),
-        current,
-      ],
+      redoStack: [...state.redoStack.slice(-(HISTORY_LIMIT - 1)), current],
       pendingDragStartSnapshot: null,
     }));
   },
@@ -621,10 +666,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         next.nodes,
         next.edges,
       ),
-      undoStack: [
-        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
-        current,
-      ],
+      undoStack: [...state.undoStack.slice(-(HISTORY_LIMIT - 1)), current],
       redoStack: redoStack.slice(0, -1),
       pendingDragStartSnapshot: null,
     }));
@@ -718,8 +760,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   hasSelectedElements: () => {
     const { nodes, edges } = get();
     return (
-      nodes.some((node) => node.selected) ||
-      edges.some((edge) => edge.selected)
+      nodes.some((node) => node.selected) || edges.some((edge) => edge.selected)
     );
   },
 
@@ -826,6 +867,52 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       isSettingsOpen: false,
       isVersionHistoryOpen: false,
     })),
+
+  // === 노드 전체화면 설정(NDV) 액션 ===
+  openNodeFullscreen: (nodeId) => {
+    updateNodeFullscreenUrl(nodeId, 'push');
+    set({
+      fullscreenNodeId: nodeId,
+      isSettingsOpen: false,
+      isVersionHistoryOpen: false,
+      isTestPanelOpen: false,
+    });
+  },
+
+  closeNodeFullscreen: () => {
+    updateNodeFullscreenUrl(null, 'replace');
+    set({ fullscreenNodeId: null });
+  },
+
+  syncNodeFullscreenFromUrl: (nodeId) =>
+    set({
+      fullscreenNodeId: nodeId,
+      ...(nodeId
+        ? {
+            isSettingsOpen: false,
+            isVersionHistoryOpen: false,
+            isTestPanelOpen: false,
+          }
+        : {}),
+    }),
+
+  startNumberConnection: (sourceNodeId, sourceHandleId) =>
+    set({
+      numberConnection: {
+        sourceNodeId,
+        sourceHandleId,
+        input: '',
+      },
+    }),
+
+  updateNumberConnectionInput: (input) =>
+    set((state) => ({
+      numberConnection: state.numberConnection
+        ? { ...state.numberConnection, input }
+        : null,
+    })),
+
+  cancelNumberConnection: () => set({ numberConnection: null }),
 
   previewVersion: (version) => {
     // 현재 스냅샷을 노드/엣지에 적용 (미리보기)

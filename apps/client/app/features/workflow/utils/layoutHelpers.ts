@@ -2,8 +2,23 @@ import dagre from 'dagre';
 import type { AppNode } from '../types/Nodes';
 import type { Edge } from '@xyflow/react';
 
-const NODE_WIDTH = 300;
+const NODE_WIDTH = 420;
 const NODE_HEIGHT = 150;
+const RANK_GAP = 160;
+const NODE_GAP = 100;
+
+const getLayoutNodeSize = (node: AppNode) => {
+  const measuredNode = node as AppNode & {
+    measured?: { width?: number; height?: number };
+    width?: number;
+    height?: number;
+  };
+
+  return {
+    width: measuredNode.measured?.width ?? measuredNode.width ?? NODE_WIDTH,
+    height: measuredNode.measured?.height ?? measuredNode.height ?? NODE_HEIGHT,
+  };
+};
 
 /**
  * Calculate auto layout for workflow nodes using Dagre
@@ -16,8 +31,8 @@ export function calculateAutoLayout(
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
 
-  // 간격을 넓혀서 엣지가 더 잘 보이도록 설정
-  dagreGraph.setGraph({ rankdir: 'LR', ranksep: 100, nodesep: 80 });
+  // 실제 노드 크기를 기준으로 충분한 간격을 두어 겹침을 방지합니다.
+  dagreGraph.setGraph({ rankdir: 'LR', ranksep: RANK_GAP, nodesep: NODE_GAP });
 
   // 2. 연결된 노드와 고립된 노드 분류
   const connectedNodeIds = new Set<string>();
@@ -33,8 +48,7 @@ export function calculateAutoLayout(
     if (connectedNodeIds.has(node.id)) {
       connectedNodes.push(node);
 
-      let width = NODE_WIDTH;
-      let height = NODE_HEIGHT;
+      let { width, height } = getLayoutNodeSize(node);
 
       // 서브모듈 노드가 펼쳐져 있는 경우 동적 크기 계산
       if (
@@ -192,12 +206,13 @@ export function calculateAutoLayout(
     };
 
     // 다음 위치 계산
-    currentX += NODE_WIDTH + gapX;
+    const { width, height } = getLayoutNodeSize(node);
+    currentX += width + gapX;
 
     // 줄바꿈 체크 (시작점으로부터의 거리가 최대 너비를 넘으면)
     if (currentX - minX > maxWidth) {
       currentX = minX;
-      currentY += NODE_HEIGHT + gapY;
+      currentY += height + gapY;
     }
 
     return newNode;

@@ -418,7 +418,7 @@ export const WorkflowNode = memo(
         {/* 토글 버튼: 우측 상단 절대 위치 */}
         <button
           onClick={handleToggle}
-          className="absolute top-5 right-5 p-1 rounded-md hover:bg-gray-100 text-gray-500 transition-colors"
+          className="absolute top-0 right-9 z-20 p-1.5 rounded-md border border-gray-200 bg-white shadow-sm hover:bg-gray-50 text-gray-500 transition-colors"
           title={isExpanded ? '접기' : '펼치기'}
         >
           {isLoading ? (

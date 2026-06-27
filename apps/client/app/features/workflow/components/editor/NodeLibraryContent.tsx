@@ -81,23 +81,23 @@ export const NodeLibraryContent = ({
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-white select-none">
+    <div className="flex h-full w-full select-none flex-col bg-white">
       {/* 1. Tabs */}
-      <div className="flex items-center px-4 pt-4 pb-2 border-b border-gray-100">
+      <div className="flex items-center border-b border-slate-100 px-4 pb-2 pt-4">
         <div className="w-full grid grid-cols-3 gap-1">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`text-sm font-medium pb-2 relative transition-colors w-full flex justify-center ${
+              className={`relative flex w-full justify-center pb-2 text-sm font-semibold transition-colors ${
                 activeTab === tab.id
-                  ? 'text-blue-600'
-                  : 'text-gray-500 hover:text-gray-800'
+                  ? 'text-slate-950'
+                  : 'text-slate-500 hover:text-slate-800'
               }`}
             >
               {tab.label}
               {activeTab === tab.id && (
-                <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 rounded-t-full" />
+                <div className="absolute bottom-0 left-0 h-0.5 w-full rounded-t-full bg-slate-950" />
               )}
             </button>
           ))}
@@ -107,13 +107,13 @@ export const NodeLibraryContent = ({
       {/* 2. Search */}
       <div className="px-4 py-3">
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             placeholder="검색 노드"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-8 pl-9 pr-3 rounded-lg border border-gray-200 bg-gray-50 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition-all placeholder:text-gray-400"
+            className="h-8 w-full rounded-md border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-semibold text-slate-900 transition-all placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100"
           />
         </div>
       </div>
@@ -121,8 +121,8 @@ export const NodeLibraryContent = ({
       {/* 3. Node List */}
       <div className="flex-1 overflow-y-auto px-2 pb-4 scrollbar-hide">
         {filteredNodes.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-gray-400">
-            <p className="text-sm">검색 결과가 없습니다</p>
+          <div className="flex flex-col items-center justify-center py-8 text-slate-400">
+            <p className="text-sm font-semibold">검색 결과가 없습니다</p>
           </div>
         ) : (
           <div className="space-y-4">
@@ -149,13 +149,13 @@ export const NodeLibraryContent = ({
                 }}
                 onMouseEnter={(e) => onHoverNode?.(node.id, node, e)}
                 onMouseLeave={(e) => onHoverNode?.(null, null, e)}
-                className={`group flex items-center gap-3 p-2 rounded-lg transition-all ${
+                className={`group flex items-center gap-3 rounded-lg p-2 transition-all ${
                   isNodeDisabled(node.type)
                     ? 'opacity-50 cursor-not-allowed'
-                    : 'cursor-pointer hover:bg-gray-100/80 active:scale-[0.98]'
+                    : 'cursor-pointer hover:bg-slate-100 active:scale-[0.98]'
                 } ${
                   hoveredNode === node.id && !isNodeDisabled(node.type)
-                    ? 'bg-gray-100'
+                    ? 'bg-slate-100'
                     : ''
                 }`}
               >
@@ -166,7 +166,7 @@ export const NodeLibraryContent = ({
                   {node.icon}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-gray-900 truncate">
+                  <div className="truncate text-sm font-semibold text-slate-950">
                     {node.name}
                   </div>
                   {/* Description is hidden in list, shown in hover card usually */}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
+import { getNodeOutputVariables } from '../../utils/nodeVariablePorts';
 
 type TestSidebarProps = {
   appendMemoryFlag?: (
@@ -40,6 +41,50 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     Array<{ nodeId: string; nodeType: string; output: any }>
   >([]);
   const [error, setError] = useState<string | null>(null);
+
+  const outputLabelByNodeId = useMemo(() => {
+    const labelMap = new Map<string, Map<string, string>>();
+
+    for (const node of nodes) {
+      const outputLabels = new Map<string, string>();
+      for (const output of getNodeOutputVariables(node)) {
+        outputLabels.set(output.key, output.label || output.key);
+        if (output.outputId) {
+          outputLabels.set(output.outputId, output.label || output.key);
+        }
+      }
+      labelMap.set(node.id, outputLabels);
+    }
+
+    return labelMap;
+  }, [nodes]);
+
+  const getNodeDisplayName = (nodeId: string) => {
+    const node = nodes.find((item) => item.id === nodeId);
+    const title = String(node?.data?.title || '').trim();
+    return title || nodeId;
+  };
+
+  const getOutputDisplayKey = (nodeId: string, key: string) => {
+    const label = outputLabelByNodeId.get(nodeId)?.get(key)?.trim();
+    if (!label || label === key) return key;
+    return `${label} (${key})`;
+  };
+
+  const stringifyOutputForDisplay = (nodeId: string, output: unknown) => {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) {
+      return JSON.stringify(output, null, 2);
+    }
+
+    const displayOutput = Object.fromEntries(
+      Object.entries(output as Record<string, unknown>).map(([key, value]) => [
+        getOutputDisplayKey(nodeId, key),
+        value,
+      ]),
+    );
+
+    return JSON.stringify(displayOutput, null, 2);
+  };
 
   // Start Node 찾기 및 변수 초기화
   const startNode = nodes.find(
@@ -246,6 +291,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     setError(null);
   };
 
+  const getVariableDisplayName = (variable: WorkflowVariable) =>
+    variable.label?.trim() || variable.name;
+
   return (
     <div className="absolute top-18 right-2 bottom-2 w-[400px] bg-white border-l border-gray-200 shadow-xl z-50 flex flex-col rounded-xl animate-in slide-in-from-right duration-200 dark:bg-gray-900 dark:border-gray-800">
       {/* Header */}
@@ -284,7 +332,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
                 <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900 max-h-40">
                   <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                    {JSON.stringify(result.output, null, 2)}
+                    {stringifyOutputForDisplay(result.nodeId, result.output)}
                   </pre>
                 </div>
               </div>
@@ -360,7 +408,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                             className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
                           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -369,7 +417,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       ) : variable.type === 'select' ? (
                         <>
                           <label className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -391,7 +439,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       ) : variable.type === 'file' ? (
                         <>
                           <label className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -411,7 +459,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       ) : (
                         <>
                           <label className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -491,11 +539,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                         className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700"
                       >
                         <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 dark:bg-gray-800 dark:border-gray-700">
-                          {nodeId}
+                          {getNodeDisplayName(nodeId)}
                         </div>
                         <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900">
                           <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                            {JSON.stringify(output, null, 2)}
+                            {stringifyOutputForDisplay(nodeId, output)}
                           </pre>
                         </div>
                       </div>

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { X, HelpCircle, Plus, Trash2 } from 'lucide-react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { LLMNodeData } from '../../../../types/Nodes';
@@ -6,6 +7,7 @@ interface LLMParameterSidePanelProps {
   nodeId: string;
   data: LLMNodeData;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 // 파라미터 설명 (한국어)
@@ -23,19 +25,64 @@ const PARAM_DESCRIPTIONS = {
   stop: '지정된 문자열이 나타나면 응답 생성을 즉시 중단합니다. (예: ###, END)',
 };
 
+type ParamHelpId = keyof typeof PARAM_DESCRIPTIONS;
+
+const DescTooltip = ({
+  id,
+  text,
+  activeHelp,
+  onToggle,
+}: {
+  id: ParamHelpId;
+  text: string;
+  activeHelp: ParamHelpId | null;
+  onToggle: (id: ParamHelpId) => void;
+}) => {
+  const isOpen = activeHelp === id;
+
+  return (
+    <div className="relative inline-block ml-1">
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggle(id);
+        }}
+        className="flex h-4 w-4 items-center justify-center rounded-full text-gray-400 transition-colors hover:text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
+        aria-label="파라미터 도움말 보기"
+        aria-expanded={isOpen}
+      >
+        <HelpCircle className="w-3 h-3" />
+      </button>
+      {isOpen && (
+        <div
+          className="absolute z-50 w-48 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {text}
+          <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
+        </div>
+      )}
+    </div>
+  );
+};
+
 export function LLMParameterSidePanel({
   nodeId,
   data,
   onClose,
+  embedded = false,
 }: LLMParameterSidePanelProps) {
   const { updateNodeData } = useWorkflowStore();
+  const [activeHelp, setActiveHelp] = useState<ParamHelpId | null>(null);
 
   // Extract current parameter values (with defaults)
   const params = data.parameters || {};
   const modelId = (data.model_id || '').toLowerCase();
   const provider = (data.provider || '').toLowerCase();
   // Claude(Anthropic) 계열 여부 판단
-  const isAnthropic = provider.includes('anthropic') || modelId.startsWith('claude');
+  const isAnthropic =
+    provider.includes('anthropic') || modelId.startsWith('claude');
   // Google(Gemini) 계열 여부 판단
   const isGoogle =
     provider.includes('google') ||
@@ -58,12 +105,16 @@ export function LLMParameterSidePanel({
   // Claude 모델은 top_p/temperature 동시 사용이 제한되어 top_p를 제거
   const stripTopP = (input: Record<string, unknown>) => {
     if (!Object.prototype.hasOwnProperty.call(input, 'top_p')) return input;
-    const { top_p, ...rest } = input;
-    return rest;
+    const next = { ...input };
+    delete next.top_p;
+    return next;
   };
 
   // Claude일 경우 top_p가 빠진 파라미터를 기준으로 업데이트
   const baseParams = isAnthropic ? stripTopP(params) : params;
+  const toggleHelp = (id: ParamHelpId) => {
+    setActiveHelp((current) => (current === id ? null : id));
+  };
 
   // Handler to update a specific parameter
   const handleParamChange = (key: string, value: number) => {
@@ -155,23 +206,15 @@ export function LLMParameterSidePanel({
     );
   };
 
-  // Helper for parameter description tooltip
-  const DescTooltip = ({ text }: { text: string }) => (
-    <div className="group relative inline-block ml-1">
-      <HelpCircle className="w-3 h-3 text-gray-400 cursor-help" />
-      <div className="absolute z-50 hidden group-hover:block w-48 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5">
-        {text}
-        <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
-      </div>
-    </div>
-  );
-
   return (
     <div
-      className="absolute right-[400px] top-14 bottom-0 w-[320px] bg-white shadow-xl z-40 flex flex-col border-l border-gray-200"
-      style={{
-        transition: 'transform 0.3s ease-in-out',
-      }}
+      className={
+        embedded
+          ? 'nodrag flex h-full min-h-0 flex-col bg-white'
+          : 'nodrag w-[320px] max-h-[560px] rounded-xl border border-gray-200 bg-white shadow-xl z-40 flex flex-col'
+      }
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50/50">
         <div>
@@ -180,12 +223,16 @@ export function LLMParameterSidePanel({
             모델 응답 특성을 조절합니다
           </p>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 hover:bg-gray-200 rounded text-gray-500 transition-colors"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {!embedded && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 hover:bg-gray-200 rounded text-gray-500 transition-colors"
+            aria-label="LLM 파라미터 패널 닫기"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -196,7 +243,12 @@ export function LLMParameterSidePanel({
               <label className="text-xs font-medium text-gray-700">
                 온도 (Temperature)
               </label>
-              <DescTooltip text={PARAM_DESCRIPTIONS.temperature} />
+              <DescTooltip
+                id="temperature"
+                text={PARAM_DESCRIPTIONS.temperature}
+                activeHelp={activeHelp}
+                onToggle={toggleHelp}
+              />
             </div>
             <span className="text-xs font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
               {temperature.toFixed(1)}
@@ -220,7 +272,12 @@ export function LLMParameterSidePanel({
                 <label className="text-xs font-medium text-gray-700">
                   상위 확률 (Top P)
                 </label>
-                <DescTooltip text={PARAM_DESCRIPTIONS.top_p} />
+                <DescTooltip
+                  id="top_p"
+                  text={PARAM_DESCRIPTIONS.top_p}
+                  activeHelp={activeHelp}
+                  onToggle={toggleHelp}
+                />
               </div>
               <span className="text-xs font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
                 {topP.toFixed(2)}
@@ -239,12 +296,17 @@ export function LLMParameterSidePanel({
 
         {/* Max Tokens */}
         <div className="space-y-2">
-          <div className="flex justify-between items.center">
+          <div className="flex justify-between items-center">
             <div className="flex items-center">
               <label className="text-xs font-medium text-gray-700">
                 최대 토큰
               </label>
-              <DescTooltip text={PARAM_DESCRIPTIONS.max_tokens} />
+              <DescTooltip
+                id="max_tokens"
+                text={PARAM_DESCRIPTIONS.max_tokens}
+                activeHelp={activeHelp}
+                onToggle={toggleHelp}
+              />
             </div>
             <input
               type="number"
@@ -276,7 +338,12 @@ export function LLMParameterSidePanel({
                 <label className="text-xs font-medium text-gray-700">
                   주제 전환도
                 </label>
-                <DescTooltip text={PARAM_DESCRIPTIONS.presence_penalty} />
+                <DescTooltip
+                  id="presence_penalty"
+                  text={PARAM_DESCRIPTIONS.presence_penalty}
+                  activeHelp={activeHelp}
+                  onToggle={toggleHelp}
+                />
               </div>
               <span className="text-xs font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
                 {presencePenalty.toFixed(1)}
@@ -308,7 +375,12 @@ export function LLMParameterSidePanel({
                 <label className="text-xs font-medium text-gray-700">
                   반복 억제도
                 </label>
-                <DescTooltip text={PARAM_DESCRIPTIONS.frequency_penalty} />
+                <DescTooltip
+                  id="frequency_penalty"
+                  text={PARAM_DESCRIPTIONS.frequency_penalty}
+                  activeHelp={activeHelp}
+                  onToggle={toggleHelp}
+                />
               </div>
               <span className="text-xs font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
                 {frequencyPenalty.toFixed(1)}
@@ -339,7 +411,12 @@ export function LLMParameterSidePanel({
               <label className="text-xs font-medium text-gray-700">
                 종료 문자열
               </label>
-              <DescTooltip text={PARAM_DESCRIPTIONS.stop} />
+              <DescTooltip
+                id="stop"
+                text={PARAM_DESCRIPTIONS.stop}
+                activeHelp={activeHelp}
+                onToggle={toggleHelp}
+              />
             </div>
             <button
               onClick={handleAddStopSequence}

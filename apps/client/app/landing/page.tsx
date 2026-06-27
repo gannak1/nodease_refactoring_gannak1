@@ -30,7 +30,6 @@ import {
   Plus,
   Search,
   TrendingUp,
-  Users2,
   Webhook,
   Workflow,
   Zap,
@@ -106,8 +105,8 @@ function DataView() {
             />
           </div>
           <button className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-colors">
-            <Plus className="-ml-1 mr-2 h-5 w-5" aria-hidden="true" />
-            새 지식 베이스
+            <Plus className="-ml-1 mr-2 h-5 w-5" aria-hidden="true" />새 지식
+            베이스
           </button>
         </div>
       </div>
@@ -129,21 +128,21 @@ function DataView() {
               </div>
 
               <div className="flex-1 min-w-0 ml-2">
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
-                  {kb.name}
-                </h3>
-                {kb.tag ? (
-                  <span
-                    className={cn(
-                      'text-[10px] font-semibold px-2 py-0.5 rounded-full border',
-                      kb.tagClassName,
-                    )}
-                  >
-                    {kb.tag}
-                  </span>
-                ) : null}
-              </div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                    {kb.name}
+                  </h3>
+                  {kb.tag ? (
+                    <span
+                      className={cn(
+                        'text-[10px] font-semibold px-2 py-0.5 rounded-full border',
+                        kb.tagClassName,
+                      )}
+                    >
+                      {kb.tag}
+                    </span>
+                  ) : null}
+                </div>
                 <p className="text-sm text-gray-500 truncate mt-1">
                   {kb.description}
                 </p>
@@ -154,9 +153,7 @@ function DataView() {
                       <div className="flex items-center -space-x-1.5">
                         {kb.sourceTypes.map((type) => {
                           const meta =
-                            sourceTypeMeta[
-                              type as keyof typeof sourceTypeMeta
-                            ];
+                            sourceTypeMeta[type as keyof typeof sourceTypeMeta];
                           if (!meta) return null;
                           const Icon = meta.Icon;
                           return (
@@ -209,12 +206,7 @@ type NodePreviewProps = {
   children?: ReactNode;
 };
 
-function NodePreview({
-  title,
-  icon,
-  iconColor,
-  children,
-}: NodePreviewProps) {
+function NodePreview({ title, icon, iconColor, children }: NodePreviewProps) {
   return (
     <div className="relative w-[180px] min-h-[72px] rounded-[16px] border-2 border-gray-200 bg-white p-3 shadow-sm">
       <div className="mb-1.5 flex items-center gap-2.5">
@@ -506,7 +498,13 @@ function ReportingView() {
             <div className="h-[200px] w-full">
               <svg viewBox="0 0 600 200" className="w-full h-full">
                 <defs>
-                  <linearGradient id="reportingRuns" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient
+                    id="reportingRuns"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
                     <stop offset="5%" stopColor="#3b82f6" stopOpacity="0.15" />
                     <stop offset="95%" stopColor="#3b82f6" stopOpacity="0" />
                   </linearGradient>
@@ -545,9 +543,7 @@ function ReportingView() {
                   <span className="text-xs text-blue-500">(Total Runs)</span>
                 </div>
               </div>
-              <div className="text-3xl font-extrabold text-gray-800">
-                1,248
-              </div>
+              <div className="text-3xl font-extrabold text-gray-800">1,248</div>
             </div>
             <div className="bg-green-50 p-4 rounded-xl border border-green-100 flex flex-col justify-between">
               <div className="flex items-center gap-2 text-green-600 mb-2">
@@ -557,9 +553,7 @@ function ReportingView() {
                   <span className="text-xs text-green-500">(Success Rate)</span>
                 </div>
               </div>
-              <div className="text-3xl font-extrabold text-gray-800">
-                98.4%
-              </div>
+              <div className="text-3xl font-extrabold text-gray-800">98.4%</div>
             </div>
             <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 flex flex-col justify-between">
               <div className="flex items-center gap-2 text-purple-600 mb-2">
@@ -611,9 +605,7 @@ function ReportingView() {
                       key={fail.time}
                       className="hover:bg-red-50/30 transition-colors"
                     >
-                      <td className="px-4 py-3 text-gray-600">
-                        {fail.time}
-                      </td>
+                      <td className="px-4 py-3 text-gray-600">{fail.time}</td>
                       <td className="px-4 py-3">
                         <span
                           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium ${fail.badgeClass}`}
@@ -669,9 +661,7 @@ function ReportingView() {
                       <td className="px-6 py-4 font-bold text-red-600">
                         {item.count}
                       </td>
-                      <td className="px-6 py-4 text-gray-500">
-                        {item.reason}
-                      </td>
+                      <td className="px-6 py-4 text-gray-500">{item.reason}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -899,8 +889,9 @@ export default function LandingPage() {
 
           <p className="text-lg md:text-xl text-slate-500 max-w-2xl mx-auto mb-10 leading-relaxed animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
             Moduly는 직관적인 노드와 유연한 모듈 시스템으로 강력한 LLM
-            오케스트레이션을 <br />실현합니다. 코딩 없이 복잡한 AI 프로세스를
-            설계하고 비즈니스를 혁신하세요.
+            오케스트레이션을 <br />
+            실현합니다. 코딩 없이 복잡한 AI 프로세스를 설계하고 비즈니스를
+            혁신하세요.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-200">

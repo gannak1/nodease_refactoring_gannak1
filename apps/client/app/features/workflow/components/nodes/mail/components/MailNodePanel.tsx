@@ -1,14 +1,17 @@
-import { useCallback, useMemo, useState, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { MailNodeData, EmailProvider } from '../../../../types/Nodes';
-import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
-import { AlertTriangle } from 'lucide-react';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
+import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
+import {
+  DraggedOutputVariable,
+  getDroppedOutputReferenceName,
+  getTokenLabelMap,
+  upsertNamedSelector,
+} from '../../../../utils/nodeVariablePorts';
+import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 
 interface MailNodePanelProps {
   nodeId: string;
@@ -47,53 +50,8 @@ const PROVIDER_PRESETS: Record<
   },
 };
 
-// Caret 좌표 계산 (자동완성용)
-const getCaretCoordinates = (
-  element: HTMLTextAreaElement,
-  position: number,
-) => {
-  const div = document.createElement('div');
-  const style = window.getComputedStyle(element);
-
-  Array.from(style).forEach((prop) => {
-    div.style.setProperty(prop, style.getPropertyValue(prop));
-  });
-
-  div.style.position = 'absolute';
-  div.style.visibility = 'hidden';
-  div.style.whiteSpace = 'pre-wrap';
-  div.style.top = '0';
-  div.style.left = '0';
-
-  const textContent = element.value.substring(0, position);
-  div.innerHTML =
-    textContent.replace(/\n/g, '<br>') + '<span id="caret-marker">|</span>';
-
-  document.body.appendChild(div);
-
-  const marker = div.querySelector('#caret-marker');
-  const coordinates = {
-    top: marker
-      ? marker.getBoundingClientRect().top - div.getBoundingClientRect().top
-      : 0,
-    left: marker
-      ? marker.getBoundingClientRect().left - div.getBoundingClientRect().left
-      : 0,
-    height: parseInt(style.lineHeight) || 20,
-  };
-
-  document.body.removeChild(div);
-  return coordinates;
-};
-
 export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
   const { updateNodeData, nodes, edges } = useWorkflowStore();
-
-  const keywordRef = useRef<HTMLTextAreaElement>(null);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [suggestionPos, setSuggestionPos] = useState({ top: 0, left: 0 });
-
-  // 상위 노드 가져오기
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -127,32 +85,6 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
     [handleUpdateData],
   );
 
-  // 변수 핸들러
-  const handleAddVariable = useCallback(() => {
-    handleUpdateData('referenced_variables', [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ]);
-  }, [data.referenced_variables, handleUpdateData]);
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars.splice(index, 1);
-      handleUpdateData('referenced_variables', newVars);
-    },
-    [data.referenced_variables, handleUpdateData],
-  );
-
-  const handleUpdateVariable = useCallback(
-    (index: number, field: 'name' | 'value_selector', value: any) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars[index] = { ...newVars[index], [field]: value };
-      handleUpdateData('referenced_variables', newVars);
-    },
-    [data.referenced_variables, handleUpdateData],
-  );
-
   const emailMissing = useMemo(() => {
     return !data.email?.trim();
   }, [data.email]);
@@ -161,55 +93,30 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
     return !data.password?.trim();
   }, [data.password]);
 
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
+  const handleKeywordDropOutput = useCallback(
+    (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      );
+      handleUpdateData(
+        'referenced_variables',
+        upsertNamedSelector(
+          data.referenced_variables,
+          output,
+          'value_selector',
+        ),
+      );
+      return referenceName;
+    },
+    [data.referenced_variables, handleUpdateData],
   );
 
-  // 자동완성 핸들러
-  const handleKeyUp = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const target = e.target as HTMLTextAreaElement;
-    const value = target.value;
-    const selectionEnd = target.selectionEnd;
-
-    if (value.substring(selectionEnd - 2, selectionEnd) === '{{') {
-      const coords = getCaretCoordinates(target, selectionEnd);
-
-      setSuggestionPos({
-        top: target.offsetTop + coords.top + coords.height,
-        left: target.offsetLeft + coords.left,
-      });
-      setShowSuggestions(true);
-    } else {
-      setShowSuggestions(false);
-    }
-  };
-
-  const insertVariable = (varName: string) => {
-    const currentValue = data.keyword || '';
-    const textarea = keywordRef.current;
-
-    if (!textarea) return;
-
-    const selectionEnd = textarea.selectionEnd;
-    const lastOpen = currentValue.lastIndexOf('{{', selectionEnd);
-
-    if (lastOpen !== -1) {
-      const prefix = currentValue.substring(0, lastOpen);
-      const suffix = currentValue.substring(selectionEnd);
-
-      const newValue = `${prefix}{{ ${varName} }}${suffix}`;
-
-      handleUpdateData('keyword', newValue);
-      setShowSuggestions(false);
-
-      setTimeout(() => {
-        const newCursorPos = prefix.length + varName.length + 5;
-        textarea.focus();
-        textarea.setSelectionRange(newCursorPos, newCursorPos);
-      }, 0);
-    }
-  };
+  const tokenLabels = useMemo(
+    () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
+    [data.referenced_variables, upstreamNodes],
+  );
 
   const isCustomProvider = data.provider === 'custom';
 
@@ -335,22 +242,6 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
         </div>
       </CollapsibleSection>
 
-      {/* 3. 참조 변수 */}
-      <CollapsibleSection title="입력변수" defaultOpen={false} showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title=""
-          description="검색 조건에서 사용할 입력변수를 등록하고, 이전 노드의 출력값과 연결하세요."
-        />
-
-        {/* [VALIDATION] 불완전한 변수 경고 */}
-        <IncompleteVariablesAlert variables={incompleteVariables} />
-      </CollapsibleSection>
-
       {/* 4. 검색 옵션 */}
       <CollapsibleSection title="검색 옵션" defaultOpen={true} showDivider>
         <div className="flex flex-col gap-2 relative">
@@ -358,45 +249,20 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
             <label className="text-xs font-medium text-gray-700">
               검색 키워드
             </label>
-            <textarea
-              ref={keywordRef}
-              className="w-full h-20 rounded border border-gray-300 p-2 text-xs font-mono focus:outline-none focus:border-blue-500 resize-y"
+            <VariableTokenEditor
+              className="min-h-20 font-mono text-xs"
               placeholder="검색 키워드를 입력하세요..."
               value={data.keyword || ''}
-              onChange={(e) => handleUpdateData('keyword', e.target.value)}
-              onKeyUp={handleKeyUp}
+              onChange={(value) => handleUpdateData('keyword', value)}
+              onDropOutput={handleKeywordDropOutput}
+              tokenLabels={tokenLabels}
+              ariaLabel="메일 검색 키워드"
             />
             <p className="text-[10px] text-gray-500">
-              💡 <code>{'{{variable}}'}</code> 문법 사용 가능
+              좌측 입력 패널에서 변수를 클릭하거나 검색 키워드에 드롭해서
+              추가하세요.
             </p>
           </div>
-
-          {/* 자동완성 제안 */}
-          {showSuggestions && (
-            <div
-              className="absolute z-10 w-48 rounded border border-gray-200 bg-white shadow-lg"
-              style={{
-                top: suggestionPos.top,
-                left: suggestionPos.left,
-              }}
-            >
-              {(data.referenced_variables || []).length > 0 ? (
-                (data.referenced_variables || []).map((v, i) => (
-                  <button
-                    key={i}
-                    className="block w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
-                    onClick={() => insertVariable(v.name)}
-                  >
-                    {v.name || '(이름 없음)'}
-                  </button>
-                ))
-              ) : (
-                <div className="px-4 py-2 text-sm text-gray-400">
-                  등록된 입력변수가 없습니다.
-                </div>
-              )}
-            </div>
-          )}
 
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-gray-700">
