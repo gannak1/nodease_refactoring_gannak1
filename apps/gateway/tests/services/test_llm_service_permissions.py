@@ -106,6 +106,10 @@ def test_delete_credential_preserves_permission_http_exception(monkeypatch):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     monkeypatch.setattr(llm_endpoint, "ensure_llm_credential_permission", deny)
+    monkeypatch.setattr(
+        "apps.gateway.utils.audit.record_audit",
+        lambda **kwargs: None,
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         llm_endpoint.delete_credential(credential_id, FakeDb(None), user)

@@ -4,6 +4,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import requests
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.organization_context import ensure_user_default_organization
@@ -14,6 +15,8 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     LLMUsageLog,
 )
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
     LLMCredentialResponse,
@@ -1033,6 +1036,33 @@ class LLMService:
             except (TypeError, ValueError):
                 workflow_uuid = None
 
+        run_log = None
+        workflow = None
+        if workflow_run_id is not None:
+            run_log = (
+                db.query(WorkflowRun)
+                .filter(WorkflowRun.id == workflow_run_id)
+                .first()
+            )
+            if run_log:
+                workflow = (
+                    db.query(Workflow)
+                    .filter(Workflow.id == run_log.workflow_id)
+                    .first()
+                )
+                if workflow_uuid is None:
+                    try:
+                        workflow_uuid = uuid.UUID(str(run_log.workflow_id))
+                    except (TypeError, ValueError):
+                        workflow_uuid = None
+        if workflow is None and workflow_uuid is not None:
+            workflow = db.query(Workflow).filter(Workflow.id == workflow_uuid).first()
+        if organization_uuid is None and workflow is not None:
+            try:
+                organization_uuid = uuid.UUID(str(workflow.organization_id))
+            except (TypeError, ValueError):
+                organization_uuid = None
+
         credential = LLMService._get_valid_credential_for_user(
             db,
             user_id,
@@ -1063,6 +1093,77 @@ class LLMService:
         db.commit()
         db.refresh(log)
         return log
+
+    @staticmethod
+    def list_workflow_run_llm_traces(
+        db: Session,
+        workflow_id: uuid.UUID,
+        run_id: uuid.UUID,
+        *,
+        node_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        run_exists = (
+            db.query(WorkflowRun.id)
+            .filter(WorkflowRun.id == run_id, WorkflowRun.workflow_id == workflow_id)
+            .first()
+        )
+        if not run_exists:
+            return None
+
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+
+        query = (
+            db.query(LLMUsageLog)
+            .options(joinedload(LLMUsageLog.model).joinedload(LLMModel.provider))
+            .filter(
+                LLMUsageLog.workflow_run_id == run_id,
+                or_(
+                    LLMUsageLog.workflow_id == workflow_id,
+                    LLMUsageLog.workflow_id.is_(None),
+                ),
+            )
+        )
+        if node_id:
+            query = query.filter(LLMUsageLog.node_id == node_id)
+
+        total = query.count()
+        rows = (
+            query.order_by(LLMUsageLog.created_at.asc(), LLMUsageLog.id.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        items = []
+        for row in rows:
+            model = row.model
+            provider = model.provider if model else None
+            items.append(
+                {
+                    "id": row.id,
+                    "workflow_id": row.workflow_id or workflow_id,
+                    "workflow_run_id": row.workflow_run_id,
+                    "node_id": row.node_id,
+                    "model_id": row.model_id,
+                    "model_name": getattr(model, "name", None),
+                    "provider": getattr(provider, "name", None),
+                    "credential_id": row.credential_id,
+                    "prompt_tokens": row.prompt_tokens,
+                    "completion_tokens": row.completion_tokens,
+                    "total_tokens": row.prompt_tokens + row.completion_tokens,
+                    "total_cost": float(row.total_cost)
+                    if row.total_cost is not None
+                    else None,
+                    "latency_ms": row.latency_ms,
+                    "status": row.status,
+                    "created_at": row.created_at,
+                }
+            )
+
+        return {"total": total, "limit": limit, "offset": offset, "items": items}
 
     @staticmethod
     def update_model_pricing(

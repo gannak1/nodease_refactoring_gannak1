@@ -40,6 +40,12 @@ def record_permission_denied(
     )
 
 
+def _permission_denied_exception() -> HTTPException:
+    exc = HTTPException(status_code=403, detail="Forbidden")
+    setattr(exc, "audit_recorded", True)
+    return exc
+
+
 def ensure_workflow_permission(
     db: Session,
     current_user: User,
@@ -70,7 +76,7 @@ def ensure_workflow_permission(
             action,
             effective_auth_state,
         )
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise _permission_denied_exception()
     return workflow
 
 
@@ -106,7 +112,7 @@ def ensure_llm_credential_permission(
             action,
             effective_auth_state,
         )
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise _permission_denied_exception()
     return credential
 
 

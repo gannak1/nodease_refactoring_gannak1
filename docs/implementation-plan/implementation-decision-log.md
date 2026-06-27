@@ -88,3 +88,63 @@ Related ADRs:
 - 관련 문서: [api/knowledge-rag.md](../api/knowledge-rag.md)
 - 후속 검토: 실제 검색 품질과 비용을 평가한 뒤 조정한다.
 - ADR 승격 여부: No. 단, 모든 tenant에 강제되는 제품 정책이 되거나 재색인 migration에 영향을 주면 ADR 후보로 승격한다.
+
+### MBA-44 / Issue #59 LLM trace endpoint 형태
+
+- 상태: Active
+- 맥락: MVP1 LLM trace는 run detail 응답 확장 또는 별도 endpoint 방식 중 하나로 구현할 수 있다.
+- 결정: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces`를 필수 endpoint로 구현한다. `node_id`, `limit`, `offset` query를 지원하고, 기본 정렬은 `created_at ASC`, `id ASC`로 둔다. `limit` 기본값은 `100`, 최대값은 `500`이다.
+- 근거: LLM trace는 응답 크기와 필터링 요구가 커질 수 있고, 향후 raw/redacted payload 정책과 분리해야 하므로 run detail 전체 응답에 기본 포함하지 않는 편이 안전하다.
+- 범위: GitHub Issue #59 / MBA-44 LLM trace 조회 API.
+- 영향 파일: `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/services/llm_service.py`, `apps/shared/schemas/llm.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`.
+- 관련 문서: [api/tracing-audit.md](../api/tracing-audit.md), [requirements/mvp-1-foundation-llmops.md](../requirements/mvp-1-foundation-llmops.md)
+- 후속 검토: FE가 run detail summary를 별도로 요구하면 기존 응답 호환성을 확인한 뒤 summary field만 추가한다.
+- ADR 승격 여부: No. Issue #59 endpoint 구현 기본값에 한정한다.
+
+### MBA-44 / Issue #59 workflow read guard 과도기 호환
+
+- 상태: Active
+- 맥락: workflow run list/detail/stats와 LLM trace 조회가 workflow 존재 여부만 확인하면 다른 user가 run/trace 정보를 볼 수 있다. PR #65에서 `apps.gateway.auth.permissions.ensure_workflow_permission`과 `apps.shared.services.permissions` 기반 공통 resource permission helper가 도입되었다.
+- 결정: Issue #59 범위에서는 별도 workflow read guard를 유지하지 않고 PR #65 공통 `ensure_workflow_permission(db, current_user, workflow_id, "read")`를 workflow run list/detail/stats와 LLM trace 조회 endpoint에 적용한다. read 허용 여부, active organization 확인, team/direct permission 해석, manager 판정은 `apps.shared.services.permissions`의 공통 evaluator를 따른다. workflow가 없거나 workflow id가 유효하지 않으면 404, 권한이 없으면 fail-closed 403으로 처리한다.
+- 근거: 전용 guard를 유지하면 PR #65의 direct user permission, auth_state normalization, active organization 기준과 어긋날 수 있다. Issue #59의 목적은 조회 경계를 닫는 것이므로 새 공통 RBAC 경계를 재사용하는 편이 중복 정책과 drift를 줄인다.
+- 범위: workflow run list/detail/stats, LLM trace 조회 권한.
+- 영향 파일: `apps/gateway/auth/permissions.py`, `apps/shared/services/permissions.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`, `apps/gateway/tests/api/test_workflow_stats_permissions.py`, `apps/gateway/tests/api/test_permission_helpers.py`.
+- 관련 문서: [data-model/rbac-permission-policy.md](../data-model/rbac-permission-policy.md), [decisions/ADR-202606271559-active-organization.md](../decisions/ADR-202606271559-active-organization.md), [decisions/ADR-202606271559-auth-state-standard.md](../decisions/ADR-202606271559-auth-state-standard.md)
+- 후속 검토: active organization과 `auth_state` 표준화 ADR이 변경되면 공통 evaluator 기준만 조정하고 endpoint별 별도 guard를 만들지 않는다.
+- ADR 승격 여부: No. 단, 공통 evaluator의 compatibility mapping을 제품 정책으로 고정하려면 ADR 검토가 필요하다.
+
+### MBA-44 / Issue #59 permission denied audit 기록 지점
+
+- 상태: Active
+- 맥락: 권한 실패를 전역 HTTPException handler에서만 기록하면 resource/action/effective permission context가 부족하고, guard와 handler가 동시에 기록하면 중복 audit이 생긴다.
+- 결정: 공통 permission helper가 canonical `permission.denied` audit을 1회 기록하고, helper가 발생시킨 403 `HTTPException`에는 `audit_recorded=True`를 표시한다. 전역 401/403 handler는 이 표시가 있는 예외에 대해 추가 `auth.permission_denied` audit을 남기지 않는다. helper를 거치지 않은 인증/권한 실패는 기존처럼 전역 handler가 `auth.permission_denied`를 기록한다.
+- 근거: permission helper는 resource type, target id, required permission, effective auth state를 가장 정확히 알고 있다. 전역 handler는 generic auth failure fallback으로 유지하되, 이미 resource-level audit이 기록된 실패는 중복 기록하지 않는다.
+- 범위: Issue #59 workflow read 조회 차단과 PR #65 공통 permission helper 기반 권한 차단.
+- 영향 파일: `apps/gateway/auth/permissions.py`, `apps/gateway/main.py`, `apps/shared/audit/actions.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`, `apps/gateway/tests/api/test_permission_helpers.py`.
+- 관련 문서: [data-model/rbac-permission-policy.md](../data-model/rbac-permission-policy.md), [decisions/ADR-202606271559-audit-log-rag-trace-storage.md](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md)
+- 후속 검토: 다른 resource guard가 추가되면 전용 exception class를 늘리지 않고 공통 permission helper 또는 shared helper에서 `audit_recorded` 표시를 재사용한다.
+- ADR 승격 여부: No. 기존 audit 저장 정책을 바꾸지 않고 구현 지점만 정한다.
+
+### MBA-44 / Issue #59 LLM trace 민감 정보 제외와 legacy usage 호환
+
+- 상태: Active
+- 맥락: LLM trace는 node별 model/token/cost/latency/status를 보여야 하지만 credential value, raw prompt, raw completion은 기본 조회 응답에 포함하면 안 된다. 또한 기존 `LLMUsageLog.log_usage` 경로는 `workflow_id`를 채우지 않을 수 있다.
+- 결정: LLM trace 응답은 whitelist schema만 사용한다. 허용 필드는 `id`, `workflow_id`, `workflow_run_id`, `node_id`, `model_id`, `model_name`, `provider`, `credential_id`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `status`, `created_at`이다. API key, credential config, raw prompt, raw completion, raw request/response body, Authorization/Cookie header는 반환하지 않는다. 새 usage log는 run context에서 `workflow_id`와 가능한 `organization_id`를 채우고, 조회 시에는 `run_id`가 path의 `workflow_id`에 속하는지 먼저 확인한 뒤 `llm_usage_logs.workflow_id`가 일치하거나 legacy `NULL`인 row만 반환한다.
+- 근거: 기본 LLM trace endpoint는 observability endpoint이지 raw payload access endpoint가 아니다. 기존 usage row의 `workflow_id` 누락 때문에 실제 run trace가 비어 보이는 문제를 막되, `workflow_run_id` 검증으로 다른 workflow usage 혼입을 차단한다.
+- 범위: Issue #59 LLM trace 조회와 신규 LLM usage 기록 context 보강.
+- 영향 파일: `apps/gateway/services/llm_service.py`, `apps/workflow_engine/services/llm_service.py`, `apps/shared/schemas/llm.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`.
+- 관련 문서: [api/tracing-audit.md](../api/tracing-audit.md), [data-model/physical-data-model.md](../data-model/physical-data-model.md)
+- 후속 검토: raw payload 조회가 필요하면 `raw_auditor` 또는 `manager` 권한과 `trace_visibility_policies`, `trace_payload_access_events`를 요구하는 별도 endpoint로 설계한다.
+- ADR 승격 여부: No. 기존 raw trace 정책을 바꾸지 않고 기본 응답 whitelist와 legacy compatibility만 정한다.
+
+### MBA-44 / Issue #59 workflow execute audit 시점
+
+- 상태: Active
+- 맥락: workflow 실행 audit은 API 요청 수락 시점이 아니라 실제 실행 결과와 일치해야 한다.
+- 결정: `workflow.execute` audit은 log worker의 `log.update_run_finish`와 `log.update_run_error`에서 실제 run 상태가 success/failure로 확정된 뒤 기록한다. 성공은 `status='success'`, 실패는 `status='failure'`를 사용한다. 권한 차단은 별도 `permission.denied` action으로 기록한다.
+- 근거: API request accepted 시점에 success audit을 남기면 background task 실패를 반영하지 못한다. 실행 완료 로그 업데이트 지점이 실제 결과에 가장 가깝다.
+- 범위: workflow run success/failure audit.
+- 영향 파일: `apps/log_system/tasks.py`, `apps/shared/audit/actions.py`, `apps/log_system/tests/test_workflow_execute_audit.py`.
+- 관련 문서: [requirements/mvp-1-foundation-llmops.md](../requirements/mvp-1-foundation-llmops.md), [data-model/physical-data-model.md](../data-model/physical-data-model.md)
+- 후속 검토: 실행 시작 audit이 필요해지면 `workflow.execute.started` 같은 별도 action 도입을 검토한다.
+- ADR 승격 여부: No. audit table/schema 정책 변경 없이 기록 시점만 정한다.

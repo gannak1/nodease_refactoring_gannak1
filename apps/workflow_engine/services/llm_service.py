@@ -13,6 +13,8 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     LLMUsageLog,
 )
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
     LLMCredentialResponse,
@@ -989,6 +991,33 @@ class LLMService:
                 workflow_uuid = uuid.UUID(str(workflow_id))
             except (TypeError, ValueError):
                 workflow_uuid = None
+
+        run_log = None
+        workflow = None
+        if workflow_run_id is not None:
+            run_log = (
+                db.query(WorkflowRun)
+                .filter(WorkflowRun.id == workflow_run_id)
+                .first()
+            )
+            if run_log:
+                workflow = (
+                    db.query(Workflow)
+                    .filter(Workflow.id == run_log.workflow_id)
+                    .first()
+                )
+                if workflow_uuid is None:
+                    try:
+                        workflow_uuid = uuid.UUID(str(run_log.workflow_id))
+                    except (TypeError, ValueError):
+                        workflow_uuid = None
+        if workflow is None and workflow_uuid is not None:
+            workflow = db.query(Workflow).filter(Workflow.id == workflow_uuid).first()
+        if organization_uuid is None and workflow is not None:
+            try:
+                organization_uuid = uuid.UUID(str(workflow.organization_id))
+            except (TypeError, ValueError):
+                organization_uuid = None
 
         credential = LLMService._get_valid_credential_for_user(
             db,

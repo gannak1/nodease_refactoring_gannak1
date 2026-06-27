@@ -13,6 +13,7 @@ class AuditAction:
     USER_LOGIN_FAILED = "user.login_failed"
     USER_LOGOUT = "user.logout"
     AUTH_PERMISSION_DENIED = "auth.permission_denied"
+    PERMISSION_DENIED = "permission.denied"
 
     PERMISSION_GRANT = "permission.grant"
     PERMISSION_REVOKE = "permission.revoke"
@@ -27,6 +28,7 @@ class AuditAction:
     WORKFLOW_CREATE = "workflow.create"
     WORKFLOW_UPDATE = "workflow.update"
     WORKFLOW_DEPLOY = "workflow.deploy"
+    WORKFLOW_EXECUTE = "workflow.execute"
 
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_DELETE = "deployment.delete"
