@@ -114,6 +114,7 @@ export const LogDetail = ({
 
     const loadLlmTraces = async () => {
       try {
+        setLlmTraces([]);
         setLlmTraceLoading(true);
         setLlmTraceError(false);
         const response = await workflowApi.getWorkflowRunLlmTraces(
