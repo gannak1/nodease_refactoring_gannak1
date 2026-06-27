@@ -23,7 +23,25 @@ interface UsageByNode {
   completionTokens: number;
   cost: number;
   latencyMs?: number | null;
+  status?: string;
 }
+
+interface LegacyUsage {
+  total_tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
+interface LegacyNodeOutputs {
+  usage?: LegacyUsage;
+  cost?: number;
+  model?: string;
+}
+
+const getLegacyOutputs = (outputs: unknown): LegacyNodeOutputs => {
+  if (!outputs || typeof outputs !== 'object') return {};
+  return outputs as LegacyNodeOutputs;
+};
 
 export const LogTokenAnalysis = ({
   run,
@@ -37,10 +55,9 @@ export const LogTokenAnalysis = ({
     nodeRuns.map((node) => [node.node_id, node.node_type]),
   );
 
-  const usageByNode = (
+  const usageByNode: UsageByNode[] = (
     llmTraces.length > 0
       ? llmTraces
-          .filter((trace) => trace.total_tokens)
           .map((trace) => {
             const nodeId = trace.node_id || 'unknown';
             const nodeType = nodeTypeById.get(nodeId) || 'llm';
@@ -57,13 +74,15 @@ export const LogTokenAnalysis = ({
               completionTokens: trace.completion_tokens || 0,
               cost: Number(trace.total_cost || 0),
               latencyMs: trace.latency_ms,
+              status: trace.status,
             };
           })
       : nodeRuns
-          .filter((node) => (node.outputs as any)?.usage?.total_tokens)
+          .filter((node) => getLegacyOutputs(node.outputs).usage?.total_tokens)
           .map((node) => {
-            const usage = (node.outputs as any).usage;
-            const cost = (node.outputs as any).cost || 0;
+            const outputs = getLegacyOutputs(node.outputs);
+            const usage = outputs.usage;
+            const cost = outputs.cost || 0;
             const displayInfo = getNodeDisplayInfo(node.node_type);
             return {
               nodeId: node.node_id,
@@ -71,10 +90,10 @@ export const LogTokenAnalysis = ({
               displayLabel: displayInfo.label,
               displayColor: displayInfo.color,
               displayIcon: displayInfo.icon,
-              model: (node.outputs as any).model || 'Unknown',
-              totalTokens: usage.total_tokens || 0,
-              promptTokens: usage.prompt_tokens || 0,
-              completionTokens: usage.completion_tokens || 0,
+              model: outputs.model || 'Unknown',
+              totalTokens: usage?.total_tokens || 0,
+              promptTokens: usage?.prompt_tokens || 0,
+              completionTokens: usage?.completion_tokens || 0,
               cost,
             };
           })
@@ -101,6 +120,9 @@ export const LogTokenAnalysis = ({
         acc[node.nodeId].promptTokens += node.promptTokens;
         acc[node.nodeId].completionTokens += node.completionTokens;
         acc[node.nodeId].cost += node.cost;
+        if (node.status && node.status !== 'success') {
+          acc[node.nodeId].status = node.status;
+        }
         return acc;
       },
       {} as Record<string, UsageByNode>,
@@ -129,6 +151,7 @@ export const LogTokenAnalysis = ({
   const modelStats = Object.values(usageByModel).sort(
     (a, b) => b.totalTokens - a.totalTokens,
   );
+  const maxNodeTotalTokens = usageByNodeSummary[0]?.totalTokens || 1;
 
   return (
     <>
@@ -168,7 +191,7 @@ export const LogTokenAnalysis = ({
                     className="h-full rounded-full bg-amber-400"
                     style={{
                       width: `${Math.min(
-                        (node.totalTokens / (modelStats[0]?.totalTokens || 1)) * 100,
+                        (node.totalTokens / maxNodeTotalTokens) * 100,
                         100,
                       )}%`,
                     }}
@@ -178,7 +201,10 @@ export const LogTokenAnalysis = ({
                   <span>{node.model}</span>
                   <span>
                     ${node.cost.toFixed(5)}
-                    {node.latencyMs ? ` · ${node.latencyMs}ms` : ''}
+                    {node.latencyMs != null ? ` · ${node.latencyMs}ms` : ''}
+                    {node.status && node.status !== 'success'
+                      ? ` · ${node.status}`
+                      : ''}
                   </span>
                 </div>
               </button>
