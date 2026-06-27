@@ -16,9 +16,12 @@ def _load_model_module(module_name: str, relative_path: str):
         "apps.shared.db.models": root / "apps" / "shared" / "db" / "models",
     }
     for name, path in packages.items():
-        module = types.ModuleType(name)
+        module = sys.modules.get(name) or types.ModuleType(name)
         module.__path__ = [str(path)]
         sys.modules[name] = module
+        if "." in name:
+            parent_name, child_name = name.rsplit(".", 1)
+            setattr(sys.modules[parent_name], child_name, module)
 
     base_spec = importlib.util.spec_from_file_location(
         "apps.shared.db.base",
@@ -27,6 +30,7 @@ def _load_model_module(module_name: str, relative_path: str):
     base_module = importlib.util.module_from_spec(base_spec)
     sys.modules["apps.shared.db.base"] = base_module
     base_spec.loader.exec_module(base_module)
+    sys.modules["apps.shared.db"].base = base_module
 
     spec = importlib.util.spec_from_file_location(
         module_name,
@@ -35,6 +39,9 @@ def _load_model_module(module_name: str, relative_path: str):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    if "." in module_name:
+        parent_name, child_name = module_name.rsplit(".", 1)
+        setattr(sys.modules[parent_name], child_name, module)
     return module
 
 

@@ -37,6 +37,11 @@ def _load_module(module_name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    if "." in module_name:
+        parent_name, child_name = module_name.rsplit(".", 1)
+        parent = sys.modules.get(parent_name)
+        if parent is not None:
+            setattr(parent, child_name, module)
     return module
 
 
@@ -50,15 +55,27 @@ for package_name, package_path in {
     "apps.shared.db.models": ROOT / "apps" / "shared" / "db" / "models",
     "apps.shared.schemas": ROOT / "apps" / "shared" / "schemas",
 }.items():
-    package = types.ModuleType(package_name)
+    package = sys.modules.get(package_name) or types.ModuleType(package_name)
     package.__path__ = [str(package_path)]
     sys.modules[package_name] = package
+    if "." in package_name:
+        parent_name, child_name = package_name.rsplit(".", 1)
+        setattr(sys.modules[parent_name], child_name, package)
 
 _load_module("apps.shared.db.base", ROOT / "apps" / "shared" / "db" / "base.py")
 user_module = _load_module(
     "apps.shared.db.models.user",
     ROOT / "apps" / "shared" / "db" / "models" / "user.py",
 )
+for module_name, relative_path in (
+    ("apps.shared.db.models.organization", "apps/shared/db/models/organization.py"),
+    ("apps.shared.db.models.workflow", "apps/shared/db/models/workflow.py"),
+    ("apps.shared.db.models.knowledge", "apps/shared/db/models/knowledge.py"),
+    ("apps.shared.db.models.llm", "apps/shared/db/models/llm.py"),
+    ("apps.shared.db.models.team", "apps/shared/db/models/team.py"),
+):
+    if module_name not in sys.modules:
+        _load_module(module_name, ROOT / relative_path)
 _load_module(
     "apps.shared.schemas.auth",
     ROOT / "apps" / "shared" / "schemas" / "auth.py",
@@ -73,33 +90,44 @@ User = user_module.User
 
 
 class FakeQuery:
-    def __init__(self, user):
-        self.user = user
+    def __init__(self, db):
+        self.db = db
+
+    def join(self, *args, **kwargs):
+        return self
 
     def filter(self, *args, **kwargs):
         return self
 
+    def order_by(self, *args, **kwargs):
+        return self
+
     def first(self):
-        return self.user
+        return self.db.query_first_result
 
 
 class FakeDB:
     def __init__(self, user=None):
         self.user = user
+        self.objects = []
+        self.query_first_result = user
         self.commit_count = 0
         self.refresh_count = 0
 
     def query(self, model):
-        return FakeQuery(self.user)
+        return FakeQuery(self)
 
-    def add(self, user):
-        if user.id is None:
-            user.id = uuid.uuid4()
-        if user.created_at is None:
-            user.created_at = datetime.now(timezone.utc)
-        if user.updated_at is None:
-            user.updated_at = user.created_at
-        self.user = user
+    def add(self, obj):
+        if getattr(obj, "id", None) is None:
+            obj.id = uuid.uuid4()
+        if hasattr(obj, "created_at") and obj.created_at is None:
+            obj.created_at = datetime.now(timezone.utc)
+        if hasattr(obj, "updated_at") and obj.updated_at is None:
+            obj.updated_at = obj.created_at
+        self.objects.append(obj)
+        if isinstance(obj, User):
+            self.user = obj
+        self.query_first_result = None
 
     def commit(self):
         self.commit_count += 1
@@ -206,3 +234,8 @@ def test_signup_sets_last_login_at_for_initial_session():
     assert db.user.last_login_at is not None
     assert db.user.last_login_at.tzinfo is not None
     assert db.commit_count == 1
+    assert {type(obj).__name__ for obj in db.objects} >= {
+        "Organization",
+        "Team",
+        "TeamMembership",
+    }

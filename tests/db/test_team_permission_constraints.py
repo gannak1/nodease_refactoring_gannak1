@@ -21,9 +21,12 @@ def _load_team_module():
         "apps.shared.db.models": root / "apps" / "shared" / "db" / "models",
     }
     for name, path in packages.items():
-        module = types.ModuleType(name)
+        module = sys.modules.get(name) or types.ModuleType(name)
         module.__path__ = [str(path)]
         sys.modules[name] = module
+        if "." in name:
+            parent_name, child_name = name.rsplit(".", 1)
+            setattr(sys.modules[parent_name], child_name, module)
 
     base_spec = importlib.util.spec_from_file_location(
         "apps.shared.db.base",
@@ -32,6 +35,7 @@ def _load_team_module():
     base_module = importlib.util.module_from_spec(base_spec)
     sys.modules["apps.shared.db.base"] = base_module
     base_spec.loader.exec_module(base_module)
+    sys.modules["apps.shared.db"].base = base_module
 
     team_spec = importlib.util.spec_from_file_location(
         "apps.shared.db.models.team",
@@ -40,6 +44,7 @@ def _load_team_module():
     team_module = importlib.util.module_from_spec(team_spec)
     sys.modules["apps.shared.db.models.team"] = team_module
     team_spec.loader.exec_module(team_module)
+    sys.modules["apps.shared.db.models"].team = team_module
     return team_module
 
 
@@ -49,6 +54,8 @@ def test_team_tables_use_final_names():
     assert team.Team.__tablename__ == "teams"
     assert team.TeamMembership.__tablename__ == "team_memberships"
     assert team.TeamWorkflowPermission.__tablename__ == "team_workflow_permissions"
+    assert team.UserWorkflowPermission.__tablename__ == "user_workflow_permissions"
+    assert team.UserLLMPermission.__tablename__ == "user_llm_permissions"
 
 
 def test_team_has_unique_team_id_organization_id_constraint():
@@ -110,6 +117,8 @@ def test_team_options_and_flags_columns():
         team.TeamKnowledgePermission: "ck_team_knowledge_permissions_flags_nonnegative",
         team.TeamLLMPermission: "ck_team_llm_permissions_flags_nonnegative",
         team.TeamAuditPermission: "ck_team_audit_permissions_flags_nonnegative",
+        team.UserWorkflowPermission: "ck_user_workflow_permissions_flags_nonnegative",
+        team.UserLLMPermission: "ck_user_llm_permissions_flags_nonnegative",
     }
 
     for model, check_name in expected_check_names.items():
@@ -141,5 +150,30 @@ def test_auth_state_is_only_on_resource_permission_tables():
         team.TeamKnowledgePermission,
         team.TeamLLMPermission,
         team.TeamAuditPermission,
+        team.UserWorkflowPermission,
+        team.UserLLMPermission,
     ):
         assert "auth_state" in model.__table__.columns
+
+
+def test_user_direct_permission_tables_are_additive_user_resource_grants():
+    team = _load_team_module()
+    expected_unique_constraints = {
+        team.UserWorkflowPermission: (
+            "uq_user_workflow_permissions_org_user_workflow",
+            ["grantee_organization_id", "user_id", "workflow_id"],
+        ),
+        team.UserLLMPermission: (
+            "uq_user_llm_permissions_org_user_credential",
+            ["grantee_organization_id", "user_id", "llm_credential_id"],
+        ),
+    }
+
+    for model, (constraint_name, columns) in expected_unique_constraints.items():
+        assert "team_id" not in model.__table__.columns
+        assert any(
+            isinstance(constraint, UniqueConstraint)
+            and constraint.name == constraint_name
+            and [column.name for column in constraint.columns] == columns
+            for constraint in model.__table__.constraints
+        )
