@@ -21,14 +21,23 @@ from apps.shared.schemas.llm import (
     LLMModelResponse,
     LLMProviderResponse,
 )
+from apps.shared.services.tracing.access import TraceAccessService
 
 router = APIRouter()
+
+
+def _require_system_admin(db: Session, current_user: User):
+    if not TraceAccessService.is_system_admin(db, current_user):
+        raise HTTPException(status_code=403, detail="system_admin_required")
 
 # --- Providers (System) ---
 
 
 @router.get("/providers", response_model=List[LLMProviderResponse])
-def get_system_providers(db: Session = Depends(get_db)):
+def get_system_providers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     List all system-defined LLM providers and their models.
     """
@@ -210,12 +219,13 @@ def get_top_expensive_models(
 @router.post("/models/sync-pricing")
 def sync_system_pricing(
     db: Session = Depends(get_db),
-    # Optional: Admin only
+    current_user: User = Depends(get_current_user),
 ):
     """
     [Admin] Sync all DB models with hardcoded system prices.
     Useful when system price list is updated.
     """
+    _require_system_admin(db, current_user)
     try:
         result = LLMService.sync_system_prices(db)
         return result
@@ -229,11 +239,12 @@ def update_model_pricing(
     model_id: UUID,
     pricing: LLMModelPricingUpdate,
     db: Session = Depends(get_db),
-    # Optional: Admin only
+    current_user: User = Depends(get_current_user),
 ):
     """
     [Admin] Manually update pricing for a specific model.
     """
+    _require_system_admin(db, current_user)
     try:
         model = LLMService.update_model_pricing(
             db, model_id, pricing.input_price_1k, pricing.output_price_1k

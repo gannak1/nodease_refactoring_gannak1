@@ -9,7 +9,7 @@ from apps.gateway.api.v1.endpoints import llm as llm_endpoint
 from apps.gateway.services import llm_service
 from apps.gateway.services.llm_service import LLMService
 from apps.shared.db.models.user import User
-from apps.shared.schemas.llm import LLMCredentialCreate
+from apps.shared.schemas.llm import LLMCredentialCreate, LLMModelPricingUpdate
 
 
 class FakeQuery:
@@ -112,6 +112,77 @@ def test_delete_credential_preserves_permission_http_exception(monkeypatch):
 
     assert exc_info.value.status_code == 403
     assert seen["action"] == "write"
+
+
+def _route(path, method):
+    for route in llm_endpoint.router.routes:
+        if route.path == path and method in route.methods:
+            return route
+    raise AssertionError(f"route not found: {method} {path}")
+
+
+def _dependency_calls(route):
+    return [dependency.call for dependency in route.dependant.dependencies]
+
+
+def test_llm_catalog_and_pricing_routes_require_current_user():
+    protected_routes = [
+        ("/providers", "GET"),
+        ("/models/sync-pricing", "POST"),
+        ("/models/{model_id}/pricing", "PUT"),
+    ]
+
+    for path, method in protected_routes:
+        route = _route(path, method)
+        assert llm_endpoint.get_current_user in _dependency_calls(route)
+
+
+def test_sync_system_pricing_requires_system_admin(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(
+        llm_endpoint.TraceAccessService,
+        "is_system_admin",
+        staticmethod(lambda db, current_user: False),
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "sync_system_prices",
+        lambda *a, **k: pytest.fail("pricing sync should require system admin"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.sync_system_pricing(db=FakeDb(None), current_user=user)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "system_admin_required"
+
+
+def test_update_model_pricing_requires_system_admin(monkeypatch):
+    user = SimpleNamespace(id=uuid.uuid4())
+    pricing = LLMModelPricingUpdate(input_price_1k=0.1, output_price_1k=0.2)
+
+    monkeypatch.setattr(
+        llm_endpoint.TraceAccessService,
+        "is_system_admin",
+        staticmethod(lambda db, current_user: False),
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "update_model_pricing",
+        lambda *a, **k: pytest.fail("pricing update should require system admin"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.update_model_pricing(
+            model_id=uuid.uuid4(),
+            pricing=pricing,
+            db=FakeDb(None),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "system_admin_required"
 
 
 def test_register_credential_checks_organization_manager_before_remote_fetch(monkeypatch):
