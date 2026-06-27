@@ -128,7 +128,7 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | Permission vocabulary | 문서는 `viewer/operator/builder/manager`를 표준으로 쓰지만, tracing RBAC 코드는 `read/write/execute/admin`을 사용한다. |
 | Gateway permission dependency | `apps/gateway/api/deps.py`에는 DB dependency만 있고, resource permission dependency가 없다. |
 | Organization bootstrap | signup/social signup 시 organization/team/membership을 자동 생성하지 않는다. |
-| Active organization | 현재 `get_user_primary_organization_id()`는 첫 team membership만 반환한다. 명시적인 active organization 선택 방식은 없다. |
+| Active organization | 현재 `get_user_primary_organization_id()`는 첫 team membership만 반환한다. `X-Organization-Id` header 기반 active organization 선택/검증은 아직 구현되지 않았다. |
 | App/Workflow scope | 일부 생성/복제 코드가 `organization_id=user_id` 같은 과도기 값을 사용한다. |
 | Workflow enforcement | workflow 상세, draft 저장, draft 조회, execute, stream, runs, stats가 대부분 creator 기반이거나 권한 체크 TODO 상태다. |
 | LLM credential scope | LLM credential API/service가 대부분 `current_user.id` 기준이다. organization-level credential 관리와 team/user permission check가 없다. |
@@ -174,11 +174,11 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | `MBA-27` Retrieved chunk lineage 저장 | Backlog, Feature, Medium | RAG lineage는 MVP2 범위다. |
 | `MBA-26` 문서 변경 감지 기반 Partial Re-index MVP 구현 | Backlog, Feature, Medium | RAG indexing 고도화는 MVP2 범위다. |
 
-### 5.3 결정이 필요해서 바로 포함 여부를 확정하지 않는 이슈
+### 5.3 Active organization 결정 후 범위가 남은 이슈
 
-| Linear | 현재 상태 | 필요한 결정 |
+| Linear | 현재 상태 | MVP 1 처리 |
 | --- | --- | --- |
-| `MBA-16` 기존 Nav를 Organization 기준으로 변경 | Backlog, Feature, High | 부분 포함. MVP1에는 현재 organization 표시와 기본 scope 인지가 필요하다. 다중 organization switcher와 nav 전체 개편은 active organization 방식이 확정될 때 포함한다. |
+| `MBA-16` 기존 Nav를 Organization 기준으로 변경 | Backlog, Feature, High | 부분 포함. Active organization은 `X-Organization-Id` header로 확정한다. MVP1에는 현재 organization 표시와 header 전달 경로를 포함하고, 다중 organization switcher와 nav 전체 개편은 별도 결정으로 남긴다. |
 
 ## 6. 생성할 개발 이슈
 
@@ -609,7 +609,7 @@ Issue 1 RBAC/Organization Foundation
 
 순서상 먼저 고정해야 하는 것:
 
-1. active organization 결정 방식
+1. active organization header 적용 방식
 2. `auth_state` 표준값과 compatibility mapping
 3. permission helper interface
 4. workflow/app organization scope 처리
@@ -625,17 +625,21 @@ Issue 1 RBAC/Organization Foundation
 
 현재 dev에는 `get_user_primary_organization_id()`가 있고, 첫 team membership을 기준으로 organization을 찾는다.
 
-결정 필요:
+결정:
 
-- MVP1에서 단일 primary organization만 지원할지
-- API header 또는 cookie로 active organization을 명시할지
-- FE nav에서 organization switcher를 MVP1에 포함할지
+- MVP1 active organization은 `X-Organization-Id` header로 명시한다.
+- session/cookie에는 active organization을 저장하지 않는다.
+- header가 없는 과도기 요청은 첫 active team membership fallback을 제한적으로 사용할 수 있다.
 
 영향:
 
-- `MBA-16` 포함 여부
 - 모든 permission helper의 입력값
 - App/Workflow/LLM credential 생성 scope
+- FE API client의 organization-scoped 요청 header 전달
+
+별도 결정 필요:
+
+- FE nav에서 다중 organization switcher를 MVP1에 포함할지
 
 ### 8.2 신규 가입 시 organization 이름과 입력 방식
 
@@ -743,7 +747,7 @@ MVP1 완료 기준에는 model 또는 prompt 비교가 있다. 물리 데이터 
 예외:
 
 - `MBA-38`, `MBA-39`는 lightweight activity panel 대신 기존 audit list/search UI를 MVP1 demo에 사용하기로 결정하면 Issue 4 또는 Issue 6에 포함해야 한다.
-- `MBA-16`은 현재 organization 표시와 MVP1 이동 경로만 Issue 5에 포함하고, 다중 organization switcher와 nav 전체 개편은 active organization 방식이 확정될 때 포함한다.
+- `MBA-16`은 현재 organization 표시와 `X-Organization-Id` header 전달 경로만 Issue 5에 포함하고, 다중 organization switcher와 nav 전체 개편은 별도 결정으로 남긴다.
 
 ## 10. Linear issue 생성 형태
 

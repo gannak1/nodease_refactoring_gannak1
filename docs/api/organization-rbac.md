@@ -17,10 +17,11 @@ Organization context, team/member 관리, resource permission grant/revoke API �
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
 | Planned | `GET` | `/api/v1/organizations` | authenticated | 사용자가 속한 organization 목록 |
-| Planned | `GET` | `/api/v1/organizations/current` | authenticated | 현재 active organization 조회 |
-| Proposed | `PATCH` | `/api/v1/organizations/current` | authenticated | active organization 변경 |
+| Planned | `GET` | `/api/v1/organizations/current` | authenticated + `X-Organization-Id` | header로 지정한 현재 active organization 조회 |
 
-`PATCH /organizations/current`는 active organization 방식을 header로 확정하면 만들지 않을 수 있다.
+Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 서버는 active organization을 session/cookie에 저장하지 않으므로 `PATCH /api/v1/organizations/current`는 만들지 않는다.
+
+`GET /api/v1/organizations/current`는 `X-Organization-Id`가 현재 사용자의 active team membership scope 안에 있는지 검증하고, 접근 가능한 organization이면 `OrganizationResponse`를 반환한다. Header가 없거나 scope를 결정할 수 없으면 [errors.md](errors.md)의 `organization.required` 기준을 따른다.
 
 ## Team 관리
 
