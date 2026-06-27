@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiClient } from '@/lib/apiClient';
 
 export type AuditStatus = 'success' | 'failure';
@@ -45,9 +45,17 @@ export function useAuditLogs() {
     try {
       setLoading(true);
       setError(null);
+      const params: Record<string, string | number> = {
+        page: 1,
+        limit: AUDIT_LOG_LIMIT,
+      };
+      if (filters.status !== 'all') params.status = filters.status;
+      if (filters.startDate) params.startDate = filters.startDate;
+      if (filters.endDate) params.endDate = filters.endDate;
+
       const response = await apiClient.get<AuditLogListResponse>(
         '/users/me/audit-logs',
-        { params: { page: 1, limit: AUDIT_LOG_LIMIT } },
+        { params },
       );
       setLogs(response.data.items);
       setTotal(response.data.total);
@@ -58,35 +66,16 @@ export function useAuditLogs() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filters]);
 
   useEffect(() => {
     loadLogs();
   }, [loadLogs]);
 
-  const filteredLogs = useMemo(() => {
-    return logs.filter((log) => {
-      const occurredAt = new Date(log.occurred_at).getTime();
-
-      if (filters.status !== 'all' && log.status !== filters.status) {
-        return false;
-      }
-      if (filters.startDate) {
-        const start = new Date(`${filters.startDate}T00:00:00`).getTime();
-        if (occurredAt < start) return false;
-      }
-      if (filters.endDate) {
-        const end = new Date(`${filters.endDate}T23:59:59.999`).getTime();
-        if (occurredAt > end) return false;
-      }
-      return true;
-    });
-  }, [logs, filters]);
-
   const resetFilters = () => setFilters(defaultFilters);
 
   return {
-    logs: filteredLogs,
+    logs,
     total,
     limit: AUDIT_LOG_LIMIT,
     loading,

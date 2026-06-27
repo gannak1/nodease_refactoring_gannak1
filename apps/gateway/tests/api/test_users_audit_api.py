@@ -1,5 +1,6 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from operator import eq, ge, le
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -79,6 +80,47 @@ class TestUsersAuditApi(unittest.TestCase):
             ["audit_logs.occurred_at", "audit_logs.id"],
         )
 
+    def test_list_my_audit_logs_filters_before_pagination(self):
+        user_id = uuid4()
+        logs = [
+            AuditLog(
+                id=uuid4(),
+                occurred_at=datetime(2024, 1, day, tzinfo=timezone.utc),
+                actor_id=user_id,
+                actor_type=ActorType.USER,
+                category=AuditCategory.ACTION,
+                action="app.create",
+                status=AuditStatus.SUCCESS,
+            )
+            for day in range(1, 12)
+        ]
+        match = AuditLog(
+            id=uuid4(),
+            occurred_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            actor_id=user_id,
+            actor_type=ActorType.USER,
+            category=AuditCategory.ACTION,
+            action="app.delete",
+            status=AuditStatus.FAILURE,
+        )
+        query = _Query(logs + [match], apply_paging=True)
+        db = SimpleNamespace(query=lambda model: query)
+
+        response = list_my_audit_logs(
+            page=1,
+            limit=10,
+            status=AuditStatus.FAILURE,
+            startDate=date(2024, 1, 15),
+            endDate=date(2024, 1, 15),
+            db=db,
+            current_user=SimpleNamespace(id=user_id),
+        )
+
+        self.assertEqual(response["total"], 1)
+        self.assertEqual([item["id"] for item in response["items"]], [match.id])
+        self.assertEqual(query.offset_value, 0)
+        self.assertEqual(query.limit_value, 10)
+
     def test_route_returns_current_user_audit_logs(self):
         user_id = uuid4()
         log_id = uuid4()
@@ -144,8 +186,9 @@ class TestUsersAuditApi(unittest.TestCase):
 
 
 class _Query:
-    def __init__(self, items):
+    def __init__(self, items, apply_paging=False):
         self.items = items
+        self.apply_paging = apply_paging
         self.filter_expressions = []
         self.order_by_values = []
         self.offset_value = None
@@ -156,10 +199,17 @@ class _Query:
         for expression in expressions:
             column = str(expression.left)
             value = expression.right.value
-            if column == "audit_logs.actor_id":
+            operator = expression.operator
+            if column == "audit_logs.actor_id" and operator is eq:
                 self.items = [item for item in self.items if item.actor_id == value]
-            if column == "audit_logs.actor_type":
+            if column == "audit_logs.actor_type" and operator is eq:
                 self.items = [item for item in self.items if item.actor_type == value]
+            if column == "audit_logs.status" and operator is eq:
+                self.items = [item for item in self.items if item.status == value]
+            if column == "audit_logs.occurred_at" and operator is ge:
+                self.items = [item for item in self.items if item.occurred_at >= value]
+            if column == "audit_logs.occurred_at" and operator is le:
+                self.items = [item for item in self.items if item.occurred_at <= value]
         return self
 
     def count(self):
@@ -178,6 +228,10 @@ class _Query:
         return self
 
     def all(self):
+        if self.apply_paging:
+            start = self.offset_value or 0
+            end = None if self.limit_value is None else start + self.limit_value
+            return self.items[start:end]
         return self.items
 
 
