@@ -89,6 +89,7 @@ class TestWorkflowLlmTracesApi:
         assert body["total"] == 1
         item = body["items"][0]
         assert item["node_id"] == "node-a"
+        assert item["credential_id"] == str(credential_id)
         assert item["total_tokens"] == 30
         assert "api_key" not in item
         assert "encrypted_config" not in item

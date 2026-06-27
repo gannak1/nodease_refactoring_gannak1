@@ -117,7 +117,7 @@ Related ADRs:
 
 - 상태: Active
 - 맥락: 권한 실패를 전역 HTTPException handler에서만 기록하면 resource/action/effective permission context가 부족하고, guard와 handler가 동시에 기록하면 중복 audit이 생긴다.
-- 결정: 공통 permission helper가 canonical `permission.denied` audit을 1회 기록하고, helper가 발생시킨 403 `HTTPException`에는 `audit_recorded=True`를 표시한다. 전역 401/403 handler는 이 표시가 있는 예외에 대해 추가 `auth.permission_denied` audit을 남기지 않는다. helper를 거치지 않은 인증/권한 실패는 기존처럼 전역 handler가 `auth.permission_denied`를 기록한다.
+- 결정: 공통 permission helper가 canonical `permission.denied` audit을 1회 기록하고, helper가 발생시킨 403 `HTTPException`에는 `audit_recorded=True`를 표시한다. 전역 401/403 handler는 이 표시가 있는 예외에 대해 추가 `auth.permission_denied` audit을 남기지 않는다. helper를 거치지 않은 인증/권한 실패는 기존처럼 전역 handler가 `auth.permission_denied`를 기록한다. `permission.denied` metadata에는 `policy_result='deny'`, `resource_type`, `resource_id`, `required_permission`을 포함해 사후 분석에 필요한 결정 context를 남긴다.
 - 근거: permission helper는 resource type, target id, required permission, effective auth state를 가장 정확히 알고 있다. 전역 handler는 generic auth failure fallback으로 유지하되, 이미 resource-level audit이 기록된 실패는 중복 기록하지 않는다.
 - 범위: Issue #59 workflow read 조회 차단과 PR #65 공통 permission helper 기반 권한 차단.
 - 영향 파일: `apps/gateway/auth/permissions.py`, `apps/gateway/main.py`, `apps/shared/audit/actions.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`, `apps/gateway/tests/api/test_permission_helpers.py`.
@@ -129,13 +129,24 @@ Related ADRs:
 
 - 상태: Active
 - 맥락: LLM trace는 node별 model/token/cost/latency/status를 보여야 하지만 credential value, raw prompt, raw completion은 기본 조회 응답에 포함하면 안 된다. 또한 기존 `LLMUsageLog.log_usage` 경로는 `workflow_id`를 채우지 않을 수 있다.
-- 결정: LLM trace 응답은 whitelist schema만 사용한다. 허용 필드는 `id`, `workflow_id`, `workflow_run_id`, `node_id`, `model_id`, `model_name`, `provider`, `credential_id`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `status`, `created_at`이다. API key, credential config, raw prompt, raw completion, raw request/response body, Authorization/Cookie header는 반환하지 않는다. 새 usage log는 run context에서 `workflow_id`와 가능한 `organization_id`를 채우고, 조회 시에는 `run_id`가 path의 `workflow_id`에 속하는지 먼저 확인한 뒤 `llm_usage_logs.workflow_id`가 일치하거나 legacy `NULL`인 row만 반환한다.
-- 근거: 기본 LLM trace endpoint는 observability endpoint이지 raw payload access endpoint가 아니다. 기존 usage row의 `workflow_id` 누락 때문에 실제 run trace가 비어 보이는 문제를 막되, `workflow_run_id` 검증으로 다른 workflow usage 혼입을 차단한다.
+- 결정: LLM trace 응답은 whitelist schema만 사용한다. 허용 필드는 `id`, `workflow_id`, `workflow_run_id`, `node_id`, `model_id`, `model_name`, `provider`, `credential_id`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `status`, `created_at`이다. `credential_id`는 어떤 등록 credential로 호출됐는지 추적하기 위한 correlation identifier로만 허용한다. API key, credential config, raw prompt, raw completion, raw request/response body, Authorization/Cookie header는 반환하지 않는다. 새 usage log는 run context에서 `workflow_id`와 가능한 `organization_id`를 채운다. 명시된 `workflow_id` 또는 `workflow_run_id`가 invalid, missing, mismatch이면 credential 조회 전에 저장을 중단한다. 단, 레거시 workflow row의 `organization_id`가 비어 있거나 invalid인 경우에는 `organization_id=NULL`로 usage 저장을 허용한다. 조회 시에는 `run_id`가 path의 `workflow_id`에 속하는지 먼저 확인한 뒤 `llm_usage_logs.workflow_id`가 일치하거나 legacy `NULL`인 row만 반환한다.
+- 근거: 기본 LLM trace endpoint는 observability endpoint이지 raw payload access endpoint가 아니다. 기존 usage row의 `workflow_id` 누락 때문에 실제 run trace가 비어 보이는 문제를 막되, `workflow_run_id` 검증으로 다른 workflow usage 혼입을 차단한다. 명시 context가 잘못된 row는 저장하지 않는 편이 cross-workflow trace 혼입보다 안전하다. 반면 workflow의 organization은 파생 scope이므로 레거시 데이터 결손 때문에 trace 저장 자체를 중단하지 않는다. `credential_id`는 secret이나 credential 설정값이 아니며, 이 id만으로 credential 원문을 조회할 수 없어야 한다.
 - 범위: Issue #59 LLM trace 조회와 신규 LLM usage 기록 context 보강.
-- 영향 파일: `apps/gateway/services/llm_service.py`, `apps/workflow_engine/services/llm_service.py`, `apps/shared/schemas/llm.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`.
+- 영향 파일: `apps/gateway/services/llm_service.py`, `apps/workflow_engine/services/llm_service.py`, `apps/shared/services/llm_usage_context.py`, `apps/shared/schemas/llm.py`, `apps/gateway/tests/api/test_workflow_llm_traces_api.py`, `apps/gateway/tests/services/test_llm_usage_log_context.py`.
 - 관련 문서: [api/tracing-audit.md](../api/tracing-audit.md), [data-model/physical-data-model.md](../data-model/physical-data-model.md)
 - 후속 검토: raw payload 조회가 필요하면 `raw_auditor` 또는 `manager` 권한과 `trace_visibility_policies`, `trace_payload_access_events`를 요구하는 별도 endpoint로 설계한다.
 - ADR 승격 여부: No. 기존 raw trace 정책을 바꾸지 않고 기본 응답 whitelist와 legacy compatibility만 정한다.
+
+### MBA-44 / Issue #59 LLM usage latency column 정합성
+
+- 상태: Active
+- 맥락: LLM usage latency는 API와 ORM에서 `latency_ms`로 노출되지만, 기존 초기 migration과 일부 문서에 물리 column명 오타가 남아 있었다.
+- 결정: 새 schema, ORM, API, 문서는 모두 `latency_ms`를 사용한다. 기존 환경에 잘못 생성된 legacy latency column은 전용 Alembic migration에서 `latency_ms`로 rename하고, 이미 정정된 환경에서는 no-op으로 둔다.
+- 근거: alias를 장기간 유지하면 raw SQL, ORM, 문서 간 source of truth가 갈라진다. 새 설치는 올바른 column으로 생성하고, 기존 설치는 migration으로 흡수하는 방식이 가장 단순하다.
+- 범위: LLM usage latency column명과 migration compatibility.
+- 영향 파일: `apps/shared/db/models/llm.py`, `apps/shared/alembic/versions/3d4d4f13ff35_initial_migration_with_all_tables.py`, `apps/shared/alembic/versions/f8a9b0c1d2e3_rename_llm_usage_latency_ms.py`, `apps/shared/tests/test_llm_usage_schema.py`, `docs/data-model/physical-data-model.md`, `docs/references/moduly-architecture/sections/06-data-model.md`, `docs/requirements/mvp-1-foundation-llmops.md`, `docs/implementation-plan/mvp-1-development-issue-plan.md`, `docs/implementation-plan/risk-consistency-verification.md`.
+- 후속 검토: 배포 환경에서 migration 실행 전 legacy column 존재 여부를 점검하고, migration 이후 query와 dashboard가 `latency_ms`만 참조하는지 확인한다.
+- ADR 승격 여부: No. schema naming 정정과 backward-compatible migration에 한정한다.
 
 ### MBA-44 / Issue #59 LLM call audit action 정합성
 
@@ -165,7 +176,7 @@ Related ADRs:
 
 - 상태: Active
 - 맥락: run detail 화면은 새 LLM trace endpoint를 우선 사용해야 하지만, legacy run에는 `llm_usage_logs.workflow_id`가 비어 있거나 trace row가 없을 수 있다.
-- 결정: workflow log detail의 token analysis는 `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces`를 우선 조회한다. 조회 결과가 있으면 trace row를 기준으로 node/model별 token, cost, latency를 표시한다. 조회 실패 또는 빈 결과에서는 기존 `node_runs.outputs.usage` 기반 표시를 유지하고, 실패 시에는 민감 정보 없이 안내 문구만 표시한다.
+- 결정: workflow log detail의 token analysis는 `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces`를 우선 조회한다. 조회 결과가 있으면 trace row를 기준으로 node/model별 token, cost, latency, status를 표시한다. 0-token 또는 failed trace row도 숨기지 않고, `latency_ms=0`은 `0ms`로 표시한다. 조회 실패 또는 빈 결과에서는 기존 `node_runs.outputs.usage` 기반 표시를 유지하고, 실패 시에는 민감 정보 없이 안내 문구만 표시한다.
 - 근거: 새 endpoint를 사용해 권한 검증과 whitelist 응답 경계를 적용하면서도 legacy 실행 로그의 관측 가능성을 유지한다. 실패 메시지에는 request/response body, credential, prompt, completion을 포함하지 않는다.
 - 범위: workflow 실행 로그 상세 화면의 LLM token analysis.
 - 영향 파일: `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/features/workflow/components/logs/LogDetail.tsx`, `apps/client/app/features/workflow/components/logs/detail-components/LogTokenAnalysis.tsx`.
