@@ -356,6 +356,8 @@ def get_workflow_stats(
             failureAnalysis=failure_analysis,
             recentFailures=recent_failures,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[ERROR] Stats API Failed:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
