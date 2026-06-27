@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient } from '@/lib/apiClient';
 
 export type AuditStatus = 'success' | 'failure';
@@ -45,8 +45,11 @@ export function useAuditLogs() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<AuditFilters>(defaultFilters);
+  const requestSeqRef = useRef(0);
 
   const loadLogs = useCallback(async () => {
+    const requestSeq = ++requestSeqRef.current;
+
     try {
       setLoading(true);
       setError(null);
@@ -66,14 +69,20 @@ export function useAuditLogs() {
         '/users/me/audit-logs',
         { params },
       );
+      if (requestSeq !== requestSeqRef.current) return;
+
       setLogs(response.data.items);
       setTotal(response.data.total);
     } catch {
+      if (requestSeq !== requestSeqRef.current) return;
+
       setLogs([]);
       setTotal(0);
       setError('감사 로그를 불러오지 못했습니다.');
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [filters]);
 
