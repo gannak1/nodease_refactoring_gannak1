@@ -23,6 +23,43 @@ Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 
 
 `GET /api/v1/organizations/current`는 `X-Organization-Id`가 현재 사용자의 active team membership scope 안에 있는지 검증하고, 접근 가능한 organization이면 `OrganizationResponse`를 반환한다. Header가 없거나 scope를 결정할 수 없으면 [errors.md](errors.md)의 `organization.required` 기준을 따른다.
 
+## Organization 관리
+
+| Status | Method | Path | Request | Response | Permission | 설명 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Planned | `PATCH` | `/api/v1/organizations/{organization_id}` | `OrganizationPatchRequest` | `OrganizationResponse` | organization `manager` | organization 이름/설정 변경 |
+
+`PATCH /api/v1/organizations/{organization_id}`는 organization 자체 정보를 수정한다. Active organization 변경 API가 아니다.
+
+요청에는 `X-Organization-Id` header가 필요하며, header 값은 path의 `organization_id`와 같아야 한다. Gateway는 해당 organization이 active 상태이고 현재 사용자가 그 organization의 owner/manager인지 검증한다.
+
+이 endpoint는 partial update다. 요청에는 변경 가능한 field가 하나 이상 있어야 한다.
+
+오류 기준:
+
+- `X-Organization-Id` header가 없으면 `400`을 반환한다.
+- `X-Organization-Id` header와 path의 `organization_id`가 다르면 `404`를 반환한다.
+- organization이 없거나 현재 사용자의 scope 밖이면 `403`을 반환한다.
+- 현재 사용자가 organization member이지만 owner/manager가 아니면 `403`을 반환한다.
+- 변경 가능한 field가 없거나 `name`이 빈 문자열이면 `400`을 반환한다.
+
+### `OrganizationPatchRequest`
+
+| Field | Type | Required | 설명 |
+| --- | --- | --- | --- |
+| `name` | string | No | organization 표시 이름. 빈 문자열은 허용하지 않는다. |
+| `options` | object | No | organization 확장 설정. 제공되면 기존 `options` object를 전체 교체한다. |
+
+다음 field는 이 endpoint에서 수정하지 않는다.
+
+- `created_by`
+- `managed_by`
+- `flags`
+- `is_active`
+- `deactivated_at`
+
+`managed_by`, `flags`, organization 비활성화/재활성화는 별도 정책과 endpoint가 필요하다.
+
 ## Team 관리
 
 | Status | Method | Path | Permission | 설명 |
@@ -58,10 +95,11 @@ Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 
 
 ## Audit
 
-권한 부여, 회수, 거부는 `audit_logs`에 남긴다.
+조직 정보 수정, 권한 부여, 회수, 거부는 `audit_logs`에 남긴다.
 
 | Event | `audit_logs.action` |
 | --- | --- |
+| 조직 정보 수정 | `organization.update` |
 | 권한 부여 | `permission.grant` |
 | 권한 회수 | `permission.revoke` |
 | 권한 거부 | `permission.denied` |
