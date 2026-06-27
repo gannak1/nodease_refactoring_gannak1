@@ -1,7 +1,13 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OrganizationPatchRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    options: dict[str, Any] | None = None
 
 
 class OrganizationResponse(BaseModel):

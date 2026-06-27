@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from operator import eq
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -15,7 +16,17 @@ from apps.shared.db.session import get_db
 
 
 class TestOrganizationsApi(unittest.TestCase):
+    def setUp(self):
+        self.audit_patchers = [
+            patch("apps.gateway.utils.audit.record_audit"),
+            patch("apps.gateway.main.record_audit"),
+        ]
+        for audit_patcher in self.audit_patchers:
+            audit_patcher.start()
+
     def tearDown(self):
+        for audit_patcher in reversed(self.audit_patchers):
+            audit_patcher.stop()
         app.dependency_overrides = {}
 
     def test_list_organizations_uses_memberships_and_deduplicates(self):
@@ -185,6 +196,220 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"detail": "Organization not found"})
 
+    def test_patch_organization_allows_owner_without_team_membership(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_by=user_id,
+            options={"theme": "legacy", "limits": {"runs": 10}},
+        )
+        db = _Session([organization])
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "  Acme Korea  ", "options": {"theme": "modern"}},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["name"], "Acme Korea")
+        self.assertEqual(organization.name, "Acme Korea")
+        self.assertEqual(organization.options, {"theme": "modern"})
+        self.assertEqual(db.query_value.join_values, [])
+        _assert_patch_scope_filters(self, db.query_value, organization_id)
+        self.assertTrue(db.commit_called)
+        self.assertEqual(db.refresh_values, [organization])
+
+    def test_patch_organization_requires_organization_header(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: _Session([])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_organization_hides_header_path_mismatch(self):
+        organization_id = uuid4()
+        header_organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: _Session([])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(header_organization_id)},
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_patch_organization_rejects_non_manager(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(id=organization_id, name="Acme")
+
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_patch_organization_rejects_missing_or_out_of_scope_organization(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: _Session([])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_patch_organization_rejects_different_organization_from_query(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(
+            id=uuid4(),
+            name="Acme",
+            created_by=user_id,
+        )
+
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(organization.name, "Acme")
+
+    def test_patch_organization_rejects_inactive_organization(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_by=user_id,
+            is_active=False,
+        )
+
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(organization.name, "Acme")
+
+    def test_patch_organization_rejects_empty_update(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_by=user_id,
+        )
+
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_organization_rejects_blank_name(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_by=user_id,
+        )
+
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "   "},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_organization_rejects_name_longer_than_database_column(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_by=user_id,
+        )
+
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"name": "A" * 256},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(organization.name, "Acme")
+
 
 class _Query:
     def __init__(self, items):
@@ -222,12 +447,54 @@ class _Query:
         return self.items
 
     def first(self):
-        return self.items[0] if self.items else None
+        for item in self.items:
+            if self._matches_filters(item):
+                return item
+        return None
+
+    def _matches_filters(self, item):
+        return all(
+            self._matches_filter(item, expression)
+            for expression in self.filter_expressions
+        )
+
+    def _matches_filter(self, item, expression):
+        if not hasattr(expression, "left"):
+            return True
+
+        left = str(expression.left)
+        if left == "organization.id" and expression.operator is eq:
+            return item.id == expression.right.value
+        if left == "organization.is_active" and expression.operator is is_:
+            return item.is_active is (str(expression.right) == "true")
+        if left.startswith("organization."):
+            raise AssertionError(f"Unsupported organization filter: {expression}")
+        return True
+
+
+class _Session:
+    def __init__(self, items):
+        self.query_value = _Query(items)
+        self.commit_called = False
+        self.refresh_values = []
+
+    def query(self, model):
+        return self.query_value
+
+    def commit(self):
+        self.commit_called = True
+
+    def refresh(self, value):
+        self.refresh_values.append(value)
 
 
 def _organization(
     id,
     name,
+    created_by=None,
+    managed_by=None,
+    options=None,
+    is_active=True,
     created_at=None,
     updated_at=None,
 ):
@@ -235,11 +502,26 @@ def _organization(
     return Organization(
         id=id,
         name=name,
-        created_by=uuid4(),
-        is_active=True,
+        options=options or {},
+        created_by=created_by or uuid4(),
+        managed_by=managed_by,
+        is_active=is_active,
         created_at=created_at or now,
         updated_at=updated_at or now,
     )
+
+
+def _assert_patch_scope_filters(test_case, query, organization_id):
+    test_case.assertEqual(len(query.filter_expressions), 2)
+    organization_filter, org_active_filter = query.filter_expressions
+
+    test_case.assertEqual(str(organization_filter.left), "organization.id")
+    test_case.assertIs(organization_filter.operator, eq)
+    test_case.assertEqual(organization_filter.right.value, organization_id)
+
+    test_case.assertEqual(str(org_active_filter.left), "organization.is_active")
+    test_case.assertIs(org_active_filter.operator, is_)
+    test_case.assertEqual(str(org_active_filter.right), "true")
 
 
 if __name__ == "__main__":

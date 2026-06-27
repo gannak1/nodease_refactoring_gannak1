@@ -15,6 +15,8 @@ class AuditAction:
     AUTH_PERMISSION_DENIED = "auth.permission_denied"
 
     # 앱/워크플로우/배포: 사용자가 워크플로우 운영 단위에서 수행한 행동.
+    ORGANIZATION_UPDATE = "organization.update"
+
     APP_CREATE = "app.create"
     APP_UPDATE = "app.update"
     APP_CLONE = "app.clone"
