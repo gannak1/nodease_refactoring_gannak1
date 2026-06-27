@@ -7,6 +7,7 @@ interface LLMParameterSidePanelProps {
   nodeId: string;
   data: LLMNodeData;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 // 파라미터 설명 (한국어)
@@ -58,7 +59,7 @@ const DescTooltip = ({
           className="absolute z-50 w-48 p-2 text-[11px] text-gray-600 bg-white border border-gray-200 rounded-lg shadow-lg left-0 top-5"
           onClick={(event) => event.stopPropagation()}
         >
-      {text}
+          {text}
           <div className="absolute -top-1 left-2 w-2 h-2 bg-white border-l border-t border-gray-200 rotate-45" />
         </div>
       )}
@@ -70,6 +71,7 @@ export function LLMParameterSidePanel({
   nodeId,
   data,
   onClose,
+  embedded = false,
 }: LLMParameterSidePanelProps) {
   const { updateNodeData } = useWorkflowStore();
   const [activeHelp, setActiveHelp] = useState<ParamHelpId | null>(null);
@@ -79,7 +81,8 @@ export function LLMParameterSidePanel({
   const modelId = (data.model_id || '').toLowerCase();
   const provider = (data.provider || '').toLowerCase();
   // Claude(Anthropic) 계열 여부 판단
-  const isAnthropic = provider.includes('anthropic') || modelId.startsWith('claude');
+  const isAnthropic =
+    provider.includes('anthropic') || modelId.startsWith('claude');
   // Google(Gemini) 계열 여부 판단
   const isGoogle =
     provider.includes('google') ||
@@ -205,7 +208,11 @@ export function LLMParameterSidePanel({
 
   return (
     <div
-      className="nodrag w-[320px] max-h-[560px] rounded-xl border border-gray-200 bg-white shadow-xl z-40 flex flex-col"
+      className={
+        embedded
+          ? 'nodrag flex h-full min-h-0 flex-col bg-white'
+          : 'nodrag w-[320px] max-h-[560px] rounded-xl border border-gray-200 bg-white shadow-xl z-40 flex flex-col'
+      }
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
     >
@@ -216,14 +223,16 @@ export function LLMParameterSidePanel({
             모델 응답 특성을 조절합니다
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="p-1 hover:bg-gray-200 rounded text-gray-500 transition-colors"
-          aria-label="LLM 파라미터 패널 닫기"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {!embedded && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 hover:bg-gray-200 rounded text-gray-500 transition-colors"
+            aria-label="LLM 파라미터 패널 닫기"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">

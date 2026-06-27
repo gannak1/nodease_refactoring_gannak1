@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, X } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { isMockWorkflowId } from '../../utils/mockMode';
@@ -8,7 +8,8 @@ import { isMockWorkflowId } from '../../utils/mockMode';
 export default function EditorHeader() {
   const router = useRouter();
   const params = useParams();
-  const { projectApp } = useWorkflowStore();
+  const { projectApp, fullscreenNodeId, closeNodeFullscreen } =
+    useWorkflowStore();
   const isMockMode = isMockWorkflowId(params.id as string);
 
   return (
@@ -31,6 +32,18 @@ export default function EditorHeader() {
           </span>
         )}
       </nav>
+
+      {fullscreenNodeId && (
+        <button
+          type="button"
+          onClick={closeNodeFullscreen}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800"
+          title="노드 상세 닫기 (Esc)"
+          aria-label="노드 상세 닫기"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      )}
     </header>
   );
 }

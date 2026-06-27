@@ -1,19 +1,23 @@
 import { Handle, Position, HandleProps } from '@xyflow/react';
-import { Check, ChevronDown, ChevronRight, Pencil, X } from 'lucide-react';
-import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { Check, ChevronDown, Maximize2, Pencil, X } from 'lucide-react';
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+} from 'react';
 
 import { cn } from '@/lib/utils';
 import { getNodeDefinitionByType } from '../../config/nodeRegistry';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
-import { AppNode, BaseNodeData } from '../../types/Nodes';
-import { getUpstreamNodes } from '../../utils/getUpstreamNodes';
+import { BaseNodeData } from '../../types/Nodes';
+import { useNodeIO } from '../../hooks/useNodeIO';
+import { buildOutputLabelPatch } from '../../utils/nodeOutputLabels';
 import {
   NODE_OUTPUT_DRAG_MIME,
   NodeOutputVariable,
-  getNodeOutputVariables,
 } from '../../utils/nodeVariablePorts';
-import { NodeInlinePanel } from './NodeInlinePanel';
-import { NodeOutputsSection } from './NodeOutputsSection';
 import { VisiblePropertySummary } from './VisiblePropertySummary';
 
 interface BaseNodeProps {
@@ -54,7 +58,8 @@ const INPUT_CHIP_COLORS = [
 const getInputChipColor = (sourceNodeId: string) => {
   let hash = 0;
   for (let index = 0; index < sourceNodeId.length; index += 1) {
-    hash = (hash * 31 + sourceNodeId.charCodeAt(index)) % INPUT_CHIP_COLORS.length;
+    hash =
+      (hash * 31 + sourceNodeId.charCodeAt(index)) % INPUT_CHIP_COLORS.length;
   }
   return INPUT_CHIP_COLORS[hash];
 };
@@ -90,76 +95,20 @@ const setOutputDragPreview = (
   }, 0);
 };
 
-const getOutputLabels = (data: BaseNodeData) =>
-  data.outputLabels &&
-  typeof data.outputLabels === 'object' &&
-  !Array.isArray(data.outputLabels)
-    ? (data.outputLabels as Record<string, string>)
-    : {};
-
-const withoutOutputLabel = (
-  labels: Record<string, string>,
-  outputKey: string,
-) => {
-  const nextLabels = { ...labels };
-  delete nextLabels[outputKey];
-  return nextLabels;
-};
-
-const buildOutputLabelPatch = (
-  node: AppNode,
-  outputKey: string,
-  outputId: string | undefined,
-  nextLabel: string,
-) => {
-  const data = node.data as BaseNodeData;
-  const currentLabels = getOutputLabels(data);
-
-  if (node.type === 'startNode' && Array.isArray(data.variables)) {
-    let changed = false;
-    const nextVariables = data.variables.map((variable) => {
-      if (!variable || typeof variable !== 'object') return variable;
-
-      const variableRecord = variable as Record<string, unknown>;
-      const variableId = String(variableRecord.id || '').trim();
-      const variableName = String(variableRecord.name || '').trim();
-      const variableLabel = String(variableRecord.label || '').trim();
-      const matches =
-        variableName === outputKey ||
-        variableId === outputId ||
-        (!variableName && variableLabel === outputKey);
-
-      if (!matches) return variable;
-      changed = true;
-      return { ...variableRecord, label: nextLabel };
-    });
-
-    if (changed) {
-      return {
-        variables: nextVariables,
-        outputLabels: withoutOutputLabel(currentLabels, outputKey),
-      };
-    }
-  }
-
-  return {
-    outputLabels: {
-      ...currentLabels,
-      [outputKey]: nextLabel,
-    },
-  };
-};
-
 export const SmartHandle: React.FC<
   HandleProps & {
     className?: string;
     displayNumber?: number;
     showPlusButton?: boolean;
+    numberClassName?: string;
+    onNumberClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
   }
 > = ({ className, displayNumber, showPlusButton = true, ...props }) => {
+  const { numberClassName, onNumberClick, ...handleProps } = props;
+
   return (
     <Handle
-      {...props}
+      {...handleProps}
       className={cn(
         // 히트 영역은 투명하게 유지하되, 드래그하기 쉽도록 크기 확보
         '!w-8 !h-8 !bg-transparent !border-0 rounded-full z-50 flex items-center justify-center',
@@ -167,7 +116,14 @@ export const SmartHandle: React.FC<
       )}
     >
       {typeof displayNumber === 'number' ? (
-        <div className="flex h-8 min-w-8 items-center justify-center rounded-full border-2 border-white bg-gray-900 px-2 text-xs font-bold tabular-nums text-white shadow-md">
+        <div
+          onClick={onNumberClick}
+          className={cn(
+            'flex h-8 min-w-8 items-center justify-center rounded-full border-2 border-white bg-gray-900 px-2 text-xs font-bold tabular-nums text-white shadow-md transition-colors',
+            onNumberClick && 'cursor-pointer',
+            numberClassName,
+          )}
+        >
           {displayNumber}
         </div>
       ) : showPlusButton ? (
@@ -305,50 +261,44 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   const [collapsedInputSources, setCollapsedInputSources] = useState<
     Set<string>
   >(new Set());
-  const node = useWorkflowStore((state) =>
-    id ? (state.nodes.find((item) => item.id === id) as AppNode | undefined) : undefined,
-  );
-  const nodes = useWorkflowStore((state) => state.nodes);
-  const edges = useWorkflowStore((state) => state.edges);
   const updateNodeData = useWorkflowStore((state) => state.updateNodeData);
+  const openNodeFullscreen = useWorkflowStore(
+    (state) => state.openNodeFullscreen,
+  );
+  const numberConnection = useWorkflowStore((state) => state.numberConnection);
+  const startNumberConnection = useWorkflowStore(
+    (state) => state.startNumberConnection,
+  );
+  const connectNodes = useWorkflowStore((state) => state.onConnect);
+  const { node, inputVariables, inputVariableGroups, outputVariables } =
+    useNodeIO(id);
   const definition = getNodeDefinitionByType(node?.type || '');
-  const detailsExpanded = Boolean(data.detailsExpanded);
-  const outputVariables = useMemo(() => getNodeOutputVariables(node), [node]);
-  const inputVariables = useMemo(() => {
-    if (!node) return [];
-    return getUpstreamNodes(node.id, nodes, edges).flatMap(
-      (upstreamNode) => getNodeOutputVariables(upstreamNode as AppNode),
-    );
-  }, [edges, node, nodes]);
-  const inputVariableGroups = useMemo(() => {
-    const groupMap = new Map<
-      string,
-      { sourceNodeId: string; sourceTitle: string; outputs: NodeOutputVariable[] }
-    >();
-
-    for (const input of inputVariables) {
-      const group = groupMap.get(input.sourceNodeId);
-      if (group) {
-        group.outputs.push(input);
-      } else {
-        groupMap.set(input.sourceNodeId, {
-          sourceNodeId: input.sourceNodeId,
-          sourceTitle: input.sourceTitle,
-          outputs: [input],
-        });
-      }
-    }
-
-    return Array.from(groupMap.values());
-  }, [inputVariables]);
 
   const nodeTypeLabel = definition?.name || 'Node';
   const description = data.description || definition?.description;
   const titleText = String(data.title || 'Untitled Node');
+  const nodeDisplayNumber = data.displayNumber;
+  const nodeDisplayNumberText =
+    typeof nodeDisplayNumber === 'number' ? String(nodeDisplayNumber) : '';
+  const isNumberConnectionSource =
+    Boolean(id) && numberConnection?.sourceNodeId === id;
+  const isNumberConnectionCandidate =
+    Boolean(numberConnection?.input) &&
+    nodeDisplayNumberText.startsWith(numberConnection?.input || '');
+  const isNumberConnectionExact =
+    Boolean(numberConnection?.input) &&
+    nodeDisplayNumberText === numberConnection?.input;
+  const isNumberConnectionTarget =
+    Boolean(numberConnection) &&
+    Boolean(id) &&
+    numberConnection?.sourceNodeId !== id;
+  const showCanvasVariablePanels = false;
   const isInputPanelOpen =
+    showCanvasVariablePanels &&
     inputVariables.length > 0 &&
     (isNodeHovered || isInputPanelHovered || isDraggingOutput);
   const isOutputPanelOpen =
+    showCanvasVariablePanels &&
     outputVariables.length > 0 &&
     (isNodeHovered ||
       isOutputPanelHovered ||
@@ -514,6 +464,44 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
     }
   };
 
+  const getTargetNumberClassName = () => {
+    if (!isNumberConnectionTarget) return undefined;
+    if (isNumberConnectionExact) {
+      return 'border-blue-200 bg-blue-600 text-white ring-4 ring-blue-100';
+    }
+    if (isNumberConnectionCandidate) {
+      return 'border-blue-200 bg-blue-50 text-blue-700 ring-2 ring-blue-100';
+    }
+    return 'border-blue-200 bg-white text-blue-700 ring-2 ring-blue-100';
+  };
+
+  const getSourceNumberClassName = () => {
+    if (!isNumberConnectionSource) return undefined;
+    return 'border-blue-200 bg-blue-600 text-white ring-4 ring-blue-100';
+  };
+
+  const handleTargetNumberClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!id || !numberConnection || numberConnection.sourceNodeId === id) {
+      return;
+    }
+
+    connectNodes({
+      source: numberConnection.sourceNodeId,
+      sourceHandle: numberConnection.sourceHandleId,
+      target: id,
+      targetHandle: targetHandleId,
+    });
+  };
+
+  const handleSourceNumberClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!id) return;
+    startNumberConnection(id, sourceHandleId);
+  };
+
   const handleDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!showDetailsToggle || !node) return;
 
@@ -528,7 +516,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
     }
 
     event.stopPropagation();
-    updateNodeData(node.id, { detailsExpanded: !detailsExpanded });
+    openNodeFullscreen(node.id);
   };
 
   const startTitleEdit = useCallback(
@@ -562,10 +550,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   }, [cancelTitleEdit, draftTitle, node, updateNodeData]);
 
   const startOutputLabelEdit = useCallback(
-    (
-      event: React.MouseEvent<HTMLDivElement>,
-      output: NodeOutputVariable,
-    ) => {
+    (event: React.MouseEvent<HTMLDivElement>, output: NodeOutputVariable) => {
       event.preventDefault();
       event.stopPropagation();
       setEditingOutputKey(output.key);
@@ -608,10 +593,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   ]);
 
   const startOutputDrag = useCallback(
-    (
-      event: React.DragEvent<HTMLDivElement>,
-      output: NodeOutputVariable,
-    ) => {
+    (event: React.DragEvent<HTMLDivElement>, output: NodeOutputVariable) => {
       clearOutputPanelCloseTimer();
       setIsDraggingOutput(true);
       event.dataTransfer.effectAllowed = 'copy';
@@ -804,17 +786,13 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              updateNodeData(node.id, { detailsExpanded: !detailsExpanded });
+              openNodeFullscreen(node.id);
             }}
             className="nodrag absolute right-0 top-0 z-20 flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800"
-            title={detailsExpanded ? '상세 접기' : '상세 보기'}
-            aria-label={detailsExpanded ? '상세 접기' : '상세 보기'}
+            title="노드 설정 전체화면으로 열기"
+            aria-label="노드 설정 전체화면으로 열기"
           >
-            {detailsExpanded ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
+            <Maximize2 className="h-4 w-4" />
           </button>
         )}
 
@@ -827,6 +805,10 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
             style={getHandleStyle('left')}
             displayNumber={data.displayNumber}
             showPlusButton={showTargetHandle}
+            numberClassName={getTargetNumberClassName()}
+            onNumberClick={
+              numberConnection ? handleTargetNumberClick : undefined
+            }
           />
         )}
 
@@ -837,9 +819,12 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
               style={{ backgroundColor: iconColor }}
             >
               {React.isValidElement(icon) &&
-                React.cloneElement(icon as React.ReactElement<{ className?: string }>, {
-                  className: 'w-8 h-8',
-                })}
+                React.cloneElement(
+                  icon as React.ReactElement<{ className?: string }>,
+                  {
+                    className: 'w-8 h-8',
+                  },
+                )}
             </div>
           )}
 
@@ -936,25 +921,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
 
         <div className="min-w-0 max-w-full text-sm">{children}</div>
 
-        {!detailsExpanded && node && <VisiblePropertySummary node={node} />}
-
-        {detailsExpanded && node && (
-          <>
-            <NodeInlinePanel node={node} />
-            <NodeOutputsSection
-              outputs={outputVariables}
-              editingOutputKey={editingOutputKey}
-              draftOutputLabel={draftOutputLabel}
-              onDraftOutputLabelChange={setDraftOutputLabel}
-              onStartOutputLabelEdit={startOutputLabelEdit}
-              onSaveOutputLabelEdit={saveOutputLabelEdit}
-              onCancelOutputLabelEdit={cancelOutputLabelEdit}
-              onStartOutputDrag={startOutputDrag}
-              onEndOutputDrag={() => setIsDraggingOutput(false)}
-              outputLabelInputRef={outputLabelInputRef}
-            />
-          </>
-        )}
+        {node && <VisiblePropertySummary node={node} />}
 
         {showSourceHandle && (
           <SmartHandle
@@ -965,6 +932,8 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
             style={getHandleStyle('right')}
             displayNumber={data.displayNumber}
             showPlusButton={showSourceHandle}
+            numberClassName={getSourceNumberClassName()}
+            onNumberClick={handleSourceNumberClick}
           />
         )}
       </div>

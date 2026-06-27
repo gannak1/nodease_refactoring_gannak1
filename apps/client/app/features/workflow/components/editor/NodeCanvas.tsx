@@ -46,6 +46,7 @@ import { DragConnectionOverlay } from './DragConnectionOverlay';
 import { SettingsSidebar } from './SettingsSidebar';
 import { VersionHistorySidebar } from './VersionHistorySidebar';
 import { TestSidebar } from './TestSidebar';
+import { NodeFullscreenEditor } from './NodeFullscreenEditor';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
 
 interface NodeCanvasProps {
@@ -89,6 +90,11 @@ export default function NodeCanvas({
     selectedInnerNode,
     snapGridSize,
     setSnapTemporarilyDisabled,
+    numberConnection,
+    updateNumberConnectionInput,
+    cancelNumberConnection,
+    fullscreenNodeId,
+    syncNodeFullscreenFromUrl,
   } = useWorkflowStore();
 
   const {
@@ -110,6 +116,38 @@ export default function NodeCanvas({
   const reactFlowWrapperRef = useRef<HTMLDivElement>(null);
   const hoveredNodeIdRef = useRef<string | null>(null);
   const backgroundGap = getSnapBackgroundGap(snapGridSize);
+  const numberConnectionCandidates = useMemo(() => {
+    if (!numberConnection) return [];
+    return nodes
+      .filter(
+        (node) =>
+          node.id !== numberConnection.sourceNodeId &&
+          typeof node.data?.displayNumber === 'number',
+      )
+      .map((node) => ({
+        node,
+        displayNumber: String(node.data.displayNumber),
+      }));
+  }, [nodes, numberConnection]);
+  const currentNumberMatches = useMemo(() => {
+    if (!numberConnection?.input) return [];
+    return numberConnectionCandidates.filter((candidate) =>
+      candidate.displayNumber.startsWith(numberConnection.input),
+    );
+  }, [numberConnection?.input, numberConnectionCandidates]);
+
+  const connectNumberTarget = useCallback(
+    (targetNodeId: string) => {
+      if (!numberConnection) return;
+      onConnect({
+        source: numberConnection.sourceNodeId,
+        sourceHandle: numberConnection.sourceHandleId,
+        target: targetNodeId,
+        targetHandle: 'target',
+      });
+    },
+    [numberConnection, onConnect],
+  );
 
   // Drag connection preview
   const {
@@ -131,6 +169,75 @@ export default function NodeCanvas({
 
   // Publish state
   const canPublish = useWorkflowStore((state) => state.canPublish());
+
+  useEffect(() => {
+    if (!numberConnection) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (/^\d$/.test(event.key)) {
+        event.preventDefault();
+        const nextInput = `${numberConnection.input}${event.key}`;
+        const matches = numberConnectionCandidates.filter((candidate) =>
+          candidate.displayNumber.startsWith(nextInput),
+        );
+        const exactMatches = matches.filter(
+          (candidate) => candidate.displayNumber === nextInput,
+        );
+        const prefixMatches = matches.filter(
+          (candidate) => candidate.displayNumber !== nextInput,
+        );
+
+        if (exactMatches.length === 1 && prefixMatches.length === 0) {
+          connectNumberTarget(exactMatches[0].node.id);
+          return;
+        }
+
+        updateNumberConnectionInput(nextInput);
+        return;
+      }
+
+      if (event.key === 'Backspace') {
+        event.preventDefault();
+        updateNumberConnectionInput(numberConnection.input.slice(0, -1));
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelNumberConnection();
+        return;
+      }
+
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const exactMatches = numberConnectionCandidates.filter(
+          (candidate) => candidate.displayNumber === numberConnection.input,
+        );
+        if (exactMatches.length === 1) {
+          connectNumberTarget(exactMatches[0].node.id);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    cancelNumberConnection,
+    connectNumberTarget,
+    numberConnection,
+    numberConnectionCandidates,
+    updateNumberConnectionInput,
+  ]);
 
   // Deployment logic (extracted to hook)
   const {
@@ -677,10 +784,47 @@ export default function NodeCanvas({
   // [NEW] 탭 상태 (Deleted internal logic)
   const [initialLogRunId, setInitialLogRunId] = useState<string | null>(null);
   const searchParams = useSearchParams();
+  const ndvNodeParam = searchParams.get('node');
   // const tabParam = searchParams.get('tab'); // Moved to parent
   const runIdParam = searchParams.get('runId');
 
   // useEffect for tabParam removed
+
+  useEffect(() => {
+    const currentNodeParam =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('node')
+        : ndvNodeParam;
+
+    if (!currentNodeParam) {
+      if (fullscreenNodeId) {
+        syncNodeFullscreenFromUrl(null);
+      }
+      return;
+    }
+
+    const hasTargetNode = nodes.some((node) => node.id === currentNodeParam);
+    if (hasTargetNode && fullscreenNodeId !== currentNodeParam) {
+      syncNodeFullscreenFromUrl(currentNodeParam);
+    }
+  }, [fullscreenNodeId, ndvNodeParam, nodes, syncNodeFullscreenFromUrl]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const nodeId = new URLSearchParams(window.location.search).get('node');
+      if (!nodeId) {
+        syncNodeFullscreenFromUrl(null);
+        return;
+      }
+
+      if (nodes.some((node) => node.id === nodeId)) {
+        syncNodeFullscreenFromUrl(nodeId);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [nodes, syncNodeFullscreenFromUrl]);
 
   useEffect(() => {
     if (runIdParam) {
@@ -772,6 +916,25 @@ export default function NodeCanvas({
                     color="#cbd5e1"
                   />
                 </ReactFlow>
+
+                {numberConnection && (
+                  <div className="pointer-events-none absolute left-1/2 top-4 z-40 flex -translate-x-1/2 flex-col items-center gap-1">
+                    <div className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-lg">
+                      <span className="text-blue-700">연결할 노드 번호</span>
+                      <span className="ml-2 inline-flex min-w-8 items-center justify-center rounded-md bg-blue-50 px-2 py-0.5 font-bold tabular-nums text-blue-700">
+                        {numberConnection.input || '-'}
+                      </span>
+                      <span className="ml-2 text-slate-400">
+                        숫자 입력 · Enter 확정 · Esc 취소
+                      </span>
+                    </div>
+                    {numberConnection.input && (
+                      <div className="rounded-md border border-slate-200 bg-white/95 px-2 py-1 text-[11px] font-medium text-slate-500 shadow-sm">
+                        후보 {currentNumberMatches.length}개
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Drag connection preview overlay */}
                 <DragConnectionOverlay
@@ -1078,6 +1241,9 @@ export default function NodeCanvas({
       <SettingsSidebar />
       <VersionHistorySidebar />
       <TestSidebar appendMemoryFlag={appendMemoryFlag} />
+
+      {/* 노드 전체화면 설정(NDV) */}
+      <NodeFullscreenEditor />
 
       {/* Deployment Flow Modal */}
       <DeploymentFlowModal

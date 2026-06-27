@@ -18,12 +18,14 @@ interface LLMReferenceSidePanelProps {
   nodeId: string;
   data: LLMNodeData;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 export function LLMReferenceSidePanel({
   nodeId,
   data,
   onClose,
+  embedded = false,
 }: LLMReferenceSidePanelProps) {
   const { updateNodeData } = useWorkflowStore();
 
@@ -137,15 +139,13 @@ export function LLMReferenceSidePanel({
     });
   };
 
-  const topKIndicator = useMemo(() => {
-    const max = 20;
-    const clamped = Math.min(max, Math.max(1, topK));
-    return (clamped / max) * 100;
-  }, [topK]);
-
   return (
     <div
-      className="absolute right-[400px] top-14 bottom-0 w-[360px] bg-white shadow-xl z-40 flex flex-col border-l border-gray-200"
+      className={
+        embedded
+          ? 'flex h-full min-h-0 flex-col bg-white'
+          : 'absolute right-[400px] top-14 bottom-0 w-[360px] bg-white shadow-xl z-40 flex flex-col border-l border-gray-200'
+      }
       style={{ transition: 'transform 0.3s ease-in-out' }}
     >
       {/* Header */}
@@ -159,12 +159,14 @@ export function LLMReferenceSidePanel({
             </p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 hover:bg-gray-200 rounded text-gray-500 transition-colors"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {!embedded && (
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-gray-200 rounded text-gray-500 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Content */}

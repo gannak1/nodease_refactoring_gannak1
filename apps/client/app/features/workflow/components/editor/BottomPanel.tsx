@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { useReactFlow } from '@xyflow/react';
-import { Grid2X2, Maximize2, Minimize2 } from 'lucide-react';
+import { Grid2X2 } from 'lucide-react';
 import {
   TouchpadIcon,
   MousePointerIcon,
@@ -38,8 +38,6 @@ export default function BottomPanel({
     snapGridSize,
     setSnapGridSize,
     isSnapTemporarilyDisabled,
-    nodes,
-    updateNodeData,
   } = useWorkflowStore();
   const {
     screenToFlowPosition,
@@ -215,21 +213,6 @@ export default function BottomPanel({
       : isSnapTemporarilyDisabled
         ? `Move ${snapGridSize}px paused`
         : `Move ${snapGridSize}px`;
-  const { detailTargetNodes, detailTargetLabel } = useMemo(() => {
-    const expandableNodes = nodes.filter((node) => node.type !== 'note');
-    const selectedExpandableNodes = expandableNodes.filter(
-      (node) => node.selected,
-    );
-    const shouldTargetSelection = selectedExpandableNodes.length > 1;
-
-    return {
-      detailTargetNodes: shouldTargetSelection
-        ? selectedExpandableNodes
-        : expandableNodes,
-      detailTargetLabel: shouldTargetSelection ? '선택 노드' : '전체 노드',
-    };
-  }, [nodes]);
-
   const handleZoomIn = useCallback(() => {
     zoomIn();
   }, [zoomIn]);
@@ -251,18 +234,6 @@ export default function BottomPanel({
     fitView({ padding: 0.2, duration: 300 });
     setOpenModal(null);
   }, [fitView]);
-
-  const setDetailsExpandedForTargetNodes = useCallback(
-    (detailsExpanded: boolean) => {
-      detailTargetNodes.forEach((node) => {
-        if (node.data.detailsExpanded !== detailsExpanded) {
-          updateNodeData(node.id, { detailsExpanded });
-        }
-      });
-      setOpenModal(null);
-    },
-    [detailTargetNodes, updateNodeData],
-  );
 
   return (
     <>
@@ -539,28 +510,6 @@ export default function BottomPanel({
               </div>
             )}
           </div>
-
-          <div className="h-6 w-px bg-slate-200" />
-
-          {/* 노드 상세 일괄 접기/펴기 */}
-          <button
-            onClick={() => setDetailsExpandedForTargetNodes(true)}
-            disabled={detailTargetNodes.length === 0}
-            className="rounded p-2 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-            title={`${detailTargetLabel} 상세 펼치기`}
-            aria-label={`${detailTargetLabel} 상세 펼치기`}
-          >
-            <Maximize2 className="h-4 w-4 text-slate-600" />
-          </button>
-          <button
-            onClick={() => setDetailsExpandedForTargetNodes(false)}
-            disabled={detailTargetNodes.length === 0}
-            className="rounded p-2 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-            title={`${detailTargetLabel} 상세 접기`}
-            aria-label={`${detailTargetLabel} 상세 접기`}
-          >
-            <Minimize2 className="h-4 w-4 text-slate-600" />
-          </button>
 
           <div className="h-6 w-px bg-slate-200" />
 
