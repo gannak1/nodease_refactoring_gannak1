@@ -130,10 +130,21 @@ def _llm_credential_scope(
     return credential, credential_organization_uuid or requested_organization_uuid
 
 
-def _strongest_auth_state(rows: list[tuple[Any, ...]], current: str) -> str:
+def _auth_state_from_row(row: Any) -> Any:
+    row_mapping = getattr(row, "_mapping", None)
+    if row_mapping is not None:
+        if "auth_state" in row_mapping:
+            return row_mapping["auth_state"]
+        return next(iter(row_mapping.values()), row)
+    if isinstance(row, tuple):
+        return row[0]
+    return row
+
+
+def _strongest_auth_state(rows: list[Any], current: str) -> str:
     result = current
     for row in rows:
-        auth_state = row[0] if isinstance(row, tuple) else row
+        auth_state = _auth_state_from_row(row)
         result = stronger_resource_auth_state(result, auth_state)
     return result
 

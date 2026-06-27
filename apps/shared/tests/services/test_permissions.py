@@ -42,6 +42,11 @@ class FakeDb:
         return FakeQuery(self)
 
 
+class FakeSqlAlchemyRow:
+    def __init__(self, auth_state):
+        self._mapping = {"auth_state": auth_state}
+
+
 def test_legacy_auth_states_normalize_to_mvp_auth_states():
     assert normalize_auth_state("read") == "viewer"
     assert normalize_auth_state("execute") == "operator"
@@ -136,6 +141,32 @@ def test_direct_workflow_permission_is_additive_over_team_permission():
     )
 
 
+def test_workflow_permission_sqlalchemy_rows_are_unpacked_before_ranking():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=workflow_id, organization_id=organization_id),
+            SimpleNamespace(
+                id=organization_id,
+                created_by=uuid.uuid4(),
+                managed_by=None,
+                is_active=True,
+            ),
+        ],
+        all_values=[
+            [FakeSqlAlchemyRow("viewer")],
+            [FakeSqlAlchemyRow("builder")],
+        ],
+    )
+
+    assert (
+        get_effective_workflow_auth_state(db, user_id, workflow_id, organization_id)
+        == "builder"
+    )
+
+
 def test_weaker_direct_workflow_permission_does_not_lower_team_permission():
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -213,6 +244,39 @@ def test_llm_credential_effective_permission_allows_direct_operator_use():
             ),
         ],
         all_values=[[], [("operator",)]],
+    )
+
+    assert (
+        get_effective_llm_credential_auth_state(
+            db, user_id, credential_id, organization_id
+        )
+        == "operator"
+    )
+
+
+def test_llm_permission_sqlalchemy_rows_are_unpacked_before_ranking():
+    user_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=credential_id,
+                user_id=owner_id,
+                organization_id=organization_id,
+            ),
+            SimpleNamespace(
+                id=organization_id,
+                created_by=uuid.uuid4(),
+                managed_by=None,
+                is_active=True,
+            ),
+        ],
+        all_values=[
+            [FakeSqlAlchemyRow("viewer")],
+            [FakeSqlAlchemyRow("operator")],
+        ],
     )
 
     assert (
