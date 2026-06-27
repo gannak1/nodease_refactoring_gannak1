@@ -36,6 +36,18 @@ const asKeyValueList = (value: unknown, keyName = 'key', valueName = 'value') =>
         .filter(Boolean)
         .join(', ')
     : '';
+const asTokenList = (value: unknown, key: string) =>
+  Array.isArray(value)
+    ? value
+        .map((item) =>
+          item && typeof item === 'object'
+            ? asText((item as Record<string, unknown>)[key])
+            : asText(item),
+        )
+        .filter(Boolean)
+        .map((name) => `{{${name}}}`)
+        .join(' ')
+    : '';
 
 export const VISIBLE_NODE_PROPERTIES: Partial<
   Record<NonNullable<AppNode['type']>, VisiblePropertyDefinition[]>
@@ -153,7 +165,7 @@ export const VISIBLE_NODE_PROPERTIES: Partial<
       key: 'variables',
       label: '입력변수',
       multiline: true,
-      getValue: (node) => asList(node.data.variables, 'name'),
+      getValue: (node) => asTokenList(node.data.variables, 'name'),
     },
   ],
   codeNode: [

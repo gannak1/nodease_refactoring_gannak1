@@ -25,7 +25,7 @@ const TOKEN_INTERNAL_DRAG_MIME = 'application/x-moduly-variable-token';
 
 type Segment =
   | { type: 'text'; value: string }
-  | { type: 'variable'; name: string; label: string };
+  | { type: 'variable'; name: string; label: string; isRegistered: boolean };
 
 type DropCaret = {
   left: number;
@@ -51,10 +51,15 @@ const parseValueToSegments = (
     }
 
     const name = match[1].trim();
+    const isRegistered = Object.prototype.hasOwnProperty.call(
+      tokenLabels,
+      name,
+    );
     segments.push({
       type: 'variable',
       name,
       label: tokenLabels[name] || name,
+      isRegistered,
     });
     lastIndex = match.index + match[0].length;
   }
@@ -68,14 +73,23 @@ const parseValueToSegments = (
 
 const createTextNode = (text: string) => document.createTextNode(text);
 
-const createTokenNode = (name: string, label: string) => {
+const createTokenNode = (
+  name: string,
+  label: string,
+  options: { isRegistered?: boolean } = {},
+) => {
+  const isRegistered = options.isRegistered ?? true;
   const span = document.createElement('span');
   span.setAttribute(TOKEN_ATTR, 'true');
   span.setAttribute(TOKEN_NAME_ATTR, name);
   span.setAttribute('contenteditable', 'false');
-  span.setAttribute('draggable', 'true');
-  span.className =
-    'mx-0.5 inline-flex max-w-full cursor-grab select-none items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-sm align-baseline active:cursor-grabbing';
+  span.setAttribute('draggable', isRegistered ? 'true' : 'false');
+  span.className = isRegistered
+    ? 'mx-0.5 inline-flex max-w-full cursor-grab select-none items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-sm align-baseline active:cursor-grabbing'
+    : 'mx-0.5 inline-flex max-w-full cursor-default select-none items-center rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 line-through decoration-red-400 shadow-sm align-baseline';
+  span.title = isRegistered
+    ? label
+    : '등록되지 않았거나 연결이 끊어진 변수입니다.';
   span.textContent = label;
   return span;
 };
@@ -130,7 +144,11 @@ const renderSegments = (
     if (segment.type === 'text') {
       editor.appendChild(createTextNode(segment.value));
     } else {
-      editor.appendChild(createTokenNode(segment.name, segment.label));
+      editor.appendChild(
+        createTokenNode(segment.name, segment.label, {
+          isRegistered: segment.isRegistered,
+        }),
+      );
     }
   }
 };
@@ -621,6 +639,8 @@ export const VariableTokenEditor = ({
     if (!token || !editor.contains(token)) return;
 
     const tokenElement = token as HTMLElement;
+    if (tokenElement.getAttribute('draggable') !== 'true') return;
+
     const name = tokenElement.getAttribute(TOKEN_NAME_ATTR) || '';
     const label = tokenElement.textContent || name;
     draggedTokenRef.current = tokenElement;

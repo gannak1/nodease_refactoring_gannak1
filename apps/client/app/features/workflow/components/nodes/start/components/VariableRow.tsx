@@ -118,7 +118,7 @@ export const VariableRow = ({
               type="text"
               className="w-full min-w-0 rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs font-semibold text-blue-600 placeholder:font-normal placeholder:text-gray-500 transition-colors focus:border-blue-500 focus:bg-white focus:outline-none"
               placeholder="표시명 (예: 고객 문의)"
-              value={variable.label || variable.name}
+              value={variable.label ?? ''}
               onChange={(e) => onUpdate(variable.id, { label: e.target.value })}
             />
           </div>

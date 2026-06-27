@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { LLMNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
@@ -39,6 +39,26 @@ type ModelOption = {
   provider_name?: string;
   is_active: boolean;
 };
+
+const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
+
+const extractTokenNames = (value: string) => {
+  const names = new Set<string>();
+  TOKEN_PATTERN.lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = TOKEN_PATTERN.exec(value)) !== null) {
+    const name = match[1].trim();
+    if (name) names.add(name);
+  }
+
+  return names;
+};
+
+const selectorForOutput = (output: DraggedOutputVariable) => [
+  output.sourceNodeId,
+  output.outputId || output.key,
+];
 
 interface LLMNodePanelProps {
   nodeId: string;
@@ -236,6 +256,9 @@ export function LLMNodePanel({
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
   }, []);
   const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const pendingPromptReferencesRef = useRef<
+    LLMNodeData['referenced_variables']
+  >([]);
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
   const [isParameterPanelOpen, setIsParameterPanelOpen] = useState(false);
@@ -317,18 +340,17 @@ export function LLMNodePanel({
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
   );
+  const tokenLabels = useMemo(
+    () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
+    [data.referenced_variables, upstreamNodes],
+  );
 
   const validationErrors = useMemo(() => {
     const allPrompts =
       (data.system_prompt || '') +
       (data.user_prompt || '') +
       (data.assistant_prompt || '');
-    // 등록된 변수 이름들 (공백 제거)
-    const registeredNames = new Set(
-      (data.referenced_variables || [])
-        .map((v) => v.name?.trim())
-        .filter(Boolean),
-    );
+    const registeredNames = new Set(Object.keys(tokenLabels));
     const errors: string[] = [];
 
     // 정규식: 닫는 중괄호 } 를 제외한 모든 문자 1개 이상 (공백, 한글 포함)
@@ -346,7 +368,7 @@ export function LLMNodePanel({
     data.system_prompt,
     data.user_prompt,
     data.assistant_prompt,
-    data.referenced_variables,
+    tokenLabels,
   ]);
 
   const allPromptsEmpty = useMemo(() => {
@@ -433,9 +455,84 @@ export function LLMNodePanel({
 
   const handleFieldChange = useCallback(
     (field: keyof LLMNodeData, value: unknown) => {
+      if (
+        field === 'system_prompt' ||
+        field === 'user_prompt' ||
+        field === 'assistant_prompt'
+      ) {
+        const nextSystemPrompt =
+          field === 'system_prompt'
+            ? String(value || '')
+            : data.system_prompt || '';
+        const nextUserPrompt =
+          field === 'user_prompt'
+            ? String(value || '')
+            : data.user_prompt || '';
+        const nextAssistantPrompt =
+          field === 'assistant_prompt'
+            ? String(value || '')
+            : data.assistant_prompt || '';
+        const usedNames = new Set([
+          ...extractTokenNames(nextSystemPrompt),
+          ...extractTokenNames(nextUserPrompt),
+          ...extractTokenNames(nextAssistantPrompt),
+        ]);
+        const mergedReferences = [
+          ...(data.referenced_variables || []),
+          ...pendingPromptReferencesRef.current,
+        ];
+        const pendingReferenceKeys = new Set(
+          pendingPromptReferencesRef.current.map(
+            (reference) =>
+              `${reference.name}:${reference.value_selector?.[0] || ''}:${reference.value_selector?.[1] || ''}`,
+          ),
+        );
+        const nextReferences = mergedReferences.filter((reference, index) => {
+          if (!reference.name || !usedNames.has(reference.name)) return false;
+          const referenceKey = `${reference.name}:${reference.value_selector?.[0] || ''}:${reference.value_selector?.[1] || ''}`;
+          if (
+            !Object.prototype.hasOwnProperty.call(
+              tokenLabels,
+              reference.name,
+            ) &&
+            !pendingReferenceKeys.has(referenceKey)
+          ) {
+            return false;
+          }
+          return (
+            mergedReferences.findIndex((candidate) => {
+              if (candidate.name !== reference.name) return false;
+              return (
+                candidate.value_selector?.[0] ===
+                  reference.value_selector?.[0] &&
+                candidate.value_selector?.[1] === reference.value_selector?.[1]
+              );
+            }) === index
+          );
+        });
+
+        pendingPromptReferencesRef.current =
+          pendingPromptReferencesRef.current.filter((reference) =>
+            usedNames.has(reference.name),
+          );
+        updateNodeData(nodeId, {
+          [field]: value,
+          referenced_variables: nextReferences,
+        });
+        return;
+      }
+
       updateNodeData(nodeId, { [field]: value });
     },
-    [nodeId, updateNodeData],
+    [
+      data.assistant_prompt,
+      data.referenced_variables,
+      data.system_prompt,
+      data.user_prompt,
+      nodeId,
+      tokenLabels,
+      updateNodeData,
+    ],
   );
 
   const handlePromptDropOutput = useCallback(
@@ -445,21 +542,24 @@ export function LLMNodePanel({
         output,
         'value_selector',
       );
-      updateNodeData(nodeId, {
-        referenced_variables: upsertNamedSelector(
-          data.referenced_variables,
-          output,
-          'value_selector',
+      const nextReferences = upsertNamedSelector(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      ) as LLMNodeData['referenced_variables'];
+      pendingPromptReferencesRef.current = [
+        ...pendingPromptReferencesRef.current.filter(
+          (reference) => reference.name !== referenceName,
         ),
-      });
+        {
+          name: referenceName,
+          value_selector: selectorForOutput(output),
+        },
+      ];
+      updateNodeData(nodeId, { referenced_variables: nextReferences });
       return referenceName;
     },
     [data.referenced_variables, nodeId, updateNodeData],
-  );
-
-  const tokenLabels = useMemo(
-    () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
-    [data.referenced_variables, upstreamNodes],
   );
 
   // 사용자가 사용 가능한 모델 가져오기

@@ -74,19 +74,21 @@ const VariableInsertionStatus = () => {
   const { activeTarget, message } = useVariableInsertion();
 
   return (
-    <div className="mb-2 rounded-md border border-slate-200 bg-white px-2.5 py-2 text-[11px] leading-relaxed text-slate-500">
-      {activeTarget ? (
-        <>
-          입력 위치:{' '}
-          <span className="font-semibold text-blue-700">
-            {activeTarget.label}
-          </span>
-        </>
-      ) : (
-        '가운데 설정에서 입력할 필드를 선택한 뒤 변수를 클릭하세요.'
-      )}
+    <div className="mb-2 text-[11px] leading-relaxed text-slate-400">
+      <span>
+        {activeTarget ? (
+          <>
+            입력 위치:{' '}
+            <span className="font-semibold text-blue-600">
+              {activeTarget.label}
+            </span>
+          </>
+        ) : (
+          '가운데 설정에서 입력할 필드를 선택한 뒤 변수를 클릭하세요.'
+        )}
+      </span>
       {message && (
-        <div className="mt-1 font-medium text-slate-600">{message}</div>
+        <span className="ml-1 font-medium text-slate-500">{message}</span>
       )}
     </div>
   );
@@ -515,7 +517,10 @@ export function NodeFullscreenEditor() {
   if (!fullscreenNodeId || !node) return null;
 
   return (
-    <div className="absolute inset-0 isolate z-[70] flex flex-col overflow-hidden bg-white">
+    <div
+      className="absolute inset-0 isolate z-[70] flex flex-col overflow-hidden bg-white"
+      data-canvas-shortcut-scope="blocked"
+    >
       {/* 헤더 */}
       <div className="z-10 flex h-20 shrink-0 items-center gap-4 border-b border-slate-200 bg-white px-5">
         <div className="relative flex w-56 shrink-0 items-center justify-start">
