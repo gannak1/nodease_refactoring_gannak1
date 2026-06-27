@@ -20,6 +20,7 @@ from apps.shared.schemas.llm import (
     LLMProviderResponse,
 )
 from apps.shared.services.llm_client import get_llm_client
+from apps.shared.services.llm_usage_context import resolve_llm_usage_context
 from apps.shared.services.permissions import has_llm_credential_permission
 
 logger = logging.getLogger(__name__)
@@ -977,18 +978,18 @@ class LLMService:
             )
             return None
 
-        organization_uuid = None
-        if organization_id:
-            try:
-                organization_uuid = uuid.UUID(str(organization_id))
-            except (TypeError, ValueError):
-                organization_uuid = None
-        workflow_uuid = None
-        if workflow_id:
-            try:
-                workflow_uuid = uuid.UUID(str(workflow_id))
-            except (TypeError, ValueError):
-                workflow_uuid = None
+        usage_context = resolve_llm_usage_context(
+            db,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
+            logger=logger,
+        )
+        if usage_context is None:
+            return None
+        organization_uuid = usage_context.organization_id
+        workflow_uuid = usage_context.workflow_id
+        workflow_run_uuid = usage_context.workflow_run_id
 
         credential = LLMService._get_valid_credential_for_user(
             db,
@@ -1008,7 +1009,7 @@ class LLMService:
             credential_id=credential.id,
             model_id=model.id,
             workflow_id=workflow_uuid,
-            workflow_run_id=workflow_run_id,
+            workflow_run_id=workflow_run_uuid,
             node_id=node_id,
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),

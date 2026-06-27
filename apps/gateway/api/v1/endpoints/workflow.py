@@ -1,9 +1,10 @@
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Date, Integer, cast, func
 from sqlalchemy.orm import Session, noload, selectinload
@@ -15,6 +16,7 @@ from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
+from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
@@ -30,6 +32,7 @@ from apps.shared.schemas.log import (
     WorkflowRunListResponse,
     WorkflowRunSchema,
 )
+from apps.shared.schemas.llm import LLMTraceListResponse
 from apps.shared.schemas.workflow import (
     WorkflowCreateRequest,
     WorkflowDraftRequest,
@@ -55,13 +58,6 @@ def get_workflow_runs(
     skip = (page - 1) * limit
 
     ensure_workflow_permission(db, current_user, workflow_id, "read")
-
-    # total = (
-    #     db.query(func.count(WorkflowRun.id))
-    #     .filter(WorkflowRun.workflow_id == workflow_id)
-    #     .scalar()
-    #     or 0
-    # )
 
     total = db.query(WorkflowRun).filter(WorkflowRun.workflow_id == workflow_id).count()
 
@@ -131,6 +127,39 @@ def get_workflow_run_detail(
         )
 
     return run
+
+
+@router.get("/{workflow_id}/runs/{run_id}/llm-traces", response_model=LLMTraceListResponse)
+def get_workflow_run_llm_traces(
+    workflow_id: str,
+    run_id: str,
+    node_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 workflow run에 연결된 LLM usage trace를 조회합니다.
+    """
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
+    try:
+        workflow_uuid = UUID(str(workflow_id))
+        run_uuid = UUID(str(run_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    result = LLMService.list_workflow_run_llm_traces(
+        db,
+        workflow_uuid,
+        run_uuid,
+        node_id=node_id,
+        limit=limit,
+        offset=offset,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return result
 
 
 # [NEW] 모니터링 대시보드 통계 API

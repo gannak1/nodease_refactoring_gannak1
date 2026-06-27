@@ -36,14 +36,33 @@ Workflow run trace, span, payload, trace policy, retention purge, audit log 조�
 
 ## LLM Trace 엔드포인트
 
-MVP 1에서 run/node 기준 LLM usage를 조회해야 한다. 아래 두 방식 중 하나만 채택한다.
+MVP 1에서 run/node 기준 LLM usage는 별도 LLM trace endpoint로 조회한다. 기존 run detail 응답에는 전체 trace row를 기본 포함하지 않는다.
 
-| Status | Method | Path | 설명 |
-| --- | --- | --- | --- |
-| Planned | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}` | 기존 run detail 응답에 LLM usage 요약을 포함 |
-| Planned | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 별도 LLM trace endpoint |
+| Status | Method | Path | Request | Response | Permission |
+| --- | --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | `node_id?`, `limit?`, `offset?` query | `LLMTraceListResponse` | workflow `read` |
 
-중복 API를 만들지 않는다. 별도 endpoint를 선택하면 query parameter `node_id`를 지원한다.
+기본 정렬은 `created_at ASC`, `id ASC`이다. `limit` 기본값은 `100`, 최대값은 `500`이고 `offset` 기본값은 `0`이다. `run_id`가 path의 `workflow_id`에 속하지 않으면 `404`로 응답한다.
+
+`LLMTraceListResponse.items`는 다음 whitelist field만 포함한다.
+
+- `id`
+- `workflow_id`
+- `workflow_run_id`
+- `node_id`
+- `model_id`
+- `model_name`
+- `provider`
+- `credential_id`
+- `prompt_tokens`
+- `completion_tokens`
+- `total_tokens`
+- `total_cost`
+- `latency_ms`
+- `status`
+- `created_at`
+
+API key, credential config, raw prompt, raw completion, raw request/response body, Authorization/Cookie header는 반환하지 않는다.
 
 ## Raw Payload 규칙
 

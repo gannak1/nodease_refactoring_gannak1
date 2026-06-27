@@ -423,7 +423,7 @@ Out of Scope:
 | Permission denied audit | 권한 실패 metadata에 resource/action/effective permission을 남긴다. |
 | LLM trace query | run id와 node id 기준으로 `llm_usage_logs`를 조회한다. |
 | Run detail 확장 | run detail 응답 또는 별도 endpoint에서 node별 LLM usage를 반환한다. |
-| Latency 정합성 | 코드에서는 ORM 속성 `latency_ms`를 쓰고, 물리 column `atency_ms`는 MVP1에서 rename하지 않는다. |
+| Latency 정합성 | `llm_usage_logs.latency_ms`를 DB column명과 ORM 속성명 모두에서 사용한다. 기존 오타 column은 migration으로 rename한다. |
 | Audit pagination | MVP1 UI/API에서 audit list를 사용한다면 `MBA-38`, `MBA-39`를 함께 처리한다. 사용하지 않으면 후순위로 둔다. |
 
 구현 방법:
@@ -433,7 +433,7 @@ Out of Scope:
 3. `allow/deny/warn/block` 같은 정책 결과는 `audit_metadata.policy_result`에 저장한다.
 4. LLM trace API는 raw query 또는 SQLAlchemy query로 기존 table을 조인한다.
 5. trace 조회는 workflow `read` 권한을 통과한 user만 가능하게 한다.
-6. `llm_usage_logs.latency_ms` ORM 속성은 그대로 쓰고, DB physical column rename은 별도 schema 변경으로 미룬다.
+6. `llm_usage_logs.latency_ms` ORM 속성과 DB physical column명을 일치시킨다.
 
 API 계약은 [api/tracing-audit.md](../api/tracing-audit.md)의 LLM trace 항목을 따른다. 기존 run detail 응답 확장과 별도 `llm-traces` endpoint 중 하나만 채택해 중복 API를 만들지 않는다.
 
@@ -444,7 +444,7 @@ Acceptance Criteria:
 - LLM node 실행 후 run_id 기준으로 model/token/cost/latency/status를 조회할 수 있다.
 - 여러 LLM node가 있어도 node_id로 구분된다.
 - trace API는 workflow `read` 권한 없이는 거부된다.
-- `latency_ms` 사용 코드가 physical `atency_ms` column 때문에 깨지지 않는다.
+- `latency_ms` 사용 코드와 DB physical column명이 일치한다.
 
 Out of Scope:
 

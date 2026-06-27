@@ -53,9 +53,14 @@ def test_workflow_permission_denied_records_permission_audit(monkeypatch):
         ensure_workflow_permission(FakeDb(workflow), user, workflow.id, "write")
 
     assert exc_info.value.status_code == 403
+    assert getattr(exc_info.value, "audit_recorded", False) is True
     assert events[0]["action"] == AuditAction.PERMISSION_DENIED
     assert events[0]["target_type"] == "workflow"
     assert events[0]["target_id"] == workflow.id
     assert events[0]["status"] == "failure"
+    assert events[0]["metadata"]["policy_result"] == "deny"
+    assert events[0]["metadata"]["resource_type"] == "workflow"
+    assert events[0]["metadata"]["resource_id"] == str(workflow.id)
+    assert events[0]["metadata"]["required_permission"] == "write"
     assert events[0]["metadata"]["permission_action"] == "write"
     assert events[0]["metadata"]["effective_auth_state"] == "viewer"

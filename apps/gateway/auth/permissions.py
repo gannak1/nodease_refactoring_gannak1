@@ -34,10 +34,20 @@ def record_permission_denied(
         target_id=resource_id,
         status="failure",
         metadata={
+            "policy_result": "deny",
+            "resource_type": resource_type,
+            "resource_id": str(resource_id),
+            "required_permission": action,
             "permission_action": action,
             "effective_auth_state": effective_auth_state,
         },
     )
+
+
+def _permission_denied_exception() -> HTTPException:
+    exc = HTTPException(status_code=403, detail="Forbidden")
+    setattr(exc, "audit_recorded", True)
+    return exc
 
 
 def ensure_workflow_permission(
@@ -70,7 +80,7 @@ def ensure_workflow_permission(
             action,
             effective_auth_state,
         )
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise _permission_denied_exception()
     return workflow
 
 
@@ -106,7 +116,7 @@ def ensure_llm_credential_permission(
             action,
             effective_auth_state,
         )
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise _permission_denied_exception()
     return credential
 
 

@@ -75,7 +75,11 @@ async def add_request_id(request: Request, call_next):
 
 @app.exception_handler(HTTPException)
 async def audit_permission_denied(request: Request, exc: HTTPException):
-    if request.method != "OPTIONS" and exc.status_code in (401, 403):
+    if (
+        request.method != "OPTIONS"
+        and exc.status_code in (401, 403)
+        and not getattr(exc, "audit_recorded", False)
+    ):
         record_audit(
             action=AuditAction.AUTH_PERMISSION_DENIED,
             category="action",

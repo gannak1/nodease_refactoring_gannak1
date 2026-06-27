@@ -27,6 +27,7 @@ class AuditAction:
     WORKFLOW_CREATE = "workflow.create"
     WORKFLOW_UPDATE = "workflow.update"
     WORKFLOW_DEPLOY = "workflow.deploy"
+    WORKFLOW_EXECUTE = "workflow.execute"
 
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_DELETE = "deployment.delete"
@@ -38,6 +39,7 @@ class AuditAction:
     CREDENTIAL_DELETE = "credential.delete"
 
     MODEL_PRICING_UPDATE = "model.pricing_update"
+    LLM_CALL = "llm.call"
 
     # 지식베이스와 문서 수명주기.
     KNOWLEDGE_CREATE = "knowledge.create"
