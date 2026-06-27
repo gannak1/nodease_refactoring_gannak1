@@ -356,7 +356,7 @@ Out of Scope:
 | Credential scope | `llm_credentials.organization_id`를 active organization 기준으로 저장/조회한다. |
 | Credential read | credential list/preview는 credential `read` 권한 기준으로 제한한다. |
 | Credential create | 새 credential 생성은 organization owner/manager가 수행한다. 생성 직후 권한 row를 어떻게 만들지는 8.3의 결정에 따른다. |
-| Credential write/manage | 기존 credential 삭제/sync-models/권한 관리는 organization owner/manager 또는 해당 credential `manager` 권한 기준으로 제한한다. |
+| Credential write/manage | 기존 credential 삭제/sync-models는 credential `write`, 권한 관리는 credential `manage` 기준으로 제한한다. 두 action 모두 organization owner/manager 또는 해당 credential `manager` 권한으로 통과한다. |
 | Runtime use | workflow engine LLM node가 credential `use` 권한을 확인한다. |
 | Model relation | model 사용 가능 여부는 `llm_rel_credential_models.is_verified`와 credential permission을 함께 평가한다. |
 | Usage log | `llm_usage_logs.organization_id`, `workflow_id`, `workflow_run_id`, `node_id`를 가능한 범위에서 채운다. |
@@ -387,7 +387,7 @@ Acceptance Criteria:
 - credential `viewer`는 credential preview 조회만 가능하고 runtime use는 거부된다.
 - credential `operator` 또는 `builder`는 LLM node 실행에서 credential을 사용할 수 있다.
 - organization owner/manager는 새 credential을 생성할 수 있다.
-- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다.
+- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다. 삭제/동기화 action vocabulary는 `write`, 권한 관리는 `manage`를 사용한다.
 - verified relation이 없는 model은 credential 권한이 있어도 사용할 수 없다.
 - 권한 없는 credential/model 조합으로 workflow를 실행하면 LLM node 실행 전 또는 실행 중 명확히 차단된다.
 - 차단 이벤트가 audit에 남는다.
@@ -544,7 +544,7 @@ Out of Scope:
 | 작업 | 내용 |
 | --- | --- |
 | Unit test | permission helper, auth_state mapping, user direct additive allow |
-| API test | workflow read/write/execute, LLM credential read/use/manage, permission denied audit |
+| API test | workflow read/write/execute, LLM credential read/use/write/manage, permission denied audit |
 | Service test | organization bootstrap, app/workflow organization scope |
 | Engine test | LLM node runtime credential use check |
 | Trace test | run/node LLM usage query |

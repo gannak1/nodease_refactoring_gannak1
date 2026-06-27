@@ -19,8 +19,8 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | Implemented | `GET` | `/api/v1/llm/my-embedding-models` | 없음 | `LLMModelResponse[]` | authenticated |
 | Implemented | `GET` | `/api/v1/llm/credentials` | 없음 | `LLMCredentialResponse[]` | credential `read` |
 | Implemented | `POST` | `/api/v1/llm/credentials` | `LLMCredentialCreate` | `LLMCredentialResponse` | organization `manager` |
-| Implemented | `DELETE` | `/api/v1/llm/credentials/{credential_id}` | 없음 | message | credential `manage` |
-| Implemented | `POST` | `/api/v1/llm/credentials/{credential_id}/sync-models` | 없음 | sync result | credential `manage` |
+| Implemented | `DELETE` | `/api/v1/llm/credentials/{credential_id}` | 없음 | message | credential `write` |
+| Implemented | `POST` | `/api/v1/llm/credentials/{credential_id}/sync-models` | 없음 | sync result | credential `write` |
 | Implemented | `GET` | `/api/v1/llm/stats/top-models` | query | stats | authenticated |
 | Implemented | `POST` | `/api/v1/llm/models/sync-pricing` | 없음 | result | system admin |
 | Implemented | `PUT` | `/api/v1/llm/models/{model_id}/pricing` | `LLMModelPricingUpdate` | result | system admin |
@@ -32,6 +32,7 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | Field | Type | Required | 설명 |
 | --- | --- | --- | --- |
 | `provider_id` | UUID | Yes | provider id |
+| `organization_id` | UUID | No | credential이 속할 organization. 없으면 active/default organization fallback |
 | `credential_name` | string | Yes | 표시 이름 |
 | `api_key` | string | Yes | 원문 API key. 저장 전 암호화해야 한다. |
 
@@ -50,6 +51,8 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | `quota_type` | string | quota 유형 |
 | `quota_limit` | integer | quota limit |
 | `quota_used` | integer | quota used |
+| `created_at` | datetime | 생성 시각 |
+| `updated_at` | datetime | 수정 시각 |
 
 ## MVP 1 변경 기준
 

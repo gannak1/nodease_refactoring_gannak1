@@ -43,6 +43,7 @@ class LLMCredentialCreate(BaseModel):
     - apiKey -> api_key (to be encrypted)
     """
     provider_id: uuid.UUID
+    organization_id: Optional[uuid.UUID] = None
     credential_name: str
     api_key: str = Field(..., description="Raw API Key")
     # For custom provider override if supported later, otherwise ignored/removed

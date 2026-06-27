@@ -102,10 +102,14 @@ class LLMNode(Node[LLMNodeData]):
                     raise ValueError(
                         "LLM 노드 실행에 유효한 user_id가 필요합니다."
                     ) from exc
+                organization_id = self.execution_context.get("organization_id")
 
                 try:
                     client = LLMService.get_client_for_user(
-                        db_session, user_id=user_id, model_id=self.data.model_id
+                        db_session,
+                        user_id=user_id,
+                        model_id=self.data.model_id,
+                        organization_id=organization_id,
                     )
                 except Exception as primary_client_error:
                     # [FIX] API 키 조회 실패 시 fallback 모델로 시도
@@ -117,7 +121,10 @@ class LLMNode(Node[LLMNodeData]):
                         )
                         try:
                             client = LLMService.get_client_for_user(
-                                db_session, user_id=user_id, model_id=fallback_model_id
+                                db_session,
+                                user_id=user_id,
+                                model_id=fallback_model_id,
+                                organization_id=organization_id,
                             )
                             # fallback 성공 시 model_id도 변경
                             self.data.model_id = fallback_model_id
@@ -239,12 +246,14 @@ class LLMNode(Node[LLMNodeData]):
                         raise ValueError(
                             "폴백 모델 실행에 유효한 user_id가 필요합니다."
                         ) from exc
+                    organization_id = self.execution_context.get("organization_id")
 
                     try:
                         fallback_client = LLMService.get_client_for_user(
                             db_session,  # 같은 세션 사용
                             user_id=user_id,
                             model_id=fallback_model_id,
+                            organization_id=organization_id,
                         )
                     except Exception as e:
                         logger.error(f"[LLMNode] Fallback client load failed: {e}.")
@@ -303,6 +312,12 @@ class LLMNode(Node[LLMNodeData]):
                                     model_id=used_model_id,
                                     usage=usage,
                                     cost=cost,
+                                    organization_id=self.execution_context.get(
+                                        "organization_id"
+                                    ),
+                                    workflow_id=self.execution_context.get(
+                                        "workflow_id"
+                                    ),
                                     workflow_run_id=wf_run_uuid,
                                     node_id=self.id,
                                 )
@@ -467,6 +482,7 @@ class LLMNode(Node[LLMNodeData]):
                 db_session,
                 user_id=user_id,
                 model_id=summary_model_id,
+                organization_id=self.execution_context.get("organization_id"),
             )
             summary_messages = [
                 {
