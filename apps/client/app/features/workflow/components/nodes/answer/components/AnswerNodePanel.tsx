@@ -33,6 +33,36 @@ const toSafeVariableName = (value: string) => {
   return normalized || 'result';
 };
 
+const RETURN_KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
+const RETURN_KEY_MAX_LENGTH = 32;
+
+const getReturnKeyError = (
+  value: string,
+  outputs: AnswerNodeOutput[],
+  currentIndex: number,
+) => {
+  const trimmed = value.trim();
+
+  if (!trimmed) return '반환 key를 입력하세요.';
+  if (trimmed.length > RETURN_KEY_MAX_LENGTH) {
+    return `반환 key는 최대 ${RETURN_KEY_MAX_LENGTH}자까지 사용할 수 있습니다.`;
+  }
+  if (!/^[a-z]/.test(trimmed)) {
+    return '첫 글자는 영문 소문자여야 합니다.';
+  }
+  if (!RETURN_KEY_PATTERN.test(trimmed)) {
+    return '영문 소문자, 숫자, 언더바(_)만 사용할 수 있습니다. 예: analysis_result';
+  }
+
+  const isDuplicated = outputs.some(
+    (output, index) =>
+      index !== currentIndex && output.variable?.trim() === trimmed,
+  );
+  if (isDuplicated) return '이미 사용 중인 반환 key입니다.';
+
+  return null;
+};
+
 const getUniqueVariableName = (
   outputs: AnswerNodeOutput[],
   baseValue: string,
@@ -175,11 +205,20 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
           {outputs.map((output, index) => {
             const selectedOutput = getSelectedOutput(output.value_selector);
             const sourceTitle = selectedOutput?.sourceTitle;
+            const returnKeyError = getReturnKeyError(
+              output.variable,
+              outputs,
+              index,
+            );
 
             return (
               <div
-                key={`${output.variable || 'output'}-${index}`}
-                className="group flex flex-col gap-2 rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-all hover:border-gray-300 hover:shadow-md"
+                key={index}
+                className={`group flex flex-col gap-2 rounded-lg border bg-white p-3 shadow-sm transition-all hover:shadow-md ${
+                  returnKeyError
+                    ? 'border-red-200 hover:border-red-300'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
@@ -226,9 +265,16 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
                   <div className="flex-[3]">
                     <input
                       type="text"
-                      className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-semibold text-blue-600 placeholder:font-normal placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/20"
-                      placeholder="반환 key"
+                      className={`w-full rounded-md border px-2.5 py-1.5 text-xs font-semibold placeholder:font-normal placeholder:text-gray-500 focus:outline-none focus:ring-1 ${
+                        returnKeyError
+                          ? 'border-red-300 bg-red-50/40 text-red-700 focus:border-red-500 focus:ring-red-100'
+                          : 'border-gray-200 text-blue-600 focus:border-blue-500 focus:ring-blue-500/20'
+                      }`}
+                      placeholder="예: analysis_result"
                       value={output.variable}
+                      maxLength={RETURN_KEY_MAX_LENGTH}
+                      aria-invalid={Boolean(returnKeyError)}
+                      title="최종 실행 결과에서 사용할 응답 필드명입니다."
                       onChange={(event) =>
                         handleUpdateOutput(
                           index,
@@ -237,6 +283,16 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
                         )
                       }
                     />
+                    {returnKeyError ? (
+                      <p className="mt-1 text-[11px] font-medium leading-snug text-red-600">
+                        {returnKeyError}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-[11px] leading-snug text-gray-400">
+                        최종 응답 JSON에서 이 이름의 필드로 반환됩니다. 최대{' '}
+                        {RETURN_KEY_MAX_LENGTH}자.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
