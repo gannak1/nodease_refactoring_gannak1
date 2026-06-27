@@ -10,7 +10,7 @@ Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-2026062715
 
 Organization context, team/member 관리, resource permission grant/revoke API 계약을 정의한다.
 
-현재 dev Gateway에는 전용 organization/team 관리 endpoint가 없다. 아래 API는 MVP 1 RBAC foundation 목표 계약이다.
+현재 dev Gateway에는 active organization 전용 endpoint가 없다. Team과 resource permission endpoint는 MVP 1 RBAC foundation 기준으로 구현되어 있다.
 
 ## Active Organization
 
@@ -26,24 +26,25 @@ Organization context, team/member 관리, resource permission grant/revoke API �
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Planned | `POST` | `/api/v1/teams` | organization `manager` | team 생성 |
-| Planned | `GET` | `/api/v1/teams` | organization `manager` | active organization의 team 목록 |
-| Planned | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` | team 이름/설명/활성 상태 변경 |
-| Planned | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` | user를 team에 추가 |
-| Planned | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` | user를 team에서 제거 |
+| Implemented | `POST` | `/api/v1/teams` | organization `manager` | team 생성 |
+| Implemented | `GET` | `/api/v1/teams` | organization `manager` | active organization의 team 목록 |
+| Implemented | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` | team 이름/설명/관리자 설정 변경 |
+| Implemented | `DELETE` | `/api/v1/teams/{team_id}` | organization `manager` | team 비활성화 |
+| Implemented | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` | user를 team에 추가 |
+| Implemented | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` | user를 team에서 제거 |
 
 ## Resource Permission
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Planned | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 부여/수정 |
-| Planned | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 회수 |
-| Planned | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 부여/수정 |
-| Planned | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 회수 |
-| Planned | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 부여/수정 |
-| Planned | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 회수 |
-| Planned | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 부여/수정 |
-| Planned | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 회수 |
+| Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 부여/수정 |
+| Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 회수 |
+| Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 부여/수정 |
+| Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 회수 |
+| Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 부여/수정 |
+| Implemented | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 회수 |
+| Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 부여/수정 |
+| Implemented | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 회수 |
 
 ## Permission Grant 요청
 
