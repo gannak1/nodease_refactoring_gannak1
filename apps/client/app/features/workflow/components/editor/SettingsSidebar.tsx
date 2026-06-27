@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
 import { DeploymentResponse } from '../../types/Deployment';
-import { X, Settings, Link, Key, Eye, EyeOff, Copy } from 'lucide-react';
+import { X, Settings, Key, Eye, EyeOff, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 
 // 노드 타입별 자격 증명 필드 정의

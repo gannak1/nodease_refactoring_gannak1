@@ -8,26 +8,24 @@ import { useWorkflowAppSync } from '@/app/features/workflow/hooks/useWorkflowApp
 import EditorViewSwitcher, {
   ViewMode,
 } from '@/app/features/workflow/components/editor/EditorViewSwitcher';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+
+const getViewModeFromTab = (tabParam: string | null): ViewMode => {
+  if (tabParam === 'logs') return 'log';
+  if (tabParam === 'monitoring') return 'monitoring';
+  return 'edit';
+};
 
 // ReactFlowProvider 컨텍스트 내에서 자동 저장 로직을 관리하는 래퍼 컴포넌트
 function WorkflowEditor() {
   useAutoSync();
   useWorkflowAppSync();
-  const [viewMode, setViewMode] = useState<ViewMode>('edit');
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
-
-  useEffect(() => {
-    if (tabParam === 'logs') {
-      setViewMode('log');
-    } else if (tabParam === 'monitoring') {
-      setViewMode('monitoring');
-    } else {
-      setViewMode('edit');
-    }
-  }, [tabParam]);
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    getViewModeFromTab(tabParam),
+  );
 
   return (
     <div className="flex flex-col h-full bg-white">

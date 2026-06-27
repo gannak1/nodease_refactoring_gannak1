@@ -1,5 +1,5 @@
 import { WorkflowRun } from '@/app/features/workflow/types/Api';
-import { BarChart, Coins, Zap } from 'lucide-react';
+import { BarChart, Zap } from 'lucide-react';
 import { getNodeDisplayInfo } from '../shared/nodeDisplayInfo';
 
 interface LogTokenAnalysisProps {
@@ -7,7 +7,10 @@ interface LogTokenAnalysisProps {
   onNodeSelect?: (nodeId: string) => void;
 }
 
-export const LogTokenAnalysis = ({ run, onNodeSelect }: LogTokenAnalysisProps) => {
+export const LogTokenAnalysis = ({
+  run,
+  onNodeSelect,
+}: LogTokenAnalysisProps) => {
   const nodeRuns = run.node_runs || [];
 
   // 1. 노드별 토큰 사용량 계산
@@ -38,10 +41,10 @@ export const LogTokenAnalysis = ({ run, onNodeSelect }: LogTokenAnalysisProps) =
       const model = curr.model;
       if (!acc[model]) {
         acc[model] = {
-            model,
-            totalTokens: 0,
-            cost: 0,
-            count: 0
+          model,
+          totalTokens: 0,
+          cost: 0,
+          count: 0,
         };
       }
       acc[model].totalTokens += curr.totalTokens;
@@ -49,83 +52,102 @@ export const LogTokenAnalysis = ({ run, onNodeSelect }: LogTokenAnalysisProps) =
       acc[model].count += 1;
       return acc;
     },
-    {} as Record<string, { model: string; totalTokens: number; cost: number; count: number }>,
+    {} as Record<
+      string,
+      { model: string; totalTokens: number; cost: number; count: number }
+    >,
   );
 
-  const modelStats = Object.values(usageByModel).sort((a, b) => b.totalTokens - a.totalTokens);
+  const modelStats = Object.values(usageByModel).sort(
+    (a, b) => b.totalTokens - a.totalTokens,
+  );
 
   // If no usage data, don't render anything
   if (usageByNode.length === 0) return null;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 animate-in slide-in-from-top-2 duration-300">
-      
       {/* Section 1: Usage by LLM Node */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
         <div className="flex items-center gap-2 mb-4 pb-2 border-b border-gray-100">
-            <Zap className="w-4 h-4 text-amber-500" />
-            <h4 className="font-semibold text-gray-800 text-sm">LLM 노드별 토큰 사용량</h4>
+          <Zap className="w-4 h-4 text-amber-500" />
+          <h4 className="font-semibold text-gray-800 text-sm">
+            LLM 노드별 토큰 사용량
+          </h4>
         </div>
         <div className="space-y-3">
-            {usageByNode.map((node) => (
-                <button 
-                    key={node.nodeId} 
-                    onClick={() => onNodeSelect?.(node.nodeId)}
-                    className="w-full text-left flex flex-col gap-1 p-2 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
+          {usageByNode.map((node) => (
+            <button
+              key={node.nodeId}
+              onClick={() => onNodeSelect?.(node.nodeId)}
+              className="w-full text-left flex flex-col gap-1 p-2 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
+            >
+              <div className="flex justify-between items-center text-xs">
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded font-medium ${node.displayColor}`}
                 >
-                    <div className="flex justify-between items-center text-xs">
-                        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded font-medium ${node.displayColor}`}>
-                            {node.displayIcon}
-                            {node.displayLabel}
-                        </span>
-                        <span className="font-bold text-gray-900">{node.totalTokens.toLocaleString()} tks</span>
-                    </div>
-                    {/* Progress Bar-like visualization could go here */}
-                    <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                        <div 
-                            className="bg-amber-400 h-full rounded-full" 
-                            style={{ width: `${Math.min((node.totalTokens / (modelStats[0]?.totalTokens || 1)) * 100, 100)}%` }} // Relative to max for scale
-                        ></div>
-                    </div>
-                    <div className="flex justify-between text-[10px] text-gray-500">
-                        <span>{node.model}</span>
-                        <span>${node.cost.toFixed(5)}</span>
-                    </div>
-                </button>
-            ))}
+                  {node.displayIcon}
+                  {node.displayLabel}
+                </span>
+                <span className="font-bold text-gray-900">
+                  {node.totalTokens.toLocaleString()} tks
+                </span>
+              </div>
+              {/* Progress Bar-like visualization could go here */}
+              <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-amber-400 h-full rounded-full"
+                  style={{
+                    width: `${Math.min((node.totalTokens / (modelStats[0]?.totalTokens || 1)) * 100, 100)}%`,
+                  }} // Relative to max for scale
+                ></div>
+              </div>
+              <div className="flex justify-between text-[10px] text-gray-500">
+                <span>{node.model}</span>
+                <span>${node.cost.toFixed(5)}</span>
+              </div>
+            </button>
+          ))}
         </div>
       </div>
 
       {/* Section 2: Usage by Model */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
         <div className="flex items-center gap-2 mb-4 pb-2 border-b border-gray-100">
-            <BarChart className="w-4 h-4 text-blue-500" />
-            <h4 className="font-semibold text-gray-800 text-sm">모델별 토큰 사용량</h4>
+          <BarChart className="w-4 h-4 text-blue-500" />
+          <h4 className="font-semibold text-gray-800 text-sm">
+            모델별 토큰 사용량
+          </h4>
         </div>
         <div className="space-y-3">
-             {modelStats.map((stat) => (
-                <div key={stat.model} className="flex flex-col gap-1">
-                    <div className="flex justify-between items-center text-xs">
-                        <span className="font-medium text-gray-700">{stat.model}</span>
-                        <div className="text-right">
-                             <div className="font-bold text-gray-900">{stat.totalTokens.toLocaleString()} tks</div>
-                        </div>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                        <div 
-                            className="bg-blue-500 h-full rounded-full" 
-                            style={{ width: `${Math.min((stat.totalTokens / (modelStats[0].totalTokens || 1)) * 100, 100)}%` }}
-                        ></div>
-                    </div>
-                    <div className="flex justify-between text-[10px] text-gray-500">
-                        <span>{stat.count}회 호출</span>
-                        <span className="font-medium text-gray-700">${stat.cost.toFixed(5)}</span>
-                    </div>
+          {modelStats.map((stat) => (
+            <div key={stat.model} className="flex flex-col gap-1">
+              <div className="flex justify-between items-center text-xs">
+                <span className="font-medium text-gray-700">{stat.model}</span>
+                <div className="text-right">
+                  <div className="font-bold text-gray-900">
+                    {stat.totalTokens.toLocaleString()} tks
+                  </div>
                 </div>
-            ))}
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-blue-500 h-full rounded-full"
+                  style={{
+                    width: `${Math.min((stat.totalTokens / (modelStats[0].totalTokens || 1)) * 100, 100)}%`,
+                  }}
+                ></div>
+              </div>
+              <div className="flex justify-between text-[10px] text-gray-500">
+                <span>{stat.count}회 호출</span>
+                <span className="font-medium text-gray-700">
+                  ${stat.cost.toFixed(5)}
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
-
     </div>
   );
 };

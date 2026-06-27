@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, Clock } from 'lucide-react';
 
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
