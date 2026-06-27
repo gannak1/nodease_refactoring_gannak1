@@ -15,6 +15,7 @@ class OrganizationResponse(BaseModel):
 
     id: UUID
     name: str
+    options: dict[str, Any]
     is_active: bool
     created_at: datetime
     updated_at: datetime

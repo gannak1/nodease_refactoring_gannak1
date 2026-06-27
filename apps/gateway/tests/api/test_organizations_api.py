@@ -96,6 +96,7 @@ class TestOrganizationsApi(unittest.TestCase):
                 {
                     "id": str(organization_id),
                     "name": "Acme",
+                    "options": {},
                     "is_active": True,
                     "created_at": "2026-06-27T01:02:03Z",
                     "updated_at": "2026-06-27T04:05:06Z",
@@ -132,6 +133,7 @@ class TestOrganizationsApi(unittest.TestCase):
             {
                 "id": str(organization_id),
                 "name": "Acme",
+                "options": {},
                 "is_active": True,
                 "created_at": "2026-06-27T01:02:03Z",
                 "updated_at": "2026-06-27T04:05:06Z",
@@ -220,6 +222,7 @@ class TestOrganizationsApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["name"], "Acme Korea")
+        self.assertEqual(response.json()["options"], {"theme": "modern"})
         self.assertEqual(organization.name, "Acme Korea")
         self.assertEqual(organization.options, {"theme": "modern"})
         self.assertEqual(db.query_value.join_values, [])
