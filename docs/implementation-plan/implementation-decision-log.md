@@ -137,6 +137,18 @@ Related ADRs:
 - 후속 검토: raw payload 조회가 필요하면 `raw_auditor` 또는 `manager` 권한과 `trace_visibility_policies`, `trace_payload_access_events`를 요구하는 별도 endpoint로 설계한다.
 - ADR 승격 여부: No. 기존 raw trace 정책을 바꾸지 않고 기본 응답 whitelist와 legacy compatibility만 정한다.
 
+### MBA-44 / Issue #59 LLM call audit action 정합성
+
+- 상태: Active
+- 맥락: Issue #59는 workflow execute, permission denied, LLM call에 필요한 audit action 정리를 요구한다. LLM call 세부 관측값은 `llm_usage_logs`가 source of truth이지만 canonical audit action namespace에도 LLM call action이 필요하다.
+- 결정: `AuditAction.LLM_CALL = "llm.call"`을 추가한다. 이번 issue에서는 LLM usage row를 audit log로 중복 저장하지 않고, `llm.call`은 향후 LLM 호출 audit event가 필요한 경로에서 사용할 canonical action으로 둔다.
+- 근거: token, cost, latency, model/provider 관측 정보는 `llm_usage_logs`로 조회하는 것이 중복을 피한다. 단, action 상수는 audit skeleton의 명명 체계를 완성하고 후속 기록 지점을 안정화한다.
+- 범위: Audit action namespace.
+- 영향 파일: `apps/shared/audit/actions.py`, `apps/shared/tests/test_audit_actions.py`.
+- 관련 문서: [requirements/mvp-1-foundation-llmops.md](../requirements/mvp-1-foundation-llmops.md), [api/tracing-audit.md](../api/tracing-audit.md)
+- 후속 검토: 실제 LLM call audit event를 별도로 남길 경우, raw prompt/completion을 audit metadata에 저장하지 않는 whitelist 정책을 적용한다.
+- ADR 승격 여부: No. action 상수 정합성 보강에 한정한다.
+
 ### MBA-44 / Issue #59 workflow execute audit 시점
 
 - 상태: Active

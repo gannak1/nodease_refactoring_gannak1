@@ -13,7 +13,6 @@ class AuditAction:
     USER_LOGIN_FAILED = "user.login_failed"
     USER_LOGOUT = "user.logout"
     AUTH_PERMISSION_DENIED = "auth.permission_denied"
-    PERMISSION_DENIED = "permission.denied"
 
     PERMISSION_GRANT = "permission.grant"
     PERMISSION_REVOKE = "permission.revoke"
@@ -40,6 +39,7 @@ class AuditAction:
     CREDENTIAL_DELETE = "credential.delete"
 
     MODEL_PRICING_UPDATE = "model.pricing_update"
+    LLM_CALL = "llm.call"
 
     # 지식베이스와 문서 수명주기.
     KNOWLEDGE_CREATE = "knowledge.create"
