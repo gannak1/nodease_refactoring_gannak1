@@ -34,6 +34,11 @@ const defaultFilters: AuditFilters = {
 };
 const AUDIT_LOG_LIMIT = 50;
 
+const localDateBoundaryToIso = (dateString: string, dayOffset = 0) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(year, month - 1, day + dayOffset).toISOString();
+};
+
 export function useAuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [total, setTotal] = useState(0);
@@ -50,8 +55,12 @@ export function useAuditLogs() {
         limit: AUDIT_LOG_LIMIT,
       };
       if (filters.status !== 'all') params.status = filters.status;
-      if (filters.startDate) params.startDate = filters.startDate;
-      if (filters.endDate) params.endDate = filters.endDate;
+      if (filters.startDate) {
+        params.startAt = localDateBoundaryToIso(filters.startDate);
+      }
+      if (filters.endDate) {
+        params.endAt = localDateBoundaryToIso(filters.endDate, 1);
+      }
 
       const response = await apiClient.get<AuditLogListResponse>(
         '/users/me/audit-logs',

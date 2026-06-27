@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timezone
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -19,8 +19,8 @@ def list_my_audit_logs(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
     status: Annotated[AuditStatus | None, Query()] = None,
-    startDate: Annotated[date | None, Query()] = None,
-    endDate: Annotated[date | None, Query()] = None,
+    startAt: Annotated[datetime | None, Query()] = None,
+    endAt: Annotated[datetime | None, Query()] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -30,16 +30,10 @@ def list_my_audit_logs(
     )
     if status is not None:
         query = query.filter(AuditLog.status == status)
-    if startDate is not None:
-        query = query.filter(
-            AuditLog.occurred_at
-            >= datetime.combine(startDate, time.min, tzinfo=timezone.utc)
-        )
-    if endDate is not None:
-        query = query.filter(
-            AuditLog.occurred_at
-            <= datetime.combine(endDate, time.max, tzinfo=timezone.utc)
-        )
+    if startAt is not None:
+        query = query.filter(AuditLog.occurred_at >= startAt)
+    if endAt is not None:
+        query = query.filter(AuditLog.occurred_at < endAt)
     items = (
         query.order_by(desc(AuditLog.occurred_at), desc(AuditLog.id))
         .offset((page - 1) * limit)

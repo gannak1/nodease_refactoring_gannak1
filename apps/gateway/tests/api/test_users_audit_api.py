@@ -1,6 +1,6 @@
 import unittest
-from datetime import date, datetime, timezone
-from operator import eq, ge, le
+from datetime import datetime, timezone
+from operator import eq, ge, lt
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -96,7 +96,7 @@ class TestUsersAuditApi(unittest.TestCase):
         ]
         match = AuditLog(
             id=uuid4(),
-            occurred_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            occurred_at=datetime(2024, 1, 15, 5, tzinfo=timezone.utc),
             actor_id=user_id,
             actor_type=ActorType.USER,
             category=AuditCategory.ACTION,
@@ -110,8 +110,8 @@ class TestUsersAuditApi(unittest.TestCase):
             page=1,
             limit=10,
             status=AuditStatus.FAILURE,
-            startDate=date(2024, 1, 15),
-            endDate=date(2024, 1, 15),
+            startAt=datetime(2024, 1, 15, 5, tzinfo=timezone.utc),
+            endAt=datetime(2024, 1, 16, 5, tzinfo=timezone.utc),
             db=db,
             current_user=SimpleNamespace(id=user_id),
         )
@@ -208,8 +208,8 @@ class _Query:
                 self.items = [item for item in self.items if item.status == value]
             if column == "audit_logs.occurred_at" and operator is ge:
                 self.items = [item for item in self.items if item.occurred_at >= value]
-            if column == "audit_logs.occurred_at" and operator is le:
-                self.items = [item for item in self.items if item.occurred_at <= value]
+            if column == "audit_logs.occurred_at" and operator is lt:
+                self.items = [item for item in self.items if item.occurred_at < value]
         return self
 
     def count(self):
