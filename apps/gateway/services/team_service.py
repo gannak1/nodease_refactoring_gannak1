@@ -188,6 +188,8 @@ def _record_permission_mutation(
     metadata = {
         "resource_type": request.resource_type,
         "resource_id": str(request.resource_id),
+        "grant_subject_type": request.grantee_type,
+        "grant_subject_id": str(request.grantee_id),
         "grantee_type": request.grantee_type,
         "grantee_id": str(request.grantee_id),
         "organization_id": str(request.organization_id),

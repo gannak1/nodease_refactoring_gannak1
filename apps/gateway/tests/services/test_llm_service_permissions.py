@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi import HTTPException
 from apps.gateway.api.v1.endpoints import llm as llm_endpoint
 from apps.gateway.services import llm_service
 from apps.gateway.services.llm_service import LLMService
+from apps.shared.db.models.user import User
 from apps.shared.schemas.llm import LLMCredentialCreate
 
 
@@ -39,6 +41,59 @@ class FakeDb:
 
     def query(self, *args, **kwargs):
         return FakeQuery(self.value)
+
+
+class FakeCredentialRegisterQuery:
+    def __init__(self, db, model):
+        self.db = db
+        self.model = model
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        if self.model is llm_service.LLMProvider:
+            return self.db.provider
+        if self.model is User:
+            return SimpleNamespace(name="First User")
+        return None
+
+
+class FakeCredentialRegisterDb:
+    def __init__(self, provider):
+        self.provider = provider
+        self.added = []
+        self.flush_count = 0
+        self.committed = False
+
+    def query(self, *args, **kwargs):
+        return FakeCredentialRegisterQuery(self, args[0])
+
+    def add(self, row):
+        self.added.append(row)
+
+    def flush(self):
+        self.flush_count += 1
+        now = datetime.now(timezone.utc)
+        for row in self.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+            if getattr(row, "created_at", None) is None:
+                row.created_at = now
+            if getattr(row, "updated_at", None) is None:
+                row.updated_at = now
+
+    def commit(self):
+        self.committed = True
+
+    def refresh(self, row):
+        self.refreshed = row
 
 
 def test_delete_credential_preserves_permission_http_exception(monkeypatch):
@@ -78,6 +133,46 @@ def test_register_credential_checks_organization_manager_before_remote_fetch(mon
 
     with pytest.raises(PermissionError):
         LLMService.register_credential(FakeDb(provider), uuid.uuid4(), request)
+
+
+def test_register_credential_flushes_default_organization_before_manager_check(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    provider = SimpleNamespace(
+        id=uuid.uuid4(), name="openai", base_url="https://api.example"
+    )
+    request = LLMCredentialCreate(
+        provider_id=provider.id,
+        credential_name="first",
+        api_key="sk-test",
+    )
+    db = FakeCredentialRegisterDb(provider)
+    manager_check_flush_counts = []
+
+    def has_manager_permission(db_arg, checked_user_id, organization_id):
+        manager_check_flush_counts.append(db_arg.flush_count)
+        assert checked_user_id == user_id
+        return db_arg.flush_count > 0
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_organization_manager_permission",
+        has_manager_permission,
+    )
+    monkeypatch.setattr(LLMService, "_fetch_remote_models", lambda *a, **k: [])
+    monkeypatch.setattr(LLMService, "_sync_models_to_db", lambda *a, **k: [])
+    monkeypatch.setattr(
+        llm_service.LLMCredentialResponse,
+        "model_validate",
+        staticmethod(lambda credential: credential),
+    )
+
+    credential = LLMService.register_credential(db, user_id, request)
+
+    assert manager_check_flush_counts == [1]
+    assert credential.organization_id is not None
+    assert db.committed is True
 
 
 def test_get_user_credentials_filters_by_read_permission(monkeypatch):

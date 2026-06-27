@@ -90,6 +90,10 @@ def test_workflow_resource_manager_can_grant_permission(monkeypatch):
     assert row.auth_state == "builder"
     assert db.committed is True
     assert events[0]["action"] == AuditAction.PERMISSION_GRANT
+    assert events[0]["metadata"]["grant_subject_type"] == "user"
+    assert events[0]["metadata"]["grant_subject_id"] == str(grantee_id)
+    assert events[0]["metadata"]["resource_type"] == "workflow"
+    assert events[0]["metadata"]["auth_state"] == "builder"
 
 
 def test_user_grant_requires_grantee_organization_membership(monkeypatch):
@@ -197,6 +201,9 @@ def test_llm_resource_manager_can_revoke_permission(monkeypatch):
     assert db.deleted == [permission_row]
     assert db.committed is True
     assert events[0]["action"] == AuditAction.PERMISSION_REVOKE
+    assert events[0]["metadata"]["grant_subject_type"] == "user"
+    assert events[0]["metadata"]["grant_subject_id"] == str(grantee_id)
+    assert events[0]["metadata"]["resource_type"] == "llm_credential"
 
 
 def test_team_create_still_requires_organization_manager(monkeypatch):

@@ -113,6 +113,7 @@ class FakeDB:
         self.query_first_result = user
         self.commit_count = 0
         self.refresh_count = 0
+        self.flush_count = 0
 
     def query(self, model):
         return FakeQuery(self)
@@ -131,6 +132,9 @@ class FakeDB:
 
     def commit(self):
         self.commit_count += 1
+
+    def flush(self):
+        self.flush_count += 1
 
     def refresh(self, user):
         self.refresh_count += 1

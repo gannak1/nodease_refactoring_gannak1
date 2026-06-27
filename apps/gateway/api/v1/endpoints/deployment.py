@@ -1,3 +1,4 @@
+import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -63,13 +64,29 @@ def get_deployments(
     app_id 또는 workflow_id 중 하나는 필수입니다.
     """
     target_workflow_id = workflow_id
-    if app_id and not target_workflow_id:
+    if app_id:
         app = db.query(App).filter(App.id == app_id).first()
         if not app:
             return []
+        if not app.workflow_id:
+            return []
         target_workflow_id = app.workflow_id
-    if target_workflow_id:
         ensure_workflow_permission(db, current_user, target_workflow_id, "read")
+        if workflow_id:
+            try:
+                supplied_workflow_id = uuid.UUID(str(workflow_id))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="app_id does not match workflow_id"
+                )
+            if uuid.UUID(str(target_workflow_id)) != supplied_workflow_id:
+                raise HTTPException(
+                    status_code=400, detail="app_id does not match workflow_id"
+                )
+    elif target_workflow_id:
+        ensure_workflow_permission(db, current_user, target_workflow_id, "read")
+    else:
+        return []
     return DeploymentService.list_deployments(
         db,
         app_id=app_id,

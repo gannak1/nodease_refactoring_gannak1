@@ -33,7 +33,7 @@ def ensure_user_default_organization(
 ) -> uuid.UUID:
     """Create the default organization/team/membership foundation if missing."""
 
-    user_id = user.id if isinstance(user, User) else user
+    user_id = getattr(user, "id", user)
     user_name = getattr(user, "name", None)
     existing_id = get_user_primary_organization_id(db, user_id)
     if existing_id:
@@ -66,4 +66,5 @@ def ensure_user_default_organization(
     db.add(organization)
     db.add(team)
     db.add(membership)
+    db.flush()
     return organization.id
