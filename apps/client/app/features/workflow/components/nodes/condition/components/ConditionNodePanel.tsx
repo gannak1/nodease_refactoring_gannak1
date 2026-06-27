@@ -6,10 +6,10 @@ import {
   Condition,
   ConditionCase,
 } from '../../../../types/Nodes';
-import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
 import { getNodeOutputVariables } from '../../../../utils/nodeVariablePorts';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
+import { VariableSelectorSlot } from '../../ui/VariableSelectorSlot';
 
 interface ConditionNodePanelProps {
   nodeId: string;
@@ -32,12 +32,7 @@ const CONDITION_OPERATORS = [
 ];
 
 export function ConditionNodePanel({ nodeId, data }: ConditionNodePanelProps) {
-  const { updateNodeData, nodes, edges } = useWorkflowStore();
-
-  const upstreamNodes = useMemo(
-    () => getUpstreamNodes(nodeId, nodes, edges),
-    [nodeId, nodes, edges],
-  );
+  const { updateNodeData, nodes } = useWorkflowStore();
 
   const cases = useMemo(() => data.cases || [], [data.cases]);
 
@@ -257,27 +252,14 @@ export function ConditionNodePanel({ nodeId, data }: ConditionNodePanelProps) {
                         (n) => n.id === selectedSourceNodeId,
                       );
 
-                      let sourceVariables: { label: string; value: string }[] =
-                        [];
-                      const isStartNode =
-                        selectedSourceNode &&
-                        (selectedSourceNode.type as string) === 'startNode';
-
-                      if (selectedSourceNode) {
-                        sourceVariables = getNodeOutputVariables(
-                          selectedSourceNode,
-                        ).map((output) => ({
-                          label: output.label || output.key,
-                          value:
-                            isStartNode && output.outputId
-                              ? output.outputId
-                              : output.key,
-                        }));
-                      }
-
-                      // 드롭다운을 사용해야 하는 경우: StartNode이거나 선택 가능한 변수가 있는 경우
-                      const shouldUseDropdown =
-                        isStartNode || sourceVariables.length > 0;
+                      const selectedOutput = selectedSourceNode
+                        ? getNodeOutputVariables(selectedSourceNode).find(
+                            (output) =>
+                              output.key === condition.variable_selector?.[1] ||
+                              output.outputId ===
+                                condition.variable_selector?.[1],
+                          )
+                        : undefined;
 
                       return (
                         <div
@@ -299,86 +281,21 @@ export function ConditionNodePanel({ nodeId, data }: ConditionNodePanelProps) {
                           </div>
 
                           {/* Variable Selector Row */}
-                          <div className="flex gap-2">
-                            <div className="flex-1">
-                              <RoundedSelect
-                                value={condition.variable_selector?.[0] || ''}
-                                onChange={(val) => {
-                                  handleUpdateCondition(
-                                    caseIndex,
-                                    conditionIndex,
-                                    'variable_selector',
-                                    [val as string, ''],
-                                  );
-                                }}
-                                options={[
-                                  { label: '노드 선택', value: '' },
-                                  ...upstreamNodes.map((n) => ({
-                                    label:
-                                      (n.data as { title?: string })?.title ||
-                                      n.type,
-                                    value: n.id,
-                                  })),
-                                ]}
-                                placeholder="노드 선택"
-                                className="w-full py-1.5 text-xs text-gray-700 bg-gray-50 border-gray-200"
-                              />
-                            </div>
-
-                            {shouldUseDropdown ? (
-                              <div className="flex-1">
-                                <RoundedSelect
-                                  value={condition.variable_selector?.[1] || ''}
-                                  onChange={(val) => {
-                                    const currentNode =
-                                      condition.variable_selector?.[0] || '';
-                                    handleUpdateCondition(
-                                      caseIndex,
-                                      conditionIndex,
-                                      'variable_selector',
-                                      [currentNode, val as string],
-                                    );
-                                  }}
-                                  disabled={sourceVariables.length === 0}
-                                  options={[
-                                    {
-                                      label:
-                                        sourceVariables.length === 0
-                                          ? '변수 없음'
-                                          : '변수 선택',
-                                      value: '',
-                                    },
-                                    ...sourceVariables.map((v) => ({
-                                      label: v.label,
-                                      value: v.value,
-                                    })),
-                                  ]}
-                                  placeholder={
-                                    sourceVariables.length === 0
-                                      ? '변수 없음'
-                                      : '변수 선택'
-                                  }
-                                  className="w-full py-1.5 text-xs text-gray-700 bg-gray-50 border-gray-200"
-                                />
-                              </div>
-                            ) : (
-                              <input
-                                className="w-1/2 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium text-gray-700 placeholder:font-normal placeholder:text-gray-500 focus:border-blue-500 focus:bg-white focus:outline-none transition-colors"
-                                placeholder="변수 키"
-                                value={condition.variable_selector?.[1] || ''}
-                                onChange={(e) => {
-                                  const currentNode =
-                                    condition.variable_selector?.[0] || '';
-                                  handleUpdateCondition(
-                                    caseIndex,
-                                    conditionIndex,
-                                    'variable_selector',
-                                    [currentNode, e.target.value],
-                                  );
-                                }}
-                              />
-                            )}
-                          </div>
+                          <VariableSelectorSlot
+                            value={condition.variable_selector}
+                            selectedOutput={selectedOutput}
+                            label={`조건 ${conditionIndex + 1} 입력 변수`}
+                            placeholder="입력 변수 클릭 또는 드롭"
+                            kind="selector"
+                            onChange={(selector) =>
+                              handleUpdateCondition(
+                                caseIndex,
+                                conditionIndex,
+                                'variable_selector',
+                                selector,
+                              )
+                            }
+                          />
 
                           {/* Operator Selector */}
                           <RoundedSelect

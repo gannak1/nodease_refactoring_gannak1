@@ -28,7 +28,7 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
   data,
 }) => {
   const { nodes, edges, updateNodeData } = useWorkflowStore();
-  
+
   // 템플릿 마법사 모달 상태
   const [showWizardModal, setShowWizardModal] = useState(false);
   const [hasCredentials, setHasCredentials] = useState<boolean | null>(null);
@@ -58,11 +58,11 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
       active = false;
     };
   }, []);
-  
+
   // 등록된 변수명 목록 추출
   const registeredVariableNames = useMemo(() => {
     return (data.variables || [])
-      .map(v => v.name?.trim())
+      .map((v) => v.name?.trim())
       .filter(Boolean) as string[];
   }, [data.variables]);
 
@@ -95,7 +95,6 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
     [data.variables, nodeId, updateNodeData],
   );
 
-
   const validationErrors = useMemo(() => {
     const template = data.template || '';
     const registeredNames = new Set(
@@ -113,7 +112,6 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
     }
     return Array.from(new Set(errors)); // 중복 제거
   }, [data.template, data.variables]);
-
 
   const tokenLabels = useMemo(
     () => getTokenLabelMap(data.variables, upstreamNodes),
@@ -137,9 +135,9 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
                 onClick={() => setShowWizardModal(true)}
                 disabled={hasCredentials === false}
                 title={
-                  hasCredentials === false 
-                    ? "Provider를 먼저 등록해주세요" 
-                    : "AI로 템플릿 작성/개선하기"
+                  hasCredentials === false
+                    ? 'Provider를 먼저 등록해주세요'
+                    : 'AI로 템플릿 작성/개선하기'
                 }
                 className="flex items-center gap-1 px-1.5 py-0.5 text-pink-500 hover:text-pink-700 hover:bg-pink-50 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[10px]"
               >
@@ -153,9 +151,8 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
             </div>
           </div>
           <p className="text-xs text-gray-500 leading-snug">
-            변수가 필요한 곳에는{' '}
-            <code className="bg-gray-100 px-1 rounded text-gray-600 font-mono">{`{{ }}`}</code>
-            를 사용하여 감싸주시면 됩니다.
+            변수가 필요한 위치에 커서를 둔 뒤 좌측 입력 패널의 변수를
+            클릭하세요.
           </p>
 
           <VariableTokenEditor
@@ -163,20 +160,17 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
             onChange={handleTemplateChange}
             onDropOutput={handleTemplateDropOutput}
             tokenLabels={tokenLabels}
-            placeholder="예: 안녕하세요, {{ user_name }}님!"
+            placeholder="예: 안녕하세요, 고객님!"
             ariaLabel="템플릿"
             className="min-h-[150px] font-mono"
           />
 
-
           {validationErrors.length > 0 && (
             <UnregisteredVariablesAlert variables={validationErrors} />
           )}
-
-
         </div>
       </CollapsibleSection>
-      
+
       {/* 템플릿 마법사 모달 */}
       <TemplateWizardModal
         isOpen={showWizardModal}

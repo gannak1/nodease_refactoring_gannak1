@@ -1,13 +1,5 @@
-import { DragEvent } from 'react';
-
+import { cn } from '@/lib/utils';
 import { AppNode } from '../../types/Nodes';
-import {
-  NODE_OUTPUT_DRAG_MIME,
-  applyDroppedOutputToNodeData,
-  getDroppedOutputTokenNameForNode,
-  parseDraggedOutput,
-} from '../../utils/nodeVariablePorts';
-import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { StartNodePanel } from './start/components/StartNodePanel';
 import { AnswerNodePanel } from './answer/components/AnswerNodePanel';
 import { HttpRequestNodePanel } from './http/components/HttpRequestNodePanel';
@@ -29,71 +21,17 @@ import { VisiblePropertiesControl } from './VisiblePropertiesControl';
 const isPanelSupported = (node: AppNode) =>
   node.type !== 'note' && node.type !== undefined;
 
-const getTextDropTarget = (target: EventTarget | null) => {
-  if (!(target instanceof HTMLElement)) return null;
+type NodeInlinePanelSidePanelId = 'advanced' | 'knowledge';
 
-  const textField = target.closest('textarea, input');
-  if (!(textField instanceof HTMLElement)) return null;
-  if (textField.dataset.variableDropDisabled) {
-    return null;
-  }
-  if (!textField.dataset.variableDropEnabled) {
-    return null;
-  }
-
-  if (
-    textField instanceof HTMLTextAreaElement ||
-    textField instanceof HTMLInputElement
-  ) {
-    const disallowedInputTypes = new Set([
-      'checkbox',
-      'radio',
-      'range',
-      'file',
-      'color',
-      'date',
-      'datetime-local',
-      'month',
-      'time',
-      'week',
-    ]);
-
-    if (
-      textField instanceof HTMLInputElement &&
-      disallowedInputTypes.has(textField.type)
-    ) {
-      return null;
-    }
-
-    return textField;
-  }
-
-  return null;
-};
-
-const insertTokenIntoTextField = (
-  textField: HTMLInputElement | HTMLTextAreaElement,
-  token: string,
-) => {
-  const selectionStart = textField.selectionStart ?? textField.value.length;
-  const selectionEnd = textField.selectionEnd ?? selectionStart;
-  const nextValue = `${textField.value.slice(0, selectionStart)}${token}${textField.value.slice(selectionEnd)}`;
-  const valueSetter = Object.getOwnPropertyDescriptor(
-    Object.getPrototypeOf(textField),
-    'value',
-  )?.set;
-
-  valueSetter?.call(textField, nextValue);
-  textField.dispatchEvent(new Event('input', { bubbles: true }));
-
-  const nextCursor = selectionStart + token.length;
-  window.setTimeout(() => {
-    textField.focus();
-    textField.setSelectionRange(nextCursor, nextCursor);
-  }, 0);
-};
-
-const NodePanelBody = ({ node }: { node: AppNode }) => {
+const NodePanelBody = ({
+  node,
+  activeSidePanel,
+  onOpenSidePanel,
+}: {
+  node: AppNode;
+  activeSidePanel?: NodeInlinePanelSidePanelId | null;
+  onOpenSidePanel?: (panelId: NodeInlinePanelSidePanelId) => void;
+}) => {
   if (node.type === 'startNode') {
     return <StartNodePanel nodeId={node.id} data={node.data} />;
   }
@@ -113,7 +51,19 @@ const NodePanelBody = ({ node }: { node: AppNode }) => {
     return <ConditionNodePanel nodeId={node.id} data={node.data} />;
   }
   if (node.type === 'llmNode') {
-    return <LLMNodePanel nodeId={node.id} data={node.data} />;
+    return (
+      <LLMNodePanel
+        nodeId={node.id}
+        data={node.data}
+        isAdvancedSettingsOpen={activeSidePanel === 'advanced'}
+        onOpenAdvancedSettings={
+          onOpenSidePanel ? () => onOpenSidePanel('advanced') : undefined
+        }
+        onOpenKnowledgeBaseSettings={
+          onOpenSidePanel ? () => onOpenSidePanel('knowledge') : undefined
+        }
+      />
+    );
   }
   if (node.type === 'templateNode') {
     return <TemplateNodePanel nodeId={node.id} data={node.data} />;
@@ -150,48 +100,37 @@ const NodePanelBody = ({ node }: { node: AppNode }) => {
   );
 };
 
-export const NodeInlinePanel = ({ node }: { node: AppNode }) => {
-  const updateNodeData = useWorkflowStore((state) => state.updateNodeData);
-
+export const NodeInlinePanel = ({
+  node,
+  showFrame = true,
+  activeSidePanel,
+  onOpenSidePanel,
+}: {
+  node: AppNode;
+  showFrame?: boolean;
+  activeSidePanel?: NodeInlinePanelSidePanelId | null;
+  onOpenSidePanel?: (panelId: NodeInlinePanelSidePanelId) => void;
+}) => {
   if (!isPanelSupported(node)) return null;
-
-  const handleTextFieldDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes(NODE_OUTPUT_DRAG_MIME)) return;
-    if (!getTextDropTarget(event.target)) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
-  };
-
-  const handleTextFieldDrop = (event: DragEvent<HTMLDivElement>) => {
-    const textField = getTextDropTarget(event.target);
-    if (!textField) return;
-
-    const output = parseDraggedOutput(event.dataTransfer);
-    if (!output || output.sourceNodeId === node.id) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    const tokenName = getDroppedOutputTokenNameForNode(node, output);
-    insertTokenIntoTextField(textField, `{{${tokenName}}}`);
-    const patch = applyDroppedOutputToNodeData(node, output);
-    if (patch) updateNodeData(node.id, patch);
-  };
 
   return (
     <div
-      className="nodrag nowheel mt-4 min-w-0 max-w-full overflow-visible border-t border-gray-100 pt-4"
-      onDragOverCapture={handleTextFieldDragOver}
-      onDropCapture={handleTextFieldDrop}
+      className={cn(
+        'nodrag nowheel min-w-0 max-w-full overflow-visible',
+        showFrame && 'mt-4 border-t border-gray-100 pt-4',
+      )}
     >
       <div className="min-w-0 max-w-full [&_*]:min-w-0 [&_input]:max-w-full [&_input]:text-gray-700 [&_input::placeholder]:text-gray-500 [&_select]:max-w-full [&_select]:text-gray-700 [&_textarea]:max-w-full [&_textarea]:text-gray-800 [&_textarea::placeholder]:text-gray-500">
         {node.type !== 'llmNode' && <VisiblePropertiesControl node={node} />}
-        <NodePanelBody node={node} />
+        <NodePanelBody
+          node={node}
+          activeSidePanel={activeSidePanel}
+          onOpenSidePanel={onOpenSidePanel}
+        />
       </div>
     </div>
   );
 };
 
+export type { NodeInlinePanelSidePanelId };
 export type { DraggedOutputVariable } from '../../utils/nodeVariablePorts';

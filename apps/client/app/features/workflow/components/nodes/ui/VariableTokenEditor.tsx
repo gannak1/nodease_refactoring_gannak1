@@ -1,7 +1,9 @@
 import {
   DragEvent,
   KeyboardEvent,
+  useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -14,6 +16,7 @@ import {
   parseDraggedOutput,
 } from '../../../utils/nodeVariablePorts';
 import { cn } from '@/lib/utils';
+import { useVariableInsertion } from './useVariableInsertion';
 
 const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
 const TOKEN_ATTR = 'data-variable-token';
@@ -373,6 +376,23 @@ const getAdjacentToken = (
   return isTokenElement(sibling) ? sibling : null;
 };
 
+const getCharacterBeforeRange = (editor: HTMLElement, range: Range) => {
+  const { startContainer, startOffset } = range;
+
+  if (startContainer.nodeType === Node.TEXT_NODE) {
+    return startContainer.textContent?.[startOffset - 1] || '';
+  }
+
+  if (startContainer === editor) {
+    const previousChild = editor.childNodes[startOffset - 1];
+    if (previousChild?.nodeType === Node.TEXT_NODE) {
+      return previousChild.textContent?.slice(-1) || '';
+    }
+  }
+
+  return '';
+};
+
 const moveCaretAwayFromToken = (editor: HTMLElement) => {
   const range = getActiveRange(editor);
   if (!range) return;
@@ -406,7 +426,9 @@ export const VariableTokenEditor = ({
   ariaLabel,
   tokenLabels = {},
 }: VariableTokenEditorProps) => {
+  const insertionTargetId = useId();
   const editorRef = useRef<HTMLDivElement>(null);
+  const lastSelectionRangeRef = useRef<Range | null>(null);
   const lastRenderedValueRef = useRef<string | null>(null);
   const lastTokenLabelsRef = useRef('');
   const composingRef = useRef(false);
@@ -415,14 +437,18 @@ export const VariableTokenEditor = ({
   const [isEmpty, setIsEmpty] = useState(!value);
   const [dropCaret, setDropCaret] = useState<DropCaret | null>(null);
   const portalRoot = typeof document === 'undefined' ? null : document.body;
+  const { activeTarget, registerTarget, setActiveTarget, clearMessage } =
+    useVariableInsertion();
+  const targetLabel = ariaLabel || '텍스트 필드';
+  const isActiveInsertionTarget = activeTarget?.id === insertionTargetId;
 
-  const syncPlaceholder = () => {
+  const syncPlaceholder = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
     setIsEmpty(isEditorEmpty(editor));
-  };
+  }, []);
 
-  const emitChange = () => {
+  const emitChange = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
 
@@ -430,7 +456,80 @@ export const VariableTokenEditor = ({
     lastRenderedValueRef.current = nextValue;
     syncPlaceholder();
     onChange(nextValue);
-  };
+  }, [onChange, syncPlaceholder]);
+
+  const rememberSelectionRange = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const range = getActiveRange(editor);
+    if (range) lastSelectionRangeRef.current = range.cloneRange();
+  }, []);
+
+  const activateInsertionTarget = useCallback(() => {
+    setActiveTarget({
+      id: insertionTargetId,
+      kind: 'text',
+      label: targetLabel,
+    });
+    clearMessage();
+    rememberSelectionRange();
+  }, [
+    clearMessage,
+    insertionTargetId,
+    rememberSelectionRange,
+    setActiveTarget,
+    targetLabel,
+  ]);
+
+  const getRememberedRange = useCallback(() => {
+    const editor = editorRef.current;
+    const range = lastSelectionRangeRef.current;
+    if (!editor || !range) return null;
+
+    try {
+      if (!editor.contains(range.commonAncestorContainer)) return null;
+      return range.cloneRange();
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const insertOutputToken = useCallback(
+    (output: DraggedOutputVariable, range?: Range | null) => {
+      const editor = editorRef.current;
+      if (!editor) return false;
+
+      const droppedName = onDropOutput?.(output) || output.key;
+      const label = tokenLabels[droppedName] || output.label || droppedName;
+      const tokenNode = createTokenNode(droppedName, label);
+
+      insertNodeAtRange(editor, tokenNode, range ?? getRememberedRange());
+      emitChange();
+      rememberSelectionRange();
+      return true;
+    },
+    [
+      emitChange,
+      getRememberedRange,
+      onDropOutput,
+      rememberSelectionRange,
+      tokenLabels,
+    ],
+  );
+
+  useEffect(
+    () =>
+      registerTarget(
+        {
+          id: insertionTargetId,
+          kind: 'text',
+          label: targetLabel,
+        },
+        (output) => insertOutputToken(output),
+      ),
+    [insertOutputToken, insertionTargetId, registerTarget, targetLabel],
+  );
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
@@ -450,7 +549,7 @@ export const VariableTokenEditor = ({
 
     lastRenderedValueRef.current = value;
     lastTokenLabelsRef.current = tokenLabelsSignature;
-  }, [value, tokenLabels]);
+  }, [syncPlaceholder, value, tokenLabels]);
 
   useEffect(() => {
     syncPlaceholder();
@@ -459,7 +558,7 @@ export const VariableTokenEditor = ({
       dragPreviewRef.current?.remove();
       dragPreviewRef.current = null;
     };
-  }, []);
+  }, [syncPlaceholder]);
 
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     const isOutputDrop = event.dataTransfer.types.includes(
@@ -510,12 +609,7 @@ export const VariableTokenEditor = ({
 
     if (!output) return;
 
-    const droppedName = onDropOutput?.(output) || output.key;
-    const label = tokenLabels[droppedName] || output.label || droppedName;
-    const tokenNode = createTokenNode(droppedName, label);
-
-    insertNodeAtRange(editor, tokenNode, dropRange);
-    emitChange();
+    insertOutputToken(output, dropRange);
   };
 
   const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
@@ -605,12 +699,30 @@ export const VariableTokenEditor = ({
     }
   };
 
+  const handleBeforeInput = (event: React.FormEvent<HTMLDivElement>) => {
+    const nativeEvent = event.nativeEvent as InputEvent;
+    if (nativeEvent.data !== '{') return;
+
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const range = getActiveRange(editor);
+    if (!range) return;
+
+    if (getCharacterBeforeRange(editor, range) === '{') {
+      event.preventDefault();
+    }
+  };
+
   const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
     const editor = editorRef.current;
     if (!editor) return;
 
     event.preventDefault();
-    const text = event.clipboardData.getData('text/plain');
+    const text = event.clipboardData
+      .getData('text/plain')
+      .replaceAll('{{', '{ {')
+      .replaceAll('}}', '} }');
     insertNodeAtSelection(editor, createTextNode(text));
     emitChange();
   };
@@ -619,6 +731,7 @@ export const VariableTokenEditor = ({
     <div
       className={cn(
         'relative rounded border border-gray-300 bg-white text-sm text-gray-800 focus-within:border-blue-500 focus-within:outline-none',
+        isActiveInsertionTarget && 'ring-2 ring-blue-100',
         className,
       )}
       onDragOver={handleDragOver}
@@ -666,11 +779,16 @@ export const VariableTokenEditor = ({
         onCompositionStart={() => {
           composingRef.current = true;
         }}
+        onBeforeInput={handleBeforeInput}
         onInput={handleInput}
+        onClick={activateInsertionTarget}
         onDragEnd={handleDragEnd}
         onDragLeave={handleDragLeave}
         onDragStart={handleDragStart}
+        onFocus={activateInsertionTarget}
         onKeyDown={handleKeyDown}
+        onKeyUp={rememberSelectionRange}
+        onMouseUp={rememberSelectionRange}
         onPaste={handlePaste}
       />
     </div>

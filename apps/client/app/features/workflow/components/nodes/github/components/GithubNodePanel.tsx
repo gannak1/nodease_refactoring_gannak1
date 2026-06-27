@@ -41,7 +41,7 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
     [nodeId, updateNodeData],
   );
 
-  const handleCommentDropOutput = useCallback(
+  const handleTextDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
       const referenceName = getDroppedOutputReferenceName(
         data.referenced_variables,
@@ -165,17 +165,18 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-gray-700">PR 번호</label>
-            <input
-              type="text"
-              className="h-8 w-full rounded border border-gray-300 px-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+            <VariableTokenEditor
+              className="min-h-9 font-mono text-xs"
               placeholder="예) 123"
               value={data.pr_number || ''}
-              onChange={(e) => handleUpdateData('pr_number', e.target.value)}
-              data-variable-drop-enabled="true"
-              data-variable-drop-field="pr_number"
+              onChange={(value) => handleUpdateData('pr_number', value)}
+              onDropOutput={handleTextDropOutput}
+              tokenLabels={tokenLabels}
+              ariaLabel="GitHub PR 번호"
             />
             <p className="text-[10px] text-gray-400">
-              💡 <code>{'{{variable}}'}</code> 문법 사용 가능
+              좌측 입력 패널에서 변수를 클릭하거나 PR 번호에 드롭해서
+              추가하세요.
             </p>
             {prMissing && (
               <ValidationAlert message="⚠️ PR 번호를 입력해주세요." />
@@ -193,14 +194,13 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
               placeholder="코멘트 내용을 입력하세요..."
               value={data.comment_body || ''}
               onChange={(value) => handleUpdateData('comment_body', value)}
-              onDropOutput={handleCommentDropOutput}
+              onDropOutput={handleTextDropOutput}
               tokenLabels={tokenLabels}
               ariaLabel="GitHub 코멘트"
             />
             <div className="text-[10px] text-gray-500">
-              💡 <code>{'{{variable}}'}</code> 문법 사용 가능
+              좌측 입력 패널에서 변수를 클릭하거나 코멘트에 드롭해서 추가하세요.
             </div>
-
           </div>
         </CollapsibleSection>
       )}

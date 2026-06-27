@@ -438,7 +438,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
             <div className="relative">
               <VariableTokenEditor
                 className="min-h-24 text-sm focus:border-[#4A154B]"
-                placeholder="예) :tada: 새 알림이 도착했어요! {{ 변수명 }} 로 치환 가능"
+                placeholder="예) :tada: 새 알림이 도착했어요! 변수가 필요하면 좌측 입력 패널에서 클릭하세요."
                 value={data.message || ''}
                 onChange={(value) => handleUpdateData('message', value)}
                 onDropOutput={handleTextDropOutput}
@@ -482,7 +482,9 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
                 className="min-h-28 w-full resize-y rounded border border-gray-300 p-2 font-mono text-xs text-gray-800 shadow-sm focus:border-[#4A154B] focus:outline-none"
                 placeholder='[ { "type": "section", "text": { "type": "mrkdwn", "text": "*Hello*" } } ]'
                 value={data.blocks || ''}
-                onChange={(event) => handleUpdateData('blocks', event.target.value)}
+                onChange={(event) =>
+                  handleUpdateData('blocks', event.target.value)
+                }
                 onDragOver={preventJsonVariableDrop}
                 onDrop={preventJsonVariableDrop}
                 aria-label="Slack 블록 JSON"

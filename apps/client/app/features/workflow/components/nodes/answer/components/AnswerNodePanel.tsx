@@ -1,15 +1,14 @@
-import { DragEvent, useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { AnswerNodeData, AnswerNodeOutput } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import {
-  NODE_OUTPUT_DRAG_MIME,
   NodeOutputVariable,
   getNodeOutputVariables,
-  parseDraggedOutput,
 } from '../../../../utils/nodeVariablePorts';
 import { ArrowRight, Plus, Trash2 } from 'lucide-react';
+import { VariableSelectorSlot } from '../../ui/VariableSelectorSlot';
 
 interface AnswerNodePanelProps {
   nodeId: string;
@@ -21,7 +20,10 @@ const selectorFor = (output: NodeOutputVariable) => [
   output.key,
 ];
 
-const selectorEquals = (selector: string[] | undefined, output: NodeOutputVariable) =>
+const selectorEquals = (
+  selector: string[] | undefined,
+  output: NodeOutputVariable,
+) =>
   Array.isArray(selector) &&
   selector[0] === output.sourceNodeId &&
   (selector[1] === output.key || selector[1] === output.outputId);
@@ -111,46 +113,28 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
     [data.outputs, nodeId, updateNodeData],
   );
 
-  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes(NODE_OUTPUT_DRAG_MIME)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-  };
-
-  const handleDropOutput = useCallback(
-    (event: DragEvent<HTMLDivElement>, index?: number) => {
-      const droppedOutput = parseDraggedOutput(event.dataTransfer);
-      if (!droppedOutput) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-
+  const applyOutputMapping = useCallback(
+    (droppedOutput: NodeOutputVariable, index: number) => {
       const currentOutputs = data.outputs || [];
       const existingIndex = currentOutputs.findIndex((output, outputIndex) => {
-        if (index !== undefined && outputIndex === index) return false;
+        if (outputIndex === index) return false;
         return selectorEquals(output.value_selector, droppedOutput);
       });
 
-      const targetIndex = index ?? existingIndex;
+      const targetIndex = index >= 0 ? index : existingIndex;
       const nextVariable = getUniqueVariableName(
         currentOutputs,
         droppedOutput.key,
-        targetIndex >= 0 ? targetIndex : undefined,
+        targetIndex,
       );
       const nextOutput = {
-        variable:
-          targetIndex >= 0
-            ? currentOutputs[targetIndex]?.variable || nextVariable
-            : nextVariable,
+        variable: currentOutputs[targetIndex]?.variable || nextVariable,
         value_selector: selectorFor(droppedOutput),
       };
 
-      const nextOutputs =
-        targetIndex >= 0
-          ? currentOutputs.map((output, outputIndex) =>
-              outputIndex === targetIndex ? { ...output, ...nextOutput } : output,
-            )
-          : [...currentOutputs, nextOutput];
+      const nextOutputs = currentOutputs.map((output, outputIndex) =>
+        outputIndex === targetIndex ? { ...output, ...nextOutput } : output,
+      );
 
       updateNodeData(nodeId, { outputs: nextOutputs });
     },
@@ -183,12 +167,8 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
           </div>
 
           {outputs.length === 0 && (
-            <div
-              onDragOver={handleDragOver}
-              onDrop={(event) => handleDropOutput(event)}
-              className="flex min-h-14 items-center justify-center rounded-lg border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs font-medium text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-50"
-            >
-              출력 칩을 여기에 드롭
+            <div className="flex min-h-14 items-center justify-center rounded-lg border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs font-medium text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-50">
+              빈 반환값을 추가한 뒤 좌측 입력 변수를 연결하세요.
             </div>
           )}
 
@@ -221,29 +201,20 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
 
                 <div className="flex items-center gap-2">
                   <div
-                    onDragOver={handleDragOver}
-                    onDrop={(event) => handleDropOutput(event, index)}
-                    className="flex min-h-9 flex-[4] items-center rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-1.5 transition-colors hover:border-blue-300 hover:bg-blue-50/60"
-                    title="출력 칩을 드롭해서 소스를 연결하거나 교체"
+                    className="flex-[4]"
+                    title="좌측 입력 변수를 클릭하거나 여기에 드롭해서 소스를 연결하거나 교체"
                   >
-                    {selectedOutput ? (
-                      <div className="inline-flex max-w-full flex-col gap-0.5">
-                        <span className="inline-flex max-w-full items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-800 shadow-sm">
-                          <span className="truncate">
-                            {selectedOutput.label || selectedOutput.key}
-                          </span>
-                        </span>
-                        {sourceTitle && (
-                          <span className="truncate px-0.5 text-[10px] text-gray-500">
-                            {sourceTitle}
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-xs font-medium text-gray-400">
-                        출력 칩 드롭
-                      </span>
-                    )}
+                    <VariableSelectorSlot
+                      value={output.value_selector}
+                      selectedOutput={selectedOutput}
+                      sourceLabel={sourceTitle}
+                      label={`반환값 ${index + 1} 소스`}
+                      placeholder="입력 변수 클릭 또는 드롭"
+                      kind="mapping"
+                      onChange={(_, droppedOutput) =>
+                        applyOutputMapping(droppedOutput, index)
+                      }
+                    />
                   </div>
 
                   <div className="flex flex-none items-center justify-center text-gray-400">
@@ -259,7 +230,11 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
                       placeholder="반환 key"
                       value={output.variable}
                       onChange={(event) =>
-                        handleUpdateOutput(index, 'variable', event.target.value)
+                        handleUpdateOutput(
+                          index,
+                          'variable',
+                          event.target.value,
+                        )
                       }
                     />
                   </div>

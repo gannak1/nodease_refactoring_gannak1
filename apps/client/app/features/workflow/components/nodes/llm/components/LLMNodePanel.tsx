@@ -1,9 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { LLMNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
@@ -48,6 +43,9 @@ type ModelOption = {
 interface LLMNodePanelProps {
   nodeId: string;
   data: LLMNodeData;
+  isAdvancedSettingsOpen?: boolean;
+  onOpenAdvancedSettings?: () => void;
+  onOpenKnowledgeBaseSettings?: () => void;
 }
 
 type PromptHelpId = 'fallback' | 'system' | 'user' | 'assistant';
@@ -101,13 +99,23 @@ const HelpPopover = ({
 const isChatModelOption = (model: ModelOption) => {
   const id = model.model_id_for_api_call.toLowerCase();
   const name = model.name.toLowerCase();
-  
+
   // provider_name이 있으면 사용, 없으면 model_id로 추론
   let provider = (model.provider_name || '').toLowerCase();
   if (!provider) {
-    if (id.startsWith('gpt-') || id.startsWith('o1') || id.startsWith('o3') || id.startsWith('o4') || id.startsWith('chatgpt')) {
+    if (
+      id.startsWith('gpt-') ||
+      id.startsWith('o1') ||
+      id.startsWith('o3') ||
+      id.startsWith('o4') ||
+      id.startsWith('chatgpt')
+    ) {
       provider = 'openai';
-    } else if (id.startsWith('gemini') || id.startsWith('gemma') || id.startsWith('models/gemini')) {
+    } else if (
+      id.startsWith('gemini') ||
+      id.startsWith('gemma') ||
+      id.startsWith('models/gemini')
+    ) {
       provider = 'google';
     } else if (id.startsWith('claude')) {
       provider = 'anthropic';
@@ -123,24 +131,31 @@ const isChatModelOption = (model: ModelOption) => {
   if (name.includes('embedding') || name.includes('임베딩')) return false;
 
   // ========== OpenAI 화이트리스트 (16개) - 정확히 일치만 허용 ==========
-  if (provider.includes('openai') || id.startsWith('gpt-') || id.startsWith('o1') || id.startsWith('o3') || id.startsWith('o4') || id.startsWith('chatgpt')) {
+  if (
+    provider.includes('openai') ||
+    id.startsWith('gpt-') ||
+    id.startsWith('o1') ||
+    id.startsWith('o3') ||
+    id.startsWith('o4') ||
+    id.startsWith('chatgpt')
+  ) {
     const allowedOpenAI = new Set([
-      'gpt-5.2',            // 범용 플래그십
-      'gpt-5.1',            // 코딩/명령 이행 강화
-      'gpt-5',              // GPT-5 시리즈 시작
-      'o3-pro',             // 초고도 추론
-      'o3',                 // 논리 특화
-      'o1',                 // 추론 전용
-      'gpt-4.1',            // 100만 토큰 컨텍스트
-      'gpt-4o',             // 멀티모달 표준
-      'gpt-4-turbo-preview',// 최적화된 GPT-4
-      'chatgpt-4o-latest',  // 동적 업데이트
-      'gpt-5-mini',         // 효율 모델
-      'gpt-5-nano',         // 초경량
-      'gpt-4.1-mini',       // 경량 GPT-4급
-      'gpt-4o-mini',        // 저렴한 멀티모달
-      'o3-mini',            // 실시간 추론
-      'o4-mini',            // 차세대 에이전트용
+      'gpt-5.2', // 범용 플래그십
+      'gpt-5.1', // 코딩/명령 이행 강화
+      'gpt-5', // GPT-5 시리즈 시작
+      'o3-pro', // 초고도 추론
+      'o3', // 논리 특화
+      'o1', // 추론 전용
+      'gpt-4.1', // 100만 토큰 컨텍스트
+      'gpt-4o', // 멀티모달 표준
+      'gpt-4-turbo-preview', // 최적화된 GPT-4
+      'chatgpt-4o-latest', // 동적 업데이트
+      'gpt-5-mini', // 효율 모델
+      'gpt-5-nano', // 초경량
+      'gpt-4.1-mini', // 경량 GPT-4급
+      'gpt-4o-mini', // 저렴한 멀티모달
+      'o3-mini', // 실시간 추론
+      'o4-mini', // 차세대 에이전트용
     ]);
     const cleanId = id.replace('models/', '');
     const isAllowed = allowedOpenAI.has(cleanId);
@@ -150,16 +165,16 @@ const isChatModelOption = (model: ModelOption) => {
   // ========== Anthropic 화이트리스트 (10개) - 정확히 일치만 허용 ==========
   if (provider.includes('anthropic') || id.startsWith('claude')) {
     const allowedAnthropic = new Set([
-      'claude-opus-4-5-20251101',     // 최신 최상위
-      'claude-sonnet-4-5-20250929',   // 에이전트/컴퓨터 제어
-      'claude-haiku-4-5-20251001',    // 최신 경량
-      'claude-3-5-sonnet-latest',     // 안정된 3.5
-      'claude-3-5-opus-latest',       // 깊은 분석
-      'claude-3-5-haiku-latest',      // 3.5 경량
-      'claude-opus-4-1-20250805',     // 고성능 안정화
-      'claude-sonnet-4-20250514',     // 2025 상반기 주력
-      'claude-3-5-sonnet-20241022',   // 선호도 높은 구버전
-      'claude-3-opus-20240229',       // 레거시 플래그십
+      'claude-opus-4-5-20251101', // 최신 최상위
+      'claude-sonnet-4-5-20250929', // 에이전트/컴퓨터 제어
+      'claude-haiku-4-5-20251001', // 최신 경량
+      'claude-3-5-sonnet-latest', // 안정된 3.5
+      'claude-3-5-opus-latest', // 깊은 분석
+      'claude-3-5-haiku-latest', // 3.5 경량
+      'claude-opus-4-1-20250805', // 고성능 안정화
+      'claude-sonnet-4-20250514', // 2025 상반기 주력
+      'claude-3-5-sonnet-20241022', // 선호도 높은 구버전
+      'claude-3-opus-20240229', // 레거시 플래그십
     ]);
     const cleanId = id.replace('models/', '');
     const isAllowed = allowedAnthropic.has(cleanId);
@@ -167,16 +182,20 @@ const isChatModelOption = (model: ModelOption) => {
   }
 
   // ========== Google 화이트리스트 (8개) - 정확히 일치만 허용 ==========
-  if (provider.includes('google') || id.includes('gemini') || id.includes('gemma')) {
+  if (
+    provider.includes('google') ||
+    id.includes('gemini') ||
+    id.includes('gemma')
+  ) {
     const allowedGoogle = new Set([
-      'gemini-3-pro',                 // 2026 주력
-      'gemini-3-flash',               // 초고속
-      'gemini-2.5-pro',               // 대형 컨텍스트
-      'gemini-2.5-flash',             // 범용 속도형
-      'gemini-2.0-flash',             // 안정된 표준
-      'gemini-2.0-flash-lite',        // 초경량
-      'gemini-robotics-er-1.5-preview',// 로보틱스 특화
-      'gemma-3-27b-it',               // 오픈 가중치
+      'gemini-3-pro', // 2026 주력
+      'gemini-3-flash', // 초고속
+      'gemini-2.5-pro', // 대형 컨텍스트
+      'gemini-2.5-flash', // 범용 속도형
+      'gemini-2.0-flash', // 안정된 표준
+      'gemini-2.0-flash-lite', // 초경량
+      'gemini-robotics-er-1.5-preview', // 로보틱스 특화
+      'gemma-3-27b-it', // 오픈 가중치
     ]);
     const cleanId = id.replace('models/', '');
     const isAllowed = allowedGoogle.has(cleanId);
@@ -206,7 +225,13 @@ const groupModelsByProvider = (models: ModelOption[]) => {
     }));
 };
 
-export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
+export function LLMNodePanel({
+  nodeId,
+  data,
+  isAdvancedSettingsOpen,
+  onOpenAdvancedSettings,
+  onOpenKnowledgeBaseSettings,
+}: LLMNodePanelProps) {
   const openSettingsTab = useCallback(() => {
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
   }, []);
@@ -214,6 +239,11 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
   const [isParameterPanelOpen, setIsParameterPanelOpen] = useState(false);
+  const isUsingExternalAdvancedPanel =
+    typeof onOpenAdvancedSettings === 'function';
+  const isAdvancedButtonActive = isUsingExternalAdvancedPanel
+    ? Boolean(isAdvancedSettingsOpen)
+    : isParameterPanelOpen;
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -319,7 +349,6 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     data.referenced_variables,
   ]);
 
-
   const allPromptsEmpty = useMemo(() => {
     return (
       !data.system_prompt?.trim() &&
@@ -351,7 +380,10 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
 
   // Claude 모델에서 top_p를 제거해 파라미터 충돌을 방지
   const stripTopP = (parameters?: Record<string, unknown>) => {
-    if (!parameters || !Object.prototype.hasOwnProperty.call(parameters, 'top_p')) {
+    if (
+      !parameters ||
+      !Object.prototype.hasOwnProperty.call(parameters, 'top_p')
+    ) {
       return parameters;
     }
     const rest = { ...parameters };
@@ -374,7 +406,13 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
       }
       updateNodeData(nodeId, updates);
     },
-    [data.fallback_model_id, data.parameters, isAnthropicModelId, nodeId, updateNodeData],
+    [
+      data.fallback_model_id,
+      data.parameters,
+      isAnthropicModelId,
+      nodeId,
+      updateNodeData,
+    ],
   );
 
   // 외부 갱신/새로고침 등으로 top_p가 다시 들어오는 상황을 정리
@@ -385,7 +423,13 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
     if (nextParams !== data.parameters) {
       updateNodeData(nodeId, { parameters: nextParams || {} });
     }
-  }, [data.model_id, data.parameters, isAnthropicModelId, nodeId, updateNodeData]);
+  }, [
+    data.model_id,
+    data.parameters,
+    isAnthropicModelId,
+    nodeId,
+    updateNodeData,
+  ]);
 
   const handleFieldChange = useCallback(
     (field: keyof LLMNodeData, value: unknown) => {
@@ -489,7 +533,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
 
   return (
     <div className="relative flex flex-col gap-2">
-      {isParameterPanelOpen && (
+      {!isUsingExternalAdvancedPanel && isParameterPanelOpen && (
         <div className="absolute right-[calc(100%+56px)] top-0 z-50">
           <LLMParameterSidePanel
             nodeId={nodeId}
@@ -504,14 +548,18 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
           type="button"
           onClick={(event) => {
             event.stopPropagation();
+            if (onOpenAdvancedSettings) {
+              onOpenAdvancedSettings();
+              return;
+            }
             setIsParameterPanelOpen((current) => !current);
           }}
           className={`nodrag inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-            isParameterPanelOpen
+            isAdvancedButtonActive
               ? 'border-blue-200 bg-blue-50 text-blue-700'
               : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
           }`}
-          aria-expanded={isParameterPanelOpen}
+          aria-expanded={isAdvancedButtonActive}
           aria-label="LLM 고급 설정 열기"
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -526,10 +574,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
             <label className="text-xs font-semibold text-gray-700">
               기본 모델
             </label>
-            <PropertyVisibilityToggle
-              nodeId={nodeId}
-              propertyKey="model_id"
-            />
+            <PropertyVisibilityToggle nodeId={nodeId} propertyKey="model_id" />
           </div>
           {loadingModels ? (
             <div className="text-xs text-gray-400">모델 로딩 중...</div>
@@ -560,11 +605,17 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                 <div className="relative group">
                   <ModelSelectDropdown
                     value={data.fallback_model_id || ''}
-                    onChange={(val) => handleUpdateData('fallback_model_id', val)}
+                    onChange={(val) =>
+                      handleUpdateData('fallback_model_id', val)
+                    }
                     models={fallbackCandidates}
                     groupedModels={groupedFallbackOptions}
                     disabled={fallbackDisabled}
-                    placeholder={fallbackDisabled ? '먼저 모델을 선택하세요' : '대체 모델을 선택하세요'}
+                    placeholder={
+                      fallbackDisabled
+                        ? '먼저 모델을 선택하세요'
+                        : '대체 모델을 선택하세요'
+                    }
                   />
                   {fallbackDisabled && (
                     <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 w-56 rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600 shadow-lg opacity-0 transition-opacity group-hover:opacity-100">
@@ -607,6 +658,10 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
         <button
           type="button"
           onClick={() => {
+            if (onOpenKnowledgeBaseSettings) {
+              onOpenKnowledgeBaseSettings();
+              return;
+            }
             // 부모 컴포넌트에서 사이드 패널 열기
             const event = new CustomEvent('openLLMReferencePanel', {
               detail: { nodeId },
@@ -658,9 +713,6 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
         </button>
       </div>
 
-      {/* 지식 베이스-프롬프트 구분선 */}
-      <div className="border-b border-gray-200" />
-
       {/* 3. 프롬프트 */}
       <CollapsibleSection title="프롬프트">
         <div className="flex flex-col gap-3 relative">
@@ -670,9 +722,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
           </p>
 
           {allPromptsEmpty && (
-            <ValidationAlert
-              message="⚠️ 최소 1개의 프롬프트를 입력해야 실행할 수 있습니다."
-            />
+            <ValidationAlert message="⚠️ 최소 1개의 프롬프트를 입력해야 실행할 수 있습니다." />
           )}
 
           <div>
@@ -690,8 +740,8 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                   activeHelp={activeHelp}
                   onToggle={toggleHelp}
                 >
-                  AI의 역할, 성격, 행동 규칙을 정의합니다. 모든 대화에
-                  일관되게 적용됩니다.
+                  AI의 역할, 성격, 행동 규칙을 정의합니다. 모든 대화에 일관되게
+                  적용됩니다.
                 </HelpPopover>
               </div>
               <div className="group/wizard relative">
@@ -736,8 +786,8 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
                   activeHelp={activeHelp}
                   onToggle={toggleHelp}
                 >
-                  사용자가 AI에게 보내는 질문이나 요청입니다. {'{{ 변수명 }}'}{' '}
-                  형식으로 동적 값을 삽입할 수 있습니다.
+                  사용자가 AI에게 보내는 질문이나 요청입니다. 좌측 입력 패널에서
+                  변수를 클릭해 동적 값을 삽입할 수 있습니다.
                 </HelpPopover>
               </div>
               <div className="group/wizard relative">
@@ -759,7 +809,7 @@ export function LLMNodePanel({ nodeId, data }: LLMNodePanelProps) {
             <VariableTokenEditor
               className="min-h-32"
               ariaLabel="사용자 프롬프트"
-              placeholder={`예: 다음 내용을 한국어로 3줄 요약해줘:\n\n{{ content }}`}
+              placeholder={`예: 다음 내용을 한국어로 3줄 요약해줘:\n\n여기에 입력 변수를 넣으려면 좌측 입력 패널의 변수를 클릭하세요.`}
               value={data.user_prompt || ''}
               onChange={(value) => handleFieldChange('user_prompt', value)}
               onDropOutput={handlePromptDropOutput}
