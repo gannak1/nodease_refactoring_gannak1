@@ -148,3 +148,15 @@ Related ADRs:
 - 관련 문서: [requirements/mvp-1-foundation-llmops.md](../requirements/mvp-1-foundation-llmops.md), [data-model/physical-data-model.md](../data-model/physical-data-model.md)
 - 후속 검토: 실행 시작 audit이 필요해지면 `workflow.execute.started` 같은 별도 action 도입을 검토한다.
 - ADR 승격 여부: No. audit table/schema 정책 변경 없이 기록 시점만 정한다.
+
+### MBA-44 / Issue #59 LLM trace UI fallback
+
+- 상태: Active
+- 맥락: run detail 화면은 새 LLM trace endpoint를 우선 사용해야 하지만, legacy run에는 `llm_usage_logs.workflow_id`가 비어 있거나 trace row가 없을 수 있다.
+- 결정: workflow log detail의 token analysis는 `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces`를 우선 조회한다. 조회 결과가 있으면 trace row를 기준으로 node/model별 token, cost, latency를 표시한다. 조회 실패 또는 빈 결과에서는 기존 `node_runs.outputs.usage` 기반 표시를 유지하고, 실패 시에는 민감 정보 없이 안내 문구만 표시한다.
+- 근거: 새 endpoint를 사용해 권한 검증과 whitelist 응답 경계를 적용하면서도 legacy 실행 로그의 관측 가능성을 유지한다. 실패 메시지에는 request/response body, credential, prompt, completion을 포함하지 않는다.
+- 범위: workflow 실행 로그 상세 화면의 LLM token analysis.
+- 영향 파일: `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/features/workflow/components/logs/LogDetail.tsx`, `apps/client/app/features/workflow/components/logs/detail-components/LogTokenAnalysis.tsx`.
+- 관련 문서: [api/tracing-audit.md](../api/tracing-audit.md), [requirements/mvp-1-foundation-llmops.md](../requirements/mvp-1-foundation-llmops.md)
+- 후속 검토: raw trace payload 조회 UI가 필요하면 기본 token analysis와 분리하고 별도 권한, audit, redaction 정책을 요구한다.
+- ADR 승격 여부: No. Issue #59 UI 연결과 legacy fallback에 한정한다.

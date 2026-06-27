@@ -3,6 +3,7 @@ import { WorkflowDraftRequest } from '../types/Workflow';
 import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
 import {
   WorkflowCreateRequest,
+  LLMTraceListResponse,
   WorkflowResponse,
   WorkflowRunListResponse,
 } from '../types/Api';
@@ -172,6 +173,18 @@ export const workflowApi = {
   getWorkflowRun: async (workflowId: string, runId: string) => {
     const response = await api.get(`/workflows/${workflowId}/runs/${runId}`);
     return response.data as import('../types/Api').WorkflowRun;
+  },
+
+  getWorkflowRunLlmTraces: async (
+    workflowId: string,
+    runId: string,
+    params?: { node_id?: string; limit?: number; offset?: number },
+  ) => {
+    const response = await api.get(
+      `/workflows/${workflowId}/runs/${runId}/llm-traces`,
+      { params },
+    );
+    return response.data as LLMTraceListResponse;
   },
 
   // [NEW] 대시보드 통계 조회
