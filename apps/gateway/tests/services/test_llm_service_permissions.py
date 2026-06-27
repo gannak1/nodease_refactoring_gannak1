@@ -1,0 +1,135 @@
+import uuid
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from apps.gateway.api.v1.endpoints import llm as llm_endpoint
+from apps.gateway.services import llm_service
+from apps.gateway.services.llm_service import LLMService
+from apps.shared.schemas.llm import LLMCredentialCreate
+
+
+class FakeQuery:
+    def __init__(self, value):
+        self.value = value
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def options(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self.value
+
+    def all(self):
+        return self.value
+
+
+class FakeDb:
+    def __init__(self, value):
+        self.value = value
+
+    def query(self, *args, **kwargs):
+        return FakeQuery(self.value)
+
+
+def test_delete_credential_preserves_permission_http_exception(monkeypatch):
+    credential_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    seen = {}
+
+    def deny(db, current_user, checked_credential_id, action):
+        seen["action"] = action
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    monkeypatch.setattr(llm_endpoint, "ensure_llm_credential_permission", deny)
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.delete_credential(credential_id, FakeDb(None), user)
+
+    assert exc_info.value.status_code == 403
+    assert seen["action"] == "write"
+
+
+def test_register_credential_checks_organization_manager_before_remote_fetch(monkeypatch):
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai", base_url="https://api.example")
+    request = LLMCredentialCreate(
+        provider_id=provider.id,
+        organization_id=organization_id,
+        credential_name="shared",
+        api_key="sk-test",
+    )
+
+    monkeypatch.setattr(llm_service, "has_organization_manager_permission", lambda *a: False)
+    monkeypatch.setattr(
+        LLMService,
+        "_fetch_remote_models",
+        lambda *a, **k: pytest.fail("remote fetch should not run before permission check"),
+    )
+
+    with pytest.raises(PermissionError):
+        LLMService.register_credential(FakeDb(provider), uuid.uuid4(), request)
+
+
+def test_get_user_credentials_filters_by_read_permission(monkeypatch):
+    readable_id = uuid.uuid4()
+    blocked_id = uuid.uuid4()
+    credentials = [
+        SimpleNamespace(id=readable_id),
+        SimpleNamespace(id=blocked_id),
+    ]
+    seen_actions = []
+
+    def can_read(db, user_id, credential_id, action):
+        seen_actions.append(action)
+        return credential_id == readable_id and action == "read"
+
+    monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_read)
+    monkeypatch.setattr(
+        llm_service.LLMCredentialResponse,
+        "model_validate",
+        staticmethod(lambda credential: credential),
+    )
+
+    result = LLMService.get_user_credentials(FakeDb(credentials), uuid.uuid4())
+
+    assert result == [credentials[0]]
+    assert seen_actions == ["read", "read"]
+
+
+def test_get_my_available_models_filters_by_credential_use_permission(monkeypatch):
+    allowed_credential_id = uuid.uuid4()
+    blocked_credential_id = uuid.uuid4()
+    shared_model = SimpleNamespace(id=uuid.uuid4(), name="Shared")
+    blocked_model = SimpleNamespace(id=uuid.uuid4(), name="Blocked")
+    rows = [
+        (shared_model, blocked_credential_id),
+        (shared_model, allowed_credential_id),
+        (blocked_model, blocked_credential_id),
+    ]
+    seen_actions = []
+
+    def can_use(db, user_id, credential_id, action):
+        seen_actions.append(action)
+        return credential_id == allowed_credential_id and action == "use"
+
+    monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_use)
+    monkeypatch.setattr(
+        llm_service.LLMModelResponse,
+        "model_validate",
+        staticmethod(lambda model: model),
+    )
+
+    result = LLMService.get_my_available_models(FakeDb(rows), uuid.uuid4())
+
+    assert result == [shared_model]
+    assert seen_actions == ["use", "use", "use"]

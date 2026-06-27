@@ -7,6 +7,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.auth.permissions import ensure_llm_credential_permission
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.llm_service import LLMService
 from apps.shared.audit.actions import AuditAction
@@ -91,6 +92,10 @@ def register_credential(
     """
     try:
         return LLMService.register_credential(db, current_user.id, request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -108,10 +113,13 @@ def delete_credential(
     Delete a user credential.
     """
     try:
+        ensure_llm_credential_permission(db, current_user, credential_id, "write")
         deleted = LLMService.delete_credential(db, credential_id, current_user.id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Credential not found")
         return {"message": "Credential deleted", "id": str(credential_id)}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -127,9 +135,12 @@ def sync_credential_models(
     해당 크리덴셜 기준으로 모델 매핑을 재동기화합니다.
     """
     try:
+        ensure_llm_credential_permission(db, current_user, credential_id, "write")
         return LLMService.sync_credential_models(
             db, current_user.id, credential_id, purge_unverified=purge_unverified
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

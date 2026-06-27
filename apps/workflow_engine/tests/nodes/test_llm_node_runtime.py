@@ -111,7 +111,7 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
     primary_client = FailingClient()
     fallback_client = SuccessClient()
 
-    def fake_get_client_for_user(db, user_id, model_id):
+    def fake_get_client_for_user(db, user_id, model_id, organization_id=None):
         if model_id == "primary-model":
             return primary_client
         if model_id == "fallback-model":

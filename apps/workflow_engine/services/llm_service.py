@@ -20,6 +20,7 @@ from apps.shared.schemas.llm import (
     LLMProviderResponse,
 )
 from apps.shared.services.llm_client import get_llm_client
+from apps.shared.services.permissions import has_llm_credential_permission
 
 logger = logging.getLogger(__name__)
 
@@ -684,15 +685,17 @@ class LLMService:
         }
 
     @staticmethod
-    def get_client_for_user(db: Session, user_id: uuid.UUID, model_id: str):
+    def get_client_for_user(
+        db: Session,
+        user_id: uuid.UUID,
+        model_id: str,
+        organization_id: Optional[uuid.UUID] = None,
+    ):
         """
         주어진 model_id를 지원하는 유효한 크리덴셜을 찾습니다.
         우선순위:
         1. llm_rel_credential_models에서 명시적 권한 확인 (fail-closed)
         """
-        # TODO: Tenant 스키마 도입 시 organization_id 지원 추가.
-        # 현재는 user_id만 필터링합니다.
-
         # 1. 프로바이더를 알기 위해 모델 조회
         # 참고: model_id 문자열은 'gpt-4o'처럼 흔한 값일 수 있음.
         # 동일한 모델명을 제공하는 프로바이더가 여러 개일 수 있으므로(드물지만), 추가 정보가 필요할 수 있음.
@@ -710,32 +713,20 @@ class LLMService:
             # 일단 에러 발생시키지 않고 진행하거나, Known 에러로 처리
             raise ValueError(f"Unknown model_id: {model_id}")
 
-        # [SIMPLIFIED] rel 테이블 조인 대신 프로바이더 매칭으로 단순화
-        # 모델의 프로바이더(OpenAI, Anthropic 등)와 일치하는 유효한 크리덴셜을 찾음
-        provider_id = target_model.provider_id if target_model else None
+        # verified credential-model relation과 credential use 권한을 함께 평가한다.
+        # relation이 없으면 fail-closed로 처리한다.
         cred = LLMService._get_valid_credential_for_user(
-            db, user_id=user_id, provider_id=provider_id
+            db,
+            user_id=user_id,
+            model_db_id=target_model.id,
+            organization_id=organization_id,
         )
-
-        # [FALLBACK] UUID 불일치 시 이름 기반 매칭 (서버/로컬 DB 차이 대응)
-        if not cred and target_model and target_model.provider:
-            cred = (
-                db.query(LLMCredential)
-                .join(LLMProvider)
-                .filter(
-                    LLMCredential.user_id == user_id,
-                    LLMCredential.is_valid == True,
-                    LLMProvider.name == target_model.provider.name,
-                )
-                .order_by(LLMCredential.updated_at.desc())
-                .first()
-            )
 
         if not cred:
             logger.error(
                 f"[LLMService] No valid credential found for user_id={user_id}, model_id='{model_id}'. "
                 f"TargetModel: {target_model.name if target_model else 'None'} (ID: {target_model.id if target_model else 'None'}), "
-                f"ProviderID: {provider_id}"
+                f"ProviderID: {target_model.provider_id if target_model else 'None'}"
             )
 
             raise ValueError(
@@ -774,14 +765,46 @@ class LLMService:
         db: Session,
         user_id: uuid.UUID,
         provider_id: Optional[uuid.UUID] = None,
+        model_db_id: Optional[uuid.UUID] = None,
+        organization_id: Optional[uuid.UUID] = None,
     ) -> Optional[LLMCredential]:
+        organization_uuid = None
+        if organization_id:
+            try:
+                organization_uuid = uuid.UUID(str(organization_id))
+            except (TypeError, ValueError):
+                return None
+
         query = db.query(LLMCredential).filter(
-            LLMCredential.user_id == user_id,
             LLMCredential.is_valid == True,
         )
+        if organization_uuid:
+            query = query.filter(LLMCredential.organization_id == organization_uuid)
         if provider_id:
             query = query.filter(LLMCredential.provider_id == provider_id)
-        return query.first()
+        if model_db_id:
+            query = (
+                query.join(
+                    LLMRelCredentialModel,
+                    LLMRelCredentialModel.credential_id == LLMCredential.id,
+                )
+                .filter(
+                    LLMRelCredentialModel.model_id == model_db_id,
+                    LLMRelCredentialModel.is_verified == True,
+                )
+                .order_by(LLMRelCredentialModel.priority.asc())
+            )
+
+        for credential in query.all():
+            if has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            ):
+                return credential
+        return None
 
     @staticmethod
     def get_my_available_models(
@@ -924,6 +947,8 @@ class LLMService:
         model_id: str,
         usage: Dict[str, Any],
         cost: float,
+        organization_id: Optional[uuid.UUID] = None,
+        workflow_id: Optional[uuid.UUID] = None,
         workflow_run_id: Optional[uuid.UUID] = None,
         node_id: Optional[str] = None,
     ) -> Optional[LLMUsageLog]:
@@ -952,8 +977,24 @@ class LLMService:
             )
             return None
 
+        organization_uuid = None
+        if organization_id:
+            try:
+                organization_uuid = uuid.UUID(str(organization_id))
+            except (TypeError, ValueError):
+                organization_uuid = None
+        workflow_uuid = None
+        if workflow_id:
+            try:
+                workflow_uuid = uuid.UUID(str(workflow_id))
+            except (TypeError, ValueError):
+                workflow_uuid = None
+
         credential = LLMService._get_valid_credential_for_user(
-            db, user_id, model.provider_id
+            db,
+            user_id,
+            model_db_id=model.id,
+            organization_id=organization_uuid,
         )
         if not credential:
             logger.error(
@@ -963,8 +1004,10 @@ class LLMService:
 
         log = LLMUsageLog(
             user_id=user_id,
+            organization_id=organization_uuid,
             credential_id=credential.id,
             model_id=model.id,
+            workflow_id=workflow_uuid,
             workflow_run_id=workflow_run_id,
             node_id=node_id,
             prompt_tokens=usage.get("prompt_tokens", 0),

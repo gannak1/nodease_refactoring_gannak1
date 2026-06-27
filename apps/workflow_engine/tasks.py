@@ -89,6 +89,7 @@ def execute_deployed_workflow(
 
     [GEVENT] WorkflowEngine이 동기화되어 단순화됨.
     """
+    from apps.shared.db.models.app import App
     from apps.shared.db.models.workflow_deployment import WorkflowDeployment
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
@@ -107,10 +108,15 @@ def execute_deployed_workflow(
             raise ValueError(f"배포된 워크플로우를 찾을 수 없습니다: {workflow_id}")
 
         graph = deployment.graph_data
+        app = session.query(App).filter(App.id == deployment.app_id).first()
         execution_context["workflow_id"] = workflow_id
         execution_context["app_id"] = str(deployment.app_id)
         execution_context["deployment_id"] = str(deployment.id)
         execution_context["workflow_version"] = deployment.version
+        if app and not execution_context.get("organization_id"):
+            execution_context["organization_id"] = (
+                str(app.organization_id) if app.organization_id else None
+            )
 
         sync_result = {}
         try:
@@ -157,6 +163,7 @@ def execute_by_deployment(
 
     [GEVENT] WorkflowEngine이 동기화되어 단순화됨.
     """
+    from apps.shared.db.models.app import App
     from apps.shared.db.models.workflow_deployment import WorkflowDeployment
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
@@ -176,7 +183,16 @@ def execute_by_deployment(
         if not deployment.graph_snapshot:
             raise ValueError(f"배포 그래프 데이터가 없습니다: {deployment_id}")
 
+        app = session.query(App).filter(App.id == deployment.app_id).first()
         execution_context["app_id"] = str(deployment.app_id)
+        if app and not execution_context.get("workflow_id"):
+            execution_context["workflow_id"] = (
+                str(app.workflow_id) if app.workflow_id else None
+            )
+        if app and not execution_context.get("organization_id"):
+            execution_context["organization_id"] = (
+                str(app.organization_id) if app.organization_id else None
+            )
         execution_context["deployment_id"] = str(deployment.id)
         execution_context["workflow_version"] = deployment.version
 
