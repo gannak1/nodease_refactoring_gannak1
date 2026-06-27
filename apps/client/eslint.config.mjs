@@ -9,7 +9,7 @@ import prettier from 'eslint-config-prettier'; // Prettier 충돌 방지
 export default tseslint.config(
   // 1. 검사 제외 대상
   {
-    ignores: ['dist', 'node_modules', 'build'],
+    ignores: ['dist', 'node_modules', 'build', '.next'],
   },
 
   // 2. JS/TS 공통 권장 설정 적용
