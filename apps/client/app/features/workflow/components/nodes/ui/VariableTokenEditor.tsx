@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import {
   DraggedOutputVariable,
@@ -17,10 +18,17 @@ import { cn } from '@/lib/utils';
 const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
 const TOKEN_ATTR = 'data-variable-token';
 const TOKEN_NAME_ATTR = 'data-variable-name';
+const TOKEN_INTERNAL_DRAG_MIME = 'application/x-moduly-variable-token';
 
 type Segment =
   | { type: 'text'; value: string }
   | { type: 'variable'; name: string; label: string };
+
+type DropCaret = {
+  left: number;
+  top: number;
+  height: number;
+};
 
 const parseValueToSegments = (
   value: string,
@@ -33,7 +41,10 @@ const parseValueToSegments = (
 
   while ((match = TOKEN_PATTERN.exec(value)) !== null) {
     if (match.index > lastIndex) {
-      segments.push({ type: 'text', value: value.slice(lastIndex, match.index) });
+      segments.push({
+        type: 'text',
+        value: value.slice(lastIndex, match.index),
+      });
     }
 
     const name = match[1].trim();
@@ -59,10 +70,26 @@ const createTokenNode = (name: string, label: string) => {
   span.setAttribute(TOKEN_ATTR, 'true');
   span.setAttribute(TOKEN_NAME_ATTR, name);
   span.setAttribute('contenteditable', 'false');
+  span.setAttribute('draggable', 'true');
   span.className =
-    'mx-0.5 inline-flex max-w-full select-none items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-sm align-baseline';
+    'mx-0.5 inline-flex max-w-full cursor-grab select-none items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-sm align-baseline active:cursor-grabbing';
   span.textContent = label;
   return span;
+};
+
+const createTokenDragPreview = (label: string) => {
+  const preview = document.createElement('span');
+  preview.className =
+    'inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-md';
+  preview.textContent = label;
+  preview.style.position = 'fixed';
+  preview.style.top = '0';
+  preview.style.left = '0';
+  preview.style.zIndex = '-1';
+  preview.style.opacity = '0.99';
+  preview.style.pointerEvents = 'none';
+  document.body.appendChild(preview);
+  return preview;
 };
 
 const isTokenElement = (node: Node | null): node is HTMLElement =>
@@ -80,7 +107,8 @@ const serializeNode = (node: Node): string => {
 const serializeEditor = (editor: HTMLElement) =>
   Array.from(editor.childNodes).map(serializeNode).join('');
 
-const isEditorEmpty = (editor: HTMLElement) => serializeEditor(editor).length === 0;
+const isEditorEmpty = (editor: HTMLElement) =>
+  serializeEditor(editor).length === 0;
 
 const renderSegments = (
   editor: HTMLElement,
@@ -213,6 +241,64 @@ const getPointRange = (
   return fallbackRange;
 };
 
+const getRangeCaret = (
+  editor: HTMLElement,
+  range: Range | null,
+): DropCaret | null => {
+  if (!range) return null;
+
+  const rect = range.getClientRects()[0] || range.getBoundingClientRect();
+
+  if (range.startContainer === editor) {
+    const nextChild = editor.childNodes[range.startOffset];
+    const previousChild = editor.childNodes[range.startOffset - 1];
+    const adjacentToken = isTokenElement(nextChild)
+      ? { token: nextChild, side: 'left' as const }
+      : isTokenElement(previousChild)
+        ? { token: previousChild, side: 'right' as const }
+        : null;
+
+    if (adjacentToken) {
+      const tokenRect = adjacentToken.token.getBoundingClientRect();
+      return {
+        left: adjacentToken.side === 'left' ? tokenRect.left : tokenRect.right,
+        top: tokenRect.top,
+        height: tokenRect.height,
+      };
+    }
+  }
+
+  if (rect && rect.height > 0) {
+    return {
+      left: rect.left,
+      top: rect.top,
+      height: rect.height,
+    };
+  }
+
+  const token = getTokenAtRange(editor, range);
+  if (token) {
+    const tokenRect = token.getBoundingClientRect();
+    const isBeforeToken =
+      range.startContainer === editor &&
+      editor.childNodes[range.startOffset] === token;
+
+    return {
+      left: isBeforeToken ? tokenRect.left : tokenRect.right,
+      top: tokenRect.top,
+      height: tokenRect.height,
+    };
+  }
+
+  const editorRect = editor.getBoundingClientRect();
+  const lineHeight = 24;
+  return {
+    left: editorRect.left + 8,
+    top: editorRect.top + 8,
+    height: lineHeight,
+  };
+};
+
 const insertNodeAtRange = (
   editor: HTMLElement,
   node: Node,
@@ -234,6 +320,19 @@ const insertNodeAtRange = (
 
 const insertNodeAtSelection = (editor: HTMLElement, node: Node) => {
   insertNodeAtRange(editor, node, getActiveRange(editor));
+};
+
+const isNoopTokenMove = (
+  editor: HTMLElement,
+  token: HTMLElement,
+  range: Range | null,
+) => {
+  if (!range || range.startContainer !== editor) return false;
+
+  const tokenIndex = Array.from(editor.childNodes).indexOf(token);
+  return (
+    range.startOffset === tokenIndex || range.startOffset === tokenIndex + 1
+  );
 };
 
 const getAdjacentToken = (
@@ -311,7 +410,11 @@ export const VariableTokenEditor = ({
   const lastRenderedValueRef = useRef<string | null>(null);
   const lastTokenLabelsRef = useRef('');
   const composingRef = useRef(false);
+  const draggedTokenRef = useRef<HTMLElement | null>(null);
+  const dragPreviewRef = useRef<HTMLElement | null>(null);
   const [isEmpty, setIsEmpty] = useState(!value);
+  const [dropCaret, setDropCaret] = useState<DropCaret | null>(null);
+  const portalRoot = typeof document === 'undefined' ? null : document.body;
 
   const syncPlaceholder = () => {
     const editor = editorRef.current;
@@ -351,34 +454,117 @@ export const VariableTokenEditor = ({
 
   useEffect(() => {
     syncPlaceholder();
+
+    return () => {
+      dragPreviewRef.current?.remove();
+      dragPreviewRef.current = null;
+    };
   }, []);
 
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes(NODE_OUTPUT_DRAG_MIME)) return;
+    const isOutputDrop = event.dataTransfer.types.includes(
+      NODE_OUTPUT_DRAG_MIME,
+    );
+    const isTokenMove = event.dataTransfer.types.includes(
+      TOKEN_INTERNAL_DRAG_MIME,
+    );
+    if (!isOutputDrop && !isTokenMove) return;
+
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
+    event.dataTransfer.dropEffect = isTokenMove ? 'move' : 'copy';
+
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const dropRange = getPointRange(editor, event.clientX, event.clientY);
+    setDropCaret(getRangeCaret(editor, dropRange));
   };
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    const isTokenMove = event.dataTransfer.types.includes(
+      TOKEN_INTERNAL_DRAG_MIME,
+    );
     const output = parseDraggedOutput(event.dataTransfer);
     const editor = editorRef.current;
-    if (!output || !editor) return;
+    if (!editor || (!output && !isTokenMove)) return;
 
     event.preventDefault();
     event.stopPropagation();
-
-    const droppedName = onDropOutput?.(output) || output.key;
-    const label = tokenLabels[droppedName] || output.label || droppedName;
-    const tokenNode = createTokenNode(droppedName, label);
+    setDropCaret(null);
 
     editor.focus();
 
     const dropRange = getPointRange(editor, event.clientX, event.clientY);
     if (dropRange) selectRange(dropRange);
 
+    if (isTokenMove) {
+      const draggedToken = draggedTokenRef.current;
+      if (!draggedToken || !editor.contains(draggedToken)) return;
+      if (isNoopTokenMove(editor, draggedToken, dropRange)) return;
+
+      insertNodeAtRange(editor, draggedToken, dropRange);
+      emitChange();
+      return;
+    }
+
+    if (!output) return;
+
+    const droppedName = onDropOutput?.(output) || output.key;
+    const label = tokenLabels[droppedName] || output.label || droppedName;
+    const tokenNode = createTokenNode(droppedName, label);
+
     insertNodeAtRange(editor, tokenNode, dropRange);
     emitChange();
+  };
+
+  const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const target = event.target as HTMLElement;
+    const token = target.closest(`[${TOKEN_ATTR}="true"]`);
+    if (!token || !editor.contains(token)) return;
+
+    const tokenElement = token as HTMLElement;
+    const name = tokenElement.getAttribute(TOKEN_NAME_ATTR) || '';
+    const label = tokenElement.textContent || name;
+    draggedTokenRef.current = tokenElement;
+    tokenElement.classList.add('opacity-50');
+
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(TOKEN_INTERNAL_DRAG_MIME, name);
+    event.dataTransfer.setData('text/plain', label);
+
+    const preview = createTokenDragPreview(label);
+    dragPreviewRef.current = preview;
+
+    const tokenRect = tokenElement.getBoundingClientRect();
+    const previewRect = preview.getBoundingClientRect();
+    const offsetX = Math.min(
+      Math.max(event.clientX - tokenRect.left, 0),
+      previewRect.width,
+    );
+    const offsetY = Math.min(
+      Math.max(event.clientY - tokenRect.top, 0),
+      previewRect.height,
+    );
+    event.dataTransfer.setDragImage(preview, offsetX, offsetY);
+  };
+
+  const handleDragEnd = () => {
+    draggedTokenRef.current?.classList.remove('opacity-50');
+    draggedTokenRef.current = null;
+    dragPreviewRef.current?.remove();
+    dragPreviewRef.current = null;
+    setDropCaret(null);
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
+    setDropCaret(null);
   };
 
   const handleInput = () => {
@@ -448,6 +634,19 @@ export const VariableTokenEditor = ({
           {placeholder}
         </div>
       )}
+      {dropCaret &&
+        portalRoot &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[9999] w-0.5 rounded-full bg-blue-600 shadow-[0_0_0_2px_rgba(37,99,235,0.14)]"
+            style={{
+              left: dropCaret.left,
+              top: dropCaret.top,
+              height: dropCaret.height,
+            }}
+          />,
+          portalRoot,
+        )}
       <div
         ref={editorRef}
         role="textbox"
@@ -468,6 +667,9 @@ export const VariableTokenEditor = ({
           composingRef.current = true;
         }}
         onInput={handleInput}
+        onDragEnd={handleDragEnd}
+        onDragLeave={handleDragLeave}
+        onDragStart={handleDragStart}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
       />
