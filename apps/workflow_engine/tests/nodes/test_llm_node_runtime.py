@@ -14,9 +14,10 @@ for p in [ROOT, PARENT_OF_ROOT]:
     if str(p) not in sys.path:
         sys.path.append(str(p))
 
-from apps.workflow_engine.services.llm_service import LLMService
-from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData, LLMVariable
-from apps.workflow_engine.workflow.nodes.llm.llm_node import (
+from apps.shared.schemas.rag import ChunkPreview  # noqa: E402 - 테스트 경로 보정 이후 가져오기
+from apps.workflow_engine.services.llm_service import LLMService  # noqa: E402 - 테스트 경로 보정 이후 가져오기
+from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData, LLMVariable  # noqa: E402 - 테스트 경로 보정 이후 가져오기
+from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402 - 테스트 경로 보정 이후 가져오기
     SAFETY_SYSTEM_PROMPT,
     LLMNode,
 )
@@ -110,7 +111,7 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
     primary_client = FailingClient()
     fallback_client = SuccessClient()
 
-    def fake_get_client_for_user(db, user_id, model_id):
+    def fake_get_client_for_user(db, user_id, model_id, organization_id=None):
         if model_id == "primary-model":
             return primary_client
         if model_id == "fallback-model":
@@ -142,3 +143,23 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
     assert fallback_client.calls
     assert result["text"] == "fallback ok"
     assert result["model"] == "fallback-model"
+
+
+def test_knowledge_trace_metadata_excludes_chunk_content():
+    node = LLMNode.__new__(LLMNode)
+    chunk = ChunkPreview(
+        content="검색 원문",
+        document_id=uuid.uuid4(),
+        filename="guide.md",
+        page_number=3,
+        similarity_score=0.91,
+        metadata={"source": "kb"},
+    )
+
+    metadata = node._knowledge_trace_metadata("kb-1", chunk)  # noqa: SLF001 - 테스트용
+
+    assert metadata["filename"] == "guide.md"
+    assert metadata["page_number"] == 3
+    assert metadata["knowledge_base_id"] == "kb-1"
+    assert "content" not in metadata
+    assert "metadata" not in metadata

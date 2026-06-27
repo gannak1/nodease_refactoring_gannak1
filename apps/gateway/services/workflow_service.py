@@ -3,6 +3,8 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.organization_context import ensure_user_default_organization
+from apps.gateway.services.app_service import AppService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.schemas.workflow import WorkflowCreateRequest, WorkflowDraftRequest
@@ -30,12 +32,18 @@ class WorkflowService:
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
 
-        if app.created_by != user_id:
+        if not AppService.can_manage_app(db, app, user_id):
             raise HTTPException(status_code=403, detail="Forbidden")
+
+        # BACKLOG: ensure_user_default_organization fallback은 organization_id가 비어 있는
+        # legacy app 데이터 보정용이다. DB를 초기화하면 필요 없으므로 제거한다.
+        organization_id = app.organization_id or ensure_user_default_organization(
+            db, user_id
+        )
 
         # 새 워크플로우 생성
         workflow = Workflow(
-            tenant_id=user_id,
+            organization_id=organization_id,
             app_id=request.app_id,
             created_by=user_id,
             graph={

@@ -20,8 +20,8 @@ class Workflow(Base):
         default=uuid.uuid4,
         nullable=False,
     )
-    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),ForeignKey("organization.id"), nullable=True
     )
     app_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("apps.id"), index=True, nullable=False

@@ -50,6 +50,7 @@ celery_app.conf.update(
     task_routes={
         "workflow.*": {"queue": "workflow"},
         "log.*": {"queue": "log"},
+        "audit.*": {"queue": "log"},  # 감사 로그도 log_system 워커가 소비
     },
     # 태스크 설정
     task_track_started=False,  # [FIX] STARTED 상태 추적 비활성화 (Protocol Error 방지)

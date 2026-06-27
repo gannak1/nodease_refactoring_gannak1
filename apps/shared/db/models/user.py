@@ -32,6 +32,13 @@ class User(Base):
 
     avatar_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    deactivated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -43,4 +50,3 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
-    # TODO: tenant_id 추가.

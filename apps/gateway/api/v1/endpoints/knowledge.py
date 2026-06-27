@@ -27,9 +27,12 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
+from apps.gateway.services.organization_context import get_user_primary_organization_id
+from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import (
@@ -49,6 +52,7 @@ router = APIRouter()
 @router.post(
     "", response_model=KnowledgeBaseResponse, status_code=status.HTTP_201_CREATED
 )
+@audit(AuditAction.KNOWLEDGE_CREATE)
 def create_knowledge_base(
     kb_in: KnowledgeBaseCreate,
     db: Session = Depends(get_db),
@@ -62,6 +66,7 @@ def create_knowledge_base(
         name=kb_in.name,
         description=kb_in.description,
         embedding_model=kb_in.embedding_model,
+        organization_id=get_user_primary_organization_id(db, current_user.id),
         user_id=current_user.id,
     )
     db.add(kb)
@@ -70,6 +75,7 @@ def create_knowledge_base(
 
     return KnowledgeBaseResponse(
         id=kb.id,
+        organization_id=kb.organization_id,
         name=kb.name,
         description=kb.description,
         document_count=0,
@@ -118,6 +124,7 @@ def list_knowledge_bases(
         response.append(
             KnowledgeBaseResponse(
                 id=kb.id,
+                organization_id=kb.organization_id,
                 name=kb.name,
                 description=kb.description,
                 document_count=doc_count,
@@ -170,6 +177,7 @@ def get_knowledge_base(
 
     return KnowledgeBaseDetailResponse(
         id=kb.id,
+        organization_id=kb.organization_id,
         name=kb.name,
         description=kb.description,
         document_count=len(doc_responses),
@@ -180,6 +188,7 @@ def get_knowledge_base(
 
 
 @router.patch("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit(AuditAction.KNOWLEDGE_UPDATE, target_param="kb_id")
 def update_knowledge_base(
     kb_id: UUID,
     update_data: KnowledgeUpdate,
@@ -224,6 +233,7 @@ def update_knowledge_base(
 
 
 @router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit(AuditAction.KNOWLEDGE_DELETE, target_param="kb_id")
 def delete_knowledge_base(
     kb_id: UUID,
     db: Session = Depends(get_db),
@@ -484,6 +494,7 @@ def get_document_content(
 @router.post(
     "/{kb_id}/documents/{document_id}/process", status_code=status.HTTP_202_ACCEPTED
 )
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
 async def process_document(
     kb_id: UUID,
     document_id: UUID,

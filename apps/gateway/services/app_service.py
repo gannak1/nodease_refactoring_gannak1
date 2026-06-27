@@ -3,9 +3,15 @@ import secrets
 
 from sqlalchemy.orm import Session, joinedload
 
+from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.user import User
 from apps.shared.schemas.app import AppCreateRequest, AppUpdateRequest
+from apps.shared.services.permissions import (
+    has_organization_manager_permission,
+    has_workflow_permission,
+)
 
 
 class AppService:
@@ -14,7 +20,7 @@ class AppService:
         db: Session,
         request: AppCreateRequest,
         user_id: str,
-        tenant_id: str = None,
+        organization_id: str = None,
     ):
         """
         새로운 앱을 생성합니다.
@@ -23,14 +29,15 @@ class AppService:
             db: 데이터베이스 세션
             request: 앱 생성 요청 데이터
             user_id: 생성자 ID (필수)
-            tenant_id: 테넌트 ID (선택, 기본값은 user_id)
+            organization_id: 테넌트 ID (선택, 기본값은 user_id)
 
         Returns:
             생성된 App 객체
         """
-        # tenant_id가 없으면 user_id를 사용 (유저별 분리)
-        if not tenant_id:
-            tenant_id = user_id
+        # BACKLOG: active organization을 명시적으로 받기 전까지 기본 조직을 사용하는 fallback이다.
+        # active organization 선택 흐름이 생기면 이 fallback을 제거한다.
+        if not organization_id:
+            organization_id = ensure_user_default_organization(db, user_id)
 
         # url_slug, auth_secret 생성
         url_slug = AppService._generate_url_slug(db, request.name)
@@ -39,14 +46,14 @@ class AppService:
         # 이름 중복 체크
         if (
             db.query(App)
-            .filter(App.tenant_id == tenant_id, App.name == request.name)
+            .filter(App.organization_id == organization_id, App.name == request.name)
             .first()
         ):
             raise ValueError("App with this name already exists.")
 
         # App 생성
         app = App(
-            tenant_id=tenant_id,
+            organization_id=organization_id,
             name=request.name,
             description=request.description,
             icon=request.icon.model_dump(),
@@ -60,7 +67,7 @@ class AppService:
 
         # 기본 워크플로우 생성
         workflow = Workflow(
-            tenant_id=tenant_id,
+            organization_id=organization_id,
             app_id=app.id,
             created_by=user_id,
         )
@@ -79,8 +86,6 @@ class AppService:
     @staticmethod
     def _populate_owner_name(db: Session, app: App):
         """App 객체에 owner_name 속성을 채웁니다."""
-        from apps.shared.db.models.user import User
-
         if app.created_by:
             user = db.query(User).filter(User.id == app.created_by).first()
             if user:
@@ -106,6 +111,38 @@ class AppService:
             setattr(app, "active_deployment_is_active", None)
 
     @staticmethod
+    def can_read_app(db: Session, app: App, user_id) -> bool:
+        if app.organization_id and has_organization_manager_permission(
+            db, user_id, app.organization_id
+        ):
+            return True
+        if app.workflow_id and has_workflow_permission(
+            db,
+            user_id,
+            app.workflow_id,
+            "read",
+            organization_id=app.organization_id,
+        ):
+            return True
+        return app.organization_id is None and app.created_by == user_id
+
+    @staticmethod
+    def can_manage_app(db: Session, app: App, user_id) -> bool:
+        if app.organization_id and has_organization_manager_permission(
+            db, user_id, app.organization_id
+        ):
+            return True
+        if app.workflow_id and has_workflow_permission(
+            db,
+            user_id,
+            app.workflow_id,
+            "manage",
+            organization_id=app.organization_id,
+        ):
+            return True
+        return app.organization_id is None and app.created_by == user_id
+
+    @staticmethod
     def get_app(db: Session, app_id: str, user_id=None):
         """
         특정 앱을 조회합니다.
@@ -123,8 +160,7 @@ class AppService:
         if not app:
             return None
 
-        # 소유자 체크
-        if user_id and app.created_by != user_id:
+        if user_id and not AppService.can_read_app(db, app, user_id):
             return None
 
         AppService._populate_owner_name(db, app)
@@ -147,17 +183,12 @@ class AppService:
             db.query(App)
             # N+1 문제 방지를 위해 active_deployment 관계를 즉시 로딩 (Joined Load)
             .options(joinedload(App.active_deployment))
-            .filter(App.created_by == user_id)
             .all()
         )
+        apps = [app for app in apps if AppService.can_read_app(db, app, user_id)]
 
-        # owner_name 채우기 (모두 동일한 소유자)
-        from apps.shared.db.models.user import User
-
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            for app in apps:
-                setattr(app, "owner_name", user.name)
+        for app in apps:
+            AppService._populate_owner_name(db, app)
 
         # 각 앱에 배포 상태 정보 추가
         for app in apps:
@@ -209,8 +240,7 @@ class AppService:
         if not app:
             return None
 
-        # 생성자만 수정 가능
-        if app.created_by != user_id:
+        if not AppService.can_manage_app(db, app, user_id):
             return None
 
         # 필드 업데이트
@@ -219,7 +249,7 @@ class AppService:
             if (
                 db.query(App)
                 .filter(
-                    App.tenant_id == app.tenant_id,
+                    App.organization_id == app.organization_id,
                     App.name == request.name,
                     App.id != app_id,
                 )
@@ -254,6 +284,8 @@ class AppService:
         source_app = db.query(App).filter(App.id == source_app_id).first()
         if not source_app:
             return None
+        if not AppService.can_read_app(db, source_app, user_id):
+            return None
 
         # 2. 활성 배포 확인 (Active Deployment)
         if not source_app.active_deployment_id:
@@ -277,8 +309,10 @@ class AppService:
         new_slug = AppService._generate_url_slug(db, f"{source_app.name} (복사본)")
         new_secret = secrets.token_urlsafe(32)
 
+        organization_id = ensure_user_default_organization(db, user_id)
+
         new_app = App(
-            tenant_id=user_id,  # 복제하는 사람의 tenant_id (user_id와 동일 가정)
+            organization_id=organization_id,
             name=f"{source_app.name} (복사본)",
             description=source_app.description,
             icon=new_icon,
@@ -304,7 +338,7 @@ class AppService:
         graph_data = {k: v for k, v in cleaned_snapshot.items() if k != "features"}
 
         new_workflow = Workflow(
-            tenant_id=user_id,
+            organization_id=organization_id,
             app_id=new_app.id,
             created_by=user_id,
             # 스냅샷 기반 데이터 설정
@@ -335,8 +369,7 @@ class AppService:
         if not app:
             return None
 
-        # 생성자만 삭제 가능
-        if app.created_by != user_id:
+        if not AppService.can_manage_app(db, app, user_id):
             return None
 
         # 1. Circular dependency 해결을 위해 workflow_id 관계 끊기

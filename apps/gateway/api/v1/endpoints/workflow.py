@@ -1,9 +1,10 @@
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Date, Integer, cast, func
 from sqlalchemy.orm import Session, noload, selectinload
@@ -12,7 +13,12 @@ from sqlalchemy.orm import Session, noload, selectinload
 from starlette.requests import Request
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.utils.audit import audit
+from apps.gateway.services.app_service import AppService
+from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_service import WorkflowService
+from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
@@ -26,6 +32,7 @@ from apps.shared.schemas.log import (
     WorkflowRunListResponse,
     WorkflowRunSchema,
 )
+from apps.shared.schemas.llm import LLMTraceListResponse
 from apps.shared.schemas.workflow import (
     WorkflowCreateRequest,
     WorkflowDraftRequest,
@@ -50,21 +57,7 @@ def get_workflow_runs(
     """
     skip = (page - 1) * limit
 
-    # 워크플로우 접근 권한 체크 (간단히 소유자만)
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    # TODO: 권한 체크 로직 강화 필요 (협업 기능 등)
-    # if workflow.created_by != str(current_user.id):
-    #     raise HTTPException(status_code=403, detail="Not authorized")
-
-    # total = (
-    #     db.query(func.count(WorkflowRun.id))
-    #     .filter(WorkflowRun.workflow_id == workflow_id)
-    #     .scalar()
-    #     or 0
-    # )
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
 
     total = db.query(WorkflowRun).filter(WorkflowRun.workflow_id == workflow_id).count()
 
@@ -91,10 +84,7 @@ def get_workflow_run_detail(
     """
     특정 워크플로우 실행 이력 상세 조회
     """
-    # 워크플로우 접근 권한 체크
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
 
     run = (
         db.query(WorkflowRun)
@@ -139,6 +129,39 @@ def get_workflow_run_detail(
     return run
 
 
+@router.get("/{workflow_id}/runs/{run_id}/llm-traces", response_model=LLMTraceListResponse)
+def get_workflow_run_llm_traces(
+    workflow_id: str,
+    run_id: str,
+    node_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 workflow run에 연결된 LLM usage trace를 조회합니다.
+    """
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
+    try:
+        workflow_uuid = UUID(str(workflow_id))
+        run_uuid = UUID(str(run_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    result = LLMService.list_workflow_run_llm_traces(
+        db,
+        workflow_uuid,
+        run_uuid,
+        node_id=node_id,
+        limit=limit,
+        offset=offset,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return result
+
+
 # [NEW] 모니터링 대시보드 통계 API
 
 
@@ -163,9 +186,7 @@ def get_workflow_stats(
         )
 
         # 1. 권한 체크
-        workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
+        ensure_workflow_permission(db, current_user, workflow_id, "read")
 
         # 기간 필터 (기본 30일)
         cutoff_date = datetime.now() - timedelta(days=days)
@@ -364,12 +385,15 @@ def get_workflow_stats(
             failureAnalysis=failure_analysis,
             recentFailures=recent_failures,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[ERROR] Stats API Failed:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("", response_model=WorkflowResponse)
+@audit(AuditAction.WORKFLOW_CREATE)
 def create_workflow(
     request: WorkflowCreateRequest,
     db: Session = Depends(get_db),
@@ -397,13 +421,7 @@ def get_workflow(
     """
     워크플로우 메타데이터 조회 (app_id 포함)
     """
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    if workflow.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "read")
 
     return {
         "id": str(workflow.id),
@@ -427,7 +445,7 @@ def list_workflows_by_app(
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
 
-    if app.created_by != current_user.id:
+    if not AppService.can_read_app(db, app, current_user.id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # 워크플로우 목록 조회
@@ -445,6 +463,7 @@ def list_workflows_by_app(
 
 
 @router.post("/{workflow_id}/draft")
+@audit(AuditAction.WORKFLOW_UPDATE, target_param="workflow_id")
 def sync_draft_workflow(
     workflow_id: str,
     request: WorkflowDraftRequest,
@@ -460,11 +479,7 @@ def sync_draft_workflow(
         db: 데이터베이스 세션 (의존성 주입)
         current_user: 현재 로그인한 사용자
     """
-    # 권한 확인
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-
-    if workflow and workflow.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    ensure_workflow_permission(db, current_user, workflow_id, "write")
 
     return WorkflowService.save_draft(
         db, workflow_id, request, user_id=str(current_user.id)
@@ -480,14 +495,7 @@ def get_draft_workflow(
     """
     PostgreSQL에서 워크플로우 초안 데이터를 조회합니다. (인증 필요)
     """
-    # 권한 확인
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    if workflow.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
 
     return WorkflowService.get_draft(db, workflow_id)
 
@@ -495,6 +503,7 @@ def get_draft_workflow(
 @router.post("/{workflow_id}/execute")
 async def execute_workflow(
     workflow_id: str,
+    request: Request,
     user_input: dict = {},
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -503,13 +512,7 @@ async def execute_workflow(
     PostgreSQL에서 워크플로우 초안 데이터를 조회하고, Celery 태스크로 실행합니다. (인증 필요)
     """
     # 1. 권한 확인
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    if workflow.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
 
     memory_mode_enabled = False
     if isinstance(user_input, dict):
@@ -528,7 +531,13 @@ async def execute_workflow(
         execution_context = {
             "user_id": str(current_user.id),
             "workflow_id": workflow_id,
+            "organization_id": (
+                str(workflow.organization_id) if workflow.organization_id else None
+            ),
+            "app_id": str(workflow.app_id),
             "memory_mode": memory_mode_enabled,
+            "request_id": request.headers.get("x-request-id"),
+            "correlation_id": request.headers.get("x-correlation-id"),
         }
 
         # Celery 태스크 호출 (workflow.execute)
@@ -580,13 +589,7 @@ async def stream_workflow(
 
     memory_mode_enabled = False
     # 1. 권한 확인
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    if workflow.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
 
     # 2. Request에서 FormData 파싱
     content_type = request.headers.get("content-type", "")
@@ -612,7 +615,7 @@ async def stream_workflow(
             user_input = body if isinstance(body, dict) else {}
             if isinstance(user_input, dict):
                 memory_mode_enabled = bool(user_input.pop("memory_mode", False))
-        except:
+        except Exception:
             user_input = {}
 
     # 3. 데이터 조회
@@ -629,8 +632,14 @@ async def stream_workflow(
     execution_context = {
         "user_id": str(current_user.id),
         "workflow_id": workflow_id,
+        "organization_id": (
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
+        "app_id": str(workflow.app_id),
         "memory_mode": memory_mode_enabled,
         "trigger_mode": "manual",  # 테스트 실행
+        "request_id": request.headers.get("x-request-id"),
+        "correlation_id": request.headers.get("x-correlation-id"),
     }
 
     # 6. Redis Pub/Sub 구독 및 SSE 스트리밍

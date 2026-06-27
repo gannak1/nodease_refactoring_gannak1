@@ -1,0 +1,15 @@
+**/.venv
+**/venv
+**/.env
+**/.git
+**/.gitignore
+**/__pycache__
+**/.pytest_cache
+**/.vscode
+**/.idea
+**/node_modules
+**/.next
+**/uploads
+*.pyc
+*.pyo
+*.pyd

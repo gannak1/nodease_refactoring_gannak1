@@ -39,6 +39,7 @@ export interface KnowledgeCreateRequest {
 
 export interface KnowledgeBaseResponse {
   id: string;
+  organization_id?: string;
   name: string;
   description?: string;
   document_count: number;

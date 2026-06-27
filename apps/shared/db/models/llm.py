@@ -151,9 +151,11 @@ class LLMCredential(Base):
         nullable=False,
         index=True,
     )
-    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
+        ForeignKey("organization.id"),
         nullable=True,
+        index=True,
     )
     credential_name: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_config: Mapped[str] = mapped_column(
@@ -242,8 +244,8 @@ class LLMUsageLog(Base):
         nullable=False,
         index=True,
     )
-    tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True,
     )
     credential_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -273,9 +275,7 @@ class LLMUsageLog(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_cost: Mapped[Optional[float]] = mapped_column(Numeric(10, 6), nullable=True)
 
-    latency_ms: Mapped[int] = mapped_column(
-        "atency_ms", Integer, nullable=False, default=0
-    )
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="success")
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

@@ -15,12 +15,18 @@ from sqlalchemy.orm import Session
 
 from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
+from apps.shared.db.session import SessionLocal
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 
 
 class WorkflowEngine:
     """노드와 엣지를 받아서 전체 워크플로우 실행을 담당하는 엔진 (Gevent 기반)"""
+
+    @staticmethod
+    def _default_session_factory() -> Session:
+        return SessionLocal()
 
     def __init__(
         self,
@@ -51,6 +57,17 @@ class WorkflowEngine:
         if isinstance(graph, dict):
             nodes = [NodeSchema(**node) for node in graph.get("nodes", [])]
             edges = [EdgeSchema(**edge) for edge in graph.get("edges", [])]
+        elif isinstance(graph, tuple) and len(graph) == 2:
+            nodes = [
+                node if isinstance(node, NodeSchema) else NodeSchema(**node)
+                for node in graph[0]
+            ]
+            edges = [
+                edge if isinstance(edge, EdgeSchema) else EdgeSchema(**edge)
+                for edge in graph[1]
+            ]
+        else:
+            raise ValueError("워크플로우 graph는 dict 또는 (nodes, edges) tuple이어야 합니다.")
 
         self.is_deployed = is_deployed
         self.node_schemas = {node.id: node for node in nodes}
@@ -60,11 +77,11 @@ class WorkflowEngine:
         self.execution_context = dict(execution_context) if execution_context else {}
         self.workflow_timeout = workflow_timeout
         self.start_time = 0.0
+        self._node_sequence = 0
 
-        if db is not None:
-            self.execution_context["db"] = db
-        elif "db" not in self.execution_context:
-            pass
+        self.execution_context.pop("db", None)
+        if "db_session_factory" not in self.execution_context:
+            self.execution_context["db_session_factory"] = self._default_session_factory
 
         # [PERF] 그래프 구조 사전 계산
         self.adjacency_list = {}
@@ -219,6 +236,7 @@ class WorkflowEngine:
 
         # [GEVENT] Greenlet 관리
         running_greenlets = {}  # {greenlet: node_id}
+        running_nodes: Dict[str, Dict[str, Any]] = {}
 
         # [GEVENT] Pool for concurrency control
         max_concurrent_tasks = 10
@@ -237,6 +255,7 @@ class WorkflowEngine:
                 start_node,
                 results,
                 running_greenlets,
+                running_nodes,
                 stream_mode,
                 pool,
                 event_queue,
@@ -246,6 +265,8 @@ class WorkflowEngine:
                 # 전체 타임아웃 체크
                 elapsed_time = time.time() - self.start_time
                 if elapsed_time > self.workflow_timeout:
+                    timeout_error = TimeoutError("workflow_timeout")
+                    self._mark_running_nodes_timeout(running_nodes, timeout_error)
                     for g in running_greenlets:
                         g.kill()
 
@@ -276,6 +297,7 @@ class WorkflowEngine:
 
                 for greenlet, node_id in completed:
                     del running_greenlets[greenlet]
+                    running_nodes.pop(node_id, None)
                     executed_nodes.add(node_id)
 
                     try:
@@ -284,15 +306,6 @@ class WorkflowEngine:
                         results[node_id] = node_result
 
                     except Exception as e:
-                        error_msg = str(e)
-                        self.logger.update_run_log_error(error_msg)
-
-                        if stream_mode:
-                            yield {
-                                "type": "error",
-                                "data": {"node_id": node_id, "message": error_msg},
-                            }
-
                         for g in running_greenlets:
                             g.kill()
 
@@ -312,6 +325,7 @@ class WorkflowEngine:
                                 next_node_id,
                                 results,
                                 running_greenlets,
+                                running_nodes,
                                 stream_mode,
                                 pool,
                                 event_queue,
@@ -360,7 +374,14 @@ class WorkflowEngine:
                 yield {"type": "error", "data": {"message": error_msg}}
 
     def _submit_node(
-        self, node_id, results, running_greenlets, stream_mode, pool, event_queue
+        self,
+        node_id,
+        results,
+        running_greenlets,
+        running_nodes,
+        stream_mode,
+        pool,
+        event_queue,
     ):
         """
         개별 노드를 실행하기 위해 Greenlet 생성
@@ -381,6 +402,8 @@ class WorkflowEngine:
 
         node_options_snapshot = None
         log_id = None
+        self._node_sequence += 1
+        sequence = self._node_sequence
 
         if not self.is_subworkflow:
             node_options_snapshot = self._extract_node_options(node_schema)
@@ -389,7 +412,16 @@ class WorkflowEngine:
                 node_schema.type,
                 inputs,
                 process_data=node_options_snapshot,
+                sequence=sequence,
             )
+            running_nodes[node_id] = {
+                "log_id": log_id,
+                "node_type": node_schema.type,
+                "inputs": inputs,
+                "process_data": node_options_snapshot,
+                "started_at": started_at,
+                "sequence": sequence,
+            }
 
         # Redis Pub/Sub 이벤트 발행
         run_id = self.execution_context.get("workflow_run_id")
@@ -428,16 +460,18 @@ class WorkflowEngine:
                         log_id,
                         node_options_snapshot,
                         started_at,
+                        sequence,
                     )
 
             except gevent.Timeout:
-                raise TimeoutError(
-                    f"Node '{node_id}' ({node_schema.type}) timed out after {node_timeout} seconds."
-                )
+                timeout_error = TimeoutError("node_timeout")
+                self._mark_node_timeout(node_id, running_nodes, timeout_error)
+                raise timeout_error
 
             # node_finish 이벤트 발행
             run_id = self.execution_context.get("workflow_run_id")
             if run_id and not self.is_subworkflow:
+                # 실시간 이벤트는 실행자용 실시간 출력이며 추적 메타데이터의 기준 저장소로 쓰지 않습니다.
                 publish_workflow_event(
                     run_id,
                     "node_finish",
@@ -449,6 +483,7 @@ class WorkflowEngine:
                 )
 
             if stream_mode and event_queue:
+                # SSE 이벤트도 실행자용 실시간 출력 경계이며 추적 페이로드 접근제어를 대체하지 않습니다.
                 event_queue.put(
                     {
                         "type": "node_finish",
@@ -466,6 +501,43 @@ class WorkflowEngine:
         greenlet = pool.spawn(_execute_with_event)
         running_greenlets[greenlet] = node_id
 
+    def _mark_running_nodes_timeout(
+        self, running_nodes: Dict[str, Dict[str, Any]], error: Exception
+    ) -> None:
+        for node_id in list(running_nodes):
+            self._mark_node_timeout(node_id, running_nodes, error)
+
+    def _mark_node_timeout(
+        self, node_id: str, running_nodes: Dict[str, Dict[str, Any]], error: Exception
+    ) -> None:
+        if self.is_subworkflow:
+            return
+        node_info = running_nodes.pop(node_id, None)
+        if not node_info:
+            return
+        from datetime import datetime, timezone
+
+        finished_at = datetime.now(timezone.utc)
+        safe_error_code = self._error_code(error)
+        trace_metadata = self._build_error_trace_metadata(
+            node_info["node_type"],
+            node_info.get("started_at"),
+            finished_at,
+            error,
+            error_code=safe_error_code,
+        )
+        self.logger.update_node_log_error(
+            node_info.get("log_id"),
+            node_id,
+            safe_error_code,
+            node_type=node_info["node_type"],
+            inputs=node_info.get("inputs"),
+            process_data=node_info.get("process_data"),
+            started_at=node_info.get("started_at"),
+            trace_metadata=trace_metadata,
+            sequence=node_info.get("sequence"),
+        )
+
     def _execute_node_task(
         self,
         node_id,
@@ -475,6 +547,7 @@ class WorkflowEngine:
         log_id=None,
         node_options_snapshot=None,
         started_at=None,
+        sequence=None,
     ):
         """
         개별 노드를 실행하는 작업
@@ -484,6 +557,18 @@ class WorkflowEngine:
         try:
             # 노드 실행 (핵심) - 동기 실행
             result = node_instance.execute(inputs)
+            from datetime import datetime, timezone
+
+            finished_at = datetime.now(timezone.utc)
+            trace_metadata = self._build_node_trace_metadata(
+                node_schema.type,
+                node_instance,
+                result,
+                node_options_snapshot,
+                started_at,
+                finished_at,
+            )
+            trace_payloads = self._collect_node_trace_payloads(node_instance)
 
             # 노드 완료 로깅
             if not self.is_subworkflow:
@@ -495,12 +580,21 @@ class WorkflowEngine:
                     inputs=inputs,
                     process_data=node_options_snapshot,
                     started_at=started_at,
+                    trace_metadata=trace_metadata,
+                    trace_payloads=trace_payloads,
+                    sequence=sequence,
                 )
 
             return result
 
         except Exception as e:
             error_msg = str(e)
+            from datetime import datetime, timezone
+
+            finished_at = datetime.now(timezone.utc)
+            trace_metadata = self._build_error_trace_metadata(
+                node_schema.type, started_at, finished_at, e
+            )
             if not self.is_subworkflow:
                 self.logger.update_node_log_error(
                     log_id,
@@ -510,8 +604,146 @@ class WorkflowEngine:
                     inputs=inputs,
                     process_data=node_options_snapshot,
                     started_at=started_at,
+                    trace_metadata=trace_metadata,
+                    sequence=sequence,
                 )
             raise e
+
+    def _collect_node_trace_payloads(self, node_instance) -> list[dict[str, Any]]:
+        payloads = getattr(node_instance, "_trace_payloads", []) or []
+        if hasattr(node_instance, "_trace_payloads"):
+            # 노드 인스턴스 재사용 시 같은 추가 전용 페이로드가 중복 수집되지 않게 비웁니다.
+            node_instance._trace_payloads = []
+        return payloads
+
+    def _build_error_trace_metadata(
+        self,
+        node_type: str,
+        started_at,
+        finished_at,
+        error: Exception,
+        error_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        safe_error_code = error_code or self._error_code(error)
+        metadata: Dict[str, Any] = {
+            "error": {
+                "type": "node_error",
+                "error_type": type(error).__name__,
+                "error_code": safe_error_code,
+            }
+        }
+        if started_at and finished_at:
+            metadata["latency_ms"] = int(
+                (finished_at - started_at).total_seconds() * 1000
+            )
+        if "guardrail" in node_type.lower():
+            metadata["guardrail"] = {
+                "type": "moduly_guardrail",
+                "decision": "errored",
+                "blocked": False,
+                "reason_code": safe_error_code,
+                "reason_redacted": safe_error_code,
+                "latency_ms": metadata.get("latency_ms"),
+            }
+        return TraceMetadataSanitizer.sanitize_span_metadata(node_type, metadata)
+
+    @staticmethod
+    def _error_code(error: Exception) -> str:
+        if isinstance(error, TimeoutError):
+            return "timeout"
+        return "node_error"
+
+    def _build_node_trace_metadata(
+        self,
+        node_type: str,
+        node_instance,
+        result: Any,
+        process_data: Optional[Dict[str, Any]],
+        started_at,
+        finished_at,
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_type, getattr(node_instance, "_trace_metadata", {}) or {}
+        )
+        latency_ms = (
+            int((finished_at - started_at).total_seconds() * 1000)
+            if started_at and finished_at
+            else None
+        )
+        result_dict = result if isinstance(result, dict) else {}
+        process_data = process_data or {}
+
+        if node_type == "llmNode":
+            usage = result_dict.get("usage") or {}
+            llm_metadata = dict(metadata.get("llm") or {})
+            # LLM 메타데이터는 비용/모델 식별용 요약만 담고 프롬프트/완성 원문은 페이로드로 분리합니다.
+            llm_metadata.update(
+                {
+                    "provider": process_data.get("provider"),
+                    "model": result_dict.get("model") or process_data.get("model"),
+                    "credential_id": process_data.get("credential_id"),
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens")
+                    or usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+                    "total_cost": result_dict.get("cost", 0.0),
+                    "latency_ms": latency_ms,
+                    "retry_count": 0,
+                }
+            )
+            metadata["llm"] = llm_metadata
+            knowledge = (result_dict.get("metadata") or {}).get("knowledge_search")
+            if knowledge:
+                # knowledge_search는 LLM 노드에서 본문이 제거된 허용 목록 메타데이터만 전달됩니다.
+                metadata["rag"] = {
+                    "retrieval_results": TraceMetadataSanitizer.sanitize_rag_metadata(
+                        knowledge
+                    ),
+                    "latency_ms": latency_ms,
+                }
+
+        elif node_type == "httpRequestNode":
+            http_metadata = dict(metadata.get("http") or {})
+            http_metadata.setdefault("latency_ms", latency_ms)
+            metadata["http"] = http_metadata
+
+        elif node_type == "codeNode":
+            sandbox_metadata = dict(metadata.get("sandbox") or {})
+            sandbox_metadata.update(
+                {
+                    "execution_time_ms": result_dict.get("execution_time_ms", latency_ms),
+                    "exit_code": result_dict.get("exit_code"),
+                    "timeout": bool(result_dict.get("timeout", False)),
+                    "latency_ms": latency_ms,
+                }
+            )
+            metadata["sandbox"] = sandbox_metadata
+
+        elif node_type == "workflowNode":
+            workflow_metadata = dict(metadata.get("workflow") or {})
+            workflow_metadata.setdefault("latency_ms", latency_ms)
+            metadata["workflow"] = workflow_metadata
+
+        elif "guardrail" in node_type.lower():
+            guardrail_metadata = dict(metadata.get("guardrail") or {})
+            guardrail_metadata.update(
+                {
+                    "type": "moduly_guardrail",
+                    "decision": result_dict.get("decision"),
+                    "blocked": bool(result_dict.get("blocked", False)),
+                    "policy_id": result_dict.get("policy_id"),
+                    "rule_id": result_dict.get("rule_id"),
+                    "reason_code": result_dict.get("reason_code"),
+                    "reason_redacted": result_dict.get("reason_redacted"),
+                    "severity": result_dict.get("severity"),
+                    "latency_ms": latency_ms,
+                }
+            )
+            metadata["guardrail"] = guardrail_metadata
+
+        if latency_ms is not None:
+            metadata["latency_ms"] = latency_ms
+        return TraceMetadataSanitizer.sanitize_span_metadata(node_type, metadata)
 
     # ================================================================
     # 그래프 검증 메서드

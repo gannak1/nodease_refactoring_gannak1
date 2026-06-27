@@ -54,7 +54,7 @@ class CodeNode(Node[CodeNodeData]):
                 return {"error": f"Invalid variable source format: {inp.source}"}
 
         # 2. 샌드박스에서 코드 실행
-        tenant_id = (
+        organization_id = (
             self.execution_context.get("user_id") if self.execution_context else None
         )
         trigger_mode = (
@@ -68,7 +68,33 @@ class CodeNode(Node[CodeNodeData]):
             inputs=code_inputs,
             timeout=self.data.timeout,
             trigger_type=trigger_mode,
-            tenant_id=tenant_id,
+            organization_id=organization_id,
         )
+        trace_payloads = []
+        if isinstance(result, dict):
+            if result.get("stdout"):
+                trace_payloads.append(
+                    {
+                        "payload_kind": "stdout",
+                        "payload": {"text": result.get("stdout")},
+                        "scope": "span",
+                    }
+                )
+            if result.get("stderr"):
+                trace_payloads.append(
+                    {
+                        "payload_kind": "stderr",
+                        "payload": {"text": result.get("stderr")},
+                        "scope": "span",
+                    }
+                )
+            self._trace_metadata = {
+                "sandbox": {
+                    "execution_time_ms": result.get("execution_time_ms"),
+                    "exit_code": result.get("exit_code"),
+                    "timeout": result.get("error_type") == "timeout",
+                }
+            }
+        self._trace_payloads = trace_payloads
 
         return result

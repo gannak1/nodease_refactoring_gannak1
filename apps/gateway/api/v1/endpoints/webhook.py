@@ -55,7 +55,12 @@ def verify_webhook_auth(request: Request, app: App) -> bool:
 
 
 def run_webhook_workflow(
-    deployment_id: str, payload: Dict[str, Any], app_created_by: str, workflow_id: str
+    deployment_id: str,
+    payload: Dict[str, Any],
+    app_created_by: str,
+    workflow_id: str,
+    app_id: str,
+    organization_id: str,
 ):
     """
     백그라운드에서 워크플로우를 Celery 태스크로 실행하는 함수
@@ -71,6 +76,8 @@ def run_webhook_workflow(
         execution_context = {
             "user_id": app_created_by,
             "workflow_id": workflow_id,
+            "organization_id": organization_id,
+            "app_id": app_id,
             "trigger_mode": "webhook",
             "deployment_id": deployment_id,
         }
@@ -152,6 +159,8 @@ async def receive_webhook(
         payload,
         str(app.created_by),
         str(app.workflow_id) if app.workflow_id else None,
+        str(app.id),
+        str(app.organization_id) if app.organization_id else None,
     )
 
     return {

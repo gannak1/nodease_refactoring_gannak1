@@ -25,6 +25,11 @@ from apps.shared.db.session import engine
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 0. 감사(Audit) 데이터 변경 이력 리스너 등록 (계층 B)
+    from apps.shared.audit.listeners import register_audit_listeners
+
+    register_audit_listeners()
+
     # 1. 시작 로직: pgvector 확장 활성화
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
