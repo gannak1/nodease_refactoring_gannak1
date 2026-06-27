@@ -9,6 +9,7 @@ from apps.gateway.api.v1.endpoints import (
     health,
     knowledge,
     llm,
+    organization,
     prompt_wizard,
     rag,
     run,
@@ -36,6 +37,9 @@ api_router.include_router(app.router, prefix="/apps", tags=["apps"])
 # 예: api_router.include_router(user.router, prefix="/users", tags=["users"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
+api_router.include_router(
+    organization.router, prefix="/organizations", tags=["organizations"]
+)
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(
     prompt_wizard.router, prefix="/prompt-wizard", tags=["prompt-wizard"]
