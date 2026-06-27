@@ -92,6 +92,99 @@ class TestOrganizationsApi(unittest.TestCase):
             ],
         )
 
+    def test_route_returns_member_organization_detail(self):
+        # GET /api/v1/organizations/{organization_id}가 현재 사용자의 active team membership scope 안에 있는 조직만 반환하는지 검증한다.
+        organization_id = uuid4()
+        user_id = uuid4()
+        created_at = datetime(2026, 6, 27, 1, 2, 3, tzinfo=timezone.utc)
+        updated_at = datetime(2026, 6, 27, 4, 5, 6, tzinfo=timezone.utc)
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        query = _Query([organization])
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: query
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).get(f"/api/v1/organizations/{organization_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "id": str(organization_id),
+                "name": "Acme",
+                "is_active": True,
+                "created_at": "2026-06-27T01:02:03Z",
+                "updated_at": "2026-06-27T04:05:06Z",
+            },
+        )
+
+        # 문서 기준 모델에 맞춰 organization, team_memberships, teams 조인과 active scope 조건을 사용해야 한다.
+        self.assertEqual(len(query.join_values), 2)
+        (
+            organization_filter,
+            user_filter,
+            membership_org_filter,
+            team_org_filter,
+            team_active_filter,
+            org_active_filter,
+        ) = query.filter_expressions
+
+        self.assertEqual(str(organization_filter.left), "organization.id")
+        self.assertIs(organization_filter.operator, eq)
+        self.assertEqual(organization_filter.right.value, organization_id)
+
+        self.assertEqual(str(user_filter.left), "team_memberships.user_id")
+        self.assertIs(user_filter.operator, eq)
+        self.assertEqual(user_filter.right.value, user_id)
+
+        self.assertEqual(
+            str(membership_org_filter.left),
+            "team_memberships.grantee_organization_id",
+        )
+        self.assertIs(membership_org_filter.operator, eq)
+        self.assertEqual(str(membership_org_filter.right), "organization.id")
+
+        self.assertEqual(
+            str(team_org_filter.left),
+            "team_memberships.grantee_organization_id",
+        )
+        self.assertIs(team_org_filter.operator, eq)
+        self.assertEqual(str(team_org_filter.right), "teams.organization_id")
+
+        self.assertEqual(str(team_active_filter.left), "teams.is_active")
+        self.assertIs(team_active_filter.operator, is_)
+        self.assertEqual(str(team_active_filter.right), "true")
+
+        self.assertEqual(str(org_active_filter.left), "organization.is_active")
+        self.assertIs(org_active_filter.operator, is_)
+        self.assertEqual(str(org_active_filter.right), "true")
+
+    def test_route_hides_organization_outside_user_memberships(self):
+        # 조직이 없거나 현재 사용자의 membership scope 밖이면 존재 여부를 노출하지 않고 404로 숨긴다.
+        organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: _Query([])
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).get(f"/api/v1/organizations/{organization_id}")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"detail": "Organization not found"})
+
 
 class _Query:
     def __init__(self, items):
@@ -127,6 +220,9 @@ class _Query:
 
     def all(self):
         return self.items
+
+    def first(self):
+        return self.items[0] if self.items else None
 
 
 def _organization(
