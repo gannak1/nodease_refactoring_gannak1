@@ -34,6 +34,10 @@ def record_permission_denied(
         target_id=resource_id,
         status="failure",
         metadata={
+            "policy_result": "deny",
+            "resource_type": resource_type,
+            "resource_id": str(resource_id),
+            "required_permission": action,
             "permission_action": action,
             "effective_auth_state": effective_auth_state,
         },
