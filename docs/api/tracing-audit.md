@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md)
 
 ## 범위
@@ -36,14 +36,13 @@ Workflow run trace, span, payload, trace policy, retention purge, audit log 조�
 
 ## LLM Trace 엔드포인트
 
-MVP 1에서 run/node 기준 LLM usage를 조회해야 한다. 아래 두 방식 중 하나만 채택한다.
+현재 코드는 run/node 기준 LLM usage 조회를 별도 endpoint로 제공한다. 기존 run detail 응답에 LLM usage 요약을 포함하는 방식은 채택하지 않았다.
 
 | Status | Method | Path | 설명 |
 | --- | --- | --- | --- |
-| Planned | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}` | 기존 run detail 응답에 LLM usage 요약을 포함 |
-| Planned | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 별도 LLM trace endpoint |
+| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 별도 LLM trace endpoint. `node_id`, `limit`, `offset` query를 지원 |
 
-중복 API를 만들지 않는다. 별도 endpoint를 선택하면 query parameter `node_id`를 지원한다.
+중복 API를 만들지 않는다.
 
 ## Raw Payload 규칙
 

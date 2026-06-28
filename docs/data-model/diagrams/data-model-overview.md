@@ -3,9 +3,11 @@
 Status: Draft
 Authority: Data Model Diagram
 Source of Truth: No
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
-이 문서는 [physical-data-model.md](../physical-data-model.md)의 table 참조관계를 시각화한 보조 문서다. 구현 기준은 Mermaid 다이어그램이 아니라 물리 데이터 모델 문서의 table, column, relationship 설명이다.
+이 문서는 [physical-data-model.md](../physical-data-model.md)의 현재 코드 table 참조관계를 시각화한 보조 문서다. 구현 기준은 Mermaid 다이어그램이 아니라 물리 데이터 모델 문서의 table, column, relationship 설명이다.
+
+`user_knowledge_permissions`, `user_audit_permissions`는 MVP 2/3 planned table이므로 현재 코드 기준 다이어그램에서는 제외한다.
 
 ```mermaid
 erDiagram
@@ -24,9 +26,7 @@ erDiagram
   teams ||--o{ team_llm_permissions : grants
   teams ||--o{ team_audit_permissions : grants
   users ||--o{ user_workflow_permissions : direct_grant
-  users ||--o{ user_knowledge_permissions : direct_grant
   users ||--o{ user_llm_permissions : direct_grant
-  users ||--o{ user_audit_permissions : direct_grant
 
   apps ||--o{ workflows : has
   apps ||--o{ workflow_deployments : deploys
@@ -50,7 +50,6 @@ erDiagram
   knowledge_bases ||--o{ documents : contains
   knowledge_bases ||--o{ document_chunks : denormalizes
   knowledge_bases ||--o{ team_knowledge_permissions : authorized_by
-  knowledge_bases ||--o{ user_knowledge_permissions : authorized_by
   documents ||--o{ document_chunks : contains
 
   llm_providers ||--o{ llm_models : provides

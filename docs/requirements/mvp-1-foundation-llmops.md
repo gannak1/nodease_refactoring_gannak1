@@ -1,5 +1,11 @@
 # MVP 1: 기반 구축 및 LLMOps Observability
 
+Status: Draft
+Authority: Requirements
+Source of Truth: Yes
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
+
 ## 목표
 
 MVP 1은 "가장 먼저 설계해야 하는 기반"과 "가장 빨리 보여줄 수 있는 LLMOps 가치"를 함께 만든다.
@@ -91,8 +97,8 @@ Project boundary = App
 | --- | --- | --- |
 | Project | `apps` | App을 project boundary로 사용 |
 | Canvas | `workflows` | Workflow를 canvas resource로 사용 |
-| Data Source | `knowledge_bases`, `documents`, `connections` | MVP 2에서 knowledge base/document `use` 권한을 적용하고, connection runtime `use`는 consuming resource 권한으로 허용 |
-| Model | `llm_models` | MVP 1에서 model `use` 권한 기반 설계 |
+| Data Source | `knowledge_bases`, `documents`, `connections` | MVP 2에서 knowledge base `use` 권한과 document metadata policy를 적용하고, connection runtime `use`는 consuming resource 권한으로 허용 |
+| Model | `llm_models` | 별도 model permission table 없이 credential `use` 권한과 `llm_rel_credential_models` 검증으로 사용 가능 모델 제한 |
 
 ## Resource Type
 
@@ -102,9 +108,9 @@ Project boundary = App
 | --- | --- | --- | --- |
 | `app` | `apps` | 프로젝트 경계 | MVP 1 |
 | `workflow` | `workflows` | read/write/execute 분리 | MVP 1 |
-| `deployment` | `workflow_deployments` | deploy/activate/manage | MVP 1 설계, MVP 3 강화 |
+| `deployment` | `workflow_deployments` | 기본 read/deploy/manage enforcement는 workflow 권한으로 처리. checklist/diff/trigger logging은 MVP 3에서 강화 | MVP 1 기본 enforcement, MVP 3 운영 강화 |
 | `knowledge_base` | `knowledge_bases` | RAG 데이터 사용 권한 | MVP 2 |
-| `document` | `documents` | 문서별 민감도/권한 | MVP 2 |
+| `document` | `documents` | 문서별 민감도/metadata policy. document별 permission table은 만들지 않음 | MVP 2 |
 | `connection` | `connections` | secret/manage는 owner 또는 organization owner/manager, runtime `use`는 workflow/knowledge base 권한 | 독립 permission resource 아님 |
 | `llm_model` | `llm_models` | credential-model relation으로 사용 가능 모델을 제한. model별 permission table은 만들지 않음 | MVP 1 |
 | `llm_credential` | `llm_credentials` | API key 관리 권한 | MVP 1 설계 |
@@ -129,12 +135,12 @@ Project boundary = App
 | `team` | 기본 권한 subject. user는 team membership을 통해 권한을 얻는다. | MVP 1 |
 | `user` | 예외적 추가 권한 subject. resource별 `user_*_permissions`로 additive allow만 부여한다. | MVP 1 |
 
-조직 범위는 dev baseline의 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`는 새로 만들지 않는다.
+조직 범위는 현재 코드의 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`는 새로 만들지 않는다.
 
 ## 권장 DB 모델
 
 ```text
-existing dev baseline
+current code baseline
   organization
   teams
   team_memberships
@@ -143,14 +149,16 @@ existing dev baseline
   team_llm_permissions
   team_audit_permissions
 
-new additive user direct grants
+implemented additive user direct grants
   user_workflow_permissions
   user_llm_permissions
+
+planned additive user direct grants
   user_knowledge_permissions
   user_audit_permissions
 ```
 
-MVP 1에서는 `user_workflow_permissions`, `user_llm_permissions`를 우선 추가한다. `user_knowledge_permissions`는 MVP 2, `user_audit_permissions`는 MVP 3에서 추가한다. 모든 user direct grant는 additive allow만 지원하고 deny는 도입하지 않는다.
+현재 코드에서는 `user_workflow_permissions`, `user_llm_permissions`가 구현되어 있다. `user_knowledge_permissions`는 MVP 2, `user_audit_permissions`는 MVP 3에서 추가한다. 모든 user direct grant는 additive allow만 지원하고 deny는 도입하지 않는다.
 
 ## 권한 체크 위치
 
@@ -161,54 +169,70 @@ MVP 1에서는 `user_workflow_permissions`, `user_llm_permissions`를 우선 추
 | Gateway API dependency | 화면/API 접근 권한 |
 | Workflow save | workflow `write` 권한 |
 | Workflow execute | workflow `execute` 권한 |
-| LLM node 실행 | model/credential `use` 권한 |
-| RAG retrieval | knowledge_base/document `use` 권한. MVP 2에서 enforcement |
-| Deployment create/toggle | `deploy`/`manage` 권한. MVP 3에서 강화 |
+| LLM node 실행 | credential `use` 권한 + credential-model relation |
+| RAG retrieval | knowledge base `use` 권한 + document metadata policy. MVP 2에서 enforcement |
+| Deployment create/toggle/delete | 기본 `read`/`deploy`/`manage` 권한은 Gateway route에서 적용. deploy checklist, diff, trigger logging은 MVP 3에서 강화 |
 | Audit log query | audit resource `read` 권한. MVP 2-3에서 강화 |
 
 Public Run/Webhook은 기존 Moduly처럼 app `auth_secret`을 계속 사용한다. 다만 내부 실행 context에서는 deployment/workflow/model/data source 정책을 추가로 평가할 수 있게 설계한다.
 
 ## Audit / Tracing Foundation
 
-MVP 1에서 audit logging 규칙을 먼저 정한다. 기존 Moduly/dev baseline에는 `audit_logs`, `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`가 있다. 기업용 audit에는 권한 차단, 변경 이벤트, 배포 이벤트, actor/action/resource 표준화, before/after snapshot, RAG chunk trace metadata, audit 검색 규칙이 필요하다.
+MVP 1에서 audit logging 규칙을 먼저 정한다. 현재 코드에는 `audit_logs`, `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`가 있다. 기업용 audit에는 권한 차단, 변경 이벤트, 배포 이벤트, actor/action/resource 표준화, before/after snapshot, RAG chunk trace metadata, audit 검색 규칙이 필요하다.
 
 사용 모델:
 
 ```text
 audit_logs
   id
+  occurred_at
   actor_id
+  actor_type
+  category
   action
-  resource_type
-  resource_id
+  target_type
+  target_id
+  before
+  after
   status
   audit_metadata
-  ip_address
-  user_agent
-  created_at
 ```
 
-`action`은 `workflow.execute`, `policy.block`처럼 사람이 읽을 수 있는 canonical action이다. `status`는 dev enum에 맞춰 `success` 또는 `failure`만 저장한다. `allow`, `deny`, `warn`, `block` 같은 정책 결과는 `audit_metadata.policy_result`에 저장한다.
+`action`은 `workflow.execute`, `permission.denied`처럼 사람이 읽을 수 있는 canonical action이다. `status`는 현재 코드 enum에 맞춰 `success` 또는 `failure`만 저장한다. `allow`, `deny`, `warn`, `block` 같은 정책 결과는 `audit_metadata.policy_result`에 저장한다. `ip`, `user_agent`, `request_id`는 별도 column이 아니라 `audit_metadata`에 저장한다.
 
 권한 출처 스냅샷이 필요하면 `audit_metadata.effective_permission`, `audit_metadata.source_team_ids`, `audit_metadata.user_direct_permission_id`처럼 metadata에 저장한다. 권한 판단의 원천은 `team_*_permissions`와 `user_*_permissions`다.
 
-초기 `audit_logs.action` 값:
+현재 코드에 구현된 MVP 1 주요 `audit_logs.action` 값:
 
 | Action | 예시 | MVP |
 | --- | --- | --- |
-| `resource.read` | workflow 조회 | MVP 1 |
-| `resource.update` | workflow graph 수정 | MVP 1 |
-| `workflow.execute` | workflow 실행 | MVP 1 |
-| `workflow.blocked` | 권한/정책으로 실행 차단 | MVP 1 |
+| `app.create` | app 생성 | MVP 1 |
+| `app.update` | app 수정 | MVP 1 |
+| `app.clone` | app clone | MVP 1 |
+| `app.delete` | app 삭제 | MVP 1 |
+| `workflow.create` | workflow 생성 | MVP 1 |
+| `workflow.update` | workflow graph 수정 | MVP 1 |
+| `workflow.execute` | workflow 실행 시도와 결과 | MVP 1 |
+| `permission.denied` | RBAC/resource permission 부족으로 거부 | MVP 1 |
+| `team_workflow_permission.created/updated/deleted` | team workflow permission row 변경 | MVP 1 |
+| `user_workflow_permission.created/updated/deleted` | user workflow permission row 변경 | MVP 1 |
+| `team_llm_permission.created/updated/deleted` | team LLM credential permission row 변경 | MVP 1 |
+| `user_llm_permission.created/updated/deleted` | user LLM credential permission row 변경 | MVP 1 |
+| `auth.permission_denied` | 인증 전 또는 resource helper 밖의 전역 401/403 거부 | MVP 1 |
 | `llm.call` | LLM 호출 | MVP 1 |
-| `rag.retrieve` | RAG chunk 검색 | MVP 2 |
-| `deployment.create` | 배포 생성 | MVP 3 |
-| `deployment.activate` | 배포 활성화 | MVP 3 |
-| `deployment.activate_previous` | 기존 `toggle`로 이전 deployment를 다시 활성화한 경우 | MVP 3 |
-| `permission.grant` | 권한 부여 | MVP 2 |
-| `permission.revoke` | 권한 회수 | MVP 2 |
-| `policy.warn` | 정책 경고 | MVP 2 |
-| `policy.block` | 정책 차단 | MVP 2 |
+| `workflow.deploy` | deployment 생성 | MVP 1 |
+| `deployment.toggle` | deployment 일반 활성/비활성 toggle | MVP 1 |
+| `deployment.activate_previous` | 기존 `toggle`로 이전 deployment를 다시 활성화한 경우 | MVP 1 |
+| `deployment.delete` | deployment 삭제 | MVP 1 |
+| `organization.update` | organization 이름/options 수정 | MVP 1 |
+| `credential.create` | LLM credential 생성 | MVP 1 |
+| `credential.delete` | LLM credential 삭제 | MVP 1 |
+
+MVP 2/3 목표 action인 `policy.warn`, `policy.block`, `deployment.check`, `recommendation.*`는 현재 코드의 `AuditAction` 상수에는 아직 없다. 구현 시 action 상수와 문서를 함께 추가한다.
+
+현재 `AuditAction`에는 `permission.grant`, `permission.revoke` 상수가 있지만, 등록된 `/api/v1/permissions/*` router는 권한 부여/수정/회수를 위 permission row별 data-change action으로 기록한다.
+
+`workflow.blocked`는 DB에 저장하는 canonical action으로 쓰지 않는다. UI에서 "workflow 차단" 표시가 필요하면 `target_type='workflow'`와 `permission.denied` 또는 `policy.block` event를 조합해 파생한다.
 
 MVP 1부터 `request_id` 또는 `trace_id` 개념을 둔다.
 
@@ -249,11 +273,11 @@ llm_trace
   error_message
 ```
 
-기존 `llm_usage_logs`를 최대한 재사용한다. 단, 기존 Moduly 문서상 `llm_usage_logs.latency_ms` 속성이 DB 컬럼 `atency_ms`로 생성될 수 있으므로 MVP 1에서 migration 또는 alias 정책을 확정해야 한다.
+기존 `llm_usage_logs`를 최대한 재사용한다. 현재 코드 기준 물리 column과 SQLAlchemy 속성명은 모두 `latency_ms`다. 과거 `atency_ms` column은 `f8a9b0c1d2e3_rename_llm_usage_latency_ms.py` migration에서 `latency_ms`로 정리한다.
 
 ## Data Governance / Policy Skeleton
 
-MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 만든다. 실제 데이터 소스 차단은 MVP 2에서 강화하고, MVP 1의 enforcement는 workflow 권한과 LLM model `use` 권한 중심이다.
+MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 만든다. 실제 데이터 소스 차단은 MVP 2에서 강화하고, MVP 1의 enforcement는 workflow 권한과 LLM credential `use` 권한 및 credential-model relation 중심이다.
 
 초기 classification:
 
@@ -280,7 +304,7 @@ MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 �
 | --- | --- |
 | Knowledge Base | HR team 또는 직접 grant를 받은 user만 `use` 가능 |
 | Document | PII 문서는 외부 모델 호출 전 warn/block |
-| LLM Credential/Model | 고가 모델은 허용된 credential과 credential permission을 가진 user만 사용 가능 |
+| LLM Credential/Model | 고가 모델은 허용된 credential, credential `use` 권한, verified credential-model relation을 가진 user만 사용 가능 |
 | Workflow | `viewer`는 `execute` 불가 |
 | Deployment | `operator`/`builder`/`manager` 중 배포 정책에 맞는 state만 `deploy` 가능 |
 
@@ -295,7 +319,7 @@ MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 �
 5. `builder` 권한 user는 UI에서 LLM node 포함 workflow를 만들고 저장하고 실행한다.
 6. `viewer` 권한 user는 UI에서 workflow를 볼 수 있지만 저장/실행은 차단된다.
 7. `operator` 권한 user는 UI에서 workflow를 실행할 수 있지만 저장은 차단된다.
-8. `builder` 권한이 있어도 허용되지 않은 LLM credential/model 조합을 쓰면 실행 전 또는 LLM node 실행 시 차단된다.
+8. `builder` 권한이 있어도 credential `use` 권한이 없거나 verified credential-model relation이 없으면 실행 전 또는 LLM node 실행 시 차단된다.
 9. 허용된 LLM node 포함 workflow를 실행한다.
 10. UI에서 노드별 model, token, cost, latency, status를 본다.
 11. 권한 실패와 LLM call이 audit/trace 구조에 남고 UI에서 확인된다.
@@ -307,12 +331,12 @@ Foundation:
 
 - resource type enum 정의
 - permission vocabulary 정의
-- dev baseline team permission과 user direct permission 모델 확정
+- 현재 코드의 team permission과 user direct permission 모델 확정
 - permission check helper/API dependency 추가
-- workflow read/write/execute와 LLM credential/model `use` check 최소 적용
+- workflow read/write/execute와 LLM credential `use` + credential-model relation check 최소 적용
 - audit_logs action/metadata skeleton 추가
 - trace id 전달 구조 설계
-- classification 상수/필드 설계
+- classification 상수와 metadata convention 설계
 - policy decision metadata 구조
 - 현재 organization context 표시와 API 요청 scope 전달
 - team/member/permission 관리 UI
@@ -320,7 +344,7 @@ Foundation:
 
 LLMOps Observability:
 
-- LLM trace 조회 API
+- 구현된 LLM trace 조회 API 유지 및 회귀 테스트
 - run detail에서 node run과 LLM usage 연결
 - editor canvas에 node별 비용/토큰/latency badge
 - LLMOps run detail/side panel
@@ -355,7 +379,7 @@ LLMOps Observability:
 
 작업:
 
-- dev baseline의 `team_workflow_permissions`, `team_llm_permissions` 사용 기준 확정
+- 현재 코드의 `team_workflow_permissions`, `team_llm_permissions` 사용 기준 확정
 - `user_workflow_permissions`, `user_llm_permissions` 추가
 - migration 작성
 - seed team template과 team permission row 추가
@@ -364,7 +388,7 @@ LLMOps Observability:
 
 - `builder` 권한 user는 workflow execute 가능
 - `viewer` 권한 user는 workflow execute 불가
-- 허용되지 않은 LLM credential/model `use` 차단
+- 허용되지 않은 LLM credential 또는 credential-model relation 차단
 
 3. Audit Skeleton
 
@@ -384,8 +408,8 @@ LLMOps Observability:
 작업:
 
 - `llm_usage_logs`와 `workflow_node_runs` 연결 확인
-- run id 기준 trace 조회 API 추가
-- node id 기준 trace 필터 추가
+- run id 기준 trace 조회 API 검증
+- node id 기준 trace 필터 검증
 - latency 컬럼명 정합성 확인
 
 검증:
@@ -443,7 +467,7 @@ LLMOps Observability:
 
 | 영역 | 완료 기준 |
 | --- | --- |
-| RBAC foundation | `viewer` 실행/수정 차단, `builder` 실행/수정 허용, 허용되지 않은 LLM credential/model 사용 차단 |
+| RBAC foundation | `viewer` 실행/수정 차단, `builder` 실행/수정 허용, credential `use` 권한 또는 verified credential-model relation 없는 LLM 사용 차단 |
 | Audit foundation | 권한 차단과 workflow 실행 이벤트가 `audit_logs`에 저장됨 |
 | LLM trace | run/node/model/token/cost/latency/status 조회 가능 |
 | RBAC UI | owner/manager가 team/member/workflow permission/LLM credential permission을 UI에서 관리 가능 |
@@ -477,7 +501,7 @@ LLMOps Observability:
 
 - permission helper test
 - workflow execute permission test
-- llm credential/model use permission test
+- LLM credential `use` permission과 credential-model relation test
 - audit_logs create test
 - LLM trace API test
 - RBAC management UI smoke test

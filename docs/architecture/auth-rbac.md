@@ -3,8 +3,9 @@
 Status: Draft
 Authority: Architecture
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
-Related ADRs: ADR-202606271559-active-organization, ADR-202606271559-auth-state-standard, ADR-202606271559-user-direct-permission
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
+Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
 ## 적용 경계
 
@@ -12,10 +13,12 @@ RBAC enforcement는 Gateway endpoint와 runtime service가 함께 사용하는 �
 
 ## Organization Context
 
-권한 판단에는 organization context가 필요하다. 현재 코드는 첫 active team membership을 기반으로 primary organization을 추정하는 fallback을 가진다. 최종 active organization 전략은 아직 승인되지 않았으며 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)에서 추적한다.
+권한 판단에는 organization context가 필요하다. MVP 1의 active organization context는 `X-Organization-Id` request header로 전달하고, 서버는 session/cookie에 active organization을 저장하지 않는다. Organization, team, permission API는 header 값이 현재 user의 active membership scope 안에 있는지 검증한다.
+
+첫 active team membership 기반 primary organization helper는 organization context가 없는 legacy/과도기 경로의 fallback으로만 사용한다. 승인 근거는 [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)를 따른다.
 
 ## 권한 모델
 
-현재 활성 데이터 모델은 organization/team permission을 기준으로 한다. User direct permission은 additive extension 후보이며 [ADR-202606271559-user-direct-permission](../decisions/ADR-202606271559-user-direct-permission.md)에서 추적한다.
+현재 활성 데이터 모델은 organization/team permission을 기본 기준으로 하고, workflow/LLM credential의 user direct permission은 additive allow로 합산한다. `auth_state` 표준값과 user direct permission 승인 근거는 [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)를 따른다.
 
 물리 테이블 상세는 [data-model/physical-data-model.md](../data-model/physical-data-model.md)에 정의한다.

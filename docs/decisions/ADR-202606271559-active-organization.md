@@ -8,7 +8,7 @@ Created At: 2026-06-27 15:59 KST
 
 ## 배경
 
-RBAC 판정은 먼저 요청의 organization context를 결정해야 한다. 현재 dev 코드에는 첫 active team membership을 기준으로 organization을 찾는 primary organization helper가 있다. 다중 organization 사용자가 생기면 생성 scope, 조회 scope, 권한 판정 기준이 모호해질 수 있다.
+RBAC 판정은 먼저 요청의 organization context를 결정해야 한다. 작성 당시 코드에는 첫 active team membership을 기준으로 organization을 찾는 primary organization helper가 있었다. 다중 organization 사용자가 생기면 생성 scope, 조회 scope, 권한 판정 기준이 모호해질 수 있다.
 
 ## 선택지
 
