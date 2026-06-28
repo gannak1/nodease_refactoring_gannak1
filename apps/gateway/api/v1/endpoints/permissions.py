@@ -28,6 +28,7 @@ from apps.shared.db.session import get_db
 from apps.shared.schemas.permission import (
     PermissionGrantRequest,
     TeamWorkflowPermissionResponse,
+    UserWorkflowPermissionResponse,
     WORKFLOW_AUTH_STATE_RANK,
 )
 
@@ -150,6 +151,25 @@ def _lock_team_workflow_permission_key(
     )
 
 
+def _lock_user_workflow_permission_key(
+    db: Session,
+    organization_id: UUID,
+    workflow_id: UUID,
+    user_id: UUID,
+) -> None:
+    """권한 natural key 단위로 pre-read와 upsert 사이의 감사 레이스를 막는다."""
+    # 같은 user/workflow 권한 row를 동시에 수정해도 감사 before 값이 섞이지 않게 잠근다.
+    lock_key = f"{organization_id}:{workflow_id}:{user_id}"
+    db.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtext("user_workflow_permission"),
+                func.hashtext(lock_key),
+            )
+        )
+    )
+
+
 def _permission_audit_columns(permission: TeamWorkflowPermission) -> dict:
     """감사 로그에 기록할 permission column 값을 dict로 추출한다."""
     return {
@@ -230,6 +250,45 @@ def _record_team_workflow_permission_delete_audit(
         target_id=permission.id,
         before=before,
         after=None,
+        metadata=metadata,
+    )
+
+
+def _record_user_workflow_permission_audit(
+    current_user: User,
+    permission: UserWorkflowPermission,
+    before: dict | None,
+    after: dict,
+) -> None:
+    """Core upsert가 우회한 user-workflow 권한 변경 감사를 직접 남긴다."""
+    # Core upsert는 ORM 이벤트를 타지 않으므로 endpoint에서 audit payload를 직접 구성한다.
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    if before is None:
+        action = "user_workflow_permission.created"
+        audit_before = None
+        audit_after = after
+    else:
+        # 변경이 없는 upsert는 감사 로그를 남기지 않는다.
+        audit_before, audit_after = _changed_permission_columns(before, after)
+        if not audit_before and not audit_after:
+            return
+        action = "user_workflow_permission.updated"
+
+    record_audit(
+        action=action,
+        category="data_change",
+        actor_id=str(current_user.id),
+        actor_type="user",
+        target_type="user_workflow_permission",
+        target_id=permission.id,
+        before=audit_before,
+        after=audit_after,
         metadata=metadata,
     )
 
@@ -329,6 +388,114 @@ def _authorize_team_workflow_permission_change(
     return organization, workflow, team
 
 
+def _authorize_user_workflow_permission_change(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    workflow_id: UUID,
+    user_id: UUID,
+) -> tuple[Organization, Workflow, User]:
+    """user workflow permission 변경 공통 scope와 manage 권한을 검증한다."""
+    # 먼저 organization scope를 확정한다. scope 밖이면 리소스 존재 여부를 숨긴다.
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = _is_organization_manager(
+        organization,
+        current_user.id,
+    )
+    # organization manager는 active membership 없이도 권한 관리가 가능하다.
+    if not is_organization_manager and not _has_active_membership(
+        db,
+        organization_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    # 대상 workflow는 요청 organization 안에 있어야 한다.
+    workflow = (
+        db.query(Workflow)
+        .filter(
+            Workflow.id == workflow_id,
+            Workflow.organization_id == organization_id,
+        )
+        .first()
+    )
+    if workflow is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Workflow not found.",
+        )
+
+    # 비활성화된 user에는 direct workflow permission을 부여하지 않는다.
+    target_user = (
+        db.query(User)
+        .filter(
+            User.id == user_id,
+            User.deactivated_at.is_(None),
+        )
+        .first()
+    )
+    if target_user is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "User not found.",
+        )
+
+    target_is_organization_manager = _is_organization_manager(organization, user_id)
+    # 대상 user도 같은 organization의 manager이거나 active member여야 한다.
+    if not target_is_organization_manager and not _has_active_membership(
+        db,
+        organization_id,
+        user_id,
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "User not found.",
+        )
+
+    # 최종 허용 주체는 organization manager 또는 workflow manager다.
+    if not is_organization_manager and not _has_workflow_manage_permission(
+        db,
+        organization_id,
+        workflow_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Workflow manage or organization manager permission is required.",
+        )
+
+    return organization, workflow, target_user
+
+
 def _upsert_team_workflow_permission(
     db: Session,
     current_user: User,
@@ -400,6 +567,79 @@ def _upsert_team_workflow_permission(
     return permission
 
 
+def _upsert_user_workflow_permission(
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    workflow_id: UUID,
+    user_id: UUID,
+    auth_state: str,
+    assigned_by: UUID,
+    assigned_at: datetime,
+) -> UserWorkflowPermission:
+    """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_user_workflow_permission_key(db, organization_id, workflow_id, user_id)
+    # upsert 전 기존 row를 읽어 감사 로그의 before 값으로 사용한다.
+    existing_permission = (
+        db.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.grantee_organization_id == organization_id,
+            UserWorkflowPermission.workflow_id == workflow_id,
+            UserWorkflowPermission.user_id == user_id,
+        )
+        .first()
+    )
+    before = (
+        _permission_audit_columns(existing_permission)
+        if existing_permission is not None
+        else None
+    )
+
+    # PostgreSQL upsert로 같은 권한 row를 동시에 생성하려는 요청도 DB에서 원자적으로 처리한다.
+    insert_stmt = pg_insert(UserWorkflowPermission).values(
+        grantee_organization_id=organization_id,
+        workflow_id=workflow_id,
+        user_id=user_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=assigned_at,
+        options={},
+        flags=0,
+    )
+    upsert_stmt = (
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                UserWorkflowPermission.grantee_organization_id,
+                UserWorkflowPermission.user_id,
+                UserWorkflowPermission.workflow_id,
+            ],
+            set_={
+                "auth_state": insert_stmt.excluded.auth_state,
+                "assigned_by": insert_stmt.excluded.assigned_by,
+                "assigned_at": insert_stmt.excluded.assigned_at,
+            },
+            where=UserWorkflowPermission.auth_state
+            != insert_stmt.excluded.auth_state,
+        )
+        .returning(UserWorkflowPermission)
+        .execution_options(populate_existing=True)
+    )
+
+    permission = db.scalars(upsert_stmt).one_or_none()
+    if permission is None:
+        # 같은 auth_state PUT은 no-op이므로 returning row가 없고 기존 row를 응답에 재사용한다.
+        permission = existing_permission
+    after = _permission_audit_columns(permission)
+    db.commit()
+    _record_user_workflow_permission_audit(
+        current_user,
+        permission,
+        before,
+        after,
+    )
+    return permission
+
+
 @router.put(
     "/workflows/{workflow_id}/teams/{team_id}",
     response_model=TeamWorkflowPermissionResponse,
@@ -432,6 +672,45 @@ def put_team_workflow_permission(
         organization_id,
         workflow_id,
         team_id,
+        payload.auth_state,
+        current_user.id,
+        now,
+    )
+
+
+@router.put(
+    "/workflows/{workflow_id}/users/{user_id}",
+    response_model=UserWorkflowPermissionResponse,
+)
+def put_user_workflow_permission(
+    workflow_id: UUID,
+    user_id: UUID,
+    payload: PermissionGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """user에 workflow 직접 권한을 부여하거나 갱신하는 PUT endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    # scope, 대상 user 상태, 부여자 권한을 모두 통과해야 permission row를 만든다.
+    _authorize_user_workflow_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        workflow_id,
+        user_id,
+    )
+
+    now = datetime.now(timezone.utc)
+    return _upsert_user_workflow_permission(
+        db,
+        current_user,
+        organization_id,
+        workflow_id,
+        user_id,
         payload.auth_state,
         current_user.id,
         now,

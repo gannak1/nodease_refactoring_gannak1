@@ -18,6 +18,7 @@ from apps.shared.db.models.team import (
     TeamWorkflowPermission,
     UserWorkflowPermission,
 )
+from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
 
@@ -731,6 +732,174 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
 
+    def test_put_user_workflow_permission_creates_row_for_organization_manager(self):
+        # organization manager는 user direct workflow 권한을 부여할 수 있다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        upsert_result = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                created_by=target_user_id,
+                managed_by=actor_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            user_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "builder"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["grantee_organization_id"], str(organization_id))
+        self.assertEqual(response.json()["workflow_id"], str(workflow_id))
+        self.assertEqual(response.json()["user_id"], str(target_user_id))
+        self.assertEqual(response.json()["auth_state"], "builder")
+        self.assertEqual(response.json()["assigned_by"], str(actor_id))
+        self.assertIn(
+            "ON CONFLICT (grantee_organization_id, user_id, workflow_id)",
+            str(session.upsert_statement.compile(dialect=postgresql.dialect())),
+        )
+        self.assertTrue(session.committed)
+        self.assertIsNotNone(session.lock_statement)
+        self.permission_audit.assert_called_once()
+        audit = self.permission_audit.call_args.kwargs
+        self.assertEqual(audit["action"], "user_workflow_permission.created")
+        self.assertEqual(audit["target_type"], "user_workflow_permission")
+        self.assertEqual(audit["target_id"], upsert_result.id)
+        self.assertEqual(audit["after"]["user_id"], target_user_id)
+        self.assertEqual(audit["after"]["auth_state"], "builder")
+
+    def test_put_user_workflow_permission_allows_workflow_manager(self):
+        # organization manager가 아니어도 workflow manager면 user direct 권한을 부여할 수 있다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        upsert_result = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            manager_permissions=[
+                _team_workflow_permission(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    team_id=uuid4(),
+                    auth_state="manager",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+            user_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["user_id"], str(target_user_id))
+        self.assertTrue(session.committed)
+        _assert_workflow_manage_filters(
+            self,
+            session.workflow_manager_query,
+            actor_id,
+            workflow_id,
+            organization_id,
+        )
+
+    def test_put_user_workflow_permission_hides_target_user_outside_scope(self):
+        # 대상 user가 organization active membership 밖이면 direct permission을 만들지 않는다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=None,
+        )
+
+        response = self._put_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "User not found."))
+        self.assertFalse(session.committed)
+        self.assertFalse(session.scalars_called)
+
+    def test_put_user_workflow_permission_rejects_deactivated_target_user(self):
+        # 비활성 user에게는 direct workflow permission을 만들지 않는다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(
+                id=target_user_id,
+                deactivated_at=datetime.now(timezone.utc),
+            ),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+        )
+
+        response = self._put_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "User not found."))
+        self.assertFalse(session.committed)
+        self.assertFalse(session.scalars_called)
+
     def test_delete_team_workflow_permission_deletes_row_for_organization_manager(self):
         # organization manager는 team workflow permission을 회수할 수 있다.
         user_id = uuid4()
@@ -973,6 +1142,45 @@ class TestPermissionsApi(unittest.TestCase):
                 json=payload,
             )
 
+    def _put_user_permission(
+        self,
+        session,
+        user_id,
+        workflow_id,
+        target_user_id,
+        payload,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 user 권한 PUT endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).put(
+                f"/api/v1/permissions/workflows/{workflow_id}/users/{target_user_id}",
+                headers=headers,
+                json=payload,
+            )
+
     def _delete_permission(
         self,
         session,
@@ -1072,10 +1280,14 @@ class _Session:
         membership=None,
         workflow=None,
         team=None,
+        target_user=None,
+        target_membership=None,
         manager_permissions=None,
         user_direct_permissions=None,
         existing_permission=None,
+        existing_user_permission=None,
         upsert_result=None,
+        user_upsert_result=None,
     ):
         """권한 endpoint가 사용하는 Session API의 최소 동작을 구성한다."""
         self.organization_query = _Query(
@@ -1085,13 +1297,22 @@ class _Session:
         self.membership_query = _Query(first_result=membership, apply_filters=True)
         self.workflow_query = _Query(first_result=workflow, apply_filters=True)
         self.team_query = _Query(first_result=team, apply_filters=True)
+        self.user_query = _Query(first_result=target_user, apply_filters=True)
+        self.target_membership_query = _Query(
+            first_result=target_membership,
+            apply_filters=True,
+        )
         self.manager_permissions = manager_permissions
         self.user_direct_permissions = user_direct_permissions or []
         self.existing_permission = existing_permission
+        self.existing_user_permission = existing_user_permission
         self.workflow_manager_query = None
         self.user_workflow_query = None
         self.workflow_permission_query_count = 0
+        self.membership_query_count = 0
+        self.user_workflow_permission_query_count = 0
         self.upsert_result = upsert_result
+        self.user_upsert_result = user_upsert_result
         self.upsert_statement = None
         self.lock_statement = None
         self.query_calls = []
@@ -1107,11 +1328,17 @@ class _Session:
         if model is Organization:
             return self.organization_query
         if model is TeamMembership:
+            self.membership_query_count += 1
+            # user 권한 PUT에서는 첫 membership 조회가 actor, 두 번째가 target user 검증용이다.
+            if self.membership_query_count == 2:
+                return self.target_membership_query
             return self.membership_query
         if model is Workflow:
             return self.workflow_query
         if model is Team:
             return self.team_query
+        if model is User:
+            return self.user_query
         if model is TeamWorkflowPermission:
             self.workflow_permission_query_count += 1
             # 첫 번째 TeamWorkflowPermission query는 요청자의 manage 권한 판정용이다.
@@ -1126,6 +1353,13 @@ class _Session:
                 return self.workflow_manager_query
             return _Query(first_result=self.existing_permission, apply_filters=True)
         if model is UserWorkflowPermission:
+            self.user_workflow_permission_query_count += 1
+            # 두 번째 UserWorkflowPermission query는 upsert 전 기존 direct 권한 조회용이다.
+            if self.user_workflow_permission_query_count > 1:
+                return _Query(
+                    first_result=self.existing_user_permission,
+                    apply_filters=True,
+                )
             self.user_workflow_query = _Query(
                 items=self.user_direct_permissions,
                 apply_filters=True,
@@ -1145,6 +1379,8 @@ class _Session:
         """Core upsert statement를 기록하고 returning 결과 wrapper를 반환한다."""
         self.scalars_called = True
         self.upsert_statement = statement
+        if "user_workflow_permissions" in str(statement):
+            return _ScalarResult(self.user_upsert_result)
         return _ScalarResult(self.upsert_result)
 
     def execute(self, statement):
@@ -1289,6 +1525,9 @@ def _matches_expression(obj, expression):
             return left_value == _column_value(obj, str(expression.right))
         return left_value == expression.right.value
     if expression.operator is is_:
+        # User.deactivated_at.is_(None) 같은 NULL 필터도 fake query에서 실제로 걸러낸다.
+        if str(expression.right).lower() == "null":
+            return left_value is None
         return left_value is (str(expression.right) == "true")
     raise AssertionError(f"Unexpected filter operator: {expression.operator}")
 
@@ -1298,6 +1537,8 @@ def _column_value(obj, column):
     value_by_column = {
         "organization.id": getattr(obj, "id", missing),
         "organization.is_active": getattr(obj, "is_active", missing),
+        "users.id": getattr(obj, "id", missing),
+        "users.deactivated_at": getattr(obj, "deactivated_at", None),
         "workflows.id": getattr(obj, "id", missing),
         "workflows.organization_id": getattr(obj, "organization_id", missing),
         "teams.id": getattr(obj, "id", missing),
