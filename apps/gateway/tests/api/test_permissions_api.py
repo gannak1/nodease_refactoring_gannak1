@@ -18,6 +18,7 @@ from apps.shared.db.models.team import (
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserLLMPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -1392,6 +1393,174 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
 
+    def test_put_user_llm_permission_creates_row_for_organization_manager(self):
+        # organization manager는 user direct LLM credential 권한을 부여할 수 있다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        upsert_result = _user_llm_permission(
+            organization_id=organization_id,
+            credential_id=credential_id,
+            user_id=target_user_id,
+            auth_state="operator",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=actor_id,
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            user_llm_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "operator"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["grantee_organization_id"], str(organization_id))
+        self.assertEqual(response.json()["llm_credential_id"], str(credential_id))
+        self.assertEqual(response.json()["user_id"], str(target_user_id))
+        self.assertEqual(response.json()["auth_state"], "operator")
+        self.assertEqual(response.json()["assigned_by"], str(actor_id))
+        self.assertIn(
+            "ON CONFLICT (grantee_organization_id, user_id, llm_credential_id)",
+            str(session.upsert_statement.compile(dialect=postgresql.dialect())),
+        )
+        self.assertTrue(session.committed)
+        self.assertIsNotNone(session.lock_statement)
+        self.permission_audit.assert_called_once()
+        audit = self.permission_audit.call_args.kwargs
+        self.assertEqual(audit["action"], "user_llm_permission.created")
+        self.assertEqual(audit["target_type"], "user_llm_permission")
+        self.assertEqual(audit["target_id"], upsert_result.id)
+        self.assertEqual(audit["after"]["user_id"], target_user_id)
+        self.assertEqual(audit["after"]["auth_state"], "operator")
+
+    def test_put_user_llm_permission_allows_credential_manager(self):
+        # organization manager가 아니어도 credential manager면 user direct 권한을 부여할 수 있다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        upsert_result = _user_llm_permission(
+            organization_id=organization_id,
+            credential_id=credential_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            llm_manager_permissions=[
+                _team_llm_permission(
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    team_id=uuid4(),
+                    auth_state="manager",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+            user_llm_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["user_id"], str(target_user_id))
+        self.assertTrue(session.committed)
+        _assert_llm_manage_filters(
+            self,
+            session.llm_manager_query,
+            actor_id,
+            credential_id,
+            organization_id,
+        )
+
+    def test_put_user_llm_permission_rejects_member_without_manage(self):
+        # active member라도 credential manager가 아니면 user direct LLM 권한 변경은 거부해야 한다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            llm_manager_permissions=[
+                _team_llm_permission(
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    team_id=uuid4(),
+                    auth_state="builder",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+        )
+
+        response = self._put_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Credential manage or organization manager permission is required.",
+            ),
+        )
+        self.assertFalse(session.committed)
+        self.assertFalse(session.scalars_called)
+        self.permission_audit.assert_not_called()
+
     def test_delete_team_workflow_permission_deletes_row_for_organization_manager(self):
         # organization manager는 team workflow permission을 회수할 수 있다.
         user_id = uuid4()
@@ -2144,6 +2313,45 @@ class TestPermissionsApi(unittest.TestCase):
                 json=payload,
             )
 
+    def _put_user_llm_permission(
+        self,
+        session,
+        user_id,
+        credential_id,
+        target_user_id,
+        payload,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 LLM credential user 권한 PUT endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).put(
+                f"/api/v1/permissions/llm-credentials/{credential_id}/users/{target_user_id}",
+                headers=headers,
+                json=payload,
+            )
+
     def _delete_permission(
         self,
         session,
@@ -2323,12 +2531,15 @@ class _Session:
         manager_permissions=None,
         llm_manager_permissions=None,
         user_direct_permissions=None,
+        user_llm_direct_permissions=None,
         existing_permission=None,
         existing_llm_permission=None,
         existing_user_permission=None,
+        existing_user_llm_permission=None,
         upsert_result=None,
         llm_upsert_result=None,
         user_upsert_result=None,
+        user_llm_upsert_result=None,
     ):
         """권한 endpoint가 사용하는 Session API의 최소 동작을 구성한다."""
         self.organization_query = _Query(
@@ -2347,20 +2558,25 @@ class _Session:
         self.manager_permissions = manager_permissions
         self.llm_manager_permissions = llm_manager_permissions
         self.user_direct_permissions = user_direct_permissions or []
+        self.user_llm_direct_permissions = user_llm_direct_permissions or []
         self.existing_permission = existing_permission
         self.existing_llm_permission = existing_llm_permission
         self.existing_user_permission = existing_user_permission
+        self.existing_user_llm_permission = existing_user_llm_permission
         self.workflow_manager_query = None
         self.llm_manager_query = None
         self.user_workflow_query = None
+        self.user_llm_query = None
         self.workflow_permission_query_count = 0
         self.llm_permission_query_count = 0
         self.membership_query_count = 0
         self.user_query_count = 0
         self.user_workflow_permission_query_count = 0
+        self.user_llm_permission_query_count = 0
         self.upsert_result = upsert_result
         self.llm_upsert_result = llm_upsert_result
         self.user_upsert_result = user_upsert_result
+        self.user_llm_upsert_result = user_llm_upsert_result
         self.upsert_statement = None
         self.lock_statement = None
         self.query_calls = []
@@ -2432,6 +2648,21 @@ class _Session:
                 first_result=self.existing_user_permission,
                 apply_filters=True,
             )
+        if model is UserLLMPermission:
+            self.user_llm_permission_query_count += 1
+            if (
+                self.user_llm_direct_permissions
+                and self.user_llm_permission_query_count == 1
+            ):
+                self.user_llm_query = _Query(
+                    items=self.user_llm_direct_permissions,
+                    apply_filters=True,
+                )
+                return self.user_llm_query
+            return _Query(
+                first_result=self.existing_user_llm_permission,
+                apply_filters=True,
+            )
         raise AssertionError(f"Unexpected query model: {model}")
 
     def add(self, value):
@@ -2451,6 +2682,8 @@ class _Session:
             return _ScalarResult(self.llm_upsert_result)
         if table_name == UserWorkflowPermission.__tablename__:
             return _ScalarResult(self.user_upsert_result)
+        if table_name == UserLLMPermission.__tablename__:
+            return _ScalarResult(self.user_llm_upsert_result)
         return _ScalarResult(self.upsert_result)
 
     def execute(self, statement):
@@ -2606,6 +2839,27 @@ def _user_workflow_permission(
     )
 
 
+def _user_llm_permission(
+    organization_id,
+    credential_id,
+    user_id,
+    auth_state,
+    assigned_by,
+):
+    """user direct LLM credential permission fixture를 만든다."""
+    return UserLLMPermission(
+        id=uuid4(),
+        grantee_organization_id=organization_id,
+        llm_credential_id=credential_id,
+        user_id=user_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=datetime.now(timezone.utc),
+        options={},
+        flags=0,
+    )
+
+
 def _team_llm_permission(
     organization_id,
     credential_id,
@@ -2721,6 +2975,17 @@ def _column_value(obj, column):
             missing,
         ),
         "user_workflow_permissions.grantee_organization_id": getattr(
+            obj,
+            "grantee_organization_id",
+            missing,
+        ),
+        "user_llm_permissions.user_id": getattr(obj, "user_id", missing),
+        "user_llm_permissions.llm_credential_id": getattr(
+            obj,
+            "llm_credential_id",
+            missing,
+        ),
+        "user_llm_permissions.grantee_organization_id": getattr(
             obj,
             "grantee_organization_id",
             missing,

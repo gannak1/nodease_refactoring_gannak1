@@ -71,3 +71,19 @@ class UserWorkflowPermissionResponse(BaseModel):
     assigned_at: datetime
     options: dict[str, Any]
     flags: int
+
+
+class UserLLMPermissionResponse(BaseModel):
+    """user direct LLM credential permission upsert 응답 schema."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    grantee_organization_id: UUID
+    llm_credential_id: UUID
+    user_id: UUID
+    auth_state: str
+    assigned_by: UUID
+    assigned_at: datetime
+    options: dict[str, Any]
+    flags: int

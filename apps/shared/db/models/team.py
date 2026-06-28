@@ -311,6 +311,81 @@ class UserWorkflowPermission(Base):
     assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
 
 
+class UserLLMPermission(Base):
+    """Direct additive user permission for an LLM credential resource."""
+
+    __tablename__ = "user_llm_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "user_id",
+            "llm_credential_id",
+            name="uq_user_llm_permissions_org_user_credential",
+        ),
+        ForeignKeyConstraint(
+            ["llm_credential_id", "grantee_organization_id"],
+            ["llm_credentials.id", "llm_credentials.organization_id"],
+            name="fk_user_llm_permissions_credential_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_user_llm_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_user_llm_permissions_flags_nonnegative"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    llm_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    auth_state: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="none"
+    )
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    options: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    flags: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+
+    grantee_organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[grantee_organization_id],
+    )
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    llm_credential: Mapped["LLMCredential"] = relationship(
+        "LLMCredential",
+        overlaps="grantee_organization",
+    )
+    assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
+
+
 class TeamKnowledgePermission(TeamResourcePermissionMixin, Base):
     """Team permission for a knowledge base resource."""
 
