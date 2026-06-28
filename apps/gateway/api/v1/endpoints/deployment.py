@@ -9,6 +9,8 @@ from apps.gateway.auth.permissions import ensure_workflow_permission
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.context import AuditActor, clear_current_actor, set_current_actor
+from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -18,7 +20,7 @@ from apps.shared.schemas.deployment import DeploymentCreate, DeploymentResponse
 router = APIRouter()
 
 
-def _deployment_workflow_id(db: Session, deployment_id: str):
+def _deployment_app_and_workflow_id(db: Session, deployment_id: str):
     deployment = (
         db.query(WorkflowDeployment)
         .filter(WorkflowDeployment.id == deployment_id)
@@ -29,7 +31,59 @@ def _deployment_workflow_id(db: Session, deployment_id: str):
     app = db.query(App).filter(App.id == deployment.app_id).first()
     if not app or not app.workflow_id:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    return app.workflow_id
+    return deployment, app, app.workflow_id
+
+
+def _deployment_workflow_id(db: Session, deployment_id: str):
+    _, _, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
+    return workflow_id
+
+
+def _deployment_toggle_audit_action(
+    deployment: WorkflowDeployment, app: App
+) -> str:
+    if (
+        not deployment.is_active
+        and app.active_deployment_id is not None
+        and app.active_deployment_id != deployment.id
+    ):
+        return AuditAction.DEPLOYMENT_ACTIVATE_PREVIOUS
+    return AuditAction.DEPLOYMENT_TOGGLE
+
+
+def _deployment_audit_actor(user: User) -> AuditActor:
+    return AuditActor(
+        actor_id=str(user.id),
+        actor_type="user",
+        snapshot={
+            "id": str(user.id),
+            "email": getattr(user, "email", None),
+            "name": getattr(user, "name", None),
+        },
+    )
+
+
+def _record_deployment_toggle_audit(
+    action: str,
+    current_user: User,
+    deployment_id: str,
+    status: str,
+    metadata: dict | None = None,
+) -> None:
+    actor = _deployment_audit_actor(current_user)
+    audit_metadata = {"actor": actor.snapshot}
+    if metadata:
+        audit_metadata.update(metadata)
+    record_audit(
+        action=action,
+        category="action",
+        actor_id=current_user.id,
+        actor_type="user",
+        target_type="deployment",
+        target_id=deployment_id,
+        status=status,
+        metadata=audit_metadata,
+    )
 
 
 @router.post("", response_model=DeploymentResponse)
@@ -182,7 +236,6 @@ def get_deployment_info_public(
 
 
 @router.patch("/{deployment_id}/toggle", response_model=DeploymentResponse)
-@audit(AuditAction.DEPLOYMENT_TOGGLE, target_param="deployment_id")
 def toggle_deployment(
     deployment_id: str,
     db: Session = Depends(get_db),
@@ -193,10 +246,33 @@ def toggle_deployment(
     """
     from apps.gateway.services.scheduler_service import get_scheduler_service
 
-    workflow_id = _deployment_workflow_id(db, deployment_id)
+    deployment, app, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
     ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    scheduler = get_scheduler_service()
-    return DeploymentService.toggle_deployment(db, deployment_id, scheduler)
+    audit_action = _deployment_toggle_audit_action(deployment, app)
+    actor = _deployment_audit_actor(current_user)
+    token = set_current_actor(actor)
+    try:
+        scheduler = get_scheduler_service()
+        result = DeploymentService.toggle_deployment(db, deployment_id, scheduler)
+    except Exception as e:
+        _record_deployment_toggle_audit(
+            audit_action,
+            current_user,
+            deployment_id,
+            "failure",
+            {"error": str(e)},
+        )
+        raise
+    else:
+        _record_deployment_toggle_audit(
+            audit_action,
+            current_user,
+            deployment_id,
+            "success",
+        )
+        return result
+    finally:
+        clear_current_actor(token)
 
 
 @router.delete("/{deployment_id}")

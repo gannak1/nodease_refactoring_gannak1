@@ -117,3 +117,25 @@ def test_get_deployments_accepts_equivalent_workflow_uuid_text(monkeypatch):
     )
 
     assert result == ["deployment"]
+
+
+def test_toggle_audit_action_marks_previous_activation():
+    deployment_id = uuid.uuid4()
+    deployment = SimpleNamespace(id=deployment_id, is_active=False)
+    app = SimpleNamespace(active_deployment_id=uuid.uuid4())
+
+    assert (
+        deployment_endpoint._deployment_toggle_audit_action(deployment, app)
+        == deployment_endpoint.AuditAction.DEPLOYMENT_ACTIVATE_PREVIOUS
+    )
+
+
+def test_toggle_audit_action_keeps_regular_toggle_for_deactivation():
+    deployment_id = uuid.uuid4()
+    deployment = SimpleNamespace(id=deployment_id, is_active=True)
+    app = SimpleNamespace(active_deployment_id=deployment_id)
+
+    assert (
+        deployment_endpoint._deployment_toggle_audit_action(deployment, app)
+        == deployment_endpoint.AuditAction.DEPLOYMENT_TOGGLE
+    )
