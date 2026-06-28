@@ -227,7 +227,7 @@ organization manager 권한 검사를 통과하면, 제거 응답 계약이 확�
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Planned | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 부여/수정 |
+| Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 부여/수정 |
 | Planned | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 회수 |
 | Planned | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 부여/수정 |
 | Planned | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 회수 |
@@ -245,6 +245,42 @@ organization manager 권한 검사를 통과하면, 제거 응답 계약이 확�
 ```
 
 허용값은 [rbac-permission-policy.md](../data-model/rbac-permission-policy.md)의 resource matrix를 따른다.
+
+이 API는 문서상 canonical `auth_state`인 `viewer`, `operator`, `builder`, `manager` 값을 그대로 저장한다. `admin`은 신규 permission 값으로 저장하지 않는다. 기존 tracing/RBAC reader 중 `read`, `write`, `execute`, `admin` legacy vocabulary만 해석하는 코드가 남아 있으면 이 API가 저장한 권한을 `none`처럼 처리할 수 있으므로, 해당 reader는 담당 영역에서 canonical `auth_state`와 legacy alias 호환을 함께 지원하도록 별도 follow-up으로 수정한다.
+
+### `PUT /api/v1/permissions/workflows/{workflow_id}/teams/{team_id}`
+
+Team workflow 권한을 생성하거나 수정하는 upsert API다.
+
+요청에는 `X-Organization-Id` header가 필요하다. 대상 workflow와 team은 모두 header organization scope 안에 있어야 하며, team은 active 상태여야 한다. 현재 user가 `organization.created_by` 또는 `organization.managed_by`이면 organization `manager`로 허용된다. 그렇지 않으면 현재 user가 active team membership scope 안에 있어야 하고, 대상 workflow에 대한 effective `manager` 권한을 가져야 한다.
+
+응답은 생성/수정된 `team_workflow_permissions` row를 반환한다.
+
+| 조건 | HTTP | Code |
+| --- | --- | --- |
+| 인증 없음 | `401` | `auth.required` |
+| `X-Organization-Id` 없음 | `400` | `organization.required` |
+| `X-Organization-Id`가 UUID가 아님 | `422` | `validation.failed` |
+| `workflow_id` 또는 `team_id`가 UUID가 아님 | `422` | `validation.failed` |
+| `auth_state`가 workflow matrix 허용값이 아님 | `422` | `validation.failed` |
+| organization이 없거나 inactive 또는 사용자 scope 밖 | `404` | `resource.not_found` |
+| workflow가 organization scope 안에 없음 | `404` | `resource.not_found` |
+| team이 organization scope 안에 없거나 inactive | `404` | `resource.not_found` |
+| workflow `manage` 또는 organization `manager` 권한 없음 | `403` | `permission.denied` |
+
+### `TeamWorkflowPermissionResponse`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `id` | UUID | permission row id |
+| `grantee_organization_id` | UUID | 권한이 부여되는 organization scope |
+| `workflow_id` | UUID | 대상 workflow |
+| `team_id` | UUID | 권한을 받는 team |
+| `auth_state` | string | workflow 권한 상태 |
+| `assigned_by` | UUID | 마지막 부여/수정자 |
+| `assigned_at` | datetime | 마지막 부여/수정 시각 |
+| `options` | object | 확장 설정 |
+| `flags` | integer | flag bitset |
 
 ## Audit
 
