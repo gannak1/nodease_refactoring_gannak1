@@ -49,12 +49,12 @@ Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-2026062715
 
 ## Active Organization Context
 
-Active organization 전달 방식은 아직 Proposed 상태다.
+Active organization 전달 방식은 `X-Organization-Id` header로 확정한다.
 
 | Status | Header/Cookie | 설명 |
 | --- | --- | --- |
-| Proposed | `X-Organization-Id` | API 요청에서 명시적으로 active organization을 전달하는 후보 |
-| Proposed | session/cookie context | 서버 session에 active organization을 저장하는 후보 |
-| Current fallback | 없음 | 첫 active team membership을 primary organization으로 사용하는 과도기 동작 |
+| Required for organization-scoped APIs | `X-Organization-Id` | API 요청에서 명시적으로 active organization을 전달한다. |
+| Not used | session/cookie context | 서버 session에는 active organization을 저장하지 않는다. |
+| Transition fallback | 없음 | header가 없는 과도기 요청은 첫 active team membership을 primary organization으로 사용할 수 있다. |
 
-최종 방식이 확정되면 이 문서와 [organization-rbac.md](organization-rbac.md)를 함께 갱신한다.
+Gateway는 `X-Organization-Id` 값이 현재 사용자의 active team membership scope 안에 있는지 검증한다. Organization scope가 필요한 신규 API와 FE 요청은 header 전달을 기본 계약으로 삼는다.

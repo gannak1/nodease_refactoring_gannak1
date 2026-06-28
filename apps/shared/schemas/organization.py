@@ -1,8 +1,13 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OrganizationPatchRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    options: dict[str, Any] | None = None
 
 
 class OrganizationResponse(BaseModel):
@@ -10,9 +15,7 @@ class OrganizationResponse(BaseModel):
 
     id: UUID
     name: str
-    created_by: UUID
-    managed_by: Optional[UUID] = None
+    options: dict[str, Any]
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    is_manager: bool = False

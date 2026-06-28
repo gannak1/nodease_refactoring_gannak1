@@ -314,6 +314,15 @@ class UserWorkflowPermission(UserResourcePermissionMixin, Base):
             "workflow_id",
             name="uq_user_workflow_permissions_org_user_workflow",
         ),
+        ForeignKeyConstraint(
+            ["workflow_id", "grantee_organization_id"],
+            ["workflows.id", "workflows.organization_id"],
+            name="fk_user_workflow_permissions_workflow_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_user_workflow_permissions_auth_state",
+        ),
         CheckConstraint(
             "flags >= 0", name="ck_user_workflow_permissions_flags_nonnegative"
         ),
@@ -327,12 +336,55 @@ class UserWorkflowPermission(UserResourcePermissionMixin, Base):
     )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("workflows.id"),
         nullable=False,
         index=True,
     )
+    workflow: Mapped["Workflow"] = relationship(
+        "Workflow",
+        overlaps="grantee_organization",
+    )
 
-    workflow: Mapped["Workflow"] = relationship("Workflow")
+
+class UserLLMPermission(UserResourcePermissionMixin, Base):
+    """Direct additive user permission for an LLM credential resource."""
+
+    __tablename__ = "user_llm_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "user_id",
+            "llm_credential_id",
+            name="uq_user_llm_permissions_org_user_credential",
+        ),
+        ForeignKeyConstraint(
+            ["llm_credential_id", "grantee_organization_id"],
+            ["llm_credentials.id", "llm_credentials.organization_id"],
+            name="fk_user_llm_permissions_credential_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_user_llm_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_user_llm_permissions_flags_nonnegative"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    llm_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    llm_credential: Mapped["LLMCredential"] = relationship(
+        "LLMCredential",
+        overlaps="grantee_organization",
+    )
 
 
 class TeamKnowledgePermission(TeamResourcePermissionMixin, Base):
@@ -390,38 +442,6 @@ class TeamLLMPermission(TeamResourcePermissionMixin, Base):
         ),
         CheckConstraint(
             "flags >= 0", name="ck_team_llm_permissions_flags_nonnegative"
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        nullable=False,
-    )
-    llm_credential_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("llm_credentials.id"),
-        nullable=False,
-        index=True,
-    )
-
-    llm_credential: Mapped["LLMCredential"] = relationship("LLMCredential")
-
-
-class UserLLMPermission(UserResourcePermissionMixin, Base):
-    """Direct additive user permission for an LLM credential resource."""
-
-    __tablename__ = "user_llm_permissions"
-    __table_args__ = (
-        UniqueConstraint(
-            "grantee_organization_id",
-            "user_id",
-            "llm_credential_id",
-            name="uq_user_llm_permissions_org_user_credential",
-        ),
-        CheckConstraint(
-            "flags >= 0", name="ck_user_llm_permissions_flags_nonnegative"
         ),
     )
 
