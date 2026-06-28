@@ -336,3 +336,52 @@ def add_team_member(
         "operation.not_implemented",
         "Team member addition request and response contract is TBD.",
     )
+
+
+# DELETE /teams/{team_id}/members/{user_id}는 membership 제거 응답 계약이
+# 확정되기 전까지 organization manager 권한 관문만 구현한다.
+@router.delete(
+    "/{team_id}/members/{user_id}",
+    status_code=501,
+    responses={
+        501: {
+            "description": "Team member removal contract is not implemented yet."
+        }
+    },
+)
+def remove_team_member(
+    team_id: UUID,
+    user_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    # 현재는 route UUID validation만 사용하고, 실제 membership 삭제는 계약 확정 후 추가한다.
+    _ = (team_id, user_id)
+
+    current_user, error = _authenticate(request, db, auth_token)
+    if error is not None:
+        return error
+
+    organization_id, error = _parse_organization_id(request, x_organization_id)
+    if error is not None:
+        return error
+
+    error = _require_organization_manager(
+        request,
+        db,
+        organization_id,
+        current_user.id,
+    )
+    if error is not None:
+        return error
+
+    # 문서상 Request는 없고 Response 상세는 TBD이므로, 지금은 임의 response
+    # schema나 DB delete를 만들지 않는다.
+    return _error_response(
+        request,
+        501,
+        "operation.not_implemented",
+        "Team member removal response contract is TBD.",
+    )
