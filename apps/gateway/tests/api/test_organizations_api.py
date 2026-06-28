@@ -140,46 +140,129 @@ class TestOrganizationsApi(unittest.TestCase):
             },
         )
 
-        # 문서 기준 모델에 맞춰 organization, team_memberships, teams 조인과 active scope 조건을 사용해야 한다.
-        self.assertEqual(len(query.join_values), 2)
-        (
-            organization_filter,
-            user_filter,
-            membership_org_filter,
-            team_org_filter,
-            team_active_filter,
-            org_active_filter,
-        ) = query.filter_expressions
-
-        self.assertEqual(str(organization_filter.left), "organization.id")
-        self.assertIs(organization_filter.operator, eq)
-        self.assertEqual(organization_filter.right.value, organization_id)
-
-        self.assertEqual(str(user_filter.left), "team_memberships.user_id")
-        self.assertIs(user_filter.operator, eq)
-        self.assertEqual(user_filter.right.value, user_id)
-
-        self.assertEqual(
-            str(membership_org_filter.left),
-            "team_memberships.grantee_organization_id",
+        _assert_active_membership_scope_filters(
+            self, query, organization_id, user_id
         )
-        self.assertIs(membership_org_filter.operator, eq)
-        self.assertEqual(str(membership_org_filter.right), "organization.id")
 
-        self.assertEqual(
-            str(team_org_filter.left),
-            "team_memberships.grantee_organization_id",
+    def test_route_returns_current_organization_from_header(self):
+        # GET /api/v1/organizations/current는 header의 organization id를 active membership scope로 검증한다.
+        organization_id = uuid4()
+        user_id = uuid4()
+        created_at = datetime(2026, 6, 27, 1, 2, 3, tzinfo=timezone.utc)
+        updated_at = datetime(2026, 6, 27, 4, 5, 6, tzinfo=timezone.utc)
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            created_at=created_at,
+            updated_at=updated_at,
         )
-        self.assertIs(team_org_filter.operator, eq)
-        self.assertEqual(str(team_org_filter.right), "teams.organization_id")
+        query = _Query([organization])
 
-        self.assertEqual(str(team_active_filter.left), "teams.is_active")
-        self.assertIs(team_active_filter.operator, is_)
-        self.assertEqual(str(team_active_filter.right), "true")
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: query
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
 
-        self.assertEqual(str(org_active_filter.left), "organization.is_active")
-        self.assertIs(org_active_filter.operator, is_)
-        self.assertEqual(str(org_active_filter.right), "true")
+        response = TestClient(app).get(
+            "/api/v1/organizations/current",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "id": str(organization_id),
+                "name": "Acme",
+                "options": {},
+                "is_active": True,
+                "created_at": "2026-06-27T01:02:03Z",
+                "updated_at": "2026-06-27T04:05:06Z",
+            },
+        )
+
+        _assert_active_membership_scope_filters(
+            self, query, organization_id, user_id
+        )
+
+    def test_route_requires_current_organization_header(self):
+        # Header가 없으면 active organization을 결정할 수 없으므로 organization.required를 반환한다.
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: _Query([])
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).get(
+            "/api/v1/organizations/current",
+            headers={"X-Request-ID": "req-test"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            _error("organization.required", "X-Organization-Id header is required."),
+        )
+
+    def test_route_rejects_invalid_current_organization_header(self):
+        # Header 값이 UUID가 아니면 scope 조회 전에 validation.failed로 거부한다.
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: _Query([])
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).get(
+            "/api/v1/organizations/current",
+            headers={
+                "X-Organization-Id": "not-a-uuid",
+                "X-Request-ID": "req-test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "validation.failed",
+                "X-Organization-Id must be a valid UUID.",
+                {"field": "X-Organization-Id"},
+            ),
+        )
+
+    def test_route_hides_current_organization_outside_user_memberships(self):
+        # Organization이 없거나 active membership scope 밖이면 존재 여부를 숨기기 위해 404로 응답한다.
+        organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: _Query([])
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).get(
+            "/api/v1/organizations/current",
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Organization not found."),
+        )
 
     def test_route_hides_organization_outside_user_memberships(self):
         # 조직이 없거나 현재 사용자의 membership scope 밖이면 존재 여부를 노출하지 않고 404로 숨긴다.
@@ -622,6 +705,51 @@ def _assert_patch_scope_filters(test_case, query, organization_id):
     test_case.assertEqual(str(organization_filter.left), "organization.id")
     test_case.assertIs(organization_filter.operator, eq)
     test_case.assertEqual(organization_filter.right.value, organization_id)
+
+    test_case.assertEqual(str(org_active_filter.left), "organization.is_active")
+    test_case.assertIs(org_active_filter.operator, is_)
+    test_case.assertEqual(str(org_active_filter.right), "true")
+
+
+def _assert_active_membership_scope_filters(
+    test_case, query, organization_id, user_id
+):
+    # 문서 기준 모델에 맞춰 organization, team_memberships, teams 조인과 active scope 조건을 사용해야 한다.
+    test_case.assertEqual(len(query.join_values), 2)
+    (
+        organization_filter,
+        user_filter,
+        membership_org_filter,
+        team_org_filter,
+        team_active_filter,
+        org_active_filter,
+    ) = query.filter_expressions
+
+    test_case.assertEqual(str(organization_filter.left), "organization.id")
+    test_case.assertIs(organization_filter.operator, eq)
+    test_case.assertEqual(organization_filter.right.value, organization_id)
+
+    test_case.assertEqual(str(user_filter.left), "team_memberships.user_id")
+    test_case.assertIs(user_filter.operator, eq)
+    test_case.assertEqual(user_filter.right.value, user_id)
+
+    test_case.assertEqual(
+        str(membership_org_filter.left),
+        "team_memberships.grantee_organization_id",
+    )
+    test_case.assertIs(membership_org_filter.operator, eq)
+    test_case.assertEqual(str(membership_org_filter.right), "organization.id")
+
+    test_case.assertEqual(
+        str(team_org_filter.left),
+        "team_memberships.grantee_organization_id",
+    )
+    test_case.assertIs(team_org_filter.operator, eq)
+    test_case.assertEqual(str(team_org_filter.right), "teams.organization_id")
+
+    test_case.assertEqual(str(team_active_filter.left), "teams.is_active")
+    test_case.assertIs(team_active_filter.operator, is_)
+    test_case.assertEqual(str(team_active_filter.right), "true")
 
     test_case.assertEqual(str(org_active_filter.left), "organization.is_active")
     test_case.assertIs(org_active_filter.operator, is_)

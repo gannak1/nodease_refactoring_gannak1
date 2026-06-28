@@ -72,6 +72,32 @@ def _parse_organization_id(
         )
 
 
+def _get_organization_in_active_membership_scope(
+    db: Session,
+    organization_id: UUID,
+    user_id: UUID,
+) -> Organization | None:
+    # Active organization은 서버에 저장하지 않고, 요청 header 값이
+    # 현재 사용자의 active team membership scope 안에 있는지로 판정한다.
+    return (
+        db.query(Organization)
+        .join(
+            TeamMembership,
+            TeamMembership.grantee_organization_id == Organization.id,
+        )
+        .join(Team, Team.id == TeamMembership.team_id)
+        .filter(
+            Organization.id == organization_id,
+            TeamMembership.user_id == user_id,
+            TeamMembership.grantee_organization_id == Organization.id,
+            TeamMembership.grantee_organization_id == Team.organization_id,
+            Team.is_active.is_(True),
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+
+
 # 인증된 사용자가 속한 active organization 목록을 조회하는 API.
 @router.get("", response_model=list[OrganizationResponse])
 def list_organizations(
@@ -99,6 +125,35 @@ def list_organizations(
     return organizations
 
 
+# literal path인 current가 /{organization_id} UUID path parameter로 해석되지 않도록
+# 먼저 등록한다.
+@router.get("/current", response_model=OrganizationResponse)
+def get_current_organization(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # current organization 상태를 session/cookie에 저장하지 않고
+    # 매 요청의 header 값을 검증한다.
+    organization_id = _parse_organization_id(request, x_organization_id)
+    organization = _get_organization_in_active_membership_scope(
+        db,
+        organization_id,
+        current_user.id,
+    )
+
+    if organization is None:
+        _raise_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    return organization
+
+
 # 인증된 사용자가 접근 가능한 특정 active organization 상세를 조회하는 API.
 @router.get("/{organization_id}", response_model=OrganizationResponse)
 def get_organization(
@@ -107,22 +162,10 @@ def get_organization(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    organization = (
-        db.query(Organization)
-        .join(
-            TeamMembership,
-            TeamMembership.grantee_organization_id == Organization.id,
-        )
-        .join(Team, Team.id == TeamMembership.team_id)
-        .filter(
-            Organization.id == organization_id,
-            TeamMembership.user_id == current_user.id,
-            TeamMembership.grantee_organization_id == Organization.id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
-            Organization.is_active.is_(True),
-        )
-        .first()
+    organization = _get_organization_in_active_membership_scope(
+        db,
+        organization_id,
+        current_user.id,
     )
 
     if organization is None:

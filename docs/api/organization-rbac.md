@@ -10,24 +10,44 @@ Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-2026062715
 
 Organization context, team/member 관리, resource permission grant/revoke API 계약을 정의한다.
 
-현재 dev Gateway에는 team 목록 endpoint만 구현되어 있다. 아래 API는 구현 완료된 계약과 MVP 1 RBAC foundation 목표 계약을 함께 정의한다.
+현재 Gateway에는 organization 목록/상세/수정 endpoint와 team 목록 endpoint가 구현되어 있다. 아래 API는 구현 완료된 계약과 MVP 1 RBAC foundation 목표 계약을 함께 정의한다.
 
 ## Active Organization
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Planned | `GET` | `/api/v1/organizations` | authenticated | 사용자가 속한 organization 목록 |
-| Planned | `GET` | `/api/v1/organizations/current` | authenticated + `X-Organization-Id` | header로 지정한 현재 active organization 조회 |
+| Implemented | `GET` | `/api/v1/organizations/current` | authenticated + `X-Organization-Id` | header로 지정한 현재 active organization 조회 |
 
 Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 서버는 active organization을 session/cookie에 저장하지 않으므로 `PATCH /api/v1/organizations/current`는 만들지 않는다.
 
 `GET /api/v1/organizations/current`는 `X-Organization-Id`가 현재 사용자의 active team membership scope 안에 있는지 검증하고, 접근 가능한 organization이면 `OrganizationResponse`를 반환한다. Header가 없거나 scope를 결정할 수 없으면 [errors.md](errors.md)의 `organization.required` 기준을 따른다.
 
+이 endpoint는 현재 사용자의 active organization context를 확인하는 조회 API다. `organization.created_by` 또는 `organization.managed_by` 기반 manager fallback은 team 관리 API처럼 manager 권한을 요구하는 endpoint에서만 적용하고, `GET /api/v1/organizations/current`에서는 active team membership scope를 기준으로 판정한다.
+
+오류 응답은 [errors.md](errors.md)의 목표 Error Envelope을 따른다.
+
+| 조건 | HTTP | Code |
+| --- | --- | --- |
+| `X-Organization-Id` header 없음 | `400` | `organization.required` |
+| `X-Organization-Id`가 UUID가 아님 | `422` | `validation.failed` |
+| organization이 없거나 inactive 또는 현재 사용자 active team membership scope 밖 | `404` | `resource.not_found` |
+
+## Organization 조회
+
+| Status | Method | Path | Response | Permission | 설명 |
+| --- | --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/organizations` | `list[OrganizationResponse]` | authenticated | 사용자가 속한 active organization 목록 |
+| Implemented | `GET` | `/api/v1/organizations/{organization_id}` | `OrganizationResponse` | authenticated | 사용자의 active team membership scope 안에 있는 특정 active organization 조회 |
+
+`GET /api/v1/organizations`는 현재 사용자의 active team membership을 기준으로 active organization 목록을 반환한다. 같은 organization에 여러 team membership이 있어도 organization은 중복 반환하지 않는다. 정렬은 `created_at ASC`, `id ASC`다.
+
+`GET /api/v1/organizations/{organization_id}`는 현재 사용자의 active team membership scope 안에 있는 active organization만 반환한다. Organization이 없거나 inactive이거나 현재 사용자 scope 밖이면 존재 여부를 숨기기 위해 `404` + `resource.not_found`를 반환한다.
+
 ## Organization 관리
 
 | Status | Method | Path | Request | Response | Permission | 설명 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Planned | `PATCH` | `/api/v1/organizations/{organization_id}` | `OrganizationPatchRequest` | `OrganizationResponse` | organization `manager` | organization 이름/설정 변경 |
+| Implemented | `PATCH` | `/api/v1/organizations/{organization_id}` | `OrganizationPatchRequest` | `OrganizationResponse` | organization `manager` | organization 이름/설정 변경 |
 
 `PATCH /api/v1/organizations/{organization_id}`는 organization 자체 정보를 수정한다. Active organization 변경 API가 아니다.
 
@@ -35,13 +55,18 @@ Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 
 
 이 endpoint는 partial update다. 요청에는 변경 가능한 field가 하나 이상 있어야 한다.
 
-오류 기준:
+오류 응답은 [errors.md](errors.md)의 목표 Error Envelope을 따른다.
 
-- `X-Organization-Id` header가 없으면 `400`을 반환한다.
-- `X-Organization-Id` header와 path의 `organization_id`가 다르면 `404`를 반환한다.
-- organization이 없거나 현재 사용자의 scope 밖이면 `403`을 반환한다.
-- 현재 사용자가 organization member이지만 owner/manager가 아니면 `403`을 반환한다.
-- 변경 가능한 field가 없거나 `name`이 빈 문자열이면 `400`을 반환한다.
+| 조건 | HTTP | Code |
+| --- | --- | --- |
+| `X-Organization-Id` header 없음 | `400` | `organization.required` |
+| `X-Organization-Id`가 UUID가 아님 | `422` | `validation.failed` |
+| `X-Organization-Id` header와 path의 `organization_id`가 다름 | `404` | `resource.not_found` |
+| organization이 없거나 inactive 또는 현재 사용자 scope 밖 | `403` | `permission.denied` |
+| 현재 사용자가 organization member이지만 owner/manager가 아님 | `403` | `permission.denied` |
+| 변경 가능한 field가 없음 | `400` | `validation.failed` |
+| `name`이 빈 문자열 | `400` | `validation.failed` |
+| `name`이 database column 길이보다 김 | `422` | `validation.failed` |
 
 ### `OrganizationPatchRequest`
 
@@ -59,6 +84,17 @@ Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 
 - `deactivated_at`
 
 `managed_by`, `flags`, organization 비활성화/재활성화는 별도 정책과 endpoint가 필요하다.
+
+### `OrganizationResponse`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `id` | UUID | organization id |
+| `name` | string | organization 표시 이름 |
+| `options` | object | organization 확장 설정 |
+| `is_active` | boolean | 활성 여부 |
+| `created_at` | datetime | 생성 시각 |
+| `updated_at` | datetime | 수정 시각 |
 
 ## Team 관리
 
