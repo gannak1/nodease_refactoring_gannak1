@@ -13,6 +13,7 @@ import {
   Home,
   LogOut,
   Menu,
+  Building2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Logo from './Logo';
@@ -57,6 +58,7 @@ export default function Sidebar() {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [userName, setUserName] = useState('사용자');
   const [userEmail, setUserEmail] = useState('');
+  const [organizationName, setOrganizationName] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Fetch user info
@@ -76,6 +78,24 @@ export default function Sidebar() {
     };
 
     fetchUserInfo();
+  }, []);
+
+  useEffect(() => {
+    const fetchOrganization = async () => {
+      try {
+        const response = await fetch('/api/v1/organizations/current', {
+          credentials: 'include',
+        });
+        const data = await response.json();
+        if (response.ok && data?.name) {
+          setOrganizationName(data.name);
+        }
+      } catch {
+        // Silent error handling
+      }
+    };
+
+    fetchOrganization();
   }, []);
 
   // Close dropdown when clicking outside
@@ -149,6 +169,15 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      {!isCollapsed && organizationName && (
+        <div className="mx-3 mb-3 rounded-lg border border-blue-100 bg-white px-3 py-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-gray-600">
+            <Building2 className="h-3.5 w-3.5 text-blue-600" />
+            <span className="truncate">{organizationName}</span>
+          </div>
+        </div>
+      )}
 
       {/* User Info Footer */}
       <div

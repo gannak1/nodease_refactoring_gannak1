@@ -13,18 +13,8 @@ import { LogTab } from './tabs/LogTab';
 import { MonitoringTab } from './tabs/MonitoringTab';
 import NodeLibrarySidebar from './NodeLibrarySidebar';
 import { ViewMode } from './EditorViewSwitcher';
-import {
-  type NodeDefinition,
-  getNodeDefinition,
-} from '../../config/nodeRegistry';
-import { NoteNode, AppNode } from '../../types/Nodes';
-import {
-  findFirstAvailableHandle,
-  createNewCaseForConnection,
-} from '../../utils/conditionNodeHelpers';
 import { calculateAutoLayout } from '../../utils/layoutHelpers';
 import { useDeployment } from '../../hooks/useDeployment';
-import { arrangeConditionNodeChildren } from '../../utils/arrangeConditionNodes';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useNodeCreation } from '../../hooks/useNodeCreation';
 import { MemoryModeToggle, useMemoryMode } from './memory/MemoryModeControls';
@@ -106,10 +96,8 @@ export default function NodeCanvas({
     updateNodeData,
     isVersionHistoryOpen,
     toggleVersionHistory,
-    projectName,
-    projectIcon,
-    projectDescription,
     isFullscreen,
+    workflowAccess,
     setEdges,
     isSettingsOpen,
     toggleSettings,
@@ -156,6 +144,8 @@ export default function NodeCanvas({
 
   // Publish state
   const canPublish = useWorkflowStore((state) => state.canPublish());
+  const isReadOnly = workflowAccess?.can_write === false;
+  const canExecute = workflowAccess?.can_execute !== false;
 
   // Deployment logic (extracted to hook)
   const {
@@ -232,12 +222,12 @@ export default function NodeCanvas({
   // 전체화면 모드 변경 시 사이드바 자동 토글
   // 전체화면 모드 변경 시 사이드바 자동 토글
   useEffect(() => {
-    if (isFullscreen || viewMode !== 'edit') {
+    if (isFullscreen || viewMode !== 'edit' || isReadOnly) {
       setIsNodeLibraryOpen(false);
     } else {
       setIsNodeLibraryOpen(true);
     }
-  }, [isFullscreen, viewMode]);
+  }, [isFullscreen, viewMode, isReadOnly]);
 
   useKeyboardShortcut(
     ['Meta', 'k'],
@@ -278,6 +268,7 @@ export default function NodeCanvas({
 
   const handleSelectApp = useCallback(
     async (app: App & { active_deployment_id?: string; version?: number }) => {
+      if (isReadOnly) return;
       const newNode: Node = {
         id: `workflow-${Date.now()}`,
         type: 'workflowNode',
@@ -326,7 +317,52 @@ export default function NodeCanvas({
       screenToFlowPosition,
       updateNodeData,
       searchModalContext.position,
+      isReadOnly,
     ],
+  );
+
+  const handleCanvasNodesChange = useCallback(
+    (changes: any[]) => {
+      if (isReadOnly) {
+        const selectionChanges = changes.filter((change) => change.type === 'select');
+        if (selectionChanges.length > 0) {
+          onNodesChange(selectionChanges);
+        }
+        return;
+      }
+      onNodesChange(changes);
+    },
+    [isReadOnly, onNodesChange],
+  );
+
+  const handleCanvasEdgesChange = useCallback(
+    (changes: any[]) => {
+      if (isReadOnly) {
+        const selectionChanges = changes.filter((change) => change.type === 'select');
+        if (selectionChanges.length > 0) {
+          onEdgesChange(selectionChanges);
+        }
+        return;
+      }
+      onEdgesChange(changes);
+    },
+    [isReadOnly, onEdgesChange],
+  );
+
+  const handleCanvasConnect = useCallback(
+    (...args: Parameters<typeof onConnect>) => {
+      if (isReadOnly) return;
+      onConnect(...args);
+    },
+    [isReadOnly, onConnect],
+  );
+
+  const handleCanvasDrop = useCallback(
+    (event: React.DragEvent) => {
+      if (isReadOnly) return;
+      onDrop(event);
+    },
+    [isReadOnly, onDrop],
   );
 
   const nodeTypes = useMemo(
@@ -465,6 +501,7 @@ export default function NodeCanvas({
   }, [interactiveMode]);
 
   const handleAutoLayout = useCallback(() => {
+    if (isReadOnly) return;
     const layoutedNodes = calculateAutoLayout(nodes, edges);
     setNodes(layoutedNodes);
 
@@ -481,6 +518,7 @@ export default function NodeCanvas({
     getViewport,
     updateWorkflowViewport,
     activeWorkflowId,
+    isReadOnly,
   ]);
 
   const currentAppId = useMemo(() => {
@@ -491,6 +529,7 @@ export default function NodeCanvas({
   // 노드 우클릭 핸들러
   const onNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
+      if (isReadOnly) return;
       event.preventDefault();
       event.stopPropagation();
       setNodeContextMenu({
@@ -501,12 +540,13 @@ export default function NodeCanvas({
       setEdgeContextMenu(null);
       setContextMenu(null);
     },
-    [],
+    [isReadOnly, setNodeContextMenu, setEdgeContextMenu, setContextMenu],
   );
 
   // Edge 우클릭 핸들러
   const onEdgeContextMenu = useCallback(
     (event: React.MouseEvent, edge: { id: string }) => {
+      if (isReadOnly) return;
       event.preventDefault();
       event.stopPropagation();
       setEdgeContextMenu({
@@ -517,22 +557,24 @@ export default function NodeCanvas({
       setNodeContextMenu(null);
       setContextMenu(null);
     },
-    [],
+    [isReadOnly, setEdgeContextMenu, setNodeContextMenu, setContextMenu],
   );
 
   // 노드 삭제 핸들러 (React Flow 내부 로직 사용)
   const handleDeleteNode = useCallback(() => {
+    if (isReadOnly) return;
     if (!nodeContextMenu) return;
     deleteElements({ nodes: [{ id: nodeContextMenu.nodeId }] });
     setNodeContextMenu(null);
-  }, [nodeContextMenu, deleteElements]);
+  }, [isReadOnly, nodeContextMenu, deleteElements]);
 
   // Edge 삭제 핸들러 (React Flow 내부 로직 사용)
   const handleDeleteEdge = useCallback(() => {
+    if (isReadOnly) return;
     if (!edgeContextMenu) return;
     deleteElements({ edges: [{ id: edgeContextMenu.edgeId }] });
     setEdgeContextMenu(null);
-  }, [edgeContextMenu, deleteElements]);
+  }, [isReadOnly, edgeContextMenu, deleteElements]);
 
   // Delete 키 핸들러 (React Flow 내부 로직 사용)
   useEffect(() => {
@@ -546,6 +588,7 @@ export default function NodeCanvas({
       }
 
       if (event.key === 'Delete') {
+        if (isReadOnly) return;
         // 선택된 노드/엣지가 있으면 삭제
         const selectedNodes = nodes.filter((n) => n.selected);
         const selectedEdges = edges.filter((e) => e.selected);
@@ -562,7 +605,7 @@ export default function NodeCanvas({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nodes, edges, deleteElements]);
+  }, [nodes, edges, deleteElements, isReadOnly]);
 
   useEffect(() => {
     const handleClick = () => handleCloseContextMenu();
@@ -633,19 +676,21 @@ export default function NodeCanvas({
                 className="w-full h-full relative"
                 onContextMenu={(e) => e.preventDefault()}
                 onDragOver={handleDragOver}
-                onDrop={onDrop}
+                onDrop={handleCanvasDrop}
               >
                 <ReactFlow
                   nodes={nodes}
                   edges={edges}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  onConnect={onConnect}
+                  onNodesChange={handleCanvasNodesChange}
+                  onEdgesChange={handleCanvasEdgesChange}
+                  onConnect={handleCanvasConnect}
                   onMoveEnd={handleMoveEnd}
                   onNodeClick={handleNodeClick}
-                  onPaneContextMenu={onPaneContextMenu}
+                  onPaneContextMenu={isReadOnly ? undefined : onPaneContextMenu}
                   onNodeContextMenu={onNodeContextMenu}
                   onEdgeContextMenu={onEdgeContextMenu}
+                  nodesDraggable={!isReadOnly}
+                  nodesConnectable={!isReadOnly}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
                   defaultEdgeOptions={defaultEdgeOptions}
@@ -664,6 +709,12 @@ export default function NodeCanvas({
                     color="#d1d5db"
                   />
                 </ReactFlow>
+
+                {isReadOnly && (
+                  <div className="absolute left-4 top-4 z-30 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 shadow-sm">
+                    {workflowAccess?.auth_state || 'viewer'} · 읽기 전용
+                  </div>
+                )}
 
                 {/* Drag connection preview overlay */}
                 <DragConnectionOverlay
@@ -829,8 +880,18 @@ export default function NodeCanvas({
 
                   {/* Standalone: Test Button (Primary) */}
                   <button
-                    onClick={toggleTestPanel}
-                    className="h-9 px-4 font-medium rounded-lg transition-colors flex items-center gap-1.5 text-[13px] shadow-sm bg-blue-600 hover:bg-blue-700 text-white"
+                    onClick={canExecute ? toggleTestPanel : undefined}
+                    disabled={!canExecute}
+                    className={`h-9 px-4 font-medium rounded-lg transition-colors flex items-center gap-1.5 text-[13px] shadow-sm ${
+                      canExecute
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    }`}
+                    title={
+                      canExecute
+                        ? '테스트 실행'
+                        : '현재 권한으로는 실행할 수 없습니다'
+                    }
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
                     테스트
@@ -996,7 +1057,7 @@ export default function NodeCanvas({
                   )}
 
                 {/* Context Menu UI */}
-                {contextMenu && (
+                {contextMenu && !isReadOnly && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[180px]"
                     style={{ top: contextMenu.y, left: contextMenu.x }}
@@ -1028,7 +1089,7 @@ export default function NodeCanvas({
                 )}
 
                 {/* 노드 우클릭 삭제 메뉴 */}
-                {nodeContextMenu && (
+                {nodeContextMenu && !isReadOnly && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
                     style={{ top: nodeContextMenu.y, left: nodeContextMenu.x }}
@@ -1045,7 +1106,7 @@ export default function NodeCanvas({
                 )}
 
                 {/* Edge 우클릭 삭제 메뉴 */}
-                {edgeContextMenu && (
+                {edgeContextMenu && !isReadOnly && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
                     style={{ top: edgeContextMenu.y, left: edgeContextMenu.x }}
@@ -1062,7 +1123,7 @@ export default function NodeCanvas({
                 )}
 
                 {/* Context Menu Node Selector Modal */}
-                {isContextNodeSelectorOpen && (
+                {isContextNodeSelectorOpen && !isReadOnly && (
                   <div
                     className="fixed z-50"
                     style={{
@@ -1085,7 +1146,7 @@ export default function NodeCanvas({
                 )}
 
                 {/* Close Node Selector when clicking outside (overlay) */}
-                {isContextNodeSelectorOpen && (
+                {isContextNodeSelectorOpen && !isReadOnly && (
                   <div
                     className="fixed inset-0 z-40"
                     onClick={() => setIsContextNodeSelectorOpen(false)}

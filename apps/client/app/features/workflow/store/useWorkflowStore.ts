@@ -18,6 +18,7 @@ import {
   Node,
 } from '../types/Workflow';
 import { DeploymentResponse } from '../types/Deployment';
+import { WorkflowPermissionResponse } from '../types/Api';
 
 import { create } from 'zustand';
 import { DEFAULT_NODES } from '../constants';
@@ -44,6 +45,7 @@ type WorkflowState = {
   projectIcon: AppIcon;
   projectDescription: string;
   projectApp: App | null; // Full app object for editing
+  workflowAccess: WorkflowPermissionResponse | null;
   interactiveMode: 'mouse' | 'touchpad'; // 입력 모드 (마우스/터치패드)
   isFullscreen: boolean;
 
@@ -101,6 +103,7 @@ type WorkflowState = {
 
   setProjectInfo: (name: string, icon: AppIcon, description?: string) => void;
   setProjectApp: (app: App) => void;
+  setWorkflowAccess: (access: WorkflowPermissionResponse | null) => void;
   setInteractiveMode: (mode: 'mouse' | 'touchpad') => void;
   toggleFullscreen: () => void;
   addWorkflow: (
@@ -165,6 +168,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   projectIcon: { type: 'emoji', content: '�', background_color: '#3b82f6' },
   projectDescription: '',
   projectApp: null,
+  workflowAccess: null,
   interactiveMode: 'mouse',
   isFullscreen: false,
 
@@ -215,8 +219,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     // DB에 deletable:false로 저장된 노드도 삭제 가능하도록 속성 제거
     // TODO: 데이터 마이그레이션 후 제거 필요
     const deletableNodes = currentNodes.map((node) => {
-      const { deletable, ...rest } = node as any;
-      return rest;
+      const cleanNode = { ...(node as any) };
+      delete cleanNode.deletable;
+      return cleanNode;
     });
     const newNodes = applyNodeChanges(changes, deletableNodes);
     get().setNodes(newNodes as Node[]);
@@ -248,6 +253,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       projectIcon: app.icon,
       projectDescription: app.description || '',
     }),
+
+  setWorkflowAccess: (workflowAccess) => set({ workflowAccess }),
 
   setInteractiveMode: (mode) => set({ interactiveMode: mode }),
 
@@ -458,7 +465,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   canPublish: () => {
     const count = get().getStartNodeCount();
-    return count === 1;
+    const access = get().workflowAccess;
+    return count === 1 && access?.can_deploy !== false;
   },
 
   // === API 동기화 액션 ===

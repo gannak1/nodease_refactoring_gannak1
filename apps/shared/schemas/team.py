@@ -23,6 +23,14 @@ class TeamMembershipRequest(BaseModel):
     user_id: UUID
 
 
+class TeamMemberResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    email: str
+    name: str
+    assigned_at: datetime
+
+
 class ResourceAuthStateRequest(BaseModel):
     auth_state: str
 
@@ -62,3 +70,20 @@ class TeamResponse(BaseModel):
 class PermissionMutationResponse(BaseModel):
     id: Optional[UUID] = None
     status: str
+
+
+class ResourcePermissionEntry(BaseModel):
+    id: UUID
+    grantee_type: Literal["team", "user"]
+    grantee_id: UUID
+    grantee_name: str
+    auth_state: str
+    assigned_at: datetime
+
+
+class ResourcePermissionListResponse(BaseModel):
+    resource_type: Literal["workflow", "llm_credential"]
+    resource_id: UUID
+    organization_id: UUID
+    team_permissions: list[ResourcePermissionEntry]
+    user_permissions: list[ResourcePermissionEntry]

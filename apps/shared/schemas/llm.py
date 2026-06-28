@@ -56,6 +56,7 @@ class LLMCredentialResponse(BaseModel):
     id: uuid.UUID
     provider_id: uuid.UUID
     user_id: uuid.UUID
+    organization_id: Optional[uuid.UUID] = None
     credential_name: str
     config_preview: Optional[str] = None # sk-****
     is_valid: bool

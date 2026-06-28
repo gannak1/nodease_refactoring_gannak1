@@ -147,3 +147,41 @@ class TestWorkflowLlmTracesApi:
 
         assert [response.status_code for response in responses] == [403, 403, 403]
         assert ensure_read.call_count == len(paths)
+
+    def test_workflow_permission_endpoint_returns_effective_action_flags(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: MagicMock()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=SimpleNamespace(
+                    id=workflow_id, organization_id=organization_id
+                ),
+            ) as ensure_read,
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.get_effective_workflow_auth_state",
+                return_value="operator",
+            ) as effective_state,
+        ):
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/permissions/me"
+            )
+
+        assert response.status_code == 200
+        ensure_read.assert_called_once()
+        effective_state.assert_called_once()
+        assert response.json() == {
+            "workflow_id": str(workflow_id),
+            "organization_id": str(organization_id),
+            "auth_state": "operator",
+            "can_read": True,
+            "can_write": False,
+            "can_execute": True,
+            "can_deploy": False,
+            "can_manage": False,
+        }

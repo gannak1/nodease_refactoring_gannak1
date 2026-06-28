@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
+import { WorkflowCompareResponse } from '../../types/Api';
 
 type TestSidebarProps = {
   appendMemoryFlag?: (
@@ -28,6 +29,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     activeWorkflowId,
     setNodes,
     updateNodeData,
+    workflowAccess,
   } = useWorkflowStore();
   const { setCenter } = useReactFlow();
 
@@ -36,10 +38,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<any>(null);
+  const [compareResult, setCompareResult] =
+    useState<WorkflowCompareResponse | null>(null);
+  const [isComparing, setIsComparing] = useState(false);
+  const [compareNodeId, setCompareNodeId] = useState('');
+  const [compareType, setCompareType] = useState<'model' | 'prompt'>('model');
+  const [leftValue, setLeftValue] = useState('');
+  const [rightValue, setRightValue] = useState('');
   const [nodeResults, setNodeResults] = useState<
     Array<{ nodeId: string; nodeType: string; output: any }>
   >([]);
   const [error, setError] = useState<string | null>(null);
+  const nodeStartedAtRef = React.useRef<Record<string, number>>({});
+  const canExecute = workflowAccess?.can_execute !== false;
 
   // Start Node 찾기 및 변수 초기화
   const startNode = nodes.find(
@@ -65,6 +76,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       },
     ];
   }
+
+  const llmNodes = useMemo(
+    () => nodes.filter((node) => node.type === 'llmNode'),
+    [nodes],
+  );
 
   // 패널이 열릴 때 입력값 초기화 (실행 결과는 유지)
   useEffect(() => {
@@ -101,14 +117,94 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
   }, [isTestPanelOpen]);
 
+  useEffect(() => {
+    if (!compareNodeId && llmNodes[0]) {
+      setCompareNodeId(llmNodes[0].id);
+    }
+  }, [compareNodeId, llmNodes]);
+
+  useEffect(() => {
+    const selected = llmNodes.find((node) => node.id === compareNodeId);
+    if (!selected) return;
+    const data = selected.data as any;
+    if (compareType === 'model') {
+      setLeftValue(data.model_id || '');
+      setRightValue(data.fallback_model_id || data.model_id || '');
+    } else {
+      setLeftValue(data.user_prompt || '');
+      setRightValue(data.user_prompt || '');
+    }
+    setCompareResult(null);
+  }, [compareNodeId, compareType]);
+
   if (!isTestPanelOpen) return null;
 
   const handleChange = (name: string, value: any) => {
     setInputs((prev) => ({ ...prev, [name]: value }));
   };
 
+  const buildFinalInputs = async () => {
+    const hasFiles = Object.values(files).some((file) => file !== null);
+    let finalInputs: Record<string, any> = { ...inputs };
+
+    if (startNode?.type === 'webhookTrigger') {
+      try {
+        const rawJson = inputs['__json_payload__'];
+        finalInputs = JSON.parse(rawJson);
+      } catch {
+        throw new Error('JSON 파싱 실패');
+      }
+    }
+
+    if (hasFiles) {
+      setIsUploading(true);
+      try {
+        for (const [key, file] of Object.entries(files)) {
+          if (!file) continue;
+          const presignedData = await knowledgeApi.getPresignedUploadUrl(
+            file.name,
+            file.type || 'application/octet-stream',
+          );
+          await knowledgeApi.uploadToS3(
+            presignedData.upload_url,
+            file,
+            file.type || 'application/octet-stream',
+          );
+          finalInputs[key] = presignedData.upload_url.split('?')[0];
+        }
+      } finally {
+        setIsUploading(false);
+      }
+    }
+
+    return appendMemoryFlag
+      ? appendMemoryFlag(finalInputs)
+      : finalInputs;
+  };
+
+  const buildObservability = (
+    output: any,
+    status: 'success' | 'failure' | 'running',
+    latencyMs?: number,
+  ) => {
+    const usage = output?.usage || {};
+    return {
+      status,
+      model: output?.model,
+      total_tokens:
+        usage.total_tokens ||
+        (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+      total_cost: output?.cost || usage.total_cost || 0,
+      latency_ms: latencyMs,
+    };
+  };
+
   const handleExecute = async () => {
     if (!activeWorkflowId) return;
+    if (!canExecute) {
+      setError('현재 권한으로는 실행할 수 없습니다.');
+      return;
+    }
 
     setIsExecuting(true);
     setExecutionResult(null);
@@ -116,66 +212,16 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     setError(null);
 
     try {
-      const hasFiles = Object.values(files).some((file) => file !== null);
-      let finalInputs: Record<string, any> = { ...inputs };
-
-      // Webhook인 경우 JSON 파싱
-      if (startNode?.type === 'webhookTrigger') {
-        try {
-          const rawJson = inputs['__json_payload__'];
-          finalInputs = JSON.parse(rawJson);
-        } catch {
-          toast.error('유효하지 않은 JSON 형식입니다.');
-          setError('JSON 파싱 실패');
-          setIsExecuting(false);
-          return;
-        }
-      }
-
-      // 파일 업로드 처리
-      if (hasFiles) {
-        setIsUploading(true);
-        try {
-          for (const [key, file] of Object.entries(files)) {
-            if (file) {
-              const presignedData = await knowledgeApi.getPresignedUploadUrl(
-                file.name,
-                file.type || 'application/octet-stream',
-              );
-
-              await knowledgeApi.uploadToS3(
-                presignedData.upload_url,
-                file,
-                file.type || 'application/octet-stream',
-              );
-
-              const s3Url = presignedData.upload_url.split('?')[0];
-              finalInputs[key] = s3Url;
-            }
-          }
-        } catch (uploadError: any) {
-          toast.error(`파일 업로드 실패: ${uploadError.message}`);
-          setError('파일 업로드 실패');
-          setIsUploading(false);
-          setIsExecuting(false);
-          return;
-        }
-        setIsUploading(false);
-      }
+      const inputsWithMemory = await buildFinalInputs();
 
       // 1. 초기화: 모든 노드 상태 초기화
       const initialNodes = nodes.map((node) => ({
         ...node,
-        data: { ...node.data, status: 'idle' },
+        data: { ...node.data, status: 'idle', observability: undefined },
       })) as unknown as any[];
       setNodes(initialNodes);
 
       let finalResult: any = null;
-
-      // 2. 스트리밍 실행 (기억모드 플래그 적용)
-      const inputsWithMemory = appendMemoryFlag
-        ? appendMemoryFlag(finalInputs)
-        : finalInputs;
 
       await workflowApi.executeWorkflowStream(
         activeWorkflowId,
@@ -187,7 +233,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           const { type, data } = event;
 
           if (type === 'node_start') {
-            updateNodeData(data.node_id, { status: 'running' });
+            nodeStartedAtRef.current[data.node_id] = performance.now();
+            updateNodeData(data.node_id, {
+              status: 'running',
+              observability: buildObservability(null, 'running'),
+            });
 
             // 실행 중인 노드로 화면 중심 이동 및 줌인
             const latestNodes = useWorkflowStore.getState().nodes;
@@ -202,7 +252,18 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               );
             }
           } else if (type === 'node_finish') {
-            updateNodeData(data.node_id, { status: 'success' });
+            const startedAt = nodeStartedAtRef.current[data.node_id];
+            const latencyMs = startedAt
+              ? Math.round(performance.now() - startedAt)
+              : undefined;
+            updateNodeData(data.node_id, {
+              status: 'success',
+              observability: buildObservability(
+                data.output,
+                'success',
+                latencyMs,
+              ),
+            });
 
             // 노드 실행 완료 토스트
 
@@ -219,7 +280,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             finalResult = data;
           } else if (type === 'error') {
             if (data.node_id) {
-              updateNodeData(data.node_id, { status: 'failure' });
+              const startedAt = nodeStartedAtRef.current[data.node_id];
+              const latencyMs = startedAt
+                ? Math.round(performance.now() - startedAt)
+                : undefined;
+              updateNodeData(data.node_id, {
+                status: 'failure',
+                observability: buildObservability(null, 'failure', latencyMs),
+              });
             }
             toast.error(`모듈 실행 실패: ${data.message}`);
             throw new Error(data.message);
@@ -244,6 +312,33 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     setExecutionResult(null);
     setNodeResults([]);
     setError(null);
+  };
+
+  const handleCompare = async () => {
+    if (!activeWorkflowId || !compareNodeId || !leftValue || !rightValue) return;
+    if (!canExecute) {
+      setError('현재 권한으로는 비교 실행을 할 수 없습니다.');
+      return;
+    }
+    setIsComparing(true);
+    setCompareResult(null);
+    setError(null);
+    try {
+      const compareInputs = await buildFinalInputs();
+      const result = await workflowApi.compareWorkflow(activeWorkflowId, {
+        node_id: compareNodeId,
+        compare_type: compareType,
+        inputs: compareInputs as Record<string, unknown>,
+        left: leftValue,
+        right: rightValue,
+      });
+      setCompareResult(result);
+    } catch (err: any) {
+      setError(err.message || '비교 실행 중 오류가 발생했습니다.');
+      toast.error('비교 실행 실패');
+    } finally {
+      setIsComparing(false);
+    }
   };
 
   return (
@@ -450,6 +545,148 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
               )}
             </div>
+
+            {llmNodes.length > 0 && (
+              <div className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700">
+                <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700">
+                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-200">
+                    Model / Prompt 비교
+                  </h3>
+                </div>
+                <div className="p-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      value={compareNodeId}
+                      onChange={(event) => setCompareNodeId(event.target.value)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white dark:bg-gray-800 dark:border-gray-700"
+                    >
+                      {llmNodes.map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {(node.data as any).title || node.id}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="grid grid-cols-2 rounded-lg border border-gray-300 overflow-hidden dark:border-gray-700">
+                      {(['model', 'prompt'] as const).map((type) => (
+                        <button
+                          key={type}
+                          onClick={() => setCompareType(type)}
+                          className={`py-2 text-sm font-medium ${
+                            compareType === type
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200'
+                          }`}
+                        >
+                          {type}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {compareType === 'model' ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        value={leftValue}
+                        onChange={(event) => setLeftValue(event.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Model A"
+                      />
+                      <input
+                        value={rightValue}
+                        onChange={(event) => setRightValue(event.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Model B"
+                      />
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <textarea
+                        value={leftValue}
+                        onChange={(event) => setLeftValue(event.target.value)}
+                        className="min-h-[120px] px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Prompt A"
+                      />
+                      <textarea
+                        value={rightValue}
+                        onChange={(event) => setRightValue(event.target.value)}
+                        className="min-h-[120px] px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Prompt B"
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleCompare}
+                    disabled={
+                      isComparing ||
+                      isUploading ||
+                      !canExecute ||
+                      !leftValue ||
+                      !rightValue
+                    }
+                    className="w-full px-4 py-2 text-white bg-gray-900 hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
+                  >
+                    {isComparing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        비교 실행 중...
+                      </>
+                    ) : (
+                      '비교 실행'
+                    )}
+                  </button>
+
+                  {compareResult && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {compareResult.variants.map((variant) => (
+                        <div
+                          key={variant.label}
+                          className="border border-gray-200 rounded-lg p-3 dark:border-gray-700"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                              {variant.label}
+                            </span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                variant.status === 'success'
+                                  ? 'bg-green-50 text-green-700'
+                                  : 'bg-red-50 text-red-700'
+                              }`}
+                            >
+                              {variant.status}
+                            </span>
+                          </div>
+                          <dl className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                            <div className="flex justify-between gap-2">
+                              <dt>tokens</dt>
+                              <dd>{variant.total_tokens || 0}</dd>
+                            </div>
+                            <div className="flex justify-between gap-2">
+                              <dt>cost</dt>
+                              <dd>${Number(variant.total_cost || 0).toFixed(6)}</dd>
+                            </div>
+                            <div className="flex justify-between gap-2">
+                              <dt>latency</dt>
+                              <dd>{variant.latency_ms || 0}ms</dd>
+                            </div>
+                          </dl>
+                          {variant.error ? (
+                            <p className="mt-2 line-clamp-3 text-xs text-red-600">
+                              {variant.error}
+                            </p>
+                          ) : (
+                            <pre className="mt-2 max-h-32 overflow-auto rounded bg-gray-50 p-2 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                              {JSON.stringify(variant.node_output, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           /* Execution Result */
@@ -513,7 +750,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {!executionResult && !error ? (
           <button
             onClick={handleExecute}
-            disabled={isExecuting || isUploading}
+            disabled={isExecuting || isUploading || !canExecute}
             className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
           >
             {isExecuting || isUploading ? (
@@ -524,7 +761,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             ) : (
               <>
                 <Play className="w-4 h-4" />
-                실행하기
+                {canExecute ? '실행하기' : '실행 권한 없음'}
               </>
             )}
           </button>

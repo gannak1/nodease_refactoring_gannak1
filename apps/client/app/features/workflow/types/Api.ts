@@ -11,6 +11,37 @@ export interface WorkflowResponse {
   updated_at: string;
 }
 
+export interface WorkflowPermissionResponse {
+  workflow_id: string;
+  organization_id?: string | null;
+  auth_state: string;
+  can_read: boolean;
+  can_write: boolean;
+  can_execute: boolean;
+  can_deploy: boolean;
+  can_manage: boolean;
+}
+
+export interface WorkflowCompareVariant {
+  label: 'A' | 'B';
+  value: string;
+  status: 'success' | 'failed';
+  error?: string | null;
+  outputs?: Record<string, any>;
+  node_output?: Record<string, any> | null;
+  model?: string | null;
+  total_tokens?: number;
+  total_cost?: number;
+  latency_ms?: number;
+}
+
+export interface WorkflowCompareResponse {
+  workflow_id: string;
+  node_id: string;
+  compare_type: 'model' | 'prompt';
+  variants: WorkflowCompareVariant[];
+}
+
 // 로그 관련 타입 (Backend Schemas와 일치)
 export interface WorkflowNodeRun {
   id: string;

@@ -13,12 +13,20 @@ export const useWorkflowAppSync = () => {
     setProjectInfo,
     setActiveWorkflowIdSafe,
     setProjectApp,
+    setWorkflowAccess,
   } = useWorkflowStore();
 
   useEffect(() => {
     const loadWorkflowAppId = async () => {
       try {
         const data = await workflowApi.getWorkflow(workflowId);
+        try {
+          const access = await workflowApi.getWorkflowPermission(workflowId);
+          setWorkflowAccess(access);
+        } catch (permissionError) {
+          console.error('Failed to load workflow permissions:', permissionError);
+          setWorkflowAccess(null);
+        }
         if (data.app_id) {
           setCurrentAppId(data.app_id);
 
@@ -41,7 +49,13 @@ export const useWorkflowAppSync = () => {
     if (workflowId) {
       loadWorkflowAppId();
     }
-  }, [workflowId, setProjectInfo, setActiveWorkflowIdSafe, setProjectApp]);
+  }, [
+    workflowId,
+    setProjectInfo,
+    setActiveWorkflowIdSafe,
+    setProjectApp,
+    setWorkflowAccess,
+  ]);
 
   useEffect(() => {
     const initWorkflows = async () => {

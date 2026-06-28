@@ -7,18 +7,37 @@ from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.gateway.services.team_service import TeamService
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.team import (
+    Team,
+    TeamLLMPermission,
+    TeamMembership,
+    TeamWorkflowPermission,
+    UserLLMPermission,
+    UserWorkflowPermission,
+)
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
+from apps.shared.permissions import (
+    llm_credential_auth_state_allows,
+    workflow_auth_state_allows,
+)
 from apps.shared.schemas.team import (
     PermissionMutationResponse,
     ResourceAuthStateRequest,
+    ResourcePermissionListResponse,
     ResourcePermissionGrantRequest,
     ResourcePermissionRevokeRequest,
     TeamCreateRequest,
+    TeamMemberResponse,
     TeamMembershipRequest,
     TeamResponse,
     TeamUpdateRequest,
+)
+from apps.shared.services.permissions import (
+    get_effective_llm_credential_auth_state,
+    get_effective_workflow_auth_state,
+    has_organization_manager_permission,
 )
 
 router = APIRouter()
@@ -37,6 +56,36 @@ def _credential_organization_id(db: Session, credential_id: UUID) -> UUID:
     if not credential:
         raise HTTPException(status_code=404, detail="Credential not found")
     return credential.organization_id
+
+
+def _ensure_can_manage_workflow_permissions(
+    db: Session, current_user: User, workflow: Workflow
+) -> None:
+    if has_organization_manager_permission(
+        db, current_user.id, workflow.organization_id
+    ):
+        return
+    auth_state = get_effective_workflow_auth_state(
+        db, current_user.id, workflow.id, organization_id=workflow.organization_id
+    )
+    if workflow_auth_state_allows(auth_state, "manage"):
+        return
+    raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _ensure_can_manage_credential_permissions(
+    db: Session, current_user: User, credential: LLMCredential
+) -> None:
+    if has_organization_manager_permission(
+        db, current_user.id, credential.organization_id
+    ):
+        return
+    auth_state = get_effective_llm_credential_auth_state(
+        db, current_user.id, credential.id, organization_id=credential.organization_id
+    )
+    if llm_credential_auth_state_allows(auth_state, "manage"):
+        return
+    raise HTTPException(status_code=403, detail="Forbidden")
 
 
 def _grant_permission(
@@ -108,6 +157,41 @@ def list_teams(
     return TeamService.list_teams(db, current_user, organization_id)
 
 
+@router.get("/{team_id}/members", response_model=list[TeamMemberResponse])
+def list_team_members(
+    team_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    if not has_organization_manager_permission(db, current_user.id, team.organization_id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    rows = (
+        db.query(TeamMembership, User)
+        .join(User, User.id == TeamMembership.user_id)
+        .filter(
+            TeamMembership.team_id == team.id,
+            TeamMembership.grantee_organization_id == team.organization_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc())
+        .all()
+    )
+    return [
+        {
+            "id": membership.id,
+            "user_id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "assigned_at": membership.assigned_at,
+        }
+        for membership, user in rows
+    ]
+
+
 @router.patch("/{team_id}", response_model=TeamResponse)
 def update_team(
     team_id: UUID,
@@ -166,6 +250,138 @@ def remove_member(
     current_user: User = Depends(get_current_user),
 ):
     return remove_membership(team_id, user_id, db, current_user)
+
+
+@permissions_router.get(
+    "/workflows/{workflow_id}", response_model=ResourcePermissionListResponse
+)
+def list_workflow_permissions(
+    workflow_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    _ensure_can_manage_workflow_permissions(db, current_user, workflow)
+
+    team_rows = (
+        db.query(TeamWorkflowPermission, Team)
+        .join(Team, Team.id == TeamWorkflowPermission.team_id)
+        .filter(
+            TeamWorkflowPermission.workflow_id == workflow.id,
+            TeamWorkflowPermission.grantee_organization_id == workflow.organization_id,
+            Team.organization_id == workflow.organization_id,
+            Team.is_active.is_(True),
+        )
+        .order_by(Team.name.asc())
+        .all()
+    )
+    user_rows = (
+        db.query(UserWorkflowPermission, User)
+        .join(User, User.id == UserWorkflowPermission.user_id)
+        .filter(
+            UserWorkflowPermission.workflow_id == workflow.id,
+            UserWorkflowPermission.grantee_organization_id == workflow.organization_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc())
+        .all()
+    )
+
+    return {
+        "resource_type": "workflow",
+        "resource_id": workflow.id,
+        "organization_id": workflow.organization_id,
+        "team_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "team",
+                "grantee_id": team.id,
+                "grantee_name": team.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission, team in team_rows
+        ],
+        "user_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "user",
+                "grantee_id": user.id,
+                "grantee_name": f"{user.name} <{user.email}>",
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission, user in user_rows
+        ],
+    }
+
+
+@permissions_router.get(
+    "/llm-credentials/{credential_id}", response_model=ResourcePermissionListResponse
+)
+def list_credential_permissions(
+    credential_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    credential = db.query(LLMCredential).filter(LLMCredential.id == credential_id).first()
+    if not credential:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    _ensure_can_manage_credential_permissions(db, current_user, credential)
+
+    team_rows = (
+        db.query(TeamLLMPermission, Team)
+        .join(Team, Team.id == TeamLLMPermission.team_id)
+        .filter(
+            TeamLLMPermission.llm_credential_id == credential.id,
+            TeamLLMPermission.grantee_organization_id == credential.organization_id,
+            Team.organization_id == credential.organization_id,
+            Team.is_active.is_(True),
+        )
+        .order_by(Team.name.asc())
+        .all()
+    )
+    user_rows = (
+        db.query(UserLLMPermission, User)
+        .join(User, User.id == UserLLMPermission.user_id)
+        .filter(
+            UserLLMPermission.llm_credential_id == credential.id,
+            UserLLMPermission.grantee_organization_id == credential.organization_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc())
+        .all()
+    )
+
+    return {
+        "resource_type": "llm_credential",
+        "resource_id": credential.id,
+        "organization_id": credential.organization_id,
+        "team_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "team",
+                "grantee_id": team.id,
+                "grantee_name": team.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission, team in team_rows
+        ],
+        "user_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "user",
+                "grantee_id": user.id,
+                "grantee_name": f"{user.name} <{user.email}>",
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission, user in user_rows
+        ],
+    }
 
 
 @router.post("/permissions", response_model=PermissionMutationResponse)

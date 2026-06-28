@@ -585,6 +585,7 @@ class LLMService:
             organization_id=organization_id,
             credential_name=request.credential_name,
             encrypted_config=config_json,
+            config_preview=LLMService._mask_plain(request.api_key),
             is_valid=True,
             quota_type="unlimited",
             quota_limit=0,
