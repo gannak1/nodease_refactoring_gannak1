@@ -340,7 +340,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 ## 권한 판정 순서
 
 1. 사용자를 인증한다.
-2. 요청의 active organization을 결정한다.
+2. 요청의 active organization을 `X-Organization-Id` header 기준으로 결정한다.
 3. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
 4. 사용자의 active organization 내 team 목록을 `team_memberships`에서 조회한다.
 5. 대상 resource의 organization scope를 확인한다.

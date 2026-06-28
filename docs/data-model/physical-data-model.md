@@ -1405,7 +1405,7 @@ MVP 목표 상태 결정:
 
 권한 판정 순서:
 
-1. 사용자의 active organization을 확인한다.
+1. 사용자의 active organization을 `X-Organization-Id` header 기준으로 확인한다.
 2. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
 3. 사용자가 속한 team을 `team_memberships`에서 조회한다.
 4. resource별 permission table에서 `auth_state`를 확인한다.

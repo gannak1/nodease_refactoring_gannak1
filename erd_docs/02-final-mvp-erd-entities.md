@@ -1,0 +1,1687 @@
+# Nodease Final MVP ERD Entity 설계서
+
+## 목적
+
+이 문서는 `nodease/mbased` GitHub `dev` 브랜치에 이미 설계되어 있는 ERD를 기준선으로 보존하면서, Nodease 최종 MVP에 필요한 Entity 기준을 다시 정리한다.
+
+여기서 "최종 MVP"는 MVP 1, MVP 2, MVP 3이 모두 완료된 제품 상태를 뜻한다. 단, 이 문서는 `dev` 브랜치의 기존 DB Entity, column, relationship을 대체하거나 되돌리는 설계를 하지 않는다. 추가로 필요한 Entity는 기존 dev ERD와 충돌하지 않는 additive extension으로만 정의한다.
+
+## 기준
+
+| 항목 | 기준 |
+| --- | --- |
+| 기준 브랜치 | `origin/dev` |
+| 확인 commit | `5def9053fe5d72e7ac67fe2e27c8545a5124791d` |
+| 기준 모델 경로 | `apps/shared/db/models/*` |
+| 기준 migration 경로 | `apps/shared/alembic/versions/*` |
+| 기존 목표 문서 | `local/erd_docs/01-target-erd.md` |
+
+## 설계 원칙
+
+| 원칙 | 내용 |
+| --- | --- |
+| dev ERD 보존 | `origin/dev`에 존재하는 Entity와 column을 삭제, rename, 대체하지 않는다. |
+| 추가 schema 최소화 | 최종 MVP 기능은 우선 dev의 기존 Entity 조합으로 구현하고, 필요한 경우 additive table만 추가한다. |
+| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. dev의 `organization`, `teams`, `team_*_permissions`를 기본 권한 기준으로 사용한다. |
+| User direct grant | 개별 user 예외 권한은 resource별 `user_*_permissions` table로 추가한다. direct grant는 additive allow 전용이다. |
+| Organization owner/manager | `organization.created_by` 또는 `organization.managed_by`에 해당하는 user는 해당 organization scope 안에서 `manager`급으로 판정한다. |
+| Audit 기준 | `audit_events`를 새로 만들지 않는다. dev의 `audit_logs`를 canonical audit table로 사용한다. |
+| Trace 기준 | `rag_retrieval_traces`를 새로 만들지 않는다. dev의 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies`, `trace_payload_access_events`를 trace 기준으로 사용한다. |
+| Tenant 기준 | `tenant_id`를 새로 설계하지 않는다. dev의 `organization_id`를 조직 범위 기준으로 사용한다. |
+| Project boundary | 제품상의 project boundary는 `apps`로 본다. 단, 상위 조직 범위는 `organization`이다. |
+| Dashboard | 별도 aggregate table, materialized view, dashboard 전용 table을 만들지 않고 raw query로 시작한다. |
+
+## 표기 규칙과 한계
+
+이 문서는 dev ERD를 보존하기 위한 Entity 설계 기준서다. 따라서 아래 규칙을 따른다.
+
+| 항목 | 규칙 |
+| --- | --- |
+| Entity/table 이름 | `origin/dev`의 SQLAlchemy model `__tablename__`을 기준으로 쓴다. |
+| column 목록 | 전체 DDL 명세가 아니라 최종 MVP 설계 판단에 필요한 주요 column 목록이다. nullable, index, ondelete의 최종 근거는 dev model과 Alembic migration이다. |
+| 관계 표기 | `A -> B`는 dev model에 FK 또는 relationship이 있는 경우에만 ERD 관계로 본다. JSONB metadata에 id를 넣는 방식은 관계가 아니라 application-level convention이다. |
+| `organization_id` | dev에서 nullable인 기존 column은 이 문서에서 non-null로 바꾸지 않는다. |
+| `auth_state` | dev DB enum이 아니다. 허용값과 의미는 `local/erd_docs/03-permission-matrix.md`의 application-level matrix를 따른다. |
+| `audit_logs.status` | dev 기준 `success`/`failure` 상태만 저장한다. `pass`/`warn`/`block` 같은 정책 결과는 `audit_logs.audit_metadata.policy_result`에 저장한다. |
+
+## 기존 문서에서 변경된 결정
+
+이 문서는 이전 `02-final-mvp-erd-entities.md`의 결정을 다음처럼 바꾼다.
+
+| 이전 결정 | 재설계 결정 |
+| --- | --- |
+| `roles` 신규 생성 | 생성하지 않는다. dev의 `teams`와 permission table을 사용한다. |
+| `user_roles` 신규 생성 | 생성하지 않는다. 사용자-팀 소속은 `team_memberships`를 사용한다. |
+| `resource_permissions` 신규 생성 | 생성하지 않는다. team 권한은 `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`를 사용한다. user 직접 권한은 resource별 `user_*_permissions`를 사용한다. |
+| `audit_events` 신규 생성 | 생성하지 않는다. `audit_logs`를 사용한다. |
+| `rag_retrieval_traces` 신규 생성 | 생성하지 않는다. trace 계열 테이블과 JSONB payload convention으로 처리한다. |
+| `deployment_check_runs`, `deployment_check_items` 필수 생성 | dev ERD 보존 조건에서는 생성하지 않는다. check 결과가 필요하면 `audit_logs`에 action/result metadata로 남긴다. |
+| `recommendation_events` 필수 생성 | dev ERD 보존 조건에서는 생성하지 않는다. recommendation lifecycle은 `audit_logs` action과 metadata로 남긴다. |
+| `tenant_id` 유지 | 유지하지 않는다. dev의 `organization_id`를 따른다. |
+| group/organization model 범위 밖 | dev에 이미 있으므로 최종 MVP 기준선에 포함한다. |
+| `knowledge_bases.classification`, `documents.classification` 추가 | dev ERD 보존 조건에서는 column을 추가하지 않는다. classification이 필요하면 별도 schema 변경 승인 전까지 metadata/audit/trace payload 수준에서만 다룬다. |
+| 개별 user direct permission | resource별 user permission table을 추가한다. polymorphic table은 만들지 않는다. |
+
+## Entity 분류
+
+### Dev Baseline Entity
+
+`origin/dev`에 이미 존재하며, 최종 MVP에서도 그대로 사용하는 Entity다.
+
+| Entity | 최종 MVP 역할 |
+| --- | --- |
+| `users` | 사용자, 실행 actor, resource owner |
+| `organization` | 조직 범위, tenant-like boundary |
+| `teams` | 조직 내 권한 부여 단위 |
+| `team_memberships` | 사용자와 팀의 소속 관계 |
+| `team_workflow_permissions` | 팀 단위 workflow 권한 |
+| `team_knowledge_permissions` | 팀 단위 knowledge base 권한 |
+| `team_llm_permissions` | 팀 단위 LLM credential 권한 |
+| `team_audit_permissions` | 팀 단위 audit visibility 권한 |
+| `apps` | project boundary, endpoint boundary |
+| `workflows` | Canvas, draft graph, 실행 대상 workflow |
+| `workflow_deployments` | 배포 snapshot, version, deployment type |
+| `schedules` | schedule deployment 실행 설정 |
+| `workflow_runs` | workflow 실행 이력, dashboard raw query 원천 |
+| `workflow_node_runs` | node 실행 이력, node 단위 observability |
+| `trace_redaction_policies` | trace payload redaction 정책 |
+| `trace_retention_policies` | trace payload retention 정책 |
+| `trace_visibility_policies` | trace payload visibility 정책 |
+| `trace_payloads` | 실행/노드 단위 trace payload 저장소 |
+| `trace_payload_access_events` | trace payload 접근 감사 |
+| `audit_logs` | 사용자 action과 data change 감사 로그 |
+| `knowledge_bases` | RAG data source 상위 단위 |
+| `documents` | RAG 문서 단위 |
+| `document_chunks` | RAG retrieval 최소 검색 단위 |
+| `connections` | 외부 DB data source |
+| `llm_providers` | LLM provider catalog |
+| `llm_models` | LLM model catalog |
+| `llm_credentials` | 사용자/조직 LLM credential |
+| `llm_rel_credential_models` | credential-model 사용 가능 관계 |
+| `llm_usage_logs` | LLM token/cost/latency 원천 |
+
+### New Required Entity
+
+최종 MVP에서 개별 user direct permission을 지원하기 위해 새로 추가하는 Entity다. 이 Entity들은 dev의 기존 team permission table을 대체하지 않고, additive allow extension으로만 동작한다.
+
+| Entity | 도입 MVP | 최종 MVP 역할 |
+| --- | --- | --- |
+| `user_workflow_permissions` | MVP 1 | 특정 user에게 workflow 직접 추가 권한 부여 |
+| `user_llm_permissions` | MVP 1 | 특정 user에게 LLM credential 직접 추가 권한 부여 |
+| `user_knowledge_permissions` | MVP 2 | 특정 user에게 knowledge base 직접 추가 권한 부여 |
+| `user_audit_permissions` | MVP 3 | 특정 user에게 target organization audit visibility 직접 추가 권한 부여 |
+
+이전 문서에서 신규 Entity로 다루던 기능은 다음 기준 Entity로 정리한다.
+
+| 기능 | 기준 Entity |
+| --- | --- |
+| team 기반 역할/권한 | `organization`, `teams`, `team_memberships`, `team_*_permissions` |
+| user 직접 추가 권한 | `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_audit_permissions` |
+| 감사 로그 | `audit_logs` |
+| LLM/RAG trace | `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies` |
+| trace payload 접근 감사 | `trace_payload_access_events` |
+| deploy checklist 결과 | `audit_logs.audit_metadata` |
+| recommendation lifecycle | `audit_logs.audit_metadata` |
+| operations dashboard | 기존 log/run/trace/usage table raw query |
+
+### Not Entity In This ERD
+
+다음 항목은 dev ERD 보존 조건에서 별도 Entity로 만들지 않는다.
+
+| 항목 | 결정 |
+| --- | --- |
+| `roles` | 만들지 않는다. |
+| `user_roles` | 만들지 않는다. |
+| `resource_permissions` | 만들지 않는다. |
+| `audit_events` | 만들지 않는다. |
+| `rag_retrieval_traces` | 만들지 않는다. |
+| `deployment_check_runs` | 만들지 않는다. |
+| `deployment_check_items` | 만들지 않는다. |
+| `recommendation_events` | 만들지 않는다. |
+| 독립 `projects` table | 만들지 않는다. `apps`를 project boundary로 사용한다. |
+| workflow node table | 만들지 않는다. `workflows.graph` 내부 node id를 string reference로 사용한다. |
+| node-level permission table | 만들지 않는다. |
+| `user_connection_permissions` | 만들지 않는다. connection `use`는 consuming workflow/knowledge base 권한으로 허용하고, secret/manage만 connection owner 또는 organization owner/manager로 제한한다. |
+| `user_app_permissions` | 만들지 않는다. app 권한은 workflow 권한으로 대체한다. |
+| `user_document_permissions` | 만들지 않는다. document 권한은 knowledge base 권한으로 대체한다. |
+| `user_model_permissions` | 만들지 않는다. model 사용 제한은 credential 권한과 model relation으로 처리한다. |
+| dashboard aggregate table | 만들지 않는다. |
+| materialized view | 만들지 않는다. |
+| MCP Gateway schema | 만들지 않는다. |
+
+## Entity 상세
+
+### `users`
+
+dev baseline Entity다.
+
+역할:
+
+- 로그인 사용자
+- app/workflow/knowledge base/connection/LLM credential owner
+- workflow run actor
+- audit log actor
+- organization/team 생성자 또는 관리자
+
+주요 column:
+
+- `id`
+- `email`
+- `name`
+- `password`
+- `social_provider`
+- `social_id`
+- `avatar_url`
+- `deactivated_at`
+- `last_login_at`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `users.id -> apps.created_by`
+- `users.id -> workflows.created_by`
+- `users.id -> workflows.updated_by`
+- `users.id -> workflow_deployments.created_by`
+- `users.id -> workflow_runs.user_id`
+- `users.id -> knowledge_bases.user_id`
+- `users.id -> connections.user_id`
+- `users.id -> llm_credentials.user_id`
+- `users.id -> llm_usage_logs.user_id`
+- `users.id -> organization.created_by`
+- `users.id -> organization.managed_by`
+- `users.id -> teams.created_by`
+- `users.id -> teams.managed_by`
+- `users.id -> team_memberships.user_id`
+- `users.id -> audit_logs.actor_id`
+
+최종 MVP 결정:
+
+- `users`에 `tenant_id`를 추가하지 않는다.
+- 사용자 상태는 dev의 `deactivated_at`, `last_login_at`를 사용한다.
+
+### `organization`
+
+dev baseline Entity다.
+
+역할:
+
+- 조직 범위
+- tenant-like boundary
+- app/workflow/knowledge base/LLM credential/usage log의 상위 scope
+- team permission의 조직 기준
+
+주요 column:
+
+- `id`
+- `name`
+- `options`
+- `flags`
+- `created_by`
+- `managed_by`
+- `is_active`
+- `created_at`
+- `updated_at`
+- `deactivated_at`
+
+관계:
+
+- `organization.created_by -> users.id`
+- `organization.managed_by -> users.id`
+- `apps.organization_id -> organization.id`
+- `workflows.organization_id -> organization.id`
+- `knowledge_bases.organization_id -> organization.id`
+- `llm_credentials.organization_id -> organization.id`
+- `llm_usage_logs.organization_id -> organization.id`
+- `teams.organization_id -> organization.id`
+- `team_memberships.grantee_organization_id -> organization.id`
+- `team_*_permissions.grantee_organization_id -> organization.id`
+- `team_audit_permissions.target_organization_id -> organization.id`
+
+최종 MVP 결정:
+
+- `organization`을 제거하거나 `tenant_id`로 되돌리지 않는다.
+- 조직별 설정이 필요하면 dev의 `options`, `flags`를 우선 사용한다.
+
+### `teams`
+
+dev baseline Entity다.
+
+역할:
+
+- 조직 내 권한 부여 단위
+- 사용자 그룹
+- workflow, knowledge base, LLM credential, audit visibility 권한의 subject
+
+주요 column:
+
+- `id`
+- `organization_id`
+- `name`
+- `options`
+- `flags`
+- `description`
+- `created_by`
+- `managed_by`
+- `is_active`
+- `is_auto_add`
+- `created_at`
+- `updated_at`
+- `deactivated_at`
+
+관계:
+
+- `teams.organization_id -> organization.id`
+- `teams.created_by -> users.id`
+- `teams.managed_by -> users.id`
+- `team_memberships.team_id -> teams.id`
+- `team_workflow_permissions.team_id -> teams.id`
+- `team_knowledge_permissions.team_id -> teams.id`
+- `team_llm_permissions.team_id -> teams.id`
+- `team_audit_permissions.team_id -> teams.id`
+
+최종 MVP 결정:
+
+- 별도 `roles` catalog를 만들지 않는다.
+- Admin/Builder/Operator/Viewer 같은 제품 역할은 필요하면 team naming, `options`, `flags`, application-level policy로 표현한다.
+
+### `team_memberships`
+
+dev baseline Entity다.
+
+역할:
+
+- 사용자를 팀에 소속시킨다.
+- 권한 판정의 subject membership 원천이다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `team_id`
+- `user_id`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `team_memberships.grantee_organization_id -> organization.id`
+- `team_memberships.team_id -> teams.id`
+- `team_memberships.user_id -> users.id`
+- `team_memberships.assigned_by -> users.id`
+
+제약:
+
+- dev 기준 unique constraint는 조직, 사용자, 팀 조합의 중복 소속을 막는다.
+
+### `team_workflow_permissions`
+
+dev baseline Entity다.
+
+역할:
+
+- 팀에 workflow resource 권한을 부여한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `team_id`
+- `workflow_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `team_workflow_permissions.workflow_id -> workflows.id`
+- `team_workflow_permissions.team_id -> teams.id`
+- `team_workflow_permissions.grantee_organization_id -> organization.id`
+- `team_workflow_permissions.assigned_by -> users.id`
+
+최종 MVP 결정:
+
+- workflow 권한은 `resource_permissions.resource_type='workflow'`로 표현하지 않는다.
+- dev의 `auth_state`와 application-level policy를 사용한다.
+- `auth_state` 값 집합은 DB enum으로 고정하지 않는다. 최종 MVP의 application-level 표준값과 의미는 `local/erd_docs/03-permission-matrix.md`를 따른다.
+
+### `team_knowledge_permissions`
+
+dev baseline Entity다.
+
+역할:
+
+- 팀에 knowledge base resource 권한을 부여한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `team_id`
+- `knowledge_base_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `team_knowledge_permissions.knowledge_base_id -> knowledge_bases.id`
+- `team_knowledge_permissions.team_id -> teams.id`
+- `team_knowledge_permissions.grantee_organization_id -> organization.id`
+- `team_knowledge_permissions.assigned_by -> users.id`
+
+최종 MVP 결정:
+
+- RAG data source permission은 이 테이블을 기준으로 판정한다.
+- `auth_state` 값 집합과 의미는 `local/erd_docs/03-permission-matrix.md`의 application-level matrix를 따른다.
+
+### `team_llm_permissions`
+
+dev baseline Entity다.
+
+역할:
+
+- 팀에 LLM credential 권한을 부여한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `team_id`
+- `llm_credential_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `team_llm_permissions.llm_credential_id -> llm_credentials.id`
+- `team_llm_permissions.team_id -> teams.id`
+- `team_llm_permissions.grantee_organization_id -> organization.id`
+- `team_llm_permissions.assigned_by -> users.id`
+
+최종 MVP 결정:
+
+- LLM credential 사용 권한은 이 테이블을 기준으로 판정한다.
+- model catalog 권한이 별도로 필요하면 새 테이블을 만들지 않고 credential-model 관계와 application-level policy로 제한한다.
+- `auth_state` 값 집합과 의미는 `local/erd_docs/03-permission-matrix.md`의 application-level matrix를 따른다.
+
+### `team_audit_permissions`
+
+dev baseline Entity다.
+
+역할:
+
+- 팀에 특정 조직의 audit visibility 권한을 부여한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `team_id`
+- `target_organization_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `team_audit_permissions.target_organization_id -> organization.id`
+- `team_audit_permissions.team_id -> teams.id`
+- `team_audit_permissions.grantee_organization_id -> organization.id`
+- `team_audit_permissions.assigned_by -> users.id`
+
+최종 MVP 결정:
+
+- audit log 조회 권한은 이 테이블을 기준으로 판정한다.
+- `auth_state` 값 집합과 의미는 `local/erd_docs/03-permission-matrix.md`의 application-level matrix를 따른다.
+
+### `user_workflow_permissions`
+
+최종 MVP 신규 Entity다.
+
+역할:
+
+- 특정 user에게 workflow 직접 추가 권한을 부여한다.
+- team 권한으로 처리하기 어려운 예외 권한을 저장한다.
+- team permission을 낮추거나 deny하지 않고 additive allow로만 동작한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `user_id`
+- `workflow_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `user_workflow_permissions.grantee_organization_id -> organization.id`
+- `user_workflow_permissions.user_id -> users.id`
+- `user_workflow_permissions.workflow_id -> workflows.id`
+- `user_workflow_permissions.assigned_by -> users.id`
+
+제약:
+
+- `(grantee_organization_id, user_id, workflow_id)`는 unique여야 한다.
+- `auth_state='none'`은 직접 권한 없음과 동일하게 처리한다.
+- direct user `auth_state`가 team `auth_state`보다 약해도 team 권한을 낮추지 않는다.
+
+### `user_knowledge_permissions`
+
+최종 MVP 신규 Entity다.
+
+역할:
+
+- 특정 user에게 knowledge base 직접 추가 권한을 부여한다.
+- RAG data source 접근의 예외 허용을 저장한다.
+- team permission을 낮추거나 deny하지 않고 additive allow로만 동작한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `user_id`
+- `knowledge_base_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `user_knowledge_permissions.grantee_organization_id -> organization.id`
+- `user_knowledge_permissions.user_id -> users.id`
+- `user_knowledge_permissions.knowledge_base_id -> knowledge_bases.id`
+- `user_knowledge_permissions.assigned_by -> users.id`
+
+제약:
+
+- `(grantee_organization_id, user_id, knowledge_base_id)`는 unique여야 한다.
+- document별 직접 권한은 만들지 않는다.
+- document 접근 예외가 필요하면 knowledge base 단위로 부여한다.
+
+### `user_llm_permissions`
+
+최종 MVP 신규 Entity다.
+
+역할:
+
+- 특정 user에게 LLM credential 직접 추가 권한을 부여한다.
+- workflow 실행 또는 workflow 설정에서 credential 사용 예외를 허용한다.
+- team permission을 낮추거나 deny하지 않고 additive allow로만 동작한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `user_id`
+- `llm_credential_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `user_llm_permissions.grantee_organization_id -> organization.id`
+- `user_llm_permissions.user_id -> users.id`
+- `user_llm_permissions.llm_credential_id -> llm_credentials.id`
+- `user_llm_permissions.assigned_by -> users.id`
+
+제약:
+
+- `(grantee_organization_id, user_id, llm_credential_id)`는 unique여야 한다.
+- model별 직접 권한은 만들지 않는다.
+- model 사용 제한은 credential 권한과 `llm_rel_credential_models`를 함께 평가한다.
+
+### `user_audit_permissions`
+
+최종 MVP 신규 Entity다.
+
+역할:
+
+- 특정 user에게 target organization audit visibility 직접 추가 권한을 부여한다.
+- 감사 조회 또는 raw trace 조회 예외를 저장한다.
+- team permission을 낮추거나 deny하지 않고 additive allow로만 동작한다.
+
+주요 column:
+
+- `id`
+- `grantee_organization_id`
+- `user_id`
+- `target_organization_id`
+- `auth_state`
+- `assigned_by`
+- `assigned_at`
+- `options`
+- `flags`
+
+관계:
+
+- `user_audit_permissions.grantee_organization_id -> organization.id`
+- `user_audit_permissions.user_id -> users.id`
+- `user_audit_permissions.target_organization_id -> organization.id`
+- `user_audit_permissions.assigned_by -> users.id`
+
+제약:
+
+- `(grantee_organization_id, user_id, target_organization_id)`는 unique여야 한다.
+- raw trace 조회는 이 테이블만으로 허용하지 않는다.
+- raw trace 조회는 `trace_visibility_policies`와 함께 평가한다.
+
+### `apps`
+
+dev baseline Entity다.
+
+역할:
+
+- 최종 MVP의 project boundary
+- public/API endpoint boundary
+- active deployment pointer 보유
+
+주요 column:
+
+- `id`
+- `organization_id`
+- `name`
+- `description`
+- `icon`
+- `workflow_id`
+- `active_deployment_id`
+- `url_slug`
+- `auth_secret`
+- `is_api_enabled`
+- `api_req_per_minute`
+- `api_req_per_hour`
+- `is_market`
+- `forked_from`
+- `created_by`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `apps.organization_id -> organization.id`
+- `apps.created_by -> users.id`
+- `apps.workflow_id -> workflows.id`
+- `workflows.app_id -> apps.id`
+- `workflow_deployments.app_id -> apps.id`
+- `workflow_runs.app_id -> apps.id`
+
+주의:
+
+- `active_deployment_id`는 dev 기준 FK column이 아니다.
+- relationship은 `WorkflowDeployment.id`를 viewonly로 참조한다.
+
+최종 MVP 결정:
+
+- 독립 `projects` table을 만들지 않는다.
+- `apps`는 project boundary로 유지한다.
+- 상위 조직 범위가 필요할 때는 `apps.organization_id`를 사용한다.
+
+### `workflows`
+
+dev baseline Entity다.
+
+역할:
+
+- Canvas
+- workflow draft graph 저장
+- 실행/배포/check/recommendation의 중심 resource
+
+주요 column:
+
+- `id`
+- `organization_id`
+- `app_id`
+- `graph`
+- `features`
+- `env_variables`
+- `runtime_variables`
+- `created_by`
+- `created_at`
+- `updated_by`
+- `updated_at`
+
+관계:
+
+- `workflows.organization_id -> organization.id`
+- `workflows.app_id -> apps.id`
+- `workflows.created_by -> users.id`
+- `workflows.updated_by -> users.id`
+- `workflow_runs.workflow_id -> workflows.id`
+- `llm_usage_logs.workflow_id -> workflows.id`
+- `team_workflow_permissions.workflow_id -> workflows.id`
+
+최종 MVP 결정:
+
+- workflow node를 별도 테이블로 정규화하지 않는다.
+- graph 내부 node id는 `workflow_node_runs.node_id`, `llm_usage_logs.node_id`, trace payload metadata에서 string으로 참조한다.
+
+### `workflow_deployments`
+
+dev baseline Entity다.
+
+역할:
+
+- 배포 snapshot 저장
+- app 기준 version 관리
+- schedule/webhook/API/webapp 실행 기준
+
+주요 column:
+
+- `id`
+- `app_id`
+- `version`
+- `type`
+- `graph_snapshot`
+- `config`
+- `input_schema`
+- `output_schema`
+- `description`
+- `created_by`
+- `created_at`
+- `is_active`
+
+관계:
+
+- `workflow_deployments.app_id -> apps.id`
+- `workflow_deployments.created_by -> users.id`
+- `schedules.deployment_id -> workflow_deployments.id`
+- `workflow_runs.deployment_id -> workflow_deployments.id`
+
+최종 MVP 결정:
+
+- rollback 전용 테이블은 만들지 않는다.
+- 이전 배포를 다시 활성화하는 동작은 `audit_logs.action='deployment.activate_previous'` 같은 action으로 기록한다.
+- deployment checklist 전용 테이블은 만들지 않는다. checklist 결과 저장이 필요하면 `audit_logs.audit_metadata`에 summary/items를 저장한다.
+
+### `schedules`
+
+dev baseline Entity다.
+
+역할:
+
+- schedule deployment 실행 설정
+- APScheduler 등록 정보
+
+주요 column:
+
+- `id`
+- `deployment_id`
+- `node_id`
+- `cron_expression`
+- `timezone`
+- `last_run_at`
+- `next_run_at`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `schedules.deployment_id -> workflow_deployments.id`
+
+최종 MVP 결정:
+
+- 별도 변경 없음.
+- scheduler trigger mode 정합성은 schema 변경이 아니라 실행 코드에서 보정한다.
+
+### `workflow_runs`
+
+dev baseline Entity다.
+
+역할:
+
+- workflow 실행 단위 observability
+- dashboard raw query의 핵심 원천
+- trace, LLM usage, audit metadata 연결 기준
+
+주요 column:
+
+- `id`
+- `workflow_id`
+- `user_id`
+- `app_id`
+- `deployment_id`
+- `workflow_version`
+- `status`
+- `trigger_mode`
+- `inputs`
+- `outputs`
+- `error_message`
+- `started_at`
+- `finished_at`
+- `duration`
+- `meta_info`
+- `correlation_id`
+- `request_id`
+- `workflow_task_id`
+- `trace_metadata`
+- `redaction_applied`
+- `pii_detected`
+- `redaction_policy_id`
+- `retention_policy_id`
+- `visibility_policy_id`
+- `payload_storage_mode`
+- `retention_purged_at`
+- `total_tokens`
+- `total_cost`
+
+관계:
+
+- `workflow_runs.workflow_id -> workflows.id`
+- `workflow_runs.user_id -> users.id`
+- `workflow_runs.app_id -> apps.id`
+- `workflow_runs.deployment_id -> workflow_deployments.id`
+- `workflow_node_runs.workflow_run_id -> workflow_runs.id`
+- `llm_usage_logs.workflow_run_id -> workflow_runs.id`
+- `trace_payloads.workflow_run_id -> workflow_runs.id`
+- `trace_payload_access_events.workflow_run_id -> workflow_runs.id`
+
+최종 MVP 결정:
+
+- RAG retrieval lineage를 별도 table로 만들지 않고, run/node와 trace payload를 연결해서 표현한다.
+- API/Webhook/Scheduler/App 실행 구분은 dev의 `trigger_mode`를 사용한다.
+
+### `workflow_node_runs`
+
+dev baseline Entity다.
+
+역할:
+
+- node 실행 이력
+- node 단위 latency/status/error 관측
+- trace payload 연결 기준
+
+주요 column:
+
+- `id`
+- `workflow_run_id`
+- `node_id`
+- `node_type`
+- `status`
+- `inputs`
+- `process_data`
+- `outputs`
+- `error_message`
+- `started_at`
+- `finished_at`
+- `duration`
+- `trace_metadata`
+- `redaction_applied`
+- `pii_detected`
+- `redaction_policy_id`
+- `parent_node_run_id`
+- `sequence`
+- `retry_count`
+
+관계:
+
+- `workflow_node_runs.workflow_run_id -> workflow_runs.id`
+- `workflow_node_runs.parent_node_run_id -> workflow_node_runs.id`
+- `trace_payloads.workflow_node_run_id -> workflow_node_runs.id`
+
+최종 MVP 결정:
+
+- 별도 workflow node definition table은 만들지 않는다.
+- node id는 `workflows.graph` 내부 id를 string으로 참조한다.
+
+### `trace_redaction_policies`
+
+dev baseline Entity다.
+
+역할:
+
+- trace payload redaction 정책
+- raw payload 저장 여부와 prompt/completion 저장 여부 제어
+
+주요 column:
+
+- `id`
+- `scope_type`
+- `scope_id`
+- `redaction_enabled`
+- `raw_payload_storage_enabled`
+- `prompt_completion_storage_enabled`
+- `pii_detection_enabled`
+- `store_redacted_copy_only`
+- `sensitive_headers`
+- `sensitive_json_paths`
+- `sensitive_keywords`
+- `regex_rules`
+- `replacement`
+- `is_active`
+- `updated_by`
+- `created_at`
+- `updated_at`
+
+최종 MVP 결정:
+
+- prompt/input/output 원문 저장 정책은 이 테이블을 기준으로 한다.
+- 별도 `audit_events.policy_result` column을 만들지 않는다.
+
+### `trace_retention_policies`
+
+dev baseline Entity다.
+
+역할:
+
+- trace metadata와 payload 보관 기간 정책
+
+주요 column:
+
+- `id`
+- `scope_type`
+- `scope_id`
+- `metadata_retention_days`
+- `raw_payload_retention_days`
+- `redacted_payload_retention_days`
+- `prompt_completion_retention_days`
+- `failed_trace_retention_days`
+- `retention_action`
+- `is_active`
+- `updated_by`
+- `created_at`
+- `updated_at`
+
+최종 MVP 결정:
+
+- trace payload 보관/삭제는 이 테이블을 기준으로 한다.
+
+### `trace_visibility_policies`
+
+dev baseline Entity다.
+
+역할:
+
+- owner/admin이 어떤 trace payload view level까지 볼 수 있는지 제어한다.
+
+주요 column:
+
+- `id`
+- `scope_type`
+- `scope_id`
+- `owner_trace_access_enabled`
+- `owner_redacted_payload_access_enabled`
+- `owner_raw_payload_access_enabled`
+- `owner_prompt_completion_access_enabled`
+- `admin_raw_payload_access_enabled`
+- `admin_prompt_completion_access_enabled`
+- `deny_owner_trace_access`
+- `default_view_level`
+- `is_active`
+- `updated_by`
+- `created_at`
+- `updated_at`
+
+최종 MVP 결정:
+
+- trace 조회 권한은 team permission과 이 visibility policy를 함께 판정한다.
+
+### `trace_payloads`
+
+dev baseline Entity다.
+
+역할:
+
+- workflow run 또는 node run에 연결되는 trace payload 저장
+- redacted payload와 encrypted raw payload 저장
+- RAG retrieval, LLM prompt/completion, tool call payload를 schema 변경 없이 수용할 수 있는 저장소
+
+주요 column:
+
+- `id`
+- `workflow_run_id`
+- `workflow_node_run_id`
+- `scope`
+- `payload_kind`
+- `sequence`
+- `attempt`
+- `redacted_payload`
+- `raw_payload_encrypted`
+- `redaction_applied`
+- `pii_detected`
+- `secret_detected`
+- `redaction_metadata`
+- `storage_mode`
+- `retention_expires_at`
+- `retention_purged_at`
+- `created_at`
+
+관계:
+
+- `trace_payloads.workflow_run_id -> workflow_runs.id`
+- `trace_payloads.workflow_node_run_id -> workflow_node_runs.id`
+
+최종 MVP 결정:
+
+- `rag_retrieval_traces` table을 만들지 않는다.
+- RAG retrieval 결과를 저장해야 할 때는 `payload_kind`와 `redacted_payload`/`redaction_metadata`에 retrieval 결과를 저장한다.
+- 이 문서는 구체적인 `payload_kind` 문자열을 DB enum으로 확정하지 않는다. application-level convention으로 관리한다.
+
+### `trace_payload_access_events`
+
+dev baseline Entity다.
+
+역할:
+
+- trace payload 조회 시도 기록
+- raw/redacted/prompt-completion payload 접근 감사
+
+주요 column:
+
+- `id`
+- `payload_id`
+- `workflow_run_id`
+- `actor_user_id`
+- `actor_user_ref`
+- `view_level`
+- `allowed`
+- `reason_code`
+- `created_at`
+
+관계:
+
+- `trace_payload_access_events.payload_id -> trace_payloads.id`
+- `trace_payload_access_events.workflow_run_id -> workflow_runs.id`
+- `trace_payload_access_events.actor_user_id -> users.id`
+
+최종 MVP 결정:
+
+- trace payload 접근 감사는 `audit_logs`와 별개로 이 테이블을 사용한다.
+
+### `audit_logs`
+
+dev baseline Entity다.
+
+역할:
+
+- 사용자 action 감사
+- data change 감사
+- 권한 변경, 배포 활성화, checklist 실행, recommendation lifecycle 기록
+
+주요 column:
+
+- `id`
+- `occurred_at`
+- `actor_id`
+- `actor_type`
+- `category`
+- `action`
+- `target_type`
+- `target_id`
+- `before`
+- `after`
+- `status`
+- `audit_metadata`
+
+관계:
+
+- `audit_logs.actor_id -> users.id`
+
+최종 MVP 결정:
+
+- `audit_events`를 만들지 않는다.
+- canonical action은 `audit_logs.action`에 저장한다.
+- 정책 결과, request id, ip, user agent, role/team snapshot, checklist result, recommendation context는 `audit_metadata`에 저장한다.
+- `before`/`after`는 data change 감사에 사용한다.
+- `audit_logs.status`에는 dev enum인 `success` 또는 `failure`만 저장한다.
+- `warn`, `block`, `pass` 같은 정책/검사 결과는 `audit_metadata.policy_result`에 저장한다.
+
+대표 action convention:
+
+| 기능 | action 예시 |
+| --- | --- |
+| 권한 부여 | `permission.grant` |
+| 권한 회수 | `permission.revoke` |
+| workflow 실행 | `workflow.execute` |
+| 정책 차단 | `policy.block` |
+| 정책 경고 | `policy.warn` |
+| 배포 생성 | `deployment.create` |
+| 이전 배포 활성화 | `deployment.activate_previous` |
+| 배포 check 실행 | `deployment.check` |
+| 추천 생성 | `recommendation.created` |
+| 추천 적용 | `recommendation.applied` |
+| 추천 무시 | `recommendation.ignored` |
+
+주의:
+
+- 위 action 값은 DB enum이 아니다.
+- action 문자열 표준화는 application code와 테스트로 관리한다.
+
+### `knowledge_bases`
+
+dev baseline Entity다.
+
+역할:
+
+- RAG data source 상위 단위
+- team permission 대상
+- retrieval trace payload의 대상 리소스
+
+주요 column:
+
+- `id`
+- `organization_id`
+- `name`
+- `description`
+- `embedding_model`
+- `top_k`
+- `similarity_threshold`
+- `user_id`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `knowledge_bases.organization_id -> organization.id`
+- `knowledge_bases.user_id -> users.id`
+- `documents.knowledge_base_id -> knowledge_bases.id`
+- `document_chunks.knowledge_base_id -> knowledge_bases.id`
+- `team_knowledge_permissions.knowledge_base_id -> knowledge_bases.id`
+
+최종 MVP 결정:
+
+- `classification` column을 추가하지 않는다.
+- classification이 반드시 필요한 기능은 별도 schema 변경 없이 hard requirement로 두지 않는다.
+
+### `documents`
+
+dev baseline Entity다.
+
+역할:
+
+- RAG 문서 단위
+- re-index 상태 표시의 후보 위치
+
+주요 column:
+
+- `id`
+- `knowledge_base_id`
+- `filename`
+- `file_path`
+- `source_type`
+- `content_hash`
+- `status`
+- `error_message`
+- `chunk_size`
+- `chunk_overlap`
+- `meta_info`
+- `embedding_model`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `documents.knowledge_base_id -> knowledge_bases.id`
+- `document_chunks.document_id -> documents.id`
+
+최종 MVP 결정:
+
+- `classification` column을 추가하지 않는다.
+- `needs_reindex` 같은 상태가 필요하면 dev의 `meta_info`에 application-level metadata로 저장한다.
+- re-index 때문에 `status` enum/table을 새로 만들지 않는다.
+
+### `document_chunks`
+
+dev baseline Entity다.
+
+역할:
+
+- RAG retrieval 최소 검색 단위
+- embedding vector 저장
+
+주요 column:
+
+- `id`
+- `document_id`
+- `knowledge_base_id`
+- `content`
+- `embedding`
+- `chunk_index`
+- `token_count`
+- `metadata`
+
+관계:
+
+- `document_chunks.document_id -> documents.id`
+- `document_chunks.knowledge_base_id -> knowledge_bases.id`
+
+최종 MVP 결정:
+
+- chunk-level incremental indexing table은 만들지 않는다.
+- retrieval 결과의 chunk reference는 trace payload 내부 metadata로 저장한다.
+
+### `connections`
+
+dev baseline Entity다.
+
+역할:
+
+- 외부 DB data source
+
+주요 column:
+
+- `id`
+- `user_id`
+- `name`
+- `description`
+- `type`
+- `host`
+- `port`
+- `database`
+- `username`
+- `encrypted_password`
+- `use_ssh`
+- `ssh_host`
+- `ssh_port`
+- `ssh_username`
+- `ssh_auth_type`
+- `encrypted_ssh_password`
+- `encrypted_ssh_private_key`
+
+관계:
+
+- `connections.user_id -> users.id`
+
+최종 MVP 결정:
+
+- dev ERD에는 connection 전용 team permission table이 없다.
+- 최종 MVP에서는 connection 자체를 독립 permission resource로 만들지 않는다.
+- connection `secret/manage` 권한은 `connections.user_id` owner 또는 organization owner/manager로 제한한다.
+- `connections` 자체에는 `organization_id`가 없으므로, 직접 connection CRUD API는 `connections.user_id` owner를 기본 기준으로 삼는다. organization owner/manager 판정은 connection이 active organization의 workflow/knowledge base에 연결되어 scope가 식별되는 경우에 적용한다.
+- connection `use` 권한은 connection을 직접 기준으로 판정하지 않고, connection을 소비하는 workflow 또는 knowledge base 권한으로 판정한다.
+- workflow/knowledge base 실행 중 connection credential은 사용자에게 노출하지 않고 server-side runtime에서만 사용한다.
+- 연결된 외부 DB 내부의 table/row 권한은 Nodease RBAC에서 대신 관리하지 않는다. 외부 DB credential 자체의 권한 범위가 최종 DB 접근 범위를 제한한다.
+- connection을 workflow/knowledge base와 독립적으로 team/user에게 공유해야 하는 요구가 생기면 별도 schema extension 승인이 필요하다.
+
+### `llm_providers`
+
+dev baseline Entity다.
+
+역할:
+
+- LLM provider catalog
+
+주요 column:
+
+- `id`
+- `name`
+- `description`
+- `type`
+- `base_url`
+- `auth_type`
+- `doc_url`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `llm_models.provider_id -> llm_providers.id`
+- `llm_credentials.provider_id -> llm_providers.id`
+
+### `llm_models`
+
+dev baseline Entity다.
+
+역할:
+
+- LLM model catalog
+- cost 계산 기준
+- recommendation 근거
+
+주요 column:
+
+- `id`
+- `provider_id`
+- `model_id_for_api_call`
+- `name`
+- `type`
+- `context_window`
+- `input_price_1k`
+- `output_price_1k`
+- `is_active`
+- `metadata`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `llm_models.provider_id -> llm_providers.id`
+- `llm_rel_credential_models.model_id -> llm_models.id`
+- `llm_usage_logs.model_id -> llm_models.id`
+
+최종 MVP 결정:
+
+- model catalog 자체의 team permission table은 만들지 않는다.
+- model 사용 가능 여부는 credential-model 관계, credential permission, application-level validation 조합으로 판정한다.
+
+### `llm_credentials`
+
+dev baseline Entity다.
+
+역할:
+
+- 사용자/조직 LLM credential
+- team LLM permission 대상
+
+주요 column:
+
+- `id`
+- `provider_id`
+- `user_id`
+- `organization_id`
+- `credential_name`
+- `encrypted_config`
+- `config_preview`
+- `is_valid`
+- `quota_type`
+- `quota_limit`
+- `quota_used`
+- `last_used_at`
+- `created_at`
+- `updated_at`
+
+관계:
+
+- `llm_credentials.provider_id -> llm_providers.id`
+- `llm_credentials.user_id -> users.id`
+- `llm_credentials.organization_id -> organization.id`
+- `llm_rel_credential_models.credential_id -> llm_credentials.id`
+- `llm_usage_logs.credential_id -> llm_credentials.id`
+- `team_llm_permissions.llm_credential_id -> llm_credentials.id`
+
+최종 MVP 결정:
+
+- `encrypted_config` column은 그대로 둔다.
+- `tenant_id`를 사용하지 않는다.
+- credential 권한은 `team_llm_permissions`를 기준으로 한다.
+
+### `llm_rel_credential_models`
+
+dev baseline Entity다.
+
+역할:
+
+- credential과 model의 사용 가능 관계
+- model 목록 표시와 embedding model 목록 조회에 사용
+
+주요 column:
+
+- `id`
+- `credential_id`
+- `model_id`
+- `is_verified`
+- `priority`
+- `created_at`
+
+관계:
+
+- `llm_rel_credential_models.credential_id -> llm_credentials.id`
+- `llm_rel_credential_models.model_id -> llm_models.id`
+
+최종 MVP 결정:
+
+- runtime client 선택은 credential permission과 이 관계를 함께 검증해야 한다.
+
+### `llm_usage_logs`
+
+dev baseline Entity다.
+
+역할:
+
+- LLM token/cost/latency 원천
+- operations dashboard raw query 원천
+- recommendation 생성 근거
+
+주요 column:
+
+- `id`
+- `user_id`
+- `organization_id`
+- `credential_id`
+- `model_id`
+- `workflow_id`
+- `workflow_run_id`
+- `node_id`
+- `prompt_tokens`
+- `completion_tokens`
+- `total_cost`
+- `latency_ms` SQLAlchemy 속성명
+- `atency_ms` 실제 DB column명
+- `status`
+- `error_message`
+- `created_at`
+
+관계:
+
+- `llm_usage_logs.user_id -> users.id`
+- `llm_usage_logs.organization_id -> organization.id`
+- `llm_usage_logs.credential_id -> llm_credentials.id`
+- `llm_usage_logs.model_id -> llm_models.id`
+- `llm_usage_logs.workflow_id -> workflows.id`
+- `llm_usage_logs.workflow_run_id -> workflow_runs.id`
+
+최종 MVP 결정:
+
+- 이 문서에서 `atency_ms`를 rename하지 않는다.
+- 코드에서는 SQLAlchemy 속성명 `latency_ms`를 사용한다.
+- 비용/사용량 dashboard는 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `llm_models` raw query로 계산한다.
+- dev model에는 `credential_id`, `model_id`가 `ondelete='SET NULL'`이지만 nullable은 `False`인 정합성 이슈가 있다. 이 문서는 해당 schema를 수정하지 않고, 별도 migration 판단 대상으로만 남긴다.
+
+## 기능별 ERD 사용 방식
+
+### 권한
+
+권한은 dev의 조직/팀 모델을 기본으로 처리하고, 개별 user 예외 권한은 resource별 `user_*_permissions` table로 처리한다.
+
+| 대상 | 기준 Entity |
+| --- | --- |
+| 사용자 소속 | `team_memberships` |
+| workflow team 권한 | `team_workflow_permissions` |
+| workflow user 직접 권한 | `user_workflow_permissions` |
+| knowledge base team 권한 | `team_knowledge_permissions` |
+| knowledge base user 직접 권한 | `user_knowledge_permissions` |
+| LLM credential team 권한 | `team_llm_permissions` |
+| LLM credential user 직접 권한 | `user_llm_permissions` |
+| audit visibility team 권한 | `team_audit_permissions` |
+| audit visibility user 직접 권한 | `user_audit_permissions` |
+
+권한 판정 순서:
+
+1. 사용자의 active organization을 확인한다.
+2. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
+3. 사용자가 속한 team을 `team_memberships`에서 조회한다.
+4. resource별 permission table에서 `auth_state`를 확인한다.
+5. resource별 user direct permission table에서 해당 user의 `auth_state`를 확인한다.
+6. team 권한과 user 직접 권한 중 가장 강한 허용 상태를 적용한다.
+7. application-level policy가 필요한 경우 `options`, `flags`, resource 상태를 함께 평가한다.
+8. 권한 부여/회수/차단 결과는 `audit_logs`에 기록한다.
+
+제약:
+
+- user direct permission은 additive allow 전용이다.
+- user direct permission은 team permission을 deny하거나 낮출 수 없다.
+- explicit deny는 최종 MVP 범위에 포함하지 않는다.
+- 권한 부여/회수는 organization owner/manager 또는 해당 resource의 effective `manager`가 수행할 수 있다.
+
+### Audit
+
+감사는 `audit_logs`를 사용한다.
+
+| 이전 목표 | dev 기준 저장 위치 |
+| --- | --- |
+| canonical action | `audit_logs.action` |
+| actor | `audit_logs.actor_id`, `audit_logs.actor_type` |
+| target | `audit_logs.target_type`, `audit_logs.target_id` |
+| before/after snapshot | `audit_logs.before`, `audit_logs.after` |
+| policy result | `audit_logs.audit_metadata.policy_result` |
+| request metadata | `audit_logs.audit_metadata` |
+| role/team snapshot | `audit_logs.audit_metadata.actor_snapshot` |
+
+### RAG Retrieval Trace
+
+RAG retrieval 전용 table은 만들지 않는다.
+
+저장 기준:
+
+- workflow 실행 단위: `workflow_runs`
+- node 실행 단위: `workflow_node_runs`
+- retrieval payload: `trace_payloads`
+- payload 접근 감사: `trace_payload_access_events`
+- 문서/청크 원천: `documents`, `document_chunks`
+
+`trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 다음 정보를 application-level convention으로 저장할 수 있다.
+
+- `knowledge_base_id`
+- `document_id`
+- `chunk_id`
+- `rank`
+- `score`
+- `token_count`
+
+이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 dev ERD 보존 조건 밖의 별도 설계가 필요하다.
+
+### Deployment Checklist
+
+`deployment_check_runs`, `deployment_check_items`를 만들지 않는다.
+
+저장 기준:
+
+- check 실행 event: `audit_logs.action='deployment.check'`
+- 대상 app/workflow/deployment: `audit_logs.target_type`, `audit_logs.target_id`, `audit_logs.audit_metadata`
+- check summary: `audit_logs.audit_metadata.summary`
+- check items: `audit_logs.audit_metadata.items`
+- 실행 저장 성공/실패: `audit_logs.status`
+- pass/warn/block 결과: `audit_logs.audit_metadata.policy_result`
+
+주의:
+
+- checklist를 독립 검색/필터/통계의 1급 리소스로 만들어야 한다면 별도 table이 필요하다.
+- 이 문서는 dev ERD 보존 조건 때문에 그 table을 확정하지 않는다.
+
+### Recommendation
+
+`recommendation_events`를 만들지 않는다.
+
+저장 기준:
+
+- 추천 생성: `audit_logs.action='recommendation.created'`
+- 추천 적용: `audit_logs.action='recommendation.applied'`
+- 추천 무시: `audit_logs.action='recommendation.ignored'`
+- 추천 대상 workflow/run/node/model: `audit_logs.target_*`, `audit_logs.audit_metadata`
+- 비용 근거: `llm_usage_logs`, `llm_models`
+
+주의:
+
+- recommendation을 사용자에게 장기간 노출하고 상태 전이를 1급 데이터로 관리해야 한다면 별도 table이 필요하다.
+- 이 문서는 dev ERD 보존 조건 때문에 그 table을 확정하지 않는다.
+
+### Operations Dashboard
+
+최종 MVP에서 operations dashboard는 별도 aggregate table을 만들지 않는다.
+
+Dashboard API는 raw query로 아래 기존 테이블을 조회한다.
+
+| 지표 | 원천 테이블 |
+| --- | --- |
+| 조직별 앱/워크플로우 | `organization`, `apps`, `workflows` |
+| workflow 실행 수 | `workflow_runs` |
+| 성공/실패율 | `workflow_runs.status` |
+| 실행 latency | `workflow_runs.duration`, `workflow_node_runs.duration` |
+| node별 실패 | `workflow_node_runs.status`, `workflow_node_runs.error_message` |
+| trace payload 현황 | `trace_payloads` |
+| trace 접근 감사 | `trace_payload_access_events` |
+| LLM token/cost | `llm_usage_logs.prompt_tokens`, `llm_usage_logs.completion_tokens`, `llm_usage_logs.total_cost` |
+| model별 비용 | `llm_usage_logs`, `llm_models` |
+| 권한 변경/정책 이벤트 | `audit_logs` |
+| deploy checklist 이력 | `audit_logs.action='deployment.check'` |
+| recommendation 이력 | `audit_logs.action LIKE 'recommendation.%'` |
+
+명시적 제외:
+
+- `dashboard_aggregates` table
+- `workflow_daily_metrics` table
+- materialized view
+- dashboard 저장 전용 table
+
+## Final MVP 관계 요약
+
+```mermaid
+erDiagram
+  users ||--o{ organization : creates_manages
+  organization ||--o{ teams : owns
+  organization ||--o{ apps : scopes
+  organization ||--o{ workflows : scopes
+  organization ||--o{ knowledge_bases : scopes
+  organization ||--o{ llm_credentials : scopes
+  organization ||--o{ llm_usage_logs : scopes
+
+  users ||--o{ team_memberships : joins
+  teams ||--o{ team_memberships : has_members
+  teams ||--o{ team_workflow_permissions : grants
+  teams ||--o{ team_knowledge_permissions : grants
+  teams ||--o{ team_llm_permissions : grants
+  teams ||--o{ team_audit_permissions : grants
+  users ||--o{ user_workflow_permissions : direct_grant
+  users ||--o{ user_knowledge_permissions : direct_grant
+  users ||--o{ user_llm_permissions : direct_grant
+  users ||--o{ user_audit_permissions : direct_grant
+
+  apps ||--o{ workflows : has
+  apps ||--o{ workflow_deployments : deploys
+  apps ||--o{ workflow_runs : runs
+
+  workflows ||--o{ workflow_runs : runs
+  workflows ||--o{ llm_usage_logs : logs
+  workflows ||--o{ team_workflow_permissions : authorized_by
+  workflows ||--o{ user_workflow_permissions : authorized_by
+
+  workflow_deployments ||--o| schedules : may_have
+  workflow_deployments ||--o{ workflow_runs : runs
+
+  workflow_runs ||--o{ workflow_node_runs : has
+  workflow_runs ||--o{ trace_payloads : stores
+  workflow_runs ||--o{ trace_payload_access_events : audited_by
+  workflow_runs ||--o{ llm_usage_logs : records
+
+  workflow_node_runs ||--o{ trace_payloads : stores
+
+  knowledge_bases ||--o{ documents : contains
+  knowledge_bases ||--o{ document_chunks : denormalizes
+  knowledge_bases ||--o{ team_knowledge_permissions : authorized_by
+  knowledge_bases ||--o{ user_knowledge_permissions : authorized_by
+  documents ||--o{ document_chunks : contains
+
+  llm_providers ||--o{ llm_models : provides
+  llm_providers ||--o{ llm_credentials : has
+  llm_credentials ||--o{ llm_rel_credential_models : enables
+  llm_models ||--o{ llm_rel_credential_models : enabled_by
+  llm_credentials ||--o{ llm_usage_logs : logs
+  llm_credentials ||--o{ team_llm_permissions : authorized_by
+  llm_credentials ||--o{ user_llm_permissions : authorized_by
+  llm_models ||--o{ llm_usage_logs : logs
+
+  users ||--o{ audit_logs : acts
+```
+
+## MVP별 구현 기준
+
+### MVP 1: Foundation / LLMOps
+
+DB 변경:
+
+- dev의 team permission table은 수정하지 않는다.
+- `user_workflow_permissions`를 생성한다.
+- `user_llm_permissions`를 생성한다.
+- `roles`, `user_roles`, `resource_permissions`, `audit_events`를 만들지 않는다.
+
+구현:
+
+1. organization/team 기반 권한 판정 helper를 구현한다.
+2. team permission과 user direct permission을 합산하는 effective permission helper를 구현한다.
+3. workflow/LLM credential 조회 및 실행 API에 permission enforcement를 적용한다.
+4. user direct permission은 additive allow로만 처리한다.
+5. 권한 부여/회수/차단/실행 event를 `audit_logs`에 기록한다.
+6. LLM usage dashboard는 `llm_usage_logs` raw query로 구현한다.
+7. `llm_usage_logs.atency_ms` 물리 column명은 변경하지 않고 ORM 속성 `latency_ms`를 사용한다.
+
+작동하는 MVP 산출물:
+
+- 조직/팀 기반 권한과 user direct 추가 권한으로 workflow와 LLM credential 접근이 제한된다.
+- LLM token/cost/latency가 dashboard query로 조회된다.
+- 주요 사용자 action이 `audit_logs`에 남는다.
+
+### MVP 2: Governance / RAG / Trace
+
+DB 변경:
+
+- `rag_retrieval_traces`를 만들지 않는다.
+- `knowledge_bases.classification`, `documents.classification`을 추가하지 않는다.
+- `user_knowledge_permissions`를 생성한다.
+
+구현:
+
+1. RAG retrieval 결과를 `workflow_runs`, `workflow_node_runs`, `trace_payloads`로 연결해 저장한다.
+2. retrieval payload의 민감 정보는 trace redaction policy를 적용한다.
+3. trace raw/redacted payload 접근은 `trace_payload_access_events`에 기록한다.
+4. RAG data source 접근은 `team_knowledge_permissions`와 `user_knowledge_permissions`로 제한한다.
+5. document re-index 필요 상태는 `documents.meta_info` metadata로 관리한다.
+6. 감사 검색 API는 `audit_logs`와 `trace_payload_access_events`를 구분해서 조회한다.
+
+작동하는 MVP 산출물:
+
+- RAG 실행 결과가 run/node trace에서 확인된다.
+- trace payload 접근이 정책과 감사 로그로 통제된다.
+- knowledge base 접근 권한이 team permission과 user direct permission으로 제한된다.
+
+### MVP 3: Enterprise Ops
+
+DB 변경:
+
+- `deployment_check_runs`, `deployment_check_items`, `recommendation_events`를 만들지 않는다.
+- dashboard aggregate table을 만들지 않는다.
+- `user_audit_permissions`를 생성한다.
+
+구현:
+
+1. deployment checklist는 실행 시점에 계산하고 결과를 `audit_logs`에 저장한다.
+2. recommendation은 `llm_usage_logs`와 `llm_models`를 근거로 계산하고 lifecycle event를 `audit_logs`에 저장한다.
+3. operations dashboard는 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `llm_usage_logs`, `audit_logs` raw query로 구현한다.
+4. audit visibility는 `team_audit_permissions`와 `user_audit_permissions`를 함께 평가한다.
+5. checklist와 recommendation의 장기 상태 관리가 필요하면 별도 schema 변경 요청으로 분리한다.
+
+작동하는 MVP 산출물:
+
+- 배포 전 check 결과가 사용자에게 표시되고 `audit_logs`에 남는다.
+- 비용/운영 추천이 생성되고 적용/무시 event가 `audit_logs`에 남는다.
+- 운영 dashboard가 raw query로 실행 상태, 비용, trace, audit 현황을 보여준다.
+
+## 별도 승인이 필요한 Schema Extension
+
+아래 요구가 확정되면 dev ERD 보존 조건을 넘어서므로 별도 설계 문서와 migration 승인이 필요하다.
+
+| 요구 | 필요한 schema 후보 |
+| --- | --- |
+| 역할 catalog를 DB에서 1급으로 관리 | `roles`, `user_roles` |
+| 임의 resource polymorphic permission | `resource_permissions` |
+| RAG retrieval FK 무결성 보장 | `rag_retrieval_traces` |
+| deployment checklist 독립 검색/통계 | `deployment_check_runs`, `deployment_check_items` |
+| recommendation 장기 상태 관리 | `recommendation_events` |
+| connection을 workflow/knowledge base와 독립적으로 team/user에게 공유 | `team_connection_permissions`, `user_connection_permissions` |
+| KB/document classification DB 필터링 | `knowledge_bases.classification`, `documents.classification` |
+| dashboard 성능 병목 해소 | view, materialized view, aggregate table |
+
+## 검증 기준
+
+최종 MVP ERD 구현은 아래 조건을 만족해야 한다.
+
+1. `origin/dev`에 이미 존재하는 Entity와 column을 삭제, rename, 대체하지 않는다.
+2. `roles`, `user_roles`, `resource_permissions`, `audit_events`를 생성하지 않는다.
+3. 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions` 기준으로 동작해야 한다.
+4. user direct 권한은 `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_audit_permissions` 기준으로 additive allow만 제공해야 한다.
+5. user direct 권한은 team 권한을 deny하거나 낮추면 안 된다.
+6. audit은 `audit_logs` 기준으로 동작해야 한다.
+7. trace는 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies`, `trace_payload_access_events` 기준으로 동작해야 한다.
+8. `tenant_id`를 새로 도입하지 않는다.
+9. `apps`는 project boundary로 유지한다.
+10. workflow node는 별도 table이 아니라 graph 내부 id string reference로 유지한다.
+11. dashboard API는 raw query로 구현한다.
+12. dev ERD 밖의 추가 신규 table이 필요해지는 요구는 별도 schema extension 문서로 분리한다.

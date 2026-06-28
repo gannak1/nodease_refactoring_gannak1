@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -8,15 +8,15 @@ from pydantic import BaseModel, ConfigDict
 class TeamCreateRequest(BaseModel):
     organization_id: UUID
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     is_auto_add: bool = False
 
 
 class TeamUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    managed_by: Optional[UUID] = None
-    is_auto_add: Optional[bool] = None
+    name: str | None = None
+    description: str | None = None
+    managed_by: UUID | None = None
+    is_auto_add: bool | None = None
 
 
 class TeamMembershipRequest(BaseModel):
@@ -50,15 +50,18 @@ class TeamResponse(BaseModel):
     id: UUID
     organization_id: UUID
     name: str
-    description: Optional[str] = None
+    description: str | None
+    options: dict[str, Any]
+    flags: int
     created_by: UUID
-    managed_by: Optional[UUID] = None
+    managed_by: UUID | None
     is_active: bool
     is_auto_add: bool
     created_at: datetime
     updated_at: datetime
+    deactivated_at: datetime | None
 
 
 class PermissionMutationResponse(BaseModel):
-    id: Optional[UUID] = None
+    id: UUID | None = None
     status: str
