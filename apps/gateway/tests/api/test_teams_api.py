@@ -304,6 +304,84 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertNotIn(Organization, session.query_calls)
 
+    def test_create_team_checks_manager_permission_without_request_schema(self):
+        # docs/api/organization-rbac.md에서 POST /teams schema는 아직 TBD다.
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[],
+        )
+
+        response = self._post_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            payload={"unexpected": {"contract": "tbd"}},
+        )
+
+        self.assertEqual(response.status_code, 501)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "operation.not_implemented",
+                "Team creation request and response contract is TBD.",
+            ),
+        )
+        self.assertNotIn(TeamMembership, session.query_calls)
+        self.assertNotIn(Team, session.query_calls)
+
+    def test_create_team_rejects_member_without_manager_permission(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, name="Acme"),
+            membership=SimpleNamespace(id=uuid4()),
+        )
+
+        response = self._post_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            payload={"name": "Builders"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Organization manager permission is required.",
+            ),
+        )
+        self.assertIn(TeamMembership, session.query_calls)
+
+    def test_create_team_hides_organization_outside_user_scope(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, name="Acme"),
+            membership=None,
+        )
+
+        response = self._post_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            payload={"name": "Builders"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Organization not found."),
+        )
+        self.assertIn(TeamMembership, session.query_calls)
+
     def _get_teams(
         self,
         session,
@@ -327,6 +405,32 @@ class TestTeamsApi(unittest.TestCase):
             return TestClient(app).get(
                 f"/api/v1/teams{query}",
                 headers=headers,
+            )
+
+    def _post_team(
+        self,
+        session,
+        user_id,
+        organization_id=None,
+        raw_organization_id=None,
+        payload=None,
+    ):
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {"X-Request-ID": "req-test"}
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+        headers["Cookie"] = "auth_token=token"
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            return_value=SimpleNamespace(id=user_id),
+        ):
+            return TestClient(app).post(
+                "/api/v1/teams",
+                headers=headers,
+                json=payload,
             )
 
 

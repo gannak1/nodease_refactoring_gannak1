@@ -181,3 +181,65 @@ def list_teams(
         .limit(parsed_limit)
         .all()
     )
+
+
+@router.post(
+    "",
+    status_code=501,
+    responses={
+        501: {"description": "Team creation contract is not implemented yet."}
+    },
+)
+def create_team(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    current_user, error = _authenticate(request, db, auth_token)
+    if error is not None:
+        return error
+
+    organization_id, error = _parse_organization_id(request, x_organization_id)
+    if error is not None:
+        return error
+
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        return _error_response(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    if not _is_organization_manager(organization, current_user.id):
+        if not _has_active_membership(db, organization_id, current_user.id):
+            return _error_response(
+                request,
+                404,
+                "resource.not_found",
+                "Organization not found.",
+            )
+        return _error_response(
+            request,
+            403,
+            "permission.denied",
+            "Organization manager permission is required.",
+        )
+
+    # 문서상 Request/Response 계약이 아직 TBD이므로, 지금은 문서화된
+    # organization manager 권한 관문만 노출한다.
+    return _error_response(
+        request,
+        501,
+        "operation.not_implemented",
+        "Team creation request and response contract is TBD.",
+    )
