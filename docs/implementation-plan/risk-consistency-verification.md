@@ -24,7 +24,7 @@
 | 리스크 | 영향 | 대응 |
 | --- | --- | --- |
 | RBAC를 나중에 붙이면 API/실행 경로를 대거 수정해야 함 | 구조 재작업 | MVP 1에서 resource/permission/checker 먼저 설계 |
-| `llm_usage_logs.latency_ms` 물리 column명과 ORM 속성명이 불일치할 수 있음 | 집계/조회 오류 | MVP 1에서 migration으로 `latency_ms` 정합성 확보 |
+| `llm_usage_logs.latency_ms` 컬럼명이 `atency_ms`로 생성될 수 있음 | 집계/조회 오류 | MVP 1에서 migration 또는 alias 정책 확정 |
 | trigger mode 로그 매핑이 부정확함 | audit 신뢰도 저하 | MVP 3 전 반드시 수정 |
 | `create_all`과 Alembic 혼재 | 운영 schema 불안정 | MVP 2부터 migration 기준 명확화 |
 | RAG source별 변경 감지 수준이 다름 | partial re-index 품질 편차 | MVP 2는 FILE/hash 중심으로 시작 |

@@ -14,9 +14,9 @@ Deployment 생성, 조회, 활성화, public deployment info, run/webhook 계약
 | Status | Method | Path | Request | Response | Permission |
 | --- | --- | --- | --- | --- | --- |
 | Implemented | `POST` | `/api/v1/deployments` | `DeploymentCreate` | `DeploymentResponse` | workflow `deploy` |
-| Implemented | `GET` | `/api/v1/deployments` | query | `DeploymentResponse[]` | workflow `read` |
+| Implemented | `GET` | `/api/v1/deployments` | query | `DeploymentResponse[]` | deployment read |
 | Implemented | `GET` | `/api/v1/deployments/nodes` | query | `dict[]` | workflow `read` |
-| Implemented | `GET` | `/api/v1/deployments/{deployment_id}` | 없음 | `DeploymentResponse` | workflow `read` |
+| Implemented | `GET` | `/api/v1/deployments/{deployment_id}` | 없음 | `DeploymentResponse` | deployment read |
 | Implemented | `GET` | `/api/v1/deployments/public/{url_slug}/info` | 없음 | `DeploymentInfoResponse` | public |
 | Implemented | `PATCH` | `/api/v1/deployments/{deployment_id}/toggle` | 없음 | `DeploymentResponse` | workflow `deploy` |
 | Implemented | `DELETE` | `/api/v1/deployments/{deployment_id}` | 없음 | message | workflow `manage` |

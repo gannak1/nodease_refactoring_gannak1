@@ -12,9 +12,7 @@ RBAC enforcement는 Gateway endpoint와 runtime service가 함께 사용하는 �
 
 ## Organization Context
 
-권한 판단에는 organization context가 필요하다. Active organization은 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)에 따라 `X-Organization-Id` header로 전달한다. Gateway는 header 값이 현재 사용자의 active team membership scope 안에 있는지 검증한 뒤 resource permission을 평가한다.
-
-현재 코드는 첫 active team membership을 기반으로 primary organization을 추정하는 fallback을 가진다. 이 fallback은 header 미전달 과도기 요청에만 제한적으로 사용하고, 신규 organization-scoped API와 FE 요청은 header 전달을 기준으로 한다.
+권한 판단에는 organization context가 필요하다. 현재 코드는 첫 active team membership을 기반으로 primary organization을 추정하는 fallback을 가진다. 최종 active organization 전략은 아직 승인되지 않았으며 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)에서 추적한다.
 
 ## 권한 모델
 

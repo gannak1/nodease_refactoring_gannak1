@@ -1,11 +1,10 @@
 # ADR-202606271559: Active Organization 결정 방식
 
-Status: Accepted
+Status: Proposed
 Authority: Decision
 Source of Truth: No
-Verified Against: working tree (uncommitted)
+Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 Created At: 2026-06-27 15:59 KST
-Decided At: 2026-06-27 KST
 
 ## 배경
 
@@ -21,11 +20,9 @@ RBAC 판정은 먼저 요청의 organization context를 결정해야 한다. 현
 
 ## 결정
 
-MVP 1의 active organization 전달 방식은 명시적 header로 확정한다.
+아직 확정하지 않는다. MVP 1 구현 전 active organization 전달 방식을 선택해야 한다.
 
-클라이언트는 organization scope가 필요한 인증 API 요청에 `X-Organization-Id` header를 전달한다. Gateway는 이 값을 요청의 active organization context로 사용하고, 현재 사용자가 해당 organization의 active team membership을 갖는지 검증한다. 단, `organization.created_by` 또는 `organization.managed_by`가 현재 user이면 해당 organization scope 안에서 manager로 판정하므로 active team membership 없이도 접근할 수 있다.
-
-서버는 active organization을 session/cookie나 organization row에 저장하지 않는다. 따라서 active organization 변경을 위한 `PATCH /api/v1/organizations/current` endpoint는 만들지 않는다. Header가 없는 과도기 요청은 기존 primary organization fallback을 제한적으로 사용할 수 있지만, 신규 organization-scoped API와 FE 요청은 header 전달을 기준으로 구현한다.
+현재 계획은 API 명세에서 organization context 전달 방식을 먼저 확정하고, Gateway permission helper와 FE 요청 scope를 그 계약에 맞추는 것이다.
 
 ## 영향
 
@@ -36,5 +33,6 @@ MVP 1의 active organization 전달 방식은 명시적 header로 확정한다.
 
 ## 후속 검토
 
+- API header, cookie/session, 단일 primary organization 중 하나를 승인한다.
 - App, Workflow, LLM credential 생성 scope 테스트를 추가한다.
-- FE nav에서 다중 organization switcher를 MVP 1에 포함할지 별도 결정한다.
+- 다중 organization switcher를 MVP 1에 포함할지 별도 결정한다.

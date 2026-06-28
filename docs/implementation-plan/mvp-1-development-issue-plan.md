@@ -128,7 +128,7 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | Permission vocabulary | 문서는 `viewer/operator/builder/manager`를 표준으로 쓰지만, tracing RBAC 코드는 `read/write/execute/admin`을 사용한다. |
 | Gateway permission dependency | `apps/gateway/api/deps.py`에는 DB dependency만 있고, resource permission dependency가 없다. |
 | Organization bootstrap | signup/social signup 시 organization/team/membership을 자동 생성하지 않는다. |
-| Active organization | 현재 `get_user_primary_organization_id()`는 첫 team membership만 반환한다. `X-Organization-Id` header 기반 active organization 선택/검증은 아직 구현되지 않았다. |
+| Active organization | 현재 `get_user_primary_organization_id()`는 첫 team membership만 반환한다. 명시적인 active organization 선택 방식은 없다. |
 | App/Workflow scope | 일부 생성/복제 코드가 `organization_id=user_id` 같은 과도기 값을 사용한다. |
 | Workflow enforcement | workflow 상세, draft 저장, draft 조회, execute, stream, runs, stats가 대부분 creator 기반이거나 권한 체크 TODO 상태다. |
 | LLM credential scope | LLM credential API/service가 대부분 `current_user.id` 기준이다. organization-level credential 관리와 team/user permission check가 없다. |
@@ -174,11 +174,11 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | `MBA-27` Retrieved chunk lineage 저장 | Backlog, Feature, Medium | RAG lineage는 MVP2 범위다. |
 | `MBA-26` 문서 변경 감지 기반 Partial Re-index MVP 구현 | Backlog, Feature, Medium | RAG indexing 고도화는 MVP2 범위다. |
 
-### 5.3 Active organization 결정 후 범위가 남은 이슈
+### 5.3 결정이 필요해서 바로 포함 여부를 확정하지 않는 이슈
 
-| Linear | 현재 상태 | MVP 1 처리 |
+| Linear | 현재 상태 | 필요한 결정 |
 | --- | --- | --- |
-| `MBA-16` 기존 Nav를 Organization 기준으로 변경 | Backlog, Feature, High | 부분 포함. Active organization은 `X-Organization-Id` header로 확정한다. MVP1에는 현재 organization 표시와 header 전달 경로를 포함하고, 다중 organization switcher와 nav 전체 개편은 별도 결정으로 남긴다. |
+| `MBA-16` 기존 Nav를 Organization 기준으로 변경 | Backlog, Feature, High | 부분 포함. MVP1에는 현재 organization 표시와 기본 scope 인지가 필요하다. 다중 organization switcher와 nav 전체 개편은 active organization 방식이 확정될 때 포함한다. |
 
 ## 6. 생성할 개발 이슈
 
@@ -356,7 +356,7 @@ Out of Scope:
 | Credential scope | `llm_credentials.organization_id`를 active organization 기준으로 저장/조회한다. |
 | Credential read | credential list/preview는 credential `read` 권한 기준으로 제한한다. |
 | Credential create | 새 credential 생성은 organization owner/manager가 수행한다. 생성 직후 권한 row를 어떻게 만들지는 8.3의 결정에 따른다. |
-| Credential write/manage | 기존 credential 삭제/sync-models는 credential `write`, 권한 관리는 credential `manage` 기준으로 제한한다. 두 action 모두 organization owner/manager 또는 해당 credential `manager` 권한으로 통과한다. |
+| Credential write/manage | 기존 credential 삭제/sync-models/권한 관리는 organization owner/manager 또는 해당 credential `manager` 권한 기준으로 제한한다. |
 | Runtime use | workflow engine LLM node가 credential `use` 권한을 확인한다. |
 | Model relation | model 사용 가능 여부는 `llm_rel_credential_models.is_verified`와 credential permission을 함께 평가한다. |
 | Usage log | `llm_usage_logs.organization_id`, `workflow_id`, `workflow_run_id`, `node_id`를 가능한 범위에서 채운다. |
@@ -387,7 +387,7 @@ Acceptance Criteria:
 - credential `viewer`는 credential preview 조회만 가능하고 runtime use는 거부된다.
 - credential `operator` 또는 `builder`는 LLM node 실행에서 credential을 사용할 수 있다.
 - organization owner/manager는 새 credential을 생성할 수 있다.
-- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다. 삭제/동기화 action vocabulary는 `write`, 권한 관리는 `manage`를 사용한다.
+- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다.
 - verified relation이 없는 model은 credential 권한이 있어도 사용할 수 없다.
 - 권한 없는 credential/model 조합으로 workflow를 실행하면 LLM node 실행 전 또는 실행 중 명확히 차단된다.
 - 차단 이벤트가 audit에 남는다.
@@ -423,7 +423,7 @@ Out of Scope:
 | Permission denied audit | 권한 실패 metadata에 resource/action/effective permission을 남긴다. |
 | LLM trace query | run id와 node id 기준으로 `llm_usage_logs`를 조회한다. |
 | Run detail 확장 | run detail 응답 또는 별도 endpoint에서 node별 LLM usage를 반환한다. |
-| Latency 정합성 | `llm_usage_logs.latency_ms`를 DB column명과 ORM 속성명 모두에서 사용한다. 기존 오타 column은 migration으로 rename한다. |
+| Latency 정합성 | 코드에서는 ORM 속성 `latency_ms`를 쓰고, 물리 column `atency_ms`는 MVP1에서 rename하지 않는다. |
 | Audit pagination | MVP1 UI/API에서 audit list를 사용한다면 `MBA-38`, `MBA-39`를 함께 처리한다. 사용하지 않으면 후순위로 둔다. |
 
 구현 방법:
@@ -433,7 +433,7 @@ Out of Scope:
 3. `allow/deny/warn/block` 같은 정책 결과는 `audit_metadata.policy_result`에 저장한다.
 4. LLM trace API는 raw query 또는 SQLAlchemy query로 기존 table을 조인한다.
 5. trace 조회는 workflow `read` 권한을 통과한 user만 가능하게 한다.
-6. `llm_usage_logs.latency_ms` ORM 속성과 DB physical column명을 일치시킨다.
+6. `llm_usage_logs.latency_ms` ORM 속성은 그대로 쓰고, DB physical column rename은 별도 schema 변경으로 미룬다.
 
 API 계약은 [api/tracing-audit.md](../api/tracing-audit.md)의 LLM trace 항목을 따른다. 기존 run detail 응답 확장과 별도 `llm-traces` endpoint 중 하나만 채택해 중복 API를 만들지 않는다.
 
@@ -444,7 +444,7 @@ Acceptance Criteria:
 - LLM node 실행 후 run_id 기준으로 model/token/cost/latency/status를 조회할 수 있다.
 - 여러 LLM node가 있어도 node_id로 구분된다.
 - trace API는 workflow `read` 권한 없이는 거부된다.
-- `latency_ms` 사용 코드와 DB physical column명이 일치한다.
+- `latency_ms` 사용 코드가 physical `atency_ms` column 때문에 깨지지 않는다.
 
 Out of Scope:
 
@@ -544,7 +544,7 @@ Out of Scope:
 | 작업 | 내용 |
 | --- | --- |
 | Unit test | permission helper, auth_state mapping, user direct additive allow |
-| API test | workflow read/write/execute, LLM credential read/use/write/manage, permission denied audit |
+| API test | workflow read/write/execute, LLM credential read/use/manage, permission denied audit |
 | Service test | organization bootstrap, app/workflow organization scope |
 | Engine test | LLM node runtime credential use check |
 | Trace test | run/node LLM usage query |
@@ -609,7 +609,7 @@ Issue 1 RBAC/Organization Foundation
 
 순서상 먼저 고정해야 하는 것:
 
-1. active organization header 적용 방식
+1. active organization 결정 방식
 2. `auth_state` 표준값과 compatibility mapping
 3. permission helper interface
 4. workflow/app organization scope 처리
@@ -625,21 +625,17 @@ Issue 1 RBAC/Organization Foundation
 
 현재 dev에는 `get_user_primary_organization_id()`가 있고, 첫 team membership을 기준으로 organization을 찾는다.
 
-결정:
+결정 필요:
 
-- MVP1 active organization은 `X-Organization-Id` header로 명시한다.
-- session/cookie에는 active organization을 저장하지 않는다.
-- header가 없는 과도기 요청은 첫 active team membership fallback을 제한적으로 사용할 수 있다.
+- MVP1에서 단일 primary organization만 지원할지
+- API header 또는 cookie로 active organization을 명시할지
+- FE nav에서 organization switcher를 MVP1에 포함할지
 
 영향:
 
+- `MBA-16` 포함 여부
 - 모든 permission helper의 입력값
 - App/Workflow/LLM credential 생성 scope
-- FE API client의 organization-scoped 요청 header 전달
-
-별도 결정 필요:
-
-- FE nav에서 다중 organization switcher를 MVP1에 포함할지
 
 ### 8.2 신규 가입 시 organization 이름과 입력 방식
 
@@ -747,7 +743,7 @@ MVP1 완료 기준에는 model 또는 prompt 비교가 있다. 물리 데이터 
 예외:
 
 - `MBA-38`, `MBA-39`는 lightweight activity panel 대신 기존 audit list/search UI를 MVP1 demo에 사용하기로 결정하면 Issue 4 또는 Issue 6에 포함해야 한다.
-- `MBA-16`은 현재 organization 표시와 `X-Organization-Id` header 전달 경로만 Issue 5에 포함하고, 다중 organization switcher와 nav 전체 개편은 별도 결정으로 남긴다.
+- `MBA-16`은 현재 organization 표시와 MVP1 이동 경로만 Issue 5에 포함하고, 다중 organization switcher와 nav 전체 개편은 active organization 방식이 확정될 때 포함한다.
 
 ## 10. Linear issue 생성 형태
 
