@@ -1,10 +1,10 @@
-from typing import NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.api_errors import parse_organization_id, raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.organization import Organization
@@ -17,59 +17,6 @@ from apps.shared.schemas.organization import (
 )
 
 router = APIRouter()
-
-
-def _error_detail(
-    request: Request,
-    code: str,
-    message: str,
-    details: dict | None = None,
-) -> dict:
-    return {
-        "error": {
-            "code": code,
-            "message": message,
-            "request_id": getattr(request.state, "request_id", None),
-            "details": details or {},
-        }
-    }
-
-
-def _raise_error(
-    request: Request,
-    status_code: int,
-    code: str,
-    message: str,
-    details: dict | None = None,
-) -> NoReturn:
-    raise HTTPException(
-        status_code=status_code,
-        detail=_error_detail(request, code, message, details),
-    )
-
-
-def _parse_organization_id(
-    request: Request,
-    raw_organization_id: str | None,
-) -> UUID:
-    if raw_organization_id is None:
-        _raise_error(
-            request,
-            400,
-            "organization.required",
-            "X-Organization-Id header is required.",
-        )
-
-    try:
-        return UUID(raw_organization_id)
-    except ValueError:
-        _raise_error(
-            request,
-            422,
-            "validation.failed",
-            "X-Organization-Id must be a valid UUID.",
-            {"field": "X-Organization-Id"},
-        )
 
 
 def _get_organization_in_active_membership_scope(
@@ -136,7 +83,7 @@ def get_current_organization(
 ):
     # current organization 상태를 session/cookie에 저장하지 않고
     # 매 요청의 header 값을 검증한다.
-    organization_id = _parse_organization_id(request, x_organization_id)
+    organization_id = parse_organization_id(request, x_organization_id)
     organization = _get_organization_in_active_membership_scope(
         db,
         organization_id,
@@ -144,7 +91,7 @@ def get_current_organization(
     )
 
     if organization is None:
-        _raise_error(
+        raise_api_error(
             request,
             404,
             "resource.not_found",
@@ -169,7 +116,7 @@ def get_organization(
     )
 
     if organization is None:
-        _raise_error(
+        raise_api_error(
             request,
             404,
             "resource.not_found",
@@ -189,10 +136,10 @@ def update_organization(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    parsed_organization_id = _parse_organization_id(request, x_organization_id)
+    parsed_organization_id = parse_organization_id(request, x_organization_id)
 
     if parsed_organization_id != organization_id:
-        _raise_error(
+        raise_api_error(
             request,
             404,
             "resource.not_found",
@@ -201,7 +148,7 @@ def update_organization(
 
     fields = payload.model_fields_set
     if not fields:
-        _raise_error(
+        raise_api_error(
             request,
             400,
             "validation.failed",
@@ -211,7 +158,7 @@ def update_organization(
     if "name" in fields and (
         payload.name is None or payload.name.strip() == ""
     ):
-        _raise_error(
+        raise_api_error(
             request,
             400,
             "validation.failed",
@@ -220,7 +167,7 @@ def update_organization(
         )
 
     if "options" in fields and payload.options is None:
-        _raise_error(
+        raise_api_error(
             request,
             400,
             "validation.failed",
@@ -238,7 +185,7 @@ def update_organization(
     )
 
     if organization is None:
-        _raise_error(
+        raise_api_error(
             request,
             403,
             "permission.denied",
@@ -250,7 +197,7 @@ def update_organization(
         and organization.managed_by == current_user.id
     )
     if not is_manager:
-        _raise_error(
+        raise_api_error(
             request,
             403,
             "permission.denied",

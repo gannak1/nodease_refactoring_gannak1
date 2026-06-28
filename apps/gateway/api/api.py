@@ -10,6 +10,7 @@ from apps.gateway.api.v1.endpoints import (
     knowledge,
     llm,
     organization,
+    permissions,
     prompt_wizard,
     rag,
     run,
@@ -42,6 +43,9 @@ api_router.include_router(
     organization.router, prefix="/organizations", tags=["organizations"]
 )
 api_router.include_router(team.router, prefix="/teams", tags=["teams"])
+api_router.include_router(
+    permissions.router, prefix="/permissions", tags=["permissions"]
+)
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(
     prompt_wizard.router, prefix="/prompt-wizard", tags=["prompt-wizard"]

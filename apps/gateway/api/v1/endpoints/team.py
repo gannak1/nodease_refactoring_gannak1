@@ -5,6 +5,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.services.auth_service import AuthService
+from apps.gateway.utils.api_errors import (
+    auth_error_code,
+    auth_error_message,
+    error_response,
+    parse_organization_id,
+)
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import Team, TeamMembership
 from apps.shared.db.models.user import User
@@ -12,26 +18,6 @@ from apps.shared.db.session import get_db
 from apps.shared.schemas.team import TeamResponse
 
 router = APIRouter()
-
-
-def _error_response(
-    request: Request,
-    status_code: int,
-    code: str,
-    message: str,
-    details: dict | None = None,
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "request_id": getattr(request.state, "request_id", None),
-                "details": details or {},
-            }
-        },
-    )
 
 
 def _authenticate(
@@ -42,36 +28,21 @@ def _authenticate(
     try:
         return AuthService.get_user_from_token(db, auth_token), None
     except HTTPException as exc:
-        if exc.status_code == 401:
-            code = "auth.invalid" if auth_token else "auth.required"
-        else:
-            code = "permission.denied"
-        message = (
-            exc.detail if isinstance(exc.detail, str) else "Authentication failed"
+        return None, error_response(
+            request,
+            exc.status_code,
+            auth_error_code(exc, auth_token),
+            auth_error_message(exc),
         )
-        return None, _error_response(request, exc.status_code, code, message)
 
 
 def _parse_organization_id(
     request: Request, raw_organization_id: str | None
 ) -> tuple[UUID | None, JSONResponse | None]:
-    if raw_organization_id is None:
-        return None, _error_response(
-            request,
-            400,
-            "organization.required",
-            "X-Organization-Id header is required.",
-        )
     try:
-        return UUID(raw_organization_id), None
-    except ValueError:
-        return None, _error_response(
-            request,
-            422,
-            "validation.failed",
-            "X-Organization-Id must be a valid UUID.",
-            {"field": "X-Organization-Id"},
-        )
+        return parse_organization_id(request, raw_organization_id), None
+    except HTTPException as exc:
+        return None, JSONResponse(status_code=exc.status_code, content=exc.detail)
 
 
 def _parse_limit(
@@ -80,7 +51,7 @@ def _parse_limit(
     try:
         limit = int(raw_limit)
     except ValueError:
-        return None, _error_response(
+        return None, error_response(
             request,
             422,
             "validation.failed",
@@ -89,7 +60,7 @@ def _parse_limit(
         )
 
     if limit < 1 or limit > 100:
-        return None, _error_response(
+        return None, error_response(
             request,
             422,
             "validation.failed",
@@ -140,7 +111,7 @@ def _require_organization_manager(
         .first()
     )
     if organization is None:
-        return _error_response(
+        return error_response(
             request,
             404,
             "resource.not_found",
@@ -151,13 +122,13 @@ def _require_organization_manager(
         # organization scope 밖이면 존재 여부를 숨기기 위해 404를 반환하고,
         # scope 안의 일반 member면 manager 권한 부족으로 403을 반환한다.
         if not _has_active_membership(db, organization_id, user_id):
-            return _error_response(
+            return error_response(
                 request,
                 404,
                 "resource.not_found",
                 "Organization not found.",
             )
-        return _error_response(
+        return error_response(
             request,
             403,
             "permission.denied",
@@ -237,7 +208,7 @@ def create_team(
 
     # 문서상 Request/Response 계약이 아직 TBD이므로, 지금은 문서화된
     # organization manager 권한 관문만 노출한다.
-    return _error_response(
+    return error_response(
         request,
         501,
         "operation.not_implemented",
@@ -282,7 +253,7 @@ def update_team(
 
     # team_id는 확정될 PATCH 계약의 route 식별자다. 문서상 Request/Response
     # 계약이 아직 TBD이므로, 지금은 임의 update schema나 DB update를 만들지 않는다.
-    return _error_response(
+    return error_response(
         request,
         501,
         "operation.not_implemented",
@@ -330,7 +301,7 @@ def add_team_member(
 
     # 문서상 Request/Response 계약이 아직 TBD이므로, 지금은 임의 membership
     # request schema, response schema, DB insert를 만들지 않는다.
-    return _error_response(
+    return error_response(
         request,
         501,
         "operation.not_implemented",
@@ -379,7 +350,7 @@ def remove_team_member(
 
     # 문서상 Request는 없고 Response 상세는 TBD이므로, 지금은 임의 response
     # schema나 DB delete를 만들지 않는다.
-    return _error_response(
+    return error_response(
         request,
         501,
         "operation.not_implemented",
