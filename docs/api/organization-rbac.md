@@ -3,14 +3,14 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: working tree (uncommitted)
 Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md), [ADR-202606271559-auth-state-standard](../decisions/ADR-202606271559-auth-state-standard.md), [ADR-202606271559-user-direct-permission](../decisions/ADR-202606271559-user-direct-permission.md)
 
 ## 범위
 
 Organization context, team/member 관리, resource permission grant/revoke API 계약을 정의한다.
 
-현재 dev Gateway에는 전용 organization/team 관리 endpoint가 없다. 아래 API는 MVP 1 RBAC foundation 목표 계약이다.
+현재 dev Gateway에는 team 목록 endpoint만 구현되어 있다. 아래 API는 구현 완료된 계약과 MVP 1 RBAC foundation 목표 계약을 함께 정의한다.
 
 ## Active Organization
 
@@ -62,13 +62,50 @@ Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 
 
 ## Team 관리
 
-| Status | Method | Path | Permission | 설명 |
-| --- | --- | --- | --- | --- |
-| Planned | `POST` | `/api/v1/teams` | organization `manager` | team 생성 |
-| Planned | `GET` | `/api/v1/teams` | organization `manager` | active organization의 team 목록 |
-| Planned | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` | team 이름/설명/활성 상태 변경 |
-| Planned | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` | user를 team에 추가 |
-| Planned | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` | user를 team에서 제거 |
+| Status | Method | Path | Request | Response | Permission | 설명 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/teams` | `X-Organization-Id`, `limit` query | `list[TeamResponse]` | organization `manager` | active organization의 team 목록 |
+| Planned | `POST` | `/api/v1/teams` | TBD | TBD | organization `manager` | team 생성 |
+| Planned | `PATCH` | `/api/v1/teams/{team_id}` | TBD | TBD | organization `manager` | team 이름/설명/활성 상태 변경 |
+| Planned | `POST` | `/api/v1/teams/{team_id}/members` | TBD | TBD | organization `manager` | user를 team에 추가 |
+| Planned | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | 없음 | TBD | organization `manager` | user를 team에서 제거 |
+
+### `GET /api/v1/teams`
+
+관리 화면용 team 목록 API다. 일반 member의 "내 team 목록" 조회와 섞지 않는다.
+
+요청에는 `X-Organization-Id` header가 필요하다. `organization.created_by` 또는 `organization.managed_by`가 현재 user면 active team membership이 없어도 organization `manager`로 접근할 수 있다. 현재 user가 organization manager가 아니고 active team membership scope 안에 있으면 `403`을 반환한다. 현재 user의 scope 밖 organization이면 존재 여부를 숨기기 위해 `404`를 반환한다.
+
+응답은 active team과 inactive team을 모두 포함한다. 정렬은 `name ASC`, `id ASC`다. `limit` query의 기본값은 `10`이고 허용 범위는 `1..100`이다. `teams` table에 `member_count` column이 없으므로 `member_count`는 반환하지 않는다.
+
+오류 응답은 [errors.md](errors.md)의 목표 Error Envelope을 따른다.
+
+| 조건 | HTTP | Code |
+| --- | --- | --- |
+| 인증 없음 | `401` | `auth.required` |
+| `X-Organization-Id` 없음 | `400` | `organization.required` |
+| `X-Organization-Id`가 UUID가 아님 | `422` | `validation.failed` |
+| `limit`이 정수가 아니거나 범위 밖 | `422` | `validation.failed` |
+| organization이 없거나 inactive 또는 사용자 scope 밖 | `404` | `resource.not_found` |
+| organization member지만 manager가 아님 | `403` | `permission.denied` |
+
+### `TeamResponse`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `id` | UUID | team id |
+| `organization_id` | UUID | team이 속한 organization |
+| `name` | string | team 이름 |
+| `description` | string 또는 null | team 설명 |
+| `options` | object | team 확장 설정 |
+| `flags` | integer | team flag bitset |
+| `created_by` | UUID | team 생성자 |
+| `managed_by` | UUID 또는 null | team 관리자 |
+| `is_active` | boolean | 활성 여부 |
+| `is_auto_add` | boolean | 자동 추가 team 여부 |
+| `created_at` | datetime | 생성 시각 |
+| `updated_at` | datetime | 수정 시각 |
+| `deactivated_at` | datetime 또는 null | 비활성화 시각 |
 
 ## Resource Permission
 
