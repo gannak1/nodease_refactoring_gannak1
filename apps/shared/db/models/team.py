@@ -165,6 +165,73 @@ class TeamResourcePermissionMixin(TeamAssignmentMixin):
         return mapped_column(String(50), nullable=False, default="none")
 
 
+class UserResourcePermissionMixin:
+    """Common assignment columns for direct user resource permissions."""
+
+    @declared_attr
+    def grantee_organization_id(cls) -> Mapped[uuid.UUID]:
+        return mapped_column(
+            UUID(as_uuid=True),
+            ForeignKey("organization.id"),
+            nullable=False,
+            index=True,
+        )
+
+    @declared_attr
+    def user_id(cls) -> Mapped[uuid.UUID]:
+        return mapped_column(
+            UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+        )
+
+    @declared_attr
+    def auth_state(cls) -> Mapped[str]:
+        return mapped_column(String(50), nullable=False, default="none")
+
+    @declared_attr
+    def assigned_by(cls) -> Mapped[uuid.UUID]:
+        return mapped_column(
+            UUID(as_uuid=True),
+            ForeignKey("users.id"),
+            nullable=False,
+            index=True,
+        )
+
+    @declared_attr
+    def assigned_at(cls) -> Mapped[datetime]:
+        return mapped_column(
+            DateTime(timezone=True),
+            nullable=False,
+            default=lambda: datetime.now(timezone.utc),
+        )
+
+    @declared_attr
+    def options(cls) -> Mapped[dict]:
+        return mapped_column(
+            JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+        )
+
+    @declared_attr
+    def flags(cls) -> Mapped[int]:
+        return mapped_column(
+            BigInteger, nullable=False, default=0, server_default=text("0")
+        )
+
+    @declared_attr
+    def grantee_organization(cls) -> Mapped["Organization"]:
+        return relationship(
+            "Organization",
+            foreign_keys=lambda: [cls.grantee_organization_id],
+        )
+
+    @declared_attr
+    def user(cls) -> Mapped["User"]:
+        return relationship("User", foreign_keys=lambda: [cls.user_id])
+
+    @declared_attr
+    def assigner(cls) -> Mapped["User"]:
+        return relationship("User", foreign_keys=lambda: [cls.assigned_by])
+
+
 class TeamMembership(TeamAssignmentMixin, Base):
     """Membership: which user belongs to which team."""
 
@@ -236,7 +303,7 @@ class TeamWorkflowPermission(TeamResourcePermissionMixin, Base):
     workflow: Mapped["Workflow"] = relationship("Workflow")
 
 
-class UserWorkflowPermission(Base):
+class UserWorkflowPermission(UserResourcePermissionMixin, Base):
     """Direct additive user permission for a workflow resource."""
 
     __tablename__ = "user_workflow_permissions"
@@ -267,51 +334,18 @@ class UserWorkflowPermission(Base):
         default=uuid.uuid4,
         nullable=False,
     )
-    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organization.id"),
-        nullable=False,
-        index=True,
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
-    )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         nullable=False,
         index=True,
     )
-    auth_state: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="none"
-    )
-    assigned_by: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
-    )
-    assigned_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    options: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
-    )
-    flags: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0, server_default=text("0")
-    )
-
-    grantee_organization: Mapped["Organization"] = relationship(
-        "Organization",
-        foreign_keys=[grantee_organization_id],
-    )
-    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
     workflow: Mapped["Workflow"] = relationship(
         "Workflow",
         overlaps="grantee_organization",
     )
-    assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
 
 
-class UserLLMPermission(Base):
+class UserLLMPermission(UserResourcePermissionMixin, Base):
     """Direct additive user permission for an LLM credential resource."""
 
     __tablename__ = "user_llm_permissions"
@@ -342,48 +376,15 @@ class UserLLMPermission(Base):
         default=uuid.uuid4,
         nullable=False,
     )
-    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organization.id"),
-        nullable=False,
-        index=True,
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
-    )
     llm_credential_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         nullable=False,
         index=True,
     )
-    auth_state: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="none"
-    )
-    assigned_by: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
-    )
-    assigned_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    options: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
-    )
-    flags: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0, server_default=text("0")
-    )
-
-    grantee_organization: Mapped["Organization"] = relationship(
-        "Organization",
-        foreign_keys=[grantee_organization_id],
-    )
-    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
     llm_credential: Mapped["LLMCredential"] = relationship(
         "LLMCredential",
         overlaps="grantee_organization",
     )
-    assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
 
 
 class TeamKnowledgePermission(TeamResourcePermissionMixin, Base):

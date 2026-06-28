@@ -29,6 +29,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     TeamWorkflowPermission,
     UserLLMPermission,
+    UserResourcePermissionMixin,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.organization import Organization
@@ -63,13 +64,14 @@ __all__ = [
     "Team",
     "TeamAssignmentMixin",
     "TeamResourcePermissionMixin",
+    "UserResourcePermissionMixin",
     "TeamMembership",
     "TeamKnowledgePermission",
     "TeamLLMPermission",
     "TeamAuditPermission",
     "TeamWorkflowPermission",
-    "UserLLMPermission",
     "UserWorkflowPermission",
+    "UserLLMPermission",
     "Workflow",
     "WorkflowDeployment",
     "WorkflowNodeRun",

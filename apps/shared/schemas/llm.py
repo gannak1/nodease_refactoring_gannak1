@@ -43,6 +43,7 @@ class LLMCredentialCreate(BaseModel):
     - apiKey -> api_key (to be encrypted)
     """
     provider_id: uuid.UUID
+    organization_id: Optional[uuid.UUID] = None
     credential_name: str
     api_key: str = Field(..., description="Raw API Key")
     # For custom provider override if supported later, otherwise ignored/removed
@@ -81,6 +82,33 @@ class LLMUsageLogResponse(BaseModel):
     
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class LLMTraceItem(BaseModel):
+    id: uuid.UUID
+    workflow_id: Optional[uuid.UUID] = None
+    workflow_run_id: uuid.UUID
+    node_id: Optional[str] = None
+    model_id: Optional[uuid.UUID] = None
+    model_name: Optional[str] = None
+    provider: Optional[str] = None
+    credential_id: Optional[uuid.UUID] = None
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    total_cost: Optional[float]
+    latency_ms: Optional[int]
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LLMTraceListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: List[LLMTraceItem]
 
 
 class LLMModelPricingUpdate(BaseModel):

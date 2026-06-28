@@ -160,27 +160,56 @@ def test_system_admin_requires_rbac_provider():
 
 def test_trace_rbac_service_selects_highest_workflow_auth_state():
     class FakeQuery:
+        def __init__(self, db):
+            self.db = db
+
         def join(self, *args, **kwargs):
             return self
 
         def filter(self, *args, **kwargs):
             return self
 
+        def first(self):
+            return self.db.first_values.pop(0)
+
         def all(self):
-            return [("read",), ("execute",), ("unknown",)]
+            return self.db.all_values.pop(0)
 
     class FakeDb:
+        def __init__(self):
+            user_id = uuid.uuid4()
+            organization_id = uuid.uuid4()
+            workflow_id = uuid.uuid4()
+            self.user = SimpleNamespace(id=user_id)
+            self.workflow_id = workflow_id
+            self.organization_id = organization_id
+            self.first_values = [
+                SimpleNamespace(id=workflow_id, organization_id=organization_id),
+                SimpleNamespace(
+                    id=organization_id,
+                    created_by=uuid.uuid4(),
+                    managed_by=None,
+                    is_active=True,
+                ),
+            ]
+            self.all_values = [
+                [("read",), ("execute",), ("unknown",)],
+                [],
+            ]
+
         def query(self, *args, **kwargs):
-            return FakeQuery()
+            return FakeQuery(self)
+
+    db = FakeDb()
 
     auth_state = TraceRbacService.get_workflow_auth_state(
-        FakeDb(),
-        SimpleNamespace(id=uuid.uuid4()),
-        workflow_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
+        db,
+        db.user,
+        workflow_id=db.workflow_id,
+        organization_id=db.organization_id,
     )
 
-    assert auth_state == "execute"
+    assert auth_state == "operator"
 
 
 def test_rbac_read_grants_metadata_access(monkeypatch):
@@ -203,14 +232,14 @@ def test_rbac_read_grants_metadata_access(monkeypatch):
     monkeypatch.setattr(
         TraceRbacService,
         "get_workflow_auth_state",
-        lambda db, actor, workflow, organization_id=None: "read",
+        lambda db, actor, workflow, organization_id=None: "viewer",
     )
 
     decision = TraceAccessService.check_trace_access(None, run, user)
 
     assert decision.allowed is True
     assert decision.reason_code == "rbac_metadata"
-    assert decision.rbac_auth_state == "read"
+    assert decision.rbac_auth_state == "viewer"
 
 
 def test_rbac_read_does_not_grant_redacted_payload(monkeypatch):
@@ -228,7 +257,7 @@ def test_rbac_read_does_not_grant_redacted_payload(monkeypatch):
     monkeypatch.setattr(
         TraceRbacService,
         "get_workflow_auth_state",
-        lambda db, actor, workflow, organization_id=None: "read",
+        lambda db, actor, workflow, organization_id=None: "viewer",
     )
 
     decision = TraceAccessService.check_trace_access(
@@ -239,7 +268,7 @@ def test_rbac_read_does_not_grant_redacted_payload(monkeypatch):
     assert decision.reason_code == "rbac_redacted_payload_access_disabled"
 
 
-def test_rbac_write_grants_redacted_payload_when_policy_allows(monkeypatch):
+def test_rbac_builder_grants_redacted_payload_when_policy_allows(monkeypatch):
     app_id = uuid.uuid4()
     run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
     user = SimpleNamespace(id=uuid.uuid4())
@@ -254,7 +283,7 @@ def test_rbac_write_grants_redacted_payload_when_policy_allows(monkeypatch):
     monkeypatch.setattr(
         TraceRbacService,
         "get_workflow_auth_state",
-        lambda db, actor, workflow, organization_id=None: "write",
+        lambda db, actor, workflow, organization_id=None: "builder",
     )
 
     decision = TraceAccessService.check_trace_access(
@@ -265,7 +294,7 @@ def test_rbac_write_grants_redacted_payload_when_policy_allows(monkeypatch):
     assert decision.reason_code == "rbac_redacted"
 
 
-def test_rbac_admin_raw_access_still_requires_visibility_policy(monkeypatch):
+def test_rbac_manager_raw_access_still_requires_visibility_policy(monkeypatch):
     app_id = uuid.uuid4()
     run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
     user = SimpleNamespace(id=uuid.uuid4())
@@ -280,7 +309,7 @@ def test_rbac_admin_raw_access_still_requires_visibility_policy(monkeypatch):
     monkeypatch.setattr(
         TraceRbacService,
         "get_workflow_auth_state",
-        lambda db, actor, workflow, organization_id=None: "admin",
+        lambda db, actor, workflow, organization_id=None: "manager",
     )
 
     decision = TraceAccessService.check_trace_access(None, run, user, view_level="raw")
@@ -289,7 +318,7 @@ def test_rbac_admin_raw_access_still_requires_visibility_policy(monkeypatch):
     assert decision.reason_code == "rbac_raw_payload_access_disabled"
 
 
-def test_rbac_admin_raw_access_allowed_when_policy_allows(monkeypatch):
+def test_rbac_manager_raw_access_allowed_when_policy_allows(monkeypatch):
     app_id = uuid.uuid4()
     run = SimpleNamespace(id=uuid.uuid4(), app_id=app_id, workflow_id=uuid.uuid4())
     user = SimpleNamespace(id=uuid.uuid4())
@@ -304,7 +333,7 @@ def test_rbac_admin_raw_access_allowed_when_policy_allows(monkeypatch):
     monkeypatch.setattr(
         TraceRbacService,
         "get_workflow_auth_state",
-        lambda db, actor, workflow, organization_id=None: "admin",
+        lambda db, actor, workflow, organization_id=None: "manager",
     )
 
     decision = TraceAccessService.check_trace_access(None, run, user, view_level="raw")

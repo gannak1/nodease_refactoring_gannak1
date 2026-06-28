@@ -16,6 +16,7 @@ from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.schemas.deployment import DeploymentCreate
+from apps.shared.services.permissions import has_workflow_permission
 
 logger = logging.getLogger(__name__)
 
@@ -46,21 +47,26 @@ class DeploymentService:
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
 
-        # 2. 권한 체크
-        if app.created_by != user_id:
+        # 2. Workflow 조회 및 권한 체크
+        workflow = db.query(Workflow).filter(Workflow.id == app.workflow_id).first()
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        if not has_workflow_permission(
+            db,
+            user_id,
+            workflow.id,
+            "deploy",
+            organization_id=workflow.organization_id,
+        ):
             raise HTTPException(
                 status_code=403,
                 detail="You do not have permission to deploy this app.",
             )
 
-        # 3. Workflow 조회 (app의 작업실)
-        workflow = db.query(Workflow).filter(Workflow.id == app.workflow_id).first()
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
         # 4. 첫 배포 시 url_slug, auth_secret 생성
         if not app.url_slug:
-            from services.app_service import AppService
+            from apps.gateway.services.app_service import AppService
 
             app.url_slug = AppService._generate_url_slug(db, app.name)
 
@@ -271,7 +277,6 @@ class DeploymentService:
             .join(WorkflowDeployment, App.active_deployment_id == WorkflowDeployment.id)
             .filter(WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE)
             .filter(WorkflowDeployment.is_active.is_(True))
-            .filter(App.created_by == user_id)  # [NEW] 내 앱만 조회
         )
 
         if excluded_app_id:
@@ -281,6 +286,14 @@ class DeploymentService:
 
         nodes = []
         for app, deployment in results:
+            if not app.workflow_id or not has_workflow_permission(
+                db,
+                user_id,
+                app.workflow_id,
+                "read",
+                organization_id=app.organization_id,
+            ):
+                continue
             nodes.append(
                 {
                     "deployment_id": str(deployment.id),
@@ -372,6 +385,9 @@ class DeploymentService:
             execution_context = {
                 "user_id": str(app.created_by),  # UUID를 문자열로 변환 (JSON 직렬화)
                 "workflow_id": str(app.workflow_id) if app.workflow_id else None,
+                "organization_id": (
+                    str(app.organization_id) if app.organization_id else None
+                ),
                 "app_id": str(app.id),
                 "trigger_mode": "app",  # 실행 모드 (앱 배포 실행)
                 "deployment_id": str(deployment.id),

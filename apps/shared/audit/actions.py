@@ -14,6 +14,10 @@ class AuditAction:
     USER_LOGOUT = "user.logout"
     AUTH_PERMISSION_DENIED = "auth.permission_denied"
 
+    PERMISSION_GRANT = "permission.grant"
+    PERMISSION_REVOKE = "permission.revoke"
+    PERMISSION_DENIED = "permission.denied"
+
     # 앱/워크플로우/배포: 사용자가 워크플로우 운영 단위에서 수행한 행동.
     ORGANIZATION_UPDATE = "organization.update"
 
@@ -25,6 +29,7 @@ class AuditAction:
     WORKFLOW_CREATE = "workflow.create"
     WORKFLOW_UPDATE = "workflow.update"
     WORKFLOW_DEPLOY = "workflow.deploy"
+    WORKFLOW_EXECUTE = "workflow.execute"
 
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_DELETE = "deployment.delete"
@@ -36,6 +41,7 @@ class AuditAction:
     CREDENTIAL_DELETE = "credential.delete"
 
     MODEL_PRICING_UPDATE = "model.pricing_update"
+    LLM_CALL = "llm.call"
 
     # 지식베이스와 문서 수명주기.
     KNOWLEDGE_CREATE = "knowledge.create"

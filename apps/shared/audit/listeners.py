@@ -100,6 +100,8 @@ SENSITIVE_FIELDS = {
     TeamKnowledgePermission: set(),
     TeamLLMPermission: set(),
     TeamAuditPermission: set(),
+    UserWorkflowPermission: set(),
+    UserLLMPermission: set(),
     TraceRedactionPolicy: {"regex_rules"},
     TraceRetentionPolicy: set(),
     TraceVisibilityPolicy: set(),

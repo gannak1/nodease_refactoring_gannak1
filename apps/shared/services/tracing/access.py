@@ -395,7 +395,7 @@ class TraceAccessService:
         if view_level == VIEW_METADATA:
             allowed = (
                 visibility.owner_trace_access_enabled
-                and TraceRbacService.auth_state_at_least(auth_state, "read")
+                and TraceRbacService.auth_state_at_least(auth_state, "viewer")
             )
             return TraceAccessDecision(
                 allowed,
@@ -418,7 +418,7 @@ class TraceAccessService:
                 )
             allowed = (
                 visibility.owner_redacted_payload_access_enabled
-                and TraceRbacService.auth_state_at_least(auth_state, "write")
+                and TraceRbacService.auth_state_at_least(auth_state, "builder")
             )
             return TraceAccessDecision(
                 allowed,
@@ -437,7 +437,7 @@ class TraceAccessService:
             )
         allowed = (
             visibility.owner_raw_payload_access_enabled
-            and TraceRbacService.auth_state_at_least(auth_state, "admin")
+            and TraceRbacService.auth_state_at_least(auth_state, "manager")
         )
         return TraceAccessDecision(
             allowed,

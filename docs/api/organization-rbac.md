@@ -10,7 +10,7 @@ Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-2026062715
 
 Organization context, team/member 관리, resource permission grant/revoke API 계약을 정의한다.
 
-현재 Gateway에는 organization 목록/상세/수정 endpoint와 team 목록 endpoint가 구현되어 있다. 아래 API는 구현 완료된 계약과 MVP 1 RBAC foundation 목표 계약을 함께 정의한다.
+현재 Gateway에는 organization 목록/상세/수정 endpoint, team 목록 및 team 관리 권한 관문 endpoint, resource permission grant/revoke endpoint가 구현되어 있다. 아래 API는 구현 완료된 계약과 MVP 1 RBAC foundation 목표 계약을 함께 정의한다.
 
 ## Active Organization
 
@@ -234,7 +234,7 @@ organization manager 권한 검사를 통과하면, 제거 응답 계약이 확�
 | Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 회수 |
 | Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 부여/수정 |
-| Planned | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 회수 |
+| Implemented | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` | user direct LLM credential 권한 회수 |
 
 ## Permission Grant 요청
 

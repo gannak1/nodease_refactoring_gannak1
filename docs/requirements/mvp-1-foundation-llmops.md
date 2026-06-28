@@ -249,7 +249,7 @@ llm_trace
   error_message
 ```
 
-기존 `llm_usage_logs`를 최대한 재사용한다. 단, 기존 Moduly 문서상 `llm_usage_logs.latency_ms` 속성이 DB 컬럼 `atency_ms`로 생성될 수 있으므로 MVP 1에서 migration 또는 alias 정책을 확정해야 한다.
+기존 `llm_usage_logs`를 최대한 재사용한다. `latency_ms`는 DB column명과 ORM 속성명을 동일하게 사용하며, 기존 환경에 잘못 생성된 latency column명은 migration으로 정정한다.
 
 ## Data Governance / Policy Skeleton
 

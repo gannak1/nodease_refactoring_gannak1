@@ -41,6 +41,8 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
+from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -92,6 +94,32 @@ def _resolve_app_id(session, workflow_id, deployment_id=None):
     if workflow and workflow.app_id:
         return workflow.app_id
     return None
+
+
+def _record_workflow_execute_audit(run_log, status, reason_code=None):
+    metadata = {
+        "policy_result": "allow",
+        "workflow_run_id": str(run_log.id),
+        "trigger_mode": run_log.trigger_mode.value
+        if hasattr(run_log.trigger_mode, "value")
+        else str(run_log.trigger_mode),
+        "request_id": run_log.request_id,
+        "correlation_id": run_log.correlation_id,
+    }
+    if reason_code:
+        metadata["reason_code"] = reason_code
+        metadata["error_present"] = bool(run_log.error_message)
+
+    record_audit(
+        action=AuditAction.WORKFLOW_EXECUTE,
+        category="action",
+        actor_id=run_log.user_id,
+        actor_type="user",
+        target_type="workflow",
+        target_id=run_log.workflow_id,
+        status=status,
+        metadata=metadata,
+    )
 
 
 def _insert_trace_payloads(session, workflow_run_id, payload_records):
@@ -275,6 +303,7 @@ def update_run_log_finish(self, data: Dict[str, Any]):
 
         _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
+        _record_workflow_execute_audit(run_log, "success")
 
         return {"status": "success", "run_id": str(run_id)}
 
@@ -307,6 +336,9 @@ def update_run_log_error(self, data: Dict[str, Any]):
             run_log.duration = (finished_at - run_log.started_at).total_seconds()
 
         session.commit()
+        _record_workflow_execute_audit(
+            run_log, "failure", reason_code="workflow.execute_failed"
+        )
 
         return {"status": "success", "run_id": str(run_id)}
 

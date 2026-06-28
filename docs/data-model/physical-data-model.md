@@ -1364,8 +1364,7 @@ dev baseline table이다.
 - `prompt_tokens`
 - `completion_tokens`
 - `total_cost`
-- `latency_ms` SQLAlchemy 속성명
-- `atency_ms` 실제 DB column명
+- `latency_ms`
 - `status`
 - `error_message`
 - `created_at`
@@ -1381,8 +1380,8 @@ dev baseline table이다.
 
 MVP 목표 상태 결정:
 
-- 이 문서에서 `atency_ms`를 rename하지 않는다.
-- 코드에서는 SQLAlchemy 속성명 `latency_ms`를 사용한다.
+- `latency_ms`는 DB column명과 SQLAlchemy 속성명을 동일하게 사용한다.
+- 기존 환경에 잘못 생성된 latency column명은 migration으로 `latency_ms`로 rename한다.
 - 비용/사용량 dashboard는 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `llm_models` raw query로 계산한다.
 - dev model에는 `credential_id`, `model_id`가 `ondelete='SET NULL'`이지만 nullable은 `False`인 정합성 이슈가 있다. 이 문서는 해당 schema를 수정하지 않고, 별도 migration 판단 대상으로만 남긴다.
 
@@ -1545,7 +1544,7 @@ DB 변경:
 4. user direct permission은 additive allow로만 처리한다.
 5. 권한 부여/회수/차단/실행 event를 `audit_logs`에 기록한다.
 6. LLM usage dashboard는 `llm_usage_logs` raw query로 구현한다.
-7. `llm_usage_logs.atency_ms` 물리 column명은 변경하지 않고 ORM 속성 `latency_ms`를 사용한다.
+7. `llm_usage_logs.latency_ms` 물리 column명과 ORM 속성명을 일치시킨다.
 
 작동하는 MVP 산출물:
 

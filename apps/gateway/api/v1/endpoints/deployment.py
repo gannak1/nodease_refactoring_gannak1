@@ -1,17 +1,35 @@
+import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.auth.permissions import ensure_workflow_permission
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
 from apps.shared.audit.actions import AuditAction
+from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentResponse
 
 router = APIRouter()
+
+
+def _deployment_workflow_id(db: Session, deployment_id: str):
+    deployment = (
+        db.query(WorkflowDeployment)
+        .filter(WorkflowDeployment.id == deployment_id)
+        .first()
+    )
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    app = db.query(App).filter(App.id == deployment.app_id).first()
+    if not app or not app.workflow_id:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return app.workflow_id
 
 
 @router.post("", response_model=DeploymentResponse)
@@ -25,6 +43,10 @@ def create_deployment(
     워크플로우를 배포합니다.
     [TEST] bugfix/KAN-000, gateway 배포를 위해 주석 추가
     """
+    app = db.query(App).filter(App.id == deployment_in.app_id).first()
+    if not app or not app.workflow_id:
+        raise HTTPException(status_code=404, detail="App not found")
+    ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
     return DeploymentService.create_deployment(db, deployment_in, current_user.id)
 
 
@@ -41,6 +63,30 @@ def get_deployments(
     특정 앱의 배포 이력을 조회합니다.
     app_id 또는 workflow_id 중 하나는 필수입니다.
     """
+    target_workflow_id = workflow_id
+    if app_id:
+        app = db.query(App).filter(App.id == app_id).first()
+        if not app:
+            return []
+        if not app.workflow_id:
+            return []
+        target_workflow_id = app.workflow_id
+        ensure_workflow_permission(db, current_user, target_workflow_id, "read")
+        if workflow_id:
+            try:
+                supplied_workflow_id = uuid.UUID(str(workflow_id))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="app_id does not match workflow_id"
+                )
+            if uuid.UUID(str(target_workflow_id)) != supplied_workflow_id:
+                raise HTTPException(
+                    status_code=400, detail="app_id does not match workflow_id"
+                )
+    elif target_workflow_id:
+        ensure_workflow_permission(db, current_user, target_workflow_id, "read")
+    else:
+        return []
     return DeploymentService.list_deployments(
         db,
         app_id=app_id,
@@ -73,6 +119,8 @@ def get_deployment(
     """
     특정 배포 ID의 상세 정보를 조회합니다.
     """
+    workflow_id = _deployment_workflow_id(db, deployment_id)
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
     return DeploymentService.get_deployment(db, deployment_id)
 
 
@@ -145,6 +193,8 @@ def toggle_deployment(
     """
     from apps.gateway.services.scheduler_service import get_scheduler_service
 
+    workflow_id = _deployment_workflow_id(db, deployment_id)
+    ensure_workflow_permission(db, current_user, workflow_id, "deploy")
     scheduler = get_scheduler_service()
     return DeploymentService.toggle_deployment(db, deployment_id, scheduler)
 
@@ -161,5 +211,7 @@ def delete_deployment(
     """
     from apps.gateway.services.scheduler_service import get_scheduler_service
 
+    workflow_id = _deployment_workflow_id(db, deployment_id)
+    ensure_workflow_permission(db, current_user, workflow_id, "manage")
     scheduler = get_scheduler_service()
     return DeploymentService.delete_deployment(db, deployment_id, scheduler)

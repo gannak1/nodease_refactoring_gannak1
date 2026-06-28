@@ -96,6 +96,31 @@ export interface WorkflowRunListResponse {
   items: WorkflowRun[];
 }
 
+export interface LLMTrace {
+  id: string;
+  workflow_id?: string | null;
+  workflow_run_id: string;
+  node_id?: string | null;
+  model_id?: string | null;
+  model_name?: string | null;
+  provider?: string | null;
+  credential_id?: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  total_cost?: number | null;
+  latency_ms?: number | null;
+  status: string;
+  created_at: string;
+}
+
+export interface LLMTraceListResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: LLMTrace[];
+}
+
 export interface TopExpensiveModel {
   model_name: string;
   provider_name: string;

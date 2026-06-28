@@ -440,7 +440,7 @@ def upgrade() -> None:
         sa.Column("prompt_tokens", sa.Integer(), nullable=False),
         sa.Column("completion_tokens", sa.Integer(), nullable=False),
         sa.Column("total_cost", sa.Numeric(precision=10, scale=6), nullable=True),
-        sa.Column("atency_ms", sa.Integer(), nullable=False),
+        sa.Column("latency_ms", sa.Integer(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

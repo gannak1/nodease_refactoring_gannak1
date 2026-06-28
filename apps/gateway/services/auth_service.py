@@ -1,12 +1,14 @@
 import hashlib
 import os
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.shared.db.models.user import User
 from apps.shared.schemas.auth import (
     LoginRequest,
@@ -55,6 +57,7 @@ class AuthService:
             return user
 
         new_user = User(
+            id=uuid.uuid4(),
             email=email,
             name=name,
             social_provider=social_provider,
@@ -62,6 +65,7 @@ class AuthService:
             avatar_url=avatar_url,
         )
         db.add(new_user)
+        ensure_user_default_organization(db, new_user)
         db.commit()
         db.refresh(new_user)
         return new_user
@@ -142,6 +146,7 @@ class AuthService:
 
         hashed_pwd = AuthService.hash_password(request.password)
         new_user = User(
+            id=uuid.uuid4(),
             email=request.email,
             name=request.name,
             password=hashed_pwd,
@@ -149,6 +154,7 @@ class AuthService:
             last_login_at=datetime.now(timezone.utc),
         )
         db.add(new_user)
+        ensure_user_default_organization(db, new_user)
         db.commit()
         db.refresh(new_user)
 

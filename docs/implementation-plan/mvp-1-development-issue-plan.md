@@ -356,7 +356,7 @@ Out of Scope:
 | Credential scope | `llm_credentials.organization_id`를 active organization 기준으로 저장/조회한다. |
 | Credential read | credential list/preview는 credential `read` 권한 기준으로 제한한다. |
 | Credential create | 새 credential 생성은 organization owner/manager가 수행한다. 생성 직후 권한 row를 어떻게 만들지는 8.3의 결정에 따른다. |
-| Credential write/manage | 기존 credential 삭제/sync-models/권한 관리는 organization owner/manager 또는 해당 credential `manager` 권한 기준으로 제한한다. |
+| Credential write/manage | 기존 credential 삭제/sync-models는 credential `write`, 권한 관리는 credential `manage` 기준으로 제한한다. 두 action 모두 organization owner/manager 또는 해당 credential `manager` 권한으로 통과한다. |
 | Runtime use | workflow engine LLM node가 credential `use` 권한을 확인한다. |
 | Model relation | model 사용 가능 여부는 `llm_rel_credential_models.is_verified`와 credential permission을 함께 평가한다. |
 | Usage log | `llm_usage_logs.organization_id`, `workflow_id`, `workflow_run_id`, `node_id`를 가능한 범위에서 채운다. |
@@ -387,7 +387,7 @@ Acceptance Criteria:
 - credential `viewer`는 credential preview 조회만 가능하고 runtime use는 거부된다.
 - credential `operator` 또는 `builder`는 LLM node 실행에서 credential을 사용할 수 있다.
 - organization owner/manager는 새 credential을 생성할 수 있다.
-- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다.
+- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다. 삭제/동기화 action vocabulary는 `write`, 권한 관리는 `manage`를 사용한다.
 - verified relation이 없는 model은 credential 권한이 있어도 사용할 수 없다.
 - 권한 없는 credential/model 조합으로 workflow를 실행하면 LLM node 실행 전 또는 실행 중 명확히 차단된다.
 - 차단 이벤트가 audit에 남는다.
@@ -423,7 +423,7 @@ Out of Scope:
 | Permission denied audit | 권한 실패 metadata에 resource/action/effective permission을 남긴다. |
 | LLM trace query | run id와 node id 기준으로 `llm_usage_logs`를 조회한다. |
 | Run detail 확장 | run detail 응답 또는 별도 endpoint에서 node별 LLM usage를 반환한다. |
-| Latency 정합성 | 코드에서는 ORM 속성 `latency_ms`를 쓰고, 물리 column `atency_ms`는 MVP1에서 rename하지 않는다. |
+| Latency 정합성 | `llm_usage_logs.latency_ms`를 DB column명과 ORM 속성명 모두에서 사용한다. 기존 오타 column은 migration으로 rename한다. |
 | Audit pagination | MVP1 UI/API에서 audit list를 사용한다면 `MBA-38`, `MBA-39`를 함께 처리한다. 사용하지 않으면 후순위로 둔다. |
 
 구현 방법:
@@ -433,7 +433,7 @@ Out of Scope:
 3. `allow/deny/warn/block` 같은 정책 결과는 `audit_metadata.policy_result`에 저장한다.
 4. LLM trace API는 raw query 또는 SQLAlchemy query로 기존 table을 조인한다.
 5. trace 조회는 workflow `read` 권한을 통과한 user만 가능하게 한다.
-6. `llm_usage_logs.latency_ms` ORM 속성은 그대로 쓰고, DB physical column rename은 별도 schema 변경으로 미룬다.
+6. `llm_usage_logs.latency_ms` ORM 속성과 DB physical column명을 일치시킨다.
 
 API 계약은 [api/tracing-audit.md](../api/tracing-audit.md)의 LLM trace 항목을 따른다. 기존 run detail 응답 확장과 별도 `llm-traces` endpoint 중 하나만 채택해 중복 API를 만들지 않는다.
 
@@ -444,7 +444,7 @@ Acceptance Criteria:
 - LLM node 실행 후 run_id 기준으로 model/token/cost/latency/status를 조회할 수 있다.
 - 여러 LLM node가 있어도 node_id로 구분된다.
 - trace API는 workflow `read` 권한 없이는 거부된다.
-- `latency_ms` 사용 코드가 physical `atency_ms` column 때문에 깨지지 않는다.
+- `latency_ms` 사용 코드와 DB physical column명이 일치한다.
 
 Out of Scope:
 
@@ -544,7 +544,7 @@ Out of Scope:
 | 작업 | 내용 |
 | --- | --- |
 | Unit test | permission helper, auth_state mapping, user direct additive allow |
-| API test | workflow read/write/execute, LLM credential read/use/manage, permission denied audit |
+| API test | workflow read/write/execute, LLM credential read/use/write/manage, permission denied audit |
 | Service test | organization bootstrap, app/workflow organization scope |
 | Engine test | LLM node runtime credential use check |
 | Trace test | run/node LLM usage query |
