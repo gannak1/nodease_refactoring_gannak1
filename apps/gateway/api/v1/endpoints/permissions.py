@@ -28,15 +28,14 @@ from apps.shared.db.models.user import User
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
+from apps.shared.services.permission_enforcement import PermissionEnforcementService
 from apps.shared.schemas.permission import (
-    LLM_AUTH_STATE_RANK,
     LLMPermissionGrantRequest,
     PermissionGrantRequest,
     TeamLLMPermissionResponse,
     TeamWorkflowPermissionResponse,
     UserLLMPermissionResponse,
     UserWorkflowPermissionResponse,
-    WORKFLOW_AUTH_STATE_RANK,
 )
 
 router = APIRouter()
@@ -88,176 +87,13 @@ def _has_active_membership(
     )
 
 
-def _normalize_workflow_auth_state(auth_state: str | None) -> str:
-    """DB의 workflow 권한 값을 rank 비교 가능한 상태로 정규화한다."""
-    # DB에는 string으로 저장되므로 알 수 없는 값은 fail-closed로 none 처리한다.
-    value = str(auth_state or "none").lower()
-    if value not in WORKFLOW_AUTH_STATE_RANK:
-        return "none"
-    return value
-
-
-def _normalize_llm_auth_state(auth_state: str | None) -> str:
-    """DB의 LLM credential 권한 값을 rank 비교 가능한 상태로 정규화한다."""
-    value = str(auth_state or "none").lower()
-    if value not in LLM_AUTH_STATE_RANK:
-        return "none"
-    return value
-
-
-def _has_workflow_manage_permission(
-    db: Session,
-    organization_id: UUID,
-    workflow_id: UUID,
-    user_id: UUID,
-) -> bool:
-    """team 권한과 user-direct 권한을 합산해 manager 이상인지 계산한다."""
-    team_permissions = (
-        db.query(TeamWorkflowPermission)
-        .join(
-            TeamMembership,
-            TeamMembership.team_id == TeamWorkflowPermission.team_id,
-        )
-        .join(Team, Team.id == TeamWorkflowPermission.team_id)
-        .filter(
-            TeamMembership.user_id == user_id,
-            TeamWorkflowPermission.workflow_id == workflow_id,
-            TeamWorkflowPermission.grantee_organization_id == organization_id,
-            TeamMembership.grantee_organization_id
-            == TeamWorkflowPermission.grantee_organization_id,
-            Team.organization_id == TeamWorkflowPermission.grantee_organization_id,
-            Team.is_active.is_(True),
-        )
-        .all()
-    )
-    user_permissions = (
-        db.query(UserWorkflowPermission)
-        .filter(
-            UserWorkflowPermission.user_id == user_id,
-            UserWorkflowPermission.workflow_id == workflow_id,
-            UserWorkflowPermission.grantee_organization_id == organization_id,
-        )
-        .all()
-    )
-
-    best_rank = WORKFLOW_AUTH_STATE_RANK["none"]
-    for permission in [*team_permissions, *user_permissions]:
-        state = _normalize_workflow_auth_state(permission.auth_state)
-        best_rank = max(best_rank, WORKFLOW_AUTH_STATE_RANK[state])
-
-    return best_rank >= WORKFLOW_AUTH_STATE_RANK["manager"]
-
-
-def _has_llm_credential_manage_permission(
-    db: Session,
-    organization_id: UUID,
-    credential_id: UUID,
-    user_id: UUID,
-) -> bool:
-    """team 권한을 합산해 LLM credential manager 이상인지 계산한다."""
-    team_permissions = (
-        db.query(TeamLLMPermission)
-        .join(
-            TeamMembership,
-            TeamMembership.team_id == TeamLLMPermission.team_id,
-        )
-        .join(Team, Team.id == TeamLLMPermission.team_id)
-        .filter(
-            TeamMembership.user_id == user_id,
-            TeamLLMPermission.llm_credential_id == credential_id,
-            TeamLLMPermission.grantee_organization_id == organization_id,
-            TeamMembership.grantee_organization_id
-            == TeamLLMPermission.grantee_organization_id,
-            Team.organization_id == TeamLLMPermission.grantee_organization_id,
-            Team.is_active.is_(True),
-        )
-        .all()
-    )
-    user_permissions = (
-        db.query(UserLLMPermission)
-        .filter(
-            UserLLMPermission.user_id == user_id,
-            UserLLMPermission.llm_credential_id == credential_id,
-            UserLLMPermission.grantee_organization_id == organization_id,
-        )
-        .all()
-    )
-
-    best_rank = LLM_AUTH_STATE_RANK["none"]
-    for permission in [*team_permissions, *user_permissions]:
-        state = _normalize_llm_auth_state(permission.auth_state)
-        best_rank = max(best_rank, LLM_AUTH_STATE_RANK[state])
-
-    return best_rank >= LLM_AUTH_STATE_RANK["manager"]
-
-
-def _lock_team_workflow_permission_key(
-    db: Session,
-    organization_id: UUID,
-    workflow_id: UUID,
-    team_id: UUID,
-) -> None:
+def _lock_permission_key(db: Session, namespace: str, *ids: UUID) -> None:
     """권한 natural key 단위로 pre-read와 upsert 사이의 감사 레이스를 막는다."""
-    lock_key = f"{organization_id}:{workflow_id}:{team_id}"
+    lock_key = ":".join(str(i) for i in ids)
     db.execute(
         select(
             func.pg_advisory_xact_lock(
-                func.hashtext("team_workflow_permission"),
-                func.hashtext(lock_key),
-            )
-        )
-    )
-
-
-def _lock_team_llm_permission_key(
-    db: Session,
-    organization_id: UUID,
-    credential_id: UUID,
-    team_id: UUID,
-) -> None:
-    """권한 natural key 단위로 pre-read와 upsert 사이의 감사 레이스를 막는다."""
-    lock_key = f"{organization_id}:{credential_id}:{team_id}"
-    db.execute(
-        select(
-            func.pg_advisory_xact_lock(
-                func.hashtext("team_llm_permission"),
-                func.hashtext(lock_key),
-            )
-        )
-    )
-
-
-def _lock_user_workflow_permission_key(
-    db: Session,
-    organization_id: UUID,
-    workflow_id: UUID,
-    user_id: UUID,
-) -> None:
-    """권한 natural key 단위로 pre-read와 upsert 사이의 감사 레이스를 막는다."""
-    # 같은 user/workflow 권한 row를 동시에 수정해도 감사 before 값이 섞이지 않게 잠근다.
-    lock_key = f"{organization_id}:{workflow_id}:{user_id}"
-    db.execute(
-        select(
-            func.pg_advisory_xact_lock(
-                func.hashtext("user_workflow_permission"),
-                func.hashtext(lock_key),
-            )
-        )
-    )
-
-
-def _lock_user_llm_permission_key(
-    db: Session,
-    organization_id: UUID,
-    credential_id: UUID,
-    user_id: UUID,
-) -> None:
-    """권한 natural key 단위로 pre-read와 upsert 사이의 감사 레이스를 막는다."""
-    lock_key = f"{organization_id}:{credential_id}:{user_id}"
-    db.execute(
-        select(
-            func.pg_advisory_xact_lock(
-                func.hashtext("user_llm_permission"),
+                func.hashtext(namespace),
                 func.hashtext(lock_key),
             )
         )
@@ -618,11 +454,14 @@ def _authorize_team_workflow_permission_change(
         )
 
     # 최종 허용 주체는 organization manager 또는 workflow manager다.
-    if not is_organization_manager and not _has_workflow_manage_permission(
-        db,
-        organization_id,
-        workflow_id,
-        current_user.id,
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_workflow_manage_permission(
+            db,
+            organization_id,
+            workflow_id,
+            current_user.id,
+        )
     ):
         raise_api_error(
             request,
@@ -709,11 +548,14 @@ def _authorize_team_llm_permission_change(
             "Team not found.",
         )
 
-    if not is_organization_manager and not _has_llm_credential_manage_permission(
-        db,
-        organization_id,
-        credential_id,
-        current_user.id,
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_llm_credential_manage_permission(
+            db,
+            organization_id,
+            credential_id,
+            current_user.id,
+        )
     ):
         raise_api_error(
             request,
@@ -817,11 +659,14 @@ def _authorize_user_workflow_permission_change(
         )
 
     # 최종 허용 주체는 organization manager 또는 workflow manager다.
-    if not is_organization_manager and not _has_workflow_manage_permission(
-        db,
-        organization_id,
-        workflow_id,
-        current_user.id,
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_workflow_manage_permission(
+            db,
+            organization_id,
+            workflow_id,
+            current_user.id,
+        )
     ):
         raise_api_error(
             request,
@@ -920,11 +765,14 @@ def _authorize_user_llm_permission_change(
             "User not found.",
         )
 
-    if not is_organization_manager and not _has_llm_credential_manage_permission(
-        db,
-        organization_id,
-        credential_id,
-        current_user.id,
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_llm_credential_manage_permission(
+            db,
+            organization_id,
+            credential_id,
+            current_user.id,
+        )
     ):
         raise_api_error(
             request,
@@ -947,7 +795,7 @@ def _upsert_team_workflow_permission(
     assigned_at: datetime,
 ) -> TeamWorkflowPermission:
     """team-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_team_workflow_permission_key(db, organization_id, workflow_id, team_id)
+    _lock_permission_key(db, "team_workflow_permission", organization_id, workflow_id, team_id)
     existing_permission = (
         db.query(TeamWorkflowPermission)
         .filter(
@@ -1018,7 +866,7 @@ def _upsert_user_workflow_permission(
     assigned_at: datetime,
 ) -> UserWorkflowPermission:
     """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_user_workflow_permission_key(db, organization_id, workflow_id, user_id)
+    _lock_permission_key(db, "user_workflow_permission", organization_id, workflow_id, user_id)
     # upsert 전 기존 row를 읽어 감사 로그의 before 값으로 사용한다.
     existing_permission = (
         db.query(UserWorkflowPermission)
@@ -1091,7 +939,7 @@ def _upsert_team_llm_permission(
     assigned_at: datetime,
 ) -> TeamLLMPermission:
     """team-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_team_llm_permission_key(db, organization_id, credential_id, team_id)
+    _lock_permission_key(db, "team_llm_permission", organization_id, credential_id, team_id)
     existing_permission = (
         db.query(TeamLLMPermission)
         .filter(
@@ -1160,7 +1008,7 @@ def _upsert_user_llm_permission(
     assigned_at: datetime,
 ) -> UserLLMPermission:
     """user-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_user_llm_permission_key(db, organization_id, credential_id, user_id)
+    _lock_permission_key(db, "user_llm_permission", organization_id, credential_id, user_id)
     existing_permission = (
         db.query(UserLLMPermission)
         .filter(
@@ -1441,7 +1289,7 @@ def delete_team_llm_permission(
         team_id,
     )
 
-    _lock_team_llm_permission_key(db, organization_id, credential_id, team_id)
+    _lock_permission_key(db, "team_llm_permission", organization_id, credential_id, team_id)
     permission = (
         db.query(TeamLLMPermission)
         .filter(
@@ -1491,7 +1339,7 @@ def delete_user_workflow_permission(
         user_id,
     )
 
-    _lock_user_workflow_permission_key(db, organization_id, workflow_id, user_id)
+    _lock_permission_key(db, "user_workflow_permission", organization_id, workflow_id, user_id)
     permission = (
         db.query(UserWorkflowPermission)
         .filter(
@@ -1541,7 +1389,7 @@ def delete_user_llm_permission(
         user_id,
     )
 
-    _lock_user_llm_permission_key(db, organization_id, credential_id, user_id)
+    _lock_permission_key(db, "user_llm_permission", organization_id, credential_id, user_id)
     permission = (
         db.query(UserLLMPermission)
         .filter(
