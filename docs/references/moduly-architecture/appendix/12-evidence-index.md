@@ -1,5 +1,9 @@
 # 근거 인덱스
 
+> Status: Reference-only historical document.
+>
+> 이 문서는 과거 `main` 브랜치 기준 역공학 산출물이다. 현재 구현 기준은 active `docs/` 문서와 코드를 따른다.
+
 이 문서는 주요 문서화 항목별로 확인한 근거 파일을 연결한다.
 
 ## 제품/기술 스택

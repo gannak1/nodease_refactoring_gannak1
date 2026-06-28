@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md)
 
 ## 범위
@@ -36,33 +36,13 @@ Workflow run trace, span, payload, trace policy, retention purge, audit log 조�
 
 ## LLM Trace 엔드포인트
 
-MVP 1에서 run/node 기준 LLM usage는 별도 LLM trace endpoint로 조회한다. 기존 run detail 응답에는 전체 trace row를 기본 포함하지 않는다.
+현재 코드는 run/node 기준 LLM usage 조회를 별도 endpoint로 제공한다. 기존 run detail 응답에 LLM usage 요약을 포함하는 방식은 채택하지 않았다.
 
-| Status | Method | Path | Request | Response | Permission |
-| --- | --- | --- | --- | --- | --- |
-| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | `node_id?`, `limit?`, `offset?` query | `LLMTraceListResponse` | workflow `read` |
+| Status | Method | Path | 설명 |
+| --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 별도 LLM trace endpoint. `node_id`, `limit`, `offset` query를 지원 |
 
-기본 정렬은 `created_at ASC`, `id ASC`이다. `limit` 기본값은 `100`, 최대값은 `500`이고 `offset` 기본값은 `0`이다. `run_id`가 path의 `workflow_id`에 속하지 않으면 `404`로 응답한다.
-
-`LLMTraceListResponse.items`는 다음 whitelist field만 포함한다.
-
-- `id`
-- `workflow_id`
-- `workflow_run_id`
-- `node_id`
-- `model_id`
-- `model_name`
-- `provider`
-- `credential_id`
-- `prompt_tokens`
-- `completion_tokens`
-- `total_tokens`
-- `total_cost`
-- `latency_ms`
-- `status`
-- `created_at`
-
-API key, credential config, raw prompt, raw completion, raw request/response body, Authorization/Cookie header는 반환하지 않는다.
+중복 API를 만들지 않는다.
 
 ## Raw Payload 규칙
 

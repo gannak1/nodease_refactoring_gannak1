@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation Index
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
 기반 문서는 다른 문서가 공통으로 따르는 전제와 용어를 정의한다.
 

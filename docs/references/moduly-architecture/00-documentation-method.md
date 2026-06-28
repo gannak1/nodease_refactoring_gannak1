@@ -2,7 +2,7 @@
 
 > Status: Reference-only historical document.
 >
-> 이 문서는 과거 `main` 브랜치 기준 역공학 작업의 방법 기록이다. 본문에 등장하는 `local/docs`는 당시 산출물 경로이며, 현재 active documentation root의 source of truth를 뜻하지 않는다.
+> 이 문서는 과거 `main` 브랜치 기준 역공학 작업의 방법 기록이다. 본문에 등장하는 `local/docs`는 당시 산출물 경로이며, 현재 active documentation root인 `docs/`의 source of truth를 뜻하지 않는다.
 
 ## 목표
 

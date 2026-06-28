@@ -1,5 +1,9 @@
 # 런타임 아키텍처
 
+> Status: Reference-only historical document.
+>
+> 이 문서는 과거 `main` 브랜치 기준 역공학 산출물이다. 현재 구현 기준은 active `docs/` 문서와 코드를 따른다.
+
 ## 서비스 구성
 
 ```mermaid

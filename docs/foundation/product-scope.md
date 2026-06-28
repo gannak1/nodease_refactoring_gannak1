@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
 ## 제품 정의
 
@@ -21,7 +21,7 @@ Nodease는 기존 Moduly의 workflow builder/runtime을 기반으로 LLMOps obse
 
 ## 범위 규칙
 
-- 기존 `origin/dev` 아키텍처와 물리 데이터 모델을 우선 보존한다.
+- 현재 코드의 아키텍처와 물리 데이터 모델을 우선 보존한다.
 - 큰 schema refactor보다 additive extension을 우선한다.
 - RBAC, audit, tracing은 controller가 아니라 service/helper 경계에서 적용한다.
 - secret, credential, raw payload는 문서와 로그에 노출하지 않는다.

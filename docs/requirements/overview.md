@@ -1,5 +1,10 @@
 # Nodease 개발 계획 개요
 
+Status: Draft
+Authority: Requirements
+Source of Truth: Yes
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+
 ## 작성 기준
 
 이 문서는 기존 `requirements`의 번호 문서 전체를 5개 문서로 병합한 최상위 개요다. 사용자는 "11개의 설계"라고 표현했지만, 병합 시점의 실제 번호 문서는 `00`부터 `11`까지 12개였으므로 데이터 유실을 막기 위해 12개 번호 문서 전체를 병합 대상으로 삼았다.
@@ -11,15 +16,15 @@
 
 ## 최종 문서 구조
 
-5개 문서는 MVP 기준으로 읽히도록 재배치했다. Foundation 문서는 따로 남기지 않고, 각 MVP가 실제로 필요로 하는 설계 항목 안으로 흡수했다.
+요구사항 문서는 MVP 기준으로 읽히도록 재배치했다. Foundation 문서는 따로 남기지 않고, 각 MVP가 실제로 필요로 하는 설계 항목 안으로 흡수했다. 리스크와 정합성 검증 문서는 현재 [implementation-plan/risk-consistency-verification.md](../implementation-plan/risk-consistency-verification.md)에 둔다.
 
 | 문서 | 병합된 원문 | 목적 |
 | --- | --- | --- |
-| `00-overview.md` | 기존 `00-overview.md`, README | 전체 방향, MVP 의존성, 핵심 설계 결정 |
-| `01-mvp-1-foundation-llmops.md` | 기존 `01`, `02`, `03`, `04`, `05` | RBAC/resource/audit/policy 기반과 LLMOps 관측성 MVP |
-| `02-mvp-2-governance-rag-audit.md` | 기존 `02`, `03`, `06`, `07` | 데이터 소스 권한, RAG trace metadata, 재색인, audit 검색 MVP |
-| `03-mvp-3-enterprise-ops.md` | 기존 `01`, `02`, `03`, `08`, `09` | 배포 체크, version diff, 비용 추천, 운영 대시보드 MVP |
-| `04-risk-consistency-verification.md` | 기존 `10`, `11` | 리스크, 품질 게이트, 문서 정합성 감사 |
+| `overview.md` | 기존 `00-overview.md`, README | 전체 방향, MVP 의존성, 핵심 설계 결정 |
+| `mvp-1-foundation-llmops.md` | 기존 `01`, `02`, `03`, `04`, `05` | RBAC/resource/audit/policy 기반과 LLMOps 관측성 MVP |
+| `mvp-2-governance-rag-audit.md` | 기존 `02`, `03`, `06`, `07` | 데이터 소스 권한, RAG trace metadata, 재색인, audit 검색 MVP |
+| `mvp-3-enterprise-ops.md` | 기존 `01`, `02`, `03`, `08`, `09` | 배포 체크, version diff, 비용 추천, 운영 대시보드 MVP |
+| `../implementation-plan/risk-consistency-verification.md` | 기존 `10`, `11` | 리스크, 품질 게이트, 문서 정합성 감사 |
 
 ## 목적
 
@@ -62,8 +67,8 @@ RBAC 범위:
 
 | 단계 | 범위 |
 | --- | --- |
-| MVP 1 | resource/permission 모델, workflow read/write/execute, 최소 model use check |
-| MVP 2 | knowledge base/document use enforcement, DB connection runtime use enforcement, HR 데이터 차단 시나리오 |
+| MVP 1 | resource/permission 모델, workflow read/write/execute, LLM credential `use`와 credential-model relation check |
+| MVP 2 | knowledge base `use` enforcement, document metadata policy, DB connection runtime use enforcement, HR 데이터 차단 시나리오 |
 | MVP 3 | deploy/manage 권한, audit log 접근 제어, 운영 dashboard scope |
 
 Audit/Tracing 범위:
@@ -71,15 +76,15 @@ Audit/Tracing 범위:
 | 단계 | 범위 |
 | --- | --- |
 | MVP 1 | workflow execute, LLM call, permission denied skeleton |
-| MVP 2 | permission grant/revoke, RAG retrieve, policy warn/block |
+| MVP 2 | permission row 변경 audit, RAG retrieve, policy warn/block |
 | MVP 3 | deployment diff/check, recommendation, cache/fallback event |
 
 Data Governance 범위:
 
 | 단계 | 범위 |
 | --- | --- |
-| MVP 1 | classification 상수/필드 설계, policy decision event 구조. 실제 데이터 차단은 최소 model use check 중심 |
-| MVP 2 | knowledge base/document/model use 정책 실제 차단 |
+| MVP 1 | classification 상수/metadata convention 설계, policy decision event 구조. 실제 데이터 차단은 LLM credential `use`와 credential-model relation 중심 |
+| MVP 2 | knowledge base `use`, document metadata policy, credential `use`와 credential-model relation 기반 사용 정책 실제 차단 |
 | MVP 3 | deploy checklist에서 PII/RAG/model policy 위험 표시 |
 
 ## MVP 간 의존성
@@ -111,10 +116,10 @@ Team/User Permission Model
 
 1. MVP 1에서는 기존 `App`을 project boundary로 사용하고, 독립 `Project` 모델 도입 시점은 이후에 결정한다.
 2. `Canvas`라는 제품 용어는 현재 구현의 `Workflow`에 매핑한다.
-3. `KnowledgeBase`, `Document`, `LLMModel`, `LLMCredential`, `Workflow`, `Deployment`를 resource로 표준화한다. `Connection`은 독립 permission resource로 두지 않고 consuming workflow/knowledge base 권한으로 runtime `use`를 허용한다.
+3. `KnowledgeBase`, `Document`, `LLMModel`, `LLMCredential`, `Workflow`, `Deployment`를 resource 개념으로 표준화한다. 현재 코드는 model별 permission table을 만들지 않고 `LLMCredential` 권한과 `llm_rel_credential_models`로 model 사용 가능 여부를 제한한다. `Connection`은 독립 permission resource로 두지 않고 consuming workflow/knowledge base 권한으로 runtime `use`를 허용한다.
 4. permission vocabulary는 `read`, `write`, `execute`, `use`, `manage`, `deploy`로 시작한다.
 5. `Admin`, `Builder`, `Operator`, `Viewer`, `Auditor`는 DB role이 아니라 team template 또는 UI preset으로 취급한다.
-6. audit은 신규 `audit_events`가 아니라 dev baseline의 `audit_logs`를 사용한다.
+6. audit은 신규 `audit_events`가 아니라 현재 코드의 `audit_logs`를 사용한다.
 7. canonical action은 `audit_logs.action`에 저장하고, 정책 결과는 `audit_logs.audit_metadata.policy_result`에 저장한다.
 8. RAG trace는 신규 `rag_retrieval_traces`가 아니라 `trace_payloads`와 metadata로 chunk id/run id를 연결한다.
 9. 비용 추천과 quality score는 MVP 3까지 rule-based 또는 사용자 평가 중심으로 제한한다.

@@ -1,5 +1,9 @@
 # 워크플로우 엔진
 
+> Status: Reference-only historical document.
+>
+> 이 문서는 과거 `main` 브랜치 기준 역공학 산출물이다. 현재 구현 기준은 active `docs/` 문서와 코드를 따른다.
+
 ## 책임
 
 Workflow Engine은 워크플로우 graph의 nodes/edges를 받아 실제 노드를 실행하고 결과를 만들며, 실행 로그와 실시간 이벤트를 남긴다.
