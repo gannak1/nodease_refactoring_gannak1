@@ -123,6 +123,50 @@ def _has_active_membership(
     )
 
 
+def _require_organization_manager(
+    request: Request,
+    db: Session,
+    organization_id: UUID,
+    user_id: UUID,
+) -> JSONResponse | None:
+    # Team 관리 API는 organization owner/manager만 허용한다.
+    # manager가 아닌 사용자는 active membership 여부로 403/404를 구분한다.
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        return _error_response(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    if not _is_organization_manager(organization, user_id):
+        # organization scope 밖이면 존재 여부를 숨기기 위해 404를 반환하고,
+        # scope 안의 일반 member면 manager 권한 부족으로 403을 반환한다.
+        if not _has_active_membership(db, organization_id, user_id):
+            return _error_response(
+                request,
+                404,
+                "resource.not_found",
+                "Organization not found.",
+            )
+        return _error_response(
+            request,
+            403,
+            "permission.denied",
+            "Organization manager permission is required.",
+        )
+
+    return None
+
+
 @router.get("", response_model=list[TeamResponse])
 def list_teams(
     request: Request,
@@ -143,36 +187,14 @@ def list_teams(
     if error is not None:
         return error
 
-    organization = (
-        db.query(Organization)
-        .filter(
-            Organization.id == organization_id,
-            Organization.is_active.is_(True),
-        )
-        .first()
+    error = _require_organization_manager(
+        request,
+        db,
+        organization_id,
+        current_user.id,
     )
-    if organization is None:
-        return _error_response(
-            request,
-            404,
-            "resource.not_found",
-            "Organization not found.",
-        )
-
-    if not _is_organization_manager(organization, current_user.id):
-        if not _has_active_membership(db, organization_id, current_user.id):
-            return _error_response(
-                request,
-                404,
-                "resource.not_found",
-                "Organization not found.",
-            )
-        return _error_response(
-            request,
-            403,
-            "permission.denied",
-            "Organization manager permission is required.",
-        )
+    if error is not None:
+        return error
 
     return (
         db.query(Team)
@@ -204,36 +226,14 @@ def create_team(
     if error is not None:
         return error
 
-    organization = (
-        db.query(Organization)
-        .filter(
-            Organization.id == organization_id,
-            Organization.is_active.is_(True),
-        )
-        .first()
+    error = _require_organization_manager(
+        request,
+        db,
+        organization_id,
+        current_user.id,
     )
-    if organization is None:
-        return _error_response(
-            request,
-            404,
-            "resource.not_found",
-            "Organization not found.",
-        )
-
-    if not _is_organization_manager(organization, current_user.id):
-        if not _has_active_membership(db, organization_id, current_user.id):
-            return _error_response(
-                request,
-                404,
-                "resource.not_found",
-                "Organization not found.",
-            )
-        return _error_response(
-            request,
-            403,
-            "permission.denied",
-            "Organization manager permission is required.",
-        )
+    if error is not None:
+        return error
 
     # 문서상 Request/Response 계약이 아직 TBD이므로, 지금은 문서화된
     # organization manager 권한 관문만 노출한다.
@@ -242,4 +242,49 @@ def create_team(
         501,
         "operation.not_implemented",
         "Team creation request and response contract is TBD.",
+    )
+
+
+# PATCH /teams/{team_id}는 수정 계약이 확정되기 전까지 권한 관문만 구현한다.
+@router.patch(
+    "/{team_id}",
+    status_code=501,
+    responses={
+        501: {"description": "Team update contract is not implemented yet."}
+    },
+)
+def update_team(
+    team_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    # 현재는 route UUID validation만 사용하고, 실제 team 조회/수정은 계약 확정 후 추가한다.
+    _ = team_id
+
+    current_user, error = _authenticate(request, db, auth_token)
+    if error is not None:
+        return error
+
+    organization_id, error = _parse_organization_id(request, x_organization_id)
+    if error is not None:
+        return error
+
+    error = _require_organization_manager(
+        request,
+        db,
+        organization_id,
+        current_user.id,
+    )
+    if error is not None:
+        return error
+
+    # team_id는 확정될 PATCH 계약의 route 식별자다. 문서상 Request/Response
+    # 계약이 아직 TBD이므로, 지금은 임의 update schema나 DB update를 만들지 않는다.
+    return _error_response(
+        request,
+        501,
+        "operation.not_implemented",
+        "Team update request and response contract is TBD.",
     )
