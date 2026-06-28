@@ -14,6 +14,7 @@ from apps.shared.db.models.team import (
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserWorkflowPermission,
 )
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -57,6 +58,7 @@ def test_layer_b_tracks_security_and_deployment_models():
         Team: "team",
         TeamMembership: "team_membership",
         TeamWorkflowPermission: "team_workflow_permission",
+        UserWorkflowPermission: "user_workflow_permission",
         TeamKnowledgePermission: "team_knowledge_permission",
         TeamLLMPermission: "team_llm_permission",
         TeamAuditPermission: "team_audit_permission",
