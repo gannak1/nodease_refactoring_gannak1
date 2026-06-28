@@ -293,6 +293,32 @@ def _record_user_workflow_permission_audit(
     )
 
 
+def _record_user_workflow_permission_delete_audit(
+    current_user: User,
+    permission: UserWorkflowPermission,
+    before: dict,
+) -> None:
+    """user-workflow 권한 회수 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    record_audit(
+        action="user_workflow_permission.deleted",
+        category="data_change",
+        actor_id=str(current_user.id),
+        actor_type="user",
+        target_type="user_workflow_permission",
+        target_id=permission.id,
+        before=before,
+        after=None,
+        metadata=metadata,
+    )
+
+
 def _authorize_team_workflow_permission_change(
     request: Request,
     db: Session,
@@ -764,3 +790,53 @@ def delete_team_workflow_permission(
         before,
     )
     return {"message": "Team workflow permission deleted", "id": str(permission.id)}
+
+
+@router.delete("/workflows/{workflow_id}/users/{user_id}")
+def delete_user_workflow_permission(
+    workflow_id: UUID,
+    user_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """user의 workflow 직접 권한을 회수하는 DELETE endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_user_workflow_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        workflow_id,
+        user_id,
+    )
+
+    _lock_user_workflow_permission_key(db, organization_id, workflow_id, user_id)
+    permission = (
+        db.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.grantee_organization_id == organization_id,
+            UserWorkflowPermission.workflow_id == workflow_id,
+            UserWorkflowPermission.user_id == user_id,
+        )
+        .first()
+    )
+    if permission is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "User workflow permission not found.",
+        )
+
+    before = _permission_audit_columns(permission)
+    db.delete(permission)
+    db.commit()
+    _record_user_workflow_permission_delete_audit(
+        current_user,
+        permission,
+        before,
+    )
+    return {"message": "User workflow permission deleted", "id": str(permission.id)}

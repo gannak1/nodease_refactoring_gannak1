@@ -1102,6 +1102,220 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.permission_audit.assert_not_called()
 
+    def test_delete_user_workflow_permission_deletes_row_for_organization_manager(self):
+        # organization manager는 user direct workflow permission을 회수할 수 있다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        existing_permission = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_permission=existing_permission,
+        )
+
+        response = self._delete_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "User workflow permission deleted",
+                "id": str(existing_permission.id),
+            },
+        )
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        self.assertFalse(session.scalars_called)
+        self.assertIsNotNone(session.lock_statement)
+        self.assertIn(
+            "pg_advisory_xact_lock",
+            str(session.lock_statement.compile(dialect=postgresql.dialect())),
+        )
+        self.permission_audit.assert_called_once()
+        audit = self.permission_audit.call_args.kwargs
+        self.assertEqual(audit["action"], "user_workflow_permission.deleted")
+        self.assertEqual(audit["category"], "data_change")
+        self.assertEqual(audit["actor_id"], str(actor_id))
+        self.assertEqual(audit["actor_type"], "user")
+        self.assertEqual(audit["target_type"], "user_workflow_permission")
+        self.assertEqual(audit["target_id"], existing_permission.id)
+        self.assertEqual(audit["before"]["id"], existing_permission.id)
+        self.assertEqual(audit["before"]["user_id"], target_user_id)
+        self.assertEqual(audit["before"]["auth_state"], "builder")
+        self.assertIsNone(audit["after"])
+        self.assertEqual(audit["metadata"]["request_id"], "req-test")
+        self.assertEqual(audit["metadata"]["actor"]["id"], str(actor_id))
+
+    def test_delete_user_workflow_permission_allows_workflow_manager(self):
+        # organization manager가 아니어도 workflow manager면 user direct permission 회수가 가능하다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        existing_permission = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            manager_permissions=[
+                _team_workflow_permission(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    team_id=uuid4(),
+                    auth_state="manager",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+            existing_user_permission=existing_permission,
+        )
+
+        response = self._delete_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        _assert_workflow_manage_filters(
+            self,
+            session.workflow_manager_query,
+            actor_id,
+            workflow_id,
+            organization_id,
+        )
+
+    def test_delete_user_workflow_permission_rejects_member_without_manage(self):
+        # active member라도 workflow manager가 아니면 user direct permission 회수는 거부해야 한다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        existing_permission = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            manager_permissions=[
+                _team_workflow_permission(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    team_id=uuid4(),
+                    auth_state="builder",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+            existing_user_permission=existing_permission,
+        )
+
+        response = self._delete_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Workflow manage or organization manager permission is required.",
+            ),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_not_called()
+
+    def test_delete_user_workflow_permission_hides_missing_permission_row(self):
+        # scope와 권한이 맞아도 회수할 user direct permission row가 없으면 404를 반환한다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_permission=None,
+        )
+
+        response = self._delete_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "resource.not_found",
+                "User workflow permission not found.",
+            ),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.assertIsNotNone(session.lock_statement)
+        self.assertIn(
+            "pg_advisory_xact_lock",
+            str(session.lock_statement.compile(dialect=postgresql.dialect())),
+        )
+        self.permission_audit.assert_not_called()
+
     def _put_permission(
         self,
         session,
@@ -1218,6 +1432,43 @@ class TestPermissionsApi(unittest.TestCase):
                 headers=headers,
             )
 
+    def _delete_user_permission(
+        self,
+        session,
+        user_id,
+        workflow_id,
+        target_user_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 user 권한 DELETE endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).delete(
+                f"/api/v1/permissions/workflows/{workflow_id}/users/{target_user_id}",
+                headers=headers,
+            )
+
 
 class _Query:
     # SQLAlchemy Query chain 중 이 테스트에서 사용하는 최소 동작만 흉내 낸다.
@@ -1310,6 +1561,7 @@ class _Session:
         self.user_workflow_query = None
         self.workflow_permission_query_count = 0
         self.membership_query_count = 0
+        self.user_query_count = 0
         self.user_workflow_permission_query_count = 0
         self.upsert_result = upsert_result
         self.user_upsert_result = user_upsert_result
@@ -1329,8 +1581,8 @@ class _Session:
             return self.organization_query
         if model is TeamMembership:
             self.membership_query_count += 1
-            # user 권한 PUT에서는 첫 membership 조회가 actor, 두 번째가 target user 검증용이다.
-            if self.membership_query_count == 2:
+            # target user 조회 이후의 membership 조회는 target user scope 검증용이다.
+            if self.user_query_count > 0:
                 return self.target_membership_query
             return self.membership_query
         if model is Workflow:
@@ -1338,6 +1590,7 @@ class _Session:
         if model is Team:
             return self.team_query
         if model is User:
+            self.user_query_count += 1
             return self.user_query
         if model is TeamWorkflowPermission:
             self.workflow_permission_query_count += 1
@@ -1354,17 +1607,21 @@ class _Session:
             return _Query(first_result=self.existing_permission, apply_filters=True)
         if model is UserWorkflowPermission:
             self.user_workflow_permission_query_count += 1
-            # 두 번째 UserWorkflowPermission query는 upsert 전 기존 direct 권한 조회용이다.
-            if self.user_workflow_permission_query_count > 1:
-                return _Query(
-                    first_result=self.existing_user_permission,
+            # manager 판정이 필요한 경로에서는 첫 query가 권한 합산용이고,
+            # 그 다음 query가 upsert/delete 대상 row 조회용이다.
+            if (
+                self.user_direct_permissions
+                and self.user_workflow_permission_query_count == 1
+            ):
+                self.user_workflow_query = _Query(
+                    items=self.user_direct_permissions,
                     apply_filters=True,
                 )
-            self.user_workflow_query = _Query(
-                items=self.user_direct_permissions,
+                return self.user_workflow_query
+            return _Query(
+                first_result=self.existing_user_permission,
                 apply_filters=True,
             )
-            return self.user_workflow_query
         raise AssertionError(f"Unexpected query model: {model}")
 
     def add(self, value):
