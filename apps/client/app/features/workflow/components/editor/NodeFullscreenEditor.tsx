@@ -1,12 +1,6 @@
 'use client';
 
-import React, {
-  DragEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -25,10 +19,7 @@ import {
 } from '../../hooks/useNodeNavigation';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { buildOutputLabelPatch } from '../../utils/nodeOutputLabels';
-import {
-  NODE_OUTPUT_DRAG_MIME,
-  NodeOutputVariable,
-} from '../../utils/nodeVariablePorts';
+import { NodeOutputVariable } from '../../utils/nodeVariablePorts';
 import { LLMNodeData } from '../../types/Nodes';
 import { LLMParameterSidePanel } from '../nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '../nodes/llm/components/LLMReferenceSidePanel';
@@ -97,14 +88,9 @@ const VariableInsertionStatus = () => {
 const InputVariableChip = ({
   input,
   chipColor,
-  onDragStart,
 }: {
   input: NodeOutputVariable;
   chipColor: string;
-  onDragStart: (
-    event: DragEvent<HTMLDivElement>,
-    output: NodeOutputVariable,
-  ) => void;
 }) => {
   const { activeTarget, insertOutput } = useVariableInsertion();
   const title = activeTarget
@@ -115,7 +101,9 @@ const InputVariableChip = ({
     <div
       role="button"
       tabIndex={0}
-      draggable
+      onMouseDown={(event) => {
+        event.preventDefault();
+      }}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -127,9 +115,8 @@ const InputVariableChip = ({
         event.stopPropagation();
         insertOutput(input);
       }}
-      onDragStart={(event) => onDragStart(event, input)}
       className={
-        'inline-flex max-w-full cursor-pointer items-center rounded-md border px-2 py-1 text-xs font-semibold shadow-sm transition-transform hover:-translate-y-px active:cursor-grabbing ' +
+        'inline-flex max-w-full cursor-pointer items-center rounded-md border px-2 py-1 text-xs font-semibold shadow-sm transition-transform hover:-translate-y-px ' +
         chipColor
       }
       title={title}
@@ -429,14 +416,6 @@ export function NodeFullscreenEditor() {
     setIsEditingTitle(false);
   };
 
-  const handleInputChipDragStart = (
-    event: DragEvent<HTMLDivElement>,
-    output: NodeOutputVariable,
-  ) => {
-    event.dataTransfer.effectAllowed = 'copy';
-    event.dataTransfer.setData(NODE_OUTPUT_DRAG_MIME, JSON.stringify(output));
-  };
-
   const handlePanelResizeStart = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       const panel = leftPanelRef.current;
@@ -617,7 +596,9 @@ export function NodeFullscreenEditor() {
         <div className="flex h-12 shrink-0 items-center justify-between">
           <div className="relative flex min-w-0 flex-1 items-center justify-start">
             {previousNodes.length === 0 ? (
-              <div className="text-xs font-medium text-slate-300">이전 없음</div>
+              <div className="text-xs font-medium text-slate-300">
+                이전 없음
+              </div>
             ) : previousNodes.length === 1 && primaryPreviousNode ? (
               <NodeNavigationButton
                 item={primaryPreviousNode}
@@ -662,7 +643,9 @@ export function NodeFullscreenEditor() {
 
           <div className="relative flex min-w-0 flex-1 items-center justify-end">
             {nextNodes.length === 0 ? (
-              <div className="text-xs font-medium text-slate-300">다음 없음</div>
+              <div className="text-xs font-medium text-slate-300">
+                다음 없음
+              </div>
             ) : nextNodes.length === 1 ? (
               <NodeNavigationButton
                 item={nextNodes[0]}
@@ -782,7 +765,6 @@ export function NodeFullscreenEditor() {
                                   key={`${input.sourceNodeId}-${input.key}`}
                                   input={input}
                                   chipColor={chipColor}
-                                  onDragStart={handleInputChipDragStart}
                                 />
                               ))}
                             </div>
@@ -844,8 +826,6 @@ export function NodeFullscreenEditor() {
                     onStartOutputLabelEdit={startOutputLabelEdit}
                     onSaveOutputLabelEdit={saveOutputLabelEdit}
                     onCancelOutputLabelEdit={cancelOutputLabelEdit}
-                    onStartOutputDrag={handleInputChipDragStart}
-                    onEndOutputDrag={() => undefined}
                     outputLabelInputRef={outputLabelInputRef}
                   />
                 </>

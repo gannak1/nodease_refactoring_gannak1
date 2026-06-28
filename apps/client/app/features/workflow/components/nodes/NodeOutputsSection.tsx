@@ -26,11 +26,6 @@ type NodeOutputsSectionProps = {
   ) => void;
   onSaveOutputLabelEdit: () => void;
   onCancelOutputLabelEdit: () => void;
-  onStartOutputDrag: (
-    event: React.DragEvent<HTMLDivElement>,
-    output: NodeOutputVariable,
-  ) => void;
-  onEndOutputDrag: () => void;
   outputLabelInputRef: React.RefObject<HTMLInputElement | null>;
 };
 
@@ -45,8 +40,6 @@ export const NodeOutputsSection = ({
   onStartOutputLabelEdit,
   onSaveOutputLabelEdit,
   onCancelOutputLabelEdit,
-  onStartOutputDrag,
-  onEndOutputDrag,
   outputLabelInputRef,
 }: NodeOutputsSectionProps) => {
   if (outputs.length === 0) return null;
@@ -61,12 +54,9 @@ export const NodeOutputsSection = ({
       {outputs.map((output) => (
         <div
           key={`${output.sourceNodeId}-${output.key}`}
-          draggable={editingOutputKey !== output.key}
           onDoubleClick={(event) => onStartOutputLabelEdit(event, output)}
-          onDragStart={(event) => onStartOutputDrag(event, output)}
-          onDragEnd={onEndOutputDrag}
-          className="group/output cursor-grab rounded-md border border-gray-200 bg-white px-2.5 py-2 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/30 active:cursor-grabbing"
-          title="드래그해서 다른 노드 필드에 넣거나, 라벨을 더블클릭해 수정하세요."
+          className="group/output rounded-md border border-gray-200 bg-white px-2.5 py-2 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/30"
+          title="라벨을 더블클릭해 수정하세요."
         >
           <div className="flex min-w-0 items-center gap-2">
             {editingOutputKey === output.key ? (

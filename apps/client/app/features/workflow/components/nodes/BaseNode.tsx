@@ -14,10 +14,7 @@ import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { BaseNodeData } from '../../types/Nodes';
 import { useNodeIO } from '../../hooks/useNodeIO';
 import { buildOutputLabelPatch } from '../../utils/nodeOutputLabels';
-import {
-  NODE_OUTPUT_DRAG_MIME,
-  NodeOutputVariable,
-} from '../../utils/nodeVariablePorts';
+import { NodeOutputVariable } from '../../utils/nodeVariablePorts';
 import { VisiblePropertySummary } from './VisiblePropertySummary';
 
 interface BaseNodeProps {
@@ -62,37 +59,6 @@ const getInputChipColor = (sourceNodeId: string) => {
       (hash * 31 + sourceNodeId.charCodeAt(index)) % INPUT_CHIP_COLORS.length;
   }
   return INPUT_CHIP_COLORS[hash];
-};
-
-const setOutputDragPreview = (
-  event: React.DragEvent<HTMLElement>,
-  label: string,
-) => {
-  const source = event.currentTarget;
-  const sourceRect = source.getBoundingClientRect();
-  const preview = document.createElement('div');
-
-  preview.textContent = label;
-  preview.className =
-    'pointer-events-none fixed left-0 top-0 z-[9999] inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-800 shadow-lg';
-  preview.style.width = `${Math.max(sourceRect.width, 32)}px`;
-  preview.style.maxWidth = '240px';
-  preview.style.height = `${Math.max(sourceRect.height, 24)}px`;
-  preview.style.transform = 'translate(-10000px, -10000px)';
-  preview.style.whiteSpace = 'nowrap';
-  preview.style.overflow = 'hidden';
-  preview.style.textOverflow = 'ellipsis';
-
-  document.body.appendChild(preview);
-  event.dataTransfer.setDragImage(
-    preview,
-    Math.min(sourceRect.width / 2, 48),
-    Math.min(sourceRect.height / 2, 16),
-  );
-
-  window.setTimeout(() => {
-    preview.remove();
-  }, 0);
 };
 
 export const SmartHandle: React.FC<
@@ -250,7 +216,6 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   const [isNodeHovered, setIsNodeHovered] = useState(false);
   const [isInputPanelHovered, setIsInputPanelHovered] = useState(false);
   const [isOutputPanelHovered, setIsOutputPanelHovered] = useState(false);
-  const [isDraggingOutput, setIsDraggingOutput] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [titleBeforeEdit, setTitleBeforeEdit] = useState('');
@@ -296,14 +261,11 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   const isInputPanelOpen =
     showCanvasVariablePanels &&
     inputVariables.length > 0 &&
-    (isNodeHovered || isInputPanelHovered || isDraggingOutput);
+    (isNodeHovered || isInputPanelHovered);
   const isOutputPanelOpen =
     showCanvasVariablePanels &&
     outputVariables.length > 0 &&
-    (isNodeHovered ||
-      isOutputPanelHovered ||
-      isDraggingOutput ||
-      editingOutputKey !== null);
+    (isNodeHovered || isOutputPanelHovered || editingOutputKey !== null);
 
   const clearOutputPanelCloseTimer = useCallback(() => {
     if (!closeOutputPanelTimerRef.current) return;
@@ -316,8 +278,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
     closeOutputPanelTimerRef.current = window.setTimeout(() => {
       if (
         ref.current?.matches(':hover') ||
-        outputPanelRef.current?.matches(':hover') ||
-        isDraggingOutput
+        outputPanelRef.current?.matches(':hover')
       ) {
         closeOutputPanelTimerRef.current = null;
         return;
@@ -327,7 +288,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
       setIsOutputPanelHovered(false);
       closeOutputPanelTimerRef.current = null;
     }, 350);
-  }, [clearOutputPanelCloseTimer, isDraggingOutput]);
+  }, [clearOutputPanelCloseTimer]);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -366,27 +327,6 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   useEffect(() => {
     return () => clearOutputPanelCloseTimer();
   }, [clearOutputPanelCloseTimer]);
-
-  useEffect(() => {
-    if (!isDraggingOutput) return;
-
-    const keepCopyCursor = (event: DragEvent) => {
-      if (!event.dataTransfer?.types.includes(NODE_OUTPUT_DRAG_MIME)) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
-    };
-
-    const stopDragging = () => setIsDraggingOutput(false);
-
-    window.addEventListener('dragover', keepCopyCursor);
-    window.addEventListener('drop', stopDragging);
-    window.addEventListener('dragend', stopDragging);
-    return () => {
-      window.removeEventListener('dragover', keepCopyCursor);
-      window.removeEventListener('drop', stopDragging);
-      window.removeEventListener('dragend', stopDragging);
-    };
-  }, [isDraggingOutput]);
 
   useEffect(() => {
     if (!isEditingTitle) return;
@@ -442,19 +382,14 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
         return;
       }
 
-      if (isOutputPanelOpen && !isDraggingOutput) {
+      if (isOutputPanelOpen) {
         scheduleOutputPanelClose();
       }
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, [
-    clearOutputPanelCloseTimer,
-    isDraggingOutput,
-    isOutputPanelOpen,
-    scheduleOutputPanelClose,
-  ]);
+  }, [clearOutputPanelCloseTimer, isOutputPanelOpen, scheduleOutputPanelClose]);
 
   const getHandleStyle = (side: 'left' | 'right') => {
     if (side === 'left') {
@@ -592,17 +527,6 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
     updateNodeData,
   ]);
 
-  const startOutputDrag = useCallback(
-    (event: React.DragEvent<HTMLDivElement>, output: NodeOutputVariable) => {
-      clearOutputPanelCloseTimer();
-      setIsDraggingOutput(true);
-      event.dataTransfer.effectAllowed = 'copy';
-      event.dataTransfer.setData(NODE_OUTPUT_DRAG_MIME, JSON.stringify(output));
-      setOutputDragPreview(event, output.label || output.key);
-    },
-    [clearOutputPanelCloseTimer],
-  );
-
   return (
     <div
       ref={ref}
@@ -689,13 +613,8 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
                         {group.outputs.map((input) => (
                           <div
                             key={`${input.sourceNodeId}-${input.key}`}
-                            draggable
-                            onDragStart={(event) =>
-                              startOutputDrag(event, input)
-                            }
-                            onDragEnd={() => setIsDraggingOutput(false)}
                             className={cn(
-                              'inline-flex max-w-full cursor-grab items-center rounded-md border px-2 py-1 text-xs font-semibold shadow-sm active:cursor-grabbing',
+                              'inline-flex max-w-full items-center rounded-md border px-2 py-1 text-xs font-semibold shadow-sm',
                               chipColor,
                             )}
                             title={`${input.label} (${input.sourceTitle}.${input.key})`}
@@ -738,11 +657,8 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
               {outputVariables.map((output) => (
                 <div
                   key={`${output.sourceNodeId}-${output.key}`}
-                  draggable={editingOutputKey !== output.key}
                   onDoubleClick={(event) => startOutputLabelEdit(event, output)}
-                  onDragStart={(event) => startOutputDrag(event, output)}
-                  onDragEnd={() => setIsDraggingOutput(false)}
-                  className="inline-flex max-w-full cursor-grab rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-700 shadow-sm active:cursor-grabbing"
+                  className="inline-flex max-w-full rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-700 shadow-sm"
                   title={`${output.label} (${output.sourceTitle}.${output.key}) - 더블클릭해서 표시 이름 수정`}
                 >
                   {editingOutputKey === output.key ? (

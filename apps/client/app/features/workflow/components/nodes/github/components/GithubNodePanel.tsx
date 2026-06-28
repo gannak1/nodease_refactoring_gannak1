@@ -175,7 +175,7 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
               ariaLabel="GitHub PR 번호"
             />
             <p className="text-[10px] text-gray-400">
-              좌측 입력 패널에서 변수를 클릭하거나 PR 번호에 드롭해서
+              PR 번호에 커서를 둔 뒤 좌측 입력 패널에서 변수를 클릭해
               추가하세요.
             </p>
             {prMissing && (
@@ -199,7 +199,7 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
               ariaLabel="GitHub 코멘트"
             />
             <div className="text-[10px] text-gray-500">
-              좌측 입력 패널에서 변수를 클릭하거나 코멘트에 드롭해서 추가하세요.
+              코멘트에 커서를 둔 뒤 좌측 입력 패널에서 변수를 클릭해 추가하세요.
             </div>
           </div>
         </CollapsibleSection>

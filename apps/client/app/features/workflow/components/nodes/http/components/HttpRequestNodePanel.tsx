@@ -308,7 +308,7 @@ export function HttpRequestNodePanel({
               ariaLabel="HTTP Body"
             />
             <div className="text-[10px] text-gray-500">
-              좌측 입력 패널에서 변수를 클릭하거나 본문에 드롭해서 추가하세요.
+              본문에 커서를 둔 뒤 좌측 입력 패널에서 변수를 클릭해 추가하세요.
             </div>
 
             {bodyRequiredButMissing && (

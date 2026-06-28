@@ -32,13 +32,21 @@ export function VariableInsertionProvider({
 
   const registerTarget = useCallback(
     (target: VariableInsertionTarget, handler: VariableInsertionHandler) => {
-      targetsRef.current.set(target.id, { target, handler });
+      const registration = { target, handler };
+      targetsRef.current.set(target.id, registration);
 
       return () => {
+        const currentRegistration = targetsRef.current.get(target.id);
+        if (currentRegistration !== registration) return;
+
         targetsRef.current.delete(target.id);
-        setActiveTargetState((current) =>
-          current?.id === target.id ? null : current,
-        );
+        window.setTimeout(() => {
+          setActiveTargetState((current) =>
+            current?.id === target.id && !targetsRef.current.has(target.id)
+              ? null
+              : current,
+          );
+        }, 0);
       };
     },
     [],

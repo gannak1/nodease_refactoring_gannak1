@@ -285,7 +285,7 @@ export function ConditionNodePanel({ nodeId, data }: ConditionNodePanelProps) {
                             value={condition.variable_selector}
                             selectedOutput={selectedOutput}
                             label={`조건 ${conditionIndex + 1} 입력 변수`}
-                            placeholder="입력 변수 클릭 또는 드롭"
+                            placeholder="입력 변수 클릭"
                             kind="selector"
                             onChange={(selector) =>
                               handleUpdateCondition(

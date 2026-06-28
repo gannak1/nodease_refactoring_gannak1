@@ -159,7 +159,7 @@ export const ReferencedVariablesControl: React.FC<
                   value={variable.value_selector}
                   selectedOutput={selectedOutput}
                   label={`${title || '입력변수'} ${index + 1}`}
-                  placeholder="입력 변수 클릭 또는 드롭"
+                  placeholder="입력 변수 클릭"
                   kind="mapping"
                   onChange={(selector) =>
                     onUpdate(index, 'value_selector', selector)

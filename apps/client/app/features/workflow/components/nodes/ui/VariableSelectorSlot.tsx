@@ -1,10 +1,6 @@
-import { DragEvent, useCallback, useEffect, useId } from 'react';
+import { useCallback, useEffect, useId } from 'react';
 
-import {
-  NODE_OUTPUT_DRAG_MIME,
-  NodeOutputVariable,
-  parseDraggedOutput,
-} from '../../../utils/nodeVariablePorts';
+import { NodeOutputVariable } from '../../../utils/nodeVariablePorts';
 import { cn } from '@/lib/utils';
 import { useVariableInsertion } from './useVariableInsertion';
 import { VariableInsertionTargetKind } from './variableInsertionContext';
@@ -70,23 +66,6 @@ export function VariableSelectorSlot({
     [applyOutput, kind, label, registerTarget, targetId],
   );
 
-  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes(NODE_OUTPUT_DRAG_MIME)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    const output = parseDraggedOutput(event.dataTransfer);
-    if (!output) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    activate();
-    applyOutput(output);
-  };
-
   return (
     <div
       role="button"
@@ -95,20 +74,19 @@ export function VariableSelectorSlot({
         event.stopPropagation();
         activate();
       }}
+      onFocus={activate}
       onKeyDown={(event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         event.stopPropagation();
         activate();
       }}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
       className={cn(
         'flex min-h-9 w-full items-center rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-1.5 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/60 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100',
         isActive && 'border-blue-400 bg-blue-50/70 ring-2 ring-blue-100',
         className,
       )}
-      title={`${label}: 좌측 입력 패널에서 변수를 클릭하거나 여기에 드롭`}
+      title={`${label}: 좌측 입력 패널에서 변수를 클릭해 선택`}
       aria-label={`${label} 변수 선택`}
     >
       {displayLabel ? (

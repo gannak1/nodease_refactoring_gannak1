@@ -259,7 +259,7 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
               ariaLabel="메일 검색 키워드"
             />
             <p className="text-[10px] text-gray-500">
-              좌측 입력 패널에서 변수를 클릭하거나 검색 키워드에 드롭해서
+              검색 키워드에 커서를 둔 뒤 좌측 입력 패널에서 변수를 클릭해
               추가하세요.
             </p>
           </div>

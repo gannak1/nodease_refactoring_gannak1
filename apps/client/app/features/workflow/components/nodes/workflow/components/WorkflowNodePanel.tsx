@@ -172,7 +172,7 @@ export const WorkflowNodePanel: React.FC<WorkflowNodePanelProps> = ({
                       value={mapping?.value_selector}
                       selectedOutput={selectedOutput}
                       label={`${targetVar.label || targetVar.name} 입력`}
-                      placeholder="입력 변수 클릭 또는 드롭"
+                      placeholder="입력 변수 클릭"
                       kind="mapping"
                       onChange={(selector) =>
                         handleSelectorUpdate(targetVar.name, selector)

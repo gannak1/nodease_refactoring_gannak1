@@ -1,7 +1,5 @@
 import { AppNode } from '../types/Nodes';
 
-export const NODE_OUTPUT_DRAG_MIME = 'application/x-node-output-variable';
-
 export type NodeOutputDataType =
   | 'string'
   | 'number'
@@ -377,10 +375,7 @@ export const getNodeOutputVariables = (node?: AppNode | null) => {
     }
   }
 
-  if (
-    node.type === 'webhookTrigger' &&
-    Array.isArray(data.variable_mappings)
-  ) {
+  if (node.type === 'webhookTrigger' && Array.isArray(data.variable_mappings)) {
     for (const mapping of data.variable_mappings as Array<
       Record<string, unknown>
     >) {
@@ -423,29 +418,30 @@ export const getNodeOutputVariables = (node?: AppNode | null) => {
     }
   }
 
-  const fallbackByType: Partial<Record<NonNullable<AppNode['type']>, string[]>> =
-    {
-      llmNode: ['text', 'usage', 'model', 'cost', 'metadata'],
-      codeNode: ['result'],
-      templateNode: ['text'],
-      httpRequestNode: ['status', 'data', 'headers'],
-      slackPostNode: ['status', 'data', 'headers'],
-      githubNode: [
-        'pr_title',
-        'pr_body',
-        'pr_state',
-        'pr_number',
-        'files_count',
-        'files',
-        'diff_url',
-        'comment_id',
-        'comment_url',
-        'comment_body',
-      ],
-      mailNode: ['emails', 'total_count', 'folder'],
-      scheduleTrigger: ['triggered_at', 'schedule_id'],
-      conditionNode: ['result', 'matched_case_id', 'selected_handle'],
-    };
+  const fallbackByType: Partial<
+    Record<NonNullable<AppNode['type']>, string[]>
+  > = {
+    llmNode: ['text', 'usage', 'model', 'cost', 'metadata'],
+    codeNode: ['result'],
+    templateNode: ['text'],
+    httpRequestNode: ['status', 'data', 'headers'],
+    slackPostNode: ['status', 'data', 'headers'],
+    githubNode: [
+      'pr_title',
+      'pr_body',
+      'pr_state',
+      'pr_number',
+      'files_count',
+      'files',
+      'diff_url',
+      'comment_id',
+      'comment_url',
+      'comment_body',
+    ],
+    mailNode: ['emails', 'total_count', 'folder'],
+    scheduleTrigger: ['triggered_at', 'schedule_id'],
+    conditionNode: ['result', 'matched_case_id', 'selected_handle'],
+  };
 
   for (const key of fallbackByType[node.type || 'note'] || []) {
     outputs.push(toNodeOutput(node, key));
@@ -461,17 +457,6 @@ const selectorFor = (output: DraggedOutputVariable) => [
 
 const sourceFor = (output: DraggedOutputVariable) =>
   `${output.sourceNodeId}.${output.key}`;
-
-export const parseDraggedOutput = (dataTransfer: DataTransfer) => {
-  const raw = dataTransfer.getData(NODE_OUTPUT_DRAG_MIME);
-  if (!raw) return null;
-
-  try {
-    return JSON.parse(raw) as DraggedOutputVariable;
-  } catch {
-    return null;
-  }
-};
 
 const selectorsEqual = (selector: unknown, output: DraggedOutputVariable) =>
   Array.isArray(selector) &&
@@ -760,7 +745,11 @@ export const applyDroppedOutputToNodeData = (
 
     case 'templateNode':
       return {
-        variables: upsertNamedSelector(data.variables, output, 'value_selector'),
+        variables: upsertNamedSelector(
+          data.variables,
+          output,
+          'value_selector',
+        ),
       };
 
     case 'workflowNode':
@@ -783,39 +772,40 @@ export const applyDroppedOutputToNodeData = (
         inputs:
           index >= 0
             ? current.map((item, itemIndex) =>
-                itemIndex === index ? { ...(item as object), ...nextItem } : item,
+                itemIndex === index
+                  ? { ...(item as object), ...nextItem }
+                  : item,
               )
             : [...current, nextItem],
       };
     }
 
-    case 'answerNode':
-      {
-        const current = Array.isArray(data.outputs) ? data.outputs : [];
-        const variable = getDroppedAnswerOutputName(current, output);
-        const nextItem = { variable, value_selector: selectorFor(output) };
-        const index = current.findIndex(
-          (item) =>
-            item &&
-            typeof item === 'object' &&
-            ((item as Record<string, unknown>).variable === variable ||
-              selectorsEqual(
-                (item as Record<string, unknown>).value_selector,
-                output,
-              )),
-        );
+    case 'answerNode': {
+      const current = Array.isArray(data.outputs) ? data.outputs : [];
+      const variable = getDroppedAnswerOutputName(current, output);
+      const nextItem = { variable, value_selector: selectorFor(output) };
+      const index = current.findIndex(
+        (item) =>
+          item &&
+          typeof item === 'object' &&
+          ((item as Record<string, unknown>).variable === variable ||
+            selectorsEqual(
+              (item as Record<string, unknown>).value_selector,
+              output,
+            )),
+      );
 
-        return {
-          outputs:
-            index >= 0
-              ? current.map((item, itemIndex) =>
-                  itemIndex === index
-                    ? { ...(item as object), ...nextItem }
-                    : item,
-                )
-              : [...current, nextItem],
-        };
-      }
+      return {
+        outputs:
+          index >= 0
+            ? current.map((item, itemIndex) =>
+                itemIndex === index
+                  ? { ...(item as object), ...nextItem }
+                  : item,
+              )
+            : [...current, nextItem],
+      };
+    }
 
     case 'variableExtractionNode':
       return {

@@ -1,5 +1,4 @@
 import {
-  DragEvent,
   KeyboardEvent,
   useCallback,
   useEffect,
@@ -8,30 +7,19 @@ import {
   useRef,
   useState,
 } from 'react';
-import { createPortal } from 'react-dom';
 
-import {
-  DraggedOutputVariable,
-  NODE_OUTPUT_DRAG_MIME,
-  parseDraggedOutput,
-} from '../../../utils/nodeVariablePorts';
+import { DraggedOutputVariable } from '../../../utils/nodeVariablePorts';
 import { cn } from '@/lib/utils';
 import { useVariableInsertion } from './useVariableInsertion';
 
 const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
 const TOKEN_ATTR = 'data-variable-token';
 const TOKEN_NAME_ATTR = 'data-variable-name';
-const TOKEN_INTERNAL_DRAG_MIME = 'application/x-moduly-variable-token';
+const CARET_BOUNDARY = '\u200B';
 
 type Segment =
   | { type: 'text'; value: string }
   | { type: 'variable'; name: string; label: string; isRegistered: boolean };
-
-type DropCaret = {
-  left: number;
-  top: number;
-  height: number;
-};
 
 const parseValueToSegments = (
   value: string,
@@ -72,6 +60,9 @@ const parseValueToSegments = (
 };
 
 const createTextNode = (text: string) => document.createTextNode(text);
+const createCaretBoundaryNode = () => createTextNode(CARET_BOUNDARY);
+const stripCaretBoundaries = (text: string) =>
+  text.replaceAll(CARET_BOUNDARY, '');
 
 const createTokenNode = (
   name: string,
@@ -83,30 +74,14 @@ const createTokenNode = (
   span.setAttribute(TOKEN_ATTR, 'true');
   span.setAttribute(TOKEN_NAME_ATTR, name);
   span.setAttribute('contenteditable', 'false');
-  span.setAttribute('draggable', isRegistered ? 'true' : 'false');
   span.className = isRegistered
-    ? 'mx-0.5 inline-flex max-w-full cursor-grab select-none items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-sm align-baseline active:cursor-grabbing'
+    ? 'mx-0.5 inline-flex max-w-full select-none items-center rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-sm align-baseline'
     : 'mx-0.5 inline-flex max-w-full cursor-default select-none items-center rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 line-through decoration-red-400 shadow-sm align-baseline';
   span.title = isRegistered
     ? label
     : '등록되지 않았거나 연결이 끊어진 변수입니다.';
   span.textContent = label;
   return span;
-};
-
-const createTokenDragPreview = (label: string) => {
-  const preview = document.createElement('span');
-  preview.className =
-    'inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-800 shadow-md';
-  preview.textContent = label;
-  preview.style.position = 'fixed';
-  preview.style.top = '0';
-  preview.style.left = '0';
-  preview.style.zIndex = '-1';
-  preview.style.opacity = '0.99';
-  preview.style.pointerEvents = 'none';
-  document.body.appendChild(preview);
-  return preview;
 };
 
 const isTokenElement = (node: Node | null): node is HTMLElement =>
@@ -116,7 +91,9 @@ const tokenToText = (node: HTMLElement) =>
   `{{${node.getAttribute(TOKEN_NAME_ATTR) || node.textContent || ''}}}`;
 
 const serializeNode = (node: Node): string => {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+  if (node.nodeType === Node.TEXT_NODE) {
+    return stripCaretBoundaries(node.textContent || '');
+  }
   if (isTokenElement(node)) return tokenToText(node);
   return Array.from(node.childNodes).map(serializeNode).join('');
 };
@@ -144,11 +121,13 @@ const renderSegments = (
     if (segment.type === 'text') {
       editor.appendChild(createTextNode(segment.value));
     } else {
+      editor.appendChild(createCaretBoundaryNode());
       editor.appendChild(
         createTokenNode(segment.name, segment.label, {
           isRegistered: segment.isRegistered,
         }),
       );
+      editor.appendChild(createCaretBoundaryNode());
     }
   }
 };
@@ -187,137 +166,118 @@ const selectRange = (range: Range) => {
   selection?.addRange(range);
 };
 
-const getTokenAtRange = (editor: HTMLElement, range: Range) => {
-  const container =
-    range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-      ? (range.commonAncestorContainer as HTMLElement)
-      : range.commonAncestorContainer.parentElement;
-  const token = container?.closest(`[${TOKEN_ATTR}="true"]`);
-  return token && editor.contains(token) ? token : null;
+const getSerializedLength = (node: Node) => serializeNode(node).length;
+
+const getTextSerializedOffset = (text: string, domOffset: number) =>
+  stripCaretBoundaries(text.slice(0, domOffset)).length;
+
+const getTextDomOffsetForSerializedOffset = (
+  text: string,
+  serializedOffset: number,
+) => {
+  if (serializedOffset <= 0) return 0;
+
+  let visibleCount = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== CARET_BOUNDARY) {
+      visibleCount += 1;
+    }
+    if (visibleCount >= serializedOffset) {
+      return index + 1;
+    }
+  }
+  return text.length;
 };
 
-const getPointRange = (
-  editor: HTMLElement,
-  clientX: number,
-  clientY: number,
-): Range | null => {
-  const documentWithCaretPosition = document as Document & {
-    caretPositionFromPoint?: (
-      x: number,
-      y: number,
-    ) => { offsetNode: Node; offset: number } | null;
-  };
+const getSerializedOffsetForRange = (editor: HTMLElement, range: Range) => {
+  let offset = 0;
+  let found = false;
 
-  const range = document.caretRangeFromPoint?.(clientX, clientY);
-  if (range && editor.contains(range.commonAncestorContainer)) {
-    const token = getTokenAtRange(editor, range);
+  const walk = (node: Node): void => {
+    if (found) return;
 
-    if (token && editor.contains(token)) {
-      const tokenRange = document.createRange();
-      const tokenRect = token.getBoundingClientRect();
-      if (clientX < tokenRect.left + tokenRect.width / 2) {
-        tokenRange.setStartBefore(token);
+    if (node === range.startContainer) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += getTextSerializedOffset(
+          node.textContent || '',
+          range.startOffset,
+        );
       } else {
-        tokenRange.setStartAfter(token);
+        const children = Array.from(node.childNodes);
+        for (let index = 0; index < range.startOffset; index += 1) {
+          offset += getSerializedLength(children[index]);
+        }
       }
-      tokenRange.collapse(true);
-      return tokenRange;
+      found = true;
+      return;
     }
 
-    range.collapse(true);
-    return range;
+    if (node.nodeType === Node.TEXT_NODE || isTokenElement(node)) {
+      offset += getSerializedLength(node);
+      return;
+    }
+
+    for (const child of Array.from(node.childNodes)) {
+      walk(child);
+      if (found) return;
+    }
+  };
+
+  for (const child of Array.from(editor.childNodes)) {
+    walk(child);
+    if (found) break;
   }
 
-  const position = documentWithCaretPosition.caretPositionFromPoint?.(
-    clientX,
-    clientY,
-  );
-  if (position && editor.contains(position.offsetNode)) {
-    const nextRange = document.createRange();
-    nextRange.setStart(position.offsetNode, position.offset);
-    nextRange.collapse(true);
-    return nextRange;
-  }
-
-  const rect = editor.getBoundingClientRect();
-  if (
-    clientX < rect.left ||
-    clientX > rect.right ||
-    clientY < rect.top ||
-    clientY > rect.bottom
-  ) {
-    return null;
-  }
-
-  const fallbackRange = document.createRange();
-  const isBeforeFirstLine = clientY < rect.top + rect.height / 2;
-  if (isBeforeFirstLine && editor.firstChild) {
-    fallbackRange.setStartBefore(editor.firstChild);
-  } else if (editor.lastChild) {
-    fallbackRange.setStartAfter(editor.lastChild);
-  } else {
-    fallbackRange.selectNodeContents(editor);
-  }
-  fallbackRange.collapse(true);
-  return fallbackRange;
+  return offset;
 };
 
-const getRangeCaret = (
+const restoreCaretFromSerializedOffset = (
   editor: HTMLElement,
-  range: Range | null,
-): DropCaret | null => {
-  if (!range) return null;
+  serializedOffset: number,
+) => {
+  const range = document.createRange();
+  const selection = window.getSelection();
+  let remaining = Math.max(0, serializedOffset);
 
-  const rect = range.getClientRects()[0] || range.getBoundingClientRect();
+  for (const child of Array.from(editor.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = child.textContent || '';
+      const visibleLength = stripCaretBoundaries(text).length;
+      if (remaining <= visibleLength) {
+        range.setStart(
+          child,
+          getTextDomOffsetForSerializedOffset(text, remaining),
+        );
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return;
+      }
+      remaining -= visibleLength;
+      continue;
+    }
 
-  if (range.startContainer === editor) {
-    const nextChild = editor.childNodes[range.startOffset];
-    const previousChild = editor.childNodes[range.startOffset - 1];
-    const adjacentToken = isTokenElement(nextChild)
-      ? { token: nextChild, side: 'left' as const }
-      : isTokenElement(previousChild)
-        ? { token: previousChild, side: 'right' as const }
-        : null;
-
-    if (adjacentToken) {
-      const tokenRect = adjacentToken.token.getBoundingClientRect();
-      return {
-        left: adjacentToken.side === 'left' ? tokenRect.left : tokenRect.right,
-        top: tokenRect.top,
-        height: tokenRect.height,
-      };
+    if (isTokenElement(child)) {
+      const tokenLength = tokenToText(child).length;
+      if (remaining < tokenLength) {
+        range.setStartBefore(child);
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return;
+      }
+      remaining -= tokenLength;
     }
   }
 
-  if (rect && rect.height > 0) {
-    return {
-      left: rect.left,
-      top: rect.top,
-      height: rect.height,
-    };
+  if (editor.lastChild) {
+    range.setStartAfter(editor.lastChild);
+  } else {
+    range.selectNodeContents(editor);
   }
-
-  const token = getTokenAtRange(editor, range);
-  if (token) {
-    const tokenRect = token.getBoundingClientRect();
-    const isBeforeToken =
-      range.startContainer === editor &&
-      editor.childNodes[range.startOffset] === token;
-
-    return {
-      left: isBeforeToken ? tokenRect.left : tokenRect.right,
-      top: tokenRect.top,
-      height: tokenRect.height,
-    };
-  }
-
-  const editorRect = editor.getBoundingClientRect();
-  const lineHeight = 24;
-  return {
-    left: editorRect.left + 8,
-    top: editorRect.top + 8,
-    height: lineHeight,
-  };
+  range.collapse(true);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
 };
 
 const insertNodeAtRange = (
@@ -339,21 +299,72 @@ const insertNodeAtRange = (
   placeCaretAfter(node);
 };
 
+const insertTokenAtRange = (
+  editor: HTMLElement,
+  tokenNode: HTMLElement,
+  range: Range | null,
+) => {
+  editor.focus();
+  const targetRange = range || getActiveRange(editor);
+
+  if (!targetRange) {
+    const trailingBoundary = createCaretBoundaryNode();
+    editor.appendChild(createCaretBoundaryNode());
+    editor.appendChild(tokenNode);
+    editor.appendChild(trailingBoundary);
+    const nextRange = document.createRange();
+    nextRange.setStart(
+      trailingBoundary,
+      trailingBoundary.textContent?.length || 0,
+    );
+    nextRange.collapse(true);
+    selectRange(nextRange);
+    return;
+  }
+
+  targetRange.deleteContents();
+  const fragment = document.createDocumentFragment();
+  const leadingBoundary = createCaretBoundaryNode();
+  const trailingBoundary = createCaretBoundaryNode();
+  fragment.appendChild(leadingBoundary);
+  fragment.appendChild(tokenNode);
+  fragment.appendChild(trailingBoundary);
+  targetRange.insertNode(fragment);
+
+  const nextRange = document.createRange();
+  nextRange.setStart(
+    trailingBoundary,
+    trailingBoundary.textContent?.length || 0,
+  );
+  nextRange.collapse(true);
+  selectRange(nextRange);
+};
+
 const insertNodeAtSelection = (editor: HTMLElement, node: Node) => {
   insertNodeAtRange(editor, node, getActiveRange(editor));
 };
 
-const isNoopTokenMove = (
-  editor: HTMLElement,
-  token: HTMLElement,
-  range: Range | null,
-) => {
-  if (!range || range.startContainer !== editor) return false;
+const isCaretBoundaryTextNode = (node: Node | null): node is Text =>
+  node?.nodeType === Node.TEXT_NODE &&
+  stripCaretBoundaries(node.textContent || '').length === 0;
 
-  const tokenIndex = Array.from(editor.childNodes).indexOf(token);
-  return (
-    range.startOffset === tokenIndex || range.startOffset === tokenIndex + 1
-  );
+const getSiblingSkippingCaretBoundaries = (
+  node: Node | null,
+  direction: 'backward' | 'forward',
+) => {
+  let sibling: Node | null =
+    (direction === 'backward' ? node?.previousSibling : node?.nextSibling) ||
+    null;
+
+  while (isCaretBoundaryTextNode(sibling)) {
+    const currentSibling = sibling;
+    sibling =
+      direction === 'backward'
+        ? currentSibling.previousSibling
+        : currentSibling.nextSibling;
+  }
+
+  return sibling || null;
 };
 
 const getAdjacentToken = (
@@ -367,19 +378,39 @@ const getAdjacentToken = (
 
   if (startContainer.nodeType === Node.TEXT_NODE) {
     const textLength = startContainer.textContent?.length || 0;
-    if (direction === 'backward' && startOffset > 0) return null;
-    if (direction === 'forward' && startOffset < textLength) return null;
+    const textBeforeCaret = startContainer.textContent?.slice(0, startOffset);
+    const textAfterCaret = startContainer.textContent?.slice(startOffset);
+
+    if (
+      direction === 'backward' &&
+      stripCaretBoundaries(textBeforeCaret || '').length > 0
+    ) {
+      return null;
+    }
+    if (
+      direction === 'forward' &&
+      stripCaretBoundaries(textAfterCaret || '').length > 0
+    ) {
+      return null;
+    }
 
     const sibling =
       direction === 'backward'
-        ? startContainer.previousSibling
-        : startContainer.nextSibling;
+        ? getSiblingSkippingCaretBoundaries(startContainer, 'backward')
+        : getSiblingSkippingCaretBoundaries(startContainer, 'forward');
     return isTokenElement(sibling) ? sibling : null;
   }
 
   if (startContainer === editor) {
     const index = direction === 'backward' ? startOffset - 1 : startOffset;
-    const child = editor.childNodes[index];
+    let child: Node | null = editor.childNodes[index] || null;
+    while (isCaretBoundaryTextNode(child)) {
+      const currentChild: Text = child;
+      child =
+        direction === 'backward'
+          ? currentChild.previousSibling
+          : currentChild.nextSibling;
+    }
     return isTokenElement(child) ? child : null;
   }
 
@@ -390,7 +421,9 @@ const getAdjacentToken = (
   if (!element || !editor.contains(element)) return null;
 
   const sibling =
-    direction === 'backward' ? element.previousSibling : element.nextSibling;
+    direction === 'backward'
+      ? getSiblingSkippingCaretBoundaries(element, 'backward')
+      : getSiblingSkippingCaretBoundaries(element, 'forward');
   return isTokenElement(sibling) ? sibling : null;
 };
 
@@ -447,14 +480,12 @@ export const VariableTokenEditor = ({
   const insertionTargetId = useId();
   const editorRef = useRef<HTMLDivElement>(null);
   const lastSelectionRangeRef = useRef<Range | null>(null);
+  const lastSelectionOffsetRef = useRef<number | null>(null);
+  const pendingCaretOffsetRef = useRef<number | null>(null);
   const lastRenderedValueRef = useRef<string | null>(null);
   const lastTokenLabelsRef = useRef('');
   const composingRef = useRef(false);
-  const draggedTokenRef = useRef<HTMLElement | null>(null);
-  const dragPreviewRef = useRef<HTMLElement | null>(null);
   const [isEmpty, setIsEmpty] = useState(!value);
-  const [dropCaret, setDropCaret] = useState<DropCaret | null>(null);
-  const portalRoot = typeof document === 'undefined' ? null : document.body;
   const { activeTarget, registerTarget, setActiveTarget, clearMessage } =
     useVariableInsertion();
   const targetLabel = ariaLabel || '텍스트 필드';
@@ -481,36 +512,63 @@ export const VariableTokenEditor = ({
     if (!editor) return;
 
     const range = getActiveRange(editor);
-    if (range) lastSelectionRangeRef.current = range.cloneRange();
+    if (range) {
+      lastSelectionRangeRef.current = range.cloneRange();
+      lastSelectionOffsetRef.current = getSerializedOffsetForRange(
+        editor,
+        range,
+      );
+    }
   }, []);
 
-  const activateInsertionTarget = useCallback(() => {
+  const ensureInsertionTarget = useCallback(() => {
     setActiveTarget({
       id: insertionTargetId,
       kind: 'text',
       label: targetLabel,
     });
     clearMessage();
+  }, [clearMessage, insertionTargetId, setActiveTarget, targetLabel]);
+
+  const activateInsertionTarget = useCallback(() => {
+    ensureInsertionTarget();
     rememberSelectionRange();
-  }, [
-    clearMessage,
-    insertionTargetId,
-    rememberSelectionRange,
-    setActiveTarget,
-    targetLabel,
-  ]);
+  }, [ensureInsertionTarget, rememberSelectionRange]);
 
   const getRememberedRange = useCallback(() => {
     const editor = editorRef.current;
     const range = lastSelectionRangeRef.current;
-    if (!editor || !range) return null;
+    if (!editor) return null;
 
     try {
-      if (!editor.contains(range.commonAncestorContainer)) return null;
-      return range.cloneRange();
+      if (range && editor.contains(range.commonAncestorContainer)) {
+        return range.cloneRange();
+      }
     } catch {
-      return null;
+      // Fall through to serialized offset restore.
     }
+
+    if (lastSelectionOffsetRef.current === null) return null;
+
+    restoreCaretFromSerializedOffset(editor, lastSelectionOffsetRef.current);
+    const restoredRange = getActiveRange(editor);
+    return restoredRange ? restoredRange.cloneRange() : null;
+  }, []);
+
+  const restoreCaretAfterRender = useCallback((offset: number | null) => {
+    if (offset === null) return;
+
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      restoreCaretFromSerializedOffset(editor, offset);
+      const range = getActiveRange(editor);
+      if (range) {
+        lastSelectionRangeRef.current = range.cloneRange();
+        lastSelectionOffsetRef.current = offset;
+      }
+    });
   }, []);
 
   const insertOutputToken = useCallback(
@@ -521,10 +579,18 @@ export const VariableTokenEditor = ({
       const droppedName = onDropOutput?.(output) || output.key;
       const label = tokenLabels[droppedName] || output.label || droppedName;
       const tokenNode = createTokenNode(droppedName, label);
+      const targetRange = range ?? getRememberedRange();
+      const insertionOffset =
+        targetRange && editor.contains(targetRange.commonAncestorContainer)
+          ? getSerializedOffsetForRange(editor, targetRange)
+          : serializeEditor(editor).length;
+      const nextCaretOffset = insertionOffset + tokenToText(tokenNode).length;
 
-      insertNodeAtRange(editor, tokenNode, range ?? getRememberedRange());
+      insertTokenAtRange(editor, tokenNode, targetRange);
+      pendingCaretOffsetRef.current = nextCaretOffset;
       emitChange();
       rememberSelectionRange();
+      restoreCaretAfterRender(nextCaretOffset);
       return true;
     },
     [
@@ -532,9 +598,16 @@ export const VariableTokenEditor = ({
       getRememberedRange,
       onDropOutput,
       rememberSelectionRange,
+      restoreCaretAfterRender,
       tokenLabels,
     ],
   );
+
+  const insertOutputTokenRef = useRef(insertOutputToken);
+
+  useEffect(() => {
+    insertOutputTokenRef.current = insertOutputToken;
+  }, [insertOutputToken]);
 
   useEffect(
     () =>
@@ -544,9 +617,9 @@ export const VariableTokenEditor = ({
           kind: 'text',
           label: targetLabel,
         },
-        (output) => insertOutputToken(output),
+        (output) => insertOutputTokenRef.current(output),
       ),
-    [insertOutputToken, insertionTargetId, registerTarget, targetLabel],
+    [insertionTargetId, registerTarget, targetLabel],
   );
 
   useLayoutEffect(() => {
@@ -561,134 +634,37 @@ export const VariableTokenEditor = ({
       (value !== lastRenderedValueRef.current && value !== currentValue);
 
     if (shouldRender) {
+      const activeRange = getActiveRange(editor);
+      const caretOffsetBeforeRender =
+        pendingCaretOffsetRef.current ??
+        (activeRange ? getSerializedOffsetForRange(editor, activeRange) : null);
+
       renderSegments(editor, value, tokenLabels);
       syncPlaceholder();
+      restoreCaretAfterRender(caretOffsetBeforeRender);
+      pendingCaretOffsetRef.current = null;
     }
 
     lastRenderedValueRef.current = value;
     lastTokenLabelsRef.current = tokenLabelsSignature;
-  }, [syncPlaceholder, value, tokenLabels]);
+  }, [restoreCaretAfterRender, syncPlaceholder, value, tokenLabels]);
 
   useEffect(() => {
     syncPlaceholder();
-
-    return () => {
-      dragPreviewRef.current?.remove();
-      dragPreviewRef.current = null;
-    };
   }, [syncPlaceholder]);
-
-  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-    const isOutputDrop = event.dataTransfer.types.includes(
-      NODE_OUTPUT_DRAG_MIME,
-    );
-    const isTokenMove = event.dataTransfer.types.includes(
-      TOKEN_INTERNAL_DRAG_MIME,
-    );
-    if (!isOutputDrop && !isTokenMove) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = isTokenMove ? 'move' : 'copy';
-
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    const dropRange = getPointRange(editor, event.clientX, event.clientY);
-    setDropCaret(getRangeCaret(editor, dropRange));
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    const isTokenMove = event.dataTransfer.types.includes(
-      TOKEN_INTERNAL_DRAG_MIME,
-    );
-    const output = parseDraggedOutput(event.dataTransfer);
-    const editor = editorRef.current;
-    if (!editor || (!output && !isTokenMove)) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    setDropCaret(null);
-
-    editor.focus();
-
-    const dropRange = getPointRange(editor, event.clientX, event.clientY);
-    if (dropRange) selectRange(dropRange);
-
-    if (isTokenMove) {
-      const draggedToken = draggedTokenRef.current;
-      if (!draggedToken || !editor.contains(draggedToken)) return;
-      if (isNoopTokenMove(editor, draggedToken, dropRange)) return;
-
-      insertNodeAtRange(editor, draggedToken, dropRange);
-      emitChange();
-      return;
-    }
-
-    if (!output) return;
-
-    insertOutputToken(output, dropRange);
-  };
-
-  const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    const target = event.target as HTMLElement;
-    const token = target.closest(`[${TOKEN_ATTR}="true"]`);
-    if (!token || !editor.contains(token)) return;
-
-    const tokenElement = token as HTMLElement;
-    if (tokenElement.getAttribute('draggable') !== 'true') return;
-
-    const name = tokenElement.getAttribute(TOKEN_NAME_ATTR) || '';
-    const label = tokenElement.textContent || name;
-    draggedTokenRef.current = tokenElement;
-    tokenElement.classList.add('opacity-50');
-
-    event.stopPropagation();
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData(TOKEN_INTERNAL_DRAG_MIME, name);
-    event.dataTransfer.setData('text/plain', label);
-
-    const preview = createTokenDragPreview(label);
-    dragPreviewRef.current = preview;
-
-    const tokenRect = tokenElement.getBoundingClientRect();
-    const previewRect = preview.getBoundingClientRect();
-    const offsetX = Math.min(
-      Math.max(event.clientX - tokenRect.left, 0),
-      previewRect.width,
-    );
-    const offsetY = Math.min(
-      Math.max(event.clientY - tokenRect.top, 0),
-      previewRect.height,
-    );
-    event.dataTransfer.setDragImage(preview, offsetX, offsetY);
-  };
-
-  const handleDragEnd = () => {
-    draggedTokenRef.current?.classList.remove('opacity-50');
-    draggedTokenRef.current = null;
-    dragPreviewRef.current?.remove();
-    dragPreviewRef.current = null;
-    setDropCaret(null);
-  };
-
-  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
-    const nextTarget = event.relatedTarget as Node | null;
-    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
-    setDropCaret(null);
-  };
 
   const handleInput = () => {
     if (composingRef.current) return;
+    ensureInsertionTarget();
     emitChange();
+    rememberSelectionRange();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const editor = editorRef.current;
     if (!editor) return;
+
+    ensureInsertionTarget();
 
     if (event.key === 'Backspace') {
       const token = getAdjacentToken(editor, 'backward');
@@ -738,6 +714,7 @@ export const VariableTokenEditor = ({
     const editor = editorRef.current;
     if (!editor) return;
 
+    ensureInsertionTarget();
     event.preventDefault();
     const text = event.clipboardData
       .getData('text/plain')
@@ -745,6 +722,12 @@ export const VariableTokenEditor = ({
       .replaceAll('}}', '} }');
     insertNodeAtSelection(editor, createTextNode(text));
     emitChange();
+    rememberSelectionRange();
+  };
+
+  const handleRememberActiveSelection = () => {
+    ensureInsertionTarget();
+    rememberSelectionRange();
   };
 
   return (
@@ -754,8 +737,6 @@ export const VariableTokenEditor = ({
         isActiveInsertionTarget && 'ring-2 ring-blue-100',
         className,
       )}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
     >
       {placeholder && (
         <div
@@ -767,19 +748,6 @@ export const VariableTokenEditor = ({
           {placeholder}
         </div>
       )}
-      {dropCaret &&
-        portalRoot &&
-        createPortal(
-          <div
-            className="pointer-events-none fixed z-[9999] w-0.5 rounded-full bg-blue-600 shadow-[0_0_0_2px_rgba(37,99,235,0.14)]"
-            style={{
-              left: dropCaret.left,
-              top: dropCaret.top,
-              height: dropCaret.height,
-            }}
-          />,
-          portalRoot,
-        )}
       <div
         ref={editorRef}
         role="textbox"
@@ -794,7 +762,9 @@ export const VariableTokenEditor = ({
         }}
         onCompositionEnd={() => {
           composingRef.current = false;
+          ensureInsertionTarget();
           emitChange();
+          rememberSelectionRange();
         }}
         onCompositionStart={() => {
           composingRef.current = true;
@@ -802,13 +772,10 @@ export const VariableTokenEditor = ({
         onBeforeInput={handleBeforeInput}
         onInput={handleInput}
         onClick={activateInsertionTarget}
-        onDragEnd={handleDragEnd}
-        onDragLeave={handleDragLeave}
-        onDragStart={handleDragStart}
         onFocus={activateInsertionTarget}
         onKeyDown={handleKeyDown}
-        onKeyUp={rememberSelectionRange}
-        onMouseUp={rememberSelectionRange}
+        onKeyUp={handleRememberActiveSelection}
+        onMouseUp={handleRememberActiveSelection}
         onPaste={handlePaste}
       />
     </div>

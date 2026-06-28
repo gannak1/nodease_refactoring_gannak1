@@ -1,4 +1,4 @@
-import { DragEvent, useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { HelpCircle, Plus, Trash2 } from 'lucide-react';
 
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
@@ -181,13 +181,6 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
       }
     },
     [mode, updateNodeData, nodeId, data.authConfig],
-  );
-
-  const preventJsonVariableDrop = useCallback(
-    (event: DragEvent<HTMLTextAreaElement>) => {
-      event.stopPropagation();
-    },
-    [],
   );
 
   return (
@@ -485,10 +478,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
                 onChange={(event) =>
                   handleUpdateData('blocks', event.target.value)
                 }
-                onDragOver={preventJsonVariableDrop}
-                onDrop={preventJsonVariableDrop}
                 aria-label="Slack 블록 JSON"
-                data-variable-drop-disabled="true"
               />
             </div>
           </div>

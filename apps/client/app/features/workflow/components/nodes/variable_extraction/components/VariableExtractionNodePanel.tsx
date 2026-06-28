@@ -77,7 +77,7 @@ export function VariableExtractionNodePanel({
             value={sourceSelector}
             selectedOutput={selectedOutput}
             label="추출할 입력 데이터"
-            placeholder="입력 변수 클릭 또는 드롭"
+            placeholder="입력 변수 클릭"
             kind="selector"
             onChange={handleSourceChange}
           />

@@ -179,7 +179,7 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-2">
             <p className="text-xs leading-snug text-gray-500">
-              이전 노드의 출력 칩을 드롭해서 최종 응답으로 내보낼 값을
+              좌측 입력 패널에서 출력 칩을 클릭해 최종 응답으로 내보낼 값을
               연결하세요.
             </p>
             <button
@@ -241,14 +241,14 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
                 <div className="flex items-center gap-2">
                   <div
                     className="flex-[4]"
-                    title="좌측 입력 변수를 클릭하거나 여기에 드롭해서 소스를 연결하거나 교체"
+                    title="좌측 입력 변수를 클릭해서 소스를 연결하거나 교체"
                   >
                     <VariableSelectorSlot
                       value={output.value_selector}
                       selectedOutput={selectedOutput}
                       sourceLabel={sourceTitle}
                       label={`반환값 ${index + 1} 소스`}
-                      placeholder="입력 변수 클릭 또는 드롭"
+                      placeholder="입력 변수 클릭"
                       kind="mapping"
                       onChange={(_, droppedOutput) =>
                         applyOutputMapping(droppedOutput, index)
