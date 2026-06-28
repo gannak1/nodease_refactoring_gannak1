@@ -2195,6 +2195,229 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.permission_audit.assert_not_called()
 
+    def test_delete_user_llm_permission_deletes_row_for_organization_manager(self):
+        # organization manager는 user direct LLM credential permission을 회수할 수 있다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        existing_permission = _user_llm_permission(
+            organization_id=organization_id,
+            credential_id=credential_id,
+            user_id=target_user_id,
+            auth_state="operator",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_llm_permission=existing_permission,
+        )
+
+        response = self._delete_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "User LLM credential permission deleted",
+                "id": str(existing_permission.id),
+            },
+        )
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        self.assertFalse(session.scalars_called)
+        self.assertIsNotNone(session.lock_statement)
+        self.permission_audit.assert_called_once()
+        audit = self.permission_audit.call_args.kwargs
+        self.assertEqual(audit["action"], "user_llm_permission.deleted")
+        self.assertEqual(audit["category"], "data_change")
+        self.assertEqual(audit["actor_id"], str(actor_id))
+        self.assertEqual(audit["actor_type"], "user")
+        self.assertEqual(audit["target_type"], "user_llm_permission")
+        self.assertEqual(audit["target_id"], existing_permission.id)
+        self.assertEqual(audit["before"]["id"], existing_permission.id)
+        self.assertEqual(audit["before"]["user_id"], target_user_id)
+        self.assertEqual(audit["before"]["llm_credential_id"], credential_id)
+        self.assertEqual(audit["before"]["auth_state"], "operator")
+        self.assertIsNone(audit["after"])
+        self.assertEqual(audit["metadata"]["request_id"], "req-test")
+        self.assertEqual(audit["metadata"]["actor"]["id"], str(actor_id))
+
+    def test_delete_user_llm_permission_allows_credential_manager(self):
+        # organization manager가 아니어도 credential manager면 user direct permission 회수가 가능하다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        existing_permission = _user_llm_permission(
+            organization_id=organization_id,
+            credential_id=credential_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            llm_manager_permissions=[
+                _team_llm_permission(
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    team_id=uuid4(),
+                    auth_state="manager",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+            existing_user_llm_permission=existing_permission,
+        )
+
+        response = self._delete_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        _assert_llm_manage_filters(
+            self,
+            session.llm_manager_query,
+            actor_id,
+            credential_id,
+            organization_id,
+        )
+
+    def test_delete_user_llm_permission_rejects_member_without_manage(self):
+        # active member라도 credential manager가 아니면 user direct LLM permission 회수는 거부해야 한다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        existing_permission = _user_llm_permission(
+            organization_id=organization_id,
+            credential_id=credential_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=actor_id, organization_id=organization_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            llm_manager_permissions=[
+                _team_llm_permission(
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    team_id=uuid4(),
+                    auth_state="builder",
+                    assigned_by=uuid4(),
+                    member_user_id=actor_id,
+                )
+            ],
+            existing_user_llm_permission=existing_permission,
+        )
+
+        response = self._delete_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Credential manage or organization manager permission is required.",
+            ),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_not_called()
+
+    def test_delete_user_llm_permission_hides_missing_permission_row(self):
+        # scope와 권한이 맞아도 회수할 user direct LLM permission row가 없으면 404를 반환한다.
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        credential_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            credential=_credential(
+                id=credential_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_llm_permission=None,
+        )
+
+        response = self._delete_user_llm_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            credential_id=credential_id,
+            target_user_id=target_user_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "resource.not_found",
+                "User LLM credential permission not found.",
+            ),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.assertIsNotNone(session.lock_statement)
+        self.permission_audit.assert_not_called()
+
     def _put_permission(
         self,
         session,
@@ -2460,6 +2683,43 @@ class TestPermissionsApi(unittest.TestCase):
         ):
             return TestClient(app).delete(
                 f"/api/v1/permissions/workflows/{workflow_id}/users/{target_user_id}",
+                headers=headers,
+            )
+
+    def _delete_user_llm_permission(
+        self,
+        session,
+        user_id,
+        credential_id,
+        target_user_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 LLM credential user 권한 DELETE endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).delete(
+                f"/api/v1/permissions/llm-credentials/{credential_id}/users/{target_user_id}",
                 headers=headers,
             )
 
