@@ -3,8 +3,8 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
-Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md), [ADR-202606271559-user-direct-permission](../decisions/ADR-202606271559-user-direct-permission.md)
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
 
 ## 범위
 
@@ -14,7 +14,7 @@ App/project boundary, workflow CRUD, draft, execute, stream, run detail 계약�
 
 | Status | Method | Path | Request | Response | Permission |
 | --- | --- | --- | --- | --- | --- |
-| Implemented | `POST` | `/api/v1/apps` | `AppCreateRequest` | `AppResponse` | authenticated, target organization scope |
+| Implemented | `POST` | `/api/v1/apps` | `AppCreateRequest` | `AppResponse` | authenticated; current code uses default organization fallback |
 | Implemented | `GET` | `/api/v1/apps` | query | `AppResponse[]` | app read |
 | Implemented | `GET` | `/api/v1/apps/explore` | query | `AppResponse[]` | public/explore read |
 | Implemented | `GET` | `/api/v1/apps/{app_id}` | 없음 | `AppResponse` | app read |
@@ -28,7 +28,7 @@ App 전용 permission table은 만들지 않는다. App read/settings 권한은 
 
 | Status | Method | Path | Request | Response | Permission |
 | --- | --- | --- | --- | --- | --- |
-| Implemented | `POST` | `/api/v1/workflows` | `WorkflowCreateRequest` | `WorkflowResponse` | app/workflow create scope |
+| Implemented | `POST` | `/api/v1/workflows` | `WorkflowCreateRequest` | `WorkflowResponse` | app manage; workflow inherits app organization or default fallback |
 | Implemented | `GET` | `/api/v1/workflows/{workflow_id}` | 없음 | `WorkflowResponse` | workflow `read` |
 | Implemented | `GET` | `/api/v1/workflows/app/{app_id}` | 없음 | `WorkflowResponse[]` | app read |
 | Implemented | `POST` | `/api/v1/workflows/{workflow_id}/draft` | `WorkflowDraftRequest` | message | workflow `write` |
@@ -63,6 +63,7 @@ App 전용 permission table은 만들지 않는다. App read/settings 권한은 
 
 ## MVP 1 변경 기준
 
+- App/workflow 생성은 현재 코드에서 default organization fallback을 사용한다. explicit active organization header 적용은 후속 정렬 대상이다.
 - creator 기반 권한 체크를 workflow permission helper로 교체한다.
 - workflow execute/stream은 `execute` 권한이 없으면 거부한다.
 - draft 저장은 `write` 권한이 없으면 거부한다.

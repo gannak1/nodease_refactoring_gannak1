@@ -3,8 +3,9 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
-Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
+Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
 ## 범위
 
@@ -49,12 +50,12 @@ Related ADRs: [ADR-202606271559-active-organization](../decisions/ADR-2026062715
 
 ## Active Organization Context
 
-Active organization 전달 방식은 `X-Organization-Id` header로 확정한다.
+Active organization은 request header로 전달한다. 서버는 active organization을 session/cookie에 저장하지 않는다.
 
 | Status | Header/Cookie | 설명 |
 | --- | --- | --- |
-| Required for organization-scoped APIs | `X-Organization-Id` | API 요청에서 명시적으로 active organization을 전달한다. |
-| Not used | session/cookie context | 서버 session에는 active organization을 저장하지 않는다. |
-| Transition fallback | 없음 | header가 없는 과도기 요청은 첫 active team membership을 primary organization으로 사용할 수 있다. |
+| Implemented | `X-Organization-Id` | API 요청에서 명시적으로 active organization을 전달한다. |
+| Not selected | session/cookie context | 서버 session이나 cookie에 active organization을 저장하지 않는다. |
+| Legacy fallback | 없음 | organization context가 없는 과도기 경로에서 첫 active team membership을 primary organization으로 사용할 수 있다. |
 
-Gateway는 `X-Organization-Id` 값이 현재 사용자의 active team membership scope 안에 있는지 검증한다. Organization scope가 필요한 신규 API와 FE 요청은 header 전달을 기본 계약으로 삼는다.
+`GET /api/v1/organizations/current`는 `X-Organization-Id` 값을 검증해 현재 요청의 active organization을 반환한다. 상세 endpoint는 [organization-rbac.md](organization-rbac.md)를 따른다.

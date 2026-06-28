@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
 ## 범위
 
@@ -47,7 +47,6 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 | `409` | 중복 또는 상태 충돌 |
 | `422` | Pydantic/FastAPI validation 실패 |
 | `500` | 서버 내부 오류 |
-| `501` | API 경로는 있으나 계약 또는 기능이 아직 구현되지 않음 |
 
 ## Reason Code
 
@@ -60,7 +59,6 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 | `resource.not_found` | `404` | 리소스 없음 |
 | `resource.conflict` | `409` | 중복 또는 상태 충돌 |
 | `validation.failed` | `422` | request schema validation 실패 |
-| `operation.not_implemented` | `501` | API 경로는 있으나 request/response 계약 또는 기능 구현이 아직 완료되지 않음 |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
 
 ## 보안 규칙

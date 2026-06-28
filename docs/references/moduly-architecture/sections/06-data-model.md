@@ -1,5 +1,9 @@
 # 데이터 모델
 
+> Status: Reference-only historical document.
+>
+> 이 문서는 과거 `main` 브랜치 기준 역공학 산출물이다. 현재 구현 기준은 active `docs/` 문서와 코드를 따른다.
+
 기준 파일: `apps/shared/db/models/*.py`
 
 ## ERD 개요
@@ -319,12 +323,12 @@ Credential과 Model의 사용 가능 관계를 저장한다.
 | `workflow_id`, `workflow_run_id`, `node_id` | 실행 연결 |
 | `prompt_tokens`, `completion_tokens` | 토큰 사용량 |
 | `total_cost` | 비용 |
-| `latency_ms` | latency DB 컬럼 |
+| `atency_ms` | latency DB 컬럼. SQLAlchemy 속성명은 `latency_ms` |
 | `status`, `error_message`, `created_at` | 상태/시간 |
 
 주의:
 
-- `latency_ms`는 DB 컬럼명과 SQLAlchemy 속성명을 동일하게 사용한다.
+- `latency_ms` 속성이 `mapped_column("atency_ms", ...)`로 선언되어 있어 DB 컬럼명은 `atency_ms`로 생성될 수 있다.
 - `document_chunks.metadata`와 `llm_models.metadata`도 SQLAlchemy 예약어 충돌 회피를 위해 각각 `metadata_`, `model_metadata` 속성으로 매핑된다.
 
 ## Seed 데이터

@@ -1,5 +1,9 @@
 # RAG / 지식베이스
 
+> Status: Reference-only historical document.
+>
+> 이 문서는 과거 `main` 브랜치 기준 역공학 산출물이다. 현재 구현 기준은 active `docs/` 문서와 코드를 따른다.
+
 ## 책임
 
 지식베이스 기능은 파일, API, 외부 DB 데이터를 문서로 등록하고, 텍스트 추출/청킹/임베딩/벡터 저장 후 LLM 노드나 검색 테스트에서 활용하는 기능이다.

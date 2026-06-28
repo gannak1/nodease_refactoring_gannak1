@@ -1,5 +1,11 @@
 # MVP 1 개발 이슈 생성 계획서
 
+Status: Draft
+Authority: Implementation Plan
+Source of Truth: Yes
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
+
 ## 1. 목적
 
 이 문서는 `requirements/mvp-1-foundation-llmops.md`까지 실제 개발하기 위해 어떤 개발 이슈를 생성해야 하는지 정리한다.
@@ -8,7 +14,7 @@
 
 | 기준 | 내용 |
 | --- | --- |
-| 현재 dev 구현 | 로컬 `dev` 브랜치의 최신 코드 |
+| 현재 코드 구현 | 로컬 `feature/mba-59` 브랜치의 `b92bc9e0f38588495d228fc0d17b10dfaaed03c1` 코드 |
 | MVP 1 목표 문서 | `requirements/mvp-1-foundation-llmops.md` |
 | Linear 참고 | Linear All Issues에서 확인한 미완료 이슈 목록 |
 
@@ -18,20 +24,20 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 확인 브랜치 | `dev` |
-| 확인 commit | `0cb563c942ad0b37a6c6148c04eb6ecae34579c7` |
-| commit 요약 | `Merge pull request #55 from nodease/feature/mba-31` |
-| 확인 시점 | 2026-06-27 |
+| 확인 브랜치 | `feature/mba-59` |
+| 확인 commit | `b92bc9e0f38588495d228fc0d17b10dfaaed03c1` |
+| commit 요약 | `fix: 이전 배포 재활성화 감사 액션 분리` |
+| 확인 시점 | 2026-06-29 |
 
 참고한 주요 문서:
 
 - `requirements/mvp-1-foundation-llmops.md`
 - `data-model/physical-data-model.md`
 - `data-model/rbac-permission-policy.md`
-- `docs/rbac_permission_matrix.md`
-- `docs/rbac_relationships.md`
-- `docs/audit_system.md`
-- `docs/tracing/*`
+- `api/organization-rbac.md`
+- `api/llm-credentials.md`
+- `architecture/tracing-audit.md`
+- `api/tracing-audit.md`
 
 Linear 확인 범위:
 
@@ -58,7 +64,7 @@ MVP 1은 다음이 동시에 동작해야 한다.
 | --- | --- |
 | RBAC foundation | team permission과 user direct permission으로 workflow/LLM credential 접근을 제한한다. |
 | Workflow 권한 | `viewer`는 조회만 가능하고, `operator`는 실행 가능하며, `builder`는 수정/실행 가능하다. |
-| LLM 권한 | 허용되지 않은 LLM credential/model 조합은 실행에서 차단된다. |
+| LLM 권한 | credential `use` 권한이 없거나 verified credential-model relation이 없는 LLM 사용은 실행에서 차단된다. |
 | Audit | 권한 차단과 workflow 실행 이벤트가 `audit_logs`에 남는다. |
 | LLM trace | run/node/model/token/cost/latency/status를 조회할 수 있다. |
 | UI | 실행 상세 또는 캔버스에서 LLMOps 정보를 확인할 수 있다. |
@@ -102,7 +108,7 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 - 별도 `roles`, `user_roles`, polymorphic `resource_permissions`
 - 별도 `audit_events`
 
-## 4. 현재 dev 구현 상태
+## 4. 현재 코드 구현 상태
 
 ### 4.1 이미 있는 기반
 
@@ -124,17 +130,17 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 
 | 영역 | gap |
 | --- | --- |
-| User direct permission | `user_workflow_permissions`, `user_llm_permissions`가 아직 없다. |
-| Permission vocabulary | 문서는 `viewer/operator/builder/manager`를 표준으로 쓰지만, tracing RBAC 코드는 `read/write/execute/admin`을 사용한다. |
-| Gateway permission dependency | `apps/gateway/api/deps.py`에는 DB dependency만 있고, resource permission dependency가 없다. |
-| Organization bootstrap | signup/social signup 시 organization/team/membership을 자동 생성하지 않는다. |
-| Active organization | 현재 `get_user_primary_organization_id()`는 첫 team membership만 반환한다. `X-Organization-Id` header 기반 active organization 선택/검증은 아직 구현되지 않았다. |
-| App/Workflow scope | 일부 생성/복제 코드가 `organization_id=user_id` 같은 과도기 값을 사용한다. |
-| Workflow enforcement | workflow 상세, draft 저장, draft 조회, execute, stream, runs, stats가 대부분 creator 기반이거나 권한 체크 TODO 상태다. |
-| LLM credential scope | LLM credential API/service가 대부분 `current_user.id` 기준이다. organization-level credential 관리와 team/user permission check가 없다. |
-| LLM runtime use check | workflow engine LLM node 실행 시 credential `use` 권한을 평가하지 않는다. |
-| LLM trace API | `llm_usage_logs` 원천은 있으나 run/node 기준 trace 조회 API와 UI 연결이 MVP1 수준으로 정리되어 있지 않다. |
-| Audit action 표준 | 기존 audit action과 MVP 문서의 canonical action이 일부 다르다. 기존 enum/상수를 재사용하되 MVP1 action naming 정리가 필요하다. |
+| User direct permission | workflow/LLM credential의 `user_workflow_permissions`, `user_llm_permissions`는 구현됨. `user_knowledge_permissions`, `user_audit_permissions`는 MVP 2/3 범위다. |
+| Permission vocabulary | `none/viewer/operator/builder/manager/auditor/raw_auditor` 표준과 `read/write/execute/admin` legacy mapping이 구현됨. |
+| Gateway permission dependency | workflow와 LLM credential permission helper, permission API, permission denied audit가 구현됨. endpoint별 회귀 테스트가 남아 있다. |
+| Organization bootstrap | default organization/team/membership helper가 구현됐고 signup/social signup 경로에서 호출됨. |
+| Active organization | `X-Organization-Id` header 방식이 organization/team/permission API에 구현됨. header 없는 legacy 경로에서는 primary organization fallback을 제한적으로 사용한다. |
+| App/Workflow scope | app/workflow 생성은 현재 코드에서 기본 organization fallback을 사용한다. 신규 생성 경로의 explicit active organization header 적용 범위는 추가 정렬 대상이다. |
+| Workflow enforcement | workflow read/write/execute/stream/runs/stats 주요 endpoint에 `ensure_workflow_permission`이 적용됨. 생성/list/app 경계 회귀 테스트가 남아 있다. |
+| LLM credential scope | credential 등록은 organization manager를 요구하고 `organization_id`를 저장한다. list는 credential `read`, delete/sync는 credential `write`로 필터링한다. |
+| LLM runtime use check | workflow engine LLM node 실행 시 credential `use` 권한과 verified credential-model relation을 평가한다. |
+| LLM trace API | run/node 기준 `GET /workflows/{workflow_id}/runs/{run_id}/llm-traces`가 구현됨. UI 연결과 회귀 테스트가 남아 있다. |
+| Audit action 표준 | `permission.denied`, `workflow.execute`, `workflow.deploy`, `deployment.toggle`, `deployment.activate_previous` 등 canonical action 상수가 구현됨. 현재 permission API의 grant/update/revoke는 permission row별 `*_permission.created/updated/deleted` data-change action으로 기록된다. |
 | FE RBAC | 조직/팀/권한 관리 화면, active organization UI, 권한별 enable/disable 처리가 없다. |
 | FE LLMOps | run detail/canvas badge/model-prompt compare를 MVP1 demo 기준으로 연결해야 한다. |
 
@@ -150,7 +156,7 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | `MBA-14` RBAC기반 회원가입 시 Organization 생성 및 관리 | Todo, Feature, Medium | 포함. Organization bootstrap 이슈에 병합한다. |
 | `MBA-17` LLM routing 중앙화, organization-level credential management | Backlog, Feature, High | 포함. LLM credential routing 이슈에 병합한다. |
 | `MBA-18` LLM Provider Organization단위 관리로 변경 | Backlog, Feature, High | 포함. `MBA-17`과 분리하지 않고 같은 LLM credential 이슈로 묶는다. |
-| `MBA-25` LLM token/cost/latency 기록 및 집계 기반 구현 | Backlog, Feature, Medium | 부분 포함. usage log 원천은 있으므로 run/node trace API와 organization scope 보강만 MVP1에 포함한다. |
+| `MBA-25` LLM token/cost/latency 기록 및 집계 기반 구현 | Backlog, Feature, Medium | 부분 포함. usage log와 run/node trace API는 있으므로 UI 연결, organization scope, 회귀 테스트 보강만 MVP1에 포함한다. |
 | `MBA-20` 노드 구성 및 상세 편집 UX 개편 | In Progress, Medium | 부분 포함. MVP1 LLMOps 표시와 직접 관련된 UI만 포함한다. 일반 UX 개편은 후순위. |
 | `MBA-6` 워크플로우(Canvas) UI UX 개선 | In Progress, Medium | 부분 포함. Canvas node badge와 실행 상세 연결만 포함한다. |
 | `MBA-30` Enterprise LLMOps E2E 통합 테스트 작성 | Backlog, Feature, Medium | 포함. 단, 전체 enterprise가 아니라 MVP1 acceptance regression으로 scope를 줄인다. |
@@ -174,23 +180,23 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | `MBA-27` Retrieved chunk lineage 저장 | Backlog, Feature, Medium | RAG lineage는 MVP2 범위다. |
 | `MBA-26` 문서 변경 감지 기반 Partial Re-index MVP 구현 | Backlog, Feature, Medium | RAG indexing 고도화는 MVP2 범위다. |
 
-### 5.3 Active organization 결정 후 범위가 남은 이슈
+### 5.3 결정이 필요해서 바로 포함 여부를 확정하지 않는 이슈
 
-| Linear | 현재 상태 | MVP 1 처리 |
+| Linear | 현재 상태 | 필요한 결정 |
 | --- | --- | --- |
-| `MBA-16` 기존 Nav를 Organization 기준으로 변경 | Backlog, Feature, High | 부분 포함. Active organization은 `X-Organization-Id` header로 확정한다. MVP1에는 현재 organization 표시와 header 전달 경로를 포함하고, 다중 organization switcher와 nav 전체 개편은 별도 결정으로 남긴다. |
+| `MBA-16` 기존 Nav를 Organization 기준으로 변경 | Backlog, Feature, High | 부분 포함. MVP1에는 현재 organization 표시와 기본 scope 인지가 필요하다. 다중 organization switcher와 nav 전체 개편은 active organization 방식이 확정될 때 포함한다. |
 
 ## 6. 생성할 개발 이슈
 
-아래 6개 이슈를 생성하면 MVP1 범위를 과도하게 쪼개지 않으면서 구현 순서를 유지할 수 있다.
+아래 6개 이슈를 생성하면 MVP1 범위를 과도하게 쪼개지 않으면서 구현 순서를 유지할 수 있다. 현재 코드 기준으로 Issue 1~3의 backend foundation은 상당 부분 구현되어 있으므로, 신규 이슈는 "신규 구현"보다 "검증, endpoint coverage, FE 연결, 테스트 보강" 중심으로 재작성한다.
 
-### Issue 1. `[BE][Infra][FIX] MVP1 RBAC/Organization Foundation 정렬`
+### Issue 1. `[BE][Infra][VERIFY] MVP1 RBAC/Organization Foundation 정렬`
 
 목표:
 
-- dev의 조직/팀 물리 데이터 모델을 보존하면서 MVP1 permission foundation을 구현한다.
-- `viewer/operator/builder/manager` 기반 `auth_state` 표준을 코드에 반영한다.
-- `user_workflow_permissions`, `user_llm_permissions`를 additive allow로 추가한다.
+- 현재 코드의 조직/팀 물리 데이터 모델을 보존하면서 MVP1 permission foundation을 검증한다.
+- 구현된 `none/viewer/operator/builder/manager/auditor/raw_auditor` 표준과 legacy mapping이 모든 permission 경로에서 일관되게 쓰이는지 확인한다.
+- 구현된 `user_workflow_permissions`, `user_llm_permissions` additive allow 동작을 테스트로 고정한다.
 
 관련 Linear:
 
@@ -203,21 +209,21 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 
 | 작업 | 내용 |
 | --- | --- |
-| Permission constants | `none/viewer/operator/builder/manager/auditor/raw_auditor`와 permission vocabulary를 shared layer에 정의한다. |
-| Effective permission helper | organization owner/manager 자동 `manager`, team permission, user direct permission을 합산해 가장 강한 권한을 반환한다. |
-| User direct tables | `user_workflow_permissions`, `user_llm_permissions` 모델과 migration을 추가한다. |
-| Additive allow | user direct permission은 team permission을 낮추거나 deny하지 않는다. |
-| Gateway dependency | `require_workflow_permission`, `require_llm_credential_permission` 같은 API dependency 또는 service helper를 만든다. |
-| Organization bootstrap | 신규 가입 user가 사용할 기본 organization/team/membership 기반을 만든다. |
-| Team management API | team 생성/수정/비활성화, membership 추가/제거, resource permission grant/revoke API를 만든다. |
-| Audit | permission grant/revoke/denied를 `audit_logs`에 기록한다. |
-| Trace RBAC 정렬 | `apps/shared/services/tracing/rbac.py`의 `read/write/execute/admin` 체계를 MVP 표준 상태로 맞춘다. |
-| 기존 데이터 호환 | 기존 DB row에 `read/write/execute/admin`이 있으면 의미가 유지되도록 migration 또는 compatibility mapping을 둔다. |
+| Permission constants | 구현된 `none/viewer/operator/builder/manager/auditor/raw_auditor`와 permission vocabulary를 테스트로 고정한다. |
+| Effective permission helper | organization owner/manager 자동 `manager`, team permission, user direct permission 합산 결과를 검증한다. |
+| User direct tables | 구현된 `user_workflow_permissions`, `user_llm_permissions` 모델과 migration을 검증한다. |
+| Additive allow | user direct permission이 team permission을 낮추거나 deny하지 않는지 검증한다. |
+| Gateway dependency | 구현된 `ensure_workflow_permission`, `ensure_llm_credential_permission`의 endpoint 적용 범위를 점검한다. |
+| Organization bootstrap | signup/social signup에서 기본 organization/team/membership 생성이 동작하는지 회귀 테스트한다. |
+| Team management API | team 생성/수정/비활성화, membership 추가/제거, resource permission grant/revoke API를 검증한다. |
+| Audit | permission row 생성/수정/삭제와 `permission.denied`가 `audit_logs`에 기록되는지 검증한다. |
+| Trace RBAC 정렬 | trace 접근 제어가 MVP 표준 상태와 legacy mapping을 일관되게 해석하는지 확인한다. |
+| 기존 데이터 호환 | 기존 DB row에 `read/write/execute/admin`이 있으면 현재 compatibility mapping이 의미를 유지하는지 검증한다. |
 
 구현 방법:
 
-1. `apps/shared/db/models/team.py`에 기존 team permission table을 건드리지 않고 user direct permission model만 추가한다.
-2. Alembic migration으로 `user_workflow_permissions`, `user_llm_permissions`를 생성한다.
+1. `apps/shared/db/models/team.py`의 team permission table과 user direct permission model을 현재 코드 기준으로 검증한다.
+2. Alembic migration과 실제 model이 `user_workflow_permissions`, `user_llm_permissions`를 같은 schema로 생성하는지 확인한다.
 3. 각 user direct table은 아래 공통 column을 가진다.
 
 ```text
@@ -245,7 +251,7 @@ flags
 7. user direct permission 조회
 8. team/user direct 중 가장 강한 auth_state 선택
 9. permission action 허용 여부 반환
-10. 거부 또는 grant/revoke는 audit_logs 기록
+10. 거부 또는 permission row 생성/수정/삭제는 audit_logs 기록
 ```
 
 6. `auth_state` 강도는 다음으로 고정한다.
@@ -270,7 +276,7 @@ Acceptance Criteria:
 - team `manager` + user direct `viewer`이면 effective permission은 `manager`다.
 - LLM credential `operator` 또는 `builder`는 `use` 가능하다.
 - LLM credential `viewer`는 `use` 불가다.
-- permission grant/revoke/denied가 `audit_logs`에 남는다.
+- permission row 생성/수정/삭제와 `permission.denied`가 `audit_logs`에 남는다.
 - tracing RBAC 테스트가 MVP 표준 `auth_state`를 기준으로 통과한다.
 
 Out of Scope:
@@ -281,13 +287,13 @@ Out of Scope:
 - connection 전용 permission table
 - external IdP/OIDC
 
-### Issue 2. `[BE][FIX] App/Workflow 권한 enforcement와 모듈 생성 버그 수정`
+### Issue 2. `[BE][FIX/VERIFY] App/Workflow 권한 enforcement와 모듈 생성 버그 수정`
 
 목표:
 
-- owner-based workflow/app 접근 제어를 MVP1 RBAC로 교체한다.
-- `organization_id=user_id` 같은 과도기 scope 처리를 제거하고 active organization 기준으로 정렬한다.
-- Linear `MBA-36`의 모듈 생성 버그를 이 범위 안에서 해결한다.
+- workflow/app 접근 제어가 현재 구현된 MVP1 RBAC helper를 일관되게 사용하는지 검증한다.
+- app/workflow 생성 경로가 기본 organization fallback과 active organization 정책을 혼용하지 않도록 잔여 scope 처리를 정렬한다.
+- Linear `MBA-36`의 모듈 생성 버그 회귀 조건을 이 범위 안에서 검증한다.
 
 관련 Linear:
 
@@ -298,24 +304,24 @@ Out of Scope:
 
 | 작업 | 내용 |
 | --- | --- |
-| Active organization 적용 | App/Workflow 생성, 복제, 조회에서 active organization을 사용한다. |
+| Active organization 적용 | App/Workflow 생성, 복제, 조회에서 organization scope가 일관되는지 검증하고 누락된 header 적용 범위를 보강한다. |
 | App as project boundary | app 전용 permission table을 만들지 않고 primary workflow permission으로 app 접근을 판단한다. |
-| Workflow read | workflow 상세, draft 조회, runs, stats에 workflow `read` 권한을 적용한다. |
-| Workflow write | draft 저장에 workflow `write` 권한을 적용한다. |
-| Workflow execute | execute, stream에 workflow `execute` 권한을 적용한다. |
+| Workflow read | workflow 상세, draft 조회, runs, stats에 적용된 workflow `read` 권한을 검증한다. |
+| Workflow write | draft 저장에 적용된 workflow `write` 권한을 검증한다. |
+| Workflow execute | execute, stream에 적용된 workflow `execute` 권한을 검증한다. |
 | Existing owner fallback | legacy resource처럼 organization scope가 없는 경우에만 `created_by` fallback을 제한적으로 허용한다. |
-| Audit | 권한 차단은 `audit_logs.action='permission.denied'` 또는 기존 `AuditAction.AUTH_PERMISSION_DENIED` 기준으로 기록한다. |
+| Audit | resource permission helper에서 발생한 RBAC 거부는 `audit_logs.action='permission.denied'`로 기록한다. 인증 실패나 helper 밖의 전역 401/403은 `auth.permission_denied`로 기록한다. |
 | Regression fix | module 생성, app 생성, workflow 생성, draft 저장, stream 실행이 깨지지 않도록 보장한다. |
 
 구현 방법:
 
-1. `apps/gateway/services/app_service.py`에서 `organization_id` 기본값을 `user_id`로 보지 않는다.
-2. `apps/gateway/services/workflow_service.py`의 `organization_id=user_id`를 active organization 기준으로 바꾼다.
+1. `apps/gateway/services/app_service.py`에서 app 생성 organization scope가 기본 organization fallback 또는 active organization 정책과 일관되는지 확인한다.
+2. `apps/gateway/services/workflow_service.py`에서 workflow 생성 organization scope가 app organization 또는 기본 organization fallback과 일관되는지 확인한다.
 3. app 생성 시 생성되는 primary workflow도 같은 organization scope를 가진다.
-4. workflow endpoint의 `created_by == current_user.id` 체크를 permission helper로 교체한다.
-5. `get_workflow_runs`, `get_workflow_run_detail`, `get_workflow_stats`에도 read check를 넣는다.
-6. `execute_workflow`, `stream_workflow`에는 execute check를 넣는다.
-7. `sync_draft_workflow`에는 write check를 넣는다.
+4. workflow endpoint의 permission helper 적용 범위를 점검한다.
+5. `get_workflow_runs`, `get_workflow_run_detail`, `get_workflow_stats`의 read check를 테스트한다.
+6. `execute_workflow`, `stream_workflow`의 execute check를 테스트한다.
+7. `sync_draft_workflow`의 write check를 테스트한다.
 8. 403은 공통 audit handler가 기록하도록 하되, 필요한 경우 permission helper에서 권한 출처 metadata를 추가한다.
 
 Acceptance Criteria:
@@ -324,7 +330,7 @@ Acceptance Criteria:
 - `operator`는 실행할 수 있지만 draft 저장은 거부된다.
 - `builder`는 draft 저장과 실행이 가능하다.
 - 권한 없는 user는 workflow 존재 여부를 과도하게 노출하지 않도록 403/404 정책이 일관된다.
-- app 생성 시 app과 primary workflow의 `organization_id`가 active organization과 일치한다.
+- app 생성 시 app과 primary workflow의 `organization_id`가 explicit active organization 또는 문서화된 default organization fallback과 일치한다.
 - workflow 생성/저장/실행 기존 happy path가 통과한다.
 - Linear `MBA-36`의 재현 조건이 있으면 같은 테스트로 회귀 방지한다.
 
@@ -335,13 +341,13 @@ Out of Scope:
 - app 전용 permission table
 - multi-organization switcher UI
 
-### Issue 3. `[BE][Infra] Organization-level LLM credential routing과 runtime use 권한 적용`
+### Issue 3. `[BE][Infra][VERIFY] Organization-level LLM credential routing과 runtime use 권한 적용`
 
 목표:
 
-- LLM credential을 organization-level resource로 다룬다.
-- LLM node 실행 시 credential `use` 권한과 credential-model relation을 함께 검증한다.
-- 기존 user-scoped LLM API를 MVP1 RBAC 기준으로 정렬한다.
+- 현재 구현된 LLM credential organization scope와 permission filter를 검증한다.
+- LLM node 실행 시 credential `use` 권한과 credential-model relation을 함께 평가하는 동작을 테스트로 고정한다.
+- user-scoped 통계 API와 organization-scoped credential API의 경계를 문서화한다.
 
 관련 Linear:
 
@@ -353,20 +359,20 @@ Out of Scope:
 
 | 작업 | 내용 |
 | --- | --- |
-| Credential scope | `llm_credentials.organization_id`를 active organization 기준으로 저장/조회한다. |
-| Credential read | credential list/preview는 credential `read` 권한 기준으로 제한한다. |
-| Credential create | 새 credential 생성은 organization owner/manager가 수행한다. 생성 직후 권한 row를 어떻게 만들지는 8.3의 결정에 따른다. |
-| Credential write/manage | 기존 credential 삭제/sync-models는 credential `write`, 권한 관리는 credential `manage` 기준으로 제한한다. 두 action 모두 organization owner/manager 또는 해당 credential `manager` 권한으로 통과한다. |
-| Runtime use | workflow engine LLM node가 credential `use` 권한을 확인한다. |
+| Credential scope | `llm_credentials.organization_id` 저장/조회 동작을 검증한다. |
+| Credential read | credential list/preview가 credential `read` 권한 기준으로 제한되는지 검증한다. |
+| Credential create | 새 credential 생성이 organization owner/manager에게만 허용되는지 검증한다. 생성 직후 권한 row를 어떻게 만들지는 8.3의 결정에 따른다. |
+| Credential write/manage | 기존 credential 삭제/sync-models/권한 관리가 credential `write` 또는 `manager` 권한 기준으로 제한되는지 검증한다. |
+| Runtime use | workflow engine LLM node가 credential `use` 권한을 확인하는지 검증한다. |
 | Model relation | model 사용 가능 여부는 `llm_rel_credential_models.is_verified`와 credential permission을 함께 평가한다. |
 | Usage log | `llm_usage_logs.organization_id`, `workflow_id`, `workflow_run_id`, `node_id`를 가능한 범위에서 채운다. |
-| Cost query | top model/cost query는 user-only가 아니라 organization/workflow 권한 scope를 고려한다. |
+| Cost query | 현재 `top-models`는 user-scoped다. organization/workflow scope 통계가 필요하면 별도 보강한다. |
 
 구현 방법:
 
-1. `apps/gateway/services/llm_service.py`의 user-only credential 조회를 organization-aware query로 바꾼다.
-2. credential 등록 시 active organization을 저장한다.
-3. credential 생성은 organization owner/manager를 기준으로 제한하고, 삭제/동기화는 owner-only가 아니라 permission helper를 거친다.
+1. `apps/gateway/services/llm_service.py`의 credential 조회가 permission-aware인지 확인한다.
+2. credential 등록 시 request `organization_id` 또는 default organization을 저장하는지 확인한다.
+3. credential 생성은 organization owner/manager를 기준으로 제한하고, 삭제/동기화는 permission helper를 거치는지 확인한다.
 4. LLM client 선택은 다음 순서를 따른다.
 
 ```text
@@ -387,9 +393,9 @@ Acceptance Criteria:
 - credential `viewer`는 credential preview 조회만 가능하고 runtime use는 거부된다.
 - credential `operator` 또는 `builder`는 LLM node 실행에서 credential을 사용할 수 있다.
 - organization owner/manager는 새 credential을 생성할 수 있다.
-- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다. 삭제/동기화 action vocabulary는 `write`, 권한 관리는 `manage`를 사용한다.
+- credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다.
 - verified relation이 없는 model은 credential 권한이 있어도 사용할 수 없다.
-- 권한 없는 credential/model 조합으로 workflow를 실행하면 LLM node 실행 전 또는 실행 중 명확히 차단된다.
+- credential `use` 권한이 없거나 verified credential-model relation이 없는 조합으로 workflow를 실행하면 LLM node 실행 전 또는 실행 중 명확히 차단된다.
 - 차단 이벤트가 audit에 남는다.
 - 성공한 LLM call은 `llm_usage_logs`에 organization/run/node/model/credential/token/cost/latency를 남긴다.
 
@@ -400,11 +406,11 @@ Out of Scope:
 - 외부 provider별 고급 routing 정책
 - retry/fallback/cache
 
-### Issue 4. `[BE][Data][FIX] Audit/LLM trace API foundation`
+### Issue 4. `[BE][Data][VERIFY] Audit/LLM trace API foundation`
 
 목표:
 
-- MVP1에서 필요한 audit skeleton과 LLM trace 조회 API를 완성한다.
+- MVP1에서 필요한 audit skeleton과 구현된 LLM trace 조회 API를 검증한다.
 - 기존 `audit_logs`, `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`를 재사용한다.
 - 새 audit table이나 dashboard aggregate table을 만들지 않는다.
 
@@ -421,21 +427,21 @@ Out of Scope:
 | Audit action 정리 | workflow execute, permission denied, llm call에 필요한 action을 기존 audit 체계에 맞춘다. |
 | Workflow execute audit | execute 시작/성공/실패 또는 최소 성공/실패 이벤트를 남긴다. |
 | Permission denied audit | 권한 실패 metadata에 resource/action/effective permission을 남긴다. |
-| LLM trace query | run id와 node id 기준으로 `llm_usage_logs`를 조회한다. |
+| LLM trace query | 구현된 `/workflows/{workflow_id}/runs/{run_id}/llm-traces`가 run id와 node id 기준으로 `llm_usage_logs`를 조회하는지 검증한다. |
 | Run detail 확장 | run detail 응답 또는 별도 endpoint에서 node별 LLM usage를 반환한다. |
-| Latency 정합성 | `llm_usage_logs.latency_ms`를 DB column명과 ORM 속성명 모두에서 사용한다. 기존 오타 column은 migration으로 rename한다. |
+| Latency 정합성 | 현재 코드에서는 ORM 속성과 물리 column 모두 `latency_ms`를 쓴다. 과거 `atency_ms`는 migration에서 정리한다. |
 | Audit pagination | MVP1 UI/API에서 audit list를 사용한다면 `MBA-38`, `MBA-39`를 함께 처리한다. 사용하지 않으면 후순위로 둔다. |
 
 구현 방법:
 
 1. `audit_logs`는 canonical audit table로 유지한다.
-2. `audit_logs.status`에는 dev enum 기준 `success` 또는 `failure`만 저장한다.
+2. `audit_logs.status`에는 현재 코드 enum 기준 `success` 또는 `failure`만 저장한다.
 3. `allow/deny/warn/block` 같은 정책 결과는 `audit_metadata.policy_result`에 저장한다.
-4. LLM trace API는 raw query 또는 SQLAlchemy query로 기존 table을 조인한다.
+4. LLM trace API는 현재 구현된 SQLAlchemy query와 응답 schema를 검증한다.
 5. trace 조회는 workflow `read` 권한을 통과한 user만 가능하게 한다.
-6. `llm_usage_logs.latency_ms` ORM 속성과 DB physical column명을 일치시킨다.
+6. `llm_usage_logs.latency_ms` ORM 속성과 DB physical column을 기준으로 테스트한다.
 
-API 계약은 [api/tracing-audit.md](../api/tracing-audit.md)의 LLM trace 항목을 따른다. 기존 run detail 응답 확장과 별도 `llm-traces` endpoint 중 하나만 채택해 중복 API를 만들지 않는다.
+API 계약은 [api/tracing-audit.md](../api/tracing-audit.md)의 LLM trace 항목을 따른다. 현재 코드는 별도 `llm-traces` endpoint를 채택했으므로 중복 API를 만들지 않는다.
 
 Acceptance Criteria:
 
@@ -444,7 +450,7 @@ Acceptance Criteria:
 - LLM node 실행 후 run_id 기준으로 model/token/cost/latency/status를 조회할 수 있다.
 - 여러 LLM node가 있어도 node_id로 구분된다.
 - trace API는 workflow `read` 권한 없이는 거부된다.
-- `latency_ms` 사용 코드와 DB physical column명이 일치한다.
+- `latency_ms` column이 모델과 migration/test 기준으로 일관된다.
 
 Out of Scope:
 
@@ -481,7 +487,7 @@ Out of Scope:
 | User direct grant UI | 특정 user에게 workflow/LLM credential 추가 권한을 부여/회수할 수 있는 최소 UI 제공 |
 | Credential management UI | organization-level credential 등록, model sync, credential preview 확인 |
 | Permission-aware editor | 권한에 따라 canvas/editor의 저장/실행 버튼과 read-only 상태 반영 |
-| Credential permission UX | 권한 없는 credential/model은 선택 불가 또는 실행 전 명확한 오류 표시 |
+| Credential permission UX | 권한 없는 credential 또는 verified relation 없는 model은 선택 불가 또는 실행 전 명확한 오류 표시 |
 | Model/prompt compare | 같은 입력으로 두 설정을 실행하고 결과, 비용, latency를 비교 |
 | Audit confirmation UI | 권한 차단/실행 이벤트를 확인할 수 있는 최소 audit list 또는 activity panel 제공 |
 | Organization nav | `MBA-16`에서 다루는 nav 전체 개편은 후순위 가능하지만, 현재 organization 표시와 MVP1 이동 경로는 포함 |
@@ -509,7 +515,7 @@ Acceptance Criteria:
 - `builder`는 저장과 실행이 가능하다.
 - LLM node 포함 workflow 실행 후 UI에서 node별 token/cost/latency/status를 확인할 수 있다.
 - 여러 LLM node가 있을 때 node별 값이 섞이지 않는다.
-- 권한 없는 credential/model로 실행하려 하면 사용자가 이유를 이해할 수 있는 오류가 보인다.
+- 권한 없는 credential 또는 verified relation 없는 model로 실행하려 하면 사용자가 이유를 이해할 수 있는 오류가 보인다.
 - model A/B 또는 prompt A/B 결과, 비용, latency를 한 화면에서 비교할 수 있다.
 - audit UI 또는 activity panel에서 권한 차단/실행 이벤트를 확인할 수 있다.
 - 기존 Canvas 주요 기능이 깨지지 않는다.
@@ -529,7 +535,7 @@ Out of Scope:
 목표:
 
 - MVP1의 실제 완료 여부를 검증한다.
-- 기존 dev 기능이 RBAC 적용으로 깨지지 않았는지 확인한다.
+- 기존 기능이 RBAC 적용으로 깨지지 않았는지 확인한다.
 - Linear 미완료 이슈를 새 MVP1 이슈와 후순위 이슈로 정리한다.
 
 관련 Linear:
@@ -544,7 +550,7 @@ Out of Scope:
 | 작업 | 내용 |
 | --- | --- |
 | Unit test | permission helper, auth_state mapping, user direct additive allow |
-| API test | workflow read/write/execute, LLM credential read/use/write/manage, permission denied audit |
+| API test | workflow read/write/execute, LLM credential read/use/manage, permission denied audit |
 | Service test | organization bootstrap, app/workflow organization scope |
 | Engine test | LLM node runtime credential use check |
 | Trace test | run/node LLM usage query |
@@ -564,8 +570,8 @@ Out of Scope:
 7. builder 권한 user가 UI에서 workflow 생성/저장/실행
 8. viewer 권한 user가 UI에서 workflow 조회 성공
 9. viewer 권한 user가 UI에서 저장/실행 불가 상태 확인
-10. builder 권한 user가 허용되지 않은 LLM credential/model로 실행 실패
-11. builder 권한 user가 허용된 LLM credential/model로 실행 성공
+10. builder 권한 user가 credential `use` 권한이 없거나 verified relation 없는 model로 실행 실패
+11. builder 권한 user가 허용된 credential과 verified model relation으로 실행 성공
 12. audit UI 또는 activity panel에서 실행/차단 이벤트 확인
 13. run detail에서 node별 model/token/cost/latency 확인
 14. model 또는 prompt 비교 결과 확인
@@ -609,7 +615,7 @@ Issue 1 RBAC/Organization Foundation
 
 순서상 먼저 고정해야 하는 것:
 
-1. active organization header 적용 방식
+1. active organization header 적용 범위
 2. `auth_state` 표준값과 compatibility mapping
 3. permission helper interface
 4. workflow/app organization scope 처리
@@ -621,35 +627,31 @@ Issue 1 RBAC/Organization Foundation
 
 아래는 문서만 보고 임의로 확정하면 안 되는 항목이다. 실제 Linear 이슈 생성 전에 결정이 필요하다.
 
-### 8.1 Active organization 선택 방식
+### 8.1 Active organization 적용 범위
 
-현재 dev에는 `get_user_primary_organization_id()`가 있고, 첫 team membership을 기준으로 organization을 찾는다.
+MVP 1의 active organization 전달 방식은 `X-Organization-Id` header로 확정한다. 현재 코드에는 organization/team/permission API에서 header를 검증하는 흐름과, header가 없는 legacy/과도기 경로에서 첫 team membership을 기준으로 organization을 찾는 fallback이 함께 있다.
 
-결정:
+검증 필요:
 
-- MVP1 active organization은 `X-Organization-Id` header로 명시한다.
-- session/cookie에는 active organization을 저장하지 않는다.
-- header가 없는 과도기 요청은 첫 active team membership fallback을 제한적으로 사용할 수 있다.
+- App/Workflow/LLM credential 생성과 조회가 header organization을 일관되게 사용하는지
+- header 없는 legacy fallback이 신규 경로에서 과도하게 열리지 않는지
+- FE nav에서 선택한 organization이 모든 RBAC/permission API 요청에 전달되는지
 
 영향:
 
+- `MBA-16` 포함 여부
 - 모든 permission helper의 입력값
 - App/Workflow/LLM credential 생성 scope
-- FE API client의 organization-scoped 요청 header 전달
-
-별도 결정 필요:
-
-- FE nav에서 다중 organization switcher를 MVP1에 포함할지
 
 ### 8.2 신규 가입 시 organization 이름과 입력 방식
 
-현재 signup schema는 user email/name/password 중심이다.
+현재 signup schema는 user email/name/password 중심이며, 코드에서는 signup/social signup 후 기본 organization/team/membership을 자동 생성한다.
 
 결정 필요:
 
 - signup request에 `organization_name`을 추가할지
 - 아니면 user 이름/email 기반으로 기본 organization 이름을 자동 생성할지
-- social signup도 같은 bootstrap을 적용할지
+- social signup의 bootstrap은 현재 코드에서 적용되어 있으므로, 이름 정책만 맞추면 된다.
 
 영향:
 
@@ -713,7 +715,7 @@ MVP1 완료 기준에는 model 또는 prompt 비교가 있다. 물리 데이터 
 | --- | --- |
 | `roles`, `user_roles` 미생성 | 지킴. 이슈 계획에 포함하지 않음. |
 | polymorphic `resource_permissions` 미생성 | 지킴. resource별 user direct table만 추가. |
-| dev 물리 데이터 모델 보존 | 지킴. 기존 table 삭제/rename 없음. 단, `user_workflow_permissions`, `user_llm_permissions`는 additive extension. |
+| 현재 물리 데이터 모델 보존 | 지킴. 기존 table 삭제/rename 없음. 단, `user_workflow_permissions`, `user_llm_permissions`는 additive extension. |
 | team 중심 RBAC | 지킴. 기본 subject는 team, user direct는 additive allow. |
 | explicit deny 미도입 | 지킴. deny table/column 없음. |
 | `admin` permission 미사용 | 지킴. `admin`은 compatibility에서만 `manager` 의미로 다룸. |
@@ -725,19 +727,19 @@ MVP1 완료 기준에는 model 또는 prompt 비교가 있다. 물리 데이터 
 | RAG/Guardrail/Retry 후순위 | 지킴. MVP1 issue에서 제외. |
 | 작동 MVP UI 기준 | 보강함. MVP1은 API-only가 아니라 browser UI에서 demo script가 통과해야 함. |
 
-### 9.2 현재 dev 코드와 계획 간 확인된 불일치
+### 9.2 현재 코드와 계획 간 확인된 gap
 
-이 불일치는 잘못된 계획이 아니라 MVP1에서 해결해야 할 gap이다.
+아래 항목은 현재 코드 기준으로 남은 검증 또는 보강 대상이다.
 
-| 불일치 | 처리 |
+| gap | 처리 |
 | --- | --- |
-| tracing RBAC가 `read/write/execute/admin`을 사용 | Issue 1에서 MVP 표준 `auth_state`로 정렬 |
-| signup이 organization/team을 만들지 않음 | Issue 1에서 bootstrap 구현 |
-| app/workflow 생성이 `organization_id=user_id`를 사용하거나 owner-based | Issue 2에서 active organization 기준으로 수정 |
-| workflow API가 creator 기반 권한 체크 | Issue 2에서 permission helper로 교체 |
-| LLM credential API/service가 user-scoped | Issue 3에서 organization/RBAC 기준으로 교체 |
-| LLM runtime credential use 권한 미체크 | Issue 3에서 engine-level check |
-| LLM trace 조회 API 미완성 | Issue 4에서 구현 |
+| trace 접근 제어와 legacy `read/write/execute/admin` 호환성 | Issue 1에서 MVP 표준 `auth_state` 기준으로 검증 |
+| signup/social signup bootstrap | Issue 1에서 기본 organization/team/membership 생성 회귀 테스트 |
+| app/workflow 생성 scope | Issue 2에서 default organization fallback과 active organization 정책 정렬 |
+| workflow permission endpoint coverage | Issue 2에서 주요 read/write/execute 경로 회귀 테스트 |
+| LLM credential organization/RBAC scope | Issue 3에서 create/read/write/use 경로 회귀 테스트 |
+| LLM runtime credential use 권한 | Issue 3에서 engine-level check 회귀 테스트 |
+| LLM trace UI/테스트 보강 | Issue 4에서 API 회귀 테스트, Issue 5에서 UI 연결 |
 | FE RBAC/LLMOps 표시 미완성 | Issue 5에서 구현 |
 
 ### 9.3 후순위 처리와 MVP1 목표 간 모순 없음
@@ -747,7 +749,7 @@ MVP1 완료 기준에는 model 또는 prompt 비교가 있다. 물리 데이터 
 예외:
 
 - `MBA-38`, `MBA-39`는 lightweight activity panel 대신 기존 audit list/search UI를 MVP1 demo에 사용하기로 결정하면 Issue 4 또는 Issue 6에 포함해야 한다.
-- `MBA-16`은 현재 organization 표시와 `X-Organization-Id` header 전달 경로만 Issue 5에 포함하고, 다중 organization switcher와 nav 전체 개편은 별도 결정으로 남긴다.
+- `MBA-16`은 현재 organization 표시와 MVP1 이동 경로만 Issue 5에 포함하고, 다중 organization switcher와 nav 전체 개편은 active organization 방식이 확정될 때 포함한다.
 
 ## 10. Linear issue 생성 형태
 

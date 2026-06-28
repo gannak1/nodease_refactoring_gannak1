@@ -1,5 +1,11 @@
 # MVP 3: 최적화 및 엔터프라이즈 운영
 
+Status: Draft
+Authority: Requirements
+Source of Truth: Yes
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
+
 ## 목표
 
 MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운영자가 실제로 활용할 수 있는 형태로 만든다.
@@ -23,7 +29,7 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 | 기존 Moduly `workflow_deployments.graph_snapshot` | version diff와 deploy checklist |
 | 기존 Moduly `llm_usage_logs` | cost recommendation |
 | 기존 Moduly `workflow_runs` | failure/latency aggregation |
-| MVP 1-2 `audit_logs` | policy block/permission change aggregation |
+| MVP 1-2 `audit_logs` | `policy.block`/permission change aggregation |
 | MVP 2 RAG trace metadata | RAG risk and stale index check |
 | 기존 Moduly Scheduler/Webhook/API 실행 | trigger별 운영 통계 |
 | 기존 Moduly Docker/Helm/K8s | 배포 재현성 |
@@ -32,7 +38,7 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 
 현재 Moduly 기준 deployment API에는 `create`, `get`, `toggle`, `delete`가 있고 별도 `rollback` API는 없다. 하지만 `toggle`로 예전 deployment를 다시 active로 만들면, 같은 app의 다른 active deployment가 비활성화되고 `app.active_deployment_id`가 그 deployment로 바뀐다.
 
-따라서 사용자는 "이전 배포로 되돌리기"처럼 사용할 수 있지만, 제품/코드 레벨에서는 아직 `rollback`이라는 명시 기능이 아니라 `deployment activate` 동작이다. MVP 계획에서는 `rollback`을 별도 permission으로 두지 않고, 우선 `deploy/activate/manage` 권한으로 다룬다. 이전 deployment를 다시 활성화하는 경우 `audit_logs.action='deployment.activate_previous'`로 남길 수 있다.
+따라서 사용자는 "이전 배포로 되돌리기"처럼 사용할 수 있지만, 제품/코드 레벨에서는 아직 `rollback`이라는 명시 기능이 아니라 deployment toggle 동작이다. 별도 rollback permission은 두지 않고 기본 권한은 workflow `deploy/manage`로 다룬다. 다른 deployment가 이미 active인 상태에서 이전 deployment를 다시 활성화하는 경우 `audit_logs.action='deployment.activate_previous'`로 남긴다. MVP 3의 배포 범위는 이 기본 권한이 아니라 deploy checklist, version diff, trigger mode 정합성 같은 운영 기능 강화다.
 
 ## 사용자 흐름
 
@@ -41,7 +47,7 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 3. 고비용 노드에 대해 저비용 모델 후보가 추천된다.
 4. `builder` 권한 user가 model/prompt 변경을 적용한다.
 5. Version diff에서 이전 배포 대비 변경을 확인한다.
-6. 배포 후 운영 dashboard에서 비용/실패율/latency/policy block을 본다.
+6. 배포 후 운영 dashboard에서 비용/실패율/latency/`policy.block`을 본다.
 7. API/Webhook/Scheduler 실행이 올바른 trigger mode로 기록된다.
 8. Docker Compose 또는 K8s 기준으로 동일 MVP를 재현한다.
 
@@ -128,7 +134,7 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 - user/team별 실행량
 - failure rate
 - latency p50/p95
-- policy block count
+- `policy.block` count
 - cache/fallback 후보 count
 - deployment diff/check, recommendation, cache/fallback 관련 event 집계
 
@@ -157,7 +163,7 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 | Deploy check | 실제 graph/log/policy/RAG 상태 기반 warning/block 표시 |
 | Recommendation | 최소 rule-based 비용 절감 추천 동작 |
 | Version diff | prompt/model/config/knowledge 변경 비교 |
-| Ops dashboard | 비용, 실패율, latency, policy block 집계 |
+| Ops dashboard | 비용, 실패율, latency, `policy.block` 집계 |
 | Trigger logging | api/webhook/scheduler/app이 정확히 기록 |
 | Deployment | 로컬 Docker Compose 기준 재현 가능 |
 
@@ -170,7 +176,7 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 4. 추천된 저비용 모델을 적용한다.
 5. Version diff를 확인하고 배포한다.
 6. API/Webhook/Scheduler로 실행한다.
-7. Ops dashboard에서 비용/실패/latency/policy block을 확인한다.
+7. Ops dashboard에서 비용/실패/latency/`policy.block`을 확인한다.
 ```
 
 ## 테스트 범위

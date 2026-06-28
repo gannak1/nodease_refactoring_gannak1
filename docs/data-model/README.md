@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
 데이터 모델 문서는 물리 데이터 모델, 권한 정책, migration 기준의 source of truth다.
 
@@ -21,4 +21,4 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 - `diagrams/` 문서는 시각화 보조 자료이며 source of truth가 아니다.
 - 삭제된 폐기 ERD 초안은 구현 기준이 아니다.
 - API 계약은 [api/](../api/README.md)를 따른다.
-- `auth_state` 전환과 user direct permission은 ADR 승인 상태를 확인해야 한다.
+- `auth_state` 전환과 user direct permission은 [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)에 따라 MVP 1 기준 승인된 구현 기준이다.

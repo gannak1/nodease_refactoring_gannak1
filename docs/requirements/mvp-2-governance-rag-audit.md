@@ -1,5 +1,11 @@
 # MVP 2: Governance 및 RAG Audit
 
+Status: Draft
+Authority: Requirements
+Source of Truth: Yes
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
+
 ## 목표
 
 MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소스와 RAG 실행 경로에 적용한다.
@@ -19,7 +25,7 @@ MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소�
 
 | 기반 | 재사용 방식 |
 | --- | --- |
-| MVP 1 permission model | knowledge base/document `use` 권한으로 확장. connection runtime `use`는 consuming workflow/knowledge base 권한으로 허용 |
+| MVP 1 permission model | knowledge base `use` 권한과 document metadata policy로 확장. connection runtime `use`는 consuming workflow/knowledge base 권한으로 허용 |
 | MVP 1 `audit_logs` | 권한 변경, policy warn/block, RAG/re-index action 저장 |
 | MVP 1 policy decision | `allow/warn/block` 결과 저장 |
 | Knowledge Base | 데이터 소스 권한 대상 |
@@ -36,10 +42,10 @@ MVP 2에서 실제 enforcement를 붙이는 resource:
 
 | 대상 | 정책 |
 | --- | --- |
-| `knowledge_base` | HR team 또는 직접 grant를 받은 user만 `use` 가능 |
-| `document` | PII/confidential 문서는 warn/block 가능 |
+| `knowledge_base` | HR team 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능 |
+| `document` | PII/confidential 문서는 `documents.meta_info` metadata policy로 warn/block 가능. document별 permission table은 만들지 않음 |
 | `connection` | 독립 permission resource가 아니다. secret/manage는 제한하고 runtime `use`는 workflow/knowledge base 권한으로 확인 |
-| `llm_model` | MVP 1의 model `use` 정책 유지 |
+| `llm_model` | MVP 1의 credential `use` + credential-model relation 정책 유지 |
 | `workflow` | `viewer` `execute` 차단 유지 |
 
 권한 체크 위치:
@@ -50,7 +56,7 @@ Gateway API
   -> audit log 조회 권한
 
 Workflow Engine
-  -> knowledge base/document use 권한
+  -> knowledge base use 권한과 document metadata policy
   -> LLM node 실행 전 knowledgeBases permission 검증
   -> policy decision 기록
 ```
@@ -119,18 +125,19 @@ UI와 API는 최소한 아래 필터를 제공한다.
 
 MVP 2에서 검색해야 하는 대표 이벤트:
 
-- `permission.grant`
-- `permission.revoke`
+- permission row data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`
+- `permission.denied`
 - `policy.warn`
 - `policy.block`
-- `workflow.blocked`
 - `rag.retrieve`
 - re-index 관련 event
+
+`policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 구현 시 `AuditAction` 상수와 테스트를 함께 추가해야 하는 목표 action이다. 현재 코드의 MVP 1 `AuditAction`에는 아직 없다.
 
 ## 사용자 흐름
 
 1. organization owner/manager가 HR knowledge base를 만든다.
-2. HR team 또는 직접 grant를 받은 user만 해당 knowledge base를 `use`할 수 있게 설정한다.
+2. HR team 또는 MVP 2에서 추가할 user direct grant를 받은 user만 해당 knowledge base를 `use`할 수 있게 설정한다.
 3. `builder` 권한 user가 HR knowledge base를 사용하는 RAG workflow를 만든다.
 4. 권한 없는 사용자의 실행은 차단된다.
 5. 권한 있는 사용자의 실행은 성공한다.
@@ -141,10 +148,11 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 ## 추가 개발 범위
 
-- knowledge base/document 권한 enforcement
+- knowledge base 권한 enforcement와 document metadata policy
+- `user_knowledge_permissions` additive grant 추가. 현재 코드에는 아직 없음
 - DB connection secret/manage/use 분리 enforcement
 - RAG retrieval trace metadata 저장
-- data classification 필드
+- data classification metadata convention 및 API/UI 노출
 - policy decision 저장
 - audit log 검색 API/UI
 - re-index 상태 UI
@@ -157,9 +165,10 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 작업:
 
 - knowledge base `use` 권한 체크
-- document 권한 체크와 connection secret/manage/use 분리 구현
+- document metadata policy 체크와 connection secret/manage/use 분리 구현
 - LLM node 실행 전 knowledgeBases permission 검증
-- 권한 실패 시 policy block + `audit_logs` row 저장
+- knowledge base `use` 권한 실패는 `permission.denied`로 `audit_logs`에 저장
+- document metadata/model/trace policy 차단은 `policy.block`으로 `audit_logs`에 저장
 
 검증:
 
@@ -170,7 +179,7 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 작업:
 
-- knowledge base/document classification 필드 추가
+- document classification은 `documents.meta_info.classification` metadata convention으로 저장하고, knowledge base classification은 document classification에서 파생
 - UI badge 추가
 - classification 변경 `audit_logs` row 저장
 - `public/internal/confidential/pii` 지원
@@ -235,7 +244,7 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 ```text
 1. organization owner/manager가 HR KB를 만들고 confidential로 분류한다.
-2. HR team 또는 직접 grant를 받은 user만 use 가능하게 설정한다.
+2. HR team 또는 MVP 2에서 추가할 user direct grant를 받은 user만 use 가능하게 설정한다.
 3. `builder` 권한 user가 해당 KB를 쓰는 RAG workflow를 만든다.
 4. 권한 없는 사용자는 실행 차단된다.
 5. HR 권한 사용자는 실행 성공한다.

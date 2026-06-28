@@ -38,7 +38,7 @@
 2. `apps/client/package.json`의 `dev:all`이 `../server`를 참조하는 점을 주의사항으로 표시했다.
 3. `execute_deployed_workflow`가 현재 모델과 맞지 않는 필드를 참조하는 점을 Workflow Engine 문서와 README 주의사항에 표시했다.
 4. `pluginNode`는 UI registry에 있으나 실제 실행 미구현임을 명시했다.
-5. `LLMUsageLog.latency_ms` 컬럼명 오타 가능성을 확인했고, 현재 문서에서는 `latency_ms`로 정정했다.
+5. `LLMUsageLog.latency_ms`의 실제 컬럼명이 `atency_ms`로 보이는 점을 DB 문서에 표시했다.
 6. LLM 가격 상수는 외부 최신 가격으로 검증하지 않고 코드 상태로만 기록한다고 표시했다.
 7. Sandbox 최상위 `/`, `/health` 라우트와 v1 라우트를 구분해 API 문서에 보강했다.
 8. `knowledgeApi.updateKnowledgeBase()` 클라이언트 타입과 백엔드 204 응답의 불일치를 표시했다.
@@ -48,7 +48,7 @@
 12. `DeploymentService.run_deployment()`가 `trigger_mode` 인자를 받지만 실행 context에는 `"app"`을 고정하는 점을 주의사항으로 추가했다.
 13. `tests/load`의 numbered load-test 환경변수와 Sandbox load-test 환경변수를 테스트 문서에 보강했다.
 14. Webhook/Scheduler execution context와 `log.create_run`의 `RunTriggerMode` 정규화가 다를 수 있는 점을 런타임/데이터 모델/워크플로우 문서에 추가했다.
-15. DB 문서에서 `metadata`처럼 DB 컬럼명과 SQLAlchemy 속성명이 다른 필드를 명시했다.
+15. DB 문서에서 `metadata`, `atency_ms`처럼 DB 컬럼명과 SQLAlchemy 속성명이 다른 필드를 명시했다.
 
 ## 2026-06-27 재검증
 
@@ -94,7 +94,7 @@
 - `DeploymentService.run_deployment()`의 `trigger_mode` 고정 동작을 주의사항으로 기록
 - `tests/load/load1.py`, `load2.py`, `load3.py`, `sandbox_locust.py`의 환경변수 목록 보강
 - `apps/log_system/tasks.py`가 `webhook`, `schedule`, `scheduler` trigger 문자열을 명시적으로 매핑하지 않는 점 기록
-- `document_chunks.metadata`/`metadata_`, `llm_models.metadata`/`model_metadata` 구분 기록
+- `document_chunks.metadata`/`metadata_`, `llm_models.metadata`/`model_metadata`, `llm_usage_logs.atency_ms`/`latency_ms` 구분 기록
 
 검증 범위:
 
