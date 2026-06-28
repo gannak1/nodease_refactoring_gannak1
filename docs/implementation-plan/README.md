@@ -10,6 +10,7 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 | 문서 | 역할 |
 | --- | --- |
 | [mvp-1-development-issue-plan.md](mvp-1-development-issue-plan.md) | MVP 1 개발 이슈 생성 계획 |
+| [mvp-2-0-organization-membership-plan.md](mvp-2-0-organization-membership-plan.md) | MVP 2 선행 Organization membership/invitation 기반 계획 |
 | [risk-consistency-verification.md](risk-consistency-verification.md) | 리스크, 정합성, 검증 매트릭스 |
 | [implementation-decision-log.md](implementation-decision-log.md) | 구현 중 작은 결정, 기본값, 임시 호환 처리 기록 |
 

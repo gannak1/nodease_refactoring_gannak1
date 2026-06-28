@@ -20,6 +20,34 @@ Deployment 생성, 조회, 활성화, public deployment info, run/webhook 계약
 | Implemented | `GET` | `/api/v1/deployments/public/{url_slug}/info` | 없음 | `DeploymentInfoResponse` | public |
 | Implemented | `PATCH` | `/api/v1/deployments/{deployment_id}/toggle` | 없음 | `DeploymentResponse` | workflow `deploy` |
 | Implemented | `DELETE` | `/api/v1/deployments/{deployment_id}` | 없음 | message | workflow `manage` |
+| Planned | `GET` | `/api/v1/deployments/{deployment_id}/diff` | `base_deployment_id` query | diff summary | workflow `read` |
+| Planned | `POST` | `/api/v1/deployments/check` | draft/deployment reference | checklist result | workflow `deploy` |
+
+`POST /api/v1/deployments/check` 결과는 별도 `deployment_check_runs` table 없이 `audit_logs.action='deployment.check'`와 `audit_logs.audit_metadata`에 저장한다.
+
+## MVP 3 운영 엔드포인트
+
+| Status | Method | Path | Request | Response | Permission |
+| --- | --- | --- | --- | --- | --- |
+| Planned | `GET` | `/api/v1/operations/dashboard` | dashboard filter query | metrics summary | audit `read` 또는 workflow `read` scope |
+| Planned | `GET` | `/api/v1/operations/recommendations` | recommendation filter query | recommendation summary | workflow `read` |
+| Planned | `POST` | `/api/v1/operations/recommendations/{audit_log_id}/apply` | 없음 | apply result | workflow `write` |
+| Planned | `POST` | `/api/v1/operations/recommendations/{audit_log_id}/ignore` | 없음 | ignore result | workflow `write` |
+
+Recommendation lifecycle은 별도 `recommendation_events` table 없이 `audit_logs.action='recommendation.created'`, `recommendation.applied`, `recommendation.ignored`와 `audit_logs.audit_metadata`에 저장한다. Operations dashboard는 별도 aggregate table 없이 organization membership, run, trace, usage, audit table raw query로 시작한다.
+
+`GET /api/v1/operations/dashboard`는 MVP 2-0 이후 active organization membership을 먼저 확인한다. 조직 전체 audit/policy block 집계는 audit `read` 권한이 필요하고, workflow 단위 비용/실패/latency 집계는 해당 workflow `read` scope 안에서만 반환한다.
+
+Dashboard membership 필터 기준:
+
+| Filter | 기준 |
+| --- | --- |
+| `organization_id` | active organization 또는 audit visibility가 허용된 target organization |
+| `membership_state` | 현재 `organization_memberships.membership_state` |
+| `include_inactive_members` | audit `read` 권한이 있을 때만 suspended/removed member의 과거 실행량 포함 |
+| `team_id` | 현재 `team_memberships` 기준. 제거된 member의 과거 team membership 재구성은 MVP 3 기본 범위가 아님 |
+
+Removed member의 team/direct permission row는 MVP 2-0 cleanup에서 hard delete되므로 dashboard는 과거 permission row에 의존하지 않는다. 과거 실행량은 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `audit_logs`와 soft-removed `organization_memberships` row를 기준으로 구분한다.
 
 ## Public Run 및 Webhook
 

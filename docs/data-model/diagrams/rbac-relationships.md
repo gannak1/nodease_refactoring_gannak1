@@ -9,6 +9,7 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 
 ```mermaid
 erDiagram
+  organization ||--o{ organization_memberships : has_members
   organization ||--o{ teams : owns
   organization ||--o{ team_memberships : scopes
   organization ||--o{ team_workflow_permissions : scopes
@@ -20,6 +21,7 @@ erDiagram
   organization ||--o{ user_llm_permissions : scopes
   organization ||--o{ user_audit_permissions : grants_audit_visibility
 
+  users ||--o{ organization_memberships : belongs_to
   users ||--o{ team_memberships : joins
   users ||--o{ user_workflow_permissions : direct_grant
   users ||--o{ user_knowledge_permissions : direct_grant

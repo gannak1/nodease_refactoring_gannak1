@@ -12,10 +12,10 @@ RBAC enforcement는 Gateway endpoint와 runtime service가 함께 사용하는 �
 
 ## Organization Context
 
-권한 판단에는 organization context가 필요하다. 현재 코드는 첫 active team membership을 기반으로 primary organization을 추정하는 fallback을 가진다. 최종 active organization 전략은 아직 승인되지 않았으며 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)에서 추적한다.
+권한 판단에는 organization context가 필요하다. MVP 1의 과도기 구현은 첫 active team membership을 기반으로 primary organization을 추정하는 fallback을 가진다. MVP 2-0 이후에는 active `organization_memberships`를 primary organization과 organization 소속의 기준으로 사용한다. 최종 active organization 전달 전략은 아직 승인되지 않았으며 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)에서 추적한다.
 
 ## 권한 모델
 
-현재 활성 데이터 모델은 organization/team permission을 기준으로 한다. User direct permission은 additive extension 후보이며 [ADR-202606271559-user-direct-permission](../decisions/ADR-202606271559-user-direct-permission.md)에서 추적한다.
+현재 활성 데이터 모델은 organization membership 선검증 후 team permission을 기준으로 한다. User direct permission은 additive extension이며 active organization member에게만 부여한다. 관련 결정은 [ADR-202606271559-user-direct-permission](../decisions/ADR-202606271559-user-direct-permission.md)에서 추적한다.
 
 물리 테이블 상세는 [data-model/physical-data-model.md](../data-model/physical-data-model.md)에 정의한다.

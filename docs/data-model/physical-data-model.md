@@ -22,9 +22,9 @@
 | --- | --- |
 | dev 물리 데이터 모델 보존 | `origin/dev`에 존재하는 table과 column을 삭제, rename, 대체하지 않는다. |
 | 추가 schema 최소화 | MVP 목표 상태 기능은 우선 dev의 기존 table 조합으로 구현하고, 필요한 경우 additive table만 추가한다. |
-| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. dev의 `organization`, `teams`, `team_*_permissions`를 기본 권한 기준으로 사용한다. |
+| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. MVP 2-0 이후 active `organization_memberships`를 선검증하고, dev의 `teams`, `team_memberships`, `team_*_permissions`를 team 권한 기준으로 사용한다. |
 | User direct grant | 개별 user 예외 권한은 resource별 `user_*_permissions` table로 추가한다. direct grant는 additive allow 전용이다. |
-| Organization owner/manager | `organization.created_by` 또는 `organization.managed_by`에 해당하는 user는 해당 organization scope 안에서 `manager`급으로 판정한다. |
+| Organization owner/manager | target state에서는 active `organization_memberships.organization_auth_state='manager'`를 기준으로 판정한다. MVP 1 호환을 위해 `organization.created_by` 또는 `organization.managed_by` fallback을 유지한다. |
 | Audit 기준 | `audit_events`를 새로 만들지 않는다. dev의 `audit_logs`를 canonical audit table로 사용한다. |
 | Trace 기준 | `rag_retrieval_traces`를 새로 만들지 않는다. dev의 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies`, `trace_payload_access_events`를 trace 기준으로 사용한다. |
 | Tenant 기준 | `tenant_id`를 새로 설계하지 않는다. dev의 `organization_id`를 조직 범위 기준으로 사용한다. |
@@ -51,7 +51,7 @@
 | 이전 결정 | 재설계 결정 |
 | --- | --- |
 | `roles` 신규 생성 | 생성하지 않는다. dev의 `teams`와 permission table을 사용한다. |
-| `user_roles` 신규 생성 | 생성하지 않는다. 사용자-팀 소속은 `team_memberships`를 사용한다. |
+| `user_roles` 신규 생성 | 생성하지 않는다. 사용자-organization 소속은 `organization_memberships`, 사용자-team 배정은 `team_memberships`를 사용한다. |
 | `resource_permissions` 신규 생성 | 생성하지 않는다. team 권한은 `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`를 사용한다. user 직접 권한은 resource별 `user_*_permissions`를 사용한다. |
 | `audit_events` 신규 생성 | 생성하지 않는다. `audit_logs`를 사용한다. |
 | `rag_retrieval_traces` 신규 생성 | 생성하지 않는다. trace 계열 테이블과 JSONB payload convention으로 처리한다. |
@@ -73,7 +73,7 @@
 | `users` | 사용자, 실행 actor, resource owner |
 | `organization` | 조직 범위, tenant-like boundary |
 | `teams` | 조직 내 권한 부여 단위 |
-| `team_memberships` | 사용자와 팀의 소속 관계 |
+| `team_memberships` | organization 안에서 사용자와 custom team을 연결하는 배정 관계 |
 | `team_workflow_permissions` | 팀 단위 workflow 권한 |
 | `team_knowledge_permissions` | 팀 단위 knowledge base 권한 |
 | `team_llm_permissions` | 팀 단위 LLM credential 권한 |
@@ -102,10 +102,11 @@
 
 ### New Required Table
 
-MVP 목표 상태에서 개별 user direct permission을 지원하기 위해 새로 추가하는 table이다. 이 table들은 dev의 기존 team permission table을 대체하지 않고, additive allow extension으로만 동작한다.
+MVP 목표 상태에서 organization membership과 개별 user direct permission을 지원하기 위해 새로 추가하는 table이다. 이 table들은 dev의 기존 organization/team/permission table을 대체하지 않고, additive extension으로만 동작한다.
 
 | Table | 도입 MVP | MVP 목표 상태 역할 |
 | --- | --- | --- |
+| `organization_memberships` | MVP 2-0 | user를 organization에 직접 초대/소속시키고 active organization membership을 판정 |
 | `user_workflow_permissions` | MVP 1 | 특정 user에게 workflow 직접 추가 권한 부여 |
 | `user_llm_permissions` | MVP 1 | 특정 user에게 LLM credential 직접 추가 권한 부여 |
 | `user_knowledge_permissions` | MVP 2 | 특정 user에게 knowledge base 직접 추가 권한 부여 |
@@ -115,14 +116,15 @@ MVP 목표 상태에서 개별 user direct permission을 지원하기 위해 새
 
 | 기능 | 기준 Table |
 | --- | --- |
-| team 기반 역할/권한 | `organization`, `teams`, `team_memberships`, `team_*_permissions` |
+| organization 소속 | `organization_memberships` |
+| team 기반 역할/권한 | `teams`, `team_memberships`, `team_*_permissions` |
 | user 직접 추가 권한 | `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_audit_permissions` |
 | 감사 로그 | `audit_logs` |
 | LLM/RAG trace | `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies` |
 | trace payload 접근 감사 | `trace_payload_access_events` |
 | deploy checklist 결과 | `audit_logs.audit_metadata` |
 | recommendation lifecycle | `audit_logs.audit_metadata` |
-| operations dashboard | 기존 log/run/trace/usage table raw query |
+| operations dashboard | `organization_memberships`와 기존 log/run/trace/usage table raw query |
 
 ### 만들지 않는 Table
 
@@ -190,6 +192,8 @@ dev baseline table이다.
 - `users.id -> llm_usage_logs.user_id`
 - `users.id -> organization.created_by`
 - `users.id -> organization.managed_by`
+- `users.id -> organization_memberships.user_id`
+- `users.id -> organization_memberships.invited_by`
 - `users.id -> teams.created_by`
 - `users.id -> teams.managed_by`
 - `users.id -> team_memberships.user_id`
@@ -233,6 +237,7 @@ dev baseline table이다.
 - `knowledge_bases.organization_id -> organization.id`
 - `llm_credentials.organization_id -> organization.id`
 - `llm_usage_logs.organization_id -> organization.id`
+- `organization_memberships.organization_id -> organization.id`
 - `teams.organization_id -> organization.id`
 - `team_memberships.grantee_organization_id -> organization.id`
 - `team_*_permissions.grantee_organization_id -> organization.id`
@@ -242,6 +247,51 @@ MVP 목표 상태 결정:
 
 - `organization`을 제거하거나 `tenant_id`로 되돌리지 않는다.
 - 조직별 설정이 필요하면 dev의 `options`, `flags`를 우선 사용한다.
+
+### `organization_memberships`
+
+MVP 2-0 신규 table이다.
+
+역할:
+
+- user와 organization의 직접 소속 관계를 표현한다.
+- active organization 목록과 organization manager 판정의 기준이다.
+- team membership과 user direct permission의 선행 조건이다.
+
+주요 column:
+
+- `id`
+- `organization_id`
+- `user_id`
+- `membership_state`
+- `organization_auth_state`
+- `invited_by`
+- `invited_at`
+- `accepted_at`
+- `removed_at`
+- `created_at`
+- `updated_at`
+- `options`
+- `flags`
+
+관계:
+
+- `organization_memberships.organization_id -> organization.id`
+- `organization_memberships.user_id -> users.id`
+- `organization_memberships.invited_by -> users.id`
+
+제약:
+
+- `(organization_id, user_id)`는 unique여야 한다.
+- `membership_state`는 `invited`, `active`, `suspended`, `removed` 중 하나다.
+- `organization_auth_state`는 `member`, `manager` 중 하나다.
+- `flags`는 0 이상이어야 한다.
+
+MVP 목표 상태 결정:
+
+- `organization_memberships`는 soft remove한다.
+- organization에서 user가 제거되면 해당 organization의 `team_memberships`와 `user_*_permissions`는 hard delete한다.
+- resource 접근, team 배정, user direct permission 부여는 active organization membership을 전제로 한다.
 
 ### `teams`
 
@@ -291,8 +341,8 @@ dev baseline table이다.
 
 역할:
 
-- 사용자를 팀에 소속시킨다.
-- 권한 판정의 subject membership 원천이다.
+- 사용자를 organization 안의 custom team에 배정한다.
+- team permission 계산에서 user가 어떤 team에 속하는지 확인하는 원천이다. MVP 2-0 이후 organization 소속의 원천은 `organization_memberships`다.
 
 주요 column:
 
@@ -443,7 +493,7 @@ dev baseline table이다.
 
 MVP 목표 상태 결정:
 
-- audit log 조회 권한은 이 테이블을 기준으로 판정한다.
+- audit log 조회 권한은 active organization membership 선검증 후 `team_audit_permissions`와 `user_audit_permissions`의 effective permission으로 판정한다.
 - `auth_state` 값 집합과 의미는 `data-model/rbac-permission-policy.md`의 application-level matrix를 따른다.
 
 ### `user_workflow_permissions`
@@ -933,7 +983,7 @@ dev baseline table이다.
 
 MVP 목표 상태 결정:
 
-- trace 조회 권한은 team permission과 이 visibility policy를 함께 판정한다.
+- trace 조회 권한은 audit team/user effective permission과 이 visibility policy를 함께 판정한다.
 
 ### `trace_payloads`
 
@@ -1040,7 +1090,7 @@ MVP 목표 상태 결정:
 
 - `audit_events`를 만들지 않는다.
 - canonical action은 `audit_logs.action`에 저장한다.
-- 정책 결과, request id, ip, user agent, role/team snapshot, checklist result, recommendation context는 `audit_metadata`에 저장한다.
+- 정책 결과, request id, ip, user agent, role/team snapshot, checklist result, recommendation context는 `audit_logs.audit_metadata`에 저장한다.
 - `before`/`after`는 data change 감사에 사용한다.
 - `audit_logs.status`에는 dev enum인 `success` 또는 `failure`만 저장한다.
 - `warn`, `block`, `pass` 같은 정책/검사 결과는 `audit_metadata.policy_result`에 저장한다.
@@ -1052,8 +1102,14 @@ MVP 목표 상태 결정:
 | 권한 부여 | `permission.grant` |
 | 권한 회수 | `permission.revoke` |
 | workflow 실행 | `workflow.execute` |
+| RAG retrieval | `rag.retrieve` |
+| RAG re-index | `rag.reindex` |
 | 정책 차단 | `policy.block` |
 | 정책 경고 | `policy.warn` |
+| organization 초대 | `organization.invite` |
+| organization 초대 수락 | `organization.member.accept` |
+| organization member 변경 | `organization.member.update` |
+| organization member 제거 | `organization.member.remove` |
 | 배포 생성 | `deployment.create` |
 | 이전 배포 활성화 | `deployment.activate_previous` |
 | 배포 check 실행 | `deployment.check` |
@@ -1389,11 +1445,12 @@ MVP 목표 상태 결정:
 
 ### 권한
 
-권한은 dev의 조직/팀 모델을 기본으로 처리하고, 개별 user 예외 권한은 resource별 `user_*_permissions` table로 처리한다.
+권한은 active organization membership을 먼저 확인한 뒤 dev의 조직/팀 모델로 처리하고, 개별 user 예외 권한은 resource별 `user_*_permissions` table로 처리한다.
 
 | 대상 | 기준 Table |
 | --- | --- |
-| 사용자 소속 | `team_memberships` |
+| 사용자 organization 소속 | `organization_memberships` |
+| 사용자 team 배정 | `team_memberships` |
 | workflow team 권한 | `team_workflow_permissions` |
 | workflow user 직접 권한 | `user_workflow_permissions` |
 | knowledge base team 권한 | `team_knowledge_permissions` |
@@ -1405,14 +1462,15 @@ MVP 목표 상태 결정:
 
 권한 판정 순서:
 
-1. 사용자의 active organization을 확인한다.
-2. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
-3. 사용자가 속한 team을 `team_memberships`에서 조회한다.
-4. resource별 permission table에서 `auth_state`를 확인한다.
-5. resource별 user direct permission table에서 해당 user의 `auth_state`를 확인한다.
-6. team 권한과 user 직접 권한 중 가장 강한 허용 상태를 적용한다.
-7. application-level policy가 필요한 경우 `options`, `flags`, resource 상태를 함께 평가한다.
-8. 권한 부여/회수/차단 결과는 `audit_logs`에 기록한다.
+1. 사용자의 active organization membership을 `organization_memberships`에서 확인한다.
+2. active membership의 `organization_auth_state='manager'`이면 해당 organization scope 안에서 `manager`로 판정한다.
+3. MVP 1 호환을 위해 user가 `organization.created_by` 또는 `organization.managed_by`이면 manager fallback을 적용한다.
+4. 사용자가 속한 custom team을 `team_memberships`에서 조회한다.
+5. resource별 permission table에서 `auth_state`를 확인한다.
+6. resource별 user direct permission table에서 해당 user의 `auth_state`를 확인한다.
+7. team 권한과 user 직접 권한 중 가장 강한 허용 상태를 적용한다.
+8. application-level policy가 필요한 경우 `options`, `flags`, resource 상태를 함께 평가한다.
+9. 권한 부여/회수/차단 결과는 `audit_logs`에 기록한다.
 
 제약:
 
@@ -1510,9 +1568,13 @@ Dashboard API는 raw query로 아래 기존 테이블을 조회한다.
 | trace 접근 감사 | `trace_payload_access_events` |
 | LLM token/cost | `llm_usage_logs.prompt_tokens`, `llm_usage_logs.completion_tokens`, `llm_usage_logs.total_cost` |
 | model별 비용 | `llm_usage_logs`, `llm_models` |
+| current membership 상태별 실행량 | `organization_memberships`, `workflow_runs`, `llm_usage_logs`, `audit_logs` |
+| 현재 team별 실행량 | `team_memberships`, `workflow_runs`, `llm_usage_logs` |
 | 권한 변경/정책 이벤트 | `audit_logs` |
 | deploy checklist 이력 | `audit_logs.action='deployment.check'` |
 | recommendation 이력 | `audit_logs.action LIKE 'recommendation.%'` |
+
+Removed member의 `team_memberships`와 `user_*_permissions`는 MVP 2-0 cleanup에서 hard delete되므로 dashboard는 과거 permission row에 의존하지 않는다. Suspended/removed member의 과거 실행량 구분은 soft-removed `organization_memberships`와 run/usage/audit raw data를 기준으로 한다. Historical team membership reconstruction은 MVP 3 기본 범위가 아니다.
 
 명시적 제외:
 
@@ -1587,7 +1649,7 @@ DB 변경:
 
 1. deployment checklist는 실행 시점에 계산하고 결과를 `audit_logs`에 저장한다.
 2. recommendation은 `llm_usage_logs`와 `llm_models`를 근거로 계산하고 lifecycle event를 `audit_logs`에 저장한다.
-3. operations dashboard는 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `llm_usage_logs`, `audit_logs` raw query로 구현한다.
+3. operations dashboard는 `organization_memberships`, `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `llm_usage_logs`, `audit_logs` raw query로 구현한다.
 4. audit visibility는 `team_audit_permissions`와 `user_audit_permissions`를 함께 평가한다.
 5. checklist와 recommendation의 장기 상태 관리가 필요하면 별도 schema 변경 요청으로 분리한다.
 
@@ -1618,7 +1680,7 @@ MVP 목표 데이터 모델 구현은 아래 조건을 만족해야 한다.
 
 1. `origin/dev`에 이미 존재하는 table과 column을 삭제, rename, 대체하지 않는다.
 2. `roles`, `user_roles`, `resource_permissions`, `audit_events`를 생성하지 않는다.
-3. 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions` 기준으로 동작해야 한다.
+3. 기본 권한은 active `organization_memberships` 선검증 후 `teams`, `team_memberships`, `team_*_permissions` 기준으로 동작해야 한다.
 4. user direct 권한은 `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_audit_permissions` 기준으로 additive allow만 제공해야 한다.
 5. user direct 권한은 team 권한을 deny하거나 낮추면 안 된다.
 6. audit은 `audit_logs` 기준으로 동작해야 한다.

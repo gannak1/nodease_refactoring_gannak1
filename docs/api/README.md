@@ -17,7 +17,7 @@ API 문서는 HTTP 계약의 source of truth다. 모든 endpoint는 기본적으
 | [llm-credentials.md](llm-credentials.md) | LLM provider, credential, model, pricing |
 | [knowledge-rag.md](knowledge-rag.md) | knowledge base, document, RAG retrieval |
 | [tracing-audit.md](tracing-audit.md) | trace 조회, LLM trace, audit search, raw payload access |
-| [deployments.md](deployments.md) | deployment 생성, 활성화, public info, run/webhook |
+| [deployments.md](deployments.md) | deployment 생성, 활성화, public info, run/webhook, MVP 3 운영 조회 |
 | [errors.md](errors.md) | 공통 error response와 reason code |
 
 ## 표기

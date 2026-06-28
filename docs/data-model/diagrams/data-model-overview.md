@@ -10,6 +10,8 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 ```mermaid
 erDiagram
   users ||--o{ organization : creates_manages
+  users ||--o{ organization_memberships : belongs_to
+  organization ||--o{ organization_memberships : has_members
   organization ||--o{ teams : owns
   organization ||--o{ apps : scopes
   organization ||--o{ workflows : scopes

@@ -55,6 +55,7 @@ Active organization 전달 방식은 아직 Proposed 상태다.
 | --- | --- | --- |
 | Proposed | `X-Organization-Id` | API 요청에서 명시적으로 active organization을 전달하는 후보 |
 | Proposed | session/cookie context | 서버 session에 active organization을 저장하는 후보 |
-| Current fallback | 없음 | 첫 active team membership을 primary organization으로 사용하는 과도기 동작 |
+| MVP 1 fallback | 없음 | 첫 active team membership을 primary organization으로 사용하는 과도기 동작 |
+| MVP 2-0 fallback | 없음 | active `organization_memberships`의 첫 organization을 primary organization으로 사용 |
 
 최종 방식이 확정되면 이 문서와 [organization-rbac.md](organization-rbac.md)를 함께 갱신한다.

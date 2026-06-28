@@ -63,8 +63,8 @@ RBAC 범위:
 | 단계 | 범위 |
 | --- | --- |
 | MVP 1 | resource/permission 모델, workflow read/write/execute, 최소 model use check |
-| MVP 2 | knowledge base/document use enforcement, DB connection runtime use enforcement, HR 데이터 차단 시나리오 |
-| MVP 3 | deploy/manage 권한, audit log 접근 제어, 운영 dashboard scope |
+| MVP 2 | MVP 2-0 organization membership, knowledge base/document use enforcement, DB connection runtime use enforcement, HR 데이터 차단 시나리오 |
+| MVP 3 | builder deploy, manager manage, audit log 접근 제어, 운영 dashboard scope |
 
 Audit/Tracing 범위:
 
@@ -85,7 +85,7 @@ Data Governance 범위:
 ## MVP 간 의존성
 
 ```text
-Team/User Permission Model
+Organization Membership + Team/User Permission Model
   -> Audit Logs / Trace Payload Model
   -> Data Governance Policy
   -> MVP 1 Observability

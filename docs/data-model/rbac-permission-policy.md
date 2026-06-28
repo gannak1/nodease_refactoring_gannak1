@@ -4,7 +4,7 @@
 
 이 문서는 기존 `main` 브랜치 대비 `dev` 브랜치에서 추가된 조직/팀 권한 관련 물리 데이터 모델을 기준으로, MVP 목표 상태에서 사용할 권한 정책과 matrix를 정의한다.
 
-이 문서는 [physical-data-model.md](physical-data-model.md)를 따른다. 따라서 `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 기준으로 판정하고, 예외적 추가 권한은 resource별 `user_*_permissions`로 부여한다.
+이 문서는 [physical-data-model.md](physical-data-model.md)를 따른다. 따라서 `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. MVP 2-0 이후 기본 권한은 active `organization_memberships`를 선검증한 뒤 `teams`, `team_memberships`, `team_*_permissions`를 기준으로 판정하고, 예외적 추가 권한은 resource별 `user_*_permissions`로 부여한다.
 
 ## 빠른 구현 기준
 
@@ -18,8 +18,9 @@
 | Table | 역할 |
 | --- | --- |
 | `organization` | 조직 범위. app/workflow/knowledge base/LLM credential의 상위 scope |
+| `organization_memberships` | user와 organization의 직접 소속 관계. MVP 2-0부터 active organization membership의 기준 |
 | `teams` | 권한 부여 subject. 기존 role 개념은 team template으로 흡수 |
-| `team_memberships` | 사용자와 team의 소속 관계 |
+| `team_memberships` | organization 안에서 사용자와 custom team을 연결하는 배정 관계 |
 | `team_workflow_permissions` | team별 workflow 권한 |
 | `team_knowledge_permissions` | team별 knowledge base 권한 |
 | `team_llm_permissions` | team별 LLM credential 권한 |
@@ -29,18 +30,21 @@
 | `user_llm_permissions` | user별 LLM credential 추가 권한 |
 | `user_audit_permissions` | user별 audit visibility 추가 권한 |
 
+이 표는 MVP 목표 상태의 전체 기준 테이블이다. 실제 도입 단계는 아래 `MVP별 적용 범위`를 따르며, `user_knowledge_permissions`는 MVP 2, `user_audit_permissions`와 raw trace access control은 MVP 3에서 완성한다.
+
 ## 설계 원칙
 
 | 원칙 | 내용 |
 | --- | --- |
 | Team 우선 | 기본 권한 subject는 team이다. |
 | User direct grant | 예외적 추가 권한은 user별 permission table로 부여한다. |
+| Organization membership 선검증 | MVP 2-0부터 user는 active `organization_memberships` row가 있어야 해당 organization의 team/direct permission subject가 될 수 있다. |
 | Organization scope | team과 permission은 조직 범위 안에서 해석한다. |
 | `auth_state` 단일 상태 | dev 물리 데이터 모델은 permission boolean set이 아니라 `auth_state` 문자열 하나를 가진다. |
 | Matrix 해석 | `auth_state` 값은 DB enum이 아니라 application-level matrix로 해석한다. |
 | Deny by default | 명시 권한이 없거나 `auth_state='none'`이면 거부한다. |
 | Additive only | user direct permission은 권한을 추가로 허용할 뿐, team 권한을 낮추거나 deny하지 않는다. |
-| Organization owner/manager 자동 권한 | `organization.created_by` 또는 `organization.managed_by`에 해당하는 user는 해당 organization scope 안에서 `manager`급으로 판정한다. |
+| Organization owner/manager 자동 권한 | target state에서는 active `organization_memberships.organization_auth_state='manager'`를 기준으로 판정한다. MVP 1 호환을 위해 `organization.created_by` 또는 `organization.managed_by` fallback을 유지한다. |
 | Public endpoint 분리 | public run/webhook은 `apps.auth_secret` 인증을 유지하되 내부 실행에서 workflow/credential/data 권한을 추가 평가할 수 있다. |
 | 감사 기록 | 권한 부여, 회수, 차단은 `audit_logs`에 남긴다. |
 
@@ -72,7 +76,7 @@ dev DB는 `auth_state`를 string으로만 저장한다. MVP 목표 상태에서�
 | `none` | 명시 권한 없음 | 없음 |
 | `viewer` | 조회만 가능 | `read` |
 | `operator` | 조회와 실행/사용 가능 | `read`, `execute`, `use` |
-| `builder` | 생성/수정/실행 가능 | `read`, `write`, `execute`, `use` |
+| `builder` | 생성/수정/실행/배포 가능 | `read`, `write`, `execute`, `use`, `deploy` |
 | `manager` | 권한과 설정까지 관리 가능 | `read`, `write`, `execute`, `use`, `deploy`, `manage` |
 | `auditor` | 감사 조회 가능 | `read` |
 | `raw_auditor` | 감사 조회와 raw trace 조회 가능 | `read`, `view_raw` |
@@ -91,7 +95,7 @@ Team template은 seed나 UI preset으로 만들 수 있지만 DB role table은 �
 | Team Template | 기본 목적 |
 | --- | --- |
 | `Admin` | 조직 설정, 권한, 주요 리소스 관리 |
-| `Builder` | workflow와 RAG/LLM 설정을 만들고 수정 |
+| `Builder` | workflow와 RAG/LLM 설정을 만들고 수정하며, workflow를 배포 |
 | `Operator` | 배포된 workflow 실행과 운영 확인 |
 | `Viewer` | 조회 전용 |
 | `Auditor` | audit/trace 조회 전용 |
@@ -145,7 +149,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 | `none` | No | No | No | No | No | 접근 불가 |
 | `viewer` | Yes | No | No | No | No | workflow 조회만 가능 |
 | `operator` | Yes | No | Yes | No | No | 실행 가능, 수정 불가 |
-| `builder` | Yes | Yes | Yes | No | No | graph 수정과 실행 가능 |
+| `builder` | Yes | Yes | Yes | Yes | No | graph 수정, 실행, 배포 가능. 권한 관리는 불가 |
 | `manager` | Yes | Yes | Yes | Yes | Yes | 배포/권한 관리까지 가능 |
 
 적용 위치:
@@ -234,8 +238,8 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 추가 정책:
 
-- raw trace 조회는 `team_audit_permissions`만으로 허용하지 않는다.
-- `trace_visibility_policies`와 `trace_payload_access_events`를 함께 적용한다.
+- audit team/user effective `view_raw` 권한만으로 raw trace 조회를 허용하지 않는다.
+- `trace_visibility_policies`도 함께 통과해야 하며, `trace_payload_access_events`를 함께 적용한다.
 - raw trace 조회 시도는 성공/실패 모두 `trace_payload_access_events`에 기록한다.
 
 ### App / Project Boundary
@@ -266,9 +270,9 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 | 행위 | 권한 기준 |
 | --- | --- |
 | deployment 조회 | workflow `read` |
-| deployment 생성 | workflow `deploy` |
-| deployment 활성화 | workflow `deploy` |
-| 이전 deployment 활성화 | workflow `deploy` |
+| deployment 생성 | workflow `deploy`. `builder` 이상 가능 |
+| deployment 활성화 | workflow `deploy`. `builder` 이상 가능 |
+| 이전 deployment 활성화 | workflow `deploy`. `builder` 이상 가능 |
 | deployment 삭제 또는 위험 변경 | workflow `manage` |
 
 주의:
@@ -330,26 +334,31 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 | 행위 | 허용 주체 |
 | --- | --- |
 | team 생성/수정/비활성화 | organization owner/manager |
-| team membership 추가/제거 | organization owner/manager |
+| organization member 초대/수정/제거 | organization owner/manager |
+| team membership 추가/제거 | organization owner/manager. 추가 대상 user는 active organization member여야 함 |
 | team resource permission 부여/회수 | organization owner/manager 또는 해당 resource의 effective `manager` |
-| user direct permission 부여/회수 | organization owner/manager 또는 해당 resource의 effective `manager` |
-| audit visibility permission 부여/회수 | organization owner/manager 또는 audit effective `manager` |
+| user direct permission 부여/회수 | organization owner/manager 또는 해당 resource의 effective `manager`. 대상 user는 active organization member여야 함 |
+| audit visibility permission 부여/회수 | organization owner/manager 또는 audit effective `manager`. user direct audit grant 대상 user는 target organization의 active member여야 함 |
 
 여기서 effective `manager`는 team permission과 user direct permission을 합산한 결과가 `manager`인 user를 뜻한다.
+
+Invited, suspended, removed, non-member user는 user direct workflow/knowledge/LLM/audit permission grant 대상이 될 수 없다.
 
 ## 권한 판정 순서
 
 1. 사용자를 인증한다.
 2. 요청의 active organization을 결정한다.
-3. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
-4. 사용자의 active organization 내 team 목록을 `team_memberships`에서 조회한다.
-5. 대상 resource의 organization scope를 확인한다.
-6. resource별 permission table에서 team들의 `auth_state`를 조회한다.
-7. resource별 user direct permission table에서 해당 user의 `auth_state`를 조회한다.
-8. team permission과 user direct permission 중 가장 강한 허용 상태를 적용한다.
-9. trace/raw/audit처럼 별도 visibility policy가 있으면 추가 평가한다.
-10. 최종 decision을 반환한다.
-11. 거부 또는 민감 action은 `audit_logs` 또는 `trace_payload_access_events`에 기록한다.
+3. user의 active organization membership을 확인한다.
+4. active membership의 `organization_auth_state='manager'`이면 해당 organization scope 안에서 `manager`로 판정한다.
+5. MVP 1 호환을 위해 user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager` fallback을 적용한다.
+6. 사용자의 active organization 내 team 목록을 `team_memberships`에서 조회한다.
+7. 대상 resource의 organization scope를 확인한다.
+8. resource별 permission table에서 team들의 `auth_state`를 조회한다.
+9. resource별 user direct permission table에서 해당 user의 `auth_state`를 조회한다.
+10. team permission과 user direct permission 중 가장 강한 허용 상태를 적용한다.
+11. trace/raw/audit처럼 별도 visibility policy가 있으면 추가 평가한다.
+12. 최종 decision을 반환한다.
+13. 거부 또는 민감 action은 `audit_logs` 또는 `trace_payload_access_events`에 기록한다.
 
 ## 우선순위 규칙
 
@@ -357,14 +366,15 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 1. 비활성 user/team/organization이면 거부한다.
 2. resource가 요청 organization 밖이면 거부한다.
-3. organization owner/manager는 organization scope 안에서 `manager`로 판정한다.
-4. permission row가 없으면 거부한다.
-5. `auth_state='none'`이면 거부한다.
-6. 여러 team 권한이 있으면 가장 높은 state를 적용한다.
-7. user direct permission이 있으면 team permission과 비교해 더 강한 state를 적용한다.
-8. user direct permission이 더 약해도 team permission을 낮추지 않는다.
-9. raw trace는 audit team/user permission과 `trace_visibility_policies`가 모두 허용해야 한다.
-10. legacy resource처럼 organization scope가 없는 경우에만 creator fallback을 제한적으로 적용한다.
+3. active organization membership이 없으면 거부한다. 단, MVP 1 호환을 위해 `organization.created_by`/`managed_by` fallback은 owner/manager에게만 허용한다.
+4. organization manager는 organization scope 안에서 `manager`로 판정한다.
+5. permission row가 없으면 거부한다.
+6. `auth_state='none'`이면 거부한다.
+7. 여러 team 권한이 있으면 가장 높은 state를 적용한다.
+8. user direct permission이 있으면 team permission과 비교해 더 강한 state를 적용한다.
+9. user direct permission이 더 약해도 team permission을 낮추지 않는다.
+10. raw trace는 audit team/user permission과 `trace_visibility_policies`가 모두 허용해야 한다.
+11. legacy resource처럼 organization scope가 없는 경우에만 creator fallback을 제한적으로 적용한다.
 
 권한 강도 순서:
 
@@ -402,6 +412,10 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |
+| organization 초대 | `organization.invite` | organization membership invitation 생성 |
+| organization 초대 수락 | `organization.member.accept` | 초대받은 user가 membership을 active로 전환 |
+| organization member 변경 | `organization.member.update` | membership state 또는 organization auth state 변경 |
+| organization member 제거 | `organization.member.remove` | member 제거와 team/direct permission cleanup |
 | raw trace 조회 | `trace.raw_payload.access` | raw 조회 성공/실패. 상세는 `trace_payload_access_events` |
 
 `audit_logs.status`는 dev enum에 맞춰 `success` 또는 `failure`만 저장한다. `allow`, `deny`, `warn`, `block`은 `audit_logs.audit_metadata.policy_result`에 저장한다.
@@ -428,6 +442,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 ### MVP 2
 
+- MVP 2-0 organization membership/invitation foundation
 - knowledge base `read/write/use`
 - `user_knowledge_permissions` additive grant
 - RAG node의 knowledge base `use` check
@@ -436,7 +451,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 ### MVP 3
 
-- workflow `deploy/manage`
+- workflow `deploy`는 `builder` 이상, workflow `manage`는 `manager`
 - deployment activate/previous activate 권한
 - dashboard scope filtering
 - raw trace access control
@@ -460,7 +475,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 2. `auth_state='none'`이면 접근이 거부된다.
 3. workflow `viewer`는 조회만 가능하고 수정/실행/배포는 거부된다.
 4. workflow `operator`는 실행 가능하지만 수정/배포는 거부된다.
-5. workflow `builder`는 수정/실행 가능하지만 배포는 거부된다.
+5. workflow `builder`는 수정/실행/배포가 가능하고 권한 관리는 불가하다.
 6. workflow `manager`는 배포와 권한 관리가 가능하다.
 7. LLM node 실행 시 credential `use` 권한이 없으면 실행이 차단된다.
 8. RAG node 실행 시 knowledge base `use` 권한이 없으면 실행이 차단된다.
