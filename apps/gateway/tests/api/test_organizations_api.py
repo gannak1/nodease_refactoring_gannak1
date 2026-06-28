@@ -193,10 +193,16 @@ class TestOrganizationsApi(unittest.TestCase):
             id=user_id
         )
 
-        response = TestClient(app).get(f"/api/v1/organizations/{organization_id}")
+        response = TestClient(app).get(
+            f"/api/v1/organizations/{organization_id}",
+            headers={"X-Request-ID": "req-test"},
+        )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), {"detail": "Organization not found"})
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Organization not found."),
+        )
 
     def test_patch_organization_allows_owner_without_team_membership(self):
         organization_id = uuid4()
@@ -241,10 +247,43 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
+            headers={"X-Request-ID": "req-test"},
             json={"name": "Acme Korea"},
         )
 
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            _error("organization.required", "X-Organization-Id header is required."),
+        )
+
+    def test_patch_organization_rejects_invalid_organization_header(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: _Session([])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).patch(
+            f"/api/v1/organizations/{organization_id}",
+            headers={
+                "X-Organization-Id": "not-a-uuid",
+                "X-Request-ID": "req-test",
+            },
+            json={"name": "Acme Korea"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "validation.failed",
+                "X-Organization-Id must be a valid UUID.",
+                {"field": "X-Organization-Id"},
+            ),
+        )
 
     def test_patch_organization_hides_header_path_mismatch(self):
         organization_id = uuid4()
@@ -258,11 +297,18 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(header_organization_id)},
+            headers={
+                "X-Organization-Id": str(header_organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "Acme Korea"},
         )
 
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Organization not found."),
+        )
 
     def test_patch_organization_rejects_non_manager(self):
         organization_id = uuid4()
@@ -276,11 +322,18 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "Acme Korea"},
         )
 
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error("permission.denied", "Permission denied."),
+        )
 
     def test_patch_organization_rejects_missing_or_out_of_scope_organization(self):
         organization_id = uuid4()
@@ -293,11 +346,18 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "Acme Korea"},
         )
 
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error("permission.denied", "Permission denied."),
+        )
 
     def test_patch_organization_rejects_different_organization_from_query(self):
         organization_id = uuid4()
@@ -315,11 +375,18 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "Acme Korea"},
         )
 
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error("permission.denied", "Permission denied."),
+        )
         self.assertEqual(organization.name, "Acme")
 
     def test_patch_organization_rejects_inactive_organization(self):
@@ -339,11 +406,18 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "Acme Korea"},
         )
 
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error("permission.denied", "Permission denied."),
+        )
         self.assertEqual(organization.name, "Acme")
 
     def test_patch_organization_rejects_empty_update(self):
@@ -362,11 +436,18 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={},
         )
 
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            _error("validation.failed", "No organization fields to update."),
+        )
 
     def test_patch_organization_rejects_blank_name(self):
         organization_id = uuid4()
@@ -384,11 +465,22 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "   "},
         )
 
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "validation.failed",
+                "Organization name is required.",
+                {"field": "name"},
+            ),
+        )
 
     def test_patch_organization_rejects_name_longer_than_database_column(self):
         organization_id = uuid4()
@@ -406,11 +498,20 @@ class TestOrganizationsApi(unittest.TestCase):
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
-            headers={"X-Organization-Id": str(organization_id)},
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "X-Request-ID": "req-test",
+            },
             json={"name": "A" * 256},
         )
 
         self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "validation.failed")
+        self.assertEqual(response.json()["error"]["request_id"], "req-test")
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "Request validation failed.",
+        )
         self.assertEqual(organization.name, "Acme")
 
 
@@ -525,6 +626,17 @@ def _assert_patch_scope_filters(test_case, query, organization_id):
     test_case.assertEqual(str(org_active_filter.left), "organization.is_active")
     test_case.assertIs(org_active_filter.operator, is_)
     test_case.assertEqual(str(org_active_filter.right), "true")
+
+
+def _error(code, message, details=None):
+    return {
+        "error": {
+            "code": code,
+            "message": message,
+            "request_id": "req-test",
+            "details": details or {},
+        }
+    }
 
 
 if __name__ == "__main__":

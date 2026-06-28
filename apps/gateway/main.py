@@ -35,6 +35,8 @@ else:
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -89,10 +91,30 @@ async def audit_permission_denied(request: Request, exc: HTTPException):
                 **get_current_metadata(),
             },
         )
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        content = exc.detail
+    else:
+        content = {"detail": exc.detail}
+
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content=content,
         headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_failed(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "validation.failed",
+                "message": "Request validation failed.",
+                "request_id": getattr(request.state, "request_id", None),
+                "details": {"errors": jsonable_encoder(exc.errors())},
+            }
+        },
     )
 
 

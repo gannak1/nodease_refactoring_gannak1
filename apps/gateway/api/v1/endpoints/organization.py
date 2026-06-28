@@ -1,6 +1,7 @@
+from typing import NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
@@ -16,6 +17,59 @@ from apps.shared.schemas.organization import (
 )
 
 router = APIRouter()
+
+
+def _error_detail(
+    request: Request,
+    code: str,
+    message: str,
+    details: dict | None = None,
+) -> dict:
+    return {
+        "error": {
+            "code": code,
+            "message": message,
+            "request_id": getattr(request.state, "request_id", None),
+            "details": details or {},
+        }
+    }
+
+
+def _raise_error(
+    request: Request,
+    status_code: int,
+    code: str,
+    message: str,
+    details: dict | None = None,
+) -> NoReturn:
+    raise HTTPException(
+        status_code=status_code,
+        detail=_error_detail(request, code, message, details),
+    )
+
+
+def _parse_organization_id(
+    request: Request,
+    raw_organization_id: str | None,
+) -> UUID:
+    if raw_organization_id is None:
+        _raise_error(
+            request,
+            400,
+            "organization.required",
+            "X-Organization-Id header is required.",
+        )
+
+    try:
+        return UUID(raw_organization_id)
+    except ValueError:
+        _raise_error(
+            request,
+            422,
+            "validation.failed",
+            "X-Organization-Id must be a valid UUID.",
+            {"field": "X-Organization-Id"},
+        )
 
 
 # 인증된 사용자가 속한 active organization 목록을 조회하는 API.
@@ -48,6 +102,7 @@ def list_organizations(
 # 인증된 사용자가 접근 가능한 특정 active organization 상세를 조회하는 API.
 @router.get("/{organization_id}", response_model=OrganizationResponse)
 def get_organization(
+    request: Request,
     organization_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -71,7 +126,12 @@ def get_organization(
     )
 
     if organization is None:
-        raise HTTPException(status_code=404, detail="Organization not found")
+        _raise_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
 
     return organization
 
@@ -79,31 +139,51 @@ def get_organization(
 @router.patch("/{organization_id}", response_model=OrganizationResponse)
 @audit(AuditAction.ORGANIZATION_UPDATE, target_param="organization_id")
 def update_organization(
+    request: Request,
     organization_id: UUID,
-    request: OrganizationPatchRequest,
-    x_organization_id: UUID | None = Header(default=None, alias="X-Organization-Id"),
+    payload: OrganizationPatchRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if x_organization_id is None:
-        raise HTTPException(
-            status_code=400, detail="X-Organization-Id header is required"
+    parsed_organization_id = _parse_organization_id(request, x_organization_id)
+
+    if parsed_organization_id != organization_id:
+        _raise_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
         )
 
-    if x_organization_id != organization_id:
-        raise HTTPException(status_code=404, detail="Organization not found")
-
-    fields = request.model_fields_set
+    fields = payload.model_fields_set
     if not fields:
-        raise HTTPException(status_code=400, detail="No organization fields to update")
+        _raise_error(
+            request,
+            400,
+            "validation.failed",
+            "No organization fields to update.",
+        )
 
     if "name" in fields and (
-        request.name is None or request.name.strip() == ""
+        payload.name is None or payload.name.strip() == ""
     ):
-        raise HTTPException(status_code=400, detail="Organization name is required")
+        _raise_error(
+            request,
+            400,
+            "validation.failed",
+            "Organization name is required.",
+            {"field": "name"},
+        )
 
-    if "options" in fields and request.options is None:
-        raise HTTPException(status_code=400, detail="Organization options are required")
+    if "options" in fields and payload.options is None:
+        _raise_error(
+            request,
+            400,
+            "validation.failed",
+            "Organization options are required.",
+            {"field": "options"},
+        )
 
     organization = (
         db.query(Organization)
@@ -115,19 +195,29 @@ def update_organization(
     )
 
     if organization is None:
-        raise HTTPException(status_code=403, detail="Permission denied")
+        _raise_error(
+            request,
+            403,
+            "permission.denied",
+            "Permission denied.",
+        )
 
     is_manager = organization.created_by == current_user.id or (
         organization.managed_by is not None
         and organization.managed_by == current_user.id
     )
     if not is_manager:
-        raise HTTPException(status_code=403, detail="Permission denied")
+        _raise_error(
+            request,
+            403,
+            "permission.denied",
+            "Permission denied.",
+        )
 
     if "name" in fields:
-        organization.name = request.name.strip()
+        organization.name = payload.name.strip()
     if "options" in fields:
-        organization.options = request.options
+        organization.options = payload.options
 
     db.commit()
     db.refresh(organization)
