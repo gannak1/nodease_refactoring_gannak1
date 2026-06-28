@@ -3,9 +3,9 @@
 Status: Draft
 Authority: Documentation Index
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
-이 디렉터리는 향후 저장소 루트의 `docs/`로 이동될 문서 세트다. 현재 물리 경로명은 임시 이름이므로 문서 내부 링크와 권위 규칙은 이 디렉터리를 문서 루트로 간주한다.
+이 디렉터리가 현재 저장소의 active documentation root다. 문서 내부 링크와 권위 규칙은 이 `docs/` 디렉터리를 문서 루트로 간주한다.
 
 ## 단일 기준 문서
 
@@ -24,15 +24,17 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 
 ## 활성 문서
 
-- [requirements/overview.md](requirements/overview.md)
-- [requirements/mvp-1-foundation-llmops.md](requirements/mvp-1-foundation-llmops.md)
-- [requirements/mvp-2-governance-rag-audit.md](requirements/mvp-2-governance-rag-audit.md)
-- [requirements/mvp-3-enterprise-ops.md](requirements/mvp-3-enterprise-ops.md)
-- [data-model/physical-data-model.md](data-model/physical-data-model.md)
-- [data-model/rbac-permission-policy.md](data-model/rbac-permission-policy.md)
-- [api/README.md](api/README.md)
-- [implementation-plan/mvp-1-development-issue-plan.md](implementation-plan/mvp-1-development-issue-plan.md)
-- [implementation-plan/risk-consistency-verification.md](implementation-plan/risk-consistency-verification.md)
+`Source of Truth: Yes`인 active 문서는 아래와 같다. 세부 충돌은 [foundation/document-authority.md](foundation/document-authority.md)의 권위 순서를 따른다.
+
+| 영역 | Active source-of-truth 문서 |
+| --- | --- |
+| Foundation | [foundation/document-authority.md](foundation/document-authority.md), [foundation/product-scope.md](foundation/product-scope.md), [foundation/glossary.md](foundation/glossary.md) |
+| Requirements | [requirements/overview.md](requirements/overview.md), [requirements/mvp-1-foundation-llmops.md](requirements/mvp-1-foundation-llmops.md), [requirements/mvp-2-governance-rag-audit.md](requirements/mvp-2-governance-rag-audit.md), [requirements/mvp-3-enterprise-ops.md](requirements/mvp-3-enterprise-ops.md) |
+| Architecture | [architecture/system-overview.md](architecture/system-overview.md), [architecture/auth-rbac.md](architecture/auth-rbac.md), [architecture/tracing-audit.md](architecture/tracing-audit.md) |
+| Data Model | [data-model/physical-data-model.md](data-model/physical-data-model.md), [data-model/rbac-permission-policy.md](data-model/rbac-permission-policy.md) |
+| API | [api/README.md](api/README.md), [api/auth.md](api/auth.md), [api/organization-rbac.md](api/organization-rbac.md), [api/apps-workflows.md](api/apps-workflows.md), [api/llm-credentials.md](api/llm-credentials.md), [api/knowledge-rag.md](api/knowledge-rag.md), [api/tracing-audit.md](api/tracing-audit.md), [api/deployments.md](api/deployments.md), [api/supporting-endpoints.md](api/supporting-endpoints.md), [api/errors.md](api/errors.md) |
+| Decisions | [decisions/README.md](decisions/README.md) 및 `Status: Accepted` ADR |
+| Implementation Plan | [implementation-plan/mvp-1-development-issue-plan.md](implementation-plan/mvp-1-development-issue-plan.md), [implementation-plan/risk-consistency-verification.md](implementation-plan/risk-consistency-verification.md) |
 
 ## 참조 문서
 

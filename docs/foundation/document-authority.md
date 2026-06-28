@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 
 ## 목적
 
@@ -38,12 +38,12 @@ Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
 Status: Draft | Accepted | Superseded
 Authority: Foundation | Requirements | Architecture | Data Model | API | Decision | Implementation Plan | Reference
 Source of Truth: Yes | No
-Verified Against: origin/dev @ <commit>
+Verified Against: <branch> @ <commit>
 Related ADRs:
 ```
 
 ## 현재 기준
 
-현재 active 설계 기준은 `origin/dev`의 `5def9053fe5d72e7ac67fe2e27c8545a5124791d`다.
+현재 active 문서 정합성 기준은 workspace code `feature/mba-59`의 `b92bc9e0f38588495d228fc0d17b10dfaaed03c1`다. 코드와 active 문서가 충돌하면 코드를 기준으로 active 문서를 수정한다.
 
-`references/moduly-architecture/`는 과거 `main` 기준 역공학 문서다. 이 문서는 현재 dev baseline의 ERD나 tracing/RBAC 구조를 완전히 반영하지 않으므로 구현 기준으로 사용하지 않는다.
+`references/moduly-architecture/`는 과거 `main` 기준 역공학 문서다. 이 문서는 현재 코드의 ERD나 tracing/RBAC 구조를 완전히 반영하지 않으므로 구현 기준으로 사용하지 않는다.

@@ -2,7 +2,7 @@
 
 > Status: Reference-only historical document.
 >
-> 이 문서는 과거 `main` 브랜치 기준으로 작성된 역공학 참고 문서다. 본문에 등장하는 `local/docs` 경로는 당시 산출물 위치를 뜻하며, 현재 active documentation root인 `local/docs`의 source of truth를 의미하지 않는다. 구현 기준은 상위 [문서 인덱스](../../README.md)와 active 문서를 따른다.
+> 이 문서는 과거 `main` 브랜치 기준으로 작성된 역공학 참고 문서다. 본문에 등장하는 `local/docs` 경로는 당시 산출물 위치를 뜻하며, 현재 active documentation root인 `docs/`의 source of truth를 의미하지 않는다. 구현 기준은 상위 [문서 인덱스](../../README.md)와 active 문서를 따른다.
 
 작성 기준: `main` 브랜치, 프로젝트 루트 `/Users/hong-yoonki/Desktop/krafton/final-project/mbased`
 

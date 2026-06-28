@@ -18,7 +18,7 @@ User direct permission을 도입하면 개별 사용자 예외 허용은 쉬워�
 | --- | --- | --- |
 | team-only permission | `team_*_permissions`만 사용한다. | 단순하고 현재 문서와 가깝지만 예외 처리가 어렵다. |
 | additive user direct permission | resource별 `user_*_permissions`를 추가한다. | 예외 허용을 지원하지만 schema가 늘어난다. |
-| polymorphic resource permission | 하나의 generic permission table을 만든다. | 유연하지만 dev 물리 데이터 모델 보존 원칙과 충돌한다. |
+| polymorphic resource permission | 하나의 generic permission table을 만든다. | 유연하지만 현재 물리 데이터 모델 보존 원칙과 충돌한다. |
 
 ## 결정
 

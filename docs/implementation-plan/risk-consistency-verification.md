@@ -1,5 +1,10 @@
 # 리스크, 정합성 및 검증
 
+Status: Draft
+Authority: Implementation Plan
+Source of Truth: Yes
+Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+
 ## 점검 범위
 
 점검 대상:
@@ -24,7 +29,7 @@
 | 리스크 | 영향 | 대응 |
 | --- | --- | --- |
 | RBAC를 나중에 붙이면 API/실행 경로를 대거 수정해야 함 | 구조 재작업 | MVP 1에서 resource/permission/checker 먼저 설계 |
-| `llm_usage_logs.latency_ms` 물리 column명과 ORM 속성명이 불일치할 수 있음 | 집계/조회 오류 | MVP 1에서 migration으로 `latency_ms` 정합성 확보 |
+| 과거 `llm_usage_logs.atency_ms` 컬럼 오타 | 집계/조회 오류 | 현재 코드의 `f8a9b0c1d2e3_rename_llm_usage_latency_ms.py` migration과 `LLMUsageLog.latency_ms` 모델/test 기준으로 정리됨. 새 작업은 `latency_ms`만 사용 |
 | trigger mode 로그 매핑이 부정확함 | audit 신뢰도 저하 | MVP 3 전 반드시 수정 |
 | `create_all`과 Alembic 혼재 | 운영 schema 불안정 | MVP 2부터 migration 기준 명확화 |
 | RAG source별 변경 감지 수준이 다름 | partial re-index 품질 편차 | MVP 2는 FILE/hash 중심으로 시작 |
@@ -91,13 +96,13 @@ cd apps/workflow_engine
 | --- | --- | --- |
 | Permission vocabulary | `deploy` 권한이 일부 문서에는 빠지고 일부 문서에는 등장 | `read/write/execute/use/manage/deploy`로 통일 |
 | Project/Canvas 용어 | Nodease 방향 문서의 프로젝트/캔버스가 Moduly 모델에 어떻게 대응되는지 불명확 | `Project=App`, `Canvas=Workflow`로 MVP 1 기준 명시 |
-| MVP 1 RBAC 범위 | 일부 문서는 model use foundation만 말하고, 일부 문서는 workflow 권한만 말함 | MVP 1에 최소 LLM model use 차단을 포함 |
-| Audit action schema | `event_type`과 `action`이 중복될 수 있었음 | dev baseline에 맞춰 `audit_logs.action`을 canonical action으로 사용하고 정책 결과는 `audit_logs.audit_metadata.policy_result`로 이동 |
+| MVP 1 RBAC 범위 | 일부 문서는 LLM 사용 차단만 말하고, 일부 문서는 workflow 권한만 말함 | MVP 1에 credential `use` 권한과 credential-model relation 기반 LLM 사용 차단을 포함 |
+| Audit action schema | `event_type`과 `action`이 중복될 수 있었음 | 현재 코드에 맞춰 `audit_logs.action`을 canonical action으로 사용하고 정책 결과는 `audit_logs.audit_metadata.policy_result`로 이동 |
 | Actor 권한 snapshot | 한 사용자가 여러 team/user direct grant를 가질 수 있음 | `audit_metadata.effective_permission`, `source_team_ids`, `user_direct_permission_id` 같은 metadata로 명확화 |
 | RAG re-index | `needs_reindex`가 문서 status처럼 보일 수 있었음 | 기존 status를 바꾸지 않고 `meta_info.needs_reindex` 같은 metadata flag로 명시 |
 | Partial re-index | chunk-level incremental indexing으로 오해될 수 있었음 | MVP 2에서는 변경 문서 단위 재색인으로 제한 |
 | MVP 3 기존 기반 | `audit_events`, `RAG traces`를 기존 Moduly 기반처럼 표현 | `audit_logs`와 RAG trace metadata 의존으로 수정 |
-| Deployment rollback | 기존 Moduly에 명시적 rollback API는 없지만 `toggle`로 이전 deployment를 다시 활성화할 수 있음 | 별도 rollback 권한은 두지 않고 `deploy/activate/manage`로 다루며, 이전 deployment 활성화 이벤트는 `deployment.activate_previous`로 기록 가능 |
+| Deployment rollback | 기존 Moduly에 명시적 rollback API는 없지만 `toggle`로 이전 deployment를 다시 활성화할 수 있음 | 별도 rollback 권한은 두지 않고 workflow `deploy/manage`로 다루며, 이전 deployment 활성화 이벤트는 `deployment.activate_previous`로 기록 |
 
 ## 기준 문서와 정합성이 확인된 항목
 
@@ -118,7 +123,7 @@ cd apps/workflow_engine
 | 항목 | 현재 처리 |
 | --- | --- |
 | `Project` 독립 모델 도입 여부 | MVP 1에서는 App을 project boundary로 사용, 이후 확장 |
-| 조직/그룹 모델 | dev baseline의 organization/team을 사용하고, 별도 group/role table은 만들지 않음 |
+| 조직/그룹 모델 | 현재 코드의 organization/team을 사용하고, 별도 group/role table은 만들지 않음 |
 | PII 탐지 수준 | MVP 2는 수동 classification과 간단한 regex 후보로 제한 |
 | Quality score | MVP 1-3 모두 rule-based/사용자 평가 중심 |
 | MCP Gateway | MVP 범위 밖, 아키텍처 경계 후속 결정 |
@@ -128,19 +133,19 @@ cd apps/workflow_engine
 
 | 원문 | 병합 위치 |
 | --- | --- |
-| `00-overview.md` | `00-overview.md` |
-| `01-foundation-rbac-resource-model.md` | `01-mvp-1-foundation-llmops.md`, 배포 관련 항목은 `03-mvp-3-enterprise-ops.md` |
-| `02-foundation-audit-tracing-model.md` | `01-mvp-1-foundation-llmops.md`, RAG/audit 검색은 `02-mvp-2-governance-rag-audit.md`, 배포/추천 event는 `03-mvp-3-enterprise-ops.md` |
-| `03-foundation-data-governance-policy.md` | `01-mvp-1-foundation-llmops.md`, enforcement와 re-index는 `02-mvp-2-governance-rag-audit.md`, deploy checklist 위험 표시는 `03-mvp-3-enterprise-ops.md` |
-| `04-mvp-1-scope.md` | `01-mvp-1-foundation-llmops.md` |
-| `05-mvp-1-work-breakdown.md` | `01-mvp-1-foundation-llmops.md` |
-| `06-mvp-2-scope.md` | `02-mvp-2-governance-rag-audit.md` |
-| `07-mvp-2-work-breakdown.md` | `02-mvp-2-governance-rag-audit.md` |
-| `08-mvp-3-scope.md` | `03-mvp-3-enterprise-ops.md` |
-| `09-mvp-3-work-breakdown.md` | `03-mvp-3-enterprise-ops.md` |
-| `10-risk-verification.md` | `04-risk-consistency-verification.md` |
-| `11-consistency-audit.md` | `04-risk-consistency-verification.md` |
+| `00-overview.md` | `requirements/overview.md` |
+| `01-foundation-rbac-resource-model.md` | `requirements/mvp-1-foundation-llmops.md`, 배포 관련 항목은 `requirements/mvp-3-enterprise-ops.md` |
+| `02-foundation-audit-tracing-model.md` | `requirements/mvp-1-foundation-llmops.md`, RAG/audit 검색은 `requirements/mvp-2-governance-rag-audit.md`, 배포/추천 event는 `requirements/mvp-3-enterprise-ops.md` |
+| `03-foundation-data-governance-policy.md` | `requirements/mvp-1-foundation-llmops.md`, enforcement와 re-index는 `requirements/mvp-2-governance-rag-audit.md`, deploy checklist 위험 표시는 `requirements/mvp-3-enterprise-ops.md` |
+| `04-mvp-1-scope.md` | `requirements/mvp-1-foundation-llmops.md` |
+| `05-mvp-1-work-breakdown.md` | `requirements/mvp-1-foundation-llmops.md` |
+| `06-mvp-2-scope.md` | `requirements/mvp-2-governance-rag-audit.md` |
+| `07-mvp-2-work-breakdown.md` | `requirements/mvp-2-governance-rag-audit.md` |
+| `08-mvp-3-scope.md` | `requirements/mvp-3-enterprise-ops.md` |
+| `09-mvp-3-work-breakdown.md` | `requirements/mvp-3-enterprise-ops.md` |
+| `10-risk-verification.md` | `implementation-plan/risk-consistency-verification.md` |
+| `11-consistency-audit.md` | `implementation-plan/risk-consistency-verification.md` |
 
 ## 현재 결론
 
-현재 `requirements`는 물리 데이터 모델 문서(`data-model/physical-data-model.md`, `data-model/rbac-permission-policy.md`)와 같은 기준을 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`, `audit_events`, `rag_retrieval_traces`는 MVP 목표 상태에서 새로 만들지 않는다. 권한은 dev baseline의 organization/team permission과 resource별 user direct permission으로, audit은 `audit_logs`로, RAG trace는 `trace_payloads`/metadata로 처리한다.
+현재 `requirements`는 물리 데이터 모델 문서(`data-model/physical-data-model.md`, `data-model/rbac-permission-policy.md`)와 같은 기준을 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`, `audit_events`, `rag_retrieval_traces`는 MVP 목표 상태에서 새로 만들지 않는다. 권한은 현재 코드의 organization/team permission과 resource별 user direct permission으로, audit은 `audit_logs`로, RAG trace는 `trace_payloads`/metadata로 처리한다.

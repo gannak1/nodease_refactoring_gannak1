@@ -32,6 +32,7 @@ class AuditAction:
     WORKFLOW_EXECUTE = "workflow.execute"
 
     DEPLOYMENT_TOGGLE = "deployment.toggle"
+    DEPLOYMENT_ACTIVATE_PREVIOUS = "deployment.activate_previous"
     DEPLOYMENT_DELETE = "deployment.delete"
 
     # 외부 연결 및 LLM 자격증명.
