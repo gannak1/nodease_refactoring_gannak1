@@ -1,6 +1,14 @@
 'use client';
 
-import { BarChart3, Plus, StickyNote, Play, Trash2, Settings } from 'lucide-react';
+import {
+  BarChart3,
+  Loader2,
+  Plus,
+  StickyNote,
+  Play,
+  Trash2,
+  Settings,
+} from 'lucide-react';
 import { NodeSelector } from './NodeSelector';
 import NodeLibrarySidebar from './NodeLibrarySidebar';
 import { calculateAutoLayout } from '../../utils/layoutHelpers';
@@ -46,6 +54,7 @@ import { VersionHistorySidebar } from './VersionHistorySidebar';
 import { TestSidebar } from './TestSidebar';
 import { NodeFullscreenEditor } from './NodeFullscreenEditor';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
+import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
@@ -85,6 +94,8 @@ export default function NodeCanvas() {
     cancelNumberConnection,
     fullscreenNodeId,
     syncNodeFullscreenFromUrl,
+    testExecutionStatus,
+    isTestUploading,
   } = useWorkflowStore();
 
   const {
@@ -112,6 +123,7 @@ export default function NodeCanvas() {
       .filter(
         (node) =>
           node.id !== numberConnection.sourceNodeId &&
+          hasIncomingHandle(node) &&
           typeof node.data?.displayNumber === 'number',
       )
       .map((node) => ({
@@ -980,10 +992,30 @@ export default function NodeCanvas() {
 
       <button
         onClick={toggleTestPanel}
-        className="flex h-9 items-center gap-1.5 rounded-lg bg-slate-950 px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
+        className={`flex h-9 items-center gap-1.5 rounded-lg px-4 text-[13px] font-semibold text-white shadow-sm transition-colors ${
+          testExecutionStatus === 'running'
+            ? 'bg-blue-600 hover:bg-blue-700'
+            : testExecutionStatus === 'success'
+              ? 'bg-emerald-600 hover:bg-emerald-700'
+              : testExecutionStatus === 'failure'
+                ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-slate-950 hover:bg-slate-800'
+        }`}
       >
-        <Play className="h-3.5 w-3.5 fill-current" />
-        테스트
+        {testExecutionStatus === 'running' ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Play className="h-3.5 w-3.5 fill-current" />
+        )}
+        {testExecutionStatus === 'running'
+          ? isTestUploading
+            ? '업로드 중'
+            : '실행 중'
+          : testExecutionStatus === 'success'
+            ? '결과'
+            : testExecutionStatus === 'failure'
+              ? '실패'
+              : '테스트'}
       </button>
     </>
   );

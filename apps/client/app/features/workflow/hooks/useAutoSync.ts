@@ -6,6 +6,12 @@ import { useWorkflowStore } from '../store/useWorkflowStore';
 import { workflowApi } from '../api/workflowApi';
 import { DEFAULT_NODES } from '../constants'; // 노드가 하나도 없을 때 쓸 기본값
 import { AppNode } from '../types/Nodes';
+import {
+  cleanupInvalidEdges,
+  formatGraphIssue,
+} from '../utils/validateWorkflowGraph';
+import { toast } from 'sonner';
+import { buildWorkflowDraftPayload } from '../utils/workflowDraftPayload';
 
 export const useAutoSync = () => {
   const params = useParams(); // 주소창의 파라미터 읽기
@@ -53,11 +59,36 @@ export const useAutoSync = () => {
           } else {
             data.nodes = DEFAULT_NODES as AppNode[];
           }
-          setWorkflowData(data, workflowId);
+          const cleanupResult = cleanupInvalidEdges(data);
+          setWorkflowData(cleanupResult.graph, workflowId);
+
+          if (cleanupResult.removedIssues.length > 0) {
+            const firstIssue = cleanupResult.removedIssues[0];
+            toast.warning(
+              `표시할 수 없는 연결 ${cleanupResult.removedIssues.length}개를 정리했습니다.`,
+              {
+                description: firstIssue
+                  ? formatGraphIssue(firstIssue)
+                  : undefined,
+              },
+            );
+
+            try {
+              await workflowApi.syncDraftWorkflow(
+                workflowId,
+                buildWorkflowDraftPayload(
+                  cleanupResult.graph,
+                  cleanupResult.graph.viewport || data.viewport || getViewport(),
+                ),
+              );
+            } catch {
+              toast.error('정리된 워크플로우 저장에 실패했습니다.');
+            }
+          }
 
           // 저장된 viewport를 React Flow에 적용
-          if (data.viewport) {
-            setViewport(data.viewport);
+          if (cleanupResult.graph.viewport) {
+            setViewport(cleanupResult.graph.viewport);
           }
         }
 
@@ -69,7 +100,7 @@ export const useAutoSync = () => {
 
     isLoadedRef.current = false; // 다른 워크플로우로 이동했을 때를 대비해 초기화
     loadWorkflow();
-  }, [workflowId, setWorkflowData, setViewport]);
+  }, [workflowId, setWorkflowData, setViewport, getViewport]);
 
   // 2. 자동 저장 (Debounce)
   const debouncedSync = useMemo(

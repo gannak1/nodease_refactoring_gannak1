@@ -17,6 +17,8 @@ import {
   RuntimeVariable,
   Node,
 } from '../types/Workflow';
+import type { AppNode } from '../types/Nodes';
+import { validateConnection } from '../utils/validateWorkflowGraph';
 import { DeploymentResponse } from '../types/Deployment';
 
 import { create } from 'zustand';
@@ -74,6 +76,28 @@ type WorkflowState = {
   // === 테스트 패널 상태 ===
   isTestPanelOpen: boolean;
   toggleTestPanel: () => void;
+  openTestPanel: () => void;
+
+  // === 테스트 실행 상태 ===
+  testExecutionStatus: 'idle' | 'running' | 'success' | 'failure';
+  testExecutionStartedAt: number | null;
+  testExecutionFinishedAt: number | null;
+  testExecutionResult: unknown;
+  testNodeResults: Array<{ nodeId: string; nodeType: string; output: unknown }>;
+  testExecutionError: string | null;
+  currentExecutingNodeId: string | null;
+  isTestUploading: boolean;
+  beginTestExecution: () => void;
+  setTestUploading: (isUploading: boolean) => void;
+  setCurrentExecutingNode: (nodeId: string | null) => void;
+  addTestNodeResult: (result: {
+    nodeId: string;
+    nodeType: string;
+    output: unknown;
+  }) => void;
+  finishTestExecution: (result: unknown) => void;
+  failTestExecution: (error: string) => void;
+  resetTestExecution: () => void;
 
   // === 노드 전체화면 설정(NDV) 상태 ===
   fullscreenNodeId: string | null;
@@ -444,6 +468,14 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   // === 테스트 패널 상태 ===
   isTestPanelOpen: false,
+  testExecutionStatus: 'idle',
+  testExecutionStartedAt: null,
+  testExecutionFinishedAt: null,
+  testExecutionResult: null,
+  testNodeResults: [],
+  testExecutionError: null,
+  currentExecutingNodeId: null,
+  isTestUploading: false,
 
   // === 노드 전체화면 설정(NDV) 상태 ===
   fullscreenNodeId: null,
@@ -610,6 +642,17 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   onConnect: (connection: Connection) => {
     const currentEdges = get().edges || [];
     const currentNodes = get().nodes || [];
+    const validation = validateConnection(
+      currentNodes as AppNode[],
+      currentEdges,
+      connection,
+    );
+
+    if (!validation.ok) {
+      set({ numberConnection: null });
+      return;
+    }
+
     const newEdges = addEdge(connection, currentEdges);
     const { workflows, activeWorkflowId } = get();
     const updatedWorkflows = syncActiveWorkflow(
@@ -867,6 +910,68 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       isSettingsOpen: false,
       isVersionHistoryOpen: false,
     })),
+
+  openTestPanel: () => {
+    updateNodeFullscreenUrl(null, 'replace');
+    set({
+      isTestPanelOpen: true,
+      isSettingsOpen: false,
+      isVersionHistoryOpen: false,
+      fullscreenNodeId: null,
+    });
+  },
+
+  beginTestExecution: () =>
+    set({
+      testExecutionStatus: 'running',
+      testExecutionStartedAt: Date.now(),
+      testExecutionFinishedAt: null,
+      testExecutionResult: null,
+      testNodeResults: [],
+      testExecutionError: null,
+      currentExecutingNodeId: null,
+      isTestUploading: false,
+    }),
+
+  setTestUploading: (isTestUploading) => set({ isTestUploading }),
+
+  setCurrentExecutingNode: (currentExecutingNodeId) =>
+    set({ currentExecutingNodeId }),
+
+  addTestNodeResult: (result) =>
+    set((state) => ({
+      testNodeResults: [...state.testNodeResults, result],
+    })),
+
+  finishTestExecution: (testExecutionResult) =>
+    set({
+      testExecutionStatus: 'success',
+      testExecutionFinishedAt: Date.now(),
+      testExecutionResult,
+      currentExecutingNodeId: null,
+      isTestUploading: false,
+    }),
+
+  failTestExecution: (testExecutionError) =>
+    set({
+      testExecutionStatus: 'failure',
+      testExecutionFinishedAt: Date.now(),
+      testExecutionError,
+      currentExecutingNodeId: null,
+      isTestUploading: false,
+    }),
+
+  resetTestExecution: () =>
+    set({
+      testExecutionStatus: 'idle',
+      testExecutionStartedAt: null,
+      testExecutionFinishedAt: null,
+      testExecutionResult: null,
+      testNodeResults: [],
+      testExecutionError: null,
+      currentExecutingNodeId: null,
+      isTestUploading: false,
+    }),
 
   // === 노드 전체화면 설정(NDV) 액션 ===
   openNodeFullscreen: (nodeId) => {
