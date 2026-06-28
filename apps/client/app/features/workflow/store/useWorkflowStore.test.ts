@@ -683,6 +683,10 @@ describe('Edge 생성/삭제 테스트', () => {
   });
 
   it('onConnect로 새 엣지를 생성할 수 있다', () => {
+    useWorkflowStore.getState().setNodes([
+      createMockNode('node-1', 'startNode'),
+      createMockNode('node-2', 'answerNode'),
+    ]);
     // 초기 엣지 없음
     useWorkflowStore.getState().setEdges([]);
 
@@ -934,7 +938,7 @@ describe('워크플로우 관리 테스트', () => {
     expect(
       state.workflows.find((workflow) => workflow.id === 'wf-2')?.features
         .nextNodeDisplayNumber,
-    ).toBe(43);
+    ).toBe(2);
 
     useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-2');
 
@@ -942,7 +946,7 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.activeWorkflowId).toBe('wf-2');
     expect(state.nodes[0].id).toBe('wf-2-node');
     expect(state.edges[0].id).toBe('wf-2-edge');
-    expect(state.features.nextNodeDisplayNumber).toBe(43);
+    expect(state.features.nextNodeDisplayNumber).toBe(2);
     expect(
       state.workflows.find((workflow) => workflow.id === 'wf-1')?.features
         .nextNodeDisplayNumber,
@@ -1035,10 +1039,10 @@ describe('워크플로우 관리 테스트', () => {
       .addNode(createMockNode('n2', 'answerNode'));
 
     const state = useWorkflowStore.getState();
-    expect(added.data.displayNumber).toBe(3);
-    expect(state.nodes[1].data.displayNumber).toBe(3);
-    expect(state.features.nextNodeDisplayNumber).toBe(4);
-    expect(state.workflows[0].features.nextNodeDisplayNumber).toBe(4);
+    expect(added.data.displayNumber).toBe(2);
+    expect(state.nodes[1].data.displayNumber).toBe(2);
+    expect(state.features.nextNodeDisplayNumber).toBe(3);
+    expect(state.workflows[0].features.nextNodeDisplayNumber).toBe(3);
   });
 
   it('restoreVersion은 snapshot 번호를 보정한 뒤 draft와 store에 반영한다', async () => {
