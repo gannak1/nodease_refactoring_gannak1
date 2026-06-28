@@ -191,17 +191,25 @@
 - `apps/client/app/features/workflow/utils/nodeVariablePorts.ts`
 - `apps/client/app/features/workflow/utils/nodeOutputLabels.ts`
 
-### 8. 변수 칩 삽입 UX
+### 8. 변수 칩 클릭 삽입 UX
 
-`{{변수명}}`을 사용자가 직접 외워서 입력하는 방식 대신, 입력 패널에서 변수 칩을 클릭하거나 드래그해 삽입하는 UX로 바꿨다.
+`{{변수명}}`을 사용자가 직접 외워서 입력하는 방식 대신, 입력 패널에서 변수 칩을 클릭해 삽입하는 UX로 바꿨다.
+
+초기 구현에는 드래그 앤 드롭 삽입도 있었지만, 텍스트 중간 삽입 위치와 드래그 preview가 사용자의 실제 마우스 위치와 다르게 느껴지는 문제가 있었다. 또한 클릭 삽입과 DnD 삽입이 공존하면 입력 위치 기준이 흐려져서 사용자가 어떤 위치에 변수가 들어갈지 예측하기 어려웠다.
+
+따라서 현재 구현 기준은 DnD를 제거하고, `입력 필드 선택 -> 좌측 입력 패널 칩 클릭` 흐름으로 통일한다.
 
 #### 원칙
 
 - 사용자는 보이지 않는 key를 외워서 직접 입력하지 않는다.
 - 텍스트 필드에서는 현재 커서 위치에 변수 칩을 삽입한다.
+- 텍스트 필드에 타자하거나 클릭하면 해당 필드가 active target이 된다.
+- 변수 칩을 한 번 삽입한 뒤에도 active target과 caret을 유지해 연속 삽입할 수 있어야 한다.
 - 변수 칩은 라벨 중심으로 보여준다.
 - 내부 저장값은 실행을 위해 key 기반 참조를 유지한다.
 - 등록되지 않은 `{{...}}` 토큰은 정상 변수 칩처럼 보이지 않게 처리한다.
+- 변수 칩은 contenteditable 내부에서 원자적 토큰처럼 다룬다.
+- Backspace/Delete로 칩을 삭제할 때 보이지 않는 caret boundary 때문에 두 번 눌러야 하는 일이 없어야 한다.
 
 #### 지원 대상
 
@@ -214,29 +222,55 @@
 #### 텍스트형 입력
 
 - 클릭 삽입: 커서를 둔 필드에 입력 패널 칩을 클릭하면 삽입한다.
-- DnD 삽입: 칩을 텍스트 중간에 드롭하면 해당 위치에 삽입한다.
 - 칩은 텍스트 중간에서도 원자적 토큰처럼 보이도록 렌더링한다.
-- 드래그 중 커서/삽입 위치가 어긋나지 않도록 preview와 caret 위치를 보정한다.
+- 칩 삽입 후 caret은 삽입된 칩 바로 뒤에 유지한다.
+- caret 복원은 DOM Range만 믿지 않고 serialized offset 기준으로 보정한다.
+- 칩 앞뒤에는 caret이 위치할 수 있는 zero-width boundary를 둔다.
+- serialization 시 zero-width boundary는 저장값에서 제거한다.
+- Delete/Backspace는 zero-width boundary만 삭제하지 않고 인접 칩을 한 번에 삭제하도록 boundary를 건너뛴다.
+- 입력 패널 칩 클릭은 `onMouseDown`에서 editor focus를 빼앗지 않게 처리한다.
 
 #### 선택형 입력
 
 - combo/select처럼 텍스트가 아닌 입력은 직접 `{{...}}`를 쓰지 않고 변수 선택 슬롯으로 받는다.
-- 필요한 경우 입력 패널에서 클릭하거나 드롭해 값을 연결한다.
+- 필요한 경우 입력 슬롯을 선택한 뒤 입력 패널에서 칩을 클릭해 값을 연결한다.
+- 슬롯은 focus 시에도 active target이 되어 키보드 탐색 후 칩 클릭 흐름을 지원한다.
+
+#### DnD 제거 범위
+
+- 좌측 입력 패널 칩의 `draggable`, `onDragStart`, `dataTransfer` 처리를 제거한다.
+- `VariableTokenEditor`의 외부 변수 drop, 내부 칩 drag move, drop caret, drag preview 처리를 제거한다.
+- `VariableSelectorSlot`의 drop target 처리를 제거한다.
+- 출력 변수 패널과 캔버스 hover 출력 칩의 drag source 처리를 제거한다.
+- “드롭해서 추가” 안내 문구를 “커서를 둔 뒤 좌측 입력 패널에서 클릭” 기준으로 수정한다.
+
+#### active target 유지 규칙
+
+- 입력 필드 안에서 타자/클릭/칩 삽입 시 active target을 유지한다.
+- 칩 삽입 후 value 또는 token label이 바뀌어 editor가 재렌더되어도 active target이 유지되어야 한다.
+- React effect 재등록 과정에서 기존 target cleanup이 먼저 실행되어도 같은 target이 곧 재등록되면 active target을 지우지 않는다.
+- `VariableTokenEditor`는 target 등록 effect를 값 변경마다 재등록하지 않고, handler ref만 최신 함수로 갱신한다.
+- 다른 필드를 클릭하면 active target은 새 필드로 바뀐다.
+- 편집 대상이 아닌 영역 클릭 시 active target 해제는 별도 UX 정책으로 다룬다.
 
 주요 파일:
 
 - `apps/client/app/features/workflow/components/nodes/ui/VariableInsertionProvider.tsx`
+- `apps/client/app/features/workflow/components/nodes/ui/VariableInsertionProvider.test.tsx`
 - `apps/client/app/features/workflow/components/nodes/ui/VariableTokenEditor.tsx`
 - `apps/client/app/features/workflow/components/nodes/ui/VariableSelectorSlot.tsx`
 - `apps/client/app/features/workflow/components/nodes/ui/useVariableInsertion.ts`
 - `apps/client/app/features/workflow/components/nodes/ui/variableInsertionContext.ts`
 - `apps/client/app/features/workflow/components/nodes/ui/ReferencedVariablesControl.tsx`
+- `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx`
+- `apps/client/app/features/workflow/components/nodes/NodeOutputsSection.tsx`
+- `apps/client/app/features/workflow/utils/nodeVariablePorts.ts`
 
 ### 9. Answer node 반환값 매핑
 
 응답 노드는 최종 출력으로 내보낼 값을 이전 노드 출력 변수와 반환 key로 매핑한다.
 
-- 왼쪽 슬롯에는 이전 노드의 출력 칩을 클릭 또는 드래그해 넣는다.
+- 왼쪽 슬롯에는 이전 노드의 출력 칩을 클릭해 넣는다.
 - 오른쪽 반환 key는 최종 응답 객체의 key다.
 - 반환 key는 영문/숫자/underscore 중심으로 제한한다.
 - 최대 길이는 32자다.
@@ -345,7 +379,10 @@
 ### 변수 칩
 
 - [ ] 입력 패널 칩 클릭 시 현재 커서 위치에 삽입된다.
-- [ ] 텍스트 중간 DnD 삽입 위치가 실제 드롭 위치와 일치한다.
+- [ ] 칩을 연속으로 클릭해도 같은 active target에 계속 삽입된다.
+- [ ] 칩 삽입 후 caret이 삽입된 칩 바로 뒤에 유지된다.
+- [ ] 칩 앞뒤에서 Delete/Backspace 한 번으로 칩이 삭제된다.
+- [ ] 변수 칩 DnD는 동작하지 않는다.
 - [ ] 등록되지 않은 `{{...}}`는 정상 칩처럼 보이지 않는다.
 - [ ] 같은 이름의 source 노드가 여러 개여도 node number로 구분된다.
 - [ ] 텍스트 필드와 선택형 필드 모두 변수 삽입 UX가 깨지지 않는다.
@@ -371,6 +408,7 @@
 cd apps/client
 npx tsc --noEmit
 npx vitest run app/features/workflow/hooks/useCanvasKeyboardShortcuts.test.ts
+npx vitest run app/features/workflow/components/nodes/ui/VariableInsertionProvider.test.tsx
 npx vitest run app/features/workflow/utils/gridSnap.test.ts
 npx vitest run app/features/workflow/utils/nodeNumbering.test.ts
 npx vitest run app/features/workflow/store/useWorkflowStore.test.ts
@@ -385,5 +423,7 @@ python -m py_compile apps/gateway/api/v1/endpoints/workflow.py
 
 - PR diff가 넓기 때문에 UI 변경과 실행 안정화 변경을 섞어 보지 않는 것이 좋다.
 - 변수 칩 UX는 display label과 engine key가 분리되어 있으므로, 화면 표시와 실행 payload를 함께 확인해야 한다.
+- 변수 칩 삽입 UX는 DnD가 아니라 active target 기반 클릭 삽입이 기준이다. 리뷰 시 드래그 동작이 남아 있으면 제거 대상이다.
+- contenteditable 내부의 zero-width boundary는 저장값에 포함되면 안 된다. `serializeNode`에서 제거되는지 확인해야 한다.
 - 테스트 실행 안정화는 프론트와 gateway가 함께 바뀌므로, 프론트만 확인하면 snapshot 전달 문제를 놓칠 수 있다.
 - `uv.lock`, seed script 등 개발 환경 관련 파일은 의도된 변경인지 PR 리뷰에서 한 번 더 확인해야 한다.
