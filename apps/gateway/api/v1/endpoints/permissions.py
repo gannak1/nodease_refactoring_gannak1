@@ -18,15 +18,18 @@ from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import (
     Team,
+    TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
 from apps.shared.schemas.permission import (
     PermissionGrantRequest,
+    TeamLLMPermissionResponse,
     TeamWorkflowPermissionResponse,
     UserWorkflowPermissionResponse,
     WORKFLOW_AUTH_STATE_RANK,
@@ -133,6 +136,40 @@ def _has_workflow_manage_permission(
     return best_rank >= WORKFLOW_AUTH_STATE_RANK["manager"]
 
 
+def _has_llm_credential_manage_permission(
+    db: Session,
+    organization_id: UUID,
+    credential_id: UUID,
+    user_id: UUID,
+) -> bool:
+    """team 권한을 합산해 LLM credential manager 이상인지 계산한다."""
+    team_permissions = (
+        db.query(TeamLLMPermission)
+        .join(
+            TeamMembership,
+            TeamMembership.team_id == TeamLLMPermission.team_id,
+        )
+        .join(Team, Team.id == TeamLLMPermission.team_id)
+        .filter(
+            TeamMembership.user_id == user_id,
+            TeamLLMPermission.llm_credential_id == credential_id,
+            TeamLLMPermission.grantee_organization_id == organization_id,
+            TeamMembership.grantee_organization_id
+            == TeamLLMPermission.grantee_organization_id,
+            Team.organization_id == TeamLLMPermission.grantee_organization_id,
+            Team.is_active.is_(True),
+        )
+        .all()
+    )
+
+    best_rank = WORKFLOW_AUTH_STATE_RANK["none"]
+    for permission in team_permissions:
+        state = _normalize_workflow_auth_state(permission.auth_state)
+        best_rank = max(best_rank, WORKFLOW_AUTH_STATE_RANK[state])
+
+    return best_rank >= WORKFLOW_AUTH_STATE_RANK["manager"]
+
+
 def _lock_team_workflow_permission_key(
     db: Session,
     organization_id: UUID,
@@ -145,6 +182,24 @@ def _lock_team_workflow_permission_key(
         select(
             func.pg_advisory_xact_lock(
                 func.hashtext("team_workflow_permission"),
+                func.hashtext(lock_key),
+            )
+        )
+    )
+
+
+def _lock_team_llm_permission_key(
+    db: Session,
+    organization_id: UUID,
+    credential_id: UUID,
+    team_id: UUID,
+) -> None:
+    """권한 natural key 단위로 pre-read와 upsert 사이의 감사 레이스를 막는다."""
+    lock_key = f"{organization_id}:{credential_id}:{team_id}"
+    db.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtext("team_llm_permission"),
                 func.hashtext(lock_key),
             )
         )
@@ -250,6 +305,43 @@ def _record_team_workflow_permission_delete_audit(
         target_id=permission.id,
         before=before,
         after=None,
+        metadata=metadata,
+    )
+
+
+def _record_team_llm_permission_audit(
+    current_user: User,
+    permission: TeamLLMPermission,
+    before: dict | None,
+    after: dict,
+) -> None:
+    """Core upsert가 우회한 LLM credential team 권한 변경 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    if before is None:
+        action = "team_llm_permission.created"
+        audit_before = None
+        audit_after = after
+    else:
+        audit_before, audit_after = _changed_permission_columns(before, after)
+        if not audit_before and not audit_after:
+            return
+        action = "team_llm_permission.updated"
+
+    record_audit(
+        action=action,
+        category="data_change",
+        actor_id=str(current_user.id),
+        actor_type="user",
+        target_type="team_llm_permission",
+        target_id=permission.id,
+        before=audit_before,
+        after=audit_after,
         metadata=metadata,
     )
 
@@ -412,6 +504,97 @@ def _authorize_team_workflow_permission_change(
         )
 
     return organization, workflow, team
+
+
+def _authorize_team_llm_permission_change(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    credential_id: UUID,
+    team_id: UUID,
+) -> tuple[Organization, LLMCredential, Team]:
+    """team LLM credential permission 변경 공통 scope와 manage 권한을 검증한다."""
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = _is_organization_manager(
+        organization,
+        current_user.id,
+    )
+    if not is_organization_manager and not _has_active_membership(
+        db,
+        organization_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    credential = (
+        db.query(LLMCredential)
+        .filter(
+            LLMCredential.id == credential_id,
+            LLMCredential.organization_id == organization_id,
+            LLMCredential.is_valid.is_(True),
+        )
+        .first()
+    )
+    if credential is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "LLM credential not found.",
+        )
+
+    team = (
+        db.query(Team)
+        .filter(
+            Team.id == team_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .first()
+    )
+    if team is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Team not found.",
+        )
+
+    if not is_organization_manager and not _has_llm_credential_manage_permission(
+        db,
+        organization_id,
+        credential_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Credential manage or organization manager permission is required.",
+        )
+
+    return organization, credential, team
 
 
 def _authorize_user_workflow_permission_change(
@@ -666,6 +849,75 @@ def _upsert_user_workflow_permission(
     return permission
 
 
+def _upsert_team_llm_permission(
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    credential_id: UUID,
+    team_id: UUID,
+    auth_state: str,
+    assigned_by: UUID,
+    assigned_at: datetime,
+) -> TeamLLMPermission:
+    """team-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_team_llm_permission_key(db, organization_id, credential_id, team_id)
+    existing_permission = (
+        db.query(TeamLLMPermission)
+        .filter(
+            TeamLLMPermission.grantee_organization_id == organization_id,
+            TeamLLMPermission.llm_credential_id == credential_id,
+            TeamLLMPermission.team_id == team_id,
+        )
+        .first()
+    )
+    before = (
+        _permission_audit_columns(existing_permission)
+        if existing_permission is not None
+        else None
+    )
+
+    insert_stmt = pg_insert(TeamLLMPermission).values(
+        grantee_organization_id=organization_id,
+        llm_credential_id=credential_id,
+        team_id=team_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=assigned_at,
+        options={},
+        flags=0,
+    )
+    upsert_stmt = (
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                TeamLLMPermission.grantee_organization_id,
+                TeamLLMPermission.llm_credential_id,
+                TeamLLMPermission.team_id,
+            ],
+            set_={
+                "auth_state": insert_stmt.excluded.auth_state,
+                "assigned_by": insert_stmt.excluded.assigned_by,
+                "assigned_at": insert_stmt.excluded.assigned_at,
+            },
+            where=TeamLLMPermission.auth_state != insert_stmt.excluded.auth_state,
+        )
+        .returning(TeamLLMPermission)
+        .execution_options(populate_existing=True)
+    )
+
+    permission = db.scalars(upsert_stmt).one_or_none()
+    if permission is None:
+        permission = existing_permission
+    after = _permission_audit_columns(permission)
+    db.commit()
+    _record_team_llm_permission_audit(
+        current_user,
+        permission,
+        before,
+        after,
+    )
+    return permission
+
+
 @router.put(
     "/workflows/{workflow_id}/teams/{team_id}",
     response_model=TeamWorkflowPermissionResponse,
@@ -697,6 +949,44 @@ def put_team_workflow_permission(
         current_user,
         organization_id,
         workflow_id,
+        team_id,
+        payload.auth_state,
+        current_user.id,
+        now,
+    )
+
+
+@router.put(
+    "/llm-credentials/{credential_id}/teams/{team_id}",
+    response_model=TeamLLMPermissionResponse,
+)
+def put_team_llm_permission(
+    credential_id: UUID,
+    team_id: UUID,
+    payload: PermissionGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """team에 LLM credential 권한을 부여하거나 갱신하는 PUT endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_team_llm_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        credential_id,
+        team_id,
+    )
+
+    now = datetime.now(timezone.utc)
+    return _upsert_team_llm_permission(
+        db,
+        current_user,
+        organization_id,
+        credential_id,
         team_id,
         payload.auth_state,
         current_user.id,

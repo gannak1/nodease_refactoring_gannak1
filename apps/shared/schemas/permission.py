@@ -43,6 +43,20 @@ class TeamWorkflowPermissionResponse(BaseModel):
     flags: int
 
 
+class TeamLLMPermissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    grantee_organization_id: UUID
+    llm_credential_id: UUID
+    team_id: UUID
+    auth_state: str
+    assigned_by: UUID
+    assigned_at: datetime
+    options: dict[str, Any]
+    flags: int
+
+
 class UserWorkflowPermissionResponse(BaseModel):
     """user direct workflow permission upsert 응답 schema."""
 
