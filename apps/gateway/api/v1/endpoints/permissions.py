@@ -29,6 +29,8 @@ from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
 from apps.shared.schemas.permission import (
+    LLM_AUTH_STATE_RANK,
+    LLMPermissionGrantRequest,
     PermissionGrantRequest,
     TeamLLMPermissionResponse,
     TeamWorkflowPermissionResponse,
@@ -91,6 +93,14 @@ def _normalize_workflow_auth_state(auth_state: str | None) -> str:
     # DB에는 string으로 저장되므로 알 수 없는 값은 fail-closed로 none 처리한다.
     value = str(auth_state or "none").lower()
     if value not in WORKFLOW_AUTH_STATE_RANK:
+        return "none"
+    return value
+
+
+def _normalize_llm_auth_state(auth_state: str | None) -> str:
+    """DB의 LLM credential 권한 값을 rank 비교 가능한 상태로 정규화한다."""
+    value = str(auth_state or "none").lower()
+    if value not in LLM_AUTH_STATE_RANK:
         return "none"
     return value
 
@@ -173,12 +183,12 @@ def _has_llm_credential_manage_permission(
         .all()
     )
 
-    best_rank = WORKFLOW_AUTH_STATE_RANK["none"]
+    best_rank = LLM_AUTH_STATE_RANK["none"]
     for permission in [*team_permissions, *user_permissions]:
-        state = _normalize_workflow_auth_state(permission.auth_state)
-        best_rank = max(best_rank, WORKFLOW_AUTH_STATE_RANK[state])
+        state = _normalize_llm_auth_state(permission.auth_state)
+        best_rank = max(best_rank, LLM_AUTH_STATE_RANK[state])
 
-    return best_rank >= WORKFLOW_AUTH_STATE_RANK["manager"]
+    return best_rank >= LLM_AUTH_STATE_RANK["manager"]
 
 
 def _lock_team_workflow_permission_key(
@@ -1253,7 +1263,7 @@ def put_team_workflow_permission(
 def put_team_llm_permission(
     credential_id: UUID,
     team_id: UUID,
-    payload: PermissionGrantRequest,
+    payload: LLMPermissionGrantRequest,
     request: Request,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
@@ -1330,7 +1340,7 @@ def put_user_workflow_permission(
 def put_user_llm_permission(
     credential_id: UUID,
     user_id: UUID,
-    payload: PermissionGrantRequest,
+    payload: LLMPermissionGrantRequest,
     request: Request,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
