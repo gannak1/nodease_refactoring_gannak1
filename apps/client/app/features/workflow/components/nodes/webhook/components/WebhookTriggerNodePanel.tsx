@@ -252,7 +252,7 @@ export function WebhookTriggerNodePanel({
     setIsCaptureMode(false);
   };
 
-  const handlePayloadSelect = (path: string, value: any) => {
+  const handlePayloadSelect = (path: string) => {
     // 변수명 자동 생성: 경로의 마지막 부분 (e.g. issue.fields.summary -> summary)
     // 숫자로만 된 건 제외하거나 prefix 붙임 (e.g. issues[0] -> issues_0)
     let varName = path.split('.').pop() || 'variable';
@@ -527,7 +527,7 @@ export function WebhookTriggerNodePanel({
                           )
                         }
                         placeholder="예: issue.key"
-                        className="w-full h-7 rounded border border-gray-300 px-2 text-xs text-gray-600 bg-white font-mono focus:border-blue-500 focus:outline-none placeholder:text-gray-400"
+                        className="w-full h-7 rounded border border-gray-300 px-2 text-xs text-gray-700 bg-white font-mono focus:border-blue-500 focus:outline-none placeholder:text-gray-500"
                       />
                     </div>
                   </div>

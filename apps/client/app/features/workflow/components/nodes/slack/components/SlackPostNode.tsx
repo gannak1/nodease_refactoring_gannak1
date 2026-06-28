@@ -8,7 +8,7 @@ import { ValidationBadge } from '../../../ui/ValidationBadge';
 import { hasIncompleteVariables } from '../../../../utils/validationUtils';
 
 export const SlackPostNode = memo(
-  ({ data, selected }: NodeProps<Node<SlackPostNodeData>>) => {
+  ({ id, data, selected }: NodeProps<Node<SlackPostNodeData>>) => {
     const mode = data.slackMode || 'api';
     const urlPreview = data.url || 'https://hooks.slack.com/services/...';
     const modeClass =
@@ -54,38 +54,28 @@ export const SlackPostNode = memo(
         : trimmedUrl.startsWith('https://hooks.slack.com/') &&
           trimmedUrl.includes('/services/');
 
-    const hasValidationIssue = useMemo(() => {
-      const hasMessage = !!data.message?.trim();
-      const hasValidBlocks = !!blocksText && !blocksJsonError;
+    const hasMessage = !!data.message?.trim();
+    const hasValidBlocks = !!blocksText && !blocksJsonError;
 
-      if (mode === 'webhook') {
-        if (!trimmedUrl || !isWebhookUrlValid) return true;
-      } else {
-        if (!trimmedUrl) return true;
-        if (!data.authConfig?.token?.trim()) return true;
-        if (!data.channel?.trim()) return true;
-      }
-
-      if (!hasMessage && !hasValidBlocks) return true;
-      if (blocksJsonError) return true;
-      if (missingVariables.length > 0) return true;
-      if (hasIncompleteVariables(data.referenced_variables)) return true;
-
-      return false;
-    }, [
-      mode,
-      trimmedUrl,
-      isWebhookUrlValid,
-      data.message,
-      data.authConfig?.token,
-      data.channel,
-      blocksText,
-      blocksJsonError,
-      missingVariables.length,
-    ]);
+    const hasValidationIssue =
+      mode === 'webhook'
+        ? !trimmedUrl ||
+          !isWebhookUrlValid ||
+          (!hasMessage && !hasValidBlocks) ||
+          blocksJsonError ||
+          missingVariables.length > 0 ||
+          hasIncompleteVariables(data.referenced_variables)
+        : !trimmedUrl ||
+          !data.authConfig?.token?.trim() ||
+          !data.channel?.trim() ||
+          (!hasMessage && !hasValidBlocks) ||
+          blocksJsonError ||
+          missingVariables.length > 0 ||
+          hasIncompleteVariables(data.referenced_variables);
 
     return (
       <BaseNode
+        id={id}
         data={data}
         selected={selected}
         showSourceHandle={true}

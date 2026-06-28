@@ -1,9 +1,10 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { HelpCircle } from 'lucide-react';
+import { isMockWorkflowPath } from '@/app/features/workflow/utils/mockMode';
 
 type MemoryModeModalsProps = {
   showMemoryConfirm: boolean;
@@ -25,7 +26,13 @@ function MemoryModeModals({
   return (
     <>
       {showMemoryConfirm && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="기억모드 비용 확인"
+          data-canvas-shortcut-scope="blocked"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4"
+        >
           <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-2">
               <div className="h-10 w-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
@@ -64,7 +71,13 @@ function MemoryModeModals({
       )}
 
       {showKeyPrompt && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="LLM Provider 키 등록 안내"
+          data-canvas-shortcut-scope="blocked"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4"
+        >
           <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-2">
               <div className="h-10 w-10 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center text-xl">
@@ -150,7 +163,13 @@ export function MemoryModeToggle({
   );
 }
 
-export function useMemoryMode(router = useRouter(), toaster = toast) {
+export function useMemoryMode(
+  routerOverride?: ReturnType<typeof useRouter>,
+  toaster = toast,
+) {
+  const defaultRouter = useRouter();
+  const router = routerOverride ?? defaultRouter;
+  const pathname = usePathname();
   const [isMemoryModeEnabled, setIsMemoryModeEnabled] = useState(false);
   const [showMemoryConfirm, setShowMemoryConfirm] = useState(false);
   const [showKeyPrompt, setShowKeyPrompt] = useState(false);
@@ -163,6 +182,11 @@ export function useMemoryMode(router = useRouter(), toaster = toast) {
   // 키 상태 조회 (최소 침습)
   useEffect(() => {
     const fetchKeyStatus = async () => {
+      if (isMockWorkflowPath(pathname)) {
+        setHasProviderKey(true);
+        return;
+      }
+
       try {
         const res = await fetch('/api/v1/llm/credentials', {
           credentials: 'include',
@@ -176,7 +200,7 @@ export function useMemoryMode(router = useRouter(), toaster = toast) {
       }
     };
     fetchKeyStatus();
-  }, []);
+  }, [pathname]);
 
   // 키 해제 시 자동 OFF
   useEffect(() => {

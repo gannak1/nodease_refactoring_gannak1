@@ -92,36 +92,43 @@ export default function DashboardPage() {
   );
 
   return (
-    <div className="p-8 bg-white min-h-full">
+    <div className="min-h-full bg-slate-50 px-8 py-8">
       {/* 페이지 제목 */}
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">내 모듈</h1>
-
-      {/* 검색 및 생성 행 */}
-      <div className="mb-6 flex items-center justify-end gap-3">
-        {/* 검색바 */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-          <input
-            type="text"
-            placeholder="내 모듈 검색"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-64 rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-4 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-black text-slate-950">내 모듈</h1>
+          <p className="mt-1 text-sm font-semibold text-slate-500">
+            실제 워크플로우 모듈을 만들고 관리합니다.
+          </p>
         </div>
 
-        {/* 생성 버튼 */}
-        <button
-          onClick={handleCreateApp}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />새 모듈
-        </button>
+        {/* 검색 및 생성 행 */}
+        <div className="flex items-center justify-end gap-3">
+          {/* 검색바 */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="내 모듈 검색"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-10 w-64 rounded-md border border-slate-200 bg-white py-2 pl-9 pr-4 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
+
+          {/* 생성 버튼 */}
+          <button
+            onClick={handleCreateApp}
+            className="flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800"
+          >
+            <Plus className="w-4 h-4" />새 모듈
+          </button>
+        </div>
       </div>
 
       {/* 에러 메시지 */}
       {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
+        <div className="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
           {error}
         </div>
       )}
@@ -129,7 +136,7 @@ export default function DashboardPage() {
       {/* 로딩 상태 */}
       {isLoading && (
         <div className="text-center py-12">
-          <p className="text-gray-500 text-sm">로딩 중...</p>
+          <p className="text-sm font-semibold text-slate-500">로딩 중...</p>
         </div>
       )}
 
@@ -155,7 +162,7 @@ export default function DashboardPage() {
       {/* 검색 결과 없음 상태 */}
       {!isLoading && filteredApps.length === 0 && searchQuery && (
         <div className="mt-12 text-center">
-          <p className="text-gray-500 dark:text-gray-400">
+          <p className="text-sm font-semibold text-slate-500">
             &quot;{searchQuery}&quot;에 대한 검색 결과가 없습니다.
           </p>
         </div>

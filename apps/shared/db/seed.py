@@ -7,13 +7,41 @@ Database seed helpers for startup.
 
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Iterable
 
-from apps.shared.db.models.llm import LLMProvider
-from apps.shared.db.models.user import User
 from sqlalchemy.orm import Session
 
+from apps.shared.db.models.app import App
+from apps.shared.db.models.llm import LLMProvider
+from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.db.models.workflow_run import (
+    NodeRunStatus,
+    RunStatus,
+    RunTriggerMode,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
+
 PLACEHOLDER_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
+DEV_WORKFLOW_APP_IDS = {
+    "template": uuid.UUID("20000000-0000-0000-0000-000000000001"),
+    "llm": uuid.UUID("20000000-0000-0000-0000-000000000002"),
+    "branch": uuid.UUID("20000000-0000-0000-0000-000000000003"),
+}
+DEV_WORKFLOW_IDS = {
+    "template": uuid.UUID("21000000-0000-0000-0000-000000000001"),
+    "llm": uuid.UUID("21000000-0000-0000-0000-000000000002"),
+    "branch": uuid.UUID("21000000-0000-0000-0000-000000000003"),
+}
+DEV_DEPLOYMENT_IDS = {
+    "template": uuid.UUID("22000000-0000-0000-0000-000000000001"),
+    "llm": uuid.UUID("22000000-0000-0000-0000-000000000002"),
+    "branch": uuid.UUID("22000000-0000-0000-0000-000000000003"),
+}
 
 logger = logging.getLogger(__name__)
 
@@ -189,3 +217,666 @@ def seed_default_llm_models(db: Session) -> None:
         logger.info("✅ LLM models sync complete!")
     else:
         logger.warning("ℹ️ LLM models up to date.")
+
+
+def _node(
+    node_id: str,
+    node_type: str,
+    x: int,
+    y: int,
+    data: dict,
+) -> dict:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "position": {"x": x, "y": y},
+        "data": data,
+    }
+
+
+def _edge(
+    edge_id: str,
+    source: str,
+    target: str,
+    source_handle: str | None = None,
+    target_handle: str | None = None,
+) -> dict:
+    edge = {"id": edge_id, "source": source, "target": target}
+    if source_handle is not None:
+        edge["sourceHandle"] = source_handle
+    if target_handle is not None:
+        edge["targetHandle"] = target_handle
+    return edge
+
+
+def _base_data(
+    title: str,
+    description: str,
+    display_number: int,
+    visible_properties: list[str] | None = None,
+) -> dict:
+    return {
+        "title": title,
+        "description": description,
+        "displayNumber": display_number,
+        "visibleProperties": visible_properties or [],
+    }
+
+
+def _start_data(
+    title: str,
+    description: str,
+    display_number: int,
+    variables: list[dict],
+) -> dict:
+    data = _base_data(title, description, display_number)
+    # 프론트는 triggerType, 엔진은 trigger_type을 사용하므로 dev seed에는 둘 다 둔다.
+    data.update(
+        {
+            "triggerType": "manual",
+            "trigger_type": "manual",
+            "variables": variables,
+        }
+    )
+    return data
+
+
+def _input_variable(
+    variable_id: str,
+    name: str,
+    label: str,
+    variable_type: str,
+    required: bool = True,
+    **extra,
+) -> dict:
+    return {
+        "id": variable_id,
+        "name": name,
+        "label": label,
+        "type": variable_type,
+        "required": required,
+        **extra,
+    }
+
+
+def _template_quick_reply_graph() -> dict:
+    nodes = [
+        _node(
+            "start-customer",
+            "startNode",
+            0,
+            120,
+            _start_data(
+                "고객 문의 입력",
+                "고객 문의와 우선순위를 입력받습니다.",
+                1,
+                [
+                    _input_variable(
+                        "customer_message",
+                        "customer_message",
+                        "고객 문의",
+                        "paragraph",
+                        maxLength=1000,
+                        max_length=1000,
+                    ),
+                    _input_variable(
+                        "priority",
+                        "priority",
+                        "우선순위",
+                        "select",
+                        options=[
+                            {"label": "일반", "value": "normal"},
+                            {"label": "긴급", "value": "urgent"},
+                        ],
+                    ),
+                ],
+            ),
+        ),
+        _node(
+            "template-reply",
+            "templateNode",
+            420,
+            120,
+            {
+                **_base_data(
+                    "응답 초안 생성",
+                    "문의와 우선순위를 조합해 답변 초안을 만듭니다.",
+                    2,
+                    ["template", "variables"],
+                ),
+                "template": (
+                    "문의 요약:\n"
+                    "- 고객 문의: {{ customer_message }}\n"
+                    "- 우선순위: {{ priority }}\n\n"
+                    "답변 초안:\n"
+                    "안녕하세요. 문의 주신 내용을 확인했습니다. "
+                    "우선순위는 {{ priority }}로 접수되었고, 담당자가 순차적으로 확인하겠습니다."
+                ),
+                "variables": [
+                    {
+                        "name": "customer_message",
+                        "value_selector": ["start-customer", "customer_message"],
+                    },
+                    {
+                        "name": "priority",
+                        "value_selector": ["start-customer", "priority"],
+                    },
+                ],
+            },
+        ),
+        _node(
+            "answer-reply",
+            "answerNode",
+            840,
+            120,
+            {
+                **_base_data("최종 응답", "템플릿 결과를 최종 출력합니다.", 3),
+                "outputs": [
+                    {
+                        "variable": "reply",
+                        "label": "답변 초안",
+                        "value_selector": ["template-reply", "text"],
+                    }
+                ],
+            },
+        ),
+    ]
+    return {
+        "nodes": nodes,
+        "edges": [
+            _edge("edge-start-template", "start-customer", "template-reply"),
+            _edge("edge-template-answer", "template-reply", "answer-reply"),
+        ],
+        "viewport": {"x": 120, "y": 80, "zoom": 0.9},
+    }
+
+
+def _llm_intent_graph() -> dict:
+    nodes = [
+        _node(
+            "start-inquiry",
+            "startNode",
+            0,
+            120,
+            _start_data(
+                "문의 입력",
+                "LLM 의도 분류에 사용할 고객 문의를 입력받습니다.",
+                1,
+                [
+                    _input_variable(
+                        "customer_message",
+                        "customer_message",
+                        "고객 문의",
+                        "paragraph",
+                        maxLength=1200,
+                        max_length=1200,
+                    )
+                ],
+            ),
+        ),
+        _node(
+            "llm-intent",
+            "llmNode",
+            420,
+            120,
+            {
+                **_base_data(
+                    "문의 의도 분석",
+                    "고객 문의의 의도와 감정을 분류합니다.",
+                    2,
+                    ["model_id", "user_prompt"],
+                ),
+                "provider": "openai",
+                "model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4o-mini",
+                "system_prompt": "고객센터 문의를 분류하는 상담 운영 도우미입니다.",
+                "user_prompt": (
+                    "다음 고객 문의를 읽고 의도, 감정, 긴급도를 JSON으로 답하세요.\n"
+                    "고객 문의: {{ customer_message }}"
+                ),
+                "assistant_prompt": "",
+                "referenced_variables": [
+                    {
+                        "name": "customer_message",
+                        "value_selector": ["start-inquiry", "customer_message"],
+                    }
+                ],
+                "context_variable": "",
+                "parameters": {"temperature": 0.2, "max_tokens": 500},
+                "knowledgeBases": [],
+            },
+        ),
+        _node(
+            "answer-intent",
+            "answerNode",
+            840,
+            120,
+            {
+                **_base_data("분석 결과", "LLM 분석 결과를 최종 출력합니다.", 3),
+                "outputs": [
+                    {
+                        "variable": "analysis",
+                        "label": "의도 분석",
+                        "value_selector": ["llm-intent", "text"],
+                    }
+                ],
+            },
+        ),
+    ]
+    return {
+        "nodes": nodes,
+        "edges": [
+            _edge("edge-start-llm", "start-inquiry", "llm-intent"),
+            _edge("edge-llm-answer", "llm-intent", "answer-intent"),
+        ],
+        "viewport": {"x": 120, "y": 80, "zoom": 0.9},
+    }
+
+
+def _priority_branch_graph() -> dict:
+    nodes = [
+        _node(
+            "start-priority",
+            "startNode",
+            0,
+            160,
+            _start_data(
+                "문의 입력",
+                "고객 문의와 우선순위를 입력받아 분기합니다.",
+                1,
+                [
+                    _input_variable(
+                        "customer_message",
+                        "customer_message",
+                        "고객 문의",
+                        "paragraph",
+                        maxLength=1000,
+                        max_length=1000,
+                    ),
+                    _input_variable(
+                        "priority",
+                        "priority",
+                        "우선순위",
+                        "select",
+                        options=[
+                            {"label": "일반", "value": "normal"},
+                            {"label": "긴급", "value": "urgent"},
+                        ],
+                    ),
+                ],
+            ),
+        ),
+        _node(
+            "condition-priority",
+            "conditionNode",
+            420,
+            160,
+            {
+                **_base_data(
+                    "긴급 여부 분기",
+                    "우선순위가 urgent면 긴급 응답으로 분기합니다.",
+                    2,
+                    ["cases"],
+                ),
+                "cases": [
+                    {
+                        "id": "urgent",
+                        "case_name": "긴급",
+                        "logical_operator": "and",
+                        "conditions": [
+                            {
+                                "id": "cond-priority-urgent",
+                                "variable_selector": ["start-priority", "priority"],
+                                "operator": "equals",
+                                "value": "urgent",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        _node(
+            "template-urgent",
+            "templateNode",
+            840,
+            40,
+            {
+                **_base_data("긴급 응답", "긴급 문의용 답변을 생성합니다.", 3),
+                "template": (
+                    "[긴급 접수]\n"
+                    "문의 내용: {{ customer_message }}\n"
+                    "담당자에게 즉시 전달하고 우선 처리하겠습니다."
+                ),
+                "variables": [
+                    {
+                        "name": "customer_message",
+                        "value_selector": ["start-priority", "customer_message"],
+                    }
+                ],
+            },
+        ),
+        _node(
+            "template-default",
+            "templateNode",
+            840,
+            300,
+            {
+                **_base_data("일반 응답", "일반 문의용 답변을 생성합니다.", 4),
+                "template": (
+                    "[일반 접수]\n"
+                    "문의 내용: {{ customer_message }}\n"
+                    "접수 순서에 따라 확인 후 답변드리겠습니다."
+                ),
+                "variables": [
+                    {
+                        "name": "customer_message",
+                        "value_selector": ["start-priority", "customer_message"],
+                    }
+                ],
+            },
+        ),
+        _node(
+            "answer-urgent",
+            "answerNode",
+            1260,
+            40,
+            {
+                **_base_data("긴급 최종 응답", "긴급 분기 출력을 반환합니다.", 5),
+                "outputs": [
+                    {
+                        "variable": "reply",
+                        "label": "답변",
+                        "value_selector": ["template-urgent", "text"],
+                    }
+                ],
+            },
+        ),
+        _node(
+            "answer-default",
+            "answerNode",
+            1260,
+            300,
+            {
+                **_base_data("일반 최종 응답", "기본 분기 출력을 반환합니다.", 6),
+                "outputs": [
+                    {
+                        "variable": "reply",
+                        "label": "답변",
+                        "value_selector": ["template-default", "text"],
+                    }
+                ],
+            },
+        ),
+    ]
+    return {
+        "nodes": nodes,
+        "edges": [
+            _edge("edge-start-condition", "start-priority", "condition-priority"),
+            _edge(
+                "edge-condition-urgent",
+                "condition-priority",
+                "template-urgent",
+                source_handle="urgent",
+            ),
+            _edge(
+                "edge-condition-default",
+                "condition-priority",
+                "template-default",
+                source_handle="default",
+            ),
+            _edge("edge-urgent-answer", "template-urgent", "answer-urgent"),
+            _edge("edge-default-answer", "template-default", "answer-default"),
+        ],
+        "viewport": {"x": 80, "y": 40, "zoom": 0.75},
+    }
+
+
+def _extract_input_schema(graph: dict) -> dict | None:
+    for node in graph.get("nodes", []):
+        if node.get("type") != "startNode":
+            continue
+        variables = node.get("data", {}).get("variables", [])
+        return {
+            "variables": [
+                {
+                    "name": variable["name"],
+                    "type": variable.get("type", "text"),
+                    "label": variable.get("label", variable["name"]),
+                }
+                for variable in variables
+                if variable.get("name")
+            ]
+        }
+    return None
+
+
+def _extract_output_schema(graph: dict) -> dict | None:
+    outputs = []
+    for node in graph.get("nodes", []):
+        if node.get("type") != "answerNode":
+            continue
+        for output in node.get("data", {}).get("outputs", []):
+            if output.get("variable"):
+                outputs.append(
+                    {
+                        "variable": output["variable"],
+                        "label": output.get("label", output["variable"]),
+                    }
+                )
+    return {"outputs": outputs} if outputs else None
+
+
+def _upsert_dev_app_workflow(
+    db: Session,
+    key: str,
+    name: str,
+    description: str,
+    icon: str,
+    graph: dict,
+) -> Workflow:
+    app_id = DEV_WORKFLOW_APP_IDS[key]
+    workflow_id = DEV_WORKFLOW_IDS[key]
+    deployment_id = DEV_DEPLOYMENT_IDS[key]
+
+    app = db.query(App).filter(App.id == app_id).first()
+    if not app:
+        app = App(
+            id=app_id,
+            tenant_id=PLACEHOLDER_USER_ID,
+            name=name,
+            description=description,
+            icon={
+                "type": "emoji",
+                "content": icon,
+                "background_color": "#EFF6FF",
+            },
+            url_slug=f"dev-{key}-workflow",
+            auth_secret=f"sk-dev-{key}",
+            is_market=False,
+            created_by=PLACEHOLDER_USER_ID,
+        )
+        db.add(app)
+        db.flush()
+    else:
+        app.name = name
+        app.description = description
+        app.icon = {
+            "type": "emoji",
+            "content": icon,
+            "background_color": "#EFF6FF",
+        }
+
+    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if not workflow:
+        workflow = Workflow(
+            id=workflow_id,
+            tenant_id=PLACEHOLDER_USER_ID,
+            app_id=app.id,
+            created_by=PLACEHOLDER_USER_ID,
+        )
+        db.add(workflow)
+        db.flush()
+
+    workflow.app_id = app.id
+    workflow.tenant_id = PLACEHOLDER_USER_ID
+    workflow.created_by = PLACEHOLDER_USER_ID
+    workflow.updated_by = PLACEHOLDER_USER_ID
+    workflow.graph = graph
+    workflow.features = {}
+    workflow.env_variables = []
+    workflow.runtime_variables = []
+    app.workflow_id = workflow.id
+
+    deployment = db.query(WorkflowDeployment).filter(
+        WorkflowDeployment.id == deployment_id
+    ).first()
+    if not deployment:
+        deployment = WorkflowDeployment(
+            id=deployment_id,
+            app_id=app.id,
+            version=1,
+            type=DeploymentType.API,
+            graph_snapshot=graph,
+            created_by=PLACEHOLDER_USER_ID,
+            is_active=True,
+        )
+        db.add(deployment)
+
+    deployment.app_id = app.id
+    deployment.version = 1
+    deployment.type = DeploymentType.API
+    deployment.graph_snapshot = graph
+    deployment.config = {"dev_seed": True}
+    deployment.input_schema = _extract_input_schema(graph)
+    deployment.output_schema = _extract_output_schema(graph)
+    deployment.description = "Dev seed deployment"
+    deployment.created_by = PLACEHOLDER_USER_ID
+    deployment.is_active = True
+    app.active_deployment_id = deployment.id
+
+    return workflow
+
+
+def _seed_template_run_logs(db: Session, workflow: Workflow) -> None:
+    db.query(WorkflowRun).filter(WorkflowRun.workflow_id == workflow.id).delete(
+        synchronize_session=False
+    )
+
+    now = datetime.now(timezone.utc)
+    run_specs = [
+        ("normal", RunStatus.SUCCESS, "normal", 0.0012, 0, None),
+        ("urgent", RunStatus.SUCCESS, "urgent", 0.0015, 0, None),
+        (
+            "missing",
+            RunStatus.FAILED,
+            "",
+            0,
+            0,
+            "변수 'priority' 값이 비어 있습니다.",
+        ),
+    ]
+
+    for index, (suffix, status, priority, cost, tokens, error) in enumerate(run_specs):
+        started_at = now - timedelta(days=index + 1, minutes=index * 11)
+        run = WorkflowRun(
+            workflow_id=workflow.id,
+            user_id=PLACEHOLDER_USER_ID,
+            deployment_id=DEV_DEPLOYMENT_IDS["template"],
+            workflow_version=1,
+            status=status,
+            trigger_mode=RunTriggerMode.MANUAL,
+            inputs={
+                "customer_message": f"배송 상태를 확인하고 싶습니다. ({suffix})",
+                "priority": priority,
+            },
+            outputs=None
+            if status == RunStatus.FAILED
+            else {
+                "reply": f"문의 요약:\n- 고객 문의: 배송 상태를 확인하고 싶습니다. ({suffix})\n- 우선순위: {priority}"
+            },
+            error_message=error,
+            started_at=started_at,
+            finished_at=started_at + timedelta(seconds=1.2 + index),
+            duration=1.2 + index,
+            meta_info={"seed": "dev_workflows"},
+            total_tokens=tokens,
+            total_cost=Decimal(str(cost)),
+        )
+        db.add(run)
+        db.flush()
+
+        node_status = (
+            NodeRunStatus.FAILED
+            if status == RunStatus.FAILED
+            else NodeRunStatus.SUCCESS
+        )
+        db.add_all(
+            [
+                WorkflowNodeRun(
+                    workflow_run_id=run.id,
+                    node_id="start-customer",
+                    node_type="startNode",
+                    status=NodeRunStatus.SUCCESS,
+                    inputs=run.inputs,
+                    process_data={},
+                    outputs=run.inputs,
+                    started_at=started_at,
+                    finished_at=started_at + timedelta(milliseconds=80),
+                ),
+                WorkflowNodeRun(
+                    workflow_run_id=run.id,
+                    node_id="template-reply",
+                    node_type="templateNode",
+                    status=node_status,
+                    inputs={"start-customer": run.inputs},
+                    process_data={},
+                    outputs=run.outputs,
+                    error_message=error,
+                    started_at=started_at + timedelta(milliseconds=100),
+                    finished_at=started_at + timedelta(milliseconds=300),
+                ),
+            ]
+        )
+
+
+def seed_dev_workflow_examples(db: Session) -> None:
+    """
+    Seed local/dev workflow examples for real backend testing.
+
+    - Does not create credentials or API keys.
+    - Idempotently updates the same fixed apps/workflows/deployments.
+    - Adds lightweight run logs for monitoring UI.
+    """
+
+    seed_placeholder_user(db)
+    seed_default_llm_providers(db)
+    seed_default_llm_models(db)
+
+    template_workflow = _upsert_dev_app_workflow(
+        db,
+        key="template",
+        name="[DEV] 템플릿 응답 워크플로우",
+        description="credentials 없이 실행 가능한 Start → Template → Answer 예제",
+        icon="🧩",
+        graph=_template_quick_reply_graph(),
+    )
+    _upsert_dev_app_workflow(
+        db,
+        key="llm",
+        name="[DEV] LLM 문의 의도 분석",
+        description="사용자가 OpenAI credentials를 채운 뒤 실제 LLM 호출을 확인하는 예제",
+        icon="🤖",
+        graph=_llm_intent_graph(),
+    )
+    _upsert_dev_app_workflow(
+        db,
+        key="branch",
+        name="[DEV] 우선순위 분기 워크플로우",
+        description="Start → Condition → Template → Answer 분기 실행 예제",
+        icon="🔀",
+        graph=_priority_branch_graph(),
+    )
+    _seed_template_run_logs(db, template_workflow)
+
+    db.commit()
+    logger.info("✅ Dev workflow examples seeded.")

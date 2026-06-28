@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
@@ -13,11 +13,43 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
+import { getNodeOutputVariables } from '../../utils/nodeVariablePorts';
+import type { WorkflowDraftRequest } from '../../types/Workflow';
+import {
+  formatGraphIssue,
+  type GraphValidationIssue,
+  validateWorkflowGraph,
+} from '../../utils/validateWorkflowGraph';
+import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
 
 type TestSidebarProps = {
   appendMemoryFlag?: (
     inputs: Record<string, any> | FormData,
   ) => Record<string, any> | FormData;
+};
+
+const STREAM_IDLE_TIMEOUT_MS = 60_000;
+
+type PreflightStatus = 'idle' | 'validating' | 'saving';
+
+const cloneDraft = (value: WorkflowDraftRequest): WorkflowDraftRequest => {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as WorkflowDraftRequest;
+};
+
+const getHttpStatus = (error: unknown) => {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    typeof (error as { response?: { status?: unknown } }).response?.status ===
+      'number'
+  ) {
+    return (error as { response: { status: number } }).response.status;
+  }
+  return undefined;
 };
 
 export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
@@ -28,18 +60,84 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     activeWorkflowId,
     setNodes,
     updateNodeData,
+    edges,
+    features,
+    envVariables,
+    runtimeVariables,
+    testExecutionStatus,
+    testExecutionResult,
+    testNodeResults,
+    testExecutionError,
+    isTestUploading,
+    beginTestExecution,
+    setTestUploading,
+    setCurrentExecutingNode,
+    addTestNodeResult,
+    finishTestExecution,
+    failTestExecution,
+    resetTestExecution,
   } = useWorkflowStore();
-  const { setCenter } = useReactFlow();
+  const { setCenter, getViewport } = useReactFlow();
 
   const [inputs, setInputs] = useState<Record<string, any>>({});
   const [files, setFiles] = useState<Record<string, File | null>>({});
-  const [isUploading, setIsUploading] = useState(false);
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [executionResult, setExecutionResult] = useState<any>(null);
-  const [nodeResults, setNodeResults] = useState<
-    Array<{ nodeId: string; nodeType: string; output: any }>
+  const [preflightStatus, setPreflightStatus] =
+    useState<PreflightStatus>('idle');
+  const [validationErrors, setValidationErrors] = useState<
+    GraphValidationIssue[]
   >([]);
-  const [error, setError] = useState<string | null>(null);
+  const isExecuting = testExecutionStatus === 'running';
+  const isPreparing =
+    preflightStatus === 'validating' || preflightStatus === 'saving';
+  const executionResult = testExecutionResult;
+  const hasExecutionResult =
+    executionResult !== null && executionResult !== undefined;
+  const nodeResults = testNodeResults;
+  const error = testExecutionError;
+
+  const outputLabelByNodeId = useMemo(() => {
+    const labelMap = new Map<string, Map<string, string>>();
+
+    for (const node of nodes) {
+      const outputLabels = new Map<string, string>();
+      for (const output of getNodeOutputVariables(node)) {
+        outputLabels.set(output.key, output.label || output.key);
+        if (output.outputId) {
+          outputLabels.set(output.outputId, output.label || output.key);
+        }
+      }
+      labelMap.set(node.id, outputLabels);
+    }
+
+    return labelMap;
+  }, [nodes]);
+
+  const getNodeDisplayName = (nodeId: string) => {
+    const node = nodes.find((item) => item.id === nodeId);
+    const title = String(node?.data?.title || '').trim();
+    return title || nodeId;
+  };
+
+  const getOutputDisplayKey = (nodeId: string, key: string) => {
+    const label = outputLabelByNodeId.get(nodeId)?.get(key)?.trim();
+    if (!label || label === key) return key;
+    return `${label} (${key})`;
+  };
+
+  const stringifyOutputForDisplay = (nodeId: string, output: unknown) => {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) {
+      return JSON.stringify(output, null, 2);
+    }
+
+    const displayOutput = Object.fromEntries(
+      Object.entries(output as Record<string, unknown>).map(([key, value]) => [
+        getOutputDisplayKey(nodeId, key),
+        value,
+      ]),
+    );
+
+    return JSON.stringify(displayOutput, null, 2);
+  };
 
   // Start Node 찾기 및 변수 초기화
   const startNode = nodes.find(
@@ -110,10 +208,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const handleExecute = async () => {
     if (!activeWorkflowId) return;
 
-    setIsExecuting(true);
-    setExecutionResult(null);
-    setNodeResults([]);
-    setError(null);
+    setValidationErrors([]);
+    setPreflightStatus('validating');
 
     try {
       const hasFiles = Object.values(files).some((file) => file !== null);
@@ -126,15 +222,57 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           finalInputs = JSON.parse(rawJson);
         } catch {
           toast.error('유효하지 않은 JSON 형식입니다.');
-          setError('JSON 파싱 실패');
-          setIsExecuting(false);
+          failTestExecution('JSON 파싱 실패');
+          setPreflightStatus('idle');
           return;
         }
       }
 
+      const graphSnapshot = cloneDraft({
+        nodes,
+        edges,
+        viewport: getViewport(),
+        features,
+        envVariables,
+        runtimeVariables,
+      });
+      const validation = validateWorkflowGraph(graphSnapshot);
+
+      if (!validation.ok) {
+        setValidationErrors(validation.errors);
+        failTestExecution(
+          '워크플로우 연결에 문제가 있어 테스트를 실행하지 않았습니다.',
+        );
+        toast.error('실행 전 그래프 검증 실패');
+        setPreflightStatus('idle');
+        return;
+      }
+
+      setPreflightStatus('saving');
+
+      try {
+        await workflowApi.syncDraftWorkflow(
+          activeWorkflowId,
+          buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
+        );
+      } catch (saveError) {
+        const status = getHttpStatus(saveError);
+        const message =
+          status === 401
+            ? '로그인이 만료되어 현재 워크플로우를 저장하지 못했습니다.'
+            : '현재 워크플로우 저장에 실패해서 테스트를 실행하지 않았습니다.';
+        failTestExecution(message);
+        toast.error('저장 실패');
+        setPreflightStatus('idle');
+        return;
+      }
+
+      setPreflightStatus('idle');
+      beginTestExecution();
+
       // 파일 업로드 처리
       if (hasFiles) {
-        setIsUploading(true);
+        setTestUploading(true);
         try {
           for (const [key, file] of Object.entries(files)) {
             if (file) {
@@ -155,12 +293,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           }
         } catch (uploadError: any) {
           toast.error(`파일 업로드 실패: ${uploadError.message}`);
-          setError('파일 업로드 실패');
-          setIsUploading(false);
-          setIsExecuting(false);
+          failTestExecution('파일 업로드 실패');
           return;
         }
-        setIsUploading(false);
+        setTestUploading(false);
       }
 
       // 1. 초기화: 모든 노드 상태 초기화
@@ -176,75 +312,105 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       const inputsWithMemory = appendMemoryFlag
         ? appendMemoryFlag(finalInputs)
         : finalInputs;
+      const abortController = new AbortController();
+      let streamIdleTimeout: ReturnType<typeof setTimeout> | null = null;
+      let streamTimedOut = false;
+      const resetStreamIdleTimeout = () => {
+        if (streamIdleTimeout) clearTimeout(streamIdleTimeout);
+        streamIdleTimeout = setTimeout(() => {
+          streamTimedOut = true;
+          abortController.abort();
+        }, STREAM_IDLE_TIMEOUT_MS);
+      };
 
-      await workflowApi.executeWorkflowStream(
-        activeWorkflowId,
-        inputsWithMemory as Record<string, any>,
-        async (event) => {
-          // 시각적 피드백을 위한 지연
-          await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        resetStreamIdleTimeout();
+        await workflowApi.executeWorkflowStream(
+          activeWorkflowId,
+          inputsWithMemory as Record<string, any>,
+          async (event) => {
+            resetStreamIdleTimeout();
+            // 시각적 피드백을 위한 지연
+            await new Promise((resolve) => setTimeout(resolve, 500));
 
-          const { type, data } = event;
+            const { type, data } = event;
 
-          if (type === 'node_start') {
-            updateNodeData(data.node_id, { status: 'running' });
+            if (type === 'node_start') {
+              setCurrentExecutingNode(data.node_id);
+              updateNodeData(data.node_id, { status: 'running' });
 
-            // 실행 중인 노드로 화면 중심 이동 및 줌인
-            const latestNodes = useWorkflowStore.getState().nodes;
-            const currentNode = latestNodes.find((n) => n.id === data.node_id);
-            if (currentNode) {
-              setCenter(
-                currentNode.position.x +
-                  (currentNode.measured?.width || 200) / 2,
-                currentNode.position.y +
-                  (currentNode.measured?.height || 100) / 2,
-                { zoom: 1.2, duration: 800 },
+              // 실행 중인 노드로 화면 중심 이동 및 줌인
+              const latestNodes = useWorkflowStore.getState().nodes;
+              const currentNode = latestNodes.find(
+                (n) => n.id === data.node_id,
               );
-            }
-          } else if (type === 'node_finish') {
-            updateNodeData(data.node_id, { status: 'success' });
+              if (currentNode) {
+                setCenter(
+                  currentNode.position.x +
+                    (currentNode.measured?.width || 200) / 2,
+                  currentNode.position.y +
+                    (currentNode.measured?.height || 100) / 2,
+                  { zoom: 1.2, duration: 800 },
+                );
+              }
+            } else if (type === 'node_finish') {
+              updateNodeData(data.node_id, { status: 'success' });
 
-            // 노드 실행 완료 토스트
+              // 노드 실행 완료 토스트
 
-            // 노드 결과 누적
-            setNodeResults((prev) => [
-              ...prev,
-              {
+              // 노드 결과 누적
+              addTestNodeResult({
                 nodeId: data.node_id,
                 nodeType: data.node_type,
                 output: data.output,
-              },
-            ]);
-          } else if (type === 'workflow_finish') {
-            finalResult = data;
-          } else if (type === 'error') {
-            if (data.node_id) {
-              updateNodeData(data.node_id, { status: 'failure' });
+              });
+            } else if (type === 'workflow_finish') {
+              finalResult = data;
+            } else if (type === 'error') {
+              if (data.node_id) {
+                updateNodeData(data.node_id, { status: 'failure' });
+              }
+              toast.error(`모듈 실행 실패: ${data.message}`);
+              throw new Error(data.message);
             }
-            toast.error(`모듈 실행 실패: ${data.message}`);
-            throw new Error(data.message);
-          }
-        },
-      );
+          },
+          { signal: abortController.signal, graphSnapshot },
+        );
+      } catch (streamError) {
+        if (streamTimedOut) {
+          throw new Error(
+            '실행 이벤트가 60초 이상 도착하지 않았습니다. 실행 엔진 또는 Redis 스트림 상태를 확인해주세요.',
+          );
+        }
+        throw streamError;
+      } finally {
+        if (streamIdleTimeout) clearTimeout(streamIdleTimeout);
+      }
 
       // 최종 결과 저장
       if (finalResult) {
-        setExecutionResult(finalResult);
+        finishTestExecution(finalResult);
+      } else {
+        finishTestExecution({});
       }
     } catch (err: any) {
       console.error('Execution failed:', err);
-      setError(err.message || '실행 중 오류가 발생했습니다.');
+      failTestExecution(err.message || '실행 중 오류가 발생했습니다.');
       toast.error('실행 실패');
     } finally {
-      setIsExecuting(false);
+      setTestUploading(false);
+      setPreflightStatus('idle');
     }
   };
 
   const handleReset = () => {
-    setExecutionResult(null);
-    setNodeResults([]);
-    setError(null);
+    setValidationErrors([]);
+    setPreflightStatus('idle');
+    resetTestExecution();
   };
+
+  const getVariableDisplayName = (variable: WorkflowVariable) =>
+    variable.label?.trim() || variable.name;
 
   return (
     <div className="absolute top-18 right-2 bottom-2 w-[400px] bg-white border-l border-gray-200 shadow-xl z-50 flex flex-col rounded-xl animate-in slide-in-from-right duration-200 dark:bg-gray-900 dark:border-gray-800">
@@ -284,15 +450,25 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
                 <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900 max-h-40">
                   <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                    {JSON.stringify(result.output, null, 2)}
+                    {stringifyOutputForDisplay(result.nodeId, result.output)}
                   </pre>
                 </div>
               </div>
             ))}
           </div>
-        ) : !executionResult && !error ? (
+        ) : !hasExecutionResult && !error ? (
           /* Input Form */
           <div className="space-y-6">
+            {isPreparing && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
+                <div className="flex items-center gap-2 font-medium">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {preflightStatus === 'validating'
+                    ? '워크플로우 연결을 검증하는 중입니다.'
+                    : '현재 워크플로우를 저장하는 중입니다.'}
+                </div>
+              </div>
+            )}
             <div>
               <h3 className="text-sm font-medium text-gray-900 mb-4 dark:text-gray-200">
                 입력 변수 설정
@@ -360,7 +536,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                             className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
                           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -369,7 +545,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       ) : variable.type === 'select' ? (
                         <>
                           <label className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -391,7 +567,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       ) : variable.type === 'file' ? (
                         <>
                           <label className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -411,7 +587,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       ) : (
                         <>
                           <label className="block text-sm font-medium text-gray-700 mb-1 dark:text-gray-300">
-                            {variable.name}
+                            {getVariableDisplayName(variable)}
                             {variable.required && (
                               <span className="text-red-500 ml-1">*</span>
                             )}
@@ -462,6 +638,15 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                     실행 실패
                   </h3>
                   <p className="text-sm text-red-600 mt-1">{error}</p>
+                  {validationErrors.length > 0 && (
+                    <ul className="mt-3 space-y-1 text-sm text-red-700">
+                      {validationErrors.slice(0, 5).map((issue, index) => (
+                        <li key={`${issue.code}-${issue.edgeId || index}`}>
+                          - {formatGraphIssue(issue)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </div>
             ) : (
@@ -478,24 +663,24 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               </div>
             )}
 
-            {executionResult && (
+            {hasExecutionResult && (
               <div>
                 <h3 className="text-sm font-medium text-gray-900 mb-3 dark:text-gray-200">
                   노드별 실행 결과
                 </h3>
                 <div className="space-y-3">
-                  {Object.entries(executionResult).map(
+                  {Object.entries(executionResult as Record<string, any>).map(
                     ([nodeId, output]: [string, any]) => (
                       <div
                         key={nodeId}
                         className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700"
                       >
                         <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 dark:bg-gray-800 dark:border-gray-700">
-                          {nodeId}
+                          {getNodeDisplayName(nodeId)}
                         </div>
                         <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900">
                           <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                            {JSON.stringify(output, null, 2)}
+                            {stringifyOutputForDisplay(nodeId, output)}
                           </pre>
                         </div>
                       </div>
@@ -510,16 +695,22 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       {/* Footer */}
       <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 dark:bg-gray-900 dark:border-gray-800">
-        {!executionResult && !error ? (
+        {!hasExecutionResult && !error ? (
           <button
             onClick={handleExecute}
-            disabled={isExecuting || isUploading}
+            disabled={isExecuting || isTestUploading || isPreparing}
             className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
           >
-            {isExecuting || isUploading ? (
+            {isExecuting || isTestUploading || isPreparing ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                {isUploading ? '파일 업로드 중...' : '실행 중...'}
+                {isTestUploading
+                  ? '파일 업로드 중...'
+                  : preflightStatus === 'validating'
+                    ? '검증 중...'
+                    : preflightStatus === 'saving'
+                      ? '저장 중...'
+                      : '실행 중...'}
               </>
             ) : (
               <>

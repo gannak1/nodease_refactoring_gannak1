@@ -13,9 +13,9 @@ import {
   Home,
   LogOut,
   Menu,
+  LayoutDashboard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import Logo from './Logo';
 
 const navigationItems = [
   {
@@ -107,26 +107,51 @@ export default function Sidebar() {
   return (
     <aside
       className={cn(
-        'flex h-full flex-col bg-blue-50 rounded-3xl transition-all duration-300 relative',
-        isCollapsed ? 'w-[80px]' : 'w-[270px]',
+        'relative flex h-full flex-col justify-between border-r border-slate-200 bg-white px-4 py-5 transition-all duration-300',
+        isCollapsed ? 'w-[80px]' : 'w-[248px]',
       )}
     >
       {/* Toggle Button */}
       <button
         onClick={() => setIsCollapsed(!isCollapsed)}
         className={cn(
-          'absolute z-50 p-1.5 rounded-lg hover:bg-gray-100 transition-all duration-300',
-          isCollapsed ? 'left-1/2 -translate-x-1/2 top-8' : 'right-4 top-8',
+          'absolute z-50 rounded-md p-1.5 text-slate-500 transition-all duration-300 hover:bg-slate-100 hover:text-slate-900',
+          isCollapsed ? 'left-1/2 top-6 -translate-x-1/2' : 'right-4 top-5',
         )}
       >
-        <Menu className="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors" />
+        <Menu className="h-5 w-5" />
       </button>
 
       {/* Logo */}
-      {isCollapsed ? <div className="h-[88px] w-full" /> : <Logo />}
+      {isCollapsed ? (
+        <button
+          onClick={() => router.push('/dashboard')}
+          className="mt-12 grid h-10 w-10 place-items-center rounded-lg bg-slate-950 text-white transition-colors hover:bg-slate-800"
+          aria-label="대시보드 홈"
+        >
+          <LayoutDashboard size={20} />
+        </button>
+      ) : (
+        <div className="mb-7 flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-lg bg-slate-950 text-white">
+            <LayoutDashboard size={20} />
+          </div>
+          <div className="min-w-0">
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="block text-left text-sm font-black text-slate-950"
+            >
+              Moduly
+            </button>
+            <span className="block truncate text-xs font-semibold text-slate-500">
+              AI automation workspace
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Main Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 space-y-1">
         {navigationItems.map((item) => {
           const isActive = pathname === item.href;
           const Icon = item.icon;
@@ -136,11 +161,11 @@ export default function Sidebar() {
               key={item.name}
               href={item.href}
               className={cn(
-                'flex items-center rounded-lg py-2.5 text-sm font-medium transition-colors gap-3',
+                'flex items-center gap-3 rounded-lg py-2.5 text-sm font-semibold transition-colors',
                 isCollapsed ? 'justify-center px-2' : 'px-3',
                 isActive
-                  ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-white',
+                  ? 'bg-slate-950 text-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
               )}
             >
               <Icon className="h-4 w-4 shrink-0" />
@@ -153,7 +178,7 @@ export default function Sidebar() {
       {/* User Info Footer */}
       <div
         className={cn(
-          'border-t border-gray-200 p-4 dark:border-gray-800 mb-safe relative transition-all',
+          'relative border-t border-slate-200 pt-4 transition-all',
           isCollapsed && 'items-center justify-center',
         )}
         ref={dropdownRef}
@@ -161,24 +186,19 @@ export default function Sidebar() {
         <button
           onClick={() => setIsDropdownOpen(!isDropdownOpen)}
           className={cn(
-            'flex items-center gap-3 w-full rounded-lg hover:bg-gray-50 transition-colors text-left',
+            'flex w-full items-center gap-3 rounded-lg text-left transition-colors hover:bg-slate-50',
             isCollapsed ? 'justify-center p-0' : 'p-2',
           )}
         >
-          <div className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0">
-            <img
-              src="https://images.unsplash.com/photo-1507591064344-4c6ce005b128?w=400&auto=format&fit=crop&q=60&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8Mnx8YXNpYW58ZW58MHx8MHx8fDI%3D"
-              alt={userName}
-              className="w-full h-full object-cover"
-              referrerPolicy="no-referrer"
-            />
+          <div className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full bg-slate-200 text-xs font-black text-slate-700">
+            {userName.charAt(0).toUpperCase()}
           </div>
           {!isCollapsed && (
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">
+              <p className="truncate text-sm font-black text-slate-900">
                 {userName}
               </p>
-              <p className="text-xs text-gray-500 truncate">
+              <p className="truncate text-xs font-semibold text-slate-500">
                 {userEmail || '사용자'}
               </p>
             </div>
@@ -193,7 +213,7 @@ export default function Sidebar() {
               isCollapsed ? 'left-10 w-48' : 'left-0 px-2',
             )}
           >
-            <div className="bg-white rounded-lg shadow-lg border border-gray-200 py-1 overflow-hidden">
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
