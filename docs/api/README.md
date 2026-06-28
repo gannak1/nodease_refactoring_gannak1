@@ -33,5 +33,5 @@ API 문서는 HTTP 계약의 source of truth다. 모든 endpoint는 기본적으
 - 인증된 API는 session cookie 또는 bearer token을 사용한다.
 - secret 원문은 API 응답, 로그, audit metadata에 노출하지 않는다.
 - 권한이 필요한 API는 [data-model/rbac-permission-policy.md](../data-model/rbac-permission-policy.md)의 permission matrix를 따른다.
-- active organization 전달 방식은 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)이 확정되기 전까지 Proposed 상태다.
+- organization scope가 필요한 API는 [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)에 따라 `X-Organization-Id` header로 active organization을 전달한다.
 - 오류 응답은 [errors.md](errors.md)를 따른다.
