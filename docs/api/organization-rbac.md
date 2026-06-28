@@ -103,7 +103,7 @@ Active organization은 `X-Organization-Id` header로 요청마다 명시한다. 
 | Implemented | `GET` | `/api/v1/teams` | `X-Organization-Id`, `limit` query | `list[TeamResponse]` | organization `manager` | active organization의 team 목록 |
 | Implemented (permission gate) | `POST` | `/api/v1/teams` | TBD | TBD | organization `manager` | team 생성 권한 관문. 생성 계약은 TBD |
 | Implemented (permission gate) | `PATCH` | `/api/v1/teams/{team_id}` | TBD | TBD | organization `manager` | team 수정 권한 관문. 수정 계약은 TBD |
-| Planned | `POST` | `/api/v1/teams/{team_id}/members` | TBD | TBD | organization `manager` | user를 team에 추가 |
+| Implemented (permission gate) | `POST` | `/api/v1/teams/{team_id}/members` | TBD | TBD | organization `manager` | team member 추가 권한 관문. 추가 계약은 TBD |
 | Planned | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | 없음 | TBD | organization `manager` | user를 team에서 제거 |
 
 ### `GET /api/v1/teams`
@@ -163,6 +163,26 @@ organization manager 권한 검사를 통과하면, 수정 계약이 확정되�
 | organization이 없거나 inactive 또는 사용자 scope 밖 | `404` | `resource.not_found` |
 | organization member지만 manager가 아님 | `403` | `permission.denied` |
 | organization manager 권한 검사를 통과했지만 수정 계약이 TBD | `501` | `operation.not_implemented` |
+
+### `POST /api/v1/teams/{team_id}/members`
+
+Team member 추가 API의 권한 관문이다. Request/Response 상세 계약은 아직 TBD이므로 구현은 임의 request schema, response schema, DB insert를 만들지 않는다.
+
+요청에는 `X-Organization-Id` header가 필요하다. `organization.created_by` 또는 `organization.managed_by`가 현재 user면 active team membership이 없어도 organization `manager`로 접근할 수 있다. 현재 user가 organization manager가 아니고 active team membership scope 안에 있으면 `403`을 반환한다. 현재 user의 scope 밖 organization이면 존재 여부를 숨기기 위해 `404`를 반환한다.
+
+organization manager 권한 검사를 통과하면, 추가 계약이 확정되지 않았으므로 `501` + `operation.not_implemented`를 반환한다. 이 응답은 team membership 추가 성공 응답이 아니며 team membership row를 생성하지 않는다.
+
+오류 응답은 [errors.md](errors.md)의 목표 Error Envelope을 따른다.
+
+| 조건 | HTTP | Code |
+| --- | --- | --- |
+| 인증 없음 | `401` | `auth.required` |
+| `X-Organization-Id` 없음 | `400` | `organization.required` |
+| `X-Organization-Id`가 UUID가 아님 | `422` | `validation.failed` |
+| `team_id`가 UUID가 아님 | `422` | `validation.failed` |
+| organization이 없거나 inactive 또는 사용자 scope 밖 | `404` | `resource.not_found` |
+| organization member지만 manager가 아님 | `403` | `permission.denied` |
+| organization manager 권한 검사를 통과했지만 추가 계약이 TBD | `501` | `operation.not_implemented` |
 
 ### `TeamResponse`
 

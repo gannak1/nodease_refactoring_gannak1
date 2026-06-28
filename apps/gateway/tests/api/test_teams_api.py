@@ -559,6 +559,179 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertIn(TeamMembership, session.query_calls)
 
+    def test_add_team_member_checks_manager_permission_without_request_schema(self):
+        # docs/api/organization-rbac.md에서 POST /teams/{team_id}/members schema는 아직 TBD다.
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[],
+        )
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=uuid4(),
+            payload={"unexpected": {"contract": "tbd"}},
+        )
+
+        self.assertEqual(response.status_code, 501)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "operation.not_implemented",
+                "Team member addition request and response contract is TBD.",
+            ),
+        )
+        self.assertNotIn(TeamMembership, session.query_calls)
+        self.assertNotIn(Team, session.query_calls)
+
+    def test_add_team_member_requires_organization_header(self):
+        user_id = uuid4()
+        session = _Session()
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=None,
+            team_id=uuid4(),
+            payload={"user_id": str(uuid4())},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            _error("organization.required", "X-Organization-Id header is required."),
+        )
+        self.assertNotIn(Organization, session.query_calls)
+
+    def test_add_team_member_rejects_invalid_organization_header(self):
+        user_id = uuid4()
+        session = _Session()
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            raw_organization_id="not-a-uuid",
+            team_id=uuid4(),
+            payload={"user_id": str(uuid4())},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "validation.failed",
+                "X-Organization-Id must be a valid UUID.",
+                {"field": "X-Organization-Id"},
+            ),
+        )
+        self.assertNotIn(Organization, session.query_calls)
+
+    def test_add_team_member_returns_auth_envelope_for_unauthenticated_request(self):
+        session = _Session()
+        app.dependency_overrides[get_db] = lambda: session
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            side_effect=HTTPException(status_code=401, detail="로그인이 필요합니다"),
+        ):
+            response = TestClient(app).post(
+                f"/api/v1/teams/{uuid4()}/members",
+                headers={
+                    "X-Organization-Id": str(uuid4()),
+                    "X-Request-ID": "req-test",
+                },
+                json={"user_id": str(uuid4())},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json(),
+            _error("auth.required", "로그인이 필요합니다"),
+        )
+        self.assertNotIn(Organization, session.query_calls)
+
+    def test_add_team_member_rejects_invalid_team_id_route_parameter(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session()
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id="not-a-uuid",
+            payload={"user_id": str(uuid4())},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "validation.failed")
+        self.assertEqual(response.json()["error"]["request_id"], "req-test")
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "Request validation failed.",
+        )
+        self.assertEqual(
+            response.json()["error"]["details"]["errors"][0]["loc"],
+            ["path", "team_id"],
+        )
+        self.assertNotIn(Organization, session.query_calls)
+
+    def test_add_team_member_rejects_member_without_manager_permission(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, name="Acme"),
+            membership=SimpleNamespace(id=uuid4()),
+        )
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=uuid4(),
+            payload={"user_id": str(uuid4())},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Organization manager permission is required.",
+            ),
+        )
+        self.assertIn(TeamMembership, session.query_calls)
+
+    def test_add_team_member_hides_organization_outside_user_scope(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, name="Acme"),
+            membership=None,
+        )
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=uuid4(),
+            payload={"user_id": str(uuid4())},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Organization not found."),
+        )
+        self.assertIn(TeamMembership, session.query_calls)
+
     def _get_teams(
         self,
         session,
@@ -633,6 +806,33 @@ class TestTeamsApi(unittest.TestCase):
         ):
             return TestClient(app).patch(
                 f"/api/v1/teams/{team_id}",
+                headers=headers,
+                json=payload,
+            )
+
+    def _post_team_member(
+        self,
+        session,
+        user_id,
+        team_id,
+        organization_id=None,
+        raw_organization_id=None,
+        payload=None,
+    ):
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {"X-Request-ID": "req-test"}
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+        headers["Cookie"] = "auth_token=token"
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            return_value=SimpleNamespace(id=user_id),
+        ):
+            return TestClient(app).post(
+                f"/api/v1/teams/{team_id}/members",
                 headers=headers,
                 json=payload,
             )
