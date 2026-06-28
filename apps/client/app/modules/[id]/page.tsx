@@ -5,16 +5,18 @@ import EditorHeader from '@/app/features/workflow/components/editor/EditorHeader
 import NodeCanvas from '@/app/features/workflow/components/editor/NodeCanvas';
 import { useAutoSync } from '@/app/features/workflow/hooks/useAutoSync';
 import { useWorkflowAppSync } from '@/app/features/workflow/hooks/useWorkflowAppSync';
+import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 
 // ReactFlowProvider 컨텍스트 내에서 자동 저장 로직을 관리하는 래퍼 컴포넌트
 function WorkflowEditor() {
   useAutoSync();
   useWorkflowAppSync();
+  const fullscreenNodeId = useWorkflowStore((state) => state.fullscreenNodeId);
 
   return (
     <div className="flex flex-col h-full bg-white">
       {/* 헤더 (Toolbar) */}
-      <EditorHeader />
+      {!fullscreenNodeId && <EditorHeader />}
 
       {/* 메인 콘텐츠 영역 */}
       <div className="flex flex-1 overflow-hidden">

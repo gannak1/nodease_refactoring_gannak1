@@ -522,53 +522,19 @@ export function NodeFullscreenEditor() {
       data-canvas-shortcut-scope="blocked"
     >
       {/* 헤더 */}
-      <div className="z-10 flex h-20 shrink-0 items-center gap-4 border-b border-slate-200 bg-white px-5">
-        <div className="relative flex w-56 shrink-0 items-center justify-start">
-          {previousNodes.length === 0 ? (
-            <div className="text-xs font-medium text-slate-300">이전 없음</div>
-          ) : previousNodes.length === 1 && primaryPreviousNode ? (
-            <NodeNavigationButton
-              item={primaryPreviousNode}
-              direction="previous"
-              onClick={() => navigateToNode(primaryPreviousNode.node.id)}
-            />
-          ) : (
-            <div className="flex min-w-0 items-center gap-2">
-              {primaryPreviousNode && (
-                <NodeNavigationButton
-                  item={primaryPreviousNode}
-                  direction="previous"
-                  onClick={() => navigateToNode(primaryPreviousNode.node.id)}
-                />
-              )}
-              <button
-                type="button"
-                onClick={() =>
-                  setOpenNavigationPopover((current) =>
-                    current === 'previous' ? null : 'previous',
-                  )
-                }
-                className="flex h-10 shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
-                aria-expanded={openNavigationPopover === 'previous'}
-              >
-                {primaryPreviousNode
-                  ? `+${previousNodes.length - 1}`
-                  : `← 이전 ${previousNodes.length}개`}
-                <ChevronDown className="h-4 w-4" />
-              </button>
-            </div>
-          )}
+      <div className="z-10 flex h-32 shrink-0 flex-col border-b border-slate-200 bg-white px-5">
+        <div className="relative flex min-h-0 flex-1 items-center justify-center">
+          <button
+            type="button"
+            onClick={handleClose}
+            className="absolute left-0 top-4 flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+            title="워크플로우로 돌아가기"
+            aria-label="워크플로우로 돌아가기"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            워크플로우로 돌아가기
+          </button>
 
-          {openNavigationPopover === 'previous' && (
-            <NodeNavigationPopover
-              items={previousNodes}
-              align="left"
-              onSelect={navigateToNode}
-            />
-          )}
-        </div>
-
-        <div className="flex min-w-0 flex-1 items-center justify-center">
           <div className="flex min-w-0 max-w-[560px] items-center gap-3">
             <NodeSummaryIcon type={node.type} />
 
@@ -648,39 +614,86 @@ export function NodeFullscreenEditor() {
           </div>
         </div>
 
-        <div className="relative flex w-56 shrink-0 items-center justify-end">
-          {nextNodes.length === 0 ? (
-            <div className="text-xs font-medium text-slate-300">다음 없음</div>
-          ) : nextNodes.length === 1 ? (
-            <NodeNavigationButton
-              item={nextNodes[0]}
-              direction="next"
-              onClick={() => navigateToNode(nextNodes[0].node.id)}
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() =>
-                setOpenNavigationPopover((current) =>
-                  current === 'next' ? null : 'next',
-                )
-              }
-              className="flex h-10 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
-              aria-expanded={openNavigationPopover === 'next'}
-            >
-              다음 {nextNodes.length}개
-              <ChevronRight className="h-4 w-4" />
-              <ChevronDown className="h-4 w-4" />
-            </button>
-          )}
+        <div className="flex h-12 shrink-0 items-center justify-between">
+          <div className="relative flex min-w-0 flex-1 items-center justify-start">
+            {previousNodes.length === 0 ? (
+              <div className="text-xs font-medium text-slate-300">이전 없음</div>
+            ) : previousNodes.length === 1 && primaryPreviousNode ? (
+              <NodeNavigationButton
+                item={primaryPreviousNode}
+                direction="previous"
+                onClick={() => navigateToNode(primaryPreviousNode.node.id)}
+              />
+            ) : (
+              <div className="flex min-w-0 items-center gap-2">
+                {primaryPreviousNode && (
+                  <NodeNavigationButton
+                    item={primaryPreviousNode}
+                    direction="previous"
+                    onClick={() => navigateToNode(primaryPreviousNode.node.id)}
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenNavigationPopover((current) =>
+                      current === 'previous' ? null : 'previous',
+                    )
+                  }
+                  className="flex h-10 shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
+                  aria-expanded={openNavigationPopover === 'previous'}
+                >
+                  {primaryPreviousNode
+                    ? `+${previousNodes.length - 1}`
+                    : `← 이전 ${previousNodes.length}개`}
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+              </div>
+            )}
 
-          {openNavigationPopover === 'next' && (
-            <NodeNavigationPopover
-              items={nextNodes}
-              align="right"
-              onSelect={navigateToNode}
-            />
-          )}
+            {openNavigationPopover === 'previous' && (
+              <NodeNavigationPopover
+                items={previousNodes}
+                align="left"
+                onSelect={navigateToNode}
+              />
+            )}
+          </div>
+
+          <div className="relative flex min-w-0 flex-1 items-center justify-end">
+            {nextNodes.length === 0 ? (
+              <div className="text-xs font-medium text-slate-300">다음 없음</div>
+            ) : nextNodes.length === 1 ? (
+              <NodeNavigationButton
+                item={nextNodes[0]}
+                direction="next"
+                onClick={() => navigateToNode(nextNodes[0].node.id)}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  setOpenNavigationPopover((current) =>
+                    current === 'next' ? null : 'next',
+                  )
+                }
+                className="flex h-10 items-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
+                aria-expanded={openNavigationPopover === 'next'}
+              >
+                다음 {nextNodes.length}개
+                <ChevronRight className="h-4 w-4" />
+                <ChevronDown className="h-4 w-4" />
+              </button>
+            )}
+
+            {openNavigationPopover === 'next' && (
+              <NodeNavigationPopover
+                items={nextNodes}
+                align="right"
+                onSelect={navigateToNode}
+              />
+            )}
+          </div>
         </div>
       </div>
 
