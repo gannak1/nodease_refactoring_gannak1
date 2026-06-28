@@ -9,13 +9,13 @@ import {
 } from '../types/Api';
 import {
   mockDashboardStats,
+  createMockWorkflowExecuteResult,
+  createMockWorkflowStreamEvents,
   mockDeployments,
   mockWorkflowDraft,
-  mockWorkflowExecuteResult,
   mockWorkflowResponse,
   mockWorkflowRunDetail,
   mockWorkflowRuns,
-  mockWorkflowStreamEvents,
 } from '../mock/mockWorkflow';
 import { isMockWorkflowId } from '../utils/mockMode';
 
@@ -74,7 +74,7 @@ export const workflowApi = {
     userInput?: Record<string, unknown>,
   ) => {
     if (isMockWorkflowId(workflowId)) {
-      return cloneMockResponse(mockWorkflowExecuteResult);
+      return cloneMockResponse(createMockWorkflowExecuteResult(userInput));
     }
 
     const response = await api.post(
@@ -89,9 +89,10 @@ export const workflowApi = {
     workflowId: string,
     userInput: Record<string, unknown> | FormData,
     onEvent?: (event: any) => void | Promise<void>,
+    options?: { signal?: AbortSignal; graphSnapshot?: WorkflowDraftRequest },
   ) => {
     if (isMockWorkflowId(workflowId)) {
-      for (const event of mockWorkflowStreamEvents) {
+      for (const event of createMockWorkflowStreamEvents(userInput)) {
         if (onEvent) await onEvent(cloneMockResponse(event));
       }
       return;
@@ -109,11 +110,25 @@ export const workflowApi = {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
     const fetchUrl = `${baseUrl}/stream-api/workflows/${workflowId}`;
 
+    let body: BodyInit;
+    if (isFormData) {
+      if (options?.graphSnapshot) {
+        userInput.set('graph_snapshot', JSON.stringify(options.graphSnapshot));
+      }
+      body = userInput;
+    } else {
+      body = JSON.stringify({
+        inputs: userInput || {},
+        graph_snapshot: options?.graphSnapshot,
+      });
+    }
+
     const response = await fetch(fetchUrl, {
       method: 'POST',
       headers: isFormData ? {} : { 'Content-Type': 'application/json' },
       credentials: 'include', // 쿠키 인증 포함
-      body: isFormData ? userInput : JSON.stringify(userInput || {}),
+      body,
+      signal: options?.signal,
     });
 
     if (!response.ok) {

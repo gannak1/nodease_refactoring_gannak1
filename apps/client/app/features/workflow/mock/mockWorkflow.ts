@@ -339,23 +339,60 @@ export const mockWorkflowRunDetail: WorkflowRun = {
 
 export const mockDeployments: DeploymentResponse[] = [];
 
-export const mockWorkflowExecuteResult = {
-  'mock-start': {
-    customer_message: '배송 일정이 궁금합니다.',
-    priority: 'normal',
-  },
-  'mock-llm': {
-    text: '고객은 배송 일정 확인을 원하며, 차분한 안내가 적합합니다.',
-  },
-  'mock-condition': { selected_case: 'default', matched: false },
-  'mock-template': {
-    text: '안녕하세요. 문의하신 배송 일정은 주문 상세 화면에서 확인하실 수 있습니다. 추가 확인이 필요하면 주문번호를 알려주세요.',
-  },
-  'mock-answer': {
-    reply:
-      '안녕하세요. 문의하신 배송 일정은 주문 상세 화면에서 확인하실 수 있습니다. 추가 확인이 필요하면 주문번호를 알려주세요.',
-  },
+const readMockInputValue = (
+  userInput: Record<string, unknown> | FormData | undefined,
+  key: string,
+  fallback: string,
+) => {
+  if (!userInput) return fallback;
+  if (typeof FormData !== 'undefined' && userInput instanceof FormData) {
+    const value = userInput.get(key);
+    return typeof value === 'string' && value.trim() ? value : fallback;
+  }
+
+  const value = (userInput as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() ? value : fallback;
 };
+
+export const createMockWorkflowExecuteResult = (
+  userInput?: Record<string, unknown> | FormData,
+) => {
+  const customerMessage = readMockInputValue(
+    userInput,
+    'customer_message',
+    '배송 일정이 궁금합니다.',
+  );
+  const priority = readMockInputValue(userInput, 'priority', 'normal');
+  const isUrgent = priority === 'urgent';
+  const llmText = isUrgent
+    ? `고객은 "${customerMessage}" 문의에 대해 긴급한 처리를 원합니다.`
+    : `고객은 "${customerMessage}" 문의에 대해 차분한 안내를 원합니다.`;
+  const templateText = isUrgent
+    ? `안녕하세요. 남겨주신 문의 "${customerMessage}"는 긴급 건으로 확인했습니다. 담당자가 우선 처리하겠습니다.`
+    : `안녕하세요. 남겨주신 문의 "${customerMessage}"를 확인했습니다. 담당자가 순차적으로 안내드리겠습니다.`;
+
+  return {
+    'mock-start': {
+      customer_message: customerMessage,
+      priority,
+    },
+    'mock-llm': {
+      text: llmText,
+    },
+    'mock-condition': {
+      selected_case: isUrgent ? 'urgent' : 'default',
+      matched: isUrgent,
+    },
+    'mock-template': {
+      text: templateText,
+    },
+    'mock-answer': {
+      reply: templateText,
+    },
+  };
+};
+
+export const mockWorkflowExecuteResult = createMockWorkflowExecuteResult();
 
 type MockWorkflowStreamEvent =
   | {
@@ -375,7 +412,12 @@ type MockWorkflowStreamEvent =
       data: typeof mockWorkflowExecuteResult;
     };
 
-export const mockWorkflowStreamEvents = [
+export const createMockWorkflowStreamEvents = (
+  userInput?: Record<string, unknown> | FormData,
+) => {
+  const result = createMockWorkflowExecuteResult(userInput);
+
+  return [
   {
     type: 'node_start',
     data: { node_id: 'mock-start', node_type: 'startNode' },
@@ -385,10 +427,7 @@ export const mockWorkflowStreamEvents = [
     data: {
       node_id: 'mock-start',
       node_type: 'startNode',
-      output: {
-        customer_message: '배송 일정이 궁금합니다.',
-        priority: 'normal',
-      },
+      output: result['mock-start'],
     },
   },
   {
@@ -400,9 +439,7 @@ export const mockWorkflowStreamEvents = [
     data: {
       node_id: 'mock-llm',
       node_type: 'llmNode',
-      output: {
-        text: '고객은 배송 일정 확인을 원하며, 차분한 안내가 적합합니다.',
-      },
+      output: result['mock-llm'],
     },
   },
   {
@@ -414,7 +451,7 @@ export const mockWorkflowStreamEvents = [
     data: {
       node_id: 'mock-condition',
       node_type: 'conditionNode',
-      output: { selected_case: 'default', matched: false },
+      output: result['mock-condition'],
     },
   },
   {
@@ -426,9 +463,7 @@ export const mockWorkflowStreamEvents = [
     data: {
       node_id: 'mock-template',
       node_type: 'templateNode',
-      output: {
-        text: '안녕하세요. 문의하신 배송 일정은 주문 상세 화면에서 확인하실 수 있습니다. 추가 확인이 필요하면 주문번호를 알려주세요.',
-      },
+      output: result['mock-template'],
     },
   },
   {
@@ -440,14 +475,14 @@ export const mockWorkflowStreamEvents = [
     data: {
       node_id: 'mock-answer',
       node_type: 'answerNode',
-      output: {
-        reply:
-          '안녕하세요. 문의하신 배송 일정은 주문 상세 화면에서 확인하실 수 있습니다. 추가 확인이 필요하면 주문번호를 알려주세요.',
-      },
+      output: result['mock-answer'],
     },
   },
   {
     type: 'workflow_finish',
-    data: mockWorkflowExecuteResult,
+    data: result,
   },
 ] satisfies MockWorkflowStreamEvent[];
+};
+
+export const mockWorkflowStreamEvents = createMockWorkflowStreamEvents();
