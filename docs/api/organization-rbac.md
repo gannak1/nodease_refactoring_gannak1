@@ -228,7 +228,7 @@ organization manager 권한 검사를 통과하면, 제거 응답 계약이 확�
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
 | Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 부여/수정 |
-| Planned | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 회수 |
+| Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` | team workflow 권한 회수 |
 | Planned | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 부여/수정 |
 | Planned | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` | user direct workflow 권한 회수 |
 | Planned | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` | team LLM credential 권한 부여/수정 |
@@ -267,6 +267,33 @@ Team workflow 권한을 생성하거나 수정하는 upsert API다.
 | workflow가 organization scope 안에 없음 | `404` | `resource.not_found` |
 | team이 organization scope 안에 없거나 inactive | `404` | `resource.not_found` |
 | workflow `manage` 또는 organization `manager` 권한 없음 | `403` | `permission.denied` |
+
+### `DELETE /api/v1/permissions/workflows/{workflow_id}/teams/{team_id}`
+
+Team workflow 권한을 회수하는 API다.
+
+요청에는 `X-Organization-Id` header가 필요하다. 대상 workflow와 team은 모두 header organization scope 안에 있어야 하며, team은 active 상태여야 한다. 현재 user가 `organization.created_by` 또는 `organization.managed_by`이면 organization `manager`로 허용된다. 그렇지 않으면 현재 user가 active team membership scope 안에 있어야 하고, 대상 workflow에 대한 effective `manager` 권한을 가져야 한다.
+
+응답은 삭제된 permission row id와 message를 반환한다.
+
+```json
+{
+  "message": "Team workflow permission deleted",
+  "id": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+| 조건 | HTTP | Code |
+| --- | --- | --- |
+| 인증 없음 | `401` | `auth.required` |
+| `X-Organization-Id` 없음 | `400` | `organization.required` |
+| `X-Organization-Id`가 UUID가 아님 | `422` | `validation.failed` |
+| `workflow_id` 또는 `team_id`가 UUID가 아님 | `422` | `validation.failed` |
+| organization이 없거나 inactive 또는 사용자 scope 밖 | `404` | `resource.not_found` |
+| workflow가 organization scope 안에 없음 | `404` | `resource.not_found` |
+| team이 organization scope 안에 없거나 inactive | `404` | `resource.not_found` |
+| workflow `manage` 또는 organization `manager` 권한 없음 | `403` | `permission.denied` |
+| 회수할 team workflow permission row가 없음 | `404` | `resource.not_found` |
 
 ### `TeamWorkflowPermissionResponse`
 

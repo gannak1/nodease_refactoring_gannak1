@@ -731,6 +731,208 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
 
+    def test_delete_team_workflow_permission_deletes_row_for_organization_manager(self):
+        # organization manager는 team workflow permission을 회수할 수 있다.
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        existing_permission = _team_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+            auth_state="builder",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            team=_team(id=team_id, organization_id=organization_id),
+            existing_permission=existing_permission,
+        )
+
+        response = self._delete_permission(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "Team workflow permission deleted",
+                "id": str(existing_permission.id),
+            },
+        )
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        self.assertFalse(session.scalars_called)
+        self.assertNotIn(TeamMembership, session.query_calls)
+        _assert_organization_scope_filters(self, session.organization_query, organization_id)
+        _assert_workflow_scope_filters(
+            self,
+            session.workflow_query,
+            workflow_id,
+            organization_id,
+        )
+        _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
+        self.permission_audit.assert_called_once()
+        audit = self.permission_audit.call_args.kwargs
+        self.assertEqual(audit["action"], "team_workflow_permission.deleted")
+        self.assertEqual(audit["category"], "data_change")
+        self.assertEqual(audit["actor_id"], str(user_id))
+        self.assertEqual(audit["actor_type"], "user")
+        self.assertEqual(audit["target_type"], "team_workflow_permission")
+        self.assertEqual(audit["target_id"], existing_permission.id)
+        self.assertEqual(audit["before"]["id"], existing_permission.id)
+        self.assertEqual(audit["before"]["auth_state"], "builder")
+        self.assertIsNone(audit["after"])
+        self.assertEqual(audit["metadata"]["request_id"], "req-test")
+        self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+
+    def test_delete_team_workflow_permission_allows_workflow_manager(self):
+        # organization manager가 아니어도 workflow manager면 permission 회수가 가능하다.
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        existing_permission = _team_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+            auth_state="viewer",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=user_id, organization_id=organization_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            team=_team(id=team_id, organization_id=organization_id),
+            manager_permissions=[
+                _team_workflow_permission(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    team_id=uuid4(),
+                    auth_state="manager",
+                    assigned_by=uuid4(),
+                    member_user_id=user_id,
+                )
+            ],
+            existing_permission=existing_permission,
+        )
+
+        response = self._delete_permission(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        _assert_active_membership_filters(
+            self,
+            session.membership_query,
+            user_id,
+            organization_id,
+        )
+        _assert_workflow_manage_filters(
+            self,
+            session.workflow_manager_query,
+            user_id,
+            workflow_id,
+            organization_id,
+        )
+
+    def test_delete_team_workflow_permission_rejects_member_without_manage(self):
+        # active member라도 workflow manager가 아니면 permission 회수는 거부해야 한다.
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        existing_permission = _team_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+            auth_state="viewer",
+            assigned_by=uuid4(),
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=_membership(user_id=user_id, organization_id=organization_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            team=_team(id=team_id, organization_id=organization_id),
+            manager_permissions=[
+                _team_workflow_permission(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    team_id=uuid4(),
+                    auth_state="builder",
+                    assigned_by=uuid4(),
+                    member_user_id=user_id,
+                )
+            ],
+            existing_permission=existing_permission,
+        )
+
+        response = self._delete_permission(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Workflow manage or organization manager permission is required.",
+            ),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_not_called()
+
+    def test_delete_team_workflow_permission_hides_missing_permission_row(self):
+        # scope와 권한이 맞아도 회수할 permission row가 없으면 404를 반환한다.
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            team=_team(id=team_id, organization_id=organization_id),
+            existing_permission=None,
+        )
+
+        response = self._delete_permission(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "resource.not_found",
+                "Team workflow permission not found.",
+            ),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_not_called()
+
     def _put_permission(
         self,
         session,
@@ -769,6 +971,43 @@ class TestPermissionsApi(unittest.TestCase):
                 f"/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}",
                 headers=headers,
                 json=payload,
+            )
+
+    def _delete_permission(
+        self,
+        session,
+        user_id,
+        workflow_id,
+        team_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 권한 DELETE endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).delete(
+                f"/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}",
+                headers=headers,
             )
 
 
@@ -857,6 +1096,7 @@ class _Session:
         self.lock_statement = None
         self.query_calls = []
         self.added = []
+        self.deleted = []
         self.scalars_called = False
         self.committed = False
         self.refreshed = False
@@ -896,6 +1136,10 @@ class _Session:
     def add(self, value):
         """ORM insert 경로 사용 여부를 감지하도록 add 호출 값을 기록한다."""
         self.added.append(value)
+
+    def delete(self, value):
+        """ORM delete 경로 사용 여부를 감지하도록 delete 호출 값을 기록한다."""
+        self.deleted.append(value)
 
     def scalars(self, statement):
         """Core upsert statement를 기록하고 returning 결과 wrapper를 반환한다."""

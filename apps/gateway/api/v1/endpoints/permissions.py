@@ -208,6 +208,127 @@ def _record_team_workflow_permission_audit(
     )
 
 
+def _record_team_workflow_permission_delete_audit(
+    current_user: User,
+    permission: TeamWorkflowPermission,
+    before: dict,
+) -> None:
+    """team-workflow 권한 회수 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    record_audit(
+        action="team_workflow_permission.deleted",
+        category="data_change",
+        actor_id=str(current_user.id),
+        actor_type="user",
+        target_type="team_workflow_permission",
+        target_id=permission.id,
+        before=before,
+        after=None,
+        metadata=metadata,
+    )
+
+
+def _authorize_team_workflow_permission_change(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    workflow_id: UUID,
+    team_id: UUID,
+) -> tuple[Organization, Workflow, Team]:
+    """team workflow permission 변경 공통 scope와 manage 권한을 검증한다."""
+    # 먼저 organization scope를 확정한다. scope 밖이면 리소스 존재 여부를 숨긴다.
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = _is_organization_manager(
+        organization,
+        current_user.id,
+    )
+    # organization manager는 active membership 없이도 권한 관리가 가능하다.
+    if not is_organization_manager and not _has_active_membership(
+        db,
+        organization_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    # 대상 workflow는 요청 organization 안에 있어야 한다.
+    workflow = (
+        db.query(Workflow)
+        .filter(
+            Workflow.id == workflow_id,
+            Workflow.organization_id == organization_id,
+        )
+        .first()
+    )
+    if workflow is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Workflow not found.",
+        )
+
+    # inactive team에는 workflow 권한을 부여하거나 회수하지 않는다.
+    team = (
+        db.query(Team)
+        .filter(
+            Team.id == team_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .first()
+    )
+    if team is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Team not found.",
+        )
+
+    # 최종 허용 주체는 organization manager 또는 workflow manager다.
+    if not is_organization_manager and not _has_workflow_manage_permission(
+        db,
+        organization_id,
+        workflow_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Workflow manage or organization manager permission is required.",
+        )
+
+    return organization, workflow, team
+
+
 def _upsert_team_workflow_permission(
     db: Session,
     current_user: User,
@@ -295,89 +416,14 @@ def put_team_workflow_permission(
     """team에 workflow 권한을 부여하거나 갱신하는 PUT endpoint."""
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
-
-    # 먼저 organization scope를 확정한다. scope 밖이면 리소스 존재 여부를 숨긴다.
-    organization = (
-        db.query(Organization)
-        .filter(
-            Organization.id == organization_id,
-            Organization.is_active.is_(True),
-        )
-        .first()
-    )
-    if organization is None:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "Organization not found.",
-        )
-
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    # organization manager는 active membership 없이도 권한 관리가 가능하다.
-    if not is_organization_manager and not _has_active_membership(
+    _authorize_team_workflow_permission_change(
+        request,
         db,
-        organization_id,
-        current_user.id,
-    ):
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "Organization not found.",
-        )
-
-    # 대상 workflow는 요청 organization 안에 있어야 한다.
-    workflow = (
-        db.query(Workflow)
-        .filter(
-            Workflow.id == workflow_id,
-            Workflow.organization_id == organization_id,
-        )
-        .first()
-    )
-    if workflow is None:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "Workflow not found.",
-        )
-
-    # inactive team에는 새 workflow 권한을 부여하지 않는다.
-    team = (
-        db.query(Team)
-        .filter(
-            Team.id == team_id,
-            Team.organization_id == organization_id,
-            Team.is_active.is_(True),
-        )
-        .first()
-    )
-    if team is None:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "Team not found.",
-        )
-
-    # 최종 허용 주체는 organization manager 또는 workflow manager다.
-    if not is_organization_manager and not _has_workflow_manage_permission(
-        db,
+        current_user,
         organization_id,
         workflow_id,
-        current_user.id,
-    ):
-        raise_api_error(
-            request,
-            403,
-            "permission.denied",
-            "Workflow manage or organization manager permission is required.",
-        )
+        team_id,
+    )
 
     now = datetime.now(timezone.utc)
     return _upsert_team_workflow_permission(
@@ -390,3 +436,52 @@ def put_team_workflow_permission(
         current_user.id,
         now,
     )
+
+
+@router.delete("/workflows/{workflow_id}/teams/{team_id}")
+def delete_team_workflow_permission(
+    workflow_id: UUID,
+    team_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """team의 workflow 권한을 회수하는 DELETE endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_team_workflow_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        workflow_id,
+        team_id,
+    )
+
+    permission = (
+        db.query(TeamWorkflowPermission)
+        .filter(
+            TeamWorkflowPermission.grantee_organization_id == organization_id,
+            TeamWorkflowPermission.workflow_id == workflow_id,
+            TeamWorkflowPermission.team_id == team_id,
+        )
+        .first()
+    )
+    if permission is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Team workflow permission not found.",
+        )
+
+    before = _permission_audit_columns(permission)
+    db.delete(permission)
+    db.commit()
+    _record_team_workflow_permission_delete_audit(
+        current_user,
+        permission,
+        before,
+    )
+    return {"message": "Team workflow permission deleted", "id": str(permission.id)}
