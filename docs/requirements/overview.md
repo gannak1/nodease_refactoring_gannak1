@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 작성 기준
 
@@ -39,6 +39,8 @@ Moduly는 이미 워크플로우 편집, 실행, 배포, RAG, LLM credential, us
 - 데이터 거버넌스와 정책 차단
 - 비용/품질 비교와 추천
 - 배포 전 체크와 운영 대시보드
+
+이 requirements 문서는 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 구현 사실과 MVP 목표 상태를 함께 다룬다. "현재 코드", "현재 구현"으로 표시한 내용은 이미 코드 기준으로 확인한 동작이고, MVP 2/3의 governance, deploy checklist, recommendation, operations dashboard 항목은 목표 범위다.
 
 ## 왜 RBAC가 먼저인가
 
@@ -94,9 +96,12 @@ Team/User Permission Model
   -> Audit Logs / Trace Payload Model
   -> Data Governance Policy
   -> MVP 1 Observability
+  -> MVP 2-0 Organization Membership / Invitation Foundation
   -> MVP 2 Governance Enforcement + RAG Audit
   -> MVP 3 Optimization + Operations
 ```
+
+MVP 2 본작업 전에는 [MVP 2-0 Organization Membership / Invitation Foundation](../implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md)을 선행한다. 이 단계는 `organization_memberships`를 사용자 organization 소속의 기준으로 추가하고, team membership과 user direct permission이 active organization member를 전제로 동작하도록 정리한다.
 
 ## 작동하는 MVP의 기준
 
@@ -116,7 +121,7 @@ Team/User Permission Model
 
 1. MVP 1에서는 기존 `App`을 project boundary로 사용하고, 독립 `Project` 모델 도입 시점은 이후에 결정한다.
 2. `Canvas`라는 제품 용어는 현재 구현의 `Workflow`에 매핑한다.
-3. `KnowledgeBase`, `Document`, `LLMModel`, `LLMCredential`, `Workflow`, `Deployment`를 resource 개념으로 표준화한다. 현재 코드는 model별 permission table을 만들지 않고 `LLMCredential` 권한과 `llm_rel_credential_models`로 model 사용 가능 여부를 제한한다. `Connection`은 독립 permission resource로 두지 않고 consuming workflow/knowledge base 권한으로 runtime `use`를 허용한다.
+3. `KnowledgeBase`, `Document`, `LLMModel`, `LLMCredential`, `Workflow`, `Deployment`를 resource 개념으로 표준화한다. 현재 코드는 model별 permission table을 만들지 않고 `LLMCredential` 권한과 `llm_rel_credential_models`로 model 사용 가능 여부를 제한한다. `Connection`은 독립 permission resource로 두지 않는다. 현재 구현은 connector API와 DB source upload에서 `connections.user_id` owner 기준을 주로 사용하고, 저장된 DB source sync/processor 경로는 문서 metadata의 `connection_id`로 server-side secret을 사용한다. consuming workflow/knowledge base 권한으로 runtime `use`를 허용하는 정책은 MVP 2 목표다.
 4. permission vocabulary는 `read`, `write`, `execute`, `use`, `manage`, `deploy`로 시작한다.
 5. `Admin`, `Builder`, `Operator`, `Viewer`, `Auditor`는 DB role이 아니라 team template 또는 UI preset으로 취급한다.
 6. audit은 신규 `audit_events`가 아니라 현재 코드의 `audit_logs`를 사용한다.

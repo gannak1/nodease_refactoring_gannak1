@@ -3,11 +3,13 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 제품 정의
 
 Nodease는 기존 Moduly의 workflow builder/runtime을 기반으로 LLMOps observability, RBAC, audit/tracing, RAG governance, enterprise operations를 단계적으로 강화하는 제품이다.
+
+현재 코드와 배포 리소스의 런타임 명칭은 `Moduly`다. FastAPI title, Docker/Helm 리소스명, README 실행 명령, container name은 모두 Moduly 계열 이름을 사용한다. 따라서 이 문서에서 `Nodease`는 목표 제품명 또는 리브랜딩 명칭으로 취급하고, 코드/인프라 기준 식별자는 `Moduly`를 따른다.
 
 ## MVP 범위
 

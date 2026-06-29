@@ -3,6 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Created At: 2026-06-29 13:15 KST
 Related ADRs: [ADR-202606290145-active-organization-header-context](ADR-202606290145-active-organization-header-context.md), [ADR-202606290131-audit-action-naming-standard](ADR-202606290131-audit-action-naming-standard.md)
 

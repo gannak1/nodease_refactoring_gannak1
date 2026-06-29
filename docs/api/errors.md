@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -21,6 +21,17 @@ Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR
 ```
 
 `detail`은 string 또는 object일 수 있다. 기존 endpoint와 호환이 필요하므로 즉시 전역 envelope로 바꾸지 않는다.
+
+모든 HTTP 응답은 요청의 `X-Request-ID` header 값을 보존하거나, 없으면 서버가 UUID를 생성해 응답 header `X-Request-ID`에 넣는다. 같은 request id는 audit metadata에도 전파된다.
+
+현재 error body는 두 형태가 혼용된다.
+
+| 형태 | 사용 위치 |
+| --- | --- |
+| `{ "detail": ... }` | 일반 `HTTPException` |
+| `{ "error": { ... } }` | `apps/gateway/utils/api_errors.py`의 `raise_api_error`/`error_response`, request validation error |
+
+전역 `HTTPException` handler는 `detail`이 이미 `{ "error": ... }` 구조이면 그대로 반환하고, 아니면 `{ "detail": ... }`로 감싼다.
 
 ## 목표 Error Envelope
 
@@ -91,4 +102,5 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 
 - secret, token, credential, raw API key 원문은 error message에 포함하지 않는다.
 - 401/403은 `audit_logs`에 기록할 수 있다.
+- 401/403 `HTTPException`은 해당 예외에 `audit_recorded`가 없으면 Gateway exception handler에서 permission denied audit를 기록한다.
 - permission 실패 metadata에는 resource/action/effective permission 정도만 남기고 secret payload를 남기지 않는다.

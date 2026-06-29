@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 API 문서는 HTTP 계약의 source of truth다. 모든 endpoint는 기본적으로 `/api/v1` prefix 아래에 있다.
 
@@ -32,8 +32,35 @@ API 문서는 HTTP 계약의 source of truth다. 모든 endpoint는 기본적으
 
 ## 공통 규칙
 
-- 인증된 API는 session cookie 또는 bearer token을 사용한다.
-- secret 원문은 API 응답, 로그, audit metadata에 노출하지 않는다.
+- 대부분의 인증된 Gateway API는 현재 코드 기준 `auth_token` HTTP-only cookie를 사용한다. `Authorization: Bearer ...`는 일반 사용자 세션 인증이 아니라 `/api/v1/run/{url_slug}`와 `/api/v1/hooks/{url_slug}`에서 app public secret을 전달하는 방식 중 하나다.
+- secret 원문은 API 응답, 로그, audit metadata에 노출하지 않는 것이 목표 보안 원칙이다. 현재 코드 기준 `AppResponse`와 `DeploymentResponse`에는 `auth_secret` 원문이 포함될 수 있으므로, masking/removal 전까지 current behavior로 문서화한다.
 - 권한이 필요한 API는 [data-model/rbac-permission-policy.md](../data-model/rbac-permission-policy.md)의 permission matrix를 따른다.
 - active organization은 [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)에 따라 `X-Organization-Id` header로 전달한다.
 - 오류 응답은 [errors.md](errors.md)를 따른다.
+- Gateway는 요청마다 `X-Request-ID` 응답 header를 보장한다. 요청 header에 `X-Request-ID`가 없으면 서버가 UUID를 생성하고 audit metadata에 전파한다.
+
+## 현재 Gateway 라우터
+
+현재 `apps/gateway/api/api.py`가 등록하는 router prefix는 아래와 같다.
+
+| Prefix | Router |
+| --- | --- |
+| `/api/v1/health` | `health.router` |
+| `/api/v1/auth` | `auth.router` |
+| `/api/v1/users` | `users.router` |
+| `/api/v1/organizations` | `organization.router` |
+| `/api/v1/teams` | `team.router` |
+| `/api/v1/permissions` | `permissions.router` |
+| `/api/v1/apps` | `app.router` |
+| `/api/v1/workflows` | `workflow.router` |
+| `/api/v1/llm` | `llm.router` |
+| `/api/v1/knowledge` | `knowledge.router` |
+| `/api/v1/rag` | `rag.router` |
+| `/api/v1/connectors` | `connectors.router` |
+| `/api/v1/deployments` | `deployment.router` |
+| `/api/v1/prompt-wizard` | `prompt_wizard.router` |
+| `/api/v1/code-wizard` | `code_wizard.router` |
+| `/api/v1/template-wizard` | `template_wizard.router` |
+| `/api/v1/run`, `/api/v1/run-public` | `run.router` |
+| `/api/v1/hooks` | `webhook.router` |
+| `/api/v1/traces`, `/api/v1/tracing/*` | `tracing.router` |
