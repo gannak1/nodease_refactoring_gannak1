@@ -45,6 +45,27 @@ def _get_organization_in_active_membership_scope(
     )
 
 
+def _is_organization_manager(organization: Organization, user_id: UUID) -> bool:
+    return organization.created_by == user_id or (
+        organization.managed_by is not None and organization.managed_by == user_id
+    )
+
+
+def _to_organization_response(
+    organization: Organization,
+    user_id: UUID,
+) -> OrganizationResponse:
+    return OrganizationResponse(
+        id=organization.id,
+        name=organization.name,
+        options=organization.options,
+        is_active=organization.is_active,
+        is_manager=_is_organization_manager(organization, user_id),
+        created_at=organization.created_at,
+        updated_at=organization.updated_at,
+    )
+
+
 # 인증된 사용자가 속한 active organization 목록을 조회하는 API.
 @router.get("", response_model=list[OrganizationResponse])
 def list_organizations(
@@ -69,7 +90,10 @@ def list_organizations(
         .all()
     )
 
-    return organizations
+    return [
+        _to_organization_response(organization, current_user.id)
+        for organization in organizations
+    ]
 
 
 # literal path인 current가 /{organization_id} UUID path parameter로 해석되지 않도록
@@ -98,7 +122,7 @@ def get_current_organization(
             "Organization not found.",
         )
 
-    return organization
+    return _to_organization_response(organization, current_user.id)
 
 
 # 인증된 사용자가 접근 가능한 특정 active organization 상세를 조회하는 API.
@@ -123,7 +147,7 @@ def get_organization(
             "Organization not found.",
         )
 
-    return organization
+    return _to_organization_response(organization, current_user.id)
 
 
 @router.patch("/{organization_id}", response_model=OrganizationResponse)
@@ -192,11 +216,7 @@ def update_organization(
             "Permission denied.",
         )
 
-    is_manager = organization.created_by == current_user.id or (
-        organization.managed_by is not None
-        and organization.managed_by == current_user.id
-    )
-    if not is_manager:
+    if not _is_organization_manager(organization, current_user.id):
         raise_api_error(
             request,
             403,
@@ -212,4 +232,4 @@ def update_organization(
     db.commit()
     db.refresh(organization)
 
-    return organization
+    return _to_organization_response(organization, current_user.id)
