@@ -377,7 +377,6 @@ const getAdjacentToken = (
   const { startContainer, startOffset } = range;
 
   if (startContainer.nodeType === Node.TEXT_NODE) {
-    const textLength = startContainer.textContent?.length || 0;
     const textBeforeCaret = startContainer.textContent?.slice(0, startOffset);
     const textAfterCaret = startContainer.textContent?.slice(startOffset);
 

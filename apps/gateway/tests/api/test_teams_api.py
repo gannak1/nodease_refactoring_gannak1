@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.operators import eq, is_
 
 from apps.gateway.main import app
 from apps.shared.db.models.organization import Organization
@@ -317,7 +319,7 @@ class TestTeamsApi(unittest.TestCase):
             email="member@example.com",
             name="Member One",
         )
-        membership = _team_membership(
+        membership = _membership(
             id=membership_id,
             organization_id=organization_id,
             team_id=team_id,
@@ -363,8 +365,7 @@ class TestTeamsApi(unittest.TestCase):
             ["users.name ASC", "users.email ASC", "team_memberships.id ASC"],
         )
 
-    def test_create_team_checks_manager_permission_without_request_schema(self):
-        # docs/api/organization-rbac.md에서 POST /teams schema는 아직 TBD다.
+    def test_create_team_creates_team_for_active_organization(self):
         user_id = uuid4()
         organization_id = uuid4()
         session = _Session(
@@ -380,19 +381,79 @@ class TestTeamsApi(unittest.TestCase):
             session=session,
             user_id=user_id,
             organization_id=organization_id,
-            payload={"unexpected": {"contract": "tbd"}},
+            payload={
+                "name": " Builders ",
+                "description": "Core team",
+                "is_auto_add": True,
+            },
         )
 
-        self.assertEqual(response.status_code, 501)
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["organization_id"], str(organization_id))
+        self.assertEqual(body["name"], "Builders")
+        self.assertEqual(body["description"], "Core team")
+        self.assertTrue(body["is_auto_add"])
+        self.assertEqual(session.added[0].organization_id, organization_id)
+        self.assertEqual(session.added[0].created_by, user_id)
+        self.assertTrue(session.committed)
+        self.assertNotIn(TeamMembership, session.query_calls)
+
+    def test_create_team_returns_conflict_for_duplicate_name(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=uuid4(),
+                    organization_id=organization_id,
+                    name="Builders",
+                )
+            ],
+        )
+
+        response = self._post_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            payload={"name": "Builders"},
+        )
+
+        self.assertEqual(response.status_code, 409)
         self.assertEqual(
             response.json(),
-            _error(
-                "operation.not_implemented",
-                "Team creation request and response contract is TBD.",
-            ),
+            _error("resource.conflict", "Team name already exists"),
         )
-        self.assertNotIn(TeamMembership, session.query_calls)
-        self.assertNotIn(Team, session.query_calls)
+        self.assertFalse(session.committed)
+
+    def test_create_team_returns_auth_before_body_validation(self):
+        session = _Session()
+        app.dependency_overrides[get_db] = lambda: session
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            side_effect=HTTPException(status_code=401, detail="로그인이 필요합니다"),
+        ):
+            response = TestClient(app).post(
+                "/api/v1/teams",
+                headers={
+                    "X-Organization-Id": str(uuid4()),
+                    "X-Request-ID": "req-test",
+                },
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json(),
+            _error("auth.required", "로그인이 필요합니다"),
+        )
+        self.assertNotIn(Organization, session.query_calls)
 
     def test_create_team_rejects_member_without_manager_permission(self):
         user_id = uuid4()
@@ -441,37 +502,156 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertIn(TeamMembership, session.query_calls)
 
-    def test_update_team_checks_manager_permission_without_request_schema(self):
-        # docs/api/organization-rbac.md에서 PATCH /teams/{team_id} schema는 아직 TBD다.
+    def test_update_team_updates_team_in_active_organization(self):
         user_id = uuid4()
         organization_id = uuid4()
+        team_id = uuid4()
+        team = _team(
+            id=team_id,
+            organization_id=organization_id,
+            name="Builders",
+            description="Before",
+            created_by=user_id,
+        )
         session = _Session(
             organization=_organization(
                 id=organization_id,
                 name="Acme",
                 created_by=user_id,
             ),
-            teams=[],
+            teams=[team],
         )
 
         response = self._patch_team(
             session=session,
             user_id=user_id,
             organization_id=organization_id,
-            team_id=uuid4(),
-            payload={"unexpected": {"contract": "tbd"}},
+            team_id=team_id,
+            payload={
+                "name": " Operators ",
+                "description": None,
+                "is_auto_add": True,
+            },
         )
 
-        self.assertEqual(response.status_code, 501)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["id"], str(team_id))
+        self.assertEqual(body["name"], "Operators")
+        self.assertIsNone(body["description"])
+        self.assertTrue(body["is_auto_add"])
+        self.assertEqual(team.name, "Operators")
+        self.assertIsNone(team.description)
+        self.assertTrue(session.committed)
+        self.assertNotIn(TeamMembership, session.query_calls)
+
+    def test_update_team_returns_conflict_for_duplicate_name(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        existing_team_id = uuid4()
+        team = _team(
+            id=team_id,
+            organization_id=organization_id,
+            name="Builders",
+            created_by=user_id,
+        )
+        existing_team = _team(
+            id=existing_team_id,
+            organization_id=organization_id,
+            name="Operators",
+            created_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[team, existing_team],
+        )
+
+        response = self._patch_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"name": "Operators"},
+        )
+
+        self.assertEqual(response.status_code, 409)
         self.assertEqual(
             response.json(),
-            _error(
-                "operation.not_implemented",
-                "Team update request and response contract is TBD.",
-            ),
+            _error("resource.conflict", "Team name already exists"),
         )
-        self.assertNotIn(TeamMembership, session.query_calls)
-        self.assertNotIn(Team, session.query_calls)
+        self.assertEqual(team.name, "Builders")
+        self.assertFalse(session.committed)
+
+    def test_update_team_hides_team_outside_active_organization(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        other_organization_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=other_organization_id,
+                    name="Builders",
+                )
+            ],
+        )
+
+        response = self._patch_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"name": "Operators"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "Team not found"))
+        self.assertFalse(session.committed)
+
+    def test_update_team_rejects_missing_managed_by_user(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        manager_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    created_by=user_id,
+                )
+            ],
+            user=None,
+        )
+
+        response = self._patch_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"managed_by": str(manager_id)},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "User not found"))
+        self.assertFalse(session.committed)
 
     def test_update_team_requires_organization_header(self):
         # PATCH 라우트도 조직 헤더가 없으면 권한/DB 조회 전에 거부해야 한다.
@@ -618,37 +798,181 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertIn(TeamMembership, session.query_calls)
 
-    def test_add_team_member_checks_manager_permission_without_request_schema(self):
-        # docs/api/organization-rbac.md에서 POST /teams/{team_id}/members schema는 아직 TBD다.
+    def test_add_team_member_adds_membership_in_active_organization(self):
         user_id = uuid4()
         organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
         session = _Session(
             organization=_organization(
                 id=organization_id,
                 name="Acme",
                 created_by=user_id,
             ),
-            teams=[],
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    created_by=user_id,
+                )
+            ],
+            user=_user(id=member_user_id),
         )
 
         response = self._post_team_member(
             session=session,
             user_id=user_id,
             organization_id=organization_id,
-            team_id=uuid4(),
-            payload={"unexpected": {"contract": "tbd"}},
+            team_id=team_id,
+            payload={"user_id": str(member_user_id)},
         )
 
-        self.assertEqual(response.status_code, 501)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "added")
+        self.assertEqual(session.added[0].team_id, team_id)
+        self.assertEqual(session.added[0].user_id, member_user_id)
+        self.assertEqual(session.added[0].assigned_by, user_id)
+        self.assertTrue(session.committed)
+
+    def test_add_team_member_rejects_missing_user(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    created_by=user_id,
+                )
+            ],
+            user=None,
+        )
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"user_id": str(member_user_id)},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "User not found"))
+        self.assertFalse(session.committed)
+
+    def test_add_team_member_rejects_inactive_team(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    is_active=False,
+                )
+            ],
+            user=_user(id=member_user_id),
+        )
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"user_id": str(member_user_id)},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "Team not found"))
+        self.assertFalse(session.committed)
+
+    def test_add_team_member_returns_existing_membership_after_unique_race(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        membership = _membership(
+            id=uuid4(),
+            organization_id=organization_id,
+            team_id=team_id,
+            user_id=member_user_id,
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    created_by=user_id,
+                )
+            ],
+            user=_user(id=member_user_id),
+            membership_after_rollback=membership,
+            commit_error=IntegrityError("insert", {}, Exception("duplicate")),
+        )
+
+        response = self._post_team_member(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"user_id": str(member_user_id)},
+        )
+
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.json(),
-            _error(
-                "operation.not_implemented",
-                "Team member addition request and response contract is TBD.",
-            ),
+            {"id": str(membership.id), "status": "added"},
         )
-        self.assertNotIn(TeamMembership, session.query_calls)
-        self.assertNotIn(Team, session.query_calls)
+        self.assertTrue(session.rolled_back)
+
+    def test_add_team_member_returns_auth_before_body_validation(self):
+        session = _Session()
+        app.dependency_overrides[get_db] = lambda: session
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            side_effect=HTTPException(status_code=401, detail="로그인이 필요합니다"),
+        ):
+            response = TestClient(app).post(
+                f"/api/v1/teams/{uuid4()}/members",
+                headers={
+                    "X-Organization-Id": str(uuid4()),
+                    "X-Request-ID": "req-test",
+                },
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json(),
+            _error("auth.required", "로그인이 필요합니다"),
+        )
+        self.assertNotIn(Organization, session.query_calls)
 
     def test_add_team_member_requires_organization_header(self):
         user_id = uuid4()
@@ -791,43 +1115,62 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertIn(TeamMembership, session.query_calls)
 
-    def test_remove_team_member_checks_manager_permission_without_response_schema(self):
-        # docs/api/organization-rbac.md에서 DELETE /teams/{team_id}/members/{user_id} response는 아직 TBD다.
+    def test_remove_team_member_removes_membership_in_active_organization(self):
         user_id = uuid4()
         organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        membership = _membership(
+            id=uuid4(),
+            organization_id=organization_id,
+            team_id=team_id,
+            user_id=member_user_id,
+            assigned_by=user_id,
+        )
         session = _Session(
             organization=_organization(
                 id=organization_id,
                 name="Acme",
                 created_by=user_id,
             ),
-            teams=[],
+            membership=membership,
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    created_by=user_id,
+                )
+            ],
         )
 
         response = self._delete_team_member(
             session=session,
             user_id=user_id,
             organization_id=organization_id,
-            team_id=uuid4(),
-            member_user_id=uuid4(),
+            team_id=team_id,
+            member_user_id=member_user_id,
         )
 
-        self.assertEqual(response.status_code, 501)
-        self.assertEqual(
-            response.json(),
-            _error(
-                "operation.not_implemented",
-                "Team member removal response contract is TBD.",
-            ),
-        )
-        self.assertNotIn(TeamMembership, session.query_calls)
-        self.assertNotIn(Team, session.query_calls)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "removed"})
+        self.assertEqual(session.deleted, [membership])
+        self.assertTrue(session.committed)
 
-    def test_remove_team_member_allows_managed_by_without_response_schema(self):
+    def test_remove_team_member_allows_managed_by(self):
         # organization.managed_by도 manager 권한으로 인정되어야 하므로,
-        # created_by가 아닌 관리자가 DELETE 권한 관문을 통과하는지 검증한다.
+        # created_by가 아닌 관리자가 DELETE mutation을 수행할 수 있는지 검증한다.
         user_id = uuid4()
         organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        membership = _membership(
+            id=uuid4(),
+            organization_id=organization_id,
+            team_id=team_id,
+            user_id=member_user_id,
+            assigned_by=user_id,
+        )
         session = _Session(
             organization=_organization(
                 id=organization_id,
@@ -835,27 +1178,27 @@ class TestTeamsApi(unittest.TestCase):
                 created_by=uuid4(),
                 managed_by=user_id,
             ),
-            teams=[],
+            membership=membership,
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                )
+            ],
         )
 
         response = self._delete_team_member(
             session=session,
             user_id=user_id,
             organization_id=organization_id,
-            team_id=uuid4(),
-            member_user_id=uuid4(),
+            team_id=team_id,
+            member_user_id=member_user_id,
         )
 
-        self.assertEqual(response.status_code, 501)
-        self.assertEqual(
-            response.json(),
-            _error(
-                "operation.not_implemented",
-                "Team member removal response contract is TBD.",
-            ),
-        )
-        self.assertNotIn(TeamMembership, session.query_calls)
-        self.assertNotIn(Team, session.query_calls)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "removed"})
+        self.assertEqual(session.deleted, [membership])
 
     def test_remove_team_member_requires_organization_header(self):
         user_id = uuid4()
@@ -1181,9 +1524,10 @@ class TestTeamsApi(unittest.TestCase):
 
 
 class _Query:
-    def __init__(self, first_result=None, items=None):
+    def __init__(self, first_result=None, items=None, apply_filters=True):
         self.first_result = first_result
         self.items = items or []
+        self.apply_filters = apply_filters
         self.join_values = []
         self.filter_expressions = []
         self.order_by_values = []
@@ -1211,12 +1555,27 @@ class _Query:
         return self
 
     def first(self):
-        return self.first_result
+        items = self._filtered_items()
+        return items[0] if items else None
 
     def all(self):
+        items = self._filtered_items()
         if self.limit_value is None:
-            return self.items
-        return self.items[: self.limit_value]
+            return items
+        return items[: self.limit_value]
+
+    def _filtered_items(self):
+        if self.first_result is not None:
+            items = [self.first_result]
+        else:
+            items = list(self.items)
+        if not self.apply_filters:
+            return items
+        return [
+            item
+            for item in items
+            if all(_matches_expression(item, expression) for expression in self.filter_expressions)
+        ]
 
 
 class _Session:
@@ -1227,24 +1586,79 @@ class _Session:
         teams=None,
         team=None,
         memberships=None,
+        user=None,
+        membership_after_rollback=None,
+        commit_error=None,
     ):
+        self.organization = organization
+        self.membership = membership
+        self.memberships = memberships or ([] if membership is None else [membership])
+        self.teams = teams or ([] if team is None else [team])
+        self.user = user
+        self.membership_after_rollback = membership_after_rollback
+        self.commit_error = commit_error
         self.organization_query = _Query(first_result=organization)
         self.membership_query = _Query(
             first_result=membership,
-            items=memberships or [],
+            items=self.memberships,
         )
-        self.team_query = _Query(first_result=team, items=teams or [])
+        self.team_query = _Query(items=self.teams)
+        self.user_query = _Query(first_result=user)
         self.query_calls = []
+        self.added = []
+        self.deleted = []
+        self.committed = False
+        self.commit_calls = 0
+        self.rolled_back = False
 
     def query(self, model):
         self.query_calls.append(model)
         if model is Organization:
+            self.organization_query = _Query(first_result=self.organization)
             return self.organization_query
         if model is TeamMembership:
+            self.membership_query = _Query(
+                first_result=self.membership,
+                items=self.memberships,
+            )
             return self.membership_query
         if model is Team:
+            self.team_query = _Query(items=self.teams)
             return self.team_query
+        if model is User:
+            self.user_query = _Query(first_result=self.user)
+            return self.user_query
         raise AssertionError(f"Unexpected query model: {model}")
+
+    def add(self, row):
+        _hydrate_defaults(row)
+        self.added.append(row)
+        if isinstance(row, Team):
+            self.teams.append(row)
+        if isinstance(row, TeamMembership):
+            self.membership = row
+            self.memberships.append(row)
+
+    def delete(self, row):
+        self.deleted.append(row)
+        if self.membership is row:
+            self.membership = None
+
+    def commit(self):
+        self.commit_calls += 1
+        if self.commit_error is not None:
+            error = self.commit_error
+            self.commit_error = None
+            raise error
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+        if self.membership_after_rollback is not None:
+            self.membership = self.membership_after_rollback
+
+    def refresh(self, row):
+        _hydrate_defaults(row)
 
 
 def _organization(
@@ -1263,6 +1677,20 @@ def _organization(
         created_by=created_by or uuid4(),
         managed_by=managed_by,
         is_active=is_active,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _user(id, email=None, name="Member", deactivated_at=None):
+    now = datetime.now(timezone.utc)
+    return User(
+        id=id,
+        email=email or f"{id}@example.com",
+        name=name,
+        social_provider="local",
+        social_id=str(id),
+        deactivated_at=deactivated_at,
         created_at=now,
         updated_at=now,
     )
@@ -1301,14 +1729,14 @@ def _team(
     )
 
 
-def _team_membership(
+def _membership(
     id,
     organization_id,
     team_id,
     user_id,
     assigned_by,
-    assigned_at,
-    user,
+    assigned_at=None,
+    user=None,
 ):
     membership = TeamMembership(
         id=id,
@@ -1316,22 +1744,92 @@ def _team_membership(
         team_id=team_id,
         user_id=user_id,
         assigned_by=assigned_by,
-        assigned_at=assigned_at,
+        assigned_at=assigned_at or datetime.now(timezone.utc),
+        options={},
+        flags=0,
     )
-    membership.user = user
+    if user is not None:
+        membership.user = user
     return membership
 
 
-def _user(id, email, name):
+def _hydrate_defaults(row):
     now = datetime.now(timezone.utc)
-    return User(
-        id=id,
-        email=email,
-        name=name,
-        social_provider="local",
-        created_at=now,
-        updated_at=now,
-    )
+    if getattr(row, "id", None) is None:
+        row.id = uuid4()
+    if isinstance(row, Team):
+        row.options = row.options or {}
+        row.flags = row.flags or 0
+        row.is_active = True if row.is_active is None else row.is_active
+        row.is_auto_add = (
+            False if row.is_auto_add is None else row.is_auto_add
+        )
+        row.created_at = row.created_at or now
+        row.updated_at = row.updated_at or now
+        row.deactivated_at = getattr(row, "deactivated_at", None)
+    if isinstance(row, TeamMembership):
+        row.options = row.options or {}
+        row.flags = row.flags or 0
+        row.assigned_at = row.assigned_at or now
+
+
+_ANY = object()
+
+
+def _matches_expression(obj, expression):
+    left_value = _column_value(obj, str(expression.left))
+    if left_value is _ANY:
+        return True
+
+    if expression.operator is eq:
+        right_value = _expression_value(obj, expression.right)
+        if right_value is _ANY:
+            return True
+        return left_value == right_value
+    if expression.operator is is_:
+        if str(expression.right).lower() == "null":
+            return left_value is None
+        return left_value is (str(expression.right).lower() == "true")
+    raise AssertionError(f"Unexpected filter operator: {expression.operator}")
+
+
+def _expression_value(obj, expression):
+    if hasattr(expression, "value"):
+        return expression.value
+    return _column_value(obj, str(expression))
+
+
+def _column_value(obj, column):
+    missing = object()
+    value_by_column = {
+        "organization.id": getattr(obj, "id", _ANY),
+        "organization.is_active": getattr(obj, "is_active", _ANY),
+        "teams.id": getattr(obj, "id", _ANY),
+        "teams.organization_id": getattr(
+            obj,
+            "team_organization_id",
+            getattr(obj, "organization_id", _ANY),
+        ),
+        "teams.name": getattr(obj, "name", _ANY),
+        "teams.is_active": getattr(
+            obj,
+            "team_is_active",
+            getattr(obj, "is_active", _ANY),
+        ),
+        "team_memberships.user_id": getattr(obj, "user_id", _ANY),
+        "team_memberships.team_id": getattr(obj, "team_id", _ANY),
+        "team_memberships.grantee_organization_id": getattr(
+            obj,
+            "membership_grantee_organization_id",
+            getattr(obj, "grantee_organization_id", _ANY),
+        ),
+        "users.id": getattr(obj, "id", _ANY),
+        "users.deactivated_at": getattr(obj, "deactivated_at", _ANY),
+    }
+    value = value_by_column.get(column, missing)
+    if value is missing:
+        raise AssertionError(f"Unexpected filter column: {column}")
+    return value
 
 
 def _error(code, message, details=None):

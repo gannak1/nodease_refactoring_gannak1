@@ -548,7 +548,6 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     const { node: numberedNode, nextNodeDisplayNumber } = createNumberedNode(
       node,
       nodes,
-      features,
     );
     const nextFeatures = {
       ...features,

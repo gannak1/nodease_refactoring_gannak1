@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TeamCreateRequest(BaseModel):
@@ -12,8 +12,14 @@ class TeamCreateRequest(BaseModel):
     is_auto_add: bool = False
 
 
+class TeamCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    is_auto_add: bool = False
+
+
 class TeamUpdateRequest(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=255)
     description: str | None = None
     managed_by: UUID | None = None
     is_auto_add: bool | None = None
