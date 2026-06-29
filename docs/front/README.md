@@ -60,6 +60,7 @@ Verified Against: feature/mba-6 @ 5856452478494c2e2c6aa36993a6aafac9c7ebcf
 | [rbac-permission-management-flow.md](rbac-permission-management-flow.md) | organization manager 또는 workflow manager의 team/user workflow 권한 부여/회수 흐름 |
 | [rbac-permission-api-integration.md](rbac-permission-api-integration.md) | organization, team, workflow permission API 연결과 상태 반영 기준 |
 | [rbac-permission-ui-qa.md](rbac-permission-ui-qa.md) | RBAC workflow 권한 UI QA 시나리오와 기대 결과 |
+| [rbac-mvp1-manager-member-home-settings.md](rbac-mvp1-manager-member-home-settings.md) | MBA-71 manager/member 홈·설정 화면 분리와 team 기반 멤버 관리 UX |
 
 ## 현재 RBAC 프론트 작업 문서
 
@@ -72,6 +73,7 @@ RBAC와 workflow 권한 UI 구현을 위해 현재 정리된 작업 문서는 �
 | `rbac-permission-management-flow.md` | organization manager가 team/user에게 workflow 권한을 부여/회수하는 화면 흐름                                           |
 | `rbac-permission-api-integration.md` | `/organizations`, `/teams`, `/permissions/workflows` 등 프론트 API 연결 방식 |
 | `rbac-permission-ui-qa.md`           | 권한 조합별 테스트 케이스와 기대 결과                                                                                  |
+| `rbac-mvp1-manager-member-home-settings.md` | manager/member 홈·설정 화면 분리, team 기반 멤버 관리, member 권한 표시와 제외 범위 |
 
 `/api/v1/workflows/{workflow_id}/permissions/me`는 코드와 프론트 작업 문서에서 사용하는 조회 endpoint지만, 최종 API 계약은 `api/` 문서에 보강되어야 한다. API 문서 보강 전까지 이 endpoint 설명은 프론트 연동 TODO로만 취급한다.
 
