@@ -36,7 +36,7 @@ def test_create_app_uses_active_organization_header(monkeypatch):
 
     monkeypatch.setattr(
         app_endpoint,
-        "resolve_active_organization_id",
+        "resolve_active_or_default_organization_id",
         lambda db, request, raw, user_id: organization_id,
     )
     monkeypatch.setattr(
@@ -76,7 +76,7 @@ def test_clone_app_uses_active_organization_header(monkeypatch):
 
     monkeypatch.setattr(
         app_endpoint,
-        "resolve_active_organization_id",
+        "resolve_active_or_default_organization_id",
         lambda db, request, raw, user_id: organization_id,
     )
     monkeypatch.setattr(
@@ -118,6 +118,61 @@ def test_clone_app_uses_active_organization_header(monkeypatch):
     }
 
 
+def test_clone_app_without_header_uses_default_organization_fallback(monkeypatch):
+    organization_id = uuid.uuid4()
+    source_app_id = str(uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    def resolve_organization(db, request, raw, user_id):
+        captured["raw_organization_id"] = raw
+        return organization_id
+
+    monkeypatch.setattr(
+        app_endpoint,
+        "resolve_active_or_default_organization_id",
+        resolve_organization,
+    )
+    monkeypatch.setattr(
+        app_endpoint,
+        "_get_app_or_404",
+        lambda db, app_id: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "access_denial_status",
+        lambda db, app, user_id, action: None,
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "clone_app",
+        lambda db, user_id, source_app_id, organization_id=None: captured.update(
+            {
+                "user_id": user_id,
+                "source_app_id": source_app_id,
+                "organization_id": organization_id,
+            }
+        )
+        or "cloned",
+    )
+
+    result = app_endpoint.clone_app(
+        app_id=source_app_id,
+        request=object(),
+        x_organization_id=None,
+        db=object(),
+        current_user=user,
+    )
+
+    assert result == "cloned"
+    assert captured == {
+        "raw_organization_id": None,
+        "user_id": user.id,
+        "source_app_id": source_app_id,
+        "organization_id": organization_id,
+    }
+
+
 def test_list_apps_uses_active_organization_header(monkeypatch):
     organization_id = uuid.uuid4()
     user = SimpleNamespace(id=uuid.uuid4())
@@ -125,7 +180,7 @@ def test_list_apps_uses_active_organization_header(monkeypatch):
 
     monkeypatch.setattr(
         app_endpoint,
-        "resolve_active_organization_id",
+        "resolve_active_or_default_organization_id",
         lambda db, request, raw, user_id: organization_id,
     )
     monkeypatch.setattr(
@@ -168,7 +223,7 @@ def test_create_workflow_uses_active_organization_header(monkeypatch):
     )
     monkeypatch.setattr(
         workflow_endpoint,
-        "resolve_active_organization_id",
+        "resolve_active_or_default_organization_id",
         lambda db, request, raw, user_id: organization_id,
     )
     monkeypatch.setattr(
@@ -238,7 +293,10 @@ def test_get_user_apps_filters_by_active_organization_before_permission_filter(m
     )
     db = _FakeDb([app])
 
-    monkeypatch.setattr(app_service, "has_organization_manager_permission", lambda *a: True)
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: True
+    )
+    monkeypatch.setattr(app_service, "has_organization_scope_access", lambda *a: True)
     monkeypatch.setattr(AppService, "_populate_owner_name", lambda *a: None)
     monkeypatch.setattr(AppService, "_populate_deployment_status", lambda *a: None)
 
@@ -362,6 +420,41 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
         app.dependency_overrides = {}
 
 
+def test_headerless_app_and_workflow_routes_use_default_organization_fallback(
+    monkeypatch,
+):
+    _patch_audit(monkeypatch)
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    session = _RouteSession(
+        organizations=[_route_organization(id=organization_id, created_by=uuid.uuid4())],
+        memberships=[
+            _route_membership(user_id=user_id, organization_id=organization_id)
+        ],
+    )
+    _override_route_dependencies(session, user_id)
+
+    try:
+        create_response = TestClient(app).post(
+            "/api/v1/apps",
+            json=_app_payload("Headerless App"),
+        )
+        assert create_response.status_code == 200
+        app_id = uuid.UUID(create_response.json()["id"])
+
+        list_response = TestClient(app).get("/api/v1/apps")
+        assert list_response.status_code == 200
+        assert [item["id"] for item in list_response.json()] == [str(app_id)]
+
+        workflow_response = TestClient(app).post(
+            "/api/v1/workflows",
+            json={"app_id": str(app_id)},
+        )
+        assert workflow_response.status_code == 200
+    finally:
+        app.dependency_overrides = {}
+
+
 def test_workflow_direct_permission_without_active_scope_returns_404(monkeypatch):
     _patch_audit(monkeypatch)
     user_id = uuid.uuid4()
@@ -401,6 +494,94 @@ def test_workflow_direct_permission_without_active_scope_returns_404(monkeypatch
         response = TestClient(app).get(f"/api/v1/workflows/{workflow_id}")
         assert response.status_code == 404
         assert response.json() == {"detail": "Workflow not found"}
+    finally:
+        app.dependency_overrides = {}
+
+
+def test_app_direct_permission_without_active_scope_returns_404(monkeypatch):
+    _patch_audit(monkeypatch)
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    session = _RouteSession(
+        organizations=[_route_organization(id=organization_id, created_by=uuid.uuid4())],
+        apps=[
+            _route_app(
+                id=app_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                created_by=uuid.uuid4(),
+            )
+        ],
+        workflows=[
+            _route_workflow(
+                id=workflow_id,
+                app_id=app_id,
+                organization_id=organization_id,
+                created_by=uuid.uuid4(),
+            )
+        ],
+        user_workflow_permissions=[
+            _route_user_workflow_permission(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                user_id=user_id,
+                auth_state="manager",
+            )
+        ],
+    )
+    _override_route_dependencies(session, user_id)
+
+    try:
+        response = TestClient(app).get(f"/api/v1/apps/{app_id}")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "App not found"}
+    finally:
+        app.dependency_overrides = {}
+
+
+def test_workflows_by_app_direct_permission_without_active_scope_returns_404(
+    monkeypatch,
+):
+    _patch_audit(monkeypatch)
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    session = _RouteSession(
+        organizations=[_route_organization(id=organization_id, created_by=uuid.uuid4())],
+        apps=[
+            _route_app(
+                id=app_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                created_by=uuid.uuid4(),
+            )
+        ],
+        workflows=[
+            _route_workflow(
+                id=workflow_id,
+                app_id=app_id,
+                organization_id=organization_id,
+                created_by=uuid.uuid4(),
+            )
+        ],
+        user_workflow_permissions=[
+            _route_user_workflow_permission(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                user_id=user_id,
+                auth_state="manager",
+            )
+        ],
+    )
+    _override_route_dependencies(session, user_id)
+
+    try:
+        response = TestClient(app).get(f"/api/v1/workflows/app/{app_id}")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "App not found"}
     finally:
         app.dependency_overrides = {}
 

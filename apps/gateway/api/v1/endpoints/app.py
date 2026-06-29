@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
-from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.services.organization_context import (
+    resolve_active_or_default_organization_id,
+)
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
@@ -69,7 +71,7 @@ def create_app(
     새로운 앱을 생성합니다. (인증 필요)
     """
     try:
-        organization_id = resolve_active_organization_id(
+        organization_id = resolve_active_or_default_organization_id(
             db, request, x_organization_id, current_user.id
         )
         return AppService.create_app(
@@ -103,7 +105,7 @@ def list_apps(
     """
     현재 유저의 앱 목록 조회
     """
-    organization_id = resolve_active_organization_id(
+    organization_id = resolve_active_or_default_organization_id(
         db, request, x_organization_id, current_user.id
     )
     apps = AppService.get_user_apps(
@@ -152,7 +154,7 @@ def clone_app(
         if denial_status is not None:
             raise _app_access_exception(denial_status)
 
-        organization_id = resolve_active_organization_id(
+        organization_id = resolve_active_or_default_organization_id(
             db, request, x_organization_id, current_user.id
         )
         app = AppService.clone_app(

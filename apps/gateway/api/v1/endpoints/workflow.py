@@ -14,7 +14,9 @@ from starlette.requests import Request
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
-from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.services.organization_context import (
+    resolve_active_or_default_organization_id,
+)
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.llm_service import LLMService
@@ -477,7 +479,7 @@ def create_workflow(
     """
     새 워크플로우 생성 (인증 필요)
     """
-    organization_id = resolve_active_organization_id(
+    organization_id = resolve_active_or_default_organization_id(
         db, request, x_organization_id, current_user.id
     )
     workflow = WorkflowService.create_workflow(

@@ -64,7 +64,7 @@ App 생성과 clone으로 생성되는 primary workflow에는 생성자 user dir
 
 ## MVP 1 변경 기준
 
-- `POST /api/v1/apps`, `GET /api/v1/apps`, `POST /api/v1/apps/{app_id}/clone`, `POST /api/v1/workflows`는 `X-Organization-Id` header로 active organization을 명시한다.
+- `POST /api/v1/apps`, `GET /api/v1/apps`, `POST /api/v1/apps/{app_id}/clone`, `POST /api/v1/workflows`는 `X-Organization-Id` header로 active organization을 명시한다. 과도기 동안 header가 없는 legacy client 호출은 user default organization으로 fallback한다.
 - `X-Organization-Id` scope 안 여부는 organization owner/manager 또는 active team membership으로 판정한다.
 - 생성자가 만든 workflow에는 user direct `manager` 권한을 부여해 생성 직후 App/Workflow 관리가 가능해야 한다.
 - creator 기반 권한 체크를 workflow permission helper로 교체한다.

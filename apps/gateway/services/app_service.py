@@ -135,34 +135,38 @@ class AppService:
 
     @staticmethod
     def can_read_app(db: Session, app: App, user_id) -> bool:
-        if app.organization_id and has_organization_manager_permission(
-            db, user_id, app.organization_id
-        ):
-            return True
-        if app.workflow_id and has_workflow_permission(
-            db,
-            user_id,
-            app.workflow_id,
-            "read",
-            organization_id=app.organization_id,
-        ):
-            return True
+        if app.organization_id:
+            if not has_organization_scope_access(db, user_id, app.organization_id):
+                return False
+            if has_organization_manager_permission(db, user_id, app.organization_id):
+                return True
+            if app.workflow_id and has_workflow_permission(
+                db,
+                user_id,
+                app.workflow_id,
+                "read",
+                organization_id=app.organization_id,
+            ):
+                return True
+            return False
         return app.organization_id is None and app.created_by == user_id
 
     @staticmethod
     def can_manage_app(db: Session, app: App, user_id) -> bool:
-        if app.organization_id and has_organization_manager_permission(
-            db, user_id, app.organization_id
-        ):
-            return True
-        if app.workflow_id and has_workflow_permission(
-            db,
-            user_id,
-            app.workflow_id,
-            "manage",
-            organization_id=app.organization_id,
-        ):
-            return True
+        if app.organization_id:
+            if not has_organization_scope_access(db, user_id, app.organization_id):
+                return False
+            if has_organization_manager_permission(db, user_id, app.organization_id):
+                return True
+            if app.workflow_id and has_workflow_permission(
+                db,
+                user_id,
+                app.workflow_id,
+                "manage",
+                organization_id=app.organization_id,
+            ):
+                return True
+            return False
         return app.organization_id is None and app.created_by == user_id
 
     @staticmethod

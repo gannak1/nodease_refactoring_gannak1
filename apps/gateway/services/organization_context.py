@@ -51,6 +51,19 @@ def resolve_active_organization_id(
     return organization_id
 
 
+def resolve_active_or_default_organization_id(
+    db: Session,
+    request: Request,
+    raw_organization_id: str | None,
+    user_id: uuid.UUID,
+) -> uuid.UUID:
+    """Resolve active organization, with a legacy fallback for headerless clients."""
+
+    if raw_organization_id is None:
+        return ensure_user_default_organization(db, user_id)
+    return resolve_active_organization_id(db, request, raw_organization_id, user_id)
+
+
 def ensure_user_default_organization(
     db: Session,
     user: User | uuid.UUID,
