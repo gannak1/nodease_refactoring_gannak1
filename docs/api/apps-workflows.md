@@ -4,7 +4,7 @@ Status: Draft
 Authority: API
 Source of Truth: Yes
 Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
-Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
+Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
 
@@ -69,3 +69,5 @@ App 전용 permission table은 만들지 않는다. App read/settings 권한은 
 - draft 저장은 `write` 권한이 없으면 거부한다.
 - run list/detail/stats는 `read` 권한이 없으면 거부한다.
 - 권한 차단은 `audit_logs`에 `permission.denied`로 기록한다.
+- App/Workflow id가 없거나 요청 user의 organization scope 밖이면 `404 resource.not_found`로 숨긴다.
+- 같은 organization scope 안에서 resource action 권한만 부족하면 `403 permission.denied`를 반환한다.

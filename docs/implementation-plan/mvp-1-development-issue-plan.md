@@ -329,7 +329,7 @@ Acceptance Criteria:
 - `viewer`는 workflow 상세/draft/runs/stats를 볼 수 있지만 저장/실행할 수 없다.
 - `operator`는 실행할 수 있지만 draft 저장은 거부된다.
 - `builder`는 draft 저장과 실행이 가능하다.
-- 권한 없는 user는 workflow 존재 여부를 과도하게 노출하지 않도록 403/404 정책이 일관된다.
+- 권한 없는 user가 organization scope 밖 resource에 접근하면 `404`로 숨기고, 같은 scope 안에서 action 권한만 부족하면 `403`으로 거부한다.
 - app 생성 시 app과 primary workflow의 `organization_id`가 explicit active organization 또는 문서화된 default organization fallback과 일치한다.
 - workflow 생성/저장/실행 기존 happy path가 통과한다.
 - Linear `MBA-36`의 재현 조건이 있으면 같은 테스트로 회귀 방지한다.
