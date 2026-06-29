@@ -258,3 +258,45 @@ def test_create_workflow_rejects_active_organization_mismatch(monkeypatch):
         )
 
     assert exc_info.value.status_code == 404
+
+
+def test_list_workflows_by_app_hides_outside_scope(monkeypatch):
+    app = SimpleNamespace(id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(
+        workflow_endpoint.AppService,
+        "access_denial_status",
+        lambda db, app_record, user_id, action: 404,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        workflow_endpoint.list_workflows_by_app(
+            str(app.id),
+            db=_FakeDb(app),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "App not found"
+
+
+def test_list_workflows_by_app_returns_403_inside_scope_without_app_read(monkeypatch):
+    app = SimpleNamespace(id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(
+        workflow_endpoint.AppService,
+        "access_denial_status",
+        lambda db, app_record, user_id, action: 403,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        workflow_endpoint.list_workflows_by_app(
+            str(app.id),
+            db=_FakeDb(app),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"

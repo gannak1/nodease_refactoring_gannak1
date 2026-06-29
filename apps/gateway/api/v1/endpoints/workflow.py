@@ -528,8 +528,12 @@ def list_workflows_by_app(
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
 
-    if not AppService.can_read_app(db, app, current_user.id):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    denial_status = AppService.access_denial_status(
+        db, app, current_user.id, "read"
+    )
+    if denial_status is not None:
+        detail = "Forbidden" if denial_status == 403 else "App not found"
+        raise HTTPException(status_code=denial_status, detail=detail)
 
     # 워크플로우 목록 조회
     workflows = db.query(Workflow).filter(Workflow.app_id == app_id).all()
