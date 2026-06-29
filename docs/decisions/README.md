@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Decision
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: origin/dev @ 4cff4f26e5aad92a609c38dc6276222acd4dc471
 
 중요한 정책, 아키텍처, 데이터 저장, 접근 제어 결정을 기록한다. 작은 구현 기본값은 각 도메인 문서나 구현 계획에 둔다.
 
@@ -31,6 +31,7 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 | [ADR-202606290131-audit-action-naming-standard](ADR-202606290131-audit-action-naming-standard.md) | Accepted | Audit action naming 표준 | `AuditAction` 상수 기준으로 주요 action 구현. permission row 변경은 `*_permission.created/updated/deleted` data-change audit도 기록 |
 | [ADR-202606290145-active-organization-header-context](ADR-202606290145-active-organization-header-context.md) | Accepted | Active organization header context 승인 | organization/team/permission API에서 `X-Organization-Id` 검증 구현 |
 | [ADR-202606291315-resource-access-403-404-policy](ADR-202606291315-resource-access-403-404-policy.md) | Accepted | Resource 접근 403/404 정책 | App/Workflow에서 organization scope 밖은 `404`, scope 안 action 권한 부족은 `403` |
+| [ADR-202606291451-team-router-rbac-service-boundary](ADR-202606291451-team-router-rbac-service-boundary.md) | Accepted | Team API RBAC service boundary | Team 관리 권한 판정과 team/team member 조회는 `TeamService`가 소유하고, 등록 router는 기존 `team.py` 기준 유지 |
 
 ## 상태 의미
 

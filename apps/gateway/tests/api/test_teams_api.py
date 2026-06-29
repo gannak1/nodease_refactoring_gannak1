@@ -17,7 +17,14 @@ from apps.shared.db.session import get_db
 
 
 class TestTeamsApi(unittest.TestCase):
+    def setUp(self):
+        self._permission_denied_audit_patch = patch(
+            "apps.gateway.services.team_service.record_permission_denied"
+        )
+        self._permission_denied_audit_patch.start()
+
     def tearDown(self):
+        self._permission_denied_audit_patch.stop()
         app.dependency_overrides = {}
 
     def test_list_teams_returns_manager_visible_fields_and_records_query_contract(self):
@@ -652,6 +659,89 @@ class TestTeamsApi(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), _error("resource.not_found", "User not found"))
         self.assertFalse(session.committed)
+
+    def test_update_team_rejects_managed_by_outside_organization(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        manager_id = uuid4()
+        team = _team(
+            id=team_id,
+            organization_id=organization_id,
+            name="Builders",
+            created_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[team],
+            user=_user(id=manager_id),
+            membership=None,
+        )
+
+        response = self._patch_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"managed_by": str(manager_id)},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "validation.failed",
+                "Managed user is not in the organization",
+            ),
+        )
+        self.assertIsNone(team.managed_by)
+        self.assertFalse(session.committed)
+
+    def test_update_team_allows_managed_by_organization_member(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        manager_id = uuid4()
+        membership = _membership(
+            id=uuid4(),
+            organization_id=organization_id,
+            team_id=team_id,
+            user_id=manager_id,
+            assigned_by=user_id,
+        )
+        team = _team(
+            id=team_id,
+            organization_id=organization_id,
+            name="Builders",
+            created_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[team],
+            user=_user(id=manager_id),
+            membership=membership,
+        )
+
+        response = self._patch_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            payload={"managed_by": str(manager_id)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["managed_by"], str(manager_id))
+        self.assertEqual(team.managed_by, manager_id)
+        self.assertTrue(session.committed)
 
     def test_update_team_requires_organization_header(self):
         # PATCH 라우트도 조직 헤더가 없으면 권한/DB 조회 전에 거부해야 한다.
@@ -1366,6 +1456,129 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertIn(TeamMembership, session.query_calls)
 
+    def test_deactivate_team_deactivates_team_in_active_organization(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        team = _team(
+            id=team_id,
+            organization_id=organization_id,
+            name="Builders",
+            created_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[team],
+        )
+
+        response = self._delete_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "deactivated"})
+        self.assertFalse(team.is_active)
+        self.assertIsNotNone(team.deactivated_at)
+        self.assertTrue(session.committed)
+
+    def test_deactivate_team_is_idempotent_for_inactive_team(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        deactivated_at = datetime(2026, 6, 28, 1, 2, 3, tzinfo=timezone.utc)
+        team = _team(
+            id=team_id,
+            organization_id=organization_id,
+            name="Legacy",
+            created_by=user_id,
+            is_active=False,
+            deactivated_at=deactivated_at,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[team],
+        )
+
+        response = self._delete_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "deactivated"})
+        self.assertFalse(team.is_active)
+        self.assertEqual(team.deactivated_at, deactivated_at)
+        self.assertFalse(session.committed)
+
+    def test_deactivate_team_hides_team_outside_active_organization(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        other_organization_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=other_organization_id,
+                    name="Builders",
+                )
+            ],
+        )
+
+        response = self._delete_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), _error("resource.not_found", "Team not found"))
+        self.assertFalse(session.committed)
+
+    def test_deactivate_team_rejects_member_without_manager_permission(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, name="Acme"),
+            membership=SimpleNamespace(id=uuid4()),
+        )
+
+        response = self._delete_team(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=uuid4(),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "permission.denied",
+                "Organization manager permission is required.",
+            ),
+        )
+        self.assertIn(TeamMembership, session.query_calls)
+
     def _get_teams(
         self,
         session,
@@ -1519,6 +1732,31 @@ class TestTeamsApi(unittest.TestCase):
         ):
             return TestClient(app).delete(
                 f"/api/v1/teams/{team_id}/members/{member_user_id}",
+                headers=headers,
+            )
+
+    def _delete_team(
+        self,
+        session,
+        user_id,
+        team_id,
+        organization_id=None,
+        raw_organization_id=None,
+    ):
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {"X-Request-ID": "req-test"}
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+        headers["Cookie"] = "auth_token=token"
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            return_value=SimpleNamespace(id=user_id),
+        ):
+            return TestClient(app).delete(
+                f"/api/v1/teams/{team_id}",
                 headers=headers,
             )
 
