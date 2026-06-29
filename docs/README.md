@@ -22,6 +22,14 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 | 구현 순서, 이슈 분해, 검증 계획 | [implementation-plan/](implementation-plan/README.md) |
 | 과거 조사, 메모, 폐기 문서 | [references/](references/README.md) |
 
+## 비권위 작업 문서
+
+아래 영역은 active documentation root 안에 있지만 source of truth가 아니다. 상위 기준 문서를 화면, 상태, 컴포넌트, QA 관점으로 번역하는 작업 문서로만 사용한다.
+
+| 영역 | 작업 문서 |
+| --- | --- |
+| 프론트 화면, 상태, API 연동 작업 문서 | [front/](front/README.md) |
+
 ## 활성 문서
 
 `Source of Truth: Yes`인 active 문서는 아래와 같다. 세부 충돌은 [foundation/document-authority.md](foundation/document-authority.md)의 권위 순서를 따른다.

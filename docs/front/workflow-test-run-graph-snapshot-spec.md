@@ -1,4 +1,9 @@
-# 워크플로우 테스트 실행 그래프 스냅샷 명세
+# Workflow 테스트 실행 그래프 스냅샷 명세
+
+Status: Draft
+Authority: Frontend Implementation Guide
+Source of Truth: No
+Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 
 ## 목적
 
@@ -15,6 +20,8 @@
 - 사용자는 화면에서 보이지 않는 연결 때문에 테스트가 실패한다고 느낀다.
 
 이 명세는 테스트 실행 시점에 현재 프론트 그래프를 기준으로 snapshot을 만들고, 검증하고, 저장한 뒤, 같은 snapshot으로 실행하는 구조를 정의한다.
+
+이 문서는 프론트 구현 제안이며 최종 API 계약이나 백엔드 런타임 정책의 source of truth가 아니다. 요청/응답 형태, 백엔드 검증 책임, graphSnapshot 우선순위는 `api/` 문서 또는 관련 ADR에 반영되어야 최종 계약으로 본다.
 
 ## 용어
 
@@ -114,7 +121,7 @@ Couldn't create edge for target handle id: "target"
 4. 검증 성공 시 draft 강제 저장
 5. 저장 실패 시 실행 중단 및 UI에 명확히 표시
 6. 저장 성공 시 동일 snapshot을 실행 API에 전달
-7. 백엔드는 전달받은 snapshot을 우선 사용해 테스트 실행
+7. API 계약이 확정된 경우 백엔드는 전달받은 snapshot을 우선 사용해 테스트 실행
 8. 실행 상태와 결과를 테스트 패널/미니 상태바에 표시
 ```
 
@@ -493,7 +500,7 @@ await workflowApi.executeWorkflowStream({
 });
 ```
 
-백엔드 정책:
+API 계약 보강 TODO:
 
 ```text
 현재 스냅샷 우선 실행은 UI 테스트 실행의 SSE 스트리밍 경로에 적용된다.
@@ -503,14 +510,16 @@ graph_snapshot이 없으면 기존 호환성을 위해 DB draft를 사용한다.
 일반 /api/v1/workflows/{workflow_id}/execute는 현재 DB draft만 사용한다.
 ```
 
+위 동작은 이 프론트 명세의 권장안이며, 최종 계약은 `api/` 문서에 별도로 기록해야 한다.
+
 권장 실행 순서:
 
 ```text
 1. 프론트가 graphSnapshot 검증
 2. 프론트가 draft 저장
 3. 프론트가 graph_snapshot 포함해 stream 실행 요청
-4. 백엔드도 graphSnapshot을 다시 검증
-5. 백엔드가 graphSnapshot 기준으로 Celery/Gateway 실행
+4. 백엔드 검증 정책이 확정된 경우 graphSnapshot을 다시 검증
+5. API 계약이 확정된 경우 graphSnapshot 기준으로 Celery/Gateway 실행
 ```
 
 백엔드 재검증이 필요한 이유:
@@ -758,6 +767,8 @@ xy-edge__template-replysource-start-customertarget
 
 ## 완료 기준
 
+이 섹션은 구현 작업의 acceptance criteria다. 문서 이동 시점에 아래 항목이 모두 검증 완료되었다는 기록은 아니며, 실제 완료 여부는 구현 PR과 CI/QA 결과를 기준으로 확인한다.
+
 이 작업은 다음 조건을 만족하면 완료로 본다.
 
 - 워크플로우 로딩 시 invalid edge를 감지한다.
@@ -770,7 +781,7 @@ xy-edge__template-replysource-start-customertarget
 - 검증 통과 시 draft 저장을 명시적으로 수행한다.
 - draft 저장 실패 시 실행하지 않고 UI에 오류를 표시한다.
 - draft 저장 성공 시 같은 snapshot으로 실행한다.
-- 백엔드가 요청의 graphSnapshot을 우선 사용한다.
+- API 계약이 확정된 경우 백엔드가 요청의 graphSnapshot을 우선 사용한다.
 - 시작/트리거 노드로 들어오는 invalid edge를 생성 시점 또는 실행 전 검증에서 차단한다.
 - 기존 숨은 invalid edge가 있어도 사용자가 이해 가능한 방식으로 문제를 확인할 수 있다.
 - lint/typecheck/build 또는 프로젝트에서 합의한 검증 명령을 통과한다.

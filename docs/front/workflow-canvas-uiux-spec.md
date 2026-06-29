@@ -1,8 +1,13 @@
-# MBA-6 워크플로우 Canvas UI/UX 개선 기능 명세
+# Workflow Canvas UI/UX 기능 명세
+
+Status: Draft
+Authority: Frontend Implementation Guide
+Source of Truth: No
+Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 
 ## 문서 목적
 
-이 문서는 `feature/mba-6` 브랜치에서 dev 대비 추가된 워크플로우 Canvas UI/UX 작업 범위를 리뷰와 QA 관점에서 정리한다.
+이 문서는 `feature/mba-6` 브랜치에서 dev 대비 추가된 워크플로우 Canvas UI/UX 작업 범위를 프론트 구현, 리뷰, QA 관점에서 정리한다.
 
 기존 기능을 단순히 시각적으로 바꾸는 작업이 아니라, 다음 사용 흐름을 개선하는 것이 목표다.
 
@@ -287,7 +292,7 @@
 
 기존에는 프론트 화면의 그래프와 DB에 저장된 draft 그래프가 어긋날 수 있었다. 이로 인해 화면에서는 삭제된 edge가 실제 실행에서는 남아 순환 오류를 만드는 문제가 있었다.
 
-이를 막기 위해 테스트 실행 흐름을 다음과 같이 바꿨다.
+이를 막기 위해 `feature/mba-6`의 프론트 구현 흐름은 다음과 같이 정리되어 있다. 백엔드 snapshot 우선 실행과 최종 HTTP 계약은 상세 문서의 API 계약 TODO를 따른다.
 
 1. 테스트 클릭
 2. 현재 프론트 그래프 snapshot 생성
@@ -306,7 +311,7 @@
 
 상세 문서:
 
-- `docs/HyeYeon/워크플로우-테스트-실행-그래프-스냅샷-명세.md`
+- [workflow-test-run-graph-snapshot-spec.md](workflow-test-run-graph-snapshot-spec.md)
 
 주요 파일:
 
@@ -403,6 +408,8 @@
 - [ ] 보고 페이지에는 빌더 조작 헤더가 노출되지 않는다.
 
 ## 검증 명령
+
+이 섹션은 이 작업 문서가 제안하는 검증 명령 목록이다. 문서 이동 시점에 아래 명령을 재실행했다는 완료 기록은 아니며, 실제 검증 결과는 PR/CI 결과를 기준으로 확인한다.
 
 ```bash
 cd apps/client
