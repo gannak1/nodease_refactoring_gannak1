@@ -10,7 +10,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 
 이 문서는 현재 workspace code의 조직/팀 권한 관련 물리 데이터 모델을 기준으로, 현재 구현과 MVP 목표 상태에서 사용할 권한 정책과 matrix를 정의한다.
 
-이 문서는 [physical-data-model.md](physical-data-model.md)를 따른다. 따라서 `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 현재 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 기준으로 판정한다. MVP 2-0 목표 상태에서는 `organization_memberships`를 organization 소속의 전제 조건으로 추가하고, `team_memberships`는 team permission 계산을 위한 team 배정 관계로 유지한다. 현재 코드는 workflow/LLM credential에 대해서만 user direct 권한을 구현하며, knowledge/audit user direct 권한은 MVP 2/3 목표 schema다.
+이 문서는 [physical-data-model.md](physical-data-model.md)를 따른다. 따라서 `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. MBA-67 이후 organization scope는 `organization_memberships`를 organization 소속의 전제 조건으로 사용하고, `team_memberships`는 team permission 계산을 위한 team 배정 관계로 유지한다. 현재 코드는 workflow/LLM credential에 대해서만 user direct 권한을 구현하며, knowledge/audit user direct 권한은 MVP 2/3 목표 schema다.
 
 ## 빠른 구현 기준
 
@@ -19,7 +19,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 - 구현자는 권한 row 없음, `auth_state='none'`, user direct additive allow, audit 기록 조건을 우선 테스트한다.
 - `roles`, `user_roles`, polymorphic `resource_permissions`, `user_connection_permissions`, `user_app_permissions`, `user_document_permissions`, `user_model_permissions`는 만들지 않는다.
 - 현재 코드의 user direct table은 `user_workflow_permissions`, `user_llm_permissions`뿐이다.
-- `organization_memberships`는 MBA-66에서 DB/model/migration foundation으로 추가된다. 다만 permission helper/API 전환 전까지는 기존 active team membership 및 owner/manager 기반 흐름이 남아 있다.
+- `organization_memberships`는 MBA-66에서 DB/model/migration foundation으로 추가되었고, MBA-67 이후 permission helper/API의 organization scope 기준으로 사용한다.
 
 ## 기준 테이블
 
@@ -28,7 +28,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 | `organization` | 조직 범위. app/workflow/knowledge base/LLM credential의 상위 scope |
 | `organization_memberships` | MBA-66 DB foundation: user와 organization의 직접 소속 관계 |
 | `teams` | 권한 부여 subject. 기존 role 개념은 team template으로 흡수 |
-| `team_memberships` | 현재: 사용자 organization/team 소속의 간접 기준. MVP 2-0 이후: organization 안의 team 배정 관계 |
+| `team_memberships` | organization 안의 team 배정 관계. Team permission 계산에만 사용하고 organization scope의 전제 조건으로 사용하지 않는다. |
 | `team_workflow_permissions` | team별 workflow 권한 |
 | `team_knowledge_permissions` | team별 knowledge base 권한 |
 | `team_llm_permissions` | team별 LLM credential 권한 |
@@ -43,14 +43,14 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 | 원칙 | 내용 |
 | --- | --- |
 | Team 우선 | 기본 권한 subject는 team이다. |
-| Organization membership 전제 | MBA-66에서 `organization_memberships` table을 추가한다. Permission helper/API 전환 전까지는 active team membership 기반 흐름이 남고, MVP 2-0 후속 이슈에서 active organization membership이 resource permission subject의 필요조건이 된다. |
+| Organization membership 전제 | Active `organization_memberships` row가 organization scope와 resource permission subject의 필요조건이다. Invited/suspended/removed row는 fail-closed 처리한다. Membership row 자체가 없는 legacy owner/manager만 호환 fallback으로 manager scope를 인정한다. |
 | User direct grant | 예외적 추가 권한은 user별 permission table로 부여한다. |
 | Organization scope | team과 permission은 조직 범위 안에서 해석한다. |
 | `auth_state` 단일 상태 | 현재 권한 모델은 permission boolean set이 아니라 `auth_state` 문자열 하나를 가진다. |
 | Matrix 해석 | `auth_state` 값은 DB enum이 아니라 application-level matrix로 해석한다. |
 | Deny by default | 명시 권한이 없거나 `auth_state='none'`이면 거부한다. |
 | Additive only | user direct permission은 권한을 추가로 허용할 뿐, team 권한을 낮추거나 deny하지 않는다. |
-| Organization owner/manager 자동 권한 | `organization.created_by` 또는 `organization.managed_by`에 해당하는 user는 해당 organization scope 안에서 `manager`급으로 판정한다. |
+| Organization owner/manager 자동 권한 | Active organization membership의 `organization_auth_state='manager'`를 우선 기준으로 삼는다. Membership row 자체가 없을 때만 `organization.created_by` 또는 `organization.managed_by` user를 legacy fallback manager로 판정한다. |
 | Public endpoint 분리 | public run/webhook은 `apps.auth_secret` 인증을 유지하되 내부 실행에서 workflow/credential/data 권한을 추가 평가할 수 있다. |
 | 감사 기록 | 권한 부여, 회수, 차단은 `audit_logs`에 남긴다. |
 
@@ -271,7 +271,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 - app 자체 권한을 workflow와 분리해야 하면 `team_app_permissions`가 필요하다.
 - 현재 문서에서는 현재 물리 데이터 모델 보존 조건 때문에 `team_app_permissions`를 만들지 않는다.
-- legacy resource처럼 `organization_id`가 비어 있는 경우에만 `created_by` fallback을 제한적으로 허용한다.
+- legacy workflow처럼 `organization_id`가 비어 있는 경우에만 active `created_by` user의 manager fallback을 제한적으로 허용한다. Organization-scoped app/workflow에는 이 fallback을 적용하지 않는다.
 
 ### Deployment
 
@@ -359,10 +359,10 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 1. 사용자를 인증한다.
 2. 요청의 active organization을 결정한다.
-3. 현재 구현에서는 organization owner/manager 또는 active `team_memberships`로 organization scope 안 여부를 판정한다.
-4. MVP 2-0 이후에는 active `organization_memberships` row가 없으면 일반 user의 resource permission은 fail-closed 처리한다.
-5. user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
-6. 사용자의 active organization 내 team 목록을 `team_memberships`에서 조회한다.
+3. `organization_memberships` row 존재 여부를 먼저 확인한다.
+4. Active row는 active user와 active organization 안에서만 `organization_auth_state`에 따라 member 또는 manager로 판정하고, invited/suspended/removed row는 fail-closed 처리한다.
+5. Membership row 자체가 없고 user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
+6. 사용자의 active organization 안 team 배정과 team permission은 `team_memberships`에서 조회한다.
 7. 대상 resource의 organization scope를 확인한다.
 8. resource별 permission table에서 team들의 `auth_state`를 조회한다.
 9. 현재 구현된 workflow/LLM resource는 user direct permission table에서 해당 user의 `auth_state`를 조회한다. knowledge/audit user direct 조회는 MVP 2/3 table 추가 후 적용한다.

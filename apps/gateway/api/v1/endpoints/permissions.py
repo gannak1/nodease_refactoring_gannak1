@@ -19,7 +19,6 @@ from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import (
     Team,
     TeamLLMPermission,
-    TeamMembership,
     TeamWorkflowPermission,
     UserLLMPermission,
     UserWorkflowPermission,
@@ -28,6 +27,11 @@ from apps.shared.db.models.user import User
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
+from apps.shared.services.permissions import (
+    has_active_organization_membership,
+    has_organization_manager_permission,
+    has_organization_scope_access,
+)
 from apps.shared.services.permission_enforcement import PermissionEnforcementService
 from apps.shared.schemas.permission import (
     LLMPermissionGrantRequest,
@@ -60,32 +64,13 @@ def _authenticate(
         )
 
 
-def _is_organization_manager(organization: Organization, user_id: UUID) -> bool:
-    """사용자가 organization owner 또는 managed_by 관리자인지 판정한다."""
-    return organization.created_by == user_id or (
-        organization.managed_by is not None and organization.managed_by == user_id
-    )
-
-
 def _has_active_membership(
     db: Session,
     organization_id: UUID,
     user_id: UUID,
 ) -> bool:
-    """사용자의 활성 team membership 보유 여부를 확인한다."""
-    # 일반 사용자는 active team membership이 있어야 organization scope 안으로 본다.
-    return (
-        db.query(TeamMembership)
-        .join(Team, Team.id == TeamMembership.team_id)
-        .filter(
-            TeamMembership.user_id == user_id,
-            TeamMembership.grantee_organization_id == organization_id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
-        )
-        .first()
-        is not None
-    )
+    """사용자의 active organization membership 보유 여부를 확인한다."""
+    return has_active_organization_membership(db, user_id, organization_id)
 
 
 def _lock_permission_key(db: Session, namespace: str, *ids: UUID) -> None:
@@ -402,16 +387,12 @@ def _authorize_team_workflow_permission_change(
             "Organization not found.",
         )
 
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    # organization manager는 active membership 없이도 권한 관리가 가능하다.
-    if not is_organization_manager and not _has_active_membership(
+    is_organization_manager = has_organization_manager_permission(
         db,
-        organization_id,
         current_user.id,
-    ):
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
         raise_api_error(
             request,
             404,
@@ -499,15 +480,12 @@ def _authorize_team_llm_permission_change(
             "Organization not found.",
         )
 
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    if not is_organization_manager and not _has_active_membership(
+    is_organization_manager = has_organization_manager_permission(
         db,
-        organization_id,
         current_user.id,
-    ):
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
         raise_api_error(
             request,
             404,
@@ -575,7 +553,9 @@ def _authorize_user_workflow_permission_change(
     organization_id: UUID,
     workflow_id: UUID,
     user_id: UUID,
-) -> tuple[Organization, Workflow, User]:
+    *,
+    require_active_target: bool = True,
+) -> tuple[Organization, Workflow, User | None]:
     """user workflow permission 변경 공통 scope와 manage 권한을 검증한다."""
     # 먼저 organization scope를 확정한다. scope 밖이면 리소스 존재 여부를 숨긴다.
     organization = (
@@ -594,16 +574,12 @@ def _authorize_user_workflow_permission_change(
             "Organization not found.",
         )
 
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    # organization manager는 active membership 없이도 권한 관리가 가능하다.
-    if not is_organization_manager and not _has_active_membership(
+    is_organization_manager = has_organization_manager_permission(
         db,
-        organization_id,
         current_user.id,
-    ):
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
         raise_api_error(
             request,
             404,
@@ -628,36 +604,37 @@ def _authorize_user_workflow_permission_change(
             "Workflow not found.",
         )
 
-    # 비활성화된 user에는 direct workflow permission을 부여하지 않는다.
-    target_user = (
-        db.query(User)
-        .filter(
-            User.id == user_id,
-            User.deactivated_at.is_(None),
+    target_user = None
+    if require_active_target:
+        # 비활성화된 user에는 direct workflow permission을 새로 부여하지 않는다.
+        target_user = (
+            db.query(User)
+            .filter(
+                User.id == user_id,
+                User.deactivated_at.is_(None),
+            )
+            .first()
         )
-        .first()
-    )
-    if target_user is None:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "User not found.",
-        )
+        if target_user is None:
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "User not found.",
+            )
 
-    target_is_organization_manager = _is_organization_manager(organization, user_id)
-    # 대상 user도 같은 organization의 manager이거나 active member여야 한다.
-    if not target_is_organization_manager and not _has_active_membership(
-        db,
-        organization_id,
-        user_id,
-    ):
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "User not found.",
-        )
+        # 대상 user는 실제 active organization membership이 있어야 direct grant 대상이 된다.
+        if not _has_active_membership(
+            db,
+            organization_id,
+            user_id,
+        ):
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "User not found.",
+            )
 
     # 최종 허용 주체는 organization manager 또는 workflow manager다.
     if (
@@ -686,7 +663,9 @@ def _authorize_user_llm_permission_change(
     organization_id: UUID,
     credential_id: UUID,
     user_id: UUID,
-) -> tuple[Organization, LLMCredential, User]:
+    *,
+    require_active_target: bool = True,
+) -> tuple[Organization, LLMCredential, User | None]:
     """user LLM credential permission 변경 공통 scope와 manage 권한을 검증한다."""
     organization = (
         db.query(Organization)
@@ -704,15 +683,12 @@ def _authorize_user_llm_permission_change(
             "Organization not found.",
         )
 
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    if not is_organization_manager and not _has_active_membership(
+    is_organization_manager = has_organization_manager_permission(
         db,
-        organization_id,
         current_user.id,
-    ):
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
         raise_api_error(
             request,
             404,
@@ -737,34 +713,35 @@ def _authorize_user_llm_permission_change(
             "LLM credential not found.",
         )
 
-    target_user = (
-        db.query(User)
-        .filter(
-            User.id == user_id,
-            User.deactivated_at.is_(None),
+    target_user = None
+    if require_active_target:
+        target_user = (
+            db.query(User)
+            .filter(
+                User.id == user_id,
+                User.deactivated_at.is_(None),
+            )
+            .first()
         )
-        .first()
-    )
-    if target_user is None:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "User not found.",
-        )
+        if target_user is None:
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "User not found.",
+            )
 
-    target_is_organization_manager = _is_organization_manager(organization, user_id)
-    if not target_is_organization_manager and not _has_active_membership(
-        db,
-        organization_id,
-        user_id,
-    ):
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "User not found.",
-        )
+        if not _has_active_membership(
+            db,
+            organization_id,
+            user_id,
+        ):
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "User not found.",
+            )
 
     if (
         not is_organization_manager
@@ -809,15 +786,12 @@ def _authorize_workflow_permission_read(
             "Organization not found.",
         )
 
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    if not is_organization_manager and not _has_active_membership(
+    is_organization_manager = has_organization_manager_permission(
         db,
-        organization_id,
         current_user.id,
-    ):
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
         raise_api_error(
             request,
             404,
@@ -884,15 +858,12 @@ def _authorize_llm_permission_read(
             "Organization not found.",
         )
 
-    is_organization_manager = _is_organization_manager(
-        organization,
-        current_user.id,
-    )
-    if not is_organization_manager and not _has_active_membership(
+    is_organization_manager = has_organization_manager_permission(
         db,
-        organization_id,
         current_user.id,
-    ):
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
         raise_api_error(
             request,
             404,
@@ -947,7 +918,9 @@ def _upsert_team_workflow_permission(
     assigned_at: datetime,
 ) -> TeamWorkflowPermission:
     """team-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_permission_key(db, "team_workflow_permission", organization_id, workflow_id, team_id)
+    _lock_permission_key(
+        db, "team_workflow_permission", organization_id, workflow_id, team_id
+    )
     existing_permission = (
         db.query(TeamWorkflowPermission)
         .filter(
@@ -986,8 +959,7 @@ def _upsert_team_workflow_permission(
                 "assigned_by": insert_stmt.excluded.assigned_by,
                 "assigned_at": insert_stmt.excluded.assigned_at,
             },
-            where=TeamWorkflowPermission.auth_state
-            != insert_stmt.excluded.auth_state,
+            where=TeamWorkflowPermission.auth_state != insert_stmt.excluded.auth_state,
         )
         .returning(TeamWorkflowPermission)
         .execution_options(populate_existing=True)
@@ -1018,7 +990,9 @@ def _upsert_user_workflow_permission(
     assigned_at: datetime,
 ) -> UserWorkflowPermission:
     """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_permission_key(db, "user_workflow_permission", organization_id, workflow_id, user_id)
+    _lock_permission_key(
+        db, "user_workflow_permission", organization_id, workflow_id, user_id
+    )
     # upsert 전 기존 row를 읽어 감사 로그의 before 값으로 사용한다.
     existing_permission = (
         db.query(UserWorkflowPermission)
@@ -1058,8 +1032,7 @@ def _upsert_user_workflow_permission(
                 "assigned_by": insert_stmt.excluded.assigned_by,
                 "assigned_at": insert_stmt.excluded.assigned_at,
             },
-            where=UserWorkflowPermission.auth_state
-            != insert_stmt.excluded.auth_state,
+            where=UserWorkflowPermission.auth_state != insert_stmt.excluded.auth_state,
         )
         .returning(UserWorkflowPermission)
         .execution_options(populate_existing=True)
@@ -1091,7 +1064,9 @@ def _upsert_team_llm_permission(
     assigned_at: datetime,
 ) -> TeamLLMPermission:
     """team-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_permission_key(db, "team_llm_permission", organization_id, credential_id, team_id)
+    _lock_permission_key(
+        db, "team_llm_permission", organization_id, credential_id, team_id
+    )
     existing_permission = (
         db.query(TeamLLMPermission)
         .filter(
@@ -1160,7 +1135,9 @@ def _upsert_user_llm_permission(
     assigned_at: datetime,
 ) -> UserLLMPermission:
     """user-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_permission_key(db, "user_llm_permission", organization_id, credential_id, user_id)
+    _lock_permission_key(
+        db, "user_llm_permission", organization_id, credential_id, user_id
+    )
     existing_permission = (
         db.query(UserLLMPermission)
         .filter(
@@ -1595,7 +1572,9 @@ def delete_team_llm_permission(
         team_id,
     )
 
-    _lock_permission_key(db, "team_llm_permission", organization_id, credential_id, team_id)
+    _lock_permission_key(
+        db, "team_llm_permission", organization_id, credential_id, team_id
+    )
     permission = (
         db.query(TeamLLMPermission)
         .filter(
@@ -1621,7 +1600,10 @@ def delete_team_llm_permission(
         permission,
         before,
     )
-    return {"message": "Team LLM credential permission deleted", "id": str(permission.id)}
+    return {
+        "message": "Team LLM credential permission deleted",
+        "id": str(permission.id),
+    }
 
 
 @router.delete("/workflows/{workflow_id}/users/{user_id}")
@@ -1643,9 +1625,12 @@ def delete_user_workflow_permission(
         organization_id,
         workflow_id,
         user_id,
+        require_active_target=False,
     )
 
-    _lock_permission_key(db, "user_workflow_permission", organization_id, workflow_id, user_id)
+    _lock_permission_key(
+        db, "user_workflow_permission", organization_id, workflow_id, user_id
+    )
     permission = (
         db.query(UserWorkflowPermission)
         .filter(
@@ -1693,9 +1678,12 @@ def delete_user_llm_permission(
         organization_id,
         credential_id,
         user_id,
+        require_active_target=False,
     )
 
-    _lock_permission_key(db, "user_llm_permission", organization_id, credential_id, user_id)
+    _lock_permission_key(
+        db, "user_llm_permission", organization_id, credential_id, user_id
+    )
     permission = (
         db.query(UserLLMPermission)
         .filter(
@@ -1721,4 +1709,7 @@ def delete_user_llm_permission(
         permission,
         before,
     )
-    return {"message": "User LLM credential permission deleted", "id": str(permission.id)}
+    return {
+        "message": "User LLM credential permission deleted",
+        "id": str(permission.id),
+    }

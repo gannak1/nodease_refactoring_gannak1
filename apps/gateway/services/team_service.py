@@ -41,6 +41,7 @@ from apps.shared.schemas.team import (
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
+    has_active_organization_membership,
     has_organization_manager_permission,
     has_organization_scope_access,
 )
@@ -126,8 +127,7 @@ def _get_team(
 
 
 def _get_active_user(db: Session, user_id: Any) -> User:
-    # Team membership이 조직 소속 모델이므로 active user 계정만
-    # 새 membership subject로 추가할 수 있다.
+    # Team/direct permission subject는 비활성화되지 않은 user만 허용한다.
     user = (
         db.query(User)
         .filter(
@@ -189,9 +189,7 @@ def _resource_organization_id(
             raise HTTPException(status_code=404, detail="Workflow not found")
         return workflow.organization_id
 
-    credential = (
-        db.query(LLMCredential).filter(LLMCredential.id == resource_id).first()
-    )
+    credential = db.query(LLMCredential).filter(LLMCredential.id == resource_id).first()
     if not credential:
         raise HTTPException(status_code=404, detail="Credential not found")
     return credential.organization_id
@@ -260,21 +258,8 @@ def _ensure_grantee_user_membership(
     user_id: Any,
     organization_id: Any,
 ) -> None:
-    membership = (
-        db.query(TeamMembership)
-        .join(Team, Team.id == TeamMembership.team_id)
-        .join(User, User.id == TeamMembership.user_id)
-        .filter(
-            TeamMembership.user_id == user_id,
-            TeamMembership.grantee_organization_id == organization_id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.organization_id == organization_id,
-            Team.is_active.is_(True),
-            User.deactivated_at.is_(None),
-        )
-        .first()
-    )
-    if not membership:
+    _get_active_user(db, user_id)
+    if not has_active_organization_membership(db, user_id, organization_id):
         raise HTTPException(
             status_code=400,
             detail="Grantee user is not a member of the organization",
@@ -452,7 +437,7 @@ class TeamService:
                 _get_active_user(db, request.managed_by)
                 # 정책 참고: 현재 RBAC 문서는 organization owner/manager도
                 # organization scope 안 manager로 본다. 향후 managed_by 대상을
-                # 반드시 active team membership 보유자로 제한하기로 바뀌면
+                # 반드시 active organization membership row 보유자로 제한하기로 바뀌면
                 # _ensure_user_organization_scope 조건을 membership-only로 좁힌다.
                 _ensure_user_organization_scope(
                     db,
@@ -506,7 +491,7 @@ class TeamService:
             team.organization_id,
             manager_scope,
         )
-        _get_active_user(db, request.user_id)
+        _ensure_grantee_user_membership(db, request.user_id, team.organization_id)
         membership = (
             db.query(TeamMembership)
             .filter(
@@ -597,7 +582,9 @@ class TeamService:
         if request.grantee_type == "team":
             team = _get_team(db, request.grantee_id)
             if team.organization_id != request.organization_id:
-                raise HTTPException(status_code=400, detail="Team organization mismatch")
+                raise HTTPException(
+                    status_code=400, detail="Team organization mismatch"
+                )
             if not getattr(team, "is_active", True):
                 raise HTTPException(status_code=400, detail="Team is inactive")
             if request.resource_type == "workflow":
@@ -631,10 +618,14 @@ class TeamService:
                     "user_id": request.grantee_id,
                 }
 
-        row = db.query(model).filter(
-            model.grantee_organization_id == request.organization_id,
-            *(getattr(model, key) == value for key, value in filters.items()),
-        ).first()
+        row = (
+            db.query(model)
+            .filter(
+                model.grantee_organization_id == request.organization_id,
+                *(getattr(model, key) == value for key, value in filters.items()),
+            )
+            .first()
+        )
         if not row:
             row = model(
                 grantee_organization_id=request.organization_id,
@@ -664,7 +655,9 @@ class TeamService:
             db, request.resource_type, request.resource_id
         )
         if resource_organization_id != request.organization_id:
-            raise HTTPException(status_code=400, detail="Resource organization mismatch")
+            raise HTTPException(
+                status_code=400, detail="Resource organization mismatch"
+            )
         _ensure_resource_permission_manager(
             db,
             current_user,
@@ -700,10 +693,14 @@ class TeamService:
                     "user_id": request.grantee_id,
                 }
 
-        row = db.query(model).filter(
-            model.grantee_organization_id == request.organization_id,
-            *(getattr(model, key) == value for key, value in filters.items()),
-        ).first()
+        row = (
+            db.query(model)
+            .filter(
+                model.grantee_organization_id == request.organization_id,
+                *(getattr(model, key) == value for key, value in filters.items()),
+            )
+            .first()
+        )
         target_id = row.id if row else None
         if row:
             db.delete(row)

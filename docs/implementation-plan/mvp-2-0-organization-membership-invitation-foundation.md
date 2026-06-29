@@ -190,8 +190,9 @@ resource access =
 
 ```text
 1. organization_memberships row가 active이고 organization_auth_state='manager'이면 manager
-2. active membership row가 없더라도 legacy 호환으로 organization.created_by 또는 organization.managed_by이면 manager
-3. 둘 다 아니면 manager 아님
+2. organization_memberships row가 invited/suspended/removed이면 fail-closed
+3. membership row 자체가 없고 legacy 호환으로 organization.created_by 또는 organization.managed_by이면 manager
+4. 둘 다 아니면 manager 아님
 ```
 
 이 fallback은 MVP 1 데이터 회귀를 막기 위한 안전장치다. 일반 user의 resource 접근은 migration/backfill된 active organization membership을 통해 보장하고, `created_by`/`managed_by` fallback은 owner/manager 계정에만 적용한다.
@@ -319,7 +320,7 @@ MVP 2-0 권장:
 
 ### 8.1 `team_memberships`
 
-현재:
+MBA-67 이전:
 
 ```text
 team_memberships(grantee_organization_id, user_id, team_id)
@@ -484,9 +485,9 @@ accepted_at = organization.created_at
 | manager active | member active | manager 유지 |
 | removed | active backfill | active로 복구하지 않음. migration 시점에는 removed row가 없으므로 후속 운영 정책에만 적용 |
 
-### 9.4 Legacy reconciliation guard
+### 9.4 Legacy compatibility guard
 
-MVP 1에서 생성된 데이터가 migration 이후에도 일부 누락될 수 있는 상황을 대비해 runtime reconciliation guard를 둔다.
+MVP 1에서 생성된 데이터가 migration 이후에도 일부 누락될 수 있는 상황은 MBA-66 backfill과 검증으로 처리한다. MBA-67의 read/helper 경로는 legacy team membership이나 owner/manager 관계를 보고 organization membership row를 runtime에서 자동 생성하지 않는다.
 
 적용 위치:
 
@@ -498,12 +499,13 @@ MVP 1에서 생성된 데이터가 migration 이후에도 일부 누락될 수 �
 
 ```text
 1. active organization membership이 있으면 그대로 사용한다.
-2. 없지만 legacy team membership이 있으면 organization_memberships active member row를 생성한다.
-3. 없지만 organization.created_by/managed_by이면 active manager row를 생성한다.
-4. 둘 다 없으면 기존처럼 default organization을 생성한다.
+2. invited/suspended/removed membership row가 있으면 fail-closed 처리한다.
+3. membership row 자체가 없고 organization.created_by/managed_by이면 manager fallback으로만 판정한다.
+4. legacy team membership만 있으면 backfill 누락 또는 데이터 불일치로 보고 read/helper 경로에서 row를 생성하지 않는다.
+5. 명시적 bootstrap 경로인 ensure_user_default_organization()에서만 새 default organization과 active manager organization membership row를 생성한다.
 ```
 
-이 guard는 migration 누락으로 기존 MVP 1 사용자가 갑자기 새 organization을 생성받는 문제를 막기 위한 것이다.
+이 guard는 migration 누락으로 기존 MVP 1 사용자가 scope를 잃는 문제를 런타임 쓰기로 숨기지 않고, 권한 helper를 fail-closed로 유지하기 위한 것이다.
 
 운영 안정화 후 guard를 제거할 수 있지만, MVP 2-0 구현 직후에는 유지한다.
 
@@ -582,11 +584,11 @@ has_organization_manager_permission(db, user_id, organization_id)
 ```text
 1. user_id와 organization_id를 UUID로 coerce한다.
 2. organization이 active인지 확인한다.
-3. organization_memberships에서 active row를 찾는다.
-4. active row가 없으면 legacy created_by/managed_by fallback만 제한적으로 확인한다.
-5. organization_auth_state가 manager이면 manager 권한을 반환한다.
-6. created_by/managed_by fallback이면 manager 권한을 반환한다.
-7. 그 외에는 member 또는 none을 반환한다.
+3. organization_memberships row 존재 여부를 확인한다.
+4. active row면 organization_auth_state를 읽어 member 또는 manager를 반환한다.
+5. invited/suspended/removed row면 none을 반환한다.
+6. membership row 자체가 없고 created_by/managed_by fallback이면 manager를 반환한다.
+7. 그 외에는 none을 반환한다.
 ```
 
 ### 11.2 resource permission 계산 전제
@@ -638,7 +640,7 @@ MVP 2 knowledge permission:
 
 예외:
 
-- `organization.created_by` 또는 `organization.managed_by`인 legacy owner/manager는 active membership이 누락되어도 manager fallback을 허용한다.
+- `organization.created_by` 또는 `organization.managed_by`인 legacy owner/manager는 membership row 자체가 누락된 경우에만 manager fallback을 허용한다.
 - 이 예외는 MVP 1 회귀 방지를 위한 owner/manager 전용 fallback이다.
 - 일반 user의 team/user direct permission은 active membership이 없으면 사용하지 않는다. 정상 migration 후에는 기존 team member가 모두 active membership을 가지므로 기존 MVP 1 happy path가 깨지지 않아야 한다.
 
@@ -670,10 +672,10 @@ organization_memberships.created_at asc
 `ensure_user_default_organization()` 변경:
 
 1. active organization membership이 있으면 그대로 반환
-2. 없지만 legacy team membership 또는 creator/manager 관계가 있으면 reconciliation guard로 membership 생성 후 반환
-3. 둘 다 없으면 organization 생성
-4. default team 생성
-5. organization_memberships active manager row 생성
+2. active organization membership이 없으면 기존 membership row나 legacy team membership을 reconciliation하지 않는다.
+3. organization 생성
+4. organization_memberships active manager row 생성
+5. default team 생성
 6. default team membership row 생성
 
 주의:
@@ -1313,7 +1315,7 @@ Acceptance Criteria:
 
 - active member가 아니면 resource permission row가 있어도 접근 거부된다.
 - manager membership은 organization scope 안에서 manager로 판정된다.
-- created_by/managed_by legacy fallback이 유지된다.
+- membership row 자체가 없는 created_by/managed_by legacy fallback이 유지된다.
 - team permission 계산은 기존과 동일하게 동작한다.
 
 ### Issue 0-3. `[BE][API] organization member/invitation API 추가`
@@ -1457,7 +1459,7 @@ MVP 2 본작업에서 추가할 테스트의 선행 fixture:
 
 - organization membership을 생성한다.
 - active organization 조회는 membership 기준으로 전환한다.
-- 단, legacy fallback을 유지한다.
+- 단, membership row 자체가 없는 owner/manager legacy fallback을 유지한다.
 
 ### 20.2 2단계: Write-through
 
@@ -1470,8 +1472,8 @@ MVP 2 본작업에서 추가할 테스트의 선행 fixture:
 
 permission helper:
 
-- active organization membership 없으면 fail-closed.
-- legacy fallback은 creator/managed_by에 한정한다.
+- active organization membership 없으면 일반 resource permission은 fail-closed.
+- legacy fallback은 membership row 자체가 없는 creator/managed_by에 한정한다.
 
 ### 20.4 4단계: Cleanup
 
