@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { attachActiveOrganizationHeader } from '@/lib/activeOrganization';
 
 const API_BASE_URL = '/api/v1';
 
@@ -7,6 +8,8 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
 });
+
+attachActiveOrganizationHeader(api);
 
 // 401 에러 인터셉터
 api.interceptors.response.use(

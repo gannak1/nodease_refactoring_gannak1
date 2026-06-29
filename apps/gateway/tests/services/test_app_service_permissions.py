@@ -10,6 +10,7 @@ def test_app_read_allows_primary_workflow_reader(monkeypatch):
         organization_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
         created_by=uuid.uuid4(),
+        is_market=False,
     )
     user_id = uuid.uuid4()
 
@@ -24,6 +25,7 @@ def test_app_read_denies_non_reader(monkeypatch):
         organization_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
         created_by=uuid.uuid4(),
+        is_market=False,
     )
     user_id = uuid.uuid4()
 
@@ -38,6 +40,7 @@ def test_app_read_denial_is_403_inside_organization_scope(monkeypatch):
         organization_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
         created_by=uuid.uuid4(),
+        is_market=False,
     )
     user_id = uuid.uuid4()
 
@@ -58,6 +61,7 @@ def test_app_read_denial_is_404_outside_organization_scope(monkeypatch):
         organization_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
         created_by=uuid.uuid4(),
+        is_market=False,
     )
     user_id = uuid.uuid4()
 
@@ -78,6 +82,7 @@ def test_app_manage_denial_is_403_when_readable(monkeypatch):
         organization_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
         created_by=uuid.uuid4(),
+        is_market=False,
     )
     user_id = uuid.uuid4()
 
@@ -95,3 +100,18 @@ def test_app_manage_denial_is_403_when_readable(monkeypatch):
         AppService.access_denial_status(SimpleNamespace(), app, user_id, "manage")
         == 403
     )
+
+
+def test_app_read_allows_marketplace_app_without_permissions(monkeypatch):
+    app = SimpleNamespace(
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+        is_market=True,
+    )
+    user_id = uuid.uuid4()
+
+    monkeypatch.setattr(app_service, "has_organization_manager_permission", lambda *a: False)
+    monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: False)
+
+    assert AppService.can_read_app(SimpleNamespace(), app, user_id) is True

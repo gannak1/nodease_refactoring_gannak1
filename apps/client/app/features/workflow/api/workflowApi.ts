@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { attachActiveOrganizationHeader } from '@/lib/activeOrganization';
 import { WorkflowDraftRequest } from '../types/Workflow';
 import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
 import {
@@ -28,6 +29,8 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true, // ✅ 쿠키 자동 전송
 });
+
+attachActiveOrganizationHeader(api);
 
 const cloneMockResponse = <T>(value: T): T => {
   if (typeof structuredClone === 'function') {
