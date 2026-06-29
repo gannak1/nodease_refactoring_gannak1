@@ -3,8 +3,8 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
-Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
+Verified Against: origin/dev @ 4cff4f26e5aad92a609c38dc6276222acd4dc471
+Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
 ## 범위
@@ -31,6 +31,8 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 | Implemented | `GET` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization의 team 목록 |
 | Implemented | `POST` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization에 team 생성 |
 | Implemented | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team 수정 |
+| Implemented | `DELETE` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team 비활성화 |
+| Implemented | `GET` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | active organization 안의 team member 목록 |
 | Implemented | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | active organization 안의 active user를 team member로 추가 |
 | Implemented | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team member 제거 |
 
