@@ -3,11 +3,11 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: Not yet verified
+Verified Against: feature/mba-6 @ 5856452478494c2e2c6aa36993a6aafac9c7ebcf
 
-이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 작업 문서 공간이다.
+이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 
-프론트 문서는 제품 정책이나 API 계약의 최종 기준이 아니다. 정책은 `requirements/`, `architecture/`, `data-model/`, `decisions/`를 따르고, HTTP 계약은 `api/`를 따른다. 이 폴더의 문서는 그 기준들을 실제 화면과 컴포넌트 작업으로 번역하는 역할을 한다.
+프론트 문서는 제품 정책이나 API 계약의 최종 기준이 아니다. 정책은 `requirements/`, `architecture/`, `data-model/`, `decisions/`를 따르고, HTTP 계약은 `api/`를 따른다. 이 폴더의 문서는 그 기준들을 실제 화면과 컴포넌트 작업으로 번역하는 역할만 한다.
 
 ## 문서 역할
 
@@ -55,18 +55,25 @@ Verified Against: Not yet verified
 | --- | --- |
 | [workflow-canvas-uiux-spec.md](workflow-canvas-uiux-spec.md) | Workflow canvas, node detail view, 변수 칩, 테스트 실행 안정화, 보고 페이지 등 `feature/mba-6` 프론트 UI/UX 작업 |
 | [workflow-test-run-graph-snapshot-spec.md](workflow-test-run-graph-snapshot-spec.md) | 테스트 실행 시 프론트 graph snapshot 생성, 검증, draft 저장, 실행 요청 흐름 |
+| [rbac-permission-ui-overview.md](rbac-permission-ui-overview.md) | RBAC 프론트 작업 범위, 관련 화면, 사용자 역할, 제외 범위 |
+| [rbac-workflow-access-matrix.md](rbac-workflow-access-matrix.md) | workflow `none/viewer/operator/builder/manager`별 화면과 action 제어 |
+| [rbac-permission-management-flow.md](rbac-permission-management-flow.md) | organization manager 또는 workflow manager의 team/user workflow 권한 부여/회수 흐름 |
+| [rbac-permission-api-integration.md](rbac-permission-api-integration.md) | organization, team, workflow permission API 연결과 상태 반영 기준 |
+| [rbac-permission-ui-qa.md](rbac-permission-ui-qa.md) | RBAC workflow 권한 UI QA 시나리오와 기대 결과 |
 
-## RBAC 프론트 작업에서 필요한 핵심 문서
+## 현재 RBAC 프론트 작업 문서
 
-RBAC와 workflow 권한 UI를 구현한다면 최소한 다음 내용을 문서화해야 한다.
+RBAC와 workflow 권한 UI 구현을 위해 현재 정리된 작업 문서는 아래와 같다. 이 목록은 구현 기준 문서 목록이 아니라, 상위 정책/API 문서를 프론트 작업 단위로 나눈 보조 문서 목록이다.
 
 | 문서                                   | 담을 내용                                                                                                  |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | `rbac-permission-ui-overview.md`     | RBAC 프론트 작업 범위, 관련 화면, 사용자 역할, 구현하지 않을 범위                                                              |
 | `rbac-workflow-access-matrix.md`     | `none`, `viewer`, `operator`, `builder`, `manager`별 workflow 목록, 상세, 편집, 실행, 배포, 권한 관리 UI 동작           |
 | `rbac-permission-management-flow.md` | organization manager가 team/user에게 workflow 권한을 부여/회수하는 화면 흐름                                           |
-| `rbac-permission-api-integration.md` | `/organizations`, `/teams`, `/permissions/workflows`, `/workflows/{id}/permissions/me` 등 프론트 API 연결 방식 |
+| `rbac-permission-api-integration.md` | `/organizations`, `/teams`, `/permissions/workflows` 등 프론트 API 연결 방식 |
 | `rbac-permission-ui-qa.md`           | 권한 조합별 테스트 케이스와 기대 결과                                                                                  |
+
+`/api/v1/workflows/{workflow_id}/permissions/me`는 코드와 프론트 작업 문서에서 사용하는 조회 endpoint지만, 최종 API 계약은 `api/` 문서에 보강되어야 한다. API 문서 보강 전까지 이 endpoint 설명은 프론트 연동 TODO로만 취급한다.
 
 ## RBAC 프론트 문서 작성 기준
 
@@ -92,7 +99,7 @@ RBAC 문서는 특히 `none`과 `viewer`를 분리해서 써야 한다.
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: 브랜치 또는 커밋
+Verified Against: <branch> @ <commit>
 
 ## 목적
 

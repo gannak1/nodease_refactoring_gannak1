@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6
+Verified Against: feature/mba-6 @ 5856452478494c2e2c6aa36993a6aafac9c7ebcf
 
 ## 문서 목적
 
@@ -408,6 +408,8 @@ Verified Against: feature/mba-6
 - [ ] 보고 페이지에는 빌더 조작 헤더가 노출되지 않는다.
 
 ## 검증 명령
+
+이 섹션은 이 작업 문서가 제안하는 검증 명령 목록이다. 문서 이동 시점에 아래 명령을 재실행했다는 완료 기록은 아니며, 실제 검증 결과는 PR/CI 결과를 기준으로 확인한다.
 
 ```bash
 cd apps/client
