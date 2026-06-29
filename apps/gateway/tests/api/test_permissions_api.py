@@ -115,6 +115,85 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit["metadata"]["request_id"], "req-test")
         self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
 
+    def test_list_workflow_permissions_returns_team_and_user_entries_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        target_user_id = uuid4()
+        assigned_at = datetime(2026, 6, 29, 5, 17, 29, tzinfo=timezone.utc)
+        team = _team(id=team_id, organization_id=organization_id)
+        target_user = _user(
+            id=target_user_id,
+            email="target@example.com",
+            name="Target User",
+        )
+        team_permission = _team_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            team_id=team_id,
+            auth_state="builder",
+            assigned_by=user_id,
+        )
+        team_permission.assigned_at = assigned_at
+        team_permission.team = team
+        team_permission.team_organization_id = organization_id
+        team_permission.team_is_active = True
+        user_permission = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=user_id,
+        )
+        user_permission.assigned_at = assigned_at
+        user_permission.user = target_user
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            workflow_team_permissions=[team_permission],
+            workflow_user_permissions=[user_permission],
+        )
+
+        response = self._get_workflow_permissions(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "resource_type": "workflow",
+                "resource_id": str(workflow_id),
+                "organization_id": str(organization_id),
+                "team_permissions": [
+                    {
+                        "id": str(team_permission.id),
+                        "grantee_type": "team",
+                        "grantee_id": str(team_id),
+                        "grantee_name": "Builders",
+                        "auth_state": "builder",
+                        "assigned_at": "2026-06-29T05:17:29Z",
+                    }
+                ],
+                "user_permissions": [
+                    {
+                        "id": str(user_permission.id),
+                        "grantee_type": "user",
+                        "grantee_id": str(target_user_id),
+                        "grantee_name": "Target User",
+                        "auth_state": "viewer",
+                        "assigned_at": "2026-06-29T05:17:29Z",
+                    }
+                ],
+            },
+        )
+        self.assertIn(TeamWorkflowPermission, session.query_calls)
+        self.assertIn(UserWorkflowPermission, session.query_calls)
+
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
         # organization manager가 아니어도 대상 workflow의 manager 권한이 있으면 기존 row를 수정할 수 있다.
         user_id = uuid4()
@@ -2458,6 +2537,42 @@ class TestPermissionsApi(unittest.TestCase):
                 json=payload,
             )
 
+    def _get_workflow_permissions(
+        self,
+        session,
+        user_id,
+        workflow_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 workflow permission 목록 endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).get(
+                f"/api/v1/permissions/workflows/{workflow_id}",
+                headers=headers,
+            )
+
     def _put_user_permission(
         self,
         session,
@@ -2733,6 +2848,8 @@ class _Query:
         self.apply_filters = apply_filters
         self.join_values = []
         self.filter_expressions = []
+        self.options_values = []
+        self.order_by_values = []
 
     def join(self, *args):
         """endpoint가 생성한 join 조건을 나중에 검증할 수 있게 저장한다."""
@@ -2742,6 +2859,16 @@ class _Query:
     def filter(self, *expressions):
         """filter 조건을 저장하고 필요하면 fake 결과에 적용한다."""
         self.filter_expressions.extend(expressions)
+        return self
+
+    def options(self, *args):
+        """joinedload 같은 ORM option 호출을 기록한다."""
+        self.options_values.extend(args)
+        return self
+
+    def order_by(self, *args):
+        """endpoint가 생성한 정렬 조건을 기록한다."""
+        self.order_by_values.extend(args)
         return self
 
     def first(self):
@@ -2796,6 +2923,10 @@ class _Session:
         existing_llm_permission=None,
         existing_user_permission=None,
         existing_user_llm_permission=None,
+        workflow_team_permissions=None,
+        workflow_user_permissions=None,
+        llm_team_permissions=None,
+        llm_user_permissions=None,
         upsert_result=None,
         llm_upsert_result=None,
         user_upsert_result=None,
@@ -2823,6 +2954,10 @@ class _Session:
         self.existing_llm_permission = existing_llm_permission
         self.existing_user_permission = existing_user_permission
         self.existing_user_llm_permission = existing_user_llm_permission
+        self.workflow_team_permissions = workflow_team_permissions
+        self.workflow_user_permissions = workflow_user_permissions
+        self.llm_team_permissions = llm_team_permissions
+        self.llm_user_permissions = llm_user_permissions
         self.workflow_manager_query = None
         self.llm_manager_query = None
         self.user_workflow_query = None
@@ -2868,6 +3003,11 @@ class _Session:
             return self.user_query
         if model is TeamWorkflowPermission:
             self.workflow_permission_query_count += 1
+            if self.workflow_team_permissions is not None:
+                return _Query(
+                    items=self.workflow_team_permissions,
+                    apply_filters=True,
+                )
             # 첫 번째 TeamWorkflowPermission query는 요청자의 manage 권한 판정용이다.
             if (
                 self.manager_permissions is not None
@@ -2881,6 +3021,11 @@ class _Session:
             return _Query(first_result=self.existing_permission, apply_filters=True)
         if model is TeamLLMPermission:
             self.llm_permission_query_count += 1
+            if self.llm_team_permissions is not None:
+                return _Query(
+                    items=self.llm_team_permissions,
+                    apply_filters=True,
+                )
             if (
                 self.llm_manager_permissions is not None
                 and self.llm_permission_query_count == 1
@@ -2893,6 +3038,11 @@ class _Session:
             return _Query(first_result=self.existing_llm_permission, apply_filters=True)
         if model is UserWorkflowPermission:
             self.user_workflow_permission_query_count += 1
+            if self.workflow_user_permissions is not None:
+                return _Query(
+                    items=self.workflow_user_permissions,
+                    apply_filters=True,
+                )
             # manager 판정이 필요한 경로에서는 첫 query가 권한 합산용이고,
             # 그 다음 query가 upsert/delete 대상 row 조회용이다.
             if (
@@ -2910,6 +3060,11 @@ class _Session:
             )
         if model is UserLLMPermission:
             self.user_llm_permission_query_count += 1
+            if self.llm_user_permissions is not None:
+                return _Query(
+                    items=self.llm_user_permissions,
+                    apply_filters=True,
+                )
             if (
                 self.user_llm_direct_permissions
                 and self.user_llm_permission_query_count == 1
@@ -3029,6 +3184,20 @@ def _team(id, organization_id, is_active=True):
         managed_by=None,
         is_active=is_active,
         is_auto_add=False,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _user(id, email, name, deactivated_at=None):
+    """permission list 응답의 user grantee 표시용 fixture를 만든다."""
+    now = datetime.now(timezone.utc)
+    return User(
+        id=id,
+        email=email,
+        name=name,
+        social_provider="local",
+        deactivated_at=deactivated_at,
         created_at=now,
         updated_at=now,
     )

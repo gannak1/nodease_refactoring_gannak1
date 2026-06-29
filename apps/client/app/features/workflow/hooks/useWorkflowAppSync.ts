@@ -4,6 +4,7 @@ import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore
 import { workflowApi } from '../api/workflowApi';
 import { appApi } from '@/app/features/app/api/appApi';
 import { isMockWorkflowId } from '../utils/mockMode';
+import { setActiveOrganizationId } from '@/lib/activeOrganization';
 
 export const useWorkflowAppSync = () => {
   const params = useParams();
@@ -14,6 +15,7 @@ export const useWorkflowAppSync = () => {
     setProjectInfo,
     setActiveWorkflowIdSafe,
     setProjectApp,
+    setWorkflowAccess,
   } = useWorkflowStore();
 
   useEffect(() => {
@@ -41,6 +43,14 @@ export const useWorkflowAppSync = () => {
 
       try {
         const data = await workflowApi.getWorkflow(workflowId);
+        try {
+          const access = await workflowApi.getWorkflowPermission(workflowId);
+          setWorkflowAccess(access);
+          setActiveOrganizationId(access.organization_id);
+        } catch (permissionError) {
+          console.error('Failed to load workflow permissions:', permissionError);
+          setWorkflowAccess(null);
+        }
         if (data.app_id) {
           setCurrentAppId(data.app_id);
 
@@ -63,7 +73,13 @@ export const useWorkflowAppSync = () => {
     if (workflowId) {
       loadWorkflowAppId();
     }
-  }, [workflowId, setProjectInfo, setActiveWorkflowIdSafe, setProjectApp]);
+  }, [
+    workflowId,
+    setProjectInfo,
+    setActiveWorkflowIdSafe,
+    setProjectApp,
+    setWorkflowAccess,
+  ]);
 
   useEffect(() => {
     const initWorkflows = async () => {

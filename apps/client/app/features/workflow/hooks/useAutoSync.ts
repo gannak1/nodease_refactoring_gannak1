@@ -25,6 +25,7 @@ export const useAutoSync = () => {
   const envVariables = useWorkflowStore((state) => state.envVariables);
   const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
   const setWorkflowData = useWorkflowStore((state) => state.setWorkflowData);
+  const workflowAccess = useWorkflowStore((state) => state.workflowAccess);
 
   // 로딩 완료 여부 체크
   const isLoadedRef = useRef(false);
@@ -116,6 +117,9 @@ export const useAutoSync = () => {
           if (!workflowId) {
             return;
           }
+          if (workflowAccess?.can_write === false) {
+            return;
+          }
           try {
             const currentViewport = getViewport();
 
@@ -146,7 +150,7 @@ export const useAutoSync = () => {
         { maxWait: 300000 }, // 5분이 지나면 강제로 한 번 저장
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workflowId],
+    [workflowId, workflowAccess?.can_write],
   );
 
   // debouncedSync가 변경되면 ref 업데이트
@@ -167,5 +171,5 @@ export const useAutoSync = () => {
       envVariables,
       runtimeVariables,
     );
-  }, [nodes, edges, features, envVariables, runtimeVariables]);
+  }, [nodes, edges, features, envVariables, runtimeVariables, workflowAccess]);
 };

@@ -20,6 +20,7 @@ import {
 import type { AppNode } from '../types/Nodes';
 import { validateConnection } from '../utils/validateWorkflowGraph';
 import { DeploymentResponse } from '../types/Deployment';
+import { WorkflowPermissionResponse } from '../types/Api';
 
 import { create } from 'zustand';
 import { DEFAULT_NODES } from '../constants';
@@ -59,6 +60,7 @@ type WorkflowState = {
   projectIcon: AppIcon;
   projectDescription: string;
   projectApp: App | null; // Full app object for editing
+  workflowAccess: WorkflowPermissionResponse | null;
   interactiveMode: 'mouse' | 'touchpad'; // 입력 모드 (마우스/터치패드)
   snapGridSize: SnapGridSize;
   isSnapTemporarilyDisabled: boolean;
@@ -168,6 +170,7 @@ type WorkflowState = {
 
   setProjectInfo: (name: string, icon: AppIcon, description?: string) => void;
   setProjectApp: (app: App) => void;
+  setWorkflowAccess: (access: WorkflowPermissionResponse | null) => void;
   setInteractiveMode: (mode: 'mouse' | 'touchpad') => void;
   setSnapGridSize: (size: SnapGridSize) => void;
   setSnapTemporarilyDisabled: (disabled: boolean) => void;
@@ -453,6 +456,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   projectIcon: { type: 'emoji', content: '�', background_color: '#3b82f6' },
   projectDescription: '',
   projectApp: null,
+  workflowAccess: null,
   interactiveMode: 'mouse',
   snapGridSize: DEFAULT_SNAP_GRID_SIZE,
   isSnapTemporarilyDisabled: false,
@@ -878,6 +882,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       projectDescription: app.description || '',
     }),
 
+  setWorkflowAccess: (workflowAccess) => set({ workflowAccess }),
+
   setInteractiveMode: (mode) => set({ interactiveMode: mode }),
 
   setSnapGridSize: (snapGridSize) => set({ snapGridSize }),
@@ -1245,7 +1251,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   canPublish: () => {
     const count = get().getStartNodeCount();
-    return count === 1;
+    const access = get().workflowAccess;
+    return count === 1 && access?.can_deploy !== false;
   },
 
   // === API 동기화 액션 ===

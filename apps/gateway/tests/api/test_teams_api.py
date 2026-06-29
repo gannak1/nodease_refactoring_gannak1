@@ -307,6 +307,64 @@ class TestTeamsApi(unittest.TestCase):
         )
         self.assertNotIn(Organization, session.query_calls)
 
+    def test_list_team_members_returns_members_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        membership_id = uuid4()
+        assigned_at = datetime(2026, 6, 29, 2, 11, 34, tzinfo=timezone.utc)
+        member = _user(
+            id=member_user_id,
+            email="member@example.com",
+            name="Member One",
+        )
+        membership = _membership(
+            id=membership_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            user_id=member_user_id,
+            assigned_by=user_id,
+            assigned_at=assigned_at,
+            user=member,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id, name="Alpha"),
+            memberships=[membership],
+        )
+
+        response = self._get_team_members(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [
+                {
+                    "id": str(membership_id),
+                    "user_id": str(member_user_id),
+                    "email": "member@example.com",
+                    "name": "Member One",
+                    "assigned_at": "2026-06-29T02:11:34Z",
+                }
+            ],
+        )
+        self.assertIn(Team, session.query_calls)
+        self.assertIn(TeamMembership, session.query_calls)
+        self.assertEqual(
+            [str(value) for value in session.membership_query.order_by_values],
+            ["users.name ASC", "users.email ASC", "team_memberships.id ASC"],
+        )
+
     def test_create_team_creates_team_for_active_organization(self):
         user_id = uuid4()
         organization_id = uuid4()
@@ -1333,6 +1391,31 @@ class TestTeamsApi(unittest.TestCase):
                 headers=headers,
             )
 
+    def _get_team_members(
+        self,
+        session,
+        user_id,
+        team_id,
+        organization_id=None,
+        raw_organization_id=None,
+    ):
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {"X-Request-ID": "req-test"}
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+        headers["Cookie"] = "auth_token=token"
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            return_value=SimpleNamespace(id=user_id),
+        ):
+            return TestClient(app).get(
+                f"/api/v1/teams/{team_id}/members",
+                headers=headers,
+            )
+
     def _post_team(
         self,
         session,
@@ -1448,6 +1531,7 @@ class _Query:
         self.join_values = []
         self.filter_expressions = []
         self.order_by_values = []
+        self.options_values = []
         self.limit_value = None
 
     def join(self, *args):
@@ -1460,6 +1544,10 @@ class _Query:
 
     def order_by(self, *args):
         self.order_by_values.extend(args)
+        return self
+
+    def options(self, *args):
+        self.options_values.extend(args)
         return self
 
     def limit(self, value):
@@ -1496,18 +1584,24 @@ class _Session:
         organization=None,
         membership=None,
         teams=None,
+        team=None,
+        memberships=None,
         user=None,
         membership_after_rollback=None,
         commit_error=None,
     ):
         self.organization = organization
         self.membership = membership
-        self.teams = teams or []
+        self.memberships = memberships or ([] if membership is None else [membership])
+        self.teams = teams or ([] if team is None else [team])
         self.user = user
         self.membership_after_rollback = membership_after_rollback
         self.commit_error = commit_error
         self.organization_query = _Query(first_result=organization)
-        self.membership_query = _Query(first_result=membership)
+        self.membership_query = _Query(
+            first_result=membership,
+            items=self.memberships,
+        )
         self.team_query = _Query(items=self.teams)
         self.user_query = _Query(first_result=user)
         self.query_calls = []
@@ -1523,7 +1617,10 @@ class _Session:
             self.organization_query = _Query(first_result=self.organization)
             return self.organization_query
         if model is TeamMembership:
-            self.membership_query = _Query(first_result=self.membership)
+            self.membership_query = _Query(
+                first_result=self.membership,
+                items=self.memberships,
+            )
             return self.membership_query
         if model is Team:
             self.team_query = _Query(items=self.teams)
@@ -1540,6 +1637,7 @@ class _Session:
             self.teams.append(row)
         if isinstance(row, TeamMembership):
             self.membership = row
+            self.memberships.append(row)
 
     def delete(self, row):
         self.deleted.append(row)
@@ -1584,12 +1682,12 @@ def _organization(
     )
 
 
-def _user(id, deactivated_at=None):
+def _user(id, email=None, name="Member", deactivated_at=None):
     now = datetime.now(timezone.utc)
     return User(
         id=id,
-        email=f"{id}@example.com",
-        name="Member",
+        email=email or f"{id}@example.com",
+        name=name,
         social_provider="local",
         social_id=str(id),
         deactivated_at=deactivated_at,
@@ -1638,8 +1736,9 @@ def _membership(
     user_id,
     assigned_by,
     assigned_at=None,
+    user=None,
 ):
-    return TeamMembership(
+    membership = TeamMembership(
         id=id,
         grantee_organization_id=organization_id,
         team_id=team_id,
@@ -1649,6 +1748,9 @@ def _membership(
         options={},
         flags=0,
     )
+    if user is not None:
+        membership.user = user
+    return membership
 
 
 def _hydrate_defaults(row):

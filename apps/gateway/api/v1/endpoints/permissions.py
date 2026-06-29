@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
 from sqlalchemy import func, inspect, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.utils.api_errors import (
@@ -37,6 +37,7 @@ from apps.shared.schemas.permission import (
     UserLLMPermissionResponse,
     UserWorkflowPermissionResponse,
 )
+from apps.shared.schemas.team import ResourcePermissionListResponse
 
 router = APIRouter()
 
@@ -784,6 +785,157 @@ def _authorize_user_llm_permission_change(
     return organization, credential, target_user
 
 
+def _authorize_workflow_permission_read(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    workflow_id: UUID,
+) -> tuple[Organization, Workflow]:
+    """workflow permission 목록 조회 scope와 manage 권한을 검증한다."""
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = _is_organization_manager(
+        organization,
+        current_user.id,
+    )
+    if not is_organization_manager and not _has_active_membership(
+        db,
+        organization_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    workflow = (
+        db.query(Workflow)
+        .filter(
+            Workflow.id == workflow_id,
+            Workflow.organization_id == organization_id,
+        )
+        .first()
+    )
+    if workflow is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Workflow not found.",
+        )
+
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_workflow_manage_permission(
+            db,
+            organization_id,
+            workflow_id,
+            current_user.id,
+        )
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Workflow manage or organization manager permission is required.",
+        )
+
+    return organization, workflow
+
+
+def _authorize_llm_permission_read(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    credential_id: UUID,
+) -> tuple[Organization, LLMCredential]:
+    """LLM credential permission 목록 조회 scope와 manage 권한을 검증한다."""
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = _is_organization_manager(
+        organization,
+        current_user.id,
+    )
+    if not is_organization_manager and not _has_active_membership(
+        db,
+        organization_id,
+        current_user.id,
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    credential = (
+        db.query(LLMCredential)
+        .filter(
+            LLMCredential.id == credential_id,
+            LLMCredential.organization_id == organization_id,
+            LLMCredential.is_valid.is_(True),
+        )
+        .first()
+    )
+    if credential is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "LLM credential not found.",
+        )
+
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_llm_credential_manage_permission(
+            db,
+            organization_id,
+            credential_id,
+            current_user.id,
+        )
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Credential manage or organization manager permission is required.",
+        )
+
+    return organization, credential
+
+
 def _upsert_team_workflow_permission(
     db: Session,
     current_user: User,
@@ -1064,6 +1216,160 @@ def _upsert_user_llm_permission(
         after,
     )
     return permission
+
+
+@router.get(
+    "/workflows/{workflow_id}",
+    response_model=ResourcePermissionListResponse,
+)
+def list_workflow_permissions(
+    workflow_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """workflow에 부여된 team/user 권한 목록을 조회한다."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_workflow_permission_read(
+        request,
+        db,
+        current_user,
+        organization_id,
+        workflow_id,
+    )
+
+    team_permissions = (
+        db.query(TeamWorkflowPermission)
+        .options(joinedload(TeamWorkflowPermission.team))
+        .join(Team, Team.id == TeamWorkflowPermission.team_id)
+        .filter(
+            TeamWorkflowPermission.grantee_organization_id == organization_id,
+            TeamWorkflowPermission.workflow_id == workflow_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .order_by(Team.name.asc(), TeamWorkflowPermission.id.asc())
+        .all()
+    )
+    user_permissions = (
+        db.query(UserWorkflowPermission)
+        .options(joinedload(UserWorkflowPermission.user))
+        .join(User, User.id == UserWorkflowPermission.user_id)
+        .filter(
+            UserWorkflowPermission.grantee_organization_id == organization_id,
+            UserWorkflowPermission.workflow_id == workflow_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc(), UserWorkflowPermission.id.asc())
+        .all()
+    )
+
+    return {
+        "resource_type": "workflow",
+        "resource_id": workflow_id,
+        "organization_id": organization_id,
+        "team_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "team",
+                "grantee_id": permission.team_id,
+                "grantee_name": permission.team.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission in team_permissions
+        ],
+        "user_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "user",
+                "grantee_id": permission.user_id,
+                "grantee_name": permission.user.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission in user_permissions
+        ],
+    }
+
+
+@router.get(
+    "/llm-credentials/{credential_id}",
+    response_model=ResourcePermissionListResponse,
+)
+def list_llm_credential_permissions(
+    credential_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """LLM credential에 부여된 team/user 권한 목록을 조회한다."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_llm_permission_read(
+        request,
+        db,
+        current_user,
+        organization_id,
+        credential_id,
+    )
+
+    team_permissions = (
+        db.query(TeamLLMPermission)
+        .options(joinedload(TeamLLMPermission.team))
+        .join(Team, Team.id == TeamLLMPermission.team_id)
+        .filter(
+            TeamLLMPermission.grantee_organization_id == organization_id,
+            TeamLLMPermission.llm_credential_id == credential_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .order_by(Team.name.asc(), TeamLLMPermission.id.asc())
+        .all()
+    )
+    user_permissions = (
+        db.query(UserLLMPermission)
+        .options(joinedload(UserLLMPermission.user))
+        .join(User, User.id == UserLLMPermission.user_id)
+        .filter(
+            UserLLMPermission.grantee_organization_id == organization_id,
+            UserLLMPermission.llm_credential_id == credential_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc(), UserLLMPermission.id.asc())
+        .all()
+    )
+
+    return {
+        "resource_type": "llm_credential",
+        "resource_id": credential_id,
+        "organization_id": organization_id,
+        "team_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "team",
+                "grantee_id": permission.team_id,
+                "grantee_name": permission.team.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission in team_permissions
+        ],
+        "user_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "user",
+                "grantee_id": permission.user_id,
+                "grantee_name": permission.user.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission in user_permissions
+        ],
+    }
 
 
 @router.put(
