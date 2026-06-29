@@ -44,7 +44,14 @@ export default function EditorHeader() {
         : 'border-blue-200 bg-blue-50 text-blue-700';
 
   return (
-    <header className="relative z-50 flex h-12 min-h-[48px] items-center justify-between border-b border-slate-200 bg-white px-5">
+    <header
+      className={
+        fullscreenNodeId
+          ? 'hidden'
+          : 'relative z-50 flex h-12 min-h-[48px] items-center justify-between border-b border-slate-200 bg-white px-5'
+      }
+      aria-hidden={fullscreenNodeId ? true : undefined}
+    >
       {/* 1. Left: Breadcrumb */}
       <nav className="ml-2 flex items-center gap-2 text-sm">
         <button
