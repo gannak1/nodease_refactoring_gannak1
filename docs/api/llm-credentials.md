@@ -25,6 +25,7 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | Implemented | `POST` | `/api/v1/llm/models/sync-pricing` | 없음 | result | system admin |
 | Implemented | `PUT` | `/api/v1/llm/models/{model_id}/pricing` | `LLMModelPricingUpdate` | result | system admin |
 
+<<<<<<< HEAD
 ## Organization Scope
 
 - LLM credential/model API uses `X-Organization-Id` as the primary active organization scope.
@@ -35,6 +36,9 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 - Runtime model use returns `403` when a credential exists but use is not allowed, and `404` when no usable credential-model relation exists in the requested organization.
 
 ## 현재 구현 세부사항
+=======
+현재 구현 세부사항:
+>>>>>>> 3b09ac60bc7732ebc5057377b335606ab861adbf
 
 - `GET /api/v1/llm/credentials`는 전체 valid credential 후보 중 현재 user가 `read` 권한을 가진 credential만 반환한다.
 - `GET /api/v1/llm/my-models`와 `/my-embedding-models`는 `llm_rel_credential_models.is_verified == true`, `llm_models.is_active == true`, credential `use` 권한을 함께 만족하는 모델만 반환한다.
