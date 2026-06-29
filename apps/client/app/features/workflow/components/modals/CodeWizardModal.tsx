@@ -11,7 +11,6 @@ import {
   Info,
   Code,
 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -49,8 +48,6 @@ export function CodeWizardModal({
   inputVariables,
   onApply,
 }: CodeWizardModalProps) {
-  const router = useRouter();
-
   const [description, setDescription] = useState('');
   const [generatedCode, setGeneratedCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -141,7 +138,13 @@ export function CodeWizardModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="코드 마법사"
+      data-canvas-shortcut-scope="blocked"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]"
+    >
       <div className="bg-white rounded-xl shadow-2xl w-[90vw] max-w-4xl h-[65vh] min-h-[500px] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-emerald-50 to-teal-50">

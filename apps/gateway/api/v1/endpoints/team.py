@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.utils.api_errors import (
@@ -15,7 +15,7 @@ from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import Team, TeamMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
-from apps.shared.schemas.team import TeamResponse
+from apps.shared.schemas.team import TeamMemberResponse, TeamResponse
 
 router = APIRouter()
 
@@ -259,6 +259,72 @@ def update_team(
         "operation.not_implemented",
         "Team update request and response contract is TBD.",
     )
+
+
+@router.get("/{team_id}/members", response_model=list[TeamMemberResponse])
+def list_team_members(
+    team_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    current_user, error = _authenticate(request, db, auth_token)
+    if error is not None:
+        return error
+
+    organization_id, error = _parse_organization_id(request, x_organization_id)
+    if error is not None:
+        return error
+
+    error = _require_organization_manager(
+        request,
+        db,
+        organization_id,
+        current_user.id,
+    )
+    if error is not None:
+        return error
+
+    team = (
+        db.query(Team)
+        .filter(
+            Team.id == team_id,
+            Team.organization_id == organization_id,
+        )
+        .first()
+    )
+    if team is None:
+        return error_response(
+            request,
+            404,
+            "resource.not_found",
+            "Team not found.",
+        )
+
+    memberships = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.user))
+        .join(User, User.id == TeamMembership.user_id)
+        .filter(
+            TeamMembership.grantee_organization_id == organization_id,
+            TeamMembership.team_id == team_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc(), TeamMembership.id.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": membership.id,
+            "user_id": membership.user_id,
+            "email": membership.user.email,
+            "name": membership.user.name,
+            "assigned_at": membership.assigned_at,
+        }
+        for membership in memberships
+    ]
 
 
 # POST /teams/{team_id}/members는 membership 추가 계약이 확정되기 전까지

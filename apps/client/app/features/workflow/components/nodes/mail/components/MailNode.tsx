@@ -23,7 +23,7 @@ const providerNames: Record<string, string> = {
 };
 
 export const MailNode = memo(
-  ({ data, selected }: NodeProps<Node<MailNodeData>>) => {
+  ({ id, data, selected }: NodeProps<Node<MailNodeData>>) => {
     const provider = data.provider || 'gmail';
     const iconColor = providerColors[provider] || providerColors.custom;
     const providerName = providerNames[provider] || provider;
@@ -36,6 +36,7 @@ export const MailNode = memo(
 
     return (
       <BaseNode
+        id={id}
         data={data}
         selected={selected}
         showSourceHandle={true}

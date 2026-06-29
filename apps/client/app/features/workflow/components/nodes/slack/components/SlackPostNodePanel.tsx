@@ -1,58 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { HelpCircle, Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { useCallback, useEffect, useMemo } from 'react';
+import { HelpCircle, Plus, Trash2 } from 'lucide-react';
 
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
-import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
-import { HttpVariable, SlackPostNodeData } from '../../../../types/Nodes';
+import { SlackPostNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
-import { getIncompleteVariables } from '../../../../utils/validationUtils';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
-import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
+import {
+  DraggedOutputVariable,
+  getDroppedOutputReferenceName,
+  getTokenLabelMap,
+  upsertNamedSelector,
+} from '@/app/features/workflow/utils/nodeVariablePorts';
+import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 
 // 노드 실행 필수 요건 체크
 // 1. Webhook 모드: URL이 필수
 // 2. API 모드: 봇 토큰과 채널 ID가 필수
 // 3. 메시지 본문이 비어있지 않아야 함
-
-const getCaretCoordinates = (
-  element: HTMLTextAreaElement,
-  position: number,
-) => {
-  const div = document.createElement('div');
-  const style = window.getComputedStyle(element);
-
-  Array.from(style).forEach((prop) => {
-    div.style.setProperty(prop, style.getPropertyValue(prop));
-  });
-
-  div.style.position = 'absolute';
-  div.style.visibility = 'hidden';
-  div.style.whiteSpace = 'pre-wrap';
-  div.style.top = '0';
-  div.style.left = '0';
-
-  const textContent = element.value.substring(0, position);
-  div.innerHTML =
-    textContent.replace(/\n/g, '<br>') + '<span id="caret-marker">|</span>';
-
-  document.body.appendChild(div);
-
-  const marker = div.querySelector('#caret-marker');
-  const coordinates = {
-    top: marker
-      ? marker.getBoundingClientRect().top - div.getBoundingClientRect().top
-      : 0,
-    left: marker
-      ? marker.getBoundingClientRect().left - div.getBoundingClientRect().left
-      : 0,
-    height: parseInt(style.lineHeight) || 20,
-  };
-
-  document.body.removeChild(div);
-  return coordinates;
-};
 
 interface SlackPostNodePanelProps {
   nodeId: string;
@@ -62,14 +28,6 @@ interface SlackPostNodePanelProps {
 export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
   const { updateNodeData, nodes, edges } = useWorkflowStore();
   const mode = data.slackMode || 'api';
-  const messageRef = useRef<HTMLTextAreaElement>(null);
-  const blocksRef = useRef<HTMLTextAreaElement>(null);
-
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [suggestionPos, setSuggestionPos] = useState({ top: 0, left: 0 });
-  const [activeField, setActiveField] = useState<'message' | 'blocks' | null>(
-    null,
-  );
 
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
@@ -94,7 +52,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
   }, [data.method, data.slackMode, nodeId, updateNodeData]);
 
   const payloadInfo = useMemo(() => {
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       text: data.message || '',
     };
     const warnings: string[] = [];
@@ -139,23 +97,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     return Array.from(missing);
   }, [data.message, data.blocks, availableVariables]);
 
-  const incompleteVariables = useMemo(
-    () => getIncompleteVariables(data.referenced_variables),
-    [data.referenced_variables],
-  );
-
   const trimmedUrl = (data.url || '').trim();
-  const blocksText = (data.blocks || '').trim();
-  const blocksJsonError = useMemo(() => {
-    if (!blocksText) return false;
-    try {
-      JSON.parse(blocksText);
-      return false;
-    } catch {
-      return true;
-    }
-  }, [blocksText]);
-
   const isWebhookUrlValid = useMemo(() => {
     if (mode !== 'webhook') return true;
     return (
@@ -163,54 +105,6 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
       trimmedUrl.includes('/services/')
     );
   }, [mode, trimmedUrl]);
-
-  const validationIssues = useMemo(() => {
-    const issues: string[] = [];
-    const hasMessage = !!data.message?.trim();
-    const hasValidBlocks = !!blocksText && !blocksJsonError;
-
-    if (mode === 'webhook') {
-      if (!trimmedUrl) {
-        issues.push('Web Hook URL이 필요합니다.');
-      } else if (!isWebhookUrlValid) {
-        issues.push('Web Hook URL 형식이 올바르지 않습니다.');
-      }
-    } else {
-      if (!trimmedUrl) {
-        issues.push('Slack API 엔드포인트가 필요합니다.');
-      }
-      if (!data.authConfig?.token?.trim()) {
-        issues.push('봇 토큰이 필요합니다.');
-      }
-      if (!data.channel?.trim()) {
-        issues.push('채널 ID가 필요합니다.');
-      }
-    }
-
-    if (!hasMessage && !hasValidBlocks) {
-      issues.push('메시지 또는 유효한 블록 JSON이 필요합니다.');
-    }
-
-    if (blocksJsonError) {
-      issues.push('블록 JSON이 유효하지 않습니다.');
-    }
-
-    if (missingVariables.length > 0) {
-      issues.push('등록되지 않은 입력변수가 있습니다.');
-    }
-
-    return issues;
-  }, [
-    mode,
-    trimmedUrl,
-    data.message,
-    data.authConfig?.token,
-    data.channel,
-    blocksText,
-    blocksJsonError,
-    isWebhookUrlValid,
-    missingVariables.length,
-  ]);
 
   // Slack 전용 필드로 구성된 payload를 HTTP body에 자동 반영
   useEffect(() => {
@@ -243,31 +137,28 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     [data.headers, nodeId, updateNodeData],
   );
 
-  // 참조 변수 핸들러
-  const handleAddVariable = useCallback(() => {
-    const newVars = [
-      ...(data.referenced_variables || []),
-      { name: '', value_selector: [] },
-    ];
-    updateNodeData(nodeId, { referenced_variables: newVars });
-  }, [data.referenced_variables, nodeId, updateNodeData]);
-
-  const handleRemoveVariable = useCallback(
-    (index: number) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars.splice(index, 1);
-      updateNodeData(nodeId, { referenced_variables: newVars });
+  const handleTextDropOutput = useCallback(
+    (output: DraggedOutputVariable) => {
+      const referenceName = getDroppedOutputReferenceName(
+        data.referenced_variables,
+        output,
+        'value_selector',
+      );
+      updateNodeData(nodeId, {
+        referenced_variables: upsertNamedSelector(
+          data.referenced_variables,
+          output,
+          'value_selector',
+        ),
+      });
+      return referenceName;
     },
     [data.referenced_variables, nodeId, updateNodeData],
   );
 
-  const handleUpdateVariable = useCallback(
-    (index: number, key: keyof HttpVariable, value: any) => {
-      const newVars = [...(data.referenced_variables || [])];
-      newVars[index] = { ...newVars[index], [key]: value };
-      updateNodeData(nodeId, { referenced_variables: newVars });
-    },
-    [data.referenced_variables, nodeId, updateNodeData],
+  const tokenLabels = useMemo(
+    () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
+    [data.referenced_variables, upstreamNodes],
   );
 
   const handleModeChange = useCallback(
@@ -290,65 +181,6 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
       }
     },
     [mode, updateNodeData, nodeId, data.authConfig],
-  );
-
-  const insertVariable = useCallback(
-    (varName: string) => {
-      const textarea =
-        activeField === 'blocks' ? blocksRef.current : messageRef.current;
-      if (!textarea) return;
-
-      const selectionEnd = textarea.selectionEnd;
-      const value = textarea.value;
-
-      // 가장 가까운 "{{"를 찾아 그 위치를 기준으로 치환
-      const lastOpen = value.lastIndexOf('{{', selectionEnd);
-      const prefix =
-        lastOpen !== -1
-          ? value.substring(0, lastOpen)
-          : value.substring(0, selectionEnd);
-      const suffix = value.substring(selectionEnd);
-      const newValue = `${prefix}{{ ${varName} }}${suffix}`;
-
-      if (activeField === 'blocks') {
-        handleUpdateData('blocks', newValue);
-      } else {
-        handleUpdateData('message', newValue);
-      }
-      setShowSuggestions(false);
-
-      requestAnimationFrame(() => {
-        const newCursorPos = prefix.length + varName.length + 5;
-        textarea.focus();
-        textarea.setSelectionRange(newCursorPos, newCursorPos);
-      });
-    },
-    [activeField, handleUpdateData],
-  );
-
-  const handleTemplateKeyUp = useCallback(
-    (
-      e: React.KeyboardEvent<HTMLTextAreaElement>,
-      field: 'message' | 'blocks',
-    ) => {
-      const target = e.target as HTMLTextAreaElement;
-      const value = target.value;
-      const selectionEnd = target.selectionEnd;
-
-      setActiveField(field);
-
-      if (value.substring(selectionEnd - 2, selectionEnd) === '{{') {
-        const coords = getCaretCoordinates(target, selectionEnd);
-        setSuggestionPos({
-          top: target.offsetTop + coords.top + coords.height,
-          left: target.offsetLeft + coords.left,
-        });
-        setShowSuggestions(true);
-      } else {
-        setShowSuggestions(false);
-      }
-    },
-    [],
   );
 
   return (
@@ -492,22 +324,6 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
         </>
       )}
 
-      <CollapsibleSection title="입력변수" showDivider>
-        <ReferencedVariablesControl
-          variables={data.referenced_variables || []}
-          upstreamNodes={upstreamNodes}
-          onUpdate={handleUpdateVariable}
-          onAdd={handleAddVariable}
-          onRemove={handleRemoveVariable}
-          title=""
-          description="메시지/블록에서 사용할 입력변수를 정의하고, 이전 노드의 출력값과 연결하세요."
-        />
-
-        {incompleteVariables.length > 0 && (
-          <IncompleteVariablesAlert variables={incompleteVariables} />
-        )}
-      </CollapsibleSection>
-
       <CollapsibleSection
         title="헤더 / 타임아웃"
         showDivider
@@ -613,33 +429,15 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <div className="relative">
-              <textarea
-                ref={messageRef}
-                className="w-full h-24 rounded border border-gray-300 p-2 text-sm shadow-sm focus:border-[#4A154B] focus:outline-none focus:ring-1 focus:ring-[#4A154B] resize-y"
-                placeholder="예) :tada: 새 알림이 도착했어요! {{ 변수명 }} 로 치환 가능"
+              <VariableTokenEditor
+                className="min-h-24 text-sm focus:border-[#4A154B]"
+                placeholder="예) :tada: 새 알림이 도착했어요! 변수가 필요하면 좌측 입력 패널에서 클릭하세요."
                 value={data.message || ''}
-                onChange={(e) => handleUpdateData('message', e.target.value)}
-                onKeyUp={(e) => handleTemplateKeyUp(e, 'message')}
+                onChange={(value) => handleUpdateData('message', value)}
+                onDropOutput={handleTextDropOutput}
+                tokenLabels={tokenLabels}
+                ariaLabel="Slack 메시지"
               />
-              {showSuggestions &&
-                availableVariables.length > 0 &&
-                activeField === 'message' && (
-                  <div
-                    className="absolute z-20 bg-white border border-gray-200 rounded shadow-md text-xs py-1"
-                    style={{ top: suggestionPos.top, left: suggestionPos.left }}
-                  >
-                    {availableVariables.map((name) => (
-                      <button
-                        key={name}
-                        className="block w-full text-left px-3 py-1 hover:bg-gray-100"
-                        onClick={() => insertVariable(name)}
-                        type="button"
-                      >
-                        {name}
-                      </button>
-                    ))}
-                  </div>
-                )}
             </div>
             {missingVariables.length > 0 && (
               <UnregisteredVariablesAlert variables={missingVariables} />
@@ -674,32 +472,14 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
             </label>
             <div className="relative">
               <textarea
-                ref={blocksRef}
-                className="w-full h-28 rounded border border-gray-300 p-2 text-xs font-mono shadow-sm focus:border-[#4A154B] focus:outline-none focus:ring-1 focus:ring-[#4A154B] resize-y"
+                className="min-h-28 w-full resize-y rounded border border-gray-300 p-2 font-mono text-xs text-gray-800 shadow-sm focus:border-[#4A154B] focus:outline-none"
                 placeholder='[ { "type": "section", "text": { "type": "mrkdwn", "text": "*Hello*" } } ]'
                 value={data.blocks || ''}
-                onChange={(e) => handleUpdateData('blocks', e.target.value)}
-                onKeyUp={(e) => handleTemplateKeyUp(e, 'blocks')}
+                onChange={(event) =>
+                  handleUpdateData('blocks', event.target.value)
+                }
+                aria-label="Slack 블록 JSON"
               />
-              {showSuggestions &&
-                availableVariables.length > 0 &&
-                activeField === 'blocks' && (
-                  <div
-                    className="absolute z-20 bg-white border border-gray-200 rounded shadow-md text-xs py-1"
-                    style={{ top: suggestionPos.top, left: suggestionPos.left }}
-                  >
-                    {availableVariables.map((name) => (
-                      <button
-                        key={name}
-                        className="block w-full text-left px-3 py-1 hover:bg-gray-100"
-                        onClick={() => insertVariable(name)}
-                        type="button"
-                      >
-                        {name}
-                      </button>
-                    ))}
-                  </div>
-                )}
             </div>
           </div>
           <p className="text-[10px] text-gray-500">

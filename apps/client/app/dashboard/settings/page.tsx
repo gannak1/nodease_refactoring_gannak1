@@ -13,6 +13,12 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
+import {
+  activeOrganizationHeaders,
+  getStoredActiveOrganizationId,
+  resolveActiveOrganizationId,
+  setActiveOrganizationId,
+} from '@/lib/activeOrganization';
 
 type SettingsTab = 'access' | 'credentials' | 'activity';
 type ResourceType = 'workflow' | 'llm_credential';
@@ -109,13 +115,15 @@ const API_BASE_URL = '/api/v1';
 const AUTH_STATES: AuthState[] = ['viewer', 'operator', 'builder', 'manager'];
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const organizationId = getStoredActiveOrganizationId();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
+    ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...activeOrganizationHeaders(organizationId),
       ...(init?.headers || {}),
     },
-    ...init,
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -217,9 +225,17 @@ export default function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
+      const organizations =
+        await apiRequest<OrganizationResponse[]>('/organizations');
+      const organizationId = resolveActiveOrganizationId(organizations);
+      if (!organizationId) {
+        throw new Error('현재 선택된 조직이 없습니다.');
+      }
       const org = await apiRequest<OrganizationResponse>(
         '/organizations/current',
+        { headers: activeOrganizationHeaders(organizationId) },
       );
+      setActiveOrganizationId(org.id);
       setOrganization(org);
 
       const [userData, teamData, providerData, credentialData, appData, audit] =

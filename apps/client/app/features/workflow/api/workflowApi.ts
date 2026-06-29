@@ -9,6 +9,17 @@ import {
   WorkflowResponse,
   WorkflowRunListResponse,
 } from '../types/Api';
+import {
+  mockDashboardStats,
+  createMockWorkflowExecuteResult,
+  createMockWorkflowStreamEvents,
+  mockDeployments,
+  mockWorkflowDraft,
+  mockWorkflowResponse,
+  mockWorkflowRunDetail,
+  mockWorkflowRuns,
+} from '../mock/mockWorkflow';
+import { isMockWorkflowId } from '../utils/mockMode';
 
 const API_BASE_URL = '/api/v1';
 
@@ -17,6 +28,13 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true, // ✅ 쿠키 자동 전송
 });
+
+const cloneMockResponse = <T>(value: T): T => {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+};
 
 // 401 에러 인터셉터 (인증 만료 시 로그인 페이지로)
 api.interceptors.response.use(
@@ -34,12 +52,20 @@ api.interceptors.response.use(
 export const workflowApi = {
   // 1. 드래프트 워크플로우 동기화 (저장)
   syncDraftWorkflow: async (workflowId: string, data: WorkflowDraftRequest) => {
+    if (isMockWorkflowId(workflowId)) {
+      return { ...data, mockMode: true };
+    }
+
     const response = await api.post(`/workflows/${workflowId}/draft`, data);
     return response.data;
   },
 
   // 2. 드래프트 워크플로우 가져오기
   getDraftWorkflow: async (workflowId: string) => {
+    if (isMockWorkflowId(workflowId)) {
+      return cloneMockResponse(mockWorkflowDraft);
+    }
+
     const response = await api.get(`/workflows/${workflowId}/draft`);
     return response.data;
   },
@@ -49,6 +75,10 @@ export const workflowApi = {
     workflowId: string,
     userInput?: Record<string, unknown>,
   ) => {
+    if (isMockWorkflowId(workflowId)) {
+      return cloneMockResponse(createMockWorkflowExecuteResult(userInput));
+    }
+
     const response = await api.post(
       `/workflows/${workflowId}/execute`,
       userInput || {},
@@ -61,7 +91,15 @@ export const workflowApi = {
     workflowId: string,
     userInput: Record<string, unknown> | FormData,
     onEvent?: (event: any) => void | Promise<void>,
+    options?: { signal?: AbortSignal; graphSnapshot?: WorkflowDraftRequest },
   ) => {
+    if (isMockWorkflowId(workflowId)) {
+      for (const event of createMockWorkflowStreamEvents(userInput)) {
+        if (onEvent) await onEvent(cloneMockResponse(event));
+      }
+      return;
+    }
+
     const isFormData = userInput instanceof FormData;
 
     console.log(
@@ -74,11 +112,25 @@ export const workflowApi = {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
     const fetchUrl = `${baseUrl}/stream-api/workflows/${workflowId}`;
 
+    let body: BodyInit;
+    if (isFormData) {
+      if (options?.graphSnapshot) {
+        userInput.set('graph_snapshot', JSON.stringify(options.graphSnapshot));
+      }
+      body = userInput;
+    } else {
+      body = JSON.stringify({
+        inputs: userInput || {},
+        graph_snapshot: options?.graphSnapshot,
+      });
+    }
+
     const response = await fetch(fetchUrl, {
       method: 'POST',
       headers: isFormData ? {} : { 'Content-Type': 'application/json' },
       credentials: 'include', // 쿠키 인증 포함
-      body: isFormData ? userInput : JSON.stringify(userInput || {}),
+      body,
+      signal: options?.signal,
     });
 
     if (!response.ok) {
@@ -133,6 +185,10 @@ export const workflowApi = {
 
   // 4. 단일 워크플로우 상세 조회
   getWorkflow: async (workflowId: string): Promise<WorkflowResponse> => {
+    if (isMockWorkflowId(workflowId)) {
+      return mockWorkflowResponse;
+    }
+
     const response = await api.get(`/workflows/${workflowId}`);
     return response.data;
   },
@@ -178,6 +234,10 @@ export const workflowApi = {
   },
 
   getDeployments: async (workflowId: string) => {
+    if (isMockWorkflowId(workflowId)) {
+      return mockDeployments;
+    }
+
     const response = await api.get('/deployments', {
       params: { workflow_id: workflowId },
     });
@@ -186,6 +246,13 @@ export const workflowApi = {
 
   // [NEW] 워크플로우 실행 이력 조회
   getWorkflowRuns: async (workflowId: string, page = 1, limit = 20) => {
+    if (isMockWorkflowId(workflowId)) {
+      return {
+        ...mockWorkflowRuns,
+        items: mockWorkflowRuns.items.slice((page - 1) * limit, page * limit),
+      };
+    }
+
     const response = await api.get(`/workflows/${workflowId}/runs`, {
       params: { page, limit },
     });
@@ -194,6 +261,10 @@ export const workflowApi = {
 
   // [NEW] 단일 워크플로우 실행 이력 상세 조회
   getWorkflowRun: async (workflowId: string, runId: string) => {
+    if (isMockWorkflowId(workflowId)) {
+      return { ...mockWorkflowRunDetail, id: runId };
+    }
+
     const response = await api.get(`/workflows/${workflowId}/runs/${runId}`);
     return response.data as import('../types/Api').WorkflowRun;
   },
@@ -212,6 +283,10 @@ export const workflowApi = {
 
   // [NEW] 대시보드 통계 조회
   getDashboardStats: async (workflowId: string) => {
+    if (isMockWorkflowId(workflowId)) {
+      return cloneMockResponse(mockDashboardStats);
+    }
+
     const response = await api.get(`/workflows/${workflowId}/stats`);
     return response.data as import('../types/Api').DashboardStatsResponse;
   },

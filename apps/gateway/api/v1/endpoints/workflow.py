@@ -56,6 +56,73 @@ class WorkflowCompareRequest(BaseModel):
     right: str
 
 
+def validate_execution_graph(graph: dict):
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    node_map = {
+        node.get("id"): node
+        for node in nodes
+        if isinstance(node, dict) and node.get("id")
+    }
+    source_only_types = {"startNode", "webhookTrigger", "scheduleTrigger"}
+    terminal_types = {"answerNode"}
+
+    adjacency = {node_id: [] for node_id in node_map.keys()}
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise HTTPException(status_code=400, detail="Invalid edge format")
+
+        source_id = edge.get("source")
+        target_id = edge.get("target")
+        source_node = node_map.get(source_id)
+        target_node = node_map.get(target_id)
+
+        if source_node is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"존재하지 않는 노드에서 시작하는 연결입니다. edge: {edge.get('id')}",
+            )
+        if target_node is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"존재하지 않는 노드로 향하는 연결입니다. edge: {edge.get('id')}",
+            )
+        if target_node.get("type") in source_only_types:
+            raise HTTPException(
+                status_code=400,
+                detail="입력/트리거 노드에는 다른 노드를 연결할 수 없습니다.",
+            )
+        if source_node.get("type") in terminal_types:
+            raise HTTPException(
+                status_code=400,
+                detail="응답 노드에서는 다른 노드로 연결할 수 없습니다.",
+            )
+
+        adjacency[source_id].append(target_id)
+
+    visiting = set()
+    visited = set()
+
+    def visit(node_id: str):
+        if node_id in visiting:
+            raise HTTPException(
+                status_code=400,
+                detail=f"워크플로우에 순환 연결이 있습니다. node: {node_id}",
+            )
+        if node_id in visited:
+            return
+
+        visiting.add(node_id)
+        for next_node_id in adjacency.get(node_id, []):
+            visit(next_node_id)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    for node_id in node_map.keys():
+        visit(node_id)
+
+
 def _patch_compare_graph(
     graph: dict[str, Any],
     node_id: str,
@@ -71,6 +138,7 @@ def _patch_compare_graph(
             data["model_id"] = value
         else:
             data["user_prompt"] = value
+        validate_execution_graph(patched)
         return patched
     raise HTTPException(status_code=400, detail="Compare target node not found")
 
@@ -778,6 +846,7 @@ async def stream_workflow(
     # 2. Request에서 FormData 파싱
     content_type = request.headers.get("content-type", "")
     user_input = {}
+    graph_snapshot = None
 
     if "multipart/form-data" in content_type:
         # FormData 파싱
@@ -790,24 +859,47 @@ async def stream_workflow(
         except json.JSONDecodeError:
             user_input = {}
 
+        graph_snapshot_str = form.get("graph_snapshot")
+        if isinstance(graph_snapshot_str, str) and graph_snapshot_str.strip():
+            try:
+                graph_snapshot = json.loads(graph_snapshot_str)
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=400, detail="Invalid graph_snapshot JSON"
+                )
+
         # 토글 값 분리 (문자열 true/false 허용)
-        memory_mode_enabled = str(form.get("memory_mode", "")).lower() == "true"
+        memory_mode_enabled = str(
+            form.get("memory_mode", user_input.pop("memory_mode", ""))
+        ).lower() == "true"
     else:
         # JSON 방식 (기존)
         try:
             body = await request.json()
-            user_input = body if isinstance(body, dict) else {}
+            if isinstance(body, dict) and (
+                "inputs" in body or "graph_snapshot" in body
+            ):
+                raw_inputs = body.get("inputs", {})
+                user_input = raw_inputs if isinstance(raw_inputs, dict) else {}
+                graph_snapshot = body.get("graph_snapshot")
+            else:
+                user_input = body if isinstance(body, dict) else {}
+
             if isinstance(user_input, dict):
                 memory_mode_enabled = bool(user_input.pop("memory_mode", False))
         except Exception:
             user_input = {}
 
-    # 3. 데이터 조회
-    graph = WorkflowService.get_draft(db, workflow_id)
+    if graph_snapshot is not None and not isinstance(graph_snapshot, dict):
+        raise HTTPException(status_code=400, detail="graph_snapshot must be an object")
+
+    # 3. 실행 그래프 결정
+    graph = graph_snapshot or WorkflowService.get_draft(db, workflow_id)
     if not graph:
         raise HTTPException(
             status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
         )
+    validate_execution_graph(graph)
 
     # 4. [NEW] Gateway에서 run_id 생성 (Celery 태스크에 전달)
     external_run_id = str(uuid.uuid4())

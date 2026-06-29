@@ -1,8 +1,10 @@
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
+import type { MouseEvent } from 'react';
 import { Position, Node, NodeProps } from '@xyflow/react';
 import { GitFork } from 'lucide-react';
 import { BaseNode, SmartHandle } from '../../BaseNode';
 import { ConditionNodeData } from '../../../../types/Nodes';
+import { useWorkflowStore } from '../../../../store/useWorkflowStore';
 
 export const ConditionNode = memo(
   ({
@@ -11,9 +13,34 @@ export const ConditionNode = memo(
     id,
   }: NodeProps<Node<ConditionNodeData>> & { highlightedHandle?: string }) => {
     const cases = data.cases || [];
+    const numberConnection = useWorkflowStore((state) => state.numberConnection);
+    const startNumberConnection = useWorkflowStore(
+      (state) => state.startNumberConnection,
+    );
 
     // Get highlightedHandle from global context (will be set by drag preview)
-    const highlightedHandle = (window as any).__dragHighlightedHandle__ || null;
+    const highlightedHandle =
+      typeof window !== 'undefined'
+        ? (window as Window & { __dragHighlightedHandle__?: string | null })
+            .__dragHighlightedHandle__ || null
+        : null;
+    const isNumberConnectionSource =
+      Boolean(numberConnection) && numberConnection?.sourceNodeId === id;
+
+    const handleSourceNumberClick = useCallback(
+      (sourceHandleId: string) => (event: MouseEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        startNumberConnection(id, sourceHandleId);
+      },
+      [id, startNumberConnection],
+    );
+
+    const getSourceNumberClassName = (sourceHandleId: string) =>
+      isNumberConnectionSource &&
+      numberConnection?.sourceHandleId === sourceHandleId
+        ? 'border-blue-200 bg-blue-600 text-white ring-4 ring-blue-100'
+        : undefined;
 
     return (
       <BaseNode
@@ -54,6 +81,9 @@ export const ConditionNode = memo(
                     id={caseItem.id}
                     className="!absolute !right-[-36px]"
                     style={{ top: '50%', transform: 'translateY(-50%)' }}
+                    displayNumber={data.displayNumber}
+                    numberClassName={getSourceNumberClassName(caseItem.id)}
+                    onNumberClick={handleSourceNumberClick(caseItem.id)}
                   />
                 </div>
               );
@@ -80,6 +110,9 @@ export const ConditionNode = memo(
                 id="default"
                 className="!absolute !right-[-36px]"
                 style={{ top: '50%', transform: 'translateY(-50%)' }}
+                displayNumber={data.displayNumber}
+                numberClassName={getSourceNumberClassName('default')}
+                onNumberClick={handleSourceNumberClick('default')}
               />
             </div>
           </div>

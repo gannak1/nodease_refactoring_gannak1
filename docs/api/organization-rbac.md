@@ -31,6 +31,7 @@ Organization context와 permission grant/revoke API는 `X-Organization-Id` heade
 | Implemented | `GET` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization의 team 목록 |
 | Partial | `POST` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 생성 계약은 후속 구현 |
 | Partial | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 수정 계약은 후속 구현 |
+| Implemented | `GET` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | team membership 목록 조회 |
 | Partial | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 membership 계약은 후속 구현 |
 | Partial | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 membership 계약은 후속 구현 |
 
@@ -38,10 +39,12 @@ Organization context와 permission grant/revoke API는 `X-Organization-Id` heade
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/permissions/workflows/{workflow_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | workflow에 부여된 team/user 권한 목록 |
 | Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | team workflow 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | team workflow 권한 회수 |
 | Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | user direct workflow 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | user direct workflow 권한 회수 |
+| Implemented | `GET` | `/api/v1/permissions/llm-credentials/{credential_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | LLM credential에 부여된 team/user 권한 목록 |
 | Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | team LLM credential 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | team LLM credential 권한 회수 |
 | Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | user direct LLM credential 권한 부여/수정 |

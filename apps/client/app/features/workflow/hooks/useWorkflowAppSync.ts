@@ -3,6 +3,8 @@ import { useParams } from 'next/navigation';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { workflowApi } from '../api/workflowApi';
 import { appApi } from '@/app/features/app/api/appApi';
+import { isMockWorkflowId } from '../utils/mockMode';
+import { setActiveOrganizationId } from '@/lib/activeOrganization';
 
 export const useWorkflowAppSync = () => {
   const params = useParams();
@@ -18,11 +20,33 @@ export const useWorkflowAppSync = () => {
 
   useEffect(() => {
     const loadWorkflowAppId = async () => {
+      if (isMockWorkflowId(workflowId)) {
+        setCurrentAppId('mock-app');
+        setProjectInfo(
+          'Mock 워크플로우',
+          { type: 'emoji', content: 'M', background_color: '#2563eb' },
+          '백엔드 없이 UI/UX 작업을 하기 위한 샘플 워크플로우입니다.',
+        );
+        setProjectApp({
+          id: 'mock-app',
+          name: 'Mock 워크플로우',
+          description: '백엔드 없이 UI/UX 작업을 하기 위한 샘플 워크플로우입니다.',
+          icon: { type: 'emoji', content: 'M', background_color: '#2563eb' },
+          is_market: false,
+          workflow_id: workflowId,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        setActiveWorkflowIdSafe(workflowId);
+        return;
+      }
+
       try {
         const data = await workflowApi.getWorkflow(workflowId);
         try {
           const access = await workflowApi.getWorkflowPermission(workflowId);
           setWorkflowAccess(access);
+          setActiveOrganizationId(access.organization_id);
         } catch (permissionError) {
           console.error('Failed to load workflow permissions:', permissionError);
           setWorkflowAccess(null);
@@ -59,6 +83,11 @@ export const useWorkflowAppSync = () => {
 
   useEffect(() => {
     const initWorkflows = async () => {
+      if (isMockWorkflowId(workflowId)) {
+        setActiveWorkflowIdSafe(workflowId);
+        return;
+      }
+
       if (currentAppId) {
         await loadWorkflowsByApp(currentAppId);
         // 워크플로우 목록 로드 후 활성 워크플로우 식별자만 설정 (데이터 덮어쓰기 방지)

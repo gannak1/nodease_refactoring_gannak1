@@ -138,7 +138,13 @@ export function TemplateWizardModal({
   const selectedType = TEMPLATE_TYPE_OPTIONS.find(t => t.value === templateType);
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="템플릿 마법사"
+      data-canvas-shortcut-scope="blocked"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]"
+    >
       <div className="bg-white rounded-xl shadow-2xl w-[90vw] max-w-5xl h-[70vh] min-h-[550px] flex flex-col overflow-hidden">
         {/* 헤더 */}
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-pink-50 to-purple-50">

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from apps.gateway.main import app
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import Team, TeamMembership
+from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 
 
@@ -303,6 +304,64 @@ class TestTeamsApi(unittest.TestCase):
             _error("auth.required", "로그인이 필요합니다"),
         )
         self.assertNotIn(Organization, session.query_calls)
+
+    def test_list_team_members_returns_members_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        membership_id = uuid4()
+        assigned_at = datetime(2026, 6, 29, 2, 11, 34, tzinfo=timezone.utc)
+        member = _user(
+            id=member_user_id,
+            email="member@example.com",
+            name="Member One",
+        )
+        membership = _team_membership(
+            id=membership_id,
+            organization_id=organization_id,
+            team_id=team_id,
+            user_id=member_user_id,
+            assigned_by=user_id,
+            assigned_at=assigned_at,
+            user=member,
+        )
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id, name="Alpha"),
+            memberships=[membership],
+        )
+
+        response = self._get_team_members(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            team_id=team_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [
+                {
+                    "id": str(membership_id),
+                    "user_id": str(member_user_id),
+                    "email": "member@example.com",
+                    "name": "Member One",
+                    "assigned_at": "2026-06-29T02:11:34Z",
+                }
+            ],
+        )
+        self.assertIn(Team, session.query_calls)
+        self.assertIn(TeamMembership, session.query_calls)
+        self.assertEqual(
+            [str(value) for value in session.membership_query.order_by_values],
+            ["users.name ASC", "users.email ASC", "team_memberships.id ASC"],
+        )
 
     def test_create_team_checks_manager_permission_without_request_schema(self):
         # docs/api/organization-rbac.md에서 POST /teams schema는 아직 TBD다.
@@ -989,6 +1048,31 @@ class TestTeamsApi(unittest.TestCase):
                 headers=headers,
             )
 
+    def _get_team_members(
+        self,
+        session,
+        user_id,
+        team_id,
+        organization_id=None,
+        raw_organization_id=None,
+    ):
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {"X-Request-ID": "req-test"}
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+        headers["Cookie"] = "auth_token=token"
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.team.AuthService.get_user_from_token",
+            return_value=SimpleNamespace(id=user_id),
+        ):
+            return TestClient(app).get(
+                f"/api/v1/teams/{team_id}/members",
+                headers=headers,
+            )
+
     def _post_team(
         self,
         session,
@@ -1103,6 +1187,7 @@ class _Query:
         self.join_values = []
         self.filter_expressions = []
         self.order_by_values = []
+        self.options_values = []
         self.limit_value = None
 
     def join(self, *args):
@@ -1115,6 +1200,10 @@ class _Query:
 
     def order_by(self, *args):
         self.order_by_values.extend(args)
+        return self
+
+    def options(self, *args):
+        self.options_values.extend(args)
         return self
 
     def limit(self, value):
@@ -1131,10 +1220,20 @@ class _Query:
 
 
 class _Session:
-    def __init__(self, organization=None, membership=None, teams=None):
+    def __init__(
+        self,
+        organization=None,
+        membership=None,
+        teams=None,
+        team=None,
+        memberships=None,
+    ):
         self.organization_query = _Query(first_result=organization)
-        self.membership_query = _Query(first_result=membership)
-        self.team_query = _Query(items=teams or [])
+        self.membership_query = _Query(
+            first_result=membership,
+            items=memberships or [],
+        )
+        self.team_query = _Query(first_result=team, items=teams or [])
         self.query_calls = []
 
     def query(self, model):
@@ -1199,6 +1298,39 @@ def _team(
         created_at=created_at or now,
         updated_at=updated_at or now,
         deactivated_at=deactivated_at,
+    )
+
+
+def _team_membership(
+    id,
+    organization_id,
+    team_id,
+    user_id,
+    assigned_by,
+    assigned_at,
+    user,
+):
+    membership = TeamMembership(
+        id=id,
+        grantee_organization_id=organization_id,
+        team_id=team_id,
+        user_id=user_id,
+        assigned_by=assigned_by,
+        assigned_at=assigned_at,
+    )
+    membership.user = user
+    return membership
+
+
+def _user(id, email, name):
+    now = datetime.now(timezone.utc)
+    return User(
+        id=id,
+        email=email,
+        name=name,
+        social_provider="local",
+        created_at=now,
+        updated_at=now,
     )
 
 
