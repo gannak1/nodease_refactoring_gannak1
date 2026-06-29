@@ -135,6 +135,8 @@ class AppService:
 
     @staticmethod
     def can_read_app(db: Session, app: App, user_id) -> bool:
+        if app.is_market:
+            return True
         if app.organization_id and has_organization_manager_permission(
             db, user_id, app.organization_id
         ):
