@@ -1,9 +1,10 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.auth.permissions import record_permission_denied
 from apps.shared.audit.actions import AuditAction
@@ -41,6 +42,7 @@ from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
     has_organization_manager_permission,
+    has_organization_scope_access,
 )
 
 RESOURCE_AUTH_STATES = {
@@ -52,13 +54,26 @@ RESOURCE_AUTH_STATES = {
 }
 
 
+@dataclass(frozen=True)
+class TeamManagerScope:
+    user_id: Any
+    organization_id: Any
+
+
 def _ensure_organization_manager(
     db: Session,
     current_user: User,
     organization_id: Any,
-) -> None:
+) -> TeamManagerScope:
     if has_organization_manager_permission(db, current_user.id, organization_id):
-        return
+        return TeamManagerScope(
+            user_id=current_user.id,
+            organization_id=organization_id,
+        )
+
+    if not has_organization_scope_access(db, current_user.id, organization_id):
+        raise HTTPException(status_code=404, detail="Organization not found.")
+
     record_permission_denied(
         current_user,
         "organization",
@@ -66,7 +81,27 @@ def _ensure_organization_manager(
         "manage",
         AUTH_STATE_NONE,
     )
-    raise HTTPException(status_code=403, detail="Forbidden")
+    raise HTTPException(
+        status_code=403,
+        detail="Organization manager permission is required.",
+    )
+
+
+def _ensure_or_validate_manager_scope(
+    db: Session,
+    current_user: User,
+    organization_id: Any,
+    manager_scope: TeamManagerScope | None,
+) -> TeamManagerScope:
+    if manager_scope is None:
+        return _ensure_organization_manager(db, current_user, organization_id)
+
+    if (
+        manager_scope.user_id != current_user.id
+        or manager_scope.organization_id != organization_id
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return manager_scope
 
 
 def _get_team(
@@ -246,6 +281,18 @@ def _ensure_grantee_user_membership(
         )
 
 
+def _ensure_user_organization_scope(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> None:
+    if not has_organization_scope_access(db, user_id, organization_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Managed user is not in the organization",
+        )
+
+
 def _record_permission_mutation(
     action: str,
     current_user: User,
@@ -278,19 +325,61 @@ def _record_permission_mutation(
 
 class TeamService:
     @staticmethod
+    def ensure_organization_manager_scope(
+        db: Session,
+        current_user: User,
+        organization_id: Any,
+    ) -> TeamManagerScope:
+        return _ensure_organization_manager(db, current_user, organization_id)
+
+    @staticmethod
     def list_teams(
         db: Session,
         current_user: User,
         organization_id: Any,
+        limit: int | None = None,
+        manager_scope: TeamManagerScope | None = None,
     ) -> list[Team]:
-        _ensure_organization_manager(db, current_user, organization_id)
-        return (
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            organization_id,
+            manager_scope,
+        )
+        query = (
             db.query(Team)
+            .filter(Team.organization_id == organization_id)
+            .order_by(Team.name.asc(), Team.id.asc())
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    @staticmethod
+    def list_members(
+        db: Session,
+        current_user: User,
+        team_id: Any,
+        organization_id: Any,
+        manager_scope: TeamManagerScope | None = None,
+    ) -> list[TeamMembership]:
+        team = _get_team(db, team_id, organization_id)
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            team.organization_id,
+            manager_scope,
+        )
+        return (
+            db.query(TeamMembership)
+            .options(joinedload(TeamMembership.user))
+            .join(User, User.id == TeamMembership.user_id)
             .filter(
-                Team.organization_id == organization_id,
-                Team.is_active.is_(True),
+                TeamMembership.grantee_organization_id == team.organization_id,
+                TeamMembership.team_id == team.id,
+                User.deactivated_at.is_(None),
             )
-            .order_by(Team.created_at.asc())
+            .order_by(User.name.asc(), User.email.asc(), TeamMembership.id.asc())
             .all()
         )
 
@@ -299,8 +388,14 @@ class TeamService:
         db: Session,
         current_user: User,
         request: TeamCreateRequest,
+        manager_scope: TeamManagerScope | None = None,
     ) -> Team:
-        _ensure_organization_manager(db, current_user, request.organization_id)
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            request.organization_id,
+            manager_scope,
+        )
         name = request.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="Team name is required")
@@ -326,9 +421,15 @@ class TeamService:
         team_id: Any,
         request: TeamUpdateRequest,
         organization_id: Any | None = None,
+        manager_scope: TeamManagerScope | None = None,
     ) -> Team:
         team = _get_team(db, team_id, organization_id, active_only=True)
-        _ensure_organization_manager(db, current_user, team.organization_id)
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            team.organization_id,
+            manager_scope,
+        )
 
         # PATCH는 description, managed_by 같은 nullable column에서
         # 생략된 field와 명시적 null 값을 구분해야 한다.
@@ -349,6 +450,15 @@ class TeamService:
         if "managed_by" in fields:
             if request.managed_by is not None:
                 _get_active_user(db, request.managed_by)
+                # 정책 참고: 현재 RBAC 문서는 organization owner/manager도
+                # organization scope 안 manager로 본다. 향후 managed_by 대상을
+                # 반드시 active team membership 보유자로 제한하기로 바뀌면
+                # _ensure_user_organization_scope 조건을 membership-only로 좁힌다.
+                _ensure_user_organization_scope(
+                    db,
+                    request.managed_by,
+                    team.organization_id,
+                )
             team.managed_by = request.managed_by
         if "is_auto_add" in fields:
             team.is_auto_add = request.is_auto_add
@@ -357,9 +467,24 @@ class TeamService:
         return team
 
     @staticmethod
-    def deactivate_team(db: Session, current_user: User, team_id: Any) -> dict:
-        team = _get_team(db, team_id)
-        _ensure_organization_manager(db, current_user, team.organization_id)
+    def deactivate_team(
+        db: Session,
+        current_user: User,
+        team_id: Any,
+        organization_id: Any | None = None,
+        manager_scope: TeamManagerScope | None = None,
+    ) -> dict:
+        team = _get_team(db, team_id, organization_id)
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            team.organization_id,
+            manager_scope,
+        )
+        if not team.is_active:
+            # 비활성 team은 일반 권한 판정에서는 거부하지만, deactivate는
+            # admin UI 재시도 안정성을 위해 scope 안 요청이면 idempotent하게 성공한다.
+            return {"status": "deactivated"}
         team.is_active = False
         team.deactivated_at = datetime.now(timezone.utc)
         db.commit()
@@ -372,9 +497,15 @@ class TeamService:
         team_id: Any,
         request: TeamMembershipRequest,
         organization_id: Any | None = None,
+        manager_scope: TeamManagerScope | None = None,
     ) -> TeamMembership:
         team = _get_team(db, team_id, organization_id, active_only=True)
-        _ensure_organization_manager(db, current_user, team.organization_id)
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            team.organization_id,
+            manager_scope,
+        )
         _get_active_user(db, request.user_id)
         membership = (
             db.query(TeamMembership)
@@ -424,9 +555,15 @@ class TeamService:
         team_id: Any,
         user_id: Any,
         organization_id: Any | None = None,
+        manager_scope: TeamManagerScope | None = None,
     ) -> dict:
         team = _get_team(db, team_id, organization_id, active_only=True)
-        _ensure_organization_manager(db, current_user, team.organization_id)
+        _ensure_or_validate_manager_scope(
+            db,
+            current_user,
+            team.organization_id,
+            manager_scope,
+        )
         # 없는 member 제거는 admin UI 재시도 안정성을 위해 idempotent하게 처리한다.
         membership = (
             db.query(TeamMembership)

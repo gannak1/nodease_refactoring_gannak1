@@ -11,6 +11,7 @@ from apps.shared.schemas.team import (
     ResourcePermissionGrantRequest,
     ResourcePermissionRevokeRequest,
     TeamCreateRequest,
+    TeamUpdateRequest,
 )
 
 
@@ -209,9 +210,15 @@ def test_llm_resource_manager_can_revoke_permission(monkeypatch):
 def test_team_create_still_requires_organization_manager(monkeypatch):
     organization_id = uuid.uuid4()
     user = SimpleNamespace(id=uuid.uuid4())
+    organization = SimpleNamespace(
+        id=organization_id,
+        created_by=uuid.uuid4(),
+        managed_by=None,
+        is_active=True,
+    )
+    membership = SimpleNamespace(id=uuid.uuid4())
     denied = []
 
-    monkeypatch.setattr(team_service, "has_organization_manager_permission", lambda *a: False)
     monkeypatch.setattr(
         team_service,
         "record_permission_denied",
@@ -220,10 +227,46 @@ def test_team_create_still_requires_organization_manager(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         TeamService.create_team(
-            FakeDb(),
+            FakeDb(first_values=[organization, organization, membership]),
             user,
             TeamCreateRequest(organization_id=organization_id, name="Builders"),
         )
 
     assert exc_info.value.status_code == 403
     assert denied[0][1] == "organization"
+
+
+def test_team_update_rejects_managed_by_outside_organization():
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    manager_id = uuid.uuid4()
+    team = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="Builders",
+        description=None,
+        managed_by=None,
+        is_auto_add=False,
+    )
+    organization = SimpleNamespace(
+        id=organization_id,
+        created_by=user.id,
+        managed_by=None,
+        is_active=True,
+    )
+    target_user = SimpleNamespace(id=manager_id, deactivated_at=None)
+    db = FakeDb(first_values=[team, organization, target_user, organization, None])
+
+    with pytest.raises(HTTPException) as exc_info:
+        TeamService.update_team(
+            db,
+            user,
+            team.id,
+            TeamUpdateRequest(managed_by=manager_id),
+            organization_id=organization_id,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Managed user is not in the organization"
+    assert team.managed_by is None
+    assert db.committed is False
