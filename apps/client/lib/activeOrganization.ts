@@ -1,3 +1,5 @@
+import { AxiosHeaders, type AxiosInstance } from 'axios';
+
 const ACTIVE_ORGANIZATION_ID_STORAGE_KEY = 'moduly_active_organization_id';
 
 type OrganizationLike = {
@@ -45,3 +47,14 @@ export const activeOrganizationHeaders = (
   organizationId?: string | null,
 ): Record<string, string> =>
   organizationId ? { 'X-Organization-Id': organizationId } : {};
+
+export const attachActiveOrganizationHeader = (api: AxiosInstance) => {
+  api.interceptors.request.use((config) => {
+    const organizationId = getStoredActiveOrganizationId();
+    if (organizationId) {
+      config.headers = AxiosHeaders.from(config.headers);
+      config.headers.set('X-Organization-Id', organizationId);
+    }
+    return config;
+  });
+};

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { attachActiveOrganizationHeader } from './activeOrganization';
 
 export const apiClient = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL
@@ -6,6 +7,8 @@ export const apiClient = axios.create({
     : '/api/v1',
   withCredentials: true,
 });
+
+attachActiveOrganizationHeader(apiClient);
 
 apiClient.interceptors.response.use(
   (response) => response,
