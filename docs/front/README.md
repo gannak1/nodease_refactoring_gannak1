@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 5856452478494c2e2c6aa36993a6aafac9c7ebcf
+Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 
 이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 

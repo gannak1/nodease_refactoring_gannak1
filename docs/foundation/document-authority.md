@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ 08f6e301eea5f24b76ea0a53a957c7492622d455
 
 ## 목적
 
@@ -11,14 +11,14 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 권위 순서
 
-| 충돌 주제 | 우선 문서 |
+| 충돌 주제 | 기준 또는 처리 문서 |
 | --- | --- |
 | 용어, 문서 상태, source-of-truth 규칙 | `foundation/*` |
 | 제품 요구사항, MVP 완료 기준, 제외 범위 | `requirements/*` |
 | 서비스 경계, 레이어, 런타임 흐름, 보안 경계 | `architecture/*` |
 | 물리 데이터 모델, 테이블, 권한 정책, migration | `data-model/*` |
 | HTTP API, request/response, error contract | `api/*` |
-| 프론트 화면, 상태, 컴포넌트, QA 작업 문서 | `front/*` |
+| 프론트 화면, 상태, 컴포넌트, QA 작업 문서 | `front/*` 비권위 작업 문서. 상위 기준과 충돌하면 수정 대상 |
 | 배포 런타임, 환경변수, 헬스체크, ingress, container entrypoint | `docker/**`, `infra/**`, `scripts/**`, root `README.md` |
 | 중요 설계 결정의 근거 | `decisions/*` |
 | 작업 순서, 이슈 분해, rollout | `implementation-plan/*` |
@@ -41,13 +41,13 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Status: Draft | Accepted | Superseded
 Authority: Foundation | Requirements | Architecture | Data Model | API | Frontend Implementation Guide | Decision | Implementation Plan | Reference
 Source of Truth: Yes | No
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ 08f6e301eea5f24b76ea0a53a957c7492622d455
 Related ADRs:
 ```
 
 ## 현재 기준
 
-현재 active 문서 정합성 기준은 workspace code `dev`의 `c990b54e931b4de8023822f6dff14f43fc1d415f`다. 코드와 active 문서가 충돌하면 코드를 기준으로 active 문서를 수정한다.
+현재 active 문서 정합성 기준은 workspace code `dev`의 `08f6e301eea5f24b76ea0a53a957c7492622d455`다. 코드와 active 문서가 충돌하면 코드를 기준으로 active 문서를 수정한다.
 
 `front/*` 비권위 작업 문서 규칙은 `feature/mba-6`의 프론트 문서 구조 정리 작업에서 추가했다. 이 규칙은 `front/*`를 active source of truth로 승격하지 않고, 상위 기준 문서를 프론트 구현 단위로 번역하는 보조 문서 영역으로만 정의한다.
 

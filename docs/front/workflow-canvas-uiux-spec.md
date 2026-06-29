@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 5856452478494c2e2c6aa36993a6aafac9c7ebcf
+Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 
 ## 문서 목적
 
@@ -292,7 +292,7 @@ Verified Against: feature/mba-6 @ 5856452478494c2e2c6aa36993a6aafac9c7ebcf
 
 기존에는 프론트 화면의 그래프와 DB에 저장된 draft 그래프가 어긋날 수 있었다. 이로 인해 화면에서는 삭제된 edge가 실제 실행에서는 남아 순환 오류를 만드는 문제가 있었다.
 
-이를 막기 위해 테스트 실행 흐름을 다음과 같이 바꿨다.
+이를 막기 위해 `feature/mba-6`의 프론트 구현 흐름은 다음과 같이 정리되어 있다. 백엔드 snapshot 우선 실행과 최종 HTTP 계약은 상세 문서의 API 계약 TODO를 따른다.
 
 1. 테스트 클릭
 2. 현재 프론트 그래프 snapshot 생성
