@@ -56,7 +56,7 @@ Active organization은 request header로 전달한다. 서버는 active organiza
 | --- | --- | --- |
 | Implemented | `X-Organization-Id` | API 요청에서 명시적으로 active organization을 전달한다. |
 | Not selected | session/cookie context | 서버 session이나 cookie에 active organization을 저장하지 않는다. |
-| Legacy fallback | 없음 | organization context가 없는 과도기 경로에서 첫 active team membership을 primary organization으로 사용할 수 있다. |
+| Legacy fallback | 없음 | organization context가 없는 과도기 경로에서 첫 active organization membership을 primary organization으로 사용할 수 있다. |
 
 `GET /api/v1/organizations/current`는 `X-Organization-Id` 값을 검증해 현재 요청의 active organization을 반환한다. 상세 endpoint는 [organization-rbac.md](organization-rbac.md)를 따른다.
 

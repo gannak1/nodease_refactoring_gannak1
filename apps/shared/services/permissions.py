@@ -1,10 +1,14 @@
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_AUTH_MANAGER,
+    ORGANIZATION_AUTH_MEMBER,
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    OrganizationMembership,
+)
 from apps.shared.db.models.team import (
     Team,
     TeamLLMPermission,
@@ -13,6 +17,7 @@ from apps.shared.db.models.team import (
     UserLLMPermission,
     UserWorkflowPermission,
 )
+from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
@@ -22,6 +27,7 @@ from apps.shared.permissions import (
     stronger_resource_auth_state,
     workflow_auth_state_allows,
 )
+from sqlalchemy.orm import Session
 
 
 def coerce_uuid(value: Any) -> Optional[uuid.UUID]:
@@ -39,28 +45,101 @@ def _same_uuid(left: Any, right: Any) -> bool:
     return left_uuid is not None and left_uuid == right_uuid
 
 
-def _organization_manager_state(
+def _is_active_user(
     db: Session,
     user_id: uuid.UUID,
-    organization_id: uuid.UUID,
-) -> Optional[str]:
-    organization = (
-        db.query(Organization).filter(Organization.id == organization_id).first()
+) -> bool:
+    return (
+        db.query(User)
+        .filter(
+            User.id == user_id,
+            User.deactivated_at.is_(None),
+        )
+        .first()
+        is not None
     )
-    return _manager_state_for_organization(organization, user_id)
 
 
-def _manager_state_for_organization(
-    organization: Optional[Organization],
-    user_id: uuid.UUID,
-) -> Optional[str]:
-    if not organization or not organization.is_active:
+def get_organization_membership(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> Optional[OrganizationMembership]:
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
         return None
-    if _same_uuid(organization.created_by, user_id) or _same_uuid(
-        organization.managed_by, user_id
+    return (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.user_id == user_uuid,
+            OrganizationMembership.organization_id == organization_uuid,
+        )
+        .first()
+    )
+
+
+def has_active_organization_membership(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> bool:
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return False
+    if not _is_active_user(db, user_uuid):
+        return False
+    organization = (
+        db.query(Organization).filter(Organization.id == organization_uuid).first()
+    )
+    if not organization or not organization.is_active:
+        return False
+    return (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.user_id == user_uuid,
+            OrganizationMembership.organization_id == organization_uuid,
+            OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
+        )
+        .first()
+        is not None
+    )
+
+
+def get_organization_auth_state(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> str:
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return AUTH_STATE_NONE
+    if not _is_active_user(db, user_uuid):
+        return AUTH_STATE_NONE
+
+    organization = (
+        db.query(Organization).filter(Organization.id == organization_uuid).first()
+    )
+    if not organization or not organization.is_active:
+        return AUTH_STATE_NONE
+
+    membership = get_organization_membership(db, user_uuid, organization_uuid)
+    if membership is not None:
+        if membership.membership_state != ORGANIZATION_MEMBERSHIP_ACTIVE:
+            return AUTH_STATE_NONE
+        if membership.organization_auth_state == ORGANIZATION_AUTH_MANAGER:
+            return AUTH_STATE_MANAGER
+        if membership.organization_auth_state == ORGANIZATION_AUTH_MEMBER:
+            return ORGANIZATION_AUTH_MEMBER
+        return AUTH_STATE_NONE
+
+    if _same_uuid(organization.created_by, user_uuid) or _same_uuid(
+        organization.managed_by, user_uuid
     ):
         return AUTH_STATE_MANAGER
-    return None
+    return AUTH_STATE_NONE
 
 
 def has_organization_manager_permission(
@@ -73,7 +152,7 @@ def has_organization_manager_permission(
     if user_uuid is None or organization_uuid is None:
         return False
     return (
-        _organization_manager_state(db, user_uuid, organization_uuid)
+        get_organization_auth_state(db, user_uuid, organization_uuid)
         == AUTH_STATE_MANAGER
     )
 
@@ -88,26 +167,10 @@ def has_organization_scope_access(
     if user_uuid is None or organization_uuid is None:
         return False
 
-    organization = (
-        db.query(Organization).filter(Organization.id == organization_uuid).first()
-    )
-    if not organization or not organization.is_active:
-        return False
-    if _manager_state_for_organization(organization, user_uuid):
-        return True
-
-    return (
-        db.query(TeamMembership)
-        .join(Team, Team.id == TeamMembership.team_id)
-        .filter(
-            TeamMembership.user_id == user_uuid,
-            TeamMembership.grantee_organization_id == organization_uuid,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
-        )
-        .first()
-        is not None
-    )
+    return get_organization_auth_state(db, user_uuid, organization_uuid) in {
+        AUTH_STATE_MANAGER,
+        ORGANIZATION_AUTH_MEMBER,
+    }
 
 
 def _workflow_scope(
@@ -130,7 +193,7 @@ def _workflow_scope(
         and requested_organization_uuid is not None
         and workflow_organization_uuid != requested_organization_uuid
     ):
-        return workflow, None
+        return None, None
 
     return workflow, workflow_organization_uuid or requested_organization_uuid
 
@@ -157,7 +220,7 @@ def _llm_credential_scope(
         and requested_organization_uuid is not None
         and credential_organization_uuid != requested_organization_uuid
     ):
-        return credential, None
+        return None, None
 
     return credential, credential_organization_uuid or requested_organization_uuid
 
@@ -189,18 +252,25 @@ def get_effective_workflow_auth_state(
 ) -> str:
     user_uuid = coerce_uuid(user_id)
     workflow, organization_uuid = _workflow_scope(db, workflow_id, organization_id)
-    if user_uuid is None or workflow is None or organization_uuid is None:
+    if user_uuid is None or workflow is None:
         return AUTH_STATE_NONE
 
-    organization = (
-        db.query(Organization).filter(Organization.id == organization_uuid).first()
+    if organization_uuid is None:
+        if not _is_active_user(db, user_uuid):
+            return AUTH_STATE_NONE
+        if _same_uuid(workflow.created_by, user_uuid):
+            return AUTH_STATE_MANAGER
+        return AUTH_STATE_NONE
+
+    organization_auth_state = get_organization_auth_state(
+        db,
+        user_uuid,
+        organization_uuid,
     )
-    if not organization or not organization.is_active:
+    if organization_auth_state == AUTH_STATE_MANAGER:
+        return AUTH_STATE_MANAGER
+    if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
         return AUTH_STATE_NONE
-
-    manager_state = _manager_state_for_organization(organization, user_uuid)
-    if manager_state:
-        return manager_state
 
     team_rows = (
         db.query(TeamWorkflowPermission.auth_state)
@@ -259,19 +329,21 @@ def get_effective_llm_credential_auth_state(
         return AUTH_STATE_NONE
 
     if organization_uuid is None:
+        if not _is_active_user(db, user_uuid):
+            return AUTH_STATE_NONE
         if _same_uuid(credential.user_id, user_uuid):
             return AUTH_STATE_MANAGER
         return AUTH_STATE_NONE
 
-    organization = (
-        db.query(Organization).filter(Organization.id == organization_uuid).first()
+    organization_auth_state = get_organization_auth_state(
+        db,
+        user_uuid,
+        organization_uuid,
     )
-    if not organization or not organization.is_active:
+    if organization_auth_state == AUTH_STATE_MANAGER:
+        return AUTH_STATE_MANAGER
+    if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
         return AUTH_STATE_NONE
-
-    manager_state = _manager_state_for_organization(organization, user_uuid)
-    if manager_state:
-        return manager_state
 
     team_rows = (
         db.query(TeamLLMPermission.auth_state)

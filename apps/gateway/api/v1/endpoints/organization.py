@@ -8,12 +8,19 @@ from apps.gateway.utils.api_errors import parse_organization_id, raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.team import Team, TeamMembership
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    OrganizationMembership,
+)
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.organization import (
     OrganizationPatchRequest,
     OrganizationResponse,
+)
+from apps.shared.services.permissions import (
+    has_organization_manager_permission,
+    has_organization_scope_access,
 )
 
 router = APIRouter()
@@ -24,34 +31,25 @@ def _get_organization_in_active_membership_scope(
     organization_id: UUID,
     user_id: UUID,
 ) -> Organization | None:
-    # Active organization은 서버에 저장하지 않고, 요청 header 값이
-    # 현재 사용자의 active team membership scope 안에 있는지로 판정한다.
-    return (
+    # Active organization은 서버에 저장하지 않고, 요청 header/path 값이
+    # 현재 사용자의 organization membership scope 안에 있는지로 판정한다.
+    organization = (
         db.query(Organization)
-        .join(
-            TeamMembership,
-            TeamMembership.grantee_organization_id == Organization.id,
-        )
-        .join(Team, Team.id == TeamMembership.team_id)
         .filter(
             Organization.id == organization_id,
-            TeamMembership.user_id == user_id,
-            TeamMembership.grantee_organization_id == Organization.id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
             Organization.is_active.is_(True),
         )
         .first()
     )
-
-
-def _is_organization_manager(organization: Organization, user_id: UUID) -> bool:
-    return organization.created_by == user_id or (
-        organization.managed_by is not None and organization.managed_by == user_id
-    )
+    if organization is None:
+        return None
+    if not has_organization_scope_access(db, user_id, organization_id):
+        return None
+    return organization
 
 
 def _to_organization_response(
+    db: Session,
     organization: Organization,
     user_id: UUID,
 ) -> OrganizationResponse:
@@ -60,7 +58,7 @@ def _to_organization_response(
         name=organization.name,
         options=organization.options,
         is_active=organization.is_active,
-        is_manager=_is_organization_manager(organization, user_id),
+        is_manager=has_organization_manager_permission(db, user_id, organization.id),
         created_at=organization.created_at,
         updated_at=organization.updated_at,
     )
@@ -75,14 +73,12 @@ def list_organizations(
     organizations = (
         db.query(Organization)
         .join(
-            TeamMembership,
-            TeamMembership.grantee_organization_id == Organization.id,
+            OrganizationMembership,
+            OrganizationMembership.organization_id == Organization.id,
         )
-        .join(Team, Team.id == TeamMembership.team_id)
         .filter(
-            TeamMembership.user_id == current_user.id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
+            OrganizationMembership.user_id == current_user.id,
+            OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
             Organization.is_active.is_(True),
         )
         .distinct()
@@ -91,7 +87,7 @@ def list_organizations(
     )
 
     return [
-        _to_organization_response(organization, current_user.id)
+        _to_organization_response(db, organization, current_user.id)
         for organization in organizations
     ]
 
@@ -122,7 +118,7 @@ def get_current_organization(
             "Organization not found.",
         )
 
-    return _to_organization_response(organization, current_user.id)
+    return _to_organization_response(db, organization, current_user.id)
 
 
 # 인증된 사용자가 접근 가능한 특정 active organization 상세를 조회하는 API.
@@ -147,7 +143,7 @@ def get_organization(
             "Organization not found.",
         )
 
-    return _to_organization_response(organization, current_user.id)
+    return _to_organization_response(db, organization, current_user.id)
 
 
 @router.patch("/{organization_id}", response_model=OrganizationResponse)
@@ -179,9 +175,7 @@ def update_organization(
             "No organization fields to update.",
         )
 
-    if "name" in fields and (
-        payload.name is None or payload.name.strip() == ""
-    ):
+    if "name" in fields and (payload.name is None or payload.name.strip() == ""):
         raise_api_error(
             request,
             400,
@@ -211,12 +205,20 @@ def update_organization(
     if organization is None:
         raise_api_error(
             request,
-            403,
-            "permission.denied",
-            "Permission denied.",
+            404,
+            "resource.not_found",
+            "Organization not found.",
         )
 
-    if not _is_organization_manager(organization, current_user.id):
+    if not has_organization_scope_access(db, current_user.id, organization_id):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    if not has_organization_manager_permission(db, current_user.id, organization_id):
         raise_api_error(
             request,
             403,
@@ -232,4 +234,4 @@ def update_organization(
     db.commit()
     db.refresh(organization)
 
-    return _to_organization_response(organization, current_user.id)
+    return _to_organization_response(db, organization, current_user.id)

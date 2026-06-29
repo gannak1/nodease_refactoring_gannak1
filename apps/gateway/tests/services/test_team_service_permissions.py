@@ -51,6 +51,20 @@ class FakeDb:
         self.refreshed = row
 
 
+def _organization_membership(user_id, organization_id, auth_state="member"):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        membership_state="active",
+        organization_auth_state=auth_state,
+    )
+
+
+def _active_organization(organization_id):
+    return SimpleNamespace(id=organization_id, is_active=True)
+
+
 def test_workflow_resource_manager_can_grant_permission(monkeypatch):
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -59,20 +73,27 @@ def test_workflow_resource_manager_can_grant_permission(monkeypatch):
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(id=uuid.uuid4()),
+            SimpleNamespace(id=grantee_id, deactivated_at=None),
+            SimpleNamespace(id=grantee_id, deactivated_at=None),
+            _active_organization(organization_id),
+            _organization_membership(grantee_id, organization_id),
             permission_row,
         ]
     )
     user = SimpleNamespace(id=uuid.uuid4())
     events = []
 
-    monkeypatch.setattr(team_service, "has_organization_manager_permission", lambda *a: False)
+    monkeypatch.setattr(
+        team_service, "has_organization_manager_permission", lambda *a: False
+    )
     monkeypatch.setattr(
         team_service,
         "get_effective_workflow_auth_state",
         lambda *a, **k: "manager",
     )
-    monkeypatch.setattr(team_service, "record_audit", lambda **event: events.append(event))
+    monkeypatch.setattr(
+        team_service, "record_audit", lambda **event: events.append(event)
+    )
 
     row = TeamService.grant_resource_permission(
         db,
@@ -104,12 +125,17 @@ def test_user_grant_requires_grantee_organization_membership(monkeypatch):
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
+            SimpleNamespace(id=grantee_id, deactivated_at=None),
+            SimpleNamespace(id=grantee_id, deactivated_at=None),
+            _active_organization(organization_id),
             None,
         ]
     )
     user = SimpleNamespace(id=uuid.uuid4())
 
-    monkeypatch.setattr(team_service, "has_organization_manager_permission", lambda *a: True)
+    monkeypatch.setattr(
+        team_service, "has_organization_manager_permission", lambda *a: True
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         TeamService.grant_resource_permission(
@@ -144,7 +170,9 @@ def test_team_grant_rejects_inactive_team(monkeypatch):
     )
     user = SimpleNamespace(id=uuid.uuid4())
 
-    monkeypatch.setattr(team_service, "has_organization_manager_permission", lambda *a: True)
+    monkeypatch.setattr(
+        team_service, "has_organization_manager_permission", lambda *a: True
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         TeamService.grant_resource_permission(
@@ -178,13 +206,17 @@ def test_llm_resource_manager_can_revoke_permission(monkeypatch):
     user = SimpleNamespace(id=uuid.uuid4())
     events = []
 
-    monkeypatch.setattr(team_service, "has_organization_manager_permission", lambda *a: False)
+    monkeypatch.setattr(
+        team_service, "has_organization_manager_permission", lambda *a: False
+    )
     monkeypatch.setattr(
         team_service,
         "get_effective_llm_credential_auth_state",
         lambda *a, **k: "manager",
     )
-    monkeypatch.setattr(team_service, "record_audit", lambda **event: events.append(event))
+    monkeypatch.setattr(
+        team_service, "record_audit", lambda **event: events.append(event)
+    )
 
     result = TeamService.revoke_resource_permission(
         db,
@@ -216,7 +248,7 @@ def test_team_create_still_requires_organization_manager(monkeypatch):
         managed_by=None,
         is_active=True,
     )
-    membership = SimpleNamespace(id=uuid.uuid4())
+    membership = _organization_membership(user.id, organization_id)
     denied = []
 
     monkeypatch.setattr(
@@ -227,7 +259,16 @@ def test_team_create_still_requires_organization_manager(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         TeamService.create_team(
-            FakeDb(first_values=[organization, organization, membership]),
+            FakeDb(
+                first_values=[
+                    SimpleNamespace(id=user.id, deactivated_at=None),
+                    organization,
+                    membership,
+                    SimpleNamespace(id=user.id, deactivated_at=None),
+                    organization,
+                    membership,
+                ]
+            ),
             user,
             TeamCreateRequest(organization_id=organization_id, name="Builders"),
         )
@@ -255,7 +296,18 @@ def test_team_update_rejects_managed_by_outside_organization():
         is_active=True,
     )
     target_user = SimpleNamespace(id=manager_id, deactivated_at=None)
-    db = FakeDb(first_values=[team, organization, target_user, organization, None])
+    db = FakeDb(
+        first_values=[
+            team,
+            SimpleNamespace(id=user.id, deactivated_at=None),
+            organization,
+            None,
+            target_user,
+            target_user,
+            organization,
+            None,
+        ]
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         TeamService.update_team(

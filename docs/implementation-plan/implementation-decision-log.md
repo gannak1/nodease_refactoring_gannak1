@@ -65,6 +65,17 @@ Related ADRs:
 
 ## 2026-06-30
 
+### MBA-67 organization membership helper 전환
+- 상태: Active
+- 맥락: MBA-66으로 `organization_memberships` DB/model/migration/backfill이 병합되었지만, 일부 permission helper와 API는 여전히 active team membership을 organization scope 전제로 사용했다. 공식 문서는 MVP 2-0 이후 organization membership을 조직 소속의 전제 조건으로 둔다.
+- 선택지: 1) 기존 team membership 기반 scope 판정을 유지한다. 2) helper/API를 즉시 `organization_memberships` 기준으로 전환하되 legacy owner/manager fallback만 제한적으로 유지한다. 3) 실제 membership API가 모두 완성될 때까지 production code 전환을 보류한다.
+- 결정: MBA-67은 `get_organization_auth_state`, `has_active_organization_membership`, `has_organization_manager_permission`, `has_organization_scope_access`를 실제 `OrganizationMembership` model 기준으로 구현한다. Resource permission helper는 active user와 active organization 안의 active organization member를 선행 조건으로 보고, active manager membership은 resource manager override로 본다. Invited/suspended/removed membership row는 fail-closed 처리하고, membership row 자체가 없을 때만 `organization.created_by`/`managed_by` legacy fallback을 manager로 허용한다. Team membership 조회는 organization membership을 생성하거나 대체하지 않는다. `GET /users` 같은 read API는 primary organization이 없거나 organization이 inactive/scope 밖이면 404로 닫고 default organization을 생성하지 않는다. `organization_id is null`인 legacy workflow는 active `created_by` user에게만 manager fallback을 허용한다.
+- 근거: 문서상 목표 계약은 organization membership이 조직 소속의 기준이며, MBA-66 backfill이 기존 team membership과 owner/manager 정보를 이미 organization membership row로 이전한다. Legacy fallback은 backfill 누락이나 과거 데이터 호환을 위한 좁은 안전장치로만 남겨야 한다.
+- 범위: organization scope helper, workflow/LLM credential effective permission helper, organization context fallback, organization/user/team/permission API의 scope 검증.
+- 영향 파일: `apps/shared/services/permissions.py`, `apps/shared/services/permission_enforcement.py`, `apps/gateway/services/organization_context.py`, `apps/gateway/services/team_service.py`, `apps/gateway/api/v1/endpoints/organization.py`, `apps/gateway/api/v1/endpoints/users.py`, `apps/gateway/api/v1/endpoints/permissions.py`, `apps/gateway/auth/permissions.py`, `docs/architecture/auth-rbac.md`, `docs/data-model/rbac-permission-policy.md`, `docs/api/auth.md`, `docs/api/organization-rbac.md`, `docs/api/apps-workflows.md`, `docs/api/knowledge-rag.md`.
+- 후속 검토: Manager 조회용 composite index 필요 여부를 query plan 기준으로 재검토한다. Organization membership invite/update API가 도입되면 legacy fallback 제거 시점과 마지막 manager guard를 별도 이슈에서 확정한다. Direct permission 회수는 stale row cleanup을 위해 대상 user의 현재 active membership을 요구하지 않는 정책을 유지할지 재검토한다.
+- ADR 승격 여부: No. 공식 문서의 목표 계약을 구현 helper에 연결하는 범위이며, 새 제품 정책을 도입하지 않는다.
+
 ### MBA-66 organization_memberships migration 분리
 - 상태: Active
 - 맥락: MBA-66은 organization membership foundation DB/model/migration 추가가 범위이며, API/helper/FE 전환은 후속 이슈 범위다.

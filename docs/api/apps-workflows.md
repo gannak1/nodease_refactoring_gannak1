@@ -102,7 +102,8 @@ App 생성과 clone으로 생성되는 primary workflow에는 생성자 user dir
 ## MVP 1 변경 기준
 
 - Backend 기준 `POST /api/v1/apps`, `GET /api/v1/apps`, `POST /api/v1/apps/{app_id}/clone`, `POST /api/v1/workflows`는 `X-Organization-Id` header로 active organization을 명시한다. 현재 frontend wrapper는 아직 이 header를 자동 첨부하지 않는다.
-- `X-Organization-Id` scope 안 여부는 organization owner/manager 또는 active team membership으로 판정한다.
+- `X-Organization-Id` scope 안 여부는 organization membership helper로 판정한다. Active row는 `organization_auth_state`에 따르고, invited/suspended/removed row는 fail-closed 된다. Membership row 자체가 없는 legacy owner/manager만 호환 fallback으로 organization manager scope를 인정한다.
+- `organization_id is null`인 legacy workflow는 active user가 `workflow.created_by`이면 manager fallback을 제한적으로 허용한다. 신규 organization-scoped workflow에는 creator fallback을 적용하지 않는다.
 - 생성자가 만든 workflow에는 user direct `manager` 권한을 부여해 생성 직후 App/Workflow 관리가 가능해야 한다.
 - creator 기반 권한 체크를 workflow permission helper로 교체한다.
 - workflow execute/stream은 `execute` 권한이 없으면 거부한다.

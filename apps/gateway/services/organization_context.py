@@ -1,34 +1,43 @@
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Request
+from sqlalchemy.orm import Session
 
 from apps.gateway.utils.api_errors import parse_organization_id, raise_api_error
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_AUTH_MANAGER,
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    OrganizationMembership,
+)
 from apps.shared.db.models.team import Team, TeamMembership
 from apps.shared.db.models.user import User
 from apps.shared.services.permissions import has_organization_scope_access
-from sqlalchemy.orm import Session
 
 
 def get_user_primary_organization_id(
     db: Session,
     user_id: uuid.UUID,
 ) -> Optional[uuid.UUID]:
-    """Return the first organization available through active team membership."""
+    """Return the first organization available through active organization membership."""
 
-    row = (
-        db.query(TeamMembership.grantee_organization_id)
-        .join(Team, Team.id == TeamMembership.team_id)
+    membership = (
+        db.query(OrganizationMembership)
+        .join(Organization, Organization.id == OrganizationMembership.organization_id)
         .filter(
-            TeamMembership.user_id == user_id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
+            OrganizationMembership.user_id == user_id,
+            OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
+            Organization.is_active.is_(True),
         )
-        .order_by(TeamMembership.assigned_at.asc())
+        .order_by(
+            OrganizationMembership.accepted_at.asc().nulls_last(),
+            OrganizationMembership.created_at.asc(),
+        )
         .first()
     )
-    return row[0] if row else None
+    return membership.organization_id if membership else None
 
 
 def resolve_active_organization_id(
@@ -73,6 +82,16 @@ def ensure_user_default_organization(
         created_by=user_id,
         managed_by=user_id,
     )
+    now = datetime.now(timezone.utc)
+    organization_membership = OrganizationMembership(
+        organization_id=organization.id,
+        user_id=user_id,
+        membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE,
+        organization_auth_state=ORGANIZATION_AUTH_MANAGER,
+        invited_by=user_id,
+        invited_at=now,
+        accepted_at=now,
+    )
     team = Team(
         id=uuid.uuid4(),
         organization_id=organization.id,
@@ -88,6 +107,7 @@ def ensure_user_default_organization(
         assigned_by=user_id,
     )
     db.add(organization)
+    db.add(organization_membership)
     db.add(team)
     db.add(membership)
     db.flush()
