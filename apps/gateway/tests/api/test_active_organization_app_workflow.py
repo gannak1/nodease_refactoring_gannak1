@@ -1,0 +1,759 @@
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from sqlalchemy.sql.operators import eq
+from sqlalchemy.sql.operators import is_ as is_operator
+
+from apps.gateway.api.v1.endpoints import app as app_endpoint
+from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
+from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.main import app
+from apps.gateway.services import app_service
+from apps.gateway.services import workflow_service
+from apps.gateway.services.app_service import AppService
+from apps.gateway.services.workflow_service import WorkflowService
+from apps.shared.db.models.app import App
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.team import (
+    TeamMembership,
+    TeamWorkflowPermission,
+    UserWorkflowPermission,
+)
+from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.session import get_db
+
+
+def test_create_app_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    payload = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        app_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "create_app",
+        lambda db, request, user_id, organization_id=None: captured.update(
+            {
+                "request": request,
+                "user_id": user_id,
+                "organization_id": organization_id,
+            }
+        )
+        or "created",
+    )
+
+    result = app_endpoint.create_app(
+        request=object(),
+        payload=payload,
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result == "created"
+    assert captured == {
+        "request": payload,
+        "user_id": user.id,
+        "organization_id": organization_id,
+    }
+
+
+def test_clone_app_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    source_app_id = str(uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    monkeypatch.setattr(
+        app_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        app_endpoint,
+        "_get_app_or_404",
+        lambda db, app_id: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "access_denial_status",
+        lambda db, app, user_id, action: None,
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "clone_app",
+        lambda db, user_id, source_app_id, organization_id=None: captured.update(
+            {
+                "user_id": user_id,
+                "source_app_id": source_app_id,
+                "organization_id": organization_id,
+            }
+        )
+        or "cloned",
+    )
+
+    result = app_endpoint.clone_app(
+        app_id=source_app_id,
+        request=object(),
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result == "cloned"
+    assert captured == {
+        "user_id": user.id,
+        "source_app_id": source_app_id,
+        "organization_id": organization_id,
+    }
+
+
+def test_list_apps_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    monkeypatch.setattr(
+        app_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "get_user_apps",
+        lambda db, user_id, organization_id=None: captured.update(
+            {
+                "user_id": user_id,
+                "organization_id": organization_id,
+            }
+        )
+        or ["app"],
+    )
+
+    result = app_endpoint.list_apps(
+        request=object(),
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result == ["app"]
+    assert captured == {
+        "user_id": user.id,
+        "organization_id": organization_id,
+    }
+
+
+def test_create_workflow_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    payload = object()
+    captured = {}
+
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        created_at=SimpleNamespace(isoformat=lambda: "created"),
+        updated_at=SimpleNamespace(isoformat=lambda: "updated"),
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "create_workflow",
+        lambda db, request, user_id, organization_id=None: captured.update(
+            {
+                "request": request,
+                "user_id": user_id,
+                "organization_id": organization_id,
+            }
+        )
+        or workflow,
+    )
+
+    result = workflow_endpoint.create_workflow(
+        request=object(),
+        payload=payload,
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result["id"] == str(workflow.id)
+    assert captured == {
+        "request": payload,
+        "user_id": user.id,
+        "organization_id": organization_id,
+    }
+
+
+class _FakeQuery:
+    def __init__(self, value):
+        self.value = value
+        self.filters = []
+
+    def filter(self, *args, **kwargs):
+        self.filters.extend(args)
+        return self
+
+    def options(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self.value
+
+    def all(self):
+        return self.value
+
+
+class _FakeDb:
+    def __init__(self, value):
+        self.value = value
+        self.query_obj = _FakeQuery(value)
+
+    def query(self, *args, **kwargs):
+        return self.query_obj
+
+
+def test_get_user_apps_filters_by_active_organization_before_permission_filter(monkeypatch):
+    organization_id = uuid.uuid4()
+    app = SimpleNamespace(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+        active_deployment_id=None,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(app_service, "has_organization_manager_permission", lambda *a: True)
+    monkeypatch.setattr(AppService, "_populate_owner_name", lambda *a: None)
+    monkeypatch.setattr(AppService, "_populate_deployment_status", lambda *a: None)
+
+    apps = AppService.get_user_apps(db, uuid.uuid4(), organization_id=organization_id)
+
+    assert apps == [app]
+    assert any(
+        str(getattr(expression, "left", "")) == "apps.organization_id"
+        and expression.operator is eq
+        and expression.right.value == organization_id
+        for expression in db.query_obj.filters
+    )
+
+
+def test_create_workflow_rejects_active_organization_mismatch(monkeypatch):
+    app_organization_id = uuid.uuid4()
+    active_organization_id = uuid.uuid4()
+    app = SimpleNamespace(id=uuid.uuid4(), organization_id=app_organization_id)
+
+    monkeypatch.setattr(
+        workflow_service.AppService,
+        "can_manage_app",
+        lambda db, app, user_id: True,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        WorkflowService.create_workflow(
+            _FakeDb(app),
+            SimpleNamespace(app_id=app.id),
+            user_id=uuid.uuid4(),
+            organization_id=active_organization_id,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.parametrize("manager_field", ["created_by", "managed_by"])
+def test_owner_or_manager_without_membership_can_create_and_list_apps_and_workflows(
+    monkeypatch, manager_field
+):
+    _patch_audit(monkeypatch)
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    organization_kwargs = {"created_by": uuid.uuid4(), "managed_by": None}
+    organization_kwargs[manager_field] = user_id
+    session = _RouteSession(
+        organizations=[_route_organization(id=organization_id, **organization_kwargs)],
+    )
+    _override_route_dependencies(session, user_id)
+
+    try:
+        create_response = TestClient(app).post(
+            "/api/v1/apps",
+            headers={"X-Organization-Id": str(organization_id)},
+            json=_app_payload("Manager App"),
+        )
+        assert create_response.status_code == 200
+        app_id = uuid.UUID(create_response.json()["id"])
+        primary_workflow_id = uuid.UUID(create_response.json()["workflow_id"])
+        assert _has_user_workflow_permission(
+            session,
+            user_id=user_id,
+            workflow_id=primary_workflow_id,
+            organization_id=organization_id,
+            auth_state="manager",
+        )
+
+        list_response = TestClient(app).get(
+            "/api/v1/apps",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+        assert list_response.status_code == 200
+        assert [item["id"] for item in list_response.json()] == [str(app_id)]
+
+        workflow_response = TestClient(app).post(
+            "/api/v1/workflows",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"app_id": str(app_id)},
+        )
+        assert workflow_response.status_code == 200
+        new_workflow_id = uuid.UUID(workflow_response.json()["id"])
+        assert _has_user_workflow_permission(
+            session,
+            user_id=user_id,
+            workflow_id=new_workflow_id,
+            organization_id=organization_id,
+            auth_state="manager",
+        )
+    finally:
+        app.dependency_overrides = {}
+
+
+def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
+    _patch_audit(monkeypatch)
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    session = _RouteSession(
+        organizations=[_route_organization(id=organization_id, created_by=uuid.uuid4())],
+        memberships=[
+            _route_membership(user_id=user_id, organization_id=organization_id)
+        ],
+    )
+    _override_route_dependencies(session, user_id)
+
+    try:
+        create_response = TestClient(app).post(
+            "/api/v1/apps",
+            headers={"X-Organization-Id": str(organization_id)},
+            json=_app_payload("Member App"),
+        )
+        assert create_response.status_code == 200
+        workflow_id = uuid.UUID(create_response.json()["workflow_id"])
+
+        draft_response = TestClient(app).post(
+            f"/api/v1/workflows/{workflow_id}/draft",
+            json={"nodes": [], "edges": []},
+        )
+        assert draft_response.status_code == 200
+        assert draft_response.json()["status"] == "success"
+    finally:
+        app.dependency_overrides = {}
+
+
+def test_workflow_direct_permission_without_active_scope_returns_404(monkeypatch):
+    _patch_audit(monkeypatch)
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    session = _RouteSession(
+        organizations=[_route_organization(id=organization_id, created_by=uuid.uuid4())],
+        apps=[
+            _route_app(
+                id=app_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                created_by=uuid.uuid4(),
+            )
+        ],
+        workflows=[
+            _route_workflow(
+                id=workflow_id,
+                app_id=app_id,
+                organization_id=organization_id,
+                created_by=uuid.uuid4(),
+            )
+        ],
+        user_workflow_permissions=[
+            _route_user_workflow_permission(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                user_id=user_id,
+                auth_state="manager",
+            )
+        ],
+    )
+    _override_route_dependencies(session, user_id)
+
+    try:
+        response = TestClient(app).get(f"/api/v1/workflows/{workflow_id}")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Workflow not found"}
+    finally:
+        app.dependency_overrides = {}
+
+
+def _patch_audit(monkeypatch):
+    monkeypatch.setattr("apps.gateway.utils.audit.record_audit", lambda **kwargs: None)
+    monkeypatch.setattr("apps.gateway.main.record_audit", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "apps.gateway.auth.permissions.record_audit",
+        lambda **kwargs: None,
+    )
+
+
+def _override_route_dependencies(session, user_id):
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+
+def _app_payload(name):
+    return {
+        "name": name,
+        "description": "test app",
+        "icon": {
+            "type": "emoji",
+            "content": "A",
+            "background_color": "#FFFFFF",
+        },
+        "is_market": False,
+    }
+
+
+def _has_user_workflow_permission(
+    session,
+    *,
+    user_id,
+    workflow_id,
+    organization_id,
+    auth_state,
+):
+    return any(
+        permission.user_id == user_id
+        and permission.workflow_id == workflow_id
+        and permission.grantee_organization_id == organization_id
+        and permission.auth_state == auth_state
+        for permission in session.user_workflow_permissions
+    )
+
+
+class _RouteSession:
+    def __init__(
+        self,
+        *,
+        organizations=None,
+        memberships=None,
+        apps=None,
+        workflows=None,
+        users=None,
+        team_workflow_permissions=None,
+        user_workflow_permissions=None,
+    ):
+        self.organizations = list(organizations or [])
+        self.memberships = list(memberships or [])
+        self.apps = list(apps or [])
+        self.workflows = list(workflows or [])
+        self.users = list(users or [])
+        self.team_workflow_permissions = list(team_workflow_permissions or [])
+        self.user_workflow_permissions = list(user_workflow_permissions or [])
+        self.added = []
+        self.committed = False
+        self.refreshed = []
+
+    def query(self, *entities):
+        return _RouteQuery(self, entities)
+
+    def add(self, value):
+        self.added.append(value)
+        if isinstance(value, App):
+            self.apps.append(value)
+        elif isinstance(value, Workflow):
+            self.workflows.append(value)
+        elif isinstance(value, UserWorkflowPermission):
+            self.user_workflow_permissions.append(value)
+
+    def flush(self):
+        now = datetime.now(timezone.utc)
+        for value in self.added:
+            if getattr(value, "id", None) is None:
+                value.id = uuid.uuid4()
+            if (
+                hasattr(value, "created_at")
+                and getattr(value, "created_at", None) is None
+            ):
+                value.created_at = now
+            if (
+                hasattr(value, "updated_at")
+                and getattr(value, "updated_at", None) is None
+            ):
+                value.updated_at = now
+
+    def commit(self):
+        self.flush()
+        self.committed = True
+
+    def refresh(self, value):
+        self.refreshed.append(value)
+
+
+class _RouteQuery:
+    def __init__(self, session, entities):
+        self.session = session
+        self.entities = entities
+        self.model = _model_for_entity(entities[0])
+        self.selected_attribute = _selected_attribute(entities[0])
+        self.filter_expressions = []
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def filter(self, *expressions):
+        self.filter_expressions.extend(expressions)
+        return self
+
+    def options(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        values = self.all()
+        return values[0] if values else None
+
+    def all(self):
+        values = [
+            value
+            for value in self._items()
+            if all(
+                _matches_expression(value, expression)
+                for expression in self.filter_expressions
+            )
+        ]
+        if self.selected_attribute:
+            return [(getattr(value, self.selected_attribute),) for value in values]
+        return values
+
+    def _items(self):
+        if self.model is Organization:
+            return self.session.organizations
+        if self.model is TeamMembership:
+            return self.session.memberships
+        if self.model is App:
+            return self.session.apps
+        if self.model is Workflow:
+            return self.session.workflows
+        if self.model is User:
+            return self.session.users
+        if self.model is TeamWorkflowPermission:
+            return self.session.team_workflow_permissions
+        if self.model is UserWorkflowPermission:
+            return self.session.user_workflow_permissions
+        raise AssertionError(f"Unexpected query model: {self.model}")
+
+
+def _model_for_entity(entity):
+    return getattr(entity, "class_", entity)
+
+
+def _selected_attribute(entity):
+    if getattr(entity, "class_", None) is None:
+        return None
+    return getattr(entity, "key", None)
+
+
+def _matches_expression(value, expression):
+    if not hasattr(expression, "left"):
+        return True
+    left_value = _column_value(value, str(expression.left))
+
+    if expression.operator is eq:
+        right = expression.right
+        right_value = (
+            right.value
+            if hasattr(right, "value")
+            else _column_value(value, str(right))
+        )
+        return _same_value(left_value, right_value)
+    if expression.operator is is_operator:
+        if str(expression.right).lower() == "null":
+            return left_value is None
+        return left_value is (str(expression.right) == "true")
+    raise AssertionError(f"Unexpected filter operator: {expression.operator}")
+
+
+def _same_value(left, right):
+    return left == right or (
+        left is not None and right is not None and str(left) == str(right)
+    )
+
+
+def _column_value(value, column):
+    missing = object()
+    values = {
+        "organization.id": getattr(value, "id", missing),
+        "organization.is_active": getattr(value, "is_active", missing),
+        "users.id": getattr(value, "id", missing),
+        "apps.id": getattr(value, "id", missing),
+        "apps.organization_id": getattr(value, "organization_id", missing),
+        "apps.name": getattr(value, "name", missing),
+        "apps.url_slug": getattr(value, "url_slug", missing),
+        "workflows.id": getattr(value, "id", missing),
+        "workflows.organization_id": getattr(value, "organization_id", missing),
+        "team_memberships.user_id": getattr(value, "user_id", missing),
+        "team_memberships.grantee_organization_id": getattr(
+            value, "grantee_organization_id", missing
+        ),
+        "teams.organization_id": getattr(value, "team_organization_id", missing),
+        "teams.is_active": getattr(value, "team_is_active", missing),
+        "team_workflow_permissions.workflow_id": getattr(value, "workflow_id", missing),
+        "team_workflow_permissions.grantee_organization_id": getattr(
+            value, "grantee_organization_id", missing
+        ),
+        "team_workflow_permissions.team_id": getattr(value, "team_id", missing),
+        "user_workflow_permissions.user_id": getattr(value, "user_id", missing),
+        "user_workflow_permissions.workflow_id": getattr(value, "workflow_id", missing),
+        "user_workflow_permissions.grantee_organization_id": getattr(
+            value, "grantee_organization_id", missing
+        ),
+    }
+    if column not in values:
+        raise AssertionError(f"Unexpected filter column: {column}")
+    if values[column] is missing:
+        raise AssertionError(f"Missing fixture attribute for filter column: {column}")
+    return values[column]
+
+
+def _route_organization(id, created_by, managed_by=None, is_active=True):
+    now = datetime.now(timezone.utc)
+    return Organization(
+        id=id,
+        name="Acme",
+        options={},
+        created_by=created_by,
+        managed_by=managed_by,
+        is_active=is_active,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _route_membership(user_id, organization_id, team_is_active=True):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        grantee_organization_id=organization_id,
+        team_organization_id=organization_id,
+        team_is_active=team_is_active,
+    )
+
+
+def _route_app(id, organization_id, workflow_id, created_by):
+    now = datetime.now(timezone.utc)
+    return App(
+        id=id,
+        organization_id=organization_id,
+        name="Existing App",
+        description="existing",
+        icon={
+            "type": "emoji",
+            "content": "E",
+            "background_color": "#FFFFFF",
+        },
+        workflow_id=workflow_id,
+        url_slug=f"app-{id.hex[:8]}",
+        auth_secret="secret",
+        is_market=False,
+        created_by=created_by,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _route_workflow(id, app_id, organization_id, created_by):
+    now = datetime.now(timezone.utc)
+    return Workflow(
+        id=id,
+        organization_id=organization_id,
+        app_id=app_id,
+        created_by=created_by,
+        graph={"nodes": [], "edges": []},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _route_user_workflow_permission(
+    organization_id,
+    workflow_id,
+    user_id,
+    auth_state,
+):
+    return UserWorkflowPermission(
+        id=uuid.uuid4(),
+        grantee_organization_id=organization_id,
+        workflow_id=workflow_id,
+        user_id=user_id,
+        auth_state=auth_state,
+        assigned_by=user_id,
+        assigned_at=datetime.now(timezone.utc),
+        options={},
+        flags=0,
+    )
+
+
+def test_list_workflows_by_app_hides_outside_scope(monkeypatch):
+    app = SimpleNamespace(id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(
+        workflow_endpoint.AppService,
+        "access_denial_status",
+        lambda db, app_record, user_id, action: 404,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        workflow_endpoint.list_workflows_by_app(
+            str(app.id),
+            db=_FakeDb(app),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "App not found"
+
+
+def test_list_workflows_by_app_returns_403_inside_scope_without_app_read(monkeypatch):
+    app = SimpleNamespace(id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(
+        workflow_endpoint.AppService,
+        "access_denial_status",
+        lambda db, app_record, user_id, action: 403,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        workflow_endpoint.list_workflows_by_app(
+            str(app.id),
+            db=_FakeDb(app),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"

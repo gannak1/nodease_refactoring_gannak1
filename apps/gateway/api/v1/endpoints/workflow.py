@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Date, Integer, cast, func
@@ -17,6 +17,7 @@ from starlette.requests import Request
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.llm_service import LLMService
@@ -101,26 +102,31 @@ def validate_execution_graph(graph: dict):
 
         adjacency[source_id].append(target_id)
 
-    visiting = set()
     visited = set()
 
-    def visit(node_id: str):
-        if node_id in visiting:
-            raise HTTPException(
-                status_code=400,
-                detail=f"워크플로우에 순환 연결이 있습니다. node: {node_id}",
-            )
-        if node_id in visited:
-            return
-
-        visiting.add(node_id)
-        for next_node_id in adjacency.get(node_id, []):
-            visit(next_node_id)
-        visiting.remove(node_id)
-        visited.add(node_id)
-
-    for node_id in node_map.keys():
-        visit(node_id)
+    for start_id in node_map.keys():
+        if start_id in visited:
+            continue
+        # iterative DFS — avoids Python recursion limit on large graphs
+        path: set[str] = set()
+        stack = [(start_id, iter(adjacency.get(start_id, [])))]
+        path.add(start_id)
+        while stack:
+            node_id, children = stack[-1]
+            try:
+                child = next(children)
+                if child in path:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"워크플로우에 순환 연결이 있습니다. node: {child}",
+                    )
+                if child not in visited:
+                    path.add(child)
+                    stack.append((child, iter(adjacency.get(child, []))))
+            except StopIteration:
+                path.discard(node_id)
+                visited.add(node_id)
+                stack.pop()
 
 
 def _patch_compare_graph(
@@ -536,14 +542,24 @@ def get_workflow_stats(
 @router.post("", response_model=WorkflowResponse)
 @audit(AuditAction.WORKFLOW_CREATE)
 def create_workflow(
-    request: WorkflowCreateRequest,
+    request: Request,
+    payload: WorkflowCreateRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     새 워크플로우 생성 (인증 필요)
     """
-    workflow = WorkflowService.create_workflow(db, request, user_id=current_user.id)
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    workflow = WorkflowService.create_workflow(
+        db,
+        payload,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
 
     return {
         "id": str(workflow.id),
@@ -613,8 +629,12 @@ def list_workflows_by_app(
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
 
-    if not AppService.can_read_app(db, app, current_user.id):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    denial_status = AppService.access_denial_status(
+        db, app, current_user.id, "read"
+    )
+    if denial_status is not None:
+        detail = "Forbidden" if denial_status == 403 else "App not found"
+        raise HTTPException(status_code=denial_status, detail=detail)
 
     # 워크플로우 목록 조회
     workflows = db.query(Workflow).filter(Workflow.app_id == app_id).all()
