@@ -63,6 +63,52 @@ Related ADRs:
 - ADR 승격 여부: Yes | No
 ```
 
+## 2026-06-30
+
+### MBA-66 organization_memberships migration 분리
+- 상태: Active
+- 맥락: MBA-66은 organization membership foundation DB/model/migration 추가가 범위이며, API/helper/FE 전환은 후속 이슈 범위다.
+- 결정: `organization_memberships` schema migration과 backfill data migration을 별도 Alembic revision으로 분리한다. Data migration downgrade는 기존 source table로 역전파하지 않는 no-op으로 둔다.
+- 근거: DDL과 DML 실패 원인을 분리하고, backfill 재실행성을 검증하기 쉽다. Backfill row를 기존 `team_memberships`, `organization.created_by`, `organization.managed_by`로 정확히 되돌리는 역변환은 안전하지 않다.
+- 범위: MBA-66 Alembic migrations.
+- 영향 파일: `apps/shared/alembic/versions/*_add_organization_memberships.py`, `apps/shared/alembic/versions/*_backfill_organization_memberships.py`.
+- 관련 문서: [mvp-2-0 organization membership foundation](mvp-2-0-organization-membership-invitation-foundation.md), [physical data model](../data-model/physical-data-model.md)
+- 후속 검토: 운영 데이터 규모가 커지면 backfill batch size와 lock 시간을 별도 migration runbook에서 검토한다.
+- ADR 승격 여부: No
+
+### MBA-66 backfill source와 conflict 처리
+- 상태: Active
+- 맥락: 기존 schema에는 organization 직접 membership row가 없고, 초기 membership은 legacy `team_memberships`, `organization.created_by`, `organization.managed_by`에서 유도해야 한다.
+- 결정: `team_memberships` source는 active member로 upsert하고, `organization.created_by`와 `organization.managed_by` source는 active manager로 upsert한다. 같은 `(organization_id, user_id)`가 충돌하면 manager source를 우선해 `organization_auth_state='manager'`로 승격하고, manager row를 member로 낮추지 않는다. `team_memberships.assigned_by`가 유효하지 않으면 `organization.created_by`를 `invited_by` fallback으로 사용한다.
+- 근거: MBA-66은 데이터 foundation을 만드는 이슈이므로 기존 팀 기반 소속과 organization owner/manager 정보를 모두 보존해야 한다. Invalid `assigned_by` 때문에 유효한 source row 전체를 잃는 것보다 organization creator fallback이 후속 audit/cleanup에 안전하다.
+- 범위: MBA-66 backfill migration.
+- 영향 파일: `apps/shared/alembic/versions/*_backfill_organization_memberships.py`.
+- 관련 문서: [physical data model](../data-model/physical-data-model.md), [RBAC permission policy](../data-model/rbac-permission-policy.md)
+- 후속 검토: MBA-67 helper 전환 시 legacy fallback 제거 또는 유지 기간을 재검토한다.
+- ADR 승격 여부: No
+
+### MBA-66 OrganizationMembership 모델 위치와 export
+- 상태: Active
+- 맥락: 공식 문서는 table schema를 정의하지만 SQLAlchemy model 파일 위치와 상태 상수 export 위치까지 고정하지 않는다.
+- 결정: `OrganizationMembership`은 `apps/shared/db/models/organization_membership.py`에 별도 model로 두고, membership/auth state 문자열 상수와 함께 `apps/shared/db/models/__init__.py`에서 export한다.
+- 근거: 기존 `team.py` 파일에 새 organization membership까지 합치면 후속 membership/permission 추상화가 더 어려워진다. 별도 파일은 MBA-66 범위를 지키면서도 후속 리팩터링에 유리하다.
+- 범위: SQLAlchemy model registry.
+- 영향 파일: `apps/shared/db/models/organization_membership.py`, `apps/shared/db/models/__init__.py`, `apps/shared/alembic/env.py`.
+- 관련 문서: [physical data model](../data-model/physical-data-model.md)
+- 후속 검토: 별도 refactor issue에서 team/user permission mixin 구조를 정리한다.
+- ADR 승격 여부: No
+
+### MBA-66 manager 조회용 추가 index 보류
+- 상태: Active
+- 맥락: `(organization_id, membership_state, organization_auth_state)` index는 후속 manager helper에서 유용할 수 있지만, Linear MBA-66 필수 index 범위에는 없다.
+- 결정: MBA-66에서는 필수 index만 생성하고, manager 조회용 composite index는 만들지 않는다.
+- 근거: MBA-66은 DB foundation 범위이므로 아직 구현되지 않은 helper query를 위해 schema를 선행 확장하지 않는다.
+- 범위: `organization_memberships` index 설계.
+- 영향 파일: `apps/shared/alembic/versions/*_add_organization_memberships.py`, `docs/data-model/physical-data-model.md`.
+- 관련 문서: [physical data model](../data-model/physical-data-model.md)
+- 후속 검토: MBA-67에서 `has_organization_manager_permission`, last-manager guard query가 확정되면 query plan 기준으로 추가 여부를 판단한다.
+- ADR 승격 여부: No
+
 ## 2026-06-27
 
 ### 구현 계획 디렉터리명

@@ -6,7 +6,7 @@ Source of Truth: Yes
 Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
-편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했으며, 현재 검증 기준은 `organization_memberships` 미구현 상태와 `TeamMembership`/`X-Organization-Id` 기반 active organization 흐름을 확인한 commit이다.
+편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation은 구현됐으며, permission helper/API/FE 전환은 후속 Issue 0-2 이후 범위다.
 
 ## 1. 목적
 
@@ -1292,6 +1292,12 @@ Acceptance Criteria:
 - organization creator/manager는 manager membership을 가진다.
 - `(organization_id, user_id)` 중복이 없다.
 - downgrade가 table drop까지 수행된다.
+
+MBA-66 구현 메모:
+
+- `organization_memberships` DB/model/migration foundation을 추가한다.
+- schema migration과 data/backfill migration을 분리한다.
+- API endpoint, permission helper 전환, FE 전환은 Issue 0-2 이후 범위로 유지한다.
 
 ### Issue 0-2. `[BE][RBAC] organization membership 기반 permission helper 전환`
 
