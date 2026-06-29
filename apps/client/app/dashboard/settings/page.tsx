@@ -449,7 +449,14 @@ export default function SettingsPage() {
   };
 
   const handleRegisterCredential = async () => {
-    if (!organization || !credentialForm.providerId || !credentialForm.alias) return;
+    if (
+      !isManager ||
+      !organization ||
+      !credentialForm.providerId ||
+      !credentialForm.alias
+    ) {
+      return;
+    }
     setSubmitting(true);
     try {
       await apiRequest('/llm/credentials', {
@@ -471,6 +478,7 @@ export default function SettingsPage() {
   };
 
   const handleSyncCredential = async (credentialId: string) => {
+    if (!isManager) return;
     setSyncResults((prev) => ({ ...prev, [credentialId]: '동기화 중' }));
     try {
       const result = await apiRequest<{
@@ -490,6 +498,7 @@ export default function SettingsPage() {
   };
 
   const handleDeleteCredential = async (credentialId: string) => {
+    if (!isManager) return;
     if (!confirm('이 credential을 삭제할까요?')) return;
     await apiRequest(`/llm/credentials/${credentialId}`, { method: 'DELETE' });
     await loadData();
@@ -890,7 +899,9 @@ export default function SettingsPage() {
                   <div className="divide-y divide-gray-100">
                     {providerCredentials.length === 0 ? (
                       <div className="px-5 py-4 text-sm text-gray-500">
-                        등록된 credential 없음
+                        {isManager
+                          ? '등록된 credential 없음'
+                          : '접근 가능한 credential이 없습니다. 관리자에게 credential 등록 또는 권한 부여를 요청하세요.'}
                       </div>
                     ) : (
                       providerCredentials.map((credential) => (
@@ -921,25 +932,31 @@ export default function SettingsPage() {
                               </p>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1">
-                            <span className="mr-2 text-xs text-gray-500">
-                              {syncResults[credential.id]}
+                          {isManager ? (
+                            <div className="flex items-center gap-1">
+                              <span className="mr-2 text-xs text-gray-500">
+                                {syncResults[credential.id]}
+                              </span>
+                              <button
+                                onClick={() => handleSyncCredential(credential.id)}
+                                className="rounded-md p-2 text-gray-500 hover:bg-gray-100"
+                                title="모델 동기화"
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteCredential(credential.id)}
+                                className="rounded-md p-2 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                                title="Credential 삭제"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
+                              읽기 전용
                             </span>
-                            <button
-                              onClick={() => handleSyncCredential(credential.id)}
-                              className="rounded-md p-2 text-gray-500 hover:bg-gray-100"
-                              title="모델 동기화"
-                            >
-                              <RefreshCw className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteCredential(credential.id)}
-                              className="rounded-md p-2 text-gray-500 hover:bg-red-50 hover:text-red-600"
-                              title="Credential 삭제"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
+                          )}
                         </div>
                       ))
                     )}
@@ -949,61 +966,74 @@ export default function SettingsPage() {
             })}
           </section>
 
-          <section className="h-fit rounded-lg border border-gray-200 p-5">
-            <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-900">
-              <Key className="h-4 w-4 text-blue-600" />
-              Credential 등록
-            </h2>
-            <div className="space-y-3">
-              <select
-                value={credentialForm.providerId}
-                onChange={(event) =>
-                  setCredentialForm((prev) => ({
-                    ...prev,
-                    providerId: event.target.value,
-                  }))
-                }
-                className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm"
-              >
-                <option value="">Provider 선택</option>
-                {providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>
-                    {provider.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={credentialForm.alias}
-                onChange={(event) =>
-                  setCredentialForm((prev) => ({
-                    ...prev,
-                    alias: event.target.value,
-                  }))
-                }
-                className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm"
-                placeholder="별칭"
-              />
-              <input
-                value={credentialForm.apiKey}
-                onChange={(event) =>
-                  setCredentialForm((prev) => ({
-                    ...prev,
-                    apiKey: event.target.value,
-                  }))
-                }
-                type="password"
-                className="h-10 w-full rounded-md border border-gray-300 px-3 font-mono text-sm"
-                placeholder="API key"
-              />
-              <button
-                onClick={handleRegisterCredential}
-                disabled={submitting}
-                className="h-10 w-full rounded-md bg-blue-600 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                등록 및 모델 동기화
-              </button>
-            </div>
-          </section>
+          {isManager ? (
+            <section className="h-fit rounded-lg border border-gray-200 p-5">
+              <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <Key className="h-4 w-4 text-blue-600" />
+                Credential 등록
+              </h2>
+              <div className="space-y-3">
+                <select
+                  value={credentialForm.providerId}
+                  onChange={(event) =>
+                    setCredentialForm((prev) => ({
+                      ...prev,
+                      providerId: event.target.value,
+                    }))
+                  }
+                  className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm"
+                >
+                  <option value="">Provider 선택</option>
+                  {providers.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={credentialForm.alias}
+                  onChange={(event) =>
+                    setCredentialForm((prev) => ({
+                      ...prev,
+                      alias: event.target.value,
+                    }))
+                  }
+                  className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm"
+                  placeholder="별칭"
+                />
+                <input
+                  value={credentialForm.apiKey}
+                  onChange={(event) =>
+                    setCredentialForm((prev) => ({
+                      ...prev,
+                      apiKey: event.target.value,
+                    }))
+                  }
+                  type="password"
+                  className="h-10 w-full rounded-md border border-gray-300 px-3 font-mono text-sm"
+                  placeholder="API key"
+                />
+                <button
+                  onClick={handleRegisterCredential}
+                  disabled={submitting}
+                  className="h-10 w-full rounded-md bg-blue-600 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  등록 및 모델 동기화
+                </button>
+              </div>
+            </section>
+          ) : (
+            <section className="h-fit rounded-lg border border-gray-200 bg-gray-50 p-5">
+              <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <Key className="h-4 w-4 text-blue-600" />
+                Credential 접근 상태
+              </h2>
+              <p className="text-sm leading-6 text-gray-600">
+                이 화면에서는 접근 가능한 credential만 확인할 수 있습니다.
+                등록, 삭제, 모델 동기화는 관리자에게 요청하세요.
+              </p>
+            </section>
+          )}
         </div>
       ) : (
         <section className="rounded-lg border border-gray-200">
