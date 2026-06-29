@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 점검 범위
 
@@ -14,7 +14,7 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 기준 문서:
 
 - 기존 Moduly 명세: `references/moduly-architecture`
-- Nodease 방향 메모: 삭제된 로컬 참고 자료이며, 구현 기준은 active requirements/data-model/decisions 문서를 따른다.
+- Nodease 방향 메모: 삭제된 로컬 참고 자료이며, 구현 기준은 active requirements/data-model/API 문서를 따른다.
 
 점검 관점:
 
@@ -31,7 +31,7 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 | RBAC를 나중에 붙이면 API/실행 경로를 대거 수정해야 함 | 구조 재작업 | MVP 1에서 resource/permission/checker 먼저 설계 |
 | 과거 `llm_usage_logs.atency_ms` 컬럼 오타 | 집계/조회 오류 | 현재 코드의 `f8a9b0c1d2e3_rename_llm_usage_latency_ms.py` migration과 `LLMUsageLog.latency_ms` 모델/test 기준으로 정리됨. 새 작업은 `latency_ms`만 사용 |
 | trigger mode 로그 매핑이 부정확함 | audit 신뢰도 저하 | MVP 3 전 반드시 수정 |
-| `create_all`과 Alembic 혼재 | 운영 schema 불안정 | MVP 2부터 migration 기준 명확화 |
+| `create_all`과 Alembic 혼재 | 운영 schema 불안정 | 현재 Docker Gateway entrypoint는 `alembic upgrade head`를 실행하고, Gateway lifespan도 `Base.metadata.create_all()`을 수행한다. MVP 2부터가 아니라 현재 운영 schema 전략 리스크로 추적하며, migration-only 원칙 또는 create_all의 개발 전용화 여부를 결정해야 한다. |
 | RAG source별 변경 감지 수준이 다름 | partial re-index 품질 편차 | MVP 2는 FILE/hash 중심으로 시작 |
 | quality score 정의가 모호함 | 추천 신뢰도 저하 | MVP 1~3 모두 rule-based/사용자 평가로 제한 |
 | RBAC 범위 과확장 | 일정 지연 | 프로젝트/캔버스/데이터 소스/모델 중심 |
@@ -103,6 +103,8 @@ cd apps/workflow_engine
 | Partial re-index | chunk-level incremental indexing으로 오해될 수 있었음 | MVP 2에서는 변경 문서 단위 재색인으로 제한 |
 | MVP 3 기존 기반 | `audit_events`, `RAG traces`를 기존 Moduly 기반처럼 표현 | `audit_logs`와 RAG trace metadata 의존으로 수정 |
 | Deployment rollback | 기존 Moduly에 명시적 rollback API는 없지만 `toggle`로 이전 deployment를 다시 활성화할 수 있음 | 별도 rollback 권한은 두지 않고 workflow `deploy/manage`로 다루며, 이전 deployment 활성화 이벤트는 `deployment.activate_previous`로 기록 |
+| Deployment secret 응답 | 보안 원칙은 secret 원문 비노출이지만 현재 생성 응답은 `auth_secret`을 포함할 수 있음 | 현재 코드 현실은 API 문서에 명시하고, masking/removal을 보안 보강 후보로 둔다. |
+| `system admin` provider | trace/LLM pricing 관리 API는 system admin을 요구하지만 기본 Trace RBAC provider는 deny-all | 운영 환경에서 provider 설정 전까지 policy/pricing 관리 API가 `403 system_admin_required`로 차단됨을 문서화하고, provider 연결을 별도 작업으로 추적 |
 
 ## 기준 문서와 정합성이 확인된 항목
 
@@ -148,4 +150,4 @@ cd apps/workflow_engine
 
 ## 현재 결론
 
-현재 `requirements`는 물리 데이터 모델 문서(`data-model/physical-data-model.md`, `data-model/rbac-permission-policy.md`)와 같은 기준을 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`, `audit_events`, `rag_retrieval_traces`는 MVP 목표 상태에서 새로 만들지 않는다. 권한은 현재 코드의 organization/team permission과 resource별 user direct permission으로, audit은 `audit_logs`로, RAG trace는 `trace_payloads`/metadata로 처리한다.
+현재 `requirements`와 물리 데이터 모델 문서(`data-model/physical-data-model.md`, `data-model/rbac-permission-policy.md`)는 current/target 경계를 분리한다. 현재 코드는 organization/team permission과 구현된 workflow/LLM credential user direct permission을 기준으로 한다. MVP 2-0 목표 상태에서는 `organization_memberships`를 organization 소속의 전제 조건으로 추가하고, `team_memberships`는 team 배정 관계로 유지한다. `roles`, `user_roles`, polymorphic `resource_permissions`, `audit_events`, `rag_retrieval_traces`는 MVP 목표 상태에서 새로 만들지 않는다. audit은 `audit_logs`로, RAG trace는 `trace_payloads`/metadata로 처리한다.

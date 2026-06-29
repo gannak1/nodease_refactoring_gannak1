@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs:
 
 ## 목적
@@ -80,10 +80,10 @@ Related ADRs:
 ### RAG chunk 기본값
 
 - 상태: Active
-- 맥락: RAG document preview와 ingestion의 초기 chunk 기본값이 필요하다.
-- 결정: `chunk_size=500`, `chunk_overlap=50`을 기본값으로 사용한다.
-- 근거: 초기 preview 속도와 검색 품질의 균형을 위한 구현 기본값이다.
-- 범위: RAG preview/ingestion 기본 request 값.
+- 맥락: RAG document preview/process와 upload ingestion의 초기 chunk 기본값이 필요하다.
+- 결정: 현재 코드 기준 `DocumentPreviewRequest`/document process는 `chunk_size=500`, `chunk_overlap=50`을 기본값으로 사용한다. `POST /api/v1/rag/upload` Form과 `IngestionOrchestrator` 기본값은 `chunkSize=1000`, `chunkOverlap=200`이다. DB processor의 adaptive chunker fallback은 별도 source config가 없으면 `chunk_size=1000`, `overlap=150`을 사용한다.
+- 근거: preview/process는 빠른 미리보기에 맞춘 값이고, upload ingestion은 기존 RAG upload contract와 저장된 document 기본 응답값에 맞춘 구현 기본값이다.
+- 범위: RAG preview/process request 값, upload ingestion Form 기본값, DB source processor fallback 값.
 - 영향 파일: `api/knowledge-rag.md`, RAG ingestion 관련 구현 파일.
 - 관련 문서: [api/knowledge-rag.md](../api/knowledge-rag.md)
 - 후속 검토: 실제 검색 품질과 비용을 평가한 뒤 조정한다.

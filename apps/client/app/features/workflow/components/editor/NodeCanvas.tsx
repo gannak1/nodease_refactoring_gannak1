@@ -80,6 +80,7 @@ export default function NodeCanvas() {
     isVersionHistoryOpen,
     toggleVersionHistory,
     isFullscreen,
+    workflowAccess,
     setEdges,
     isSettingsOpen,
     toggleSettings,
@@ -171,6 +172,8 @@ export default function NodeCanvas() {
 
   // Publish state
   const canPublish = useWorkflowStore((state) => state.canPublish());
+  const isReadOnly = workflowAccess?.can_write === false;
+  const canExecute = workflowAccess?.can_execute !== false;
 
   useEffect(() => {
     if (!numberConnection) return;
@@ -312,12 +315,12 @@ export default function NodeCanvas() {
   });
 
   useEffect(() => {
-    if (isFullscreen) {
+    if (isFullscreen || isReadOnly) {
       setIsNodeLibraryOpen(false);
     } else {
       setIsNodeLibraryOpen(true);
     }
-  }, [isFullscreen]);
+  }, [isFullscreen, isReadOnly]);
 
   useEffect(() => {
     if (!reactFlowWrapperRef.current) {
@@ -374,6 +377,7 @@ export default function NodeCanvas() {
 
   const handleSelectApp = useCallback(
     async (app: App & { active_deployment_id?: string; version?: number }) => {
+      if (isReadOnly) return;
       const baseNode: Node = {
         id: `workflow-${Date.now()}`,
         type: 'workflowNode',
@@ -420,7 +424,56 @@ export default function NodeCanvas() {
       updateNodeData,
       searchModalContext.position,
       addNode,
+      isReadOnly,
     ],
+  );
+
+  const handleCanvasNodesChange = useCallback(
+    (changes: Parameters<typeof onNodesChange>[0]) => {
+      if (isReadOnly) {
+        const selectionChanges = changes.filter(
+          (change) => change.type === 'select',
+        );
+        if (selectionChanges.length > 0) {
+          onNodesChange(selectionChanges);
+        }
+        return;
+      }
+      onNodesChange(changes);
+    },
+    [isReadOnly, onNodesChange],
+  );
+
+  const handleCanvasEdgesChange = useCallback(
+    (changes: Parameters<typeof onEdgesChange>[0]) => {
+      if (isReadOnly) {
+        const selectionChanges = changes.filter(
+          (change) => change.type === 'select',
+        );
+        if (selectionChanges.length > 0) {
+          onEdgesChange(selectionChanges);
+        }
+        return;
+      }
+      onEdgesChange(changes);
+    },
+    [isReadOnly, onEdgesChange],
+  );
+
+  const handleCanvasConnect = useCallback(
+    (...args: Parameters<typeof onConnect>) => {
+      if (isReadOnly) return;
+      onConnect(...args);
+    },
+    [isReadOnly, onConnect],
+  );
+
+  const handleCanvasDrop = useCallback(
+    (event: React.DragEvent) => {
+      if (isReadOnly) return;
+      onDrop(event);
+    },
+    [isReadOnly, onDrop],
   );
 
   const nodeTypes = useMemo(
@@ -678,7 +731,7 @@ export default function NodeCanvas() {
   );
 
   useCanvasKeyboardShortcuts({
-    isEnabled: true,
+    isEnabled: !isReadOnly,
     isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
     closeMenus: closeCanvasMenus,
     closePanels: closeCanvasPanels,
@@ -708,6 +761,7 @@ export default function NodeCanvas() {
   }, [interactiveMode]);
 
   const handleAutoLayout = useCallback(() => {
+    if (isReadOnly) return;
     const layoutedNodes = calculateAutoLayout(nodes, edges);
     setNodes(layoutedNodes);
 
@@ -724,6 +778,7 @@ export default function NodeCanvas() {
     getViewport,
     updateWorkflowViewport,
     activeWorkflowId,
+    isReadOnly,
   ]);
 
   const currentAppId = useMemo(() => {
@@ -734,6 +789,7 @@ export default function NodeCanvas() {
   // 노드 우클릭 핸들러
   const onNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
+      if (isReadOnly) return;
       event.preventDefault();
       event.stopPropagation();
       setNodeContextMenu({
@@ -744,12 +800,13 @@ export default function NodeCanvas() {
       setEdgeContextMenu(null);
       setContextMenu(null);
     },
-    [],
+    [isReadOnly, setContextMenu, setEdgeContextMenu, setNodeContextMenu],
   );
 
   // Edge 우클릭 핸들러
   const onEdgeContextMenu = useCallback(
     (event: React.MouseEvent, edge: { id: string }) => {
+      if (isReadOnly) return;
       event.preventDefault();
       event.stopPropagation();
       setEdgeContextMenu({
@@ -760,22 +817,24 @@ export default function NodeCanvas() {
       setNodeContextMenu(null);
       setContextMenu(null);
     },
-    [],
+    [isReadOnly, setContextMenu, setEdgeContextMenu, setNodeContextMenu],
   );
 
   // 노드 삭제 핸들러 (React Flow 내부 로직 사용)
   const handleDeleteNode = useCallback(() => {
+    if (isReadOnly) return;
     if (!nodeContextMenu) return;
     deleteElements({ nodes: [{ id: nodeContextMenu.nodeId }] });
     setNodeContextMenu(null);
-  }, [nodeContextMenu, deleteElements]);
+  }, [isReadOnly, nodeContextMenu, deleteElements, setNodeContextMenu]);
 
   // Edge 삭제 핸들러 (React Flow 내부 로직 사용)
   const handleDeleteEdge = useCallback(() => {
+    if (isReadOnly) return;
     if (!edgeContextMenu) return;
     deleteElements({ edges: [{ id: edgeContextMenu.edgeId }] });
     setEdgeContextMenu(null);
-  }, [edgeContextMenu, deleteElements]);
+  }, [isReadOnly, edgeContextMenu, deleteElements, setEdgeContextMenu]);
 
   useEffect(() => {
     const handleClick = () => handleCloseContextMenu();
@@ -991,15 +1050,19 @@ export default function NodeCanvas() {
       </div>
 
       <button
-        onClick={toggleTestPanel}
+        onClick={canExecute ? toggleTestPanel : undefined}
+        disabled={!canExecute}
+        title={canExecute ? '테스트 실행' : '현재 권한으로는 실행할 수 없습니다'}
         className={`flex h-9 items-center gap-1.5 rounded-lg px-4 text-[13px] font-semibold text-white shadow-sm transition-colors ${
-          testExecutionStatus === 'running'
-            ? 'bg-blue-600 hover:bg-blue-700'
-            : testExecutionStatus === 'success'
-              ? 'bg-emerald-600 hover:bg-emerald-700'
-              : testExecutionStatus === 'failure'
-                ? 'bg-red-600 hover:bg-red-700'
-                : 'bg-slate-950 hover:bg-slate-800'
+          !canExecute
+            ? 'cursor-not-allowed bg-gray-300 text-gray-500'
+            : testExecutionStatus === 'running'
+              ? 'bg-blue-600 hover:bg-blue-700'
+              : testExecutionStatus === 'success'
+                ? 'bg-emerald-600 hover:bg-emerald-700'
+                : testExecutionStatus === 'failure'
+                  ? 'bg-red-600 hover:bg-red-700'
+                  : 'bg-slate-950 hover:bg-slate-800'
         }`}
       >
         {testExecutionStatus === 'running' ? (
@@ -1071,22 +1134,24 @@ export default function NodeCanvas() {
                 className="w-full h-full relative"
                 onContextMenu={(e) => e.preventDefault()}
                 onDragOver={handleDragOver}
-                onDrop={onDrop}
+                onDrop={handleCanvasDrop}
                 onWheelCapture={handleNodeWheelZoom}
               >
                 <ReactFlow
                   nodes={nodes}
                   edges={edges}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  onConnect={onConnect}
+                  onNodesChange={handleCanvasNodesChange}
+                  onEdgesChange={handleCanvasEdgesChange}
+                  onConnect={handleCanvasConnect}
                   onMoveEnd={handleMoveEnd}
                   onNodeClick={handleNodeClick}
                   onNodeMouseEnter={handleNodeMouseEnter}
                   onNodeMouseLeave={handleNodeMouseLeave}
-                  onPaneContextMenu={onPaneContextMenu}
+                  onPaneContextMenu={isReadOnly ? undefined : onPaneContextMenu}
                   onNodeContextMenu={onNodeContextMenu}
                   onEdgeContextMenu={onEdgeContextMenu}
+                  nodesDraggable={!isReadOnly}
+                  nodesConnectable={!isReadOnly}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
                   defaultEdgeOptions={defaultEdgeOptions}
@@ -1106,6 +1171,12 @@ export default function NodeCanvas() {
                     color="#cbd5e1"
                   />
                 </ReactFlow>
+
+                {isReadOnly && (
+                  <div className="absolute left-4 top-4 z-30 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 shadow-sm">
+                    {workflowAccess?.auth_state || 'viewer'} · 읽기 전용
+                  </div>
+                )}
 
                 {numberConnection && (
                   <div className="pointer-events-none absolute left-1/2 top-4 z-40 flex -translate-x-1/2 flex-col items-center gap-1">
@@ -1143,7 +1214,7 @@ export default function NodeCanvas() {
                 />
 
                 {/* Context Menu UI */}
-                {contextMenu && (
+                {contextMenu && !isReadOnly && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[180px]"
                     style={{ top: contextMenu.y, left: contextMenu.x }}
@@ -1175,7 +1246,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* 노드 우클릭 삭제 메뉴 */}
-                {nodeContextMenu && (
+                {nodeContextMenu && !isReadOnly && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
                     style={{ top: nodeContextMenu.y, left: nodeContextMenu.x }}
@@ -1192,7 +1263,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* Edge 우클릭 삭제 메뉴 */}
-                {edgeContextMenu && (
+                {edgeContextMenu && !isReadOnly && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
                     style={{ top: edgeContextMenu.y, left: edgeContextMenu.x }}
@@ -1209,7 +1280,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* Context Menu Node Selector Modal */}
-                {isContextNodeSelectorOpen && (
+                {isContextNodeSelectorOpen && !isReadOnly && (
                   <div
                     className="fixed z-50"
                     style={{
@@ -1232,7 +1303,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* Close Node Selector when clicking outside (overlay) */}
-                {isContextNodeSelectorOpen && (
+                {isContextNodeSelectorOpen && !isReadOnly && (
                   <div
                     className="fixed inset-0 z-40"
                     onClick={() => setIsContextNodeSelectorOpen(false)}

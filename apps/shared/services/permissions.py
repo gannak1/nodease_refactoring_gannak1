@@ -79,6 +79,38 @@ def has_organization_manager_permission(
     )
 
 
+def has_organization_scope_access(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> bool:
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return False
+
+    organization = (
+        db.query(Organization).filter(Organization.id == organization_uuid).first()
+    )
+    if not organization or not organization.is_active:
+        return False
+    if _manager_state_for_organization(organization, user_uuid):
+        return True
+
+    return (
+        db.query(TeamMembership)
+        .join(Team, Team.id == TeamMembership.team_id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamMembership.grantee_organization_id == Team.organization_id,
+            Team.is_active.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+
 def _workflow_scope(
     db: Session,
     workflow_id: Any,

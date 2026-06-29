@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
 
 ## 1. 목적
@@ -14,7 +14,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 
 | 기준 | 내용 |
 | --- | --- |
-| 현재 코드 구현 | 로컬 `feature/mba-59` 브랜치의 `b92bc9e0f38588495d228fc0d17b10dfaaed03c1` 코드 |
+| 현재 코드 구현 | 로컬 `dev` 브랜치의 `c990b54e931b4de8023822f6dff14f43fc1d415f` 코드 |
 | MVP 1 목표 문서 | `requirements/mvp-1-foundation-llmops.md` |
 | Linear 참고 | Linear All Issues에서 확인한 미완료 이슈 목록 |
 
@@ -24,9 +24,9 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 
 | 항목 | 값 |
 | --- | --- |
-| 확인 브랜치 | `feature/mba-59` |
-| 확인 commit | `b92bc9e0f38588495d228fc0d17b10dfaaed03c1` |
-| commit 요약 | `fix: 이전 배포 재활성화 감사 액션 분리` |
+| 확인 브랜치 | `dev` |
+| 확인 commit | `c990b54e931b4de8023822f6dff14f43fc1d415f` |
+| commit 요약 | `Merge pull request #98 from nodease/feature/mba-63` |
 | 확인 시점 | 2026-06-29 |
 
 참고한 주요 문서:
@@ -134,8 +134,8 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | Permission vocabulary | `none/viewer/operator/builder/manager/auditor/raw_auditor` 표준과 `read/write/execute/admin` legacy mapping이 구현됨. |
 | Gateway permission dependency | workflow와 LLM credential permission helper, permission API, permission denied audit가 구현됨. endpoint별 회귀 테스트가 남아 있다. |
 | Organization bootstrap | default organization/team/membership helper가 구현됐고 signup/social signup 경로에서 호출됨. |
-| Active organization | `X-Organization-Id` header 방식이 organization/team/permission API에 구현됨. header 없는 legacy 경로에서는 primary organization fallback을 제한적으로 사용한다. |
-| App/Workflow scope | app/workflow 생성은 현재 코드에서 기본 organization fallback을 사용한다. 신규 생성 경로의 explicit active organization header 적용 범위는 추가 정렬 대상이다. |
+| Active organization | `X-Organization-Id` header 방식이 organization/team/permission API와 app 생성/목록/복제, workflow 생성 API에 구현됨. header 없는 fallback은 user directory, LLM credential 생성의 optional `organization_id`, service-level legacy 보정처럼 제한된 경로에 남아 있다. |
+| App/Workflow scope | 현재 Gateway `POST /api/v1/apps`, `GET /api/v1/apps`, `POST /api/v1/apps/{app_id}/clone`, `POST /api/v1/workflows`는 `X-Organization-Id`를 요구한다. `AppService.create_app`/`WorkflowService.create_workflow`에는 직접 service 호출 또는 legacy app 보정용 default organization fallback이 남아 있다. |
 | Workflow enforcement | workflow read/write/execute/stream/runs/stats 주요 endpoint에 `ensure_workflow_permission`이 적용됨. 생성/list/app 경계 회귀 테스트가 남아 있다. |
 | LLM credential scope | credential 등록은 organization manager를 요구하고 `organization_id`를 저장한다. list는 credential `read`, delete/sync는 credential `write`로 필터링한다. |
 | LLM runtime use check | workflow engine LLM node 실행 시 credential `use` 권한과 verified credential-model relation을 평가한다. |
@@ -215,7 +215,7 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 | Additive allow | user direct permission이 team permission을 낮추거나 deny하지 않는지 검증한다. |
 | Gateway dependency | 구현된 `ensure_workflow_permission`, `ensure_llm_credential_permission`의 endpoint 적용 범위를 점검한다. |
 | Organization bootstrap | signup/social signup에서 기본 organization/team/membership 생성이 동작하는지 회귀 테스트한다. |
-| Team management API | team 생성/수정/비활성화, membership 추가/제거, resource permission grant/revoke API를 검증한다. |
+| Team management API | team 생성/수정, membership 추가/제거, `DELETE /api/v1/teams/{team_id}` 비활성화, resource permission grant/revoke API를 검증한다. Team 관리 권한 판정과 team/team member 조회는 `TeamService`가 소유하며, inactive team 비활성화 재시도는 같은 organization manager scope 안에서 idempotent success로 처리한다. |
 | Audit | permission row 생성/수정/삭제와 `permission.denied`가 `audit_logs`에 기록되는지 검증한다. |
 | Trace RBAC 정렬 | trace 접근 제어가 MVP 표준 상태와 legacy mapping을 일관되게 해석하는지 확인한다. |
 | 기존 데이터 호환 | 기존 DB row에 `read/write/execute/admin`이 있으면 현재 compatibility mapping이 의미를 유지하는지 검증한다. |
@@ -292,7 +292,7 @@ Out of Scope:
 목표:
 
 - workflow/app 접근 제어가 현재 구현된 MVP1 RBAC helper를 일관되게 사용하는지 검증한다.
-- app/workflow 생성 경로가 기본 organization fallback과 active organization 정책을 혼용하지 않도록 잔여 scope 처리를 정렬한다.
+- app/workflow Gateway 생성 경로가 `X-Organization-Id` 계약을 지키고, service-level default organization fallback이 신규 route에서 과도하게 열리지 않는지 검증한다.
 - Linear `MBA-36`의 모듈 생성 버그 회귀 조건을 이 범위 안에서 검증한다.
 
 관련 Linear:
@@ -304,7 +304,7 @@ Out of Scope:
 
 | 작업 | 내용 |
 | --- | --- |
-| Active organization 적용 | App/Workflow 생성, 복제, 조회에서 organization scope가 일관되는지 검증하고 누락된 header 적용 범위를 보강한다. |
+| Active organization 적용 | App/Workflow 생성, 복제, 조회에서 organization scope가 일관되는지 검증하고 FE header 전달 누락을 보강한다. |
 | App as project boundary | app 전용 permission table을 만들지 않고 primary workflow permission으로 app 접근을 판단한다. |
 | Workflow read | workflow 상세, draft 조회, runs, stats에 적용된 workflow `read` 권한을 검증한다. |
 | Workflow write | draft 저장에 적용된 workflow `write` 권한을 검증한다. |
@@ -315,8 +315,8 @@ Out of Scope:
 
 구현 방법:
 
-1. `apps/gateway/services/app_service.py`에서 app 생성 organization scope가 기본 organization fallback 또는 active organization 정책과 일관되는지 확인한다.
-2. `apps/gateway/services/workflow_service.py`에서 workflow 생성 organization scope가 app organization 또는 기본 organization fallback과 일관되는지 확인한다.
+1. `apps/gateway/api/v1/endpoints/app.py`에서 app 생성/목록/복제가 `resolve_active_organization_id`를 호출하고, `AppService.create_app` fallback은 service-level legacy 보정으로만 남는지 확인한다.
+2. `apps/gateway/api/v1/endpoints/workflow.py`와 `apps/gateway/services/workflow_service.py`에서 workflow 생성 route는 header organization을 전달하고, service fallback은 organization scope 없는 legacy app 보정에만 쓰이는지 확인한다.
 3. app 생성 시 생성되는 primary workflow도 같은 organization scope를 가진다.
 4. workflow endpoint의 permission helper 적용 범위를 점검한다.
 5. `get_workflow_runs`, `get_workflow_run_detail`, `get_workflow_stats`의 read check를 테스트한다.
@@ -329,8 +329,8 @@ Acceptance Criteria:
 - `viewer`는 workflow 상세/draft/runs/stats를 볼 수 있지만 저장/실행할 수 없다.
 - `operator`는 실행할 수 있지만 draft 저장은 거부된다.
 - `builder`는 draft 저장과 실행이 가능하다.
-- 권한 없는 user는 workflow 존재 여부를 과도하게 노출하지 않도록 403/404 정책이 일관된다.
-- app 생성 시 app과 primary workflow의 `organization_id`가 explicit active organization 또는 문서화된 default organization fallback과 일치한다.
+- 권한 없는 user가 organization scope 밖 resource에 접근하면 `404`로 숨기고, 같은 scope 안에서 action 권한만 부족하면 `403`으로 거부한다.
+- Gateway app 생성 시 app과 primary workflow의 `organization_id`가 `X-Organization-Id`와 일치한다. service-level fallback은 직접 service 호출 또는 legacy app 보정 경로에서만 사용된다.
 - workflow 생성/저장/실행 기존 happy path가 통과한다.
 - Linear `MBA-36`의 재현 조건이 있으면 같은 테스트로 회귀 방지한다.
 
@@ -482,7 +482,7 @@ Out of Scope:
 | Canvas badge | 최근 실행 기준으로 node badge에 cost/token/latency/status 표시 |
 | Failure emphasis | 실패 node와 비용이 큰 node를 시각적으로 구분 |
 | Organization indicator | 현재 organization scope를 nav/header/settings 중 한 곳에 표시 |
-| Team/member UI | team 생성, member 추가/제거, team 비활성화의 최소 화면 제공 |
+| Team/member UI | team 생성, member 추가/제거의 최소 화면 제공. team 비활성화는 구현된 `DELETE /api/v1/teams/{team_id}` 계약과 idempotent success/error 처리를 기준으로 UI를 연결한다. |
 | Permission UI | workflow permission과 LLM credential permission grant/revoke 화면 제공 |
 | User direct grant UI | 특정 user에게 workflow/LLM credential 추가 권한을 부여/회수할 수 있는 최소 UI 제공 |
 | Credential management UI | organization-level credential 등록, model sync, credential preview 확인 |
@@ -629,12 +629,12 @@ Issue 1 RBAC/Organization Foundation
 
 ### 8.1 Active organization 적용 범위
 
-MVP 1의 active organization 전달 방식은 `X-Organization-Id` header로 확정한다. 현재 코드에는 organization/team/permission API에서 header를 검증하는 흐름과, header가 없는 legacy/과도기 경로에서 첫 team membership을 기준으로 organization을 찾는 fallback이 함께 있다.
+MVP 1의 active organization 전달 방식은 `X-Organization-Id` header로 확정한다. 현재 코드에는 organization/team/permission API와 app 생성/목록/복제, workflow 생성 API에서 header를 검증하는 흐름이 있다. header가 없는 fallback은 user directory, LLM credential 생성의 optional `organization_id`, service-level legacy 보정처럼 제한된 경로에 남아 있다.
 
 검증 필요:
 
-- App/Workflow/LLM credential 생성과 조회가 header organization을 일관되게 사용하는지
-- header 없는 legacy fallback이 신규 경로에서 과도하게 열리지 않는지
+- App/Workflow Gateway 생성/목록/복제 경로와 LLM credential 생성/조회가 각자의 organization source를 일관되게 사용하는지
+- header 없는 legacy/service-level fallback이 신규 Gateway route에서 과도하게 열리지 않는지
 - FE nav에서 선택한 organization이 모든 RBAC/permission API 요청에 전달되는지
 
 영향:
@@ -735,7 +735,7 @@ MVP1 완료 기준에는 model 또는 prompt 비교가 있다. 물리 데이터 
 | --- | --- |
 | trace 접근 제어와 legacy `read/write/execute/admin` 호환성 | Issue 1에서 MVP 표준 `auth_state` 기준으로 검증 |
 | signup/social signup bootstrap | Issue 1에서 기본 organization/team/membership 생성 회귀 테스트 |
-| app/workflow 생성 scope | Issue 2에서 default organization fallback과 active organization 정책 정렬 |
+| app/workflow 생성 scope | Issue 2에서 Gateway header contract와 service-level legacy fallback 경계를 검증하고 FE header wiring 보강 |
 | workflow permission endpoint coverage | Issue 2에서 주요 read/write/execute 경로 회귀 테스트 |
 | LLM credential organization/RBAC scope | Issue 3에서 create/read/write/use 경로 회귀 테스트 |
 | LLM runtime credential use 권한 | Issue 3에서 engine-level check 회귀 테스트 |

@@ -1,11 +1,14 @@
+import copy
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import Date, Integer, cast, func
 from sqlalchemy.orm import Session, noload, selectinload
 
@@ -14,6 +17,7 @@ from starlette.requests import Request
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.llm_service import LLMService
@@ -23,6 +27,7 @@ from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.permissions import workflow_auth_state_allows
 
 # [NEW] 로깅 모델 및 스키마
 from apps.shared.db.models.workflow_run import NodeRunStatus, RunStatus, WorkflowRun
@@ -38,9 +43,18 @@ from apps.shared.schemas.workflow import (
     WorkflowDraftRequest,
     WorkflowResponse,
 )
+from apps.shared.services.permissions import get_effective_workflow_auth_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class WorkflowCompareRequest(BaseModel):
+    node_id: str
+    compare_type: Literal["model", "prompt"]
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    left: str
+    right: str
 
 
 def validate_execution_graph(graph: dict):
@@ -88,26 +102,92 @@ def validate_execution_graph(graph: dict):
 
         adjacency[source_id].append(target_id)
 
-    visiting = set()
     visited = set()
 
-    def visit(node_id: str):
-        if node_id in visiting:
-            raise HTTPException(
-                status_code=400,
-                detail=f"워크플로우에 순환 연결이 있습니다. node: {node_id}",
-            )
-        if node_id in visited:
-            return
+    for start_id in node_map.keys():
+        if start_id in visited:
+            continue
+        # iterative DFS — avoids Python recursion limit on large graphs
+        path: set[str] = set()
+        stack = [(start_id, iter(adjacency.get(start_id, [])))]
+        path.add(start_id)
+        while stack:
+            node_id, children = stack[-1]
+            try:
+                child = next(children)
+                if child in path:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"워크플로우에 순환 연결이 있습니다. node: {child}",
+                    )
+                if child not in visited:
+                    path.add(child)
+                    stack.append((child, iter(adjacency.get(child, []))))
+            except StopIteration:
+                path.discard(node_id)
+                visited.add(node_id)
+                stack.pop()
 
-        visiting.add(node_id)
-        for next_node_id in adjacency.get(node_id, []):
-            visit(next_node_id)
-        visiting.remove(node_id)
-        visited.add(node_id)
 
-    for node_id in node_map.keys():
-        visit(node_id)
+def _patch_compare_graph(
+    graph: dict[str, Any],
+    node_id: str,
+    compare_type: Literal["model", "prompt"],
+    value: str,
+) -> dict[str, Any]:
+    patched = copy.deepcopy(graph)
+    for node in patched.get("nodes", []):
+        if str(node.get("id")) != node_id:
+            continue
+        data = node.setdefault("data", {})
+        if compare_type == "model":
+            data["model_id"] = value
+        else:
+            data["user_prompt"] = value
+        validate_execution_graph(patched)
+        return patched
+    raise HTTPException(status_code=400, detail="Compare target node not found")
+
+
+def _extract_node_result(outputs: Any, node_id: str) -> Any:
+    if not isinstance(outputs, dict):
+        return None
+    if node_id in outputs:
+        return outputs[node_id]
+    nested_result = outputs.get("result")
+    if isinstance(nested_result, dict):
+        return nested_result.get(node_id)
+    return None
+
+
+def _format_compare_variant(
+    *,
+    label: str,
+    value: str,
+    node_id: str,
+    status: str,
+    outputs: Any = None,
+    error: str | None = None,
+    latency_ms: int | None = None,
+) -> dict[str, Any]:
+    node_output = _extract_node_result(outputs, node_id)
+    usage = node_output.get("usage") if isinstance(node_output, dict) else {}
+    usage = usage if isinstance(usage, dict) else {}
+    return {
+        "label": label,
+        "value": value,
+        "status": status,
+        "error": error,
+        "outputs": outputs,
+        "node_output": node_output,
+        "model": node_output.get("model") if isinstance(node_output, dict) else None,
+        "total_tokens": usage.get("total_tokens")
+        or usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+        "total_cost": node_output.get("cost", 0.0)
+        if isinstance(node_output, dict)
+        else 0.0,
+        "latency_ms": usage.get("latency_ms") or latency_ms,
+    }
 
 
 # [NEW] 로그 조회 API
@@ -462,14 +542,24 @@ def get_workflow_stats(
 @router.post("", response_model=WorkflowResponse)
 @audit(AuditAction.WORKFLOW_CREATE)
 def create_workflow(
-    request: WorkflowCreateRequest,
+    request: Request,
+    payload: WorkflowCreateRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     새 워크플로우 생성 (인증 필요)
     """
-    workflow = WorkflowService.create_workflow(db, request, user_id=current_user.id)
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    workflow = WorkflowService.create_workflow(
+        db,
+        payload,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
 
     return {
         "id": str(workflow.id),
@@ -498,6 +588,33 @@ def get_workflow(
     }
 
 
+@router.get("/{workflow_id}/permissions/me")
+def get_my_workflow_permission(
+    workflow_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "read")
+    auth_state = get_effective_workflow_auth_state(
+        db,
+        current_user.id,
+        workflow.id,
+        organization_id=workflow.organization_id,
+    )
+    return {
+        "workflow_id": str(workflow.id),
+        "organization_id": str(workflow.organization_id)
+        if workflow.organization_id
+        else None,
+        "auth_state": auth_state,
+        "can_read": workflow_auth_state_allows(auth_state, "read"),
+        "can_write": workflow_auth_state_allows(auth_state, "write"),
+        "can_execute": workflow_auth_state_allows(auth_state, "execute"),
+        "can_deploy": workflow_auth_state_allows(auth_state, "deploy"),
+        "can_manage": workflow_auth_state_allows(auth_state, "manage"),
+    }
+
+
 @router.get("/app/{app_id}", response_model=List[WorkflowResponse])
 def list_workflows_by_app(
     app_id: str,
@@ -512,8 +629,12 @@ def list_workflows_by_app(
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
 
-    if not AppService.can_read_app(db, app, current_user.id):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    denial_status = AppService.access_denial_status(
+        db, app, current_user.id, "read"
+    )
+    if denial_status is not None:
+        detail = "Forbidden" if denial_status == 403 else "App not found"
+        raise HTTPException(status_code=denial_status, detail=detail)
 
     # 워크플로우 목록 조회
     workflows = db.query(Workflow).filter(Workflow.app_id == app_id).all()
@@ -565,6 +686,90 @@ def get_draft_workflow(
     ensure_workflow_permission(db, current_user, workflow_id, "read")
 
     return WorkflowService.get_draft(db, workflow_id)
+
+
+@router.post("/{workflow_id}/compare")
+def compare_workflow_variants(
+    workflow_id: str,
+    request_body: WorkflowCompareRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
+    graph = WorkflowService.get_draft(db, workflow_id)
+    if not graph:
+        raise HTTPException(
+            status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
+        )
+
+    base_context = {
+        "user_id": str(current_user.id),
+        "workflow_id": workflow_id,
+        "organization_id": (
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
+        "app_id": str(workflow.app_id),
+        "trigger_mode": "manual_compare",
+        "request_id": request.headers.get("x-request-id"),
+        "correlation_id": request.headers.get("x-correlation-id"),
+        "compare": {
+            "node_id": request_body.node_id,
+            "compare_type": request_body.compare_type,
+        },
+    }
+
+    def run_variant(label: str, value: str) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            patched_graph = _patch_compare_graph(
+                graph, request_body.node_id, request_body.compare_type, value
+            )
+            task = celery_app.send_task(
+                "workflow.execute",
+                args=[patched_graph, request_body.inputs, base_context],
+                kwargs={"is_deployed": False},
+            )
+            task_result = task.get(timeout=600)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            if task_result.get("status") == "success":
+                return _format_compare_variant(
+                    label=label,
+                    value=value,
+                    node_id=request_body.node_id,
+                    status="success",
+                    outputs=task_result.get("result", {}),
+                    latency_ms=latency_ms,
+                )
+            return _format_compare_variant(
+                label=label,
+                value=value,
+                node_id=request_body.node_id,
+                status="failed",
+                outputs=task_result.get("result", {}),
+                error=task_result.get("error") or "Workflow execution failed",
+                latency_ms=latency_ms,
+            )
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            return _format_compare_variant(
+                label=label,
+                value=value,
+                node_id=request_body.node_id,
+                status="failed",
+                error=str(exc),
+                latency_ms=latency_ms,
+            )
+
+    return {
+        "workflow_id": workflow_id,
+        "node_id": request_body.node_id,
+        "compare_type": request_body.compare_type,
+        "variants": [
+            run_variant("A", request_body.left),
+            run_variant("B", request_body.right),
+        ],
+    }
 
 
 @router.post("/{workflow_id}/execute")

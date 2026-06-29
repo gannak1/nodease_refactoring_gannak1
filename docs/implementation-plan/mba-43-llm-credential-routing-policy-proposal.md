@@ -120,6 +120,87 @@ Pattern 문법:
 - `*-preview`: preview 계열 차단
 - `*vision*`: model id에 `vision`이 포함된 model 차단
 
+## Deferred Decisions
+
+다음 항목은 MBA-43 현재 구현 범위에서 제외하고 후속 티켓에서 정책을 확정한다.
+
+- RAG / ingestion LLM 실행 시 organization context 기준
+  - 요청 사용자 active organization 기준인지 결정이 필요하다.
+  - Knowledge Base 소유 organization 기준인지 결정이 필요하다.
+  - 현재 구현은 이 경로의 organization context 전달을 MBA-43 범위에 포함하지 않는다.
+
+- Scheduler LLM 실행 시 organization context 기준
+  - scheduler 실행은 사용자가 직접 header를 보내는 요청이 아니므로 `X-Organization-Id`를 기대할 수 없다.
+  - `deployment`, `workflow`, `app` 중 어느 resource의 `organization_id`를 execution context로 사용할지 결정이 필요하다.
+  - 현재 구현은 scheduler execution context에 organization id를 추가하지 않는다.
+
+- LLM usage / audit / cost attribution 기준
+  - credential 소유 organization 기준으로 남길지 결정이 필요하다.
+  - 실행 resource 소유 organization 기준으로 남길지 결정이 필요하다.
+  - 두 기준이 다를 때 audit metadata에 어떤 값을 함께 남길지 결정이 필요하다.
+
+- 개인/default organization 실행 UX
+  - 개인 workspace 실행도 default organization id를 명시적으로 전달한다는 정책은 유지한다.
+  - UI/API에서 default organization id를 사용자에게 어떻게 인식시키고 전달할지 결정이 필요하다.
+
+이 항목들은 구현 누락이 아니라 정책 미확정으로 인한 의도적 제외 범위다.
+
+## Current Policy Follow-up Checklist
+
+현재 정책이 수정될 예정이므로 아래 항목은 즉시 구현하지 않고 후속 티켓에서 다시 검토한다.
+이 목록은 현재 문서 기준으로 구현한다면 처리해야 하는 작업을 기록하기 위한 것이다.
+
+### Client organization context propagation
+
+현재 문서 기준을 유지한다면 LLM credential/model API와 wizard API를 직접 호출하는 client 경로는 active organization scope를 전달해야 한다.
+정책이 header 필수 방식에서 fallback 또는 다른 context 방식으로 바뀌면 이 목록을 먼저 갱신한 뒤 구현한다.
+
+확인 대상:
+
+- `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`
+  - `/api/v1/llm/my-models`
+- `apps/client/app/features/workflow/components/editor/memory/MemoryModeControls.tsx`
+  - `/api/v1/llm/credentials`
+- `apps/client/app/features/workflow/components/modals/CodeWizardModal.tsx`
+  - `/api/v1/code-wizard/check-credentials`
+  - `/api/v1/code-wizard/generate`
+- `apps/client/app/features/workflow/components/modals/PromptWizardModal.tsx`
+  - `/api/v1/prompt-wizard/check-credentials`
+  - `/api/v1/prompt-wizard/improve`
+- `apps/client/app/features/workflow/components/modals/TemplateWizardModal.tsx`
+  - `/api/v1/template-wizard/check-credentials`
+  - `/api/v1/template-wizard/improve`
+- `apps/client/app/features/workflow/components/nodes/template/components/TemplateNodePanel.tsx`
+  - `/api/v1/template-wizard/check-credentials`
+- `apps/client/app/features/knowledge/components/change-embedding-model-modal/index.tsx`
+  - `/api/v1/llm/my-embedding-models`
+- `apps/client/app/features/knowledge/components/create-knowledge-modal/index.tsx`
+  - `/api/v1/llm/my-embedding-models`
+- `apps/client/app/features/knowledge/components/knowledge-search-modal/index.tsx`
+  - `/api/v1/llm/my-models`
+- `apps/client/app/features/knowledge/hooks/useGenericCredential.ts`
+  - `/api/v1/llm/credentials`
+
+### Runtime organization context propagation
+
+현재 문서 기준을 유지한다면 runtime LLM 호출은 공통 client 생성 함수에 organization context를 전달해야 한다.
+다만 아래 항목은 정책 기준이 아직 흔들릴 수 있으므로 이번 범위에서 구현하지 않고 deferred decision으로 유지한다.
+
+- RAG / ingestion LLM 호출
+- scheduler LLM 호출
+- usage / audit / cost attribution 기준
+- 개인/default organization 실행 UX
+
+### Permission and error consistency
+
+현재 문서 기준을 유지한다면 다음 일관성 검사를 후속 구현에서 확인한다.
+
+- `X-Organization-Id`와 body `organization_id`가 함께 있으면 mismatch를 `400`으로 처리한다.
+- organization scope가 없으면 credential/model API 요청은 fail-closed 한다.
+- credential이 존재하지 않으면 `404`, 존재하지만 scope 또는 권한이 맞지 않으면 `403`으로 처리한다.
+- model 목록 응답은 사용 가능한 model만 반환하고 `can_use=true`를 명시한다.
+- team/membership model restriction은 `teams.options.model_policy.unallowed_model_patterns`와 `team_memberships.options.model_policy.unallowed_model_patterns` 기준으로 계산한다.
+
 ## Existing Policy Relationship
 
 이 문서는 기존 정책과 충돌하지 않도록 source-of-truth가 아닌 proposed 문서로 둔다.

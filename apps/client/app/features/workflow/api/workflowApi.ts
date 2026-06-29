@@ -3,6 +3,8 @@ import { WorkflowDraftRequest } from '../types/Workflow';
 import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
 import {
   WorkflowCreateRequest,
+  WorkflowCompareResponse,
+  WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
   WorkflowRunListResponse,
@@ -188,6 +190,27 @@ export const workflowApi = {
     }
 
     const response = await api.get(`/workflows/${workflowId}`);
+    return response.data;
+  },
+
+  getWorkflowPermission: async (
+    workflowId: string,
+  ): Promise<WorkflowPermissionResponse> => {
+    const response = await api.get(`/workflows/${workflowId}/permissions/me`);
+    return response.data;
+  },
+
+  compareWorkflow: async (
+    workflowId: string,
+    data: {
+      node_id: string;
+      compare_type: 'model' | 'prompt';
+      inputs: Record<string, unknown>;
+      left: string;
+      right: string;
+    },
+  ): Promise<WorkflowCompareResponse> => {
+    const response = await api.post(`/workflows/${workflowId}/compare`, data);
     return response.data;
   },
 

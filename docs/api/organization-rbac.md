@@ -3,8 +3,8 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
-Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
 ## 범위
@@ -24,6 +24,21 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 
 서버는 active organization을 session/cookie에 저장하지 않는다. `PATCH /organizations/current`는 만들지 않고, header와 path가 일치하는 `PATCH /organizations/{organization_id}`를 사용한다.
 
+## User Directory
+
+| Status | Method | Path | Permission | 설명 |
+| --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/users` | organization `manager` | organization 안의 active team member user 목록 |
+| Implemented | `GET` | `/api/v1/users/me/audit-logs` | authenticated | 현재 user 자신의 audit log 목록 |
+
+`GET /api/v1/users` 현재 구현 세부사항:
+
+- `organization_id` query가 있으면 해당 organization을 사용하고, 없으면 현재 user의 첫 active membership organization을 fallback으로 사용한다.
+- 요청 user가 organization owner/manager가 아니면 `403`을 반환한다.
+- `q` query는 user `name` 또는 `email`에 대한 부분 검색이다.
+- `limit` 기본값은 `50`이고 허용 범위는 `1..200`이다.
+- 응답은 active team membership을 기준으로 distinct user를 반환하며, 비활성 user는 제외한다.
+
 ## Team 관리
 
 | Status | Method | Path | Permission | 설명 |
@@ -31,17 +46,32 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 | Implemented | `GET` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization의 team 목록 |
 | Implemented | `POST` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization에 team 생성 |
 | Implemented | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team 수정 |
+| Implemented | `DELETE` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team 비활성화 |
+| Implemented | `GET` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | active organization 안의 team member 목록 |
 | Implemented | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | active organization 안의 active user를 team member로 추가 |
 | Implemented | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team member 제거 |
+
+Team 관리 API의 현재 구현 세부사항:
+
+- `GET /api/v1/teams`는 `limit` query를 문자열로 받은 뒤 정수 변환을 수행하며 허용 범위는 `1..100`이다. 기본값은 `10`이다.
+- `GET /api/v1/teams`는 organization scope 안의 team을 `name`, `id` 오름차순으로 반환하며, inactive team도 `is_active`, `deactivated_at` 상태 필드와 함께 포함한다.
+- Team API는 `auth_token` cookie를 직접 읽어 인증한다. 인증 실패, validation 실패, scope 실패는 [errors.md](errors.md)의 `{ "error": ... }` 구조로 반환한다.
+- organization owner/manager가 아니지만 해당 organization의 active membership은 있으면 `403 permission.denied`, scope 밖이면 `404 resource.not_found`로 숨긴다.
+- Team 관리 권한 판정, team 목록 조회, team member 목록 조회는 `TeamService`가 소유한다. 등록 router `team.py`는 인증, header/body parsing, response envelope 변환을 담당한다.
+- `PATCH /api/v1/teams/{team_id}`의 `managed_by`는 active user이면서 같은 organization scope 안에 있는 user만 허용한다.
+- `DELETE /api/v1/teams/{team_id}`는 `X-Organization-Id`와 team organization이 일치할 때 team을 inactive로 바꾸고 `{"status": "deactivated"}`를 반환한다. 같은 organization scope 안에서 이미 inactive인 team을 다시 비활성화하면 같은 응답을 idempotent success로 반환한다. 존재하지 않거나 요청 organization 밖의 team은 `404 resource.not_found`로 숨긴다.
+- `GET /api/v1/teams/{team_id}/members` 응답은 `id`, `user_id`, `email`, `name`, `assigned_at`을 반환하며 비활성 user는 제외한다.
 
 ## Resource Permission
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/permissions/workflows/{workflow_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | workflow에 부여된 team/user 권한 목록 |
 | Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | team workflow 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/teams/{team_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | team workflow 권한 회수 |
 | Implemented | `PUT` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | user direct workflow 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/workflows/{workflow_id}/users/{user_id}` | workflow `manage` 또는 organization `manager` + `X-Organization-Id` | user direct workflow 권한 회수 |
+| Implemented | `GET` | `/api/v1/permissions/llm-credentials/{credential_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | LLM credential에 부여된 team/user 권한 목록 |
 | Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | team LLM credential 권한 부여/수정 |
 | Implemented | `DELETE` | `/api/v1/permissions/llm-credentials/{credential_id}/teams/{team_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | team LLM credential 권한 회수 |
 | Implemented | `PUT` | `/api/v1/permissions/llm-credentials/{credential_id}/users/{user_id}` | credential `manage` 또는 organization `manager` + `X-Organization-Id` | user direct LLM credential 권한 부여/수정 |

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
+import { WorkflowCompareResponse } from '../../types/Api';
 import { getNodeOutputVariables } from '../../utils/nodeVariablePorts';
 import type { WorkflowDraftRequest } from '../../types/Workflow';
 import {
@@ -60,6 +61,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     activeWorkflowId,
     setNodes,
     updateNodeData,
+    workflowAccess,
     edges,
     features,
     envVariables,
@@ -86,6 +88,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
+  const [compareResult, setCompareResult] =
+    useState<WorkflowCompareResponse | null>(null);
+  const [isComparing, setIsComparing] = useState(false);
+  const [compareNodeId, setCompareNodeId] = useState('');
+  const [compareType, setCompareType] = useState<'model' | 'prompt'>('model');
+  const [leftValue, setLeftValue] = useState('');
+  const [rightValue, setRightValue] = useState('');
+  const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const isExecuting = testExecutionStatus === 'running';
   const isPreparing =
     preflightStatus === 'validating' || preflightStatus === 'saving';
@@ -94,6 +104,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     executionResult !== null && executionResult !== undefined;
   const nodeResults = testNodeResults;
   const error = testExecutionError;
+  const canExecute = workflowAccess?.can_execute !== false;
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -164,6 +175,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     ];
   }
 
+  const llmNodes = useMemo(
+    () => nodes.filter((node) => node.type === 'llmNode'),
+    [nodes],
+  );
+
   // 패널이 열릴 때 입력값 초기화 (실행 결과는 유지)
   useEffect(() => {
     if (isTestPanelOpen) {
@@ -199,14 +215,55 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
   }, [isTestPanelOpen]);
 
+  useEffect(() => {
+    if (!compareNodeId && llmNodes[0]) {
+      setCompareNodeId(llmNodes[0].id);
+    }
+  }, [compareNodeId, llmNodes]);
+
+  useEffect(() => {
+    const selected = llmNodes.find((node) => node.id === compareNodeId);
+    if (!selected) return;
+    const data = selected.data as any;
+    if (compareType === 'model') {
+      setLeftValue(data.model_id || '');
+      setRightValue(data.fallback_model_id || data.model_id || '');
+    } else {
+      setLeftValue(data.user_prompt || '');
+      setRightValue(data.user_prompt || '');
+    }
+    setCompareResult(null);
+  }, [compareNodeId, compareType, llmNodes]);
+
   if (!isTestPanelOpen) return null;
 
   const handleChange = (name: string, value: any) => {
     setInputs((prev) => ({ ...prev, [name]: value }));
   };
 
+  const buildObservability = (
+    output: any,
+    status: 'success' | 'failure' | 'running',
+    latencyMs?: number,
+  ) => {
+    const usage = output?.usage || {};
+    return {
+      status,
+      model: output?.model,
+      total_tokens:
+        usage.total_tokens ||
+        (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+      total_cost: output?.cost || usage.total_cost || 0,
+      latency_ms: latencyMs,
+    };
+  };
+
   const handleExecute = async () => {
     if (!activeWorkflowId) return;
+    if (!canExecute) {
+      failTestExecution('현재 권한으로는 실행할 수 없습니다.');
+      return;
+    }
 
     setValidationErrors([]);
     setPreflightStatus('validating');
@@ -302,7 +359,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       // 1. 초기화: 모든 노드 상태 초기화
       const initialNodes = nodes.map((node) => ({
         ...node,
-        data: { ...node.data, status: 'idle' },
+        data: { ...node.data, status: 'idle', observability: undefined },
       })) as unknown as any[];
       setNodes(initialNodes);
 
@@ -336,8 +393,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             const { type, data } = event;
 
             if (type === 'node_start') {
+              nodeStartedAtRef.current[data.node_id] = performance.now();
               setCurrentExecutingNode(data.node_id);
-              updateNodeData(data.node_id, { status: 'running' });
+              updateNodeData(data.node_id, {
+                status: 'running',
+                observability: buildObservability(null, 'running'),
+              });
 
               // 실행 중인 노드로 화면 중심 이동 및 줌인
               const latestNodes = useWorkflowStore.getState().nodes;
@@ -354,7 +415,18 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 );
               }
             } else if (type === 'node_finish') {
-              updateNodeData(data.node_id, { status: 'success' });
+              const startedAt = nodeStartedAtRef.current[data.node_id];
+              const latencyMs = startedAt
+                ? Math.round(performance.now() - startedAt)
+                : undefined;
+              updateNodeData(data.node_id, {
+                status: 'success',
+                observability: buildObservability(
+                  data.output,
+                  'success',
+                  latencyMs,
+                ),
+              });
 
               // 노드 실행 완료 토스트
 
@@ -368,7 +440,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               finalResult = data;
             } else if (type === 'error') {
               if (data.node_id) {
-                updateNodeData(data.node_id, { status: 'failure' });
+                const startedAt = nodeStartedAtRef.current[data.node_id];
+                const latencyMs = startedAt
+                  ? Math.round(performance.now() - startedAt)
+                  : undefined;
+                updateNodeData(data.node_id, {
+                  status: 'failure',
+                  observability: buildObservability(null, 'failure', latencyMs),
+                });
               }
               toast.error(`모듈 실행 실패: ${data.message}`);
               throw new Error(data.message);
@@ -406,7 +485,99 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const handleReset = () => {
     setValidationErrors([]);
     setPreflightStatus('idle');
+    setCompareResult(null);
     resetTestExecution();
+  };
+
+  const handleCompare = async () => {
+    if (!activeWorkflowId || !compareNodeId || !leftValue || !rightValue) {
+      return;
+    }
+    if (!canExecute) {
+      toast.error('현재 권한으로는 비교 실행을 할 수 없습니다.');
+      return;
+    }
+
+    setValidationErrors([]);
+    setCompareResult(null);
+    setIsComparing(true);
+    setPreflightStatus('validating');
+
+    try {
+      let compareInputs: Record<string, any> = { ...inputs };
+
+      if (startNode?.type === 'webhookTrigger') {
+        try {
+          const rawJson = inputs['__json_payload__'];
+          compareInputs = JSON.parse(rawJson);
+        } catch {
+          toast.error('유효하지 않은 JSON 형식입니다.');
+          return;
+        }
+      }
+
+      const graphSnapshot = cloneDraft({
+        nodes,
+        edges,
+        viewport: getViewport(),
+        features,
+        envVariables,
+        runtimeVariables,
+      });
+      const validation = validateWorkflowGraph(graphSnapshot);
+
+      if (!validation.ok) {
+        setValidationErrors(validation.errors);
+        toast.error('실행 전 그래프 검증 실패');
+        return;
+      }
+
+      setPreflightStatus('saving');
+      await workflowApi.syncDraftWorkflow(
+        activeWorkflowId,
+        buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
+      );
+
+      const hasFiles = Object.values(files).some((file) => file !== null);
+      if (hasFiles) {
+        setTestUploading(true);
+        try {
+          for (const [key, file] of Object.entries(files)) {
+            if (!file) continue;
+            const presignedData = await knowledgeApi.getPresignedUploadUrl(
+              file.name,
+              file.type || 'application/octet-stream',
+            );
+            await knowledgeApi.uploadToS3(
+              presignedData.upload_url,
+              file,
+              file.type || 'application/octet-stream',
+            );
+            compareInputs[key] = presignedData.upload_url.split('?')[0];
+          }
+        } finally {
+          setTestUploading(false);
+        }
+      }
+
+      const inputsWithMemory = appendMemoryFlag
+        ? appendMemoryFlag(compareInputs)
+        : compareInputs;
+      const result = await workflowApi.compareWorkflow(activeWorkflowId, {
+        node_id: compareNodeId,
+        compare_type: compareType,
+        inputs: inputsWithMemory as Record<string, unknown>,
+        left: leftValue,
+        right: rightValue,
+      });
+      setCompareResult(result);
+    } catch (err: any) {
+      toast.error(err.message || '비교 실행 실패');
+    } finally {
+      setTestUploading(false);
+      setPreflightStatus('idle');
+      setIsComparing(false);
+    }
   };
 
   const getVariableDisplayName = (variable: WorkflowVariable) =>
@@ -626,6 +797,153 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
               )}
             </div>
+
+            {llmNodes.length > 0 && (
+              <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="border-b border-gray-200 bg-gray-50 px-4 py-3 dark:bg-gray-800 dark:border-gray-700">
+                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-200">
+                    Model / Prompt 비교
+                  </h3>
+                </div>
+                <div className="space-y-3 p-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      value={compareNodeId}
+                      onChange={(event) => setCompareNodeId(event.target.value)}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
+                    >
+                      {llmNodes.map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {(node.data as any).title || node.id}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-gray-300 dark:border-gray-700">
+                      {(['model', 'prompt'] as const).map((type) => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setCompareType(type)}
+                          className={`py-2 text-sm font-medium ${
+                            compareType === type
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200'
+                          }`}
+                        >
+                          {type}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {compareType === 'model' ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        value={leftValue}
+                        onChange={(event) => setLeftValue(event.target.value)}
+                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Model A"
+                      />
+                      <input
+                        value={rightValue}
+                        onChange={(event) => setRightValue(event.target.value)}
+                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Model B"
+                      />
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <textarea
+                        value={leftValue}
+                        onChange={(event) => setLeftValue(event.target.value)}
+                        className="min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Prompt A"
+                      />
+                      <textarea
+                        value={rightValue}
+                        onChange={(event) => setRightValue(event.target.value)}
+                        className="min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
+                        placeholder="Prompt B"
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleCompare}
+                    disabled={
+                      isComparing ||
+                      isTestUploading ||
+                      isPreparing ||
+                      !canExecute ||
+                      !leftValue ||
+                      !rightValue
+                    }
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+                  >
+                    {isComparing ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        비교 실행 중...
+                      </>
+                    ) : (
+                      '비교 실행'
+                    )}
+                  </button>
+
+                  {compareResult && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {compareResult.variants.map((variant) => (
+                        <div
+                          key={variant.label}
+                          className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                              {variant.label}
+                            </span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                variant.status === 'success'
+                                  ? 'bg-green-50 text-green-700'
+                                  : 'bg-red-50 text-red-700'
+                              }`}
+                            >
+                              {variant.status}
+                            </span>
+                          </div>
+                          <dl className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                            <div className="flex justify-between gap-2">
+                              <dt>tokens</dt>
+                              <dd>{variant.total_tokens || 0}</dd>
+                            </div>
+                            <div className="flex justify-between gap-2">
+                              <dt>cost</dt>
+                              <dd>
+                                ${Number(variant.total_cost || 0).toFixed(6)}
+                              </dd>
+                            </div>
+                            <div className="flex justify-between gap-2">
+                              <dt>latency</dt>
+                              <dd>{variant.latency_ms || 0}ms</dd>
+                            </div>
+                          </dl>
+                          {variant.error ? (
+                            <p className="mt-2 line-clamp-3 text-xs text-red-600">
+                              {variant.error}
+                            </p>
+                          ) : (
+                            <pre className="mt-2 max-h-32 overflow-auto rounded bg-gray-50 p-2 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                              {JSON.stringify(variant.node_output, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           /* Execution Result */
@@ -698,7 +1016,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {!hasExecutionResult && !error ? (
           <button
             onClick={handleExecute}
-            disabled={isExecuting || isTestUploading || isPreparing}
+            disabled={isExecuting || isTestUploading || isPreparing || !canExecute}
             className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
           >
             {isExecuting || isTestUploading || isPreparing ? (
@@ -715,7 +1033,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             ) : (
               <>
                 <Play className="w-4 h-4" />
-                실행하기
+                {canExecute ? '실행하기' : '실행 권한 없음'}
               </>
             )}
           </button>
