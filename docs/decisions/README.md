@@ -30,6 +30,7 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 | [ADR-202606290124-mvp2-classification-metadata-storage](ADR-202606290124-mvp2-classification-metadata-storage.md) | Accepted | MVP 2 classification metadata 저장 방식 | `documents.meta_info` 사용 가능. `knowledge_bases.classification`, `documents.classification` column 없음 |
 | [ADR-202606290131-audit-action-naming-standard](ADR-202606290131-audit-action-naming-standard.md) | Accepted | Audit action naming 표준 | `AuditAction` 상수 기준으로 주요 action 구현. permission row 변경은 `*_permission.created/updated/deleted` data-change audit도 기록 |
 | [ADR-202606290145-active-organization-header-context](ADR-202606290145-active-organization-header-context.md) | Accepted | Active organization header context 승인 | organization/team/permission API에서 `X-Organization-Id` 검증 구현 |
+| [ADR-202606291315-resource-access-403-404-policy](ADR-202606291315-resource-access-403-404-policy.md) | Accepted | Resource 접근 403/404 정책 | App/Workflow에서 organization scope 밖은 `404`, scope 안 action 권한 부족은 `403` |
 
 ## 상태 의미
 

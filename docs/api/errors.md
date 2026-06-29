@@ -4,6 +4,7 @@ Status: Draft
 Authority: API
 Source of Truth: Yes
 Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
 
@@ -47,6 +48,31 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 | `409` | 중복 또는 상태 충돌 |
 | `422` | Pydantic/FastAPI validation 실패 |
 | `500` | 서버 내부 오류 |
+
+## Resource 접근 403/404 경계
+
+App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
+
+- 리소스가 없으면 `404 resource.not_found`를 반환한다.
+- 요청 user가 리소스의 organization scope 밖이면 `404 resource.not_found`로 숨긴다.
+- 요청 user가 같은 organization scope 안에 있지만 필요한 resource action 권한이 없으면 `403 permission.denied`를 반환한다.
+- 목록 API는 접근 가능한 resource만 반환하고 숨겨진 resource 수는 노출하지 않는다.
+
+현재 App/Workflow endpoint의 403/404 응답 body는 기존 호환을 위해 plain FastAPI `detail` 형식이다.
+
+```json
+{
+  "detail": "Forbidden"
+}
+```
+
+```json
+{
+  "detail": "App not found"
+}
+```
+
+위 reason code는 정책과 목표 envelope 기준이며, App/Workflow plain `detail` 응답을 전역 envelope로 정렬하는 작업은 별도 변경으로 다룬다.
 
 ## Reason Code
 
