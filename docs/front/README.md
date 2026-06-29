@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
+Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
 
 이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 
@@ -61,6 +61,7 @@ Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 | [rbac-permission-api-integration.md](rbac-permission-api-integration.md) | organization, team, workflow permission API 연결과 상태 반영 기준 |
 | [rbac-permission-ui-qa.md](rbac-permission-ui-qa.md) | RBAC workflow 권한 UI QA 시나리오와 기대 결과 |
 | [rbac-mvp1-manager-member-home-settings.md](rbac-mvp1-manager-member-home-settings.md) | MBA-71 manager/member 홈·설정 화면 분리와 team 기반 멤버 관리 UX |
+| [module-list-access-operations-ui.md](module-list-access-operations-ui.md) | 내 모듈 화면의 team/RBAC 기반 운영형 목록, 권한/배포/검색·필터 UX |
 
 ## 현재 RBAC 프론트 작업 문서
 
@@ -74,8 +75,9 @@ RBAC와 workflow 권한 UI 구현을 위해 현재 정리된 작업 문서는 �
 | `rbac-permission-api-integration.md` | `/organizations`, `/teams`, `/permissions/workflows` 등 프론트 API 연결 방식 |
 | `rbac-permission-ui-qa.md`           | 권한 조합별 테스트 케이스와 기대 결과                                                                                  |
 | `rbac-mvp1-manager-member-home-settings.md` | manager/member 홈·설정 화면 분리, team 기반 멤버 관리, member 권한 표시와 제외 범위 |
+| `module-list-access-operations-ui.md` | `/dashboard/mymodule`의 운영형 모듈 목록, 권한 badge, 배포 상태, 검색·필터 기준 |
 
-`/api/v1/workflows/{workflow_id}/permissions/me`는 코드와 프론트 작업 문서에서 사용하는 조회 endpoint지만, 최종 API 계약은 `api/` 문서에 보강되어야 한다. API 문서 보강 전까지 이 endpoint 설명은 프론트 연동 TODO로만 취급한다.
+`/api/v1/workflows/{workflow_id}/permissions/me`의 기본 effective permission 계약은 `api/apps-workflows.md`를 따른다. 다만 team/direct grant 출처를 보여주기 위한 `sources` 확장은 아직 API 계약에 없으므로, 프론트 문서에서는 별도 보강 TODO로 다룬다.
 
 ## RBAC 프론트 문서 작성 기준
 
