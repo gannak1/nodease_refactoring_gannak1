@@ -102,10 +102,7 @@ const getNextAvailableNodeNumber = (usedNumbers: Set<number>) => {
   return nextNumber;
 };
 
-export const getNextNodeDisplayNumber = (
-  nodes: AppNode[],
-  _features?: Features,
-) => {
+export const getNextNodeDisplayNumber = (nodes: AppNode[]) => {
   return getNextAvailableNodeNumber(getUsedNodeNumbers(nodes));
 };
 
@@ -123,16 +120,15 @@ export const withNodeDisplayNumber = <T extends AppNode>(
 export const createNumberedNode = <T extends AppNode>(
   node: T,
   nodes: AppNode[],
-  features?: Features,
 ) => {
   if (!shouldAssignNodeDisplayNumber(node)) {
     return {
       node: withoutNodeDisplayNumber(node),
-      nextNodeDisplayNumber: getNextNodeDisplayNumber(nodes, features),
+      nextNodeDisplayNumber: getNextNodeDisplayNumber(nodes),
     };
   }
 
-  const displayNumber = getNextNodeDisplayNumber(nodes, features);
+  const displayNumber = getNextNodeDisplayNumber(nodes);
   return {
     node: withNodeDisplayNumber(node, displayNumber),
     nextNodeDisplayNumber: displayNumber + 1,
