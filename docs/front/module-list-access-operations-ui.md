@@ -50,6 +50,7 @@ Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
 ### 현재 App 응답으로 가능한 표시
 
 `AppResponse` 기준으로 프론트가 바로 표시할 수 있는 값은 다음이다.
+이 섹션의 배포 상태 계산은 `/apps/operations` 구현 전 FE-only fallback 기준이다.
 
 | 필드 | 화면 의미 |
 | --- | --- |
@@ -322,7 +323,7 @@ GET /api/v1/apps
 
 ### 목표 API 보강 제안
 
-장기적으로는 다음 API가 필요하다. 이 endpoint는 프론트 작업 문서의 미승인 제안이며, `docs/api/`에 반영되기 전까지 구현 기준이나 API 계약으로 취급하지 않는다.
+장기적으로는 다음 API가 필요하다. MBA-76에서 이 endpoint는 `docs/api/apps-workflows.md`에 구현 계약으로 반영한다. 프론트는 배포 환경에서 API rollout 상태에 맞춰 feature flag를 조정하고, fallback이 필요한 동안에는 FE-only 조합 adapter를 사용할 수 있다.
 
 ```text
 GET /api/v1/apps/operations
@@ -337,33 +338,43 @@ GET /api/v1/apps/operations
       "id": "...",
       "name": "고객 문의 분류",
       "description": "...",
+      "icon": { "type": "emoji", "content": "📨", "background_color": "#E0F2FE" },
       "workflow_id": "...",
       "owner_name": "어드민",
+      "created_at": "...",
       "updated_at": "..."
     },
     "permission": {
+      "workflow_id": "...",
+      "organization_id": "...",
       "auth_state": "builder",
       "can_read": true,
       "can_write": true,
       "can_execute": true,
       "can_deploy": false,
-      "can_manage": false,
-      "sources": []
+      "can_manage": false
     },
+    "permission_status": "loaded",
+    "permission_sources": [],
     "deployment": {
       "state": "active",
-      "type": "webhook"
+      "deployment_id": "...",
+      "type": "webhook",
+      "is_active": true
     },
     "latest_run": {
       "state": "success",
+      "run_id": "...",
+      "raw_status": "success",
       "started_at": "...",
-      "finished_at": "..."
+      "finished_at": "...",
+      "error_message": null
     }
   }
 ]
 ```
 
-이 API는 FE에서 N+1 permission/run 조회를 줄이고, 검색/필터를 서버로 넘길 수 있게 한다.
+실제 응답 field contract는 `docs/api/apps-workflows.md`의 `AppOperationRow` 계약을 우선한다. 이 API는 FE에서 N+1 permission/run 조회를 줄이고, 검색/필터를 서버로 넘길 수 있게 한다.
 
 ## 화면 상태
 

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: feature/mba-76 @ 1b7ed0c0d00ca98c505810db73ae2df451f0d5e9
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -16,6 +16,7 @@ App/project boundary, workflow CRUD, draft, execute, stream, run detail 계약�
 | --- | --- | --- | --- | --- | --- |
 | Implemented | `POST` | `/api/v1/apps` | `AppCreateRequest` | `AppResponse` | authenticated + `X-Organization-Id` active organization scope |
 | Implemented | `GET` | `/api/v1/apps` | query | `AppResponse[]` | `X-Organization-Id` active organization scope + app read |
+| Implemented | `GET` | `/api/v1/apps/operations` | query | `AppOperationRow[]` | `X-Organization-Id` active organization scope + app read |
 | Implemented | `GET` | `/api/v1/apps/explore` | query | `AppResponse[]` | authenticated explore read |
 | Implemented | `GET` | `/api/v1/apps/{app_id}` | 없음 | `AppResponse` | app read |
 | Implemented | `PATCH` | `/api/v1/apps/{app_id}` | `AppUpdateRequest` | `AppResponse` | app settings/manage |
@@ -28,6 +29,171 @@ App 생성과 clone으로 생성되는 primary workflow에는 생성자 user dir
 현재 `AppResponse`에는 `url_slug`와 `auth_secret`이 포함된다. `auth_secret` 원문 비노출은 목표 보안 원칙이며, 현재 schema와 서비스가 masking/removal을 적용하기 전까지 app 조회/생성/복제 응답에서 노출될 수 있다.
 
 현재 backend contract에서 `POST /apps`, `GET /apps`, `POST /apps/{app_id}/clone`, `POST /workflows`는 `X-Organization-Id` header를 요구한다. Header가 없으면 `400 organization.required`가 발생한다. MBA-71 프론트 변경 기준 `appApi`는 공통 `apiClient`를 통해 active organization header를 자동 첨부한다. `workflowApi`와 `webhookApi`처럼 별도 axios instance를 쓰는 wrapper는 `attachActiveOrganizationHeader` helper로 같은 header 정책을 적용한다.
+
+### `GET /api/v1/apps/operations`
+
+MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow effective permission, 권한 출처, 배포 상태, 최근 run 상태를 한 화면에서 비교할 수 있도록 화면 단위 summary를 반환한다.
+
+이 endpoint는 `GET /api/v1/apps`를 대체하는 범용 app list가 아니다. 내 모듈 운영 목록 화면에 필요한 safe summary만 반환한다.
+
+#### Request
+
+| Query | Type | Required | 설명 |
+| --- | --- | --- | --- |
+| `q` | string | No | app 이름/설명 부분 검색 |
+| `permission` | string | No | `viewer`, `operator`, `builder`, `manager` 등 effective workflow `auth_state` 필터 |
+| `deployment_state` | string | No | `active`, `inactive`, `undeployed` |
+| `run_state` | string | No | `running`, `success`, `failed`, `not_started`, `unavailable` |
+| `limit` | integer | No | 기본 `50`, 허용 범위 `1..100` |
+| `offset` | integer | No | 기본 `0` |
+
+현재 구현은 `q`, `permission`, `deployment_state`, `run_state`, `limit`, `offset`을 지원한다.
+
+#### Response
+
+```json
+[
+  {
+    "app": {
+      "id": "uuid",
+      "name": "고객 문의 분류",
+      "description": "문의 내용을 분류하고 담당 팀을 추천합니다.",
+      "icon": { "type": "emoji", "content": "📨", "background_color": "#E0F2FE" },
+      "workflow_id": "uuid",
+      "owner_name": "Admin User",
+      "created_at": "2026-06-29T00:00:00Z",
+      "updated_at": "2026-06-29T00:00:00Z"
+    },
+    "permission": {
+      "workflow_id": "uuid",
+      "organization_id": "uuid",
+      "auth_state": "builder",
+      "can_read": true,
+      "can_write": true,
+      "can_execute": true,
+      "can_deploy": false,
+      "can_manage": false
+    },
+    "permission_status": "loaded",
+    "permission_sources": [],
+    "deployment": {
+      "state": "active",
+      "deployment_id": "uuid",
+      "type": "webhook",
+      "is_active": true
+    },
+    "latest_run": {
+      "state": "success",
+      "run_id": "uuid",
+      "raw_status": "success",
+      "started_at": "2026-06-29T00:00:00Z",
+      "finished_at": "2026-06-29T00:00:05Z",
+      "error_message": null
+    }
+  }
+]
+```
+
+#### Field contract
+
+##### `AppOperationAppSummary`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `id` | UUID | app id |
+| `name` | string | app 이름 |
+| `description` | string \| null | app 설명 |
+| `icon` | `AppIcon` \| null | 목록 표시용 icon |
+| `workflow_id` | UUID \| null | primary workflow id |
+| `owner_name` | string \| null | 생성자 표시 이름. 사용자 이름이 없으면 email 또는 `null` |
+| `created_at` / `updated_at` | datetime | app 생성/수정 시각 |
+
+`AppOperationAppSummary`는 `AppResponse` 전체를 그대로 반환하지 않는다. `url_slug`, `auth_secret`처럼 운영 목록에 필요 없거나 secret 성격이 있는 필드는 반환하지 않는다.
+
+##### `AppOperationPermissionSummary`
+
+`permission`은 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 effective permission payload와 같은 action boolean 의미를 사용한다.
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `workflow_id` | UUID | workflow id |
+| `organization_id` | UUID \| null | workflow organization id |
+| `auth_state` | string | `none`, `viewer`, `operator`, `builder`, `manager` |
+| `can_read` / `can_write` / `can_execute` / `can_deploy` / `can_manage` | boolean | action 허용 여부 |
+
+`permission_status`는 row별 permission 계산 상태다.
+
+| Value | 의미 |
+| --- | --- |
+| `loaded` | permission 계산 성공 |
+| `failed` | permission 계산 실패. 이 경우 `permission_error`를 포함할 수 있다. |
+| `not_available` | 연결된 workflow가 없어 계산 대상이 없음 |
+
+현재 구현은 permission 계산 예외를 row 단위로 숨기지 않는다. `failed`와 `permission_error`는 향후 row-level partial failure를 도입할 때를 위한 예약 상태다.
+
+`permission_sources`는 MBA-74 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 `sources` 계약과 동일한 의미를 사용한다. 현재 구현은 빈 배열을 반환하고, MBA-74 구현 후 같은 source schema로 채운다.
+
+##### `AppOperationDeploymentSummary`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `state` | string | `active`, `inactive`, `undeployed` |
+| `deployment_id` | UUID \| null | `active`이면 active deployment id. `inactive`이면 최근 deployment id를 반환할 수 있고, 이력 join을 하지 않는 초기 구현에서는 `null` 가능. `undeployed`이면 `null` |
+| `type` | string \| null | deployment type. `undeployed`이면 `null` |
+| `is_active` | boolean \| null | deployment 활성 여부. `undeployed`이면 `null` |
+
+`state` 계산 기준:
+
+- `app.active_deployment_id`가 있고 연결된 deployment `is_active == true`이면 `active`
+- `app.active_deployment_id is null`이고 workflow/app에 deployment 이력이 있으면 `inactive`
+- deployment 이력이 없으면 `undeployed`
+
+현재 구현은 deployment 이력을 조회해 `inactive`를 계산한다.
+
+##### `AppOperationLatestRunSummary`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `state` | string | `running`, `success`, `failed`, `not_started`, `unavailable` |
+| `run_id` | UUID \| null | 최신 run id |
+| `raw_status` | string \| null | DB/API 원본 run status |
+| `started_at` / `finished_at` | datetime \| null | 최신 run 시작/종료 시각 |
+| `error_message` | string \| null | 실패 사유 요약 |
+
+`error_message`는 raw payload를 포함하지 않는 요약 메시지만 반환한다. secret, token, credential, prompt/completion 원문은 포함하지 않으며 필요 시 redacted string 또는 `null`로 처리한다.
+
+`latest_run`은 현재 user가 해당 workflow `read` 권한을 가진 row에 대해서만 계산한다. 권한 없는 app/workflow의 run 정보는 row 자체를 반환하지 않는다.
+
+상태 계산 기준:
+
+| Source | `state` |
+| --- | --- |
+| 최신 run 없음 | `not_started` |
+| `running` | `running` |
+| `success` | `success` |
+| `failed`, `stopped` | `failed` |
+| 상태 계산 실패 또는 source unavailable | `unavailable` |
+
+현재 DB `workflow_runs.status` 기준 source 값은 `running`, `success`, `failed`, `stopped`다. 대문자 또는 `pending`, `queued`, `in_progress`, `completed`, `error` 같은 legacy/외부 상태값은 방어적 normalize 대상으로만 처리한다.
+
+#### Permission and scope
+
+- `X-Organization-Id`는 필수다. Header가 없으면 `400 organization.required`를 반환한다.
+- active organization scope 밖이면 `404 resource.not_found`로 숨긴다.
+- 응답 row는 현재 user가 app read 권한을 가진 app만 포함한다.
+- organization manager는 active organization 안의 app을 볼 수 있다.
+- 일반 member는 workflow effective `read` 이상 권한이 있는 app만 볼 수 있다.
+- run/deployment join 과정에서 권한 없는 workflow, 다른 organization workflow, inactive organization resource가 누출되면 안 된다.
+- partial failure가 발생해도 권한 없는 resource를 placeholder row로 반환하지 않는다. 권한 계산 실패가 같은 scope 안의 내부 오류이면 해당 row의 `permission_status="failed"`와 `permission_error`를 사용할 수 있다.
+
+#### Implementation notes
+
+- 기본 정렬은 `app.updated_at desc`, `app.name asc`를 권장한다.
+- FastAPI route는 `/apps/{app_id}`보다 `/apps/operations`를 먼저 등록해야 한다. 그렇지 않으면 `operations`가 `app_id` path param으로 해석될 수 있다.
+- 최신 run은 `workflow_runs.started_at desc` 기준 1건을 사용한다.
+- App, owner, active deployment, latest run, deployment history 조회는 service-level aggregation으로 묶는다. Effective permission 계산은 현재 workflow permission helper를 사용한다.
+- 권한 출처는 MBA-74와 같은 `team`/`user` source schema를 사용한다. 같은 source schema를 두 endpoint에서 중복 정의하지 말고 shared schema로 분리하는 것을 권장한다.
+- 새로운 aggregate table은 만들지 않는다. MVP 기준 source of truth는 `apps`, `workflows`, `workflow_deployments`, `workflow_runs`, `team_workflow_permissions`, `user_workflow_permissions`, `organization_memberships`, `team_memberships`다.
 
 ## Workflow 엔드포인트
 

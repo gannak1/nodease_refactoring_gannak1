@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
@@ -10,10 +10,21 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
-from apps.shared.schemas.app import AppCreateRequest, AppResponse, AppUpdateRequest
+from apps.shared.schemas.app import (
+    AppCreateRequest,
+    AppOperationRow,
+    AppResponse,
+    AppUpdateRequest,
+)
 from apps.gateway.services.app_service import AppService
 
 router = APIRouter()
+
+OperationPermissionFilter = Literal["viewer", "operator", "builder", "manager"]
+OperationDeploymentFilter = Literal["active", "inactive", "undeployed"]
+OperationRunFilter = Literal[
+    "running", "success", "failed", "not_started", "unavailable"
+]
 
 
 def _app_access_exception(status_code: int) -> HTTPException:
@@ -110,6 +121,38 @@ def list_apps(
         db, user_id=current_user.id, organization_id=organization_id
     )
     return apps
+
+
+@router.get("/operations", response_model=List[AppOperationRow])
+def list_app_operations(
+    request: Request,
+    q: str | None = Query(default=None),
+    permission: OperationPermissionFilter | None = Query(default=None),
+    deployment_state: OperationDeploymentFilter | None = Query(default=None),
+    run_state: OperationRunFilter | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    내 모듈 운영 현황 summary 조회
+    """
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    return AppService.list_app_operations(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+        q=q,
+        permission=permission,
+        deployment_state=deployment_state,
+        run_state=run_state,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{app_id}", response_model=AppResponse)

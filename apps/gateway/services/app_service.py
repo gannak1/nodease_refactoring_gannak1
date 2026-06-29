@@ -1,16 +1,30 @@
 import copy
 import secrets
+from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.shared.db.models.app import App
 from apps.shared.db.models.team import UserWorkflowPermission
-from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.permissions import AUTH_STATE_MANAGER
-from apps.shared.schemas.app import AppCreateRequest, AppUpdateRequest
+from apps.shared.permissions import workflow_auth_state_allows
+from apps.shared.schemas.app import (
+    AppOperationAppSummary,
+    AppOperationDeploymentSummary,
+    AppOperationLatestRunSummary,
+    AppOperationPermissionSummary,
+    AppOperationRow,
+    AppCreateRequest,
+    AppUpdateRequest,
+)
 from apps.shared.services.permissions import (
+    get_effective_workflow_auth_state,
     has_organization_scope_access,
     has_organization_manager_permission,
     has_workflow_permission,
@@ -242,6 +256,279 @@ class AppService:
             AppService._populate_deployment_status(db, app)
 
         return apps
+
+    @staticmethod
+    def list_app_operations(
+        db: Session,
+        user_id,
+        organization_id: str,
+        q: str | None = None,
+        permission: str | None = None,
+        deployment_state: str | None = None,
+        run_state: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[AppOperationRow]:
+        query = db.query(App).options(joinedload(App.active_deployment))
+        if organization_id:
+            query = query.filter(App.organization_id == organization_id)
+        if q:
+            pattern = f"%{q.strip()}%"
+            query = query.filter(
+                (App.name.ilike(pattern)) | (App.description.ilike(pattern))
+            )
+
+        apps = query.order_by(App.updated_at.desc(), App.name.asc()).all()
+        readable_apps = [
+            app for app in apps if AppService.can_read_app(db, app, user_id)
+        ]
+        should_filter_computed_fields = bool(
+            permission or deployment_state or run_state
+        )
+        candidate_apps = (
+            readable_apps
+            if should_filter_computed_fields
+            else readable_apps[offset : offset + limit]
+        )
+
+        owner_names = AppService._owner_names_by_id(
+            db, [app.created_by for app in candidate_apps if app.created_by]
+        )
+        latest_runs = AppService._latest_runs_by_workflow_id(
+            db, [app.workflow_id for app in candidate_apps if app.workflow_id]
+        )
+        deployment_history = AppService._deployment_history_by_app_id(
+            db, [app.id for app in candidate_apps]
+        )
+
+        rows = [
+            AppService._build_operation_row(
+                app,
+                user_id,
+                owner_names,
+                latest_runs,
+                deployment_history,
+                db,
+            )
+            for app in candidate_apps
+        ]
+
+        filtered_rows = [
+            row
+            for row in rows
+            if AppService._matches_operation_filters(
+                row, permission, deployment_state, run_state
+            )
+        ]
+        if should_filter_computed_fields:
+            return filtered_rows[offset : offset + limit]
+        return filtered_rows
+
+    @staticmethod
+    def _build_operation_row(
+        app: App,
+        user_id,
+        owner_names: dict[Any, str | None],
+        latest_runs: dict[Any, WorkflowRun],
+        deployment_history: dict[Any, WorkflowDeployment],
+        db: Session,
+    ) -> AppOperationRow:
+        permission_summary = None
+        permission_status = "not_available"
+        permission_error = None
+
+        if app.workflow_id:
+            auth_state = get_effective_workflow_auth_state(
+                db, user_id, app.workflow_id, organization_id=app.organization_id
+            )
+            permission_summary = AppOperationPermissionSummary(
+                workflow_id=app.workflow_id,
+                organization_id=app.organization_id,
+                auth_state=auth_state,
+                can_read=workflow_auth_state_allows(auth_state, "read"),
+                can_write=workflow_auth_state_allows(auth_state, "write"),
+                can_execute=workflow_auth_state_allows(auth_state, "execute"),
+                can_deploy=workflow_auth_state_allows(auth_state, "deploy"),
+                can_manage=workflow_auth_state_allows(auth_state, "manage"),
+            )
+            permission_status = "loaded"
+
+        return AppOperationRow(
+            app=AppOperationAppSummary(
+                id=app.id,
+                name=app.name,
+                description=app.description,
+                icon=app.icon,
+                workflow_id=app.workflow_id,
+                owner_name=owner_names.get(app.created_by),
+                created_at=app.created_at,
+                updated_at=app.updated_at,
+            ),
+            permission=permission_summary,
+            permission_status=permission_status,
+            permission_sources=[],
+            permission_error=permission_error,
+            deployment=AppService._operation_deployment_summary(
+                app, deployment_history.get(app.id)
+            ),
+            latest_run=AppService._operation_latest_run_summary(
+                latest_runs.get(app.workflow_id)
+            ),
+        )
+
+    @staticmethod
+    def _owner_names_by_id(db: Session, user_ids: list[Any]) -> dict[Any, str | None]:
+        if not user_ids:
+            return {}
+        users = db.query(User).filter(User.id.in_(set(user_ids))).all()
+        return {user.id: user.name or user.email for user in users}
+
+    @staticmethod
+    def _latest_runs_by_workflow_id(
+        db: Session, workflow_ids: list[Any]
+    ) -> dict[Any, WorkflowRun]:
+        if not workflow_ids:
+            return {}
+
+        latest_run_ids = (
+            db.query(
+                WorkflowRun.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=WorkflowRun.workflow_id,
+                    order_by=[WorkflowRun.started_at.desc(), WorkflowRun.id.desc()],
+                )
+                .label("row_number"),
+            )
+            .filter(WorkflowRun.workflow_id.in_(set(workflow_ids)))
+            .subquery()
+        )
+        runs = (
+            db.query(WorkflowRun)
+            .join(latest_run_ids, WorkflowRun.id == latest_run_ids.c.id)
+            .filter(latest_run_ids.c.row_number == 1)
+            .all()
+        )
+        latest_by_workflow_id = {}
+        for run in runs:
+            latest_by_workflow_id.setdefault(run.workflow_id, run)
+        return latest_by_workflow_id
+
+    @staticmethod
+    def _deployment_history_by_app_id(
+        db: Session, app_ids: list[Any]
+    ) -> dict[Any, WorkflowDeployment]:
+        if not app_ids:
+            return {}
+
+        latest_deployment_ids = (
+            db.query(
+                WorkflowDeployment.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=WorkflowDeployment.app_id,
+                    order_by=[
+                        WorkflowDeployment.created_at.desc(),
+                        WorkflowDeployment.id.desc(),
+                    ],
+                )
+                .label("row_number"),
+            )
+            .filter(WorkflowDeployment.app_id.in_(set(app_ids)))
+            .subquery()
+        )
+        deployments = (
+            db.query(WorkflowDeployment)
+            .join(
+                latest_deployment_ids,
+                WorkflowDeployment.id == latest_deployment_ids.c.id,
+            )
+            .filter(latest_deployment_ids.c.row_number == 1)
+            .all()
+        )
+        latest_by_app_id = {}
+        for deployment in deployments:
+            latest_by_app_id.setdefault(deployment.app_id, deployment)
+        return latest_by_app_id
+
+    @staticmethod
+    def _operation_deployment_summary(
+        app: App, latest_deployment: WorkflowDeployment | None
+    ) -> AppOperationDeploymentSummary:
+        active_deployment = app.active_deployment
+        if active_deployment and active_deployment.is_active:
+            return AppOperationDeploymentSummary(
+                state="active",
+                deployment_id=active_deployment.id,
+                type=AppService._enum_value(active_deployment.type),
+                is_active=True,
+            )
+        if latest_deployment:
+            return AppOperationDeploymentSummary(
+                state="inactive",
+                deployment_id=latest_deployment.id,
+                type=AppService._enum_value(latest_deployment.type),
+                is_active=False,
+            )
+        return AppOperationDeploymentSummary(state="undeployed")
+
+    @staticmethod
+    def _operation_latest_run_summary(
+        run: WorkflowRun | None,
+    ) -> AppOperationLatestRunSummary:
+        if not run:
+            return AppOperationLatestRunSummary(state="not_started")
+
+        raw_status = AppService._enum_value(run.status)
+        state = AppService._operation_run_state(raw_status)
+        return AppOperationLatestRunSummary(
+            state=state,
+            run_id=run.id,
+            raw_status=raw_status,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            error_message=AppService._safe_error_message(run.error_message),
+        )
+
+    @staticmethod
+    def _operation_run_state(status: str | None) -> str:
+        normalized = str(status or "").lower()
+        if normalized in {"running", "pending", "queued", "in_progress"}:
+            return "running"
+        if normalized in {"success", "succeeded", "completed"}:
+            return "success"
+        if normalized in {"failed", "failure", "error", "stopped"}:
+            return "failed"
+        return "unavailable"
+
+    @staticmethod
+    def _safe_error_message(message: str | None) -> str | None:
+        if not message:
+            return None
+        return "execution_failed"
+
+    @staticmethod
+    def _enum_value(value: Any) -> Any:
+        return getattr(value, "value", value)
+
+    @staticmethod
+    def _matches_operation_filters(
+        row: AppOperationRow,
+        permission: str | None,
+        deployment_state: str | None,
+        run_state: str | None,
+    ) -> bool:
+        if permission and row.permission:
+            if row.permission.auth_state != permission:
+                return False
+        elif permission:
+            return False
+
+        if deployment_state and row.deployment.state != deployment_state:
+            return False
+        if run_state and row.latest_run.state != run_state:
+            return False
+        return True
 
     @staticmethod
     def list_explore_apps(db: Session, user_id):
