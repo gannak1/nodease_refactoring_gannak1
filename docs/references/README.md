@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Reference
 Source of Truth: No
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 참조 문서는 active source of truth가 아니다.
 

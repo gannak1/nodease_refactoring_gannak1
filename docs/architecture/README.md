@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Architecture
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 아키텍처 문서는 서비스 경계, 런타임 흐름, 보안/RBAC 적용 위치를 정의한다.
 
@@ -19,3 +19,8 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 - Controller에서 DB를 직접 상세 조회해 권한 판단을 하지 않는다.
 - RBAC, tracing access, audit recording은 service/helper 경계에서 수행한다.
 - DB schema의 최종 기준은 [data-model/](../data-model/README.md)를 따른다.
+
+현재 구현 예외:
+
+- 일부 Gateway endpoint에는 과도기 controller/service-local helper 권한 판단이 남아 있다. Team 관리 API는 권한 판정과 team/team member 조회를 `TeamService`로 이관했지만, user directory와 permission management 계열 API는 router/service 경계에서 DB query와 permission helper를 직접 조합한다.
+- 따라서 위 원칙은 목표 architecture rule이며, 현재 코드와 맞출 때는 각 API 문서의 "현재 구현 세부사항"을 함께 확인한다.

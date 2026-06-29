@@ -3,12 +3,12 @@
 Status: Proposed
 Authority: Decision
 Source of Truth: No
-Verified Against: origin/dev @ 5def9053fe5d72e7ac67fe2e27c8545a5124791d
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Created At: 2026-06-27 15:59 KST
 
 ## 배경
 
-현재 tracing RBAC 코드는 `read`, `write`, `execute`, `admin` 값을 사용한다. MVP 목표 권한 모델은 application-level 상태로 `none`, `viewer`, `operator`, `builder`, `manager`, `auditor`, `raw_auditor`를 사용한다.
+이 ADR 작성 당시 일부 권한 경로는 `read`, `write`, `execute`, `admin` 값을 사용했다. 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 코드는 `none`, `viewer`, `operator`, `builder`, `manager`, `auditor`, `raw_auditor`를 application-level 표준 상태로 사용하고, legacy `read/write/execute/admin` 값은 compatibility mapping으로 해석한다.
 
 두 체계를 동시에 방치하면 권한 판정, UI 표시, migration, 테스트 기준이 흔들릴 수 있다.
 
@@ -22,7 +22,7 @@ Created At: 2026-06-27 15:59 KST
 
 ## 결정
 
-아직 확정하지 않는다. 현재 계획은 MVP 상태를 표준으로 삼고, 기존 row에 `read/write/execute/admin`이 남아 있으면 compatibility mapping으로 해석하는 것이다.
+이 ADR 자체는 Proposed 상태로 남긴다. 최종 승인은 [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)에서 이루어졌고, 현재 active 기준은 MVP 상태를 표준으로 삼으며 기존 row의 `read/write/execute/admin`은 compatibility mapping으로 해석하는 것이다.
 
 ## 영향
 
@@ -33,6 +33,6 @@ Created At: 2026-06-27 15:59 KST
 
 ## 후속 검토
 
-- migration 전 정확한 mapping 표를 확정한다.
-- `apps/shared/services/tracing/rbac.py`의 권한 해석을 표준값 기준으로 정리한다.
-- legacy 값과 신규 값 모두에 대한 테스트를 추가한다.
+- mapping 표는 후속 Accepted ADR의 `read -> viewer`, `execute -> operator`, `write -> builder`, `admin -> manager`를 따른다.
+- `apps/shared/services/tracing/rbac.py`는 shared permission helper의 effective workflow auth state와 compatibility mapping을 사용한다.
+- legacy 값과 신규 값 모두에 대한 테스트를 유지한다.

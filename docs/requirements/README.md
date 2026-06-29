@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 요구사항 문서는 무엇을 만들지와 MVP별 완료 기준을 정의한다.
 

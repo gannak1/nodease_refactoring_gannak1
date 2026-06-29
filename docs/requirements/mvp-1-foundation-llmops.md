@@ -3,8 +3,8 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
-Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 
 ## 목표
 
@@ -40,7 +40,7 @@ MVP 1 최소 UI:
 | UI 영역 | 필요한 기능 |
 | --- | --- |
 | Organization context | 현재 organization 표시. 다중 organization switcher 완성은 필수 아님 |
-| Team/member management | team 생성, member 추가/제거, team 비활성화 |
+| Team/member management | team 생성, member 추가/제거, team 비활성화. 현재 Gateway는 `DELETE /api/v1/teams/{team_id}`를 제공하며 같은 organization scope 안 inactive team 재시도는 idempotent success로 처리한다. |
 | Permission management | workflow/LLM credential의 team permission 부여/회수 |
 | User direct permission | 특정 user에게 workflow/LLM credential 추가 권한 부여/회수 |
 | Credential management | organization-level credential 등록, model sync, credential preview |
@@ -50,6 +50,24 @@ MVP 1 최소 UI:
 | Canvas observability | LLM node badge 또는 node panel에 cost/token/latency/status 표시 |
 | Compare UI | model/prompt A/B 실행 결과, 비용, latency 비교 |
 | Audit/activity UI | 권한 차단/실행 이벤트 확인 |
+
+현재 frontend 권한 UI는 완전한 fail-closed 상태가 아니다. `GET /workflows/{workflow_id}/permissions/me` 로드가 실패하거나 아직 `workflowAccess`가 `null`인 동안 일부 editor/test/autosync UI는 `!== false` 조건으로 허용처럼 보일 수 있고, 최종 차단은 backend permission enforcement에 의존한다. MVP 1 완료 기준은 이 fallback을 명확한 loading/error/read-only 상태로 정렬하는 것이다.
+
+현재 Gateway team router는 `DELETE /api/v1/teams/{team_id}`를 노출한다. 요청에는 `X-Organization-Id`와 organization `manager` 권한이 필요하며, active team은 inactive로 전환하고 이미 inactive인 scoped team은 `{"status": "deactivated"}`를 idempotent success로 반환한다. 따라서 MVP 1의 남은 작업은 `/dashboard/settings` UI가 이 계약과 오류 상태를 일관되게 처리하는지 검증하는 것이다.
+
+현재 코드 기준 주요 프론트 라우트:
+
+| 흐름 | 실제 라우트 |
+| --- | --- |
+| Dashboard home | `/dashboard` |
+| My modules | `/dashboard/mymodule` |
+| Explore/marketplace | `/dashboard/explore` |
+| Statistics | `/dashboard/statistics` |
+| Workflow editor | `/modules/{id}` |
+| Workflow report/log/monitoring | `/modules/{id}/report` |
+| LLM credential provider settings | `/dashboard/settings` (`/dashboard/settings/provider`는 redirect) |
+| Organization/team/permission settings 기반 | `/dashboard/settings` |
+| Knowledge base list/detail/document | `/dashboard/knowledge`, `/dashboard/knowledge/{id}`, `/dashboard/knowledge/{id}/document/{documentId}` |
 
 ## 기존 Moduly 상태와 재사용
 
@@ -422,7 +440,7 @@ LLMOps Observability:
 작업:
 
 - 현재 organization 표시
-- team 생성/수정/비활성화 UI
+- team 생성/수정 UI, member 추가/제거 UI, `DELETE /api/v1/teams/{team_id}` 기반 team 비활성화 UI
 - team member 추가/제거 UI
 - workflow permission 부여/회수 UI
 - LLM credential permission 부여/회수 UI
