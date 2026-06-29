@@ -89,25 +89,30 @@ def ensure_llm_credential_permission(
     current_user: User,
     credential_id: Any,
     action: str,
+    organization_id: Any = None,
 ) -> LLMCredential:
+    # Ensures LLM credential access inside the requested organization scope MBA-43
     credential = (
         db.query(LLMCredential).filter(LLMCredential.id == credential_id).first()
     )
     if not credential:
         raise HTTPException(status_code=404, detail="Credential not found")
 
+    requested_organization_id = (
+        organization_id if organization_id is not None else credential.organization_id
+    )
     effective_auth_state = get_effective_llm_credential_auth_state(
         db,
         current_user.id,
         credential.id,
-        organization_id=credential.organization_id,
+        organization_id=requested_organization_id,
     )
     if not has_llm_credential_permission(
         db,
         current_user.id,
         credential.id,
         action,
-        organization_id=credential.organization_id,
+        organization_id=requested_organization_id,
     ):
         record_permission_denied(
             current_user,

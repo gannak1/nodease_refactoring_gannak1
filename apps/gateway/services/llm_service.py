@@ -26,6 +26,7 @@ from apps.shared.schemas.llm import (
 from apps.shared.services.permissions import (
     has_llm_credential_permission,
     has_organization_manager_permission,
+    is_llm_model_blocked_by_policy,
 )
 from apps.shared.services.llm_client import get_llm_client
 from apps.shared.services.llm_usage_context import resolve_llm_usage_context
@@ -519,16 +520,25 @@ class LLMService:
 
     @staticmethod
     def get_user_credentials(
-        db: Session, user_id: uuid.UUID
+        db: Session, user_id: uuid.UUID, organization_id: Optional[uuid.UUID] = None
     ) -> List[LLMCredentialResponse]:
         """사용자의 유효한 크리덴셜 목록 조회."""
-        valid_credentials = (
-            db.query(LLMCredential).filter(LLMCredential.is_valid == True).all()
-        )
+        # Lists credentials in the active organization scope using read permission MBA-43
+        organization_uuid = LLMService._coerce_optional_uuid(organization_id)
+        query = db.query(LLMCredential).filter(LLMCredential.is_valid == True)
+        if organization_uuid:
+            query = query.filter(LLMCredential.organization_id == organization_uuid)
+        valid_credentials = query.all()
         readable_credentials = [
             credential
             for credential in valid_credentials
-            if has_llm_credential_permission(db, user_id, credential.id, "read")
+            if has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "read",
+                organization_id=organization_uuid,
+            )
         ]
         return [
             LLMCredentialResponse.model_validate(c) for c in readable_credentials
@@ -536,12 +546,16 @@ class LLMService:
 
     @staticmethod
     def register_credential(
-        db: Session, user_id: uuid.UUID, request: LLMCredentialCreate
+        db: Session,
+        user_id: uuid.UUID,
+        request: LLMCredentialCreate,
+        organization_id: Optional[uuid.UUID] = None,
     ) -> LLMCredentialResponse:
         """
         사용자의 새 크리덴셜을 등록합니다.
         프로바이더 API 키 검증과 모델 동기화를 함께 수행합니다.
         """
+        # Creates credentials under the resolved organization scope MBA-43
         # 1. 프로바이더 조회
         provider = (
             db.query(LLMProvider).filter(LLMProvider.id == request.provider_id).first()
@@ -563,8 +577,10 @@ class LLMService:
                 "입력하신 키는 Anthropic 형식을 따르고 있습니다. OpenAI가 아닌 Anthropic을 선택했는지 확인해주세요."
             )
 
-        organization_id = request.organization_id or ensure_user_default_organization(
-            db, user_id
+        organization_id = (
+            organization_id
+            or request.organization_id
+            or ensure_user_default_organization(db, user_id)
         )
         if not has_organization_manager_permission(db, user_id, organization_id):
             raise PermissionError("Credential creation requires organization manager")
@@ -612,9 +628,14 @@ class LLMService:
 
     @staticmethod
     def delete_credential(
-        db: Session, credential_id: uuid.UUID, user_id: uuid.UUID
+        db: Session,
+        credential_id: uuid.UUID,
+        user_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID] = None,
     ) -> bool:
         """크리덴셜을 실제 삭제하지 않고 비활성화 처리."""
+        # Deactivates credentials only inside the resolved organization scope MBA-43
+        organization_uuid = LLMService._coerce_optional_uuid(organization_id)
         cred = (
             db.query(LLMCredential)
             .filter(LLMCredential.id == credential_id)
@@ -623,7 +644,13 @@ class LLMService:
 
         if not cred:
             return False
-        if not has_llm_credential_permission(db, user_id, cred.id, "write"):
+        if not has_llm_credential_permission(
+            db,
+            user_id,
+            cred.id,
+            "write",
+            organization_id=organization_uuid,
+        ):
             return False
 
         cred.is_valid = False
@@ -636,6 +663,7 @@ class LLMService:
         user_id: uuid.UUID,
         credential_id: uuid.UUID,
         purge_unverified: bool = False,
+        organization_id: Optional[uuid.UUID] = None,
     ) -> Dict[str, Any]:
         """
         특정 크리덴셜 기준으로 모델 매핑을 재동기화합니다.
@@ -643,6 +671,8 @@ class LLMService:
         - 해당 크리덴셜의 모든 매핑을 unverified 처리 후,
           원격 모델에 포함된 것만 verified로 설정 (fail-closed)
         """
+        # Resyncs credential-model relations within the resolved organization scope MBA-43
+        organization_uuid = LLMService._coerce_optional_uuid(organization_id)
         cred = (
             db.query(LLMCredential)
             .options(joinedload(LLMCredential.provider))
@@ -654,7 +684,13 @@ class LLMService:
 
         if not cred:
             raise ValueError("Credential not found")
-        if not has_llm_credential_permission(db, user_id, cred.id, "write"):
+        if not has_llm_credential_permission(
+            db,
+            user_id,
+            cred.id,
+            "write",
+            organization_id=organization_uuid,
+        ):
             raise ValueError("Credential not found")
 
         if not cred.is_valid:
@@ -730,6 +766,7 @@ class LLMService:
         우선순위:
         1. llm_rel_credential_models에서 명시적 권한 확인 (fail-closed)
         """
+        # Builds a runtime LLM client after organization-scoped credential selection MBA-43
         # 1. 프로바이더를 알기 위해 모델 조회
         # 참고: model_id 문자열은 'gpt-4o'처럼 흔한 값일 수 있음.
         # 동일한 모델명을 제공하는 프로바이더가 여러 개일 수 있으므로(드물지만), 추가 정보가 필요할 수 있음.
@@ -754,6 +791,7 @@ class LLMService:
             user_id=user_id,
             model_db_id=target_model.id,
             organization_id=organization_id,
+            model_id_for_policy=target_model.model_id_for_api_call,
         )
 
         if not cred:
@@ -800,13 +838,10 @@ class LLMService:
         provider_id: Optional[uuid.UUID] = None,
         model_db_id: Optional[uuid.UUID] = None,
         organization_id: Optional[uuid.UUID] = None,
+        model_id_for_policy: Optional[str] = None,
     ) -> Optional[LLMCredential]:
-        organization_uuid = None
-        if organization_id:
-            try:
-                organization_uuid = uuid.UUID(str(organization_id))
-            except (TypeError, ValueError):
-                return None
+        # Selects a runtime credential after use permission and model policy checks MBA-43
+        organization_uuid = LLMService._coerce_optional_uuid(organization_id)
 
         query = db.query(LLMCredential).filter(
             LLMCredential.is_valid == True,
@@ -829,25 +864,37 @@ class LLMService:
             )
 
         for credential in query.all():
-            if has_llm_credential_permission(
+            if not has_llm_credential_permission(
                 db,
                 user_id,
                 credential.id,
                 "use",
                 organization_id=organization_uuid,
             ):
-                return credential
+                continue
+            if LLMService._is_model_blocked_for_user(
+                db,
+                user_id=user_id,
+                organization_id=organization_uuid,
+                model_id=model_id_for_policy,
+            ):
+                continue
+            return credential
         return None
 
     @staticmethod
     def get_my_available_models(
-        db: Session, user_id: uuid.UUID
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID] = None,
     ) -> List[LLMModelResponse]:
         """
         사용자의 등록된 크리덴셜을 기반으로 사용 가능한 모든 모델을 반환합니다.
         llm_rel_credential_models 기준으로 허용된 모델만 반환합니다.
         """
-        rows = (
+        # Lists readable models and annotates runtime use availability MBA-43
+        organization_uuid = LLMService._coerce_optional_uuid(organization_id)
+        query = (
             db.query(LLMModel, LLMCredential.id)
             .join(
                 LLMRelCredentialModel,
@@ -863,30 +910,61 @@ class LLMService:
                 LLMRelCredentialModel.is_verified == True,
                 LLMModel.is_active == True,
             )
-            .order_by(LLMModel.name)
-            .all()
         )
+        if organization_uuid:
+            query = query.filter(LLMCredential.organization_id == organization_uuid)
+        rows = query.order_by(LLMModel.name).all()
 
-        models = []
-        seen_model_ids = set()
+        models_by_id: Dict[uuid.UUID, LLMModelResponse] = {}
         for model, credential_id in rows:
-            if model.id in seen_model_ids:
+            if not has_llm_credential_permission(
+                db,
+                user_id,
+                credential_id,
+                "read",
+                organization_id=organization_uuid,
+            ):
                 continue
-            if has_llm_credential_permission(db, user_id, credential_id, "use"):
-                models.append(model)
-                seen_model_ids.add(model.id)
 
-        return [LLMModelResponse.model_validate(m) for m in models]
+            if model.id not in models_by_id:
+                response = LLMModelResponse.model_validate(model)
+                response.can_use = False
+                models_by_id[model.id] = response
+
+            if models_by_id[model.id].can_use:
+                continue
+
+            has_use_permission = has_llm_credential_permission(
+                db,
+                user_id,
+                credential_id,
+                "use",
+                organization_id=organization_uuid,
+            )
+            is_blocked = LLMService._is_model_blocked_for_user(
+                db,
+                user_id=user_id,
+                organization_id=organization_uuid,
+                model_id=model.model_id_for_api_call,
+            )
+            if has_use_permission and not is_blocked:
+                models_by_id[model.id].can_use = True
+
+        return list(models_by_id.values())
 
     @staticmethod
     def get_my_embedding_models(
-        db: Session, user_id: uuid.UUID
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID] = None,
     ) -> List[LLMModelResponse]:
         """
         사용자의 크리덴셜에 기반하여 사용 가능한 임베딩 모델 목록을 반환합니다.
         get_my_available_models와 동일하지만 type='embedding'으로 필터링됩니다.
         """
-        rows = (
+        # Lists readable embedding models and annotates runtime use availability MBA-43
+        organization_uuid = LLMService._coerce_optional_uuid(organization_id)
+        query = (
             db.query(LLMModel, LLMCredential.id)
             .join(
                 LLMRelCredentialModel,
@@ -903,19 +981,74 @@ class LLMService:
                 LLMModel.is_active == True,
                 LLMModel.type == "embedding",
             )
-            .all()
         )
+        if organization_uuid:
+            query = query.filter(LLMCredential.organization_id == organization_uuid)
+        rows = query.all()
 
-        models = []
-        seen_model_ids = set()
+        models_by_id: Dict[uuid.UUID, LLMModelResponse] = {}
         for model, credential_id in rows:
-            if model.id in seen_model_ids:
+            if not has_llm_credential_permission(
+                db,
+                user_id,
+                credential_id,
+                "read",
+                organization_id=organization_uuid,
+            ):
                 continue
-            if has_llm_credential_permission(db, user_id, credential_id, "use"):
-                models.append(model)
-                seen_model_ids.add(model.id)
 
-        return [LLMModelResponse.model_validate(m) for m in models]
+            if model.id not in models_by_id:
+                response = LLMModelResponse.model_validate(model)
+                response.can_use = False
+                models_by_id[model.id] = response
+
+            if models_by_id[model.id].can_use:
+                continue
+
+            has_use_permission = has_llm_credential_permission(
+                db,
+                user_id,
+                credential_id,
+                "use",
+                organization_id=organization_uuid,
+            )
+            is_blocked = LLMService._is_model_blocked_for_user(
+                db,
+                user_id=user_id,
+                organization_id=organization_uuid,
+                model_id=model.model_id_for_api_call,
+            )
+            if has_use_permission and not is_blocked:
+                models_by_id[model.id].can_use = True
+
+        return list(models_by_id.values())
+
+    @staticmethod
+    def _coerce_optional_uuid(value: Any) -> Optional[uuid.UUID]:
+        # Normalizes optional organization identifiers before permission checks MBA-43
+        if value is None or isinstance(value, uuid.UUID):
+            return value
+        try:
+            return uuid.UUID(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_model_blocked_for_user(
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID],
+        model_id: Optional[str],
+    ) -> bool:
+        # Applies team and membership model restriction only inside organization scope MBA-43
+        if organization_id is None or not model_id:
+            return False
+        return is_llm_model_blocked_by_policy(
+            db,
+            user_id=user_id,
+            organization_id=organization_id,
+            model_id=model_id,
+        )
 
     @staticmethod
     def _normalize_model_id(model_id: str) -> str:

@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     make \
+    curl \
     pkg-config \
     libnl-route-3-dev \
     libprotobuf-dev \

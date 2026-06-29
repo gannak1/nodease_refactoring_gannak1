@@ -16,6 +16,7 @@ class LLMModelResponse(BaseModel):
     input_price_1k: Optional[float] = None
     output_price_1k: Optional[float] = None
     is_active: bool
+    can_use: Optional[bool] = None
     model_metadata: Optional[Dict[str, Any]] = Field(default=None, serialization_alias="metadata")
     
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)

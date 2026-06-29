@@ -31,6 +31,7 @@ class DenyAllTraceRbacProvider:
 class TraceRbacService:
     """추적 접근 제어에서 실제 RBAC 모델을 조회하는 작은 통합 지점."""
 
+    # 현재 admin 여부 판단하는 함수인데 전부 false로 처리, 추후에 TraceRbacProvider로 처리해야함
     _provider: TraceRbacProvider = DenyAllTraceRbacProvider()
 
     @classmethod

@@ -1,4 +1,5 @@
 import uuid
+import re
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
@@ -147,6 +148,73 @@ def _strongest_auth_state(rows: list[Any], current: str) -> str:
         auth_state = _auth_state_from_row(row)
         result = stronger_resource_auth_state(result, auth_state)
     return result
+
+
+def _model_policy_patterns(options: Any) -> list[str]:
+    # Extracts model deny patterns from options for model restriction checks MBA-43
+    if not isinstance(options, dict):
+        return []
+    model_policy = options.get("model_policy")
+    if not isinstance(model_policy, dict):
+        return []
+    raw_patterns = model_policy.get("unallowed_model_patterns")
+    if not isinstance(raw_patterns, list):
+        return []
+    return [
+        str(pattern).strip().lower()
+        for pattern in raw_patterns
+        if str(pattern).strip()
+    ]
+
+
+def model_id_matches_pattern(model_id: Any, pattern: Any) -> bool:
+    # Matches provider model ids with exact-or-wildcard glob semantics MBA-43
+    normalized_model_id = str(model_id or "").strip().lower()
+    normalized_pattern = str(pattern or "").strip().lower()
+    if not normalized_model_id or not normalized_pattern:
+        return False
+    escaped_pattern = re.escape(normalized_pattern).replace(r"\*", ".*")
+    return re.fullmatch(escaped_pattern, normalized_model_id) is not None
+
+
+def is_llm_model_blocked_by_policy(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+    model_id: Any,
+) -> bool:
+    # Checks team and membership model restriction policy for one runtime model MBA-43
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return False
+
+    normalized_model_id = str(model_id or "").lower()
+    if not normalized_model_id:
+        return False
+
+    rows = (
+        db.query(Team.options, TeamMembership.options)
+        .join(TeamMembership, TeamMembership.team_id == Team.id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamMembership.grantee_organization_id == Team.organization_id,
+            Team.organization_id == organization_uuid,
+            Team.is_active.is_(True),
+        )
+        .all()
+    )
+
+    for team_options, membership_options in rows:
+        patterns = _model_policy_patterns(team_options)
+        patterns.extend(_model_policy_patterns(membership_options))
+        if any(
+            model_id_matches_pattern(normalized_model_id, pattern)
+            for pattern in patterns
+        ):
+            return True
+    return False
 
 
 def get_effective_workflow_auth_state(

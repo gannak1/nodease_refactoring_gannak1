@@ -1,14 +1,15 @@
 from datetime import datetime
-from typing import List
+from typing import Annotated, List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_llm_credential_permission
 from apps.gateway.utils.audit import audit
+from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.gateway.services.llm_service import LLMService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMModel, LLMProvider, LLMUsageLog
@@ -27,8 +28,29 @@ router = APIRouter()
 
 
 def _require_system_admin(db: Session, current_user: User):
+    # TracAccessService에서 admin으로 판별하면 오류 발생 안함
     if not TraceAccessService.is_system_admin(db, current_user):
         raise HTTPException(status_code=403, detail="system_admin_required")
+
+
+def _resolve_llm_organization_id(
+    db: Session,
+    current_user: User,
+    x_organization_id: UUID | None,
+    body_organization_id: UUID | None = None,
+) -> UUID:
+    # HTTP 요청이 제대로 되었는지 확인하는 함수, x_organization, body_organization이 없고 body와 header의 organization이 다르면 에러 아니면 header 우선으로 리턴, body 후순위로 리턴
+    if (
+        x_organization_id is not None
+        and body_organization_id is not None
+        and x_organization_id != body_organization_id
+    ):
+        raise HTTPException(status_code=400, detail="organization_id_mismatch")
+    if x_organization_id is not None:
+        return x_organization_id
+    if body_organization_id is not None:
+        return body_organization_id
+    return ensure_user_default_organization(db, current_user.id)
 
 # --- Providers (System) ---
 
@@ -52,39 +74,75 @@ def get_system_providers(
 
 @router.get("/my-models", response_model=List[LLMModelResponse])
 def get_my_models(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
     """
     List all models available to the current user.
     """
     try:
-        return LLMService.get_my_available_models(db, current_user.id)
+        # Handles organization-scoped model listing for the current user MBA-43
+        organization_id = _resolve_llm_organization_id(
+            db, current_user, x_organization_id
+        )
+        return LLMService.get_my_available_models(
+            db, current_user.id, organization_id=organization_id
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/my-embedding-models", response_model=List[LLMModelResponse])
 def get_my_embedding_models(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
     """
     현재 사용자가 사용 가능한 임베딩 모델 목록 조회.
     """
     try:
-        return LLMService.get_my_embedding_models(db, current_user.id)
+        # Handles organization-scoped embedding model listing for the current user MBA-43
+        organization_id = _resolve_llm_organization_id(
+            db, current_user, x_organization_id
+        )
+        return LLMService.get_my_embedding_models(
+            db, current_user.id, organization_id=organization_id
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/credentials", response_model=List[LLMCredentialResponse])
 def get_my_credentials(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
     """
     List all credentials for the current user.
     """
     try:
-        return LLMService.get_user_credentials(db, current_user.id)
+        # Handles organization-scoped credential listing for the current user MBA-43
+        organization_id = _resolve_llm_organization_id(
+            db, current_user, x_organization_id
+        )
+        return LLMService.get_user_credentials(
+            db, current_user.id, organization_id=organization_id
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -95,12 +153,21 @@ def register_credential(
     request: LLMCredentialCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
     """
     Register a new API Key for a specific provider.
     """
     try:
-        return LLMService.register_credential(db, current_user.id, request)
+        # Handles organization-scoped credential creation with header/body validation MBA-43
+        organization_id = _resolve_llm_organization_id(
+            db, current_user, x_organization_id, request.organization_id
+        )
+        return LLMService.register_credential(
+            db, current_user.id, request, organization_id=organization_id
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except HTTPException:
@@ -117,13 +184,28 @@ def delete_credential(
     credential_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
     """
     Delete a user credential.
     """
     try:
-        ensure_llm_credential_permission(db, current_user, credential_id, "write")
-        deleted = LLMService.delete_credential(db, credential_id, current_user.id)
+        # Handles organization-scoped credential deletion for the current user MBA-43
+        organization_id = _resolve_llm_organization_id(
+            db, current_user, x_organization_id
+        )
+        ensure_llm_credential_permission(
+            db,
+            current_user,
+            credential_id,
+            "write",
+            organization_id=organization_id,
+        )
+        deleted = LLMService.delete_credential(
+            db, credential_id, current_user.id, organization_id=organization_id
+        )
         if not deleted:
             raise HTTPException(status_code=404, detail="Credential not found")
         return {"message": "Credential deleted", "id": str(credential_id)}
@@ -139,14 +221,31 @@ def sync_credential_models(
     purge_unverified: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
     """
     해당 크리덴셜 기준으로 모델 매핑을 재동기화합니다.
     """
     try:
-        ensure_llm_credential_permission(db, current_user, credential_id, "write")
+        # Handles organization-scoped credential model synchronization MBA-43
+        organization_id = _resolve_llm_organization_id(
+            db, current_user, x_organization_id
+        )
+        ensure_llm_credential_permission(
+            db,
+            current_user,
+            credential_id,
+            "write",
+            organization_id=organization_id,
+        )
         return LLMService.sync_credential_models(
-            db, current_user.id, credential_id, purge_unverified=purge_unverified
+            db,
+            current_user.id,
+            credential_id,
+            purge_unverified=purge_unverified,
+            organization_id=organization_id,
         )
     except HTTPException:
         raise

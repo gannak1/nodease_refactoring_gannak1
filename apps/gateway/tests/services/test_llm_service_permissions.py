@@ -97,12 +97,16 @@ class FakeCredentialRegisterDb:
 
 
 def test_delete_credential_preserves_permission_http_exception(monkeypatch):
+    # Verifies delete endpoint preserves permission failures with scoped checks MBA-43
     credential_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
     user = SimpleNamespace(id=uuid.uuid4())
     seen = {}
 
-    def deny(db, current_user, checked_credential_id, action):
+    def deny(db, current_user, checked_credential_id, action, organization_id=None):
+        # Fakes a scoped credential permission denial MBA-43
         seen["action"] = action
+        seen["organization_id"] = organization_id
         raise HTTPException(status_code=403, detail="Forbidden")
 
     monkeypatch.setattr(llm_endpoint, "ensure_llm_credential_permission", deny)
@@ -112,10 +116,27 @@ def test_delete_credential_preserves_permission_http_exception(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        llm_endpoint.delete_credential(credential_id, FakeDb(None), user)
+        llm_endpoint.delete_credential(
+            credential_id, FakeDb(None), user, x_organization_id=organization_id
+        )
 
     assert exc_info.value.status_code == 403
     assert seen["action"] == "write"
+    assert seen["organization_id"] == organization_id
+
+
+def test_resolve_llm_organization_id_rejects_header_body_mismatch():
+    # Verifies LLM API organization header/body mismatch is rejected MBA-43
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint._resolve_llm_organization_id(
+            db=object(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+            x_organization_id=uuid.uuid4(),
+            body_organization_id=uuid.uuid4(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "organization_id_mismatch"
 
 
 def _route(path, method):
@@ -251,6 +272,7 @@ def test_register_credential_flushes_default_organization_before_manager_check(
 
 
 def test_get_user_credentials_filters_by_read_permission(monkeypatch):
+    # Verifies credential listing uses read permission in organization scope MBA-43
     readable_id = uuid.uuid4()
     blocked_id = uuid.uuid4()
     credentials = [
@@ -259,7 +281,8 @@ def test_get_user_credentials_filters_by_read_permission(monkeypatch):
     ]
     seen_actions = []
 
-    def can_read(db, user_id, credential_id, action):
+    def can_read(db, user_id, credential_id, action, organization_id=None):
+        # Fakes scoped credential read permission checks MBA-43
         seen_actions.append(action)
         return credential_id == readable_id and action == "read"
 
@@ -276,11 +299,16 @@ def test_get_user_credentials_filters_by_read_permission(monkeypatch):
     assert seen_actions == ["read", "read"]
 
 
-def test_get_my_available_models_filters_by_credential_use_permission(monkeypatch):
+def test_get_my_available_models_returns_readable_models_with_can_use(monkeypatch):
+    # Verifies model listing returns readable models with computed can_use MBA-43
     allowed_credential_id = uuid.uuid4()
     blocked_credential_id = uuid.uuid4()
-    shared_model = SimpleNamespace(id=uuid.uuid4(), name="Shared")
-    blocked_model = SimpleNamespace(id=uuid.uuid4(), name="Blocked")
+    shared_model = SimpleNamespace(
+        id=uuid.uuid4(), name="Shared", model_id_for_api_call="gpt-4o"
+    )
+    blocked_model = SimpleNamespace(
+        id=uuid.uuid4(), name="Blocked", model_id_for_api_call="gpt-5"
+    )
     rows = [
         (shared_model, blocked_credential_id),
         (shared_model, allowed_credential_id),
@@ -288,11 +316,14 @@ def test_get_my_available_models_filters_by_credential_use_permission(monkeypatc
     ]
     seen_actions = []
 
-    def can_use(db, user_id, credential_id, action):
+    def can_access(db, user_id, credential_id, action, organization_id=None):
+        # Fakes scoped model read/use permission checks MBA-43
         seen_actions.append(action)
+        if action == "read":
+            return True
         return credential_id == allowed_credential_id and action == "use"
 
-    monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_use)
+    monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_access)
     monkeypatch.setattr(
         llm_service.LLMModelResponse,
         "model_validate",
@@ -301,5 +332,7 @@ def test_get_my_available_models_filters_by_credential_use_permission(monkeypatc
 
     result = LLMService.get_my_available_models(FakeDb(rows), uuid.uuid4())
 
-    assert result == [shared_model]
-    assert seen_actions == ["use", "use", "use"]
+    assert result == [shared_model, blocked_model]
+    assert shared_model.can_use is True
+    assert blocked_model.can_use is False
+    assert seen_actions == ["read", "use", "read", "use", "read", "use"]

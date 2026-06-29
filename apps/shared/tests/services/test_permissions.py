@@ -13,6 +13,8 @@ from apps.shared.services.permissions import (
     get_effective_workflow_auth_state,
     has_llm_credential_permission,
     has_workflow_permission,
+    is_llm_model_blocked_by_policy,
+    model_id_matches_pattern,
 )
 
 
@@ -361,3 +363,50 @@ def test_has_workflow_permission_uses_effective_auth_state():
     assert has_workflow_permission(
         db, user_id, workflow_id, "execute", organization_id
     ) is True
+
+
+def test_model_id_matches_policy_pattern_only_treats_star_as_wildcard():
+    # Verifies exact and star-only model deny pattern matching MBA-43
+    assert model_id_matches_pattern("GPT-5", "gpt-5") is True
+    assert model_id_matches_pattern("gpt-5-mini", "gpt-5*") is True
+    assert model_id_matches_pattern(" gpt-5 ", " GPT-5 ") is True
+    assert model_id_matches_pattern("gpt-5x", "gpt-5?") is False
+
+
+def test_llm_model_policy_blocks_membership_or_team_patterns():
+    # Verifies team and membership options can deny runtime model use MBA-43
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = FakeDb(
+        all_values=[
+            [
+                (
+                    {"model_policy": {"unallowed_model_patterns": ["claude-*"]}},
+                    {},
+                ),
+                (
+                    {},
+                    {"model_policy": {"unallowed_model_patterns": ["gpt-5"]}},
+                ),
+            ]
+        ]
+    )
+
+    assert (
+        is_llm_model_blocked_by_policy(
+            db, user_id, organization_id, "claude-3-5-sonnet"
+        )
+        is True
+    )
+
+    db = FakeDb(
+        all_values=[
+            [
+                (
+                    {},
+                    {"model_policy": {"unallowed_model_patterns": ["gpt-5"]}},
+                )
+            ]
+        ]
+    )
+    assert is_llm_model_blocked_by_policy(db, user_id, organization_id, "GPT-5") is True
