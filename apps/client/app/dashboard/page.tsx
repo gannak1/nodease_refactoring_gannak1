@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
+  Building2,
   CheckCircle,
   RefreshCw,
   ShieldCheck,
@@ -17,6 +18,11 @@ import {
   resolveActiveOrganizationId,
   setActiveOrganizationId,
 } from '@/lib/activeOrganization';
+import {
+  DashboardPageHeader,
+  DashboardPanel,
+  DashboardSummaryCard,
+} from '@/app/features/dashboard/components/DashboardSurface';
 
 type OrganizationResponse = {
   id: string;
@@ -81,8 +87,24 @@ async function apiRequest<T>(
   return body as T;
 }
 
-const permissionLabel = (permission?: WorkflowPermissionResponse) =>
-  permission?.auth_state || '확인 필요';
+const roleLabel = (isManager?: boolean) => {
+  if (isManager === undefined) return '확인 중';
+  return isManager ? '관리자' : '멤버';
+};
+
+const permissionLabel = (permission?: WorkflowPermissionResponse) => {
+  if (!permission) return '확인 필요';
+
+  const labels: Record<string, string> = {
+    manager: '관리자',
+    builder: '편집 가능',
+    operator: '실행 가능',
+    viewer: '조회 가능',
+    none: '권한 없음',
+  };
+
+  return labels[permission.auth_state] || permission.auth_state;
+};
 
 const permissionTone = (permission?: WorkflowPermissionResponse) => {
   if (!permission) return 'bg-gray-100 text-gray-700';
@@ -198,25 +220,35 @@ export default function DashboardHomePage() {
   return (
     <div className="min-h-full bg-slate-50 px-6 py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-950">홈</h1>
-            <p className="mt-1 text-sm text-slate-600">
-              {organization
-                ? `${organization.name} · ${
-                    organization.is_manager ? 'manager' : 'member'
-                  }`
-                : 'Organization 확인 중'}
-            </p>
-          </div>
-          <button
-            onClick={loadData}
-            className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-100"
-          >
-            <RefreshCw className="h-4 w-4" />
-            새로고침
-          </button>
-        </header>
+        <DashboardPageHeader
+          icon={Workflow}
+          title="Nodease"
+          description="AI 워크플로우를 시각화하고 안전하게 제어할 수 있는 서비스"
+          badge={
+            organization && (
+              <span className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
+                {roleLabel(organization.is_manager)}
+              </span>
+            )
+          }
+          meta={
+            <div className="flex min-w-0 items-center gap-2 text-xs text-slate-500">
+              <Building2 className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+              <span className="truncate">
+                {organization?.name || '조직 확인 중'}
+              </span>
+            </div>
+          }
+          action={
+            <button
+              onClick={loadData}
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-100"
+            >
+              <RefreshCw className="h-4 w-4" />
+              새로고침
+            </button>
+          }
+        />
 
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -231,45 +263,30 @@ export default function DashboardHomePage() {
         ) : (
           <>
             <section className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-lg border border-slate-200 bg-white p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">
-                      Organization
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-slate-950">
-                      {organization?.name || '-'}
-                    </p>
-                  </div>
-                  <ShieldCheck className="h-5 w-5 text-blue-600" />
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-slate-200 bg-white p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">Role</p>
-                    <p className="mt-1 text-lg font-semibold text-slate-950">
-                      {organization?.is_manager ? 'manager' : 'member'}
-                    </p>
-                  </div>
-                  <CheckCircle className="h-5 w-5 text-green-600" />
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-slate-200 bg-white p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-500">
-                      Workflow access
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-slate-950">
-                      {workflowRows.length}
-                    </p>
-                  </div>
-                  <Workflow className="h-5 w-5 text-violet-600" />
-                </div>
-              </div>
+              <DashboardSummaryCard
+                label="현재 조직"
+                value={organization?.name || '-'}
+                icon={ShieldCheck}
+                description="요청과 권한이 적용되는 작업 공간입니다."
+              />
+              <DashboardSummaryCard
+                label="내 조직 역할"
+                value={roleLabel(organization?.is_manager)}
+                icon={CheckCircle}
+                iconClassName="text-green-600"
+                description={
+                  organization?.is_manager
+                    ? '팀과 권한을 관리할 수 있습니다.'
+                    : '부여된 워크플로우 권한 안에서 작업합니다.'
+                }
+              />
+              <DashboardSummaryCard
+                label="접근 가능한 워크플로우"
+                value={`${workflowRows.length}개`}
+                icon={Workflow}
+                iconClassName="text-violet-600"
+                description="내가 조회할 수 있는 워크플로우 기준입니다."
+              />
             </section>
 
             {organization?.is_manager && (
@@ -277,23 +294,23 @@ export default function DashboardHomePage() {
                 <div className="rounded-lg border border-slate-200 bg-white p-5">
                   <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
                     <Users className="h-4 w-4 text-blue-600" />
-                    Team summary
+                    팀 현황
                   </h2>
                   <div className="mt-4 grid grid-cols-3 gap-3">
                     <div>
-                      <p className="text-xs text-slate-500">Active</p>
+                      <p className="text-xs text-slate-500">활성 팀</p>
                       <p className="mt-1 text-xl font-semibold text-slate-950">
                         {activeTeams.length}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-slate-500">Inactive</p>
+                      <p className="text-xs text-slate-500">비활성 팀</p>
                       <p className="mt-1 text-xl font-semibold text-slate-950">
                         {inactiveTeams.length}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-slate-500">Members</p>
+                      <p className="text-xs text-slate-500">팀 멤버 수</p>
                       <p className="mt-1 text-xl font-semibold text-slate-950">
                         {totalMembers}
                       </p>
@@ -308,16 +325,11 @@ export default function DashboardHomePage() {
                   </button>
                 </div>
 
-                <div className="rounded-lg border border-slate-200 bg-white">
-                  <div className="border-b border-slate-200 px-5 py-3">
-                    <h2 className="text-sm font-semibold text-slate-950">
-                      Teams
-                    </h2>
-                  </div>
+                <DashboardPanel title="팀 목록">
                   <div className="divide-y divide-slate-100">
                     {teams.length === 0 ? (
                       <div className="px-5 py-8 text-center text-sm text-slate-500">
-                        표시할 team 없음
+                        표시할 팀이 없습니다.
                       </div>
                     ) : (
                       teams.map((team) => (
@@ -341,32 +353,31 @@ export default function DashboardHomePage() {
                             </p>
                           </div>
                           <p className="text-sm text-slate-600">
-                            {(teamMembers[team.id] || []).length} members
+                            {(teamMembers[team.id] || []).length}명
                           </p>
                         </div>
                       ))
                     )}
                   </div>
-                </div>
+                </DashboardPanel>
               </section>
             )}
 
-            <section className="rounded-lg border border-slate-200 bg-white">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
-                <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
-                  <Zap className="h-4 w-4 text-blue-600" />
-                  Workflow access
-                </h2>
-                {!organization?.is_manager && (
+            <DashboardPanel
+              title="워크플로우 접근 권한"
+              icon={Zap}
+              aside={
+                !organization?.is_manager && (
                   <span className="text-xs text-slate-500">
-                    접근 가능한 workflow만 표시
+                    접근 가능한 워크플로우만 표시됩니다.
                   </span>
-                )}
-              </div>
+                )
+              }
+            >
               <div className="divide-y divide-slate-100">
                 {workflowRows.length === 0 ? (
                   <div className="px-5 py-8 text-center text-sm text-slate-500">
-                    접근 가능한 workflow 없음
+                    접근 가능한 워크플로우가 없습니다.
                   </div>
                 ) : (
                   workflowRows.map(({ app, permission, permissionError }) => (
@@ -393,7 +404,7 @@ export default function DashboardHomePage() {
                   ))
                 )}
               </div>
-            </section>
+            </DashboardPanel>
           </>
         )}
       </div>

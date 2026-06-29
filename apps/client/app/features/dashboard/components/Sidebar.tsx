@@ -18,9 +18,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
-  activeOrganizationHeaders,
-  resolveActiveOrganizationId,
+  getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
+import { apiClient } from '@/lib/apiClient';
 
 const navigationItems = [
   {
@@ -87,24 +87,14 @@ export default function Sidebar() {
   useEffect(() => {
     const fetchOrganization = async () => {
       try {
-        const organizationsResponse = await fetch('/api/v1/organizations', {
-          credentials: 'include',
-        });
-        const organizations = await organizationsResponse.json();
-        const organizationId = Array.isArray(organizations)
-          ? resolveActiveOrganizationId(organizations)
-          : null;
-        if (!organizationsResponse.ok || !organizationId) {
+        const organizationId = getStoredActiveOrganizationId();
+        if (!organizationId) {
           return;
         }
 
-        const response = await fetch('/api/v1/organizations/current', {
-          credentials: 'include',
-          headers: activeOrganizationHeaders(organizationId),
-        });
-        const data = await response.json();
-        if (response.ok && data?.name) {
-          setOrganizationName(data.name);
+        const response = await apiClient.get('/organizations/current');
+        if (response.data?.name) {
+          setOrganizationName(response.data.name);
         }
       } catch {
         // Silent error handling
@@ -177,10 +167,10 @@ export default function Sidebar() {
               onClick={() => router.push('/dashboard')}
               className="block text-left text-sm font-black text-slate-950"
             >
-              Moduly
+              Nodease
             </button>
             <span className="block truncate text-xs font-semibold text-slate-500">
-              AI automation workspace
+              AI workflow control
             </span>
           </div>
         </div>
