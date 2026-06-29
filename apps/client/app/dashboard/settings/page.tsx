@@ -180,6 +180,27 @@ export default function SettingsPage() {
     () => apps.filter((app) => Boolean(app.workflow_id)),
     [apps],
   );
+  const isManager = organization?.is_manager === true;
+  const activeTeams = useMemo(
+    () => teams.filter((team) => team.is_active),
+    [teams],
+  );
+  const visibleTabs = useMemo<[SettingsTab, string][]>(
+    () =>
+      isManager
+        ? [
+            ['access', '조직 접근'],
+            ['credentials', 'LLM Credentials'],
+            ['activity', 'Activity'],
+          ]
+        : [
+            ['credentials', 'LLM Credentials'],
+            ['activity', 'Activity'],
+          ],
+    [isManager],
+  );
+  const effectiveTab =
+    !isManager && activeTab === 'access' ? 'credentials' : activeTab;
 
   const activePermissions =
     permissionForm.resourceType === 'workflow'
@@ -203,6 +224,7 @@ export default function SettingsPage() {
     workflowId = selectedWorkflowId,
     credentialId = selectedCredentialId,
   ) => {
+    if (organization && !organization.is_manager) return;
     try {
       if (resourceType === 'workflow' && workflowId) {
         const data = await apiRequest<ResourcePermissionListResponse>(
@@ -238,23 +260,17 @@ export default function SettingsPage() {
       setActiveOrganizationId(org.id);
       setOrganization(org);
 
-      const [userData, teamData, providerData, credentialData, appData, audit] =
-        await Promise.all([
-          apiRequest<UserResponse[]>(`/users?organization_id=${org.id}`),
-          apiRequest<TeamResponse[]>(`/teams?organization_id=${org.id}`),
-          apiRequest<LLMProviderResponse[]>('/llm/providers'),
-          apiRequest<LLMCredentialResponse[]>('/llm/credentials'),
-          apiRequest<AppResponse[]>('/apps'),
-          apiRequest<{ items: AuditItem[] }>('/users/me/audit-logs?limit=30'),
-        ]);
+      const [providerData, credentialData, appData, audit] = await Promise.all([
+        apiRequest<LLMProviderResponse[]>('/llm/providers'),
+        apiRequest<LLMCredentialResponse[]>('/llm/credentials'),
+        apiRequest<AppResponse[]>('/apps'),
+        apiRequest<{ items: AuditItem[] }>('/users/me/audit-logs?limit=30'),
+      ]);
 
-      setUsers(userData);
-      setTeams(teamData);
       setProviders(providerData);
       setCredentials(credentialData);
       setApps(appData);
       setAuditItems(audit.items || []);
-      await loadTeamMembers(teamData);
 
       const firstWorkflowId =
         selectedWorkflowId ||
@@ -263,23 +279,54 @@ export default function SettingsPage() {
       const firstCredentialId = selectedCredentialId || credentialData[0]?.id || '';
       setSelectedWorkflowId(firstWorkflowId);
       setSelectedCredentialId(firstCredentialId);
+
+      if (!org.is_manager) {
+        setActiveTab((prev) => (prev === 'access' ? 'credentials' : prev));
+        setUsers([]);
+        setTeams([]);
+        setTeamMembers({});
+        setWorkflowPermissions(null);
+        setCredentialPermissions(null);
+        setMemberForm({ teamId: '', userId: '' });
+        setPermissionForm((prev) => ({ ...prev, granteeId: '' }));
+        return;
+      }
+
+      const [userData, teamData] = await Promise.all([
+        apiRequest<UserResponse[]>(`/users?organization_id=${org.id}`),
+        apiRequest<TeamResponse[]>(`/teams?organization_id=${org.id}`),
+      ]);
+      const activeTeamData = teamData.filter((team) => team.is_active);
+
+      setUsers(userData);
+      setTeams(teamData);
+      await loadTeamMembers(teamData);
+
       setMemberForm((prev) => ({
-        teamId: prev.teamId || teamData[0]?.id || '',
+        teamId: prev.teamId || activeTeamData[0]?.id || '',
         userId: prev.userId || userData[0]?.id || '',
       }));
       setPermissionForm((prev) => ({
         ...prev,
         granteeId:
           prev.granteeId ||
-          (prev.granteeType === 'team' ? teamData[0]?.id : userData[0]?.id) ||
+          (prev.granteeType === 'team'
+            ? activeTeamData[0]?.id
+            : userData[0]?.id) ||
           '',
       }));
 
       if (firstWorkflowId) {
-        await loadPermissions('workflow', firstWorkflowId, firstCredentialId);
+        const data = await apiRequest<ResourcePermissionListResponse>(
+          `/permissions/workflows/${firstWorkflowId}`,
+        ).catch(() => null);
+        setWorkflowPermissions(data);
       }
       if (firstCredentialId) {
-        await loadPermissions('llm_credential', firstWorkflowId, firstCredentialId);
+        const data = await apiRequest<ResourcePermissionListResponse>(
+          `/permissions/llm-credentials/${firstCredentialId}`,
+        ).catch(() => null);
+        setCredentialPermissions(data);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '설정 데이터를 불러오지 못했습니다.');
@@ -293,8 +340,14 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (organization && !organization.is_manager && activeTab === 'access') {
+      setActiveTab('credentials');
+    }
+  }, [activeTab, organization]);
+
   const handleCreateTeam = async () => {
-    if (!organization || !newTeam.name.trim()) return;
+    if (!organization?.is_manager || !newTeam.name.trim()) return;
     setSubmitting(true);
     try {
       await apiRequest('/teams', {
@@ -315,13 +368,16 @@ export default function SettingsPage() {
   };
 
   const handleDeactivateTeam = async (teamId: string) => {
+    if (!organization?.is_manager) return;
     if (!confirm('이 팀을 비활성화할까요?')) return;
     await apiRequest(`/teams/${teamId}`, { method: 'DELETE' });
     await loadData();
   };
 
   const handleAddMember = async () => {
-    if (!memberForm.teamId || !memberForm.userId) return;
+    if (!organization?.is_manager || !memberForm.teamId || !memberForm.userId) {
+      return;
+    }
     await apiRequest(`/teams/${memberForm.teamId}/members`, {
       method: 'POST',
       body: JSON.stringify({ user_id: memberForm.userId }),
@@ -333,6 +389,7 @@ export default function SettingsPage() {
   };
 
   const handleRemoveMember = async (teamId: string, userId: string) => {
+    if (!organization?.is_manager) return;
     await apiRequest(`/teams/${teamId}/members/${userId}`, { method: 'DELETE' });
     const refreshed = await apiRequest<TeamMemberResponse[]>(
       `/teams/${teamId}/members`,
@@ -355,7 +412,7 @@ export default function SettingsPage() {
   };
 
   const handleGrantPermission = async () => {
-    if (!permissionForm.granteeId) return;
+    if (!organization?.is_manager || !permissionForm.granteeId) return;
     const resourceId =
       permissionForm.resourceType === 'workflow'
         ? selectedWorkflowId
@@ -384,6 +441,7 @@ export default function SettingsPage() {
     granteeType: GranteeType,
     granteeId: string,
   ) => {
+    if (!organization?.is_manager) return;
     await apiRequest(permissionPath(resourceType, granteeType, granteeId), {
       method: 'DELETE',
     });
@@ -491,16 +549,12 @@ export default function SettingsPage() {
 
       <div className="mb-6 border-b border-gray-200">
         <nav className="-mb-px flex gap-6">
-          {[
-            ['access', '조직 접근'],
-            ['credentials', 'LLM Credentials'],
-            ['activity', 'Activity'],
-          ].map(([key, label]) => (
+          {visibleTabs.map(([key, label]) => (
             <button
               key={key}
-              onClick={() => setActiveTab(key as SettingsTab)}
+              onClick={() => setActiveTab(key)}
               className={`border-b-2 px-1 pb-3 text-sm font-medium ${
-                activeTab === key
+                effectiveTab === key
                   ? 'border-blue-600 text-blue-600'
                   : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
@@ -519,7 +573,7 @@ export default function SettingsPage() {
 
       {loading ? (
         <div className="py-16 text-center text-sm text-gray-500">로딩 중...</div>
-      ) : activeTab === 'access' ? (
+      ) : effectiveTab === 'access' && isManager ? (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
           <section className="space-y-4">
             <div className="rounded-lg border border-gray-200">
@@ -551,21 +605,34 @@ export default function SettingsPage() {
                 </div>
               </div>
               <div>
-                {teams.map((team) => (
+                {teams.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-sm text-gray-500">
+                    표시할 team 없음
+                  </div>
+                ) : (
+                  teams.map((team) => (
                   <div
                     key={team.id}
                     className="border-b border-gray-100 px-4 py-4 last:border-b-0"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-medium text-gray-900">{team.name}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium text-gray-900">{team.name}</p>
+                          {!team.is_active && (
+                            <span className="rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                              비활성
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-gray-500">
                           {team.description || '설명 없음'}
                         </p>
                       </div>
                       <button
                         onClick={() => handleDeactivateTeam(team.id)}
-                        className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                        disabled={!team.is_active}
+                        className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
                         title="팀 비활성화"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -591,7 +658,8 @@ export default function SettingsPage() {
                       ))}
                     </div>
                   </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
 
@@ -610,7 +678,7 @@ export default function SettingsPage() {
                   }
                   className="h-10 rounded-md border border-gray-300 px-3 text-sm"
                 >
-                  {teams.map((team) => (
+                  {activeTeams.map((team) => (
                     <option key={team.id} value={team.id}>
                       {team.name}
                     </option>
@@ -710,7 +778,7 @@ export default function SettingsPage() {
                       granteeType,
                       granteeId:
                         granteeType === 'team'
-                          ? teams[0]?.id || ''
+                          ? activeTeams[0]?.id || ''
                           : users[0]?.id || '',
                     }));
                   }}
@@ -729,7 +797,7 @@ export default function SettingsPage() {
                   }
                   className="h-10 rounded-md border border-gray-300 px-3 text-sm"
                 >
-                  {(permissionForm.granteeType === 'team' ? teams : users).map(
+                  {(permissionForm.granteeType === 'team' ? activeTeams : users).map(
                     (item) => (
                       <option key={item.id} value={item.id}>
                         {'email' in item
@@ -779,7 +847,7 @@ export default function SettingsPage() {
             </div>
           </section>
         </div>
-      ) : activeTab === 'credentials' ? (
+      ) : effectiveTab === 'credentials' ? (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
           <section className="grid gap-4">
             {providers.map((provider) => {
