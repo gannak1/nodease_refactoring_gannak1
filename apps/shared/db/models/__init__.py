@@ -19,6 +19,15 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_AUTH_MANAGER,
+    ORGANIZATION_AUTH_MEMBER,
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    ORGANIZATION_MEMBERSHIP_INVITED,
+    ORGANIZATION_MEMBERSHIP_REMOVED,
+    ORGANIZATION_MEMBERSHIP_SUSPENDED,
+    OrganizationMembership,
+)
 from apps.shared.db.models.team import (
     Team,
     TeamAuditPermission,
@@ -61,6 +70,13 @@ __all__ = [
     "LLMUsageLog",
     "Schedule",
     "Organization",
+    "OrganizationMembership",
+    "ORGANIZATION_MEMBERSHIP_INVITED",
+    "ORGANIZATION_MEMBERSHIP_ACTIVE",
+    "ORGANIZATION_MEMBERSHIP_SUSPENDED",
+    "ORGANIZATION_MEMBERSHIP_REMOVED",
+    "ORGANIZATION_AUTH_MEMBER",
+    "ORGANIZATION_AUTH_MANAGER",
     "Team",
     "TeamAssignmentMixin",
     "TeamResourcePermissionMixin",

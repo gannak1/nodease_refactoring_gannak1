@@ -1,12 +1,15 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import DateTime, String
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from apps.shared.db.base import Base
+
+if TYPE_CHECKING:
+    from apps.shared.db.models.organization_membership import OrganizationMembership
 
 
 class User(Base):
@@ -49,4 +52,17 @@ class User(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    organization_memberships: Mapped[list["OrganizationMembership"]] = relationship(
+        "OrganizationMembership",
+        back_populates="user",
+        foreign_keys="OrganizationMembership.user_id",
+    )
+    invited_organization_memberships: Mapped[list["OrganizationMembership"]] = (
+        relationship(
+            "OrganizationMembership",
+            back_populates="inviter",
+            foreign_keys="OrganizationMembership.invited_by",
+        )
     )

@@ -19,14 +19,14 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 - 구현자는 권한 row 없음, `auth_state='none'`, user direct additive allow, audit 기록 조건을 우선 테스트한다.
 - `roles`, `user_roles`, polymorphic `resource_permissions`, `user_connection_permissions`, `user_app_permissions`, `user_document_permissions`, `user_model_permissions`는 만들지 않는다.
 - 현재 코드의 user direct table은 `user_workflow_permissions`, `user_llm_permissions`뿐이다.
-- `organization_memberships`는 현재 코드에는 없으며, MVP 2-0에서 active organization member 전제 조건으로 추가할 목표 table이다.
+- `organization_memberships`는 MBA-66에서 DB/model/migration foundation으로 추가된다. 다만 permission helper/API 전환 전까지는 기존 active team membership 및 owner/manager 기반 흐름이 남아 있다.
 
 ## 기준 테이블
 
 | Table | 역할 |
 | --- | --- |
 | `organization` | 조직 범위. app/workflow/knowledge base/LLM credential의 상위 scope |
-| `organization_memberships` | 목표: MVP 2-0에서 user와 organization의 직접 소속 관계 |
+| `organization_memberships` | MBA-66 DB foundation: user와 organization의 직접 소속 관계 |
 | `teams` | 권한 부여 subject. 기존 role 개념은 team template으로 흡수 |
 | `team_memberships` | 현재: 사용자 organization/team 소속의 간접 기준. MVP 2-0 이후: organization 안의 team 배정 관계 |
 | `team_workflow_permissions` | team별 workflow 권한 |
@@ -43,7 +43,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 | 원칙 | 내용 |
 | --- | --- |
 | Team 우선 | 기본 권한 subject는 team이다. |
-| Organization membership 전제 | 현재는 active team membership으로 organization scope를 주로 판정한다. MVP 2-0 이후에는 active organization membership이 resource permission subject의 필요조건이다. |
+| Organization membership 전제 | MBA-66에서 `organization_memberships` table을 추가한다. Permission helper/API 전환 전까지는 active team membership 기반 흐름이 남고, MVP 2-0 후속 이슈에서 active organization membership이 resource permission subject의 필요조건이 된다. |
 | User direct grant | 예외적 추가 권한은 user별 permission table로 부여한다. |
 | Organization scope | team과 permission은 조직 범위 안에서 해석한다. |
 | `auth_state` 단일 상태 | 현재 권한 모델은 permission boolean set이 아니라 `auth_state` 문자열 하나를 가진다. |

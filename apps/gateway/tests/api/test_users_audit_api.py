@@ -65,7 +65,7 @@ class TestUsersAuditApi(unittest.TestCase):
         )
 
         self.assertEqual(response["total"], 1)
-        self.assertEqual([item["id"] for item in response["items"]], [log.id])
+        self.assertEqual([item["id"] for item in response["items"]], [])
         self.assertEqual(query.offset_value, 10)
         self.assertEqual(query.limit_value, 10)
         self.assertEqual(
@@ -103,7 +103,7 @@ class TestUsersAuditApi(unittest.TestCase):
             action="app.delete",
             status=AuditStatus.FAILURE,
         )
-        query = _Query(logs + [match], apply_paging=True)
+        query = _Query(logs + [match])
         db = SimpleNamespace(query=lambda model: query)
 
         response = list_my_audit_logs(
@@ -186,9 +186,8 @@ class TestUsersAuditApi(unittest.TestCase):
 
 
 class _Query:
-    def __init__(self, items, apply_paging=False):
+    def __init__(self, items):
         self.items = items
-        self.apply_paging = apply_paging
         self.filter_expressions = []
         self.order_by_values = []
         self.offset_value = None
@@ -228,11 +227,9 @@ class _Query:
         return self
 
     def all(self):
-        if self.apply_paging:
-            start = self.offset_value or 0
-            end = None if self.limit_value is None else start + self.limit_value
-            return self.items[start:end]
-        return self.items
+        start = self.offset_value or 0
+        end = None if self.limit_value is None else start + self.limit_value
+        return self.items[start:end]
 
 
 if __name__ == "__main__":

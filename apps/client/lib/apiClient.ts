@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getStoredActiveOrganizationId } from './activeOrganization';
+import { attachActiveOrganizationHeader } from './activeOrganization';
 
 export const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL
   ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1`
@@ -32,13 +32,7 @@ export const publicApiClient = createApiClient();
 
 export const apiClient = createApiClient();
 
-apiClient.interceptors.request.use((config) => {
-  const organizationId = getStoredActiveOrganizationId();
-  if (organizationId) {
-    config.headers.set('X-Organization-Id', organizationId);
-  }
-  return config;
-});
+attachActiveOrganizationHeader(apiClient);
 
 attachAuthRedirectInterceptor(publicApiClient);
 attachAuthRedirectInterceptor(apiClient);

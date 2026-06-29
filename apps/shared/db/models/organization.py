@@ -17,6 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from apps.shared.db.base import Base
 
 if TYPE_CHECKING:
+    from apps.shared.db.models.organization_membership import OrganizationMembership
     from apps.shared.db.models.user import User
 
 
@@ -64,4 +65,9 @@ class Organization(Base):
     creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
     manager: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[managed_by]
+    )
+    memberships: Mapped[list["OrganizationMembership"]] = relationship(
+        "OrganizationMembership",
+        back_populates="organization",
+        foreign_keys="OrganizationMembership.organization_id",
     )
