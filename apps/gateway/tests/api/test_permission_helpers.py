@@ -45,6 +45,11 @@ def test_workflow_permission_denied_records_permission_audit(monkeypatch):
     )
     monkeypatch.setattr(
         permissions,
+        "has_organization_scope_access",
+        lambda db, user_id, organization_id: True,
+    )
+    monkeypatch.setattr(
+        permissions,
         "record_audit",
         lambda **event: events.append(event),
     )

@@ -7,6 +7,7 @@ from apps.gateway.utils.api_errors import parse_organization_id, raise_api_error
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import Team, TeamMembership
 from apps.shared.db.models.user import User
+from apps.shared.services.permissions import has_organization_scope_access
 from sqlalchemy.orm import Session
 
 
@@ -39,25 +40,7 @@ def resolve_active_organization_id(
     """Resolve X-Organization-Id and verify it is in the user's active scope."""
 
     organization_id = parse_organization_id(request, raw_organization_id)
-    organization = (
-        db.query(Organization)
-        .join(
-            TeamMembership,
-            TeamMembership.grantee_organization_id == Organization.id,
-        )
-        .join(Team, Team.id == TeamMembership.team_id)
-        .filter(
-            Organization.id == organization_id,
-            TeamMembership.user_id == user_id,
-            TeamMembership.grantee_organization_id == Organization.id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.is_active.is_(True),
-            Organization.is_active.is_(True),
-        )
-        .first()
-    )
-
-    if organization is None:
+    if not has_organization_scope_access(db, user_id, organization_id):
         raise_api_error(
             request,
             404,
@@ -65,7 +48,7 @@ def resolve_active_organization_id(
             "Organization not found.",
         )
 
-    return organization.id
+    return organization_id
 
 
 def ensure_user_default_organization(

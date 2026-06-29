@@ -61,6 +61,11 @@ def ensure_workflow_permission(
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
+    if workflow.organization_id and not has_organization_scope_access(
+        db, current_user.id, workflow.organization_id
+    ):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
     effective_auth_state = get_effective_workflow_auth_state(
         db,
         current_user.id,
@@ -74,14 +79,6 @@ def ensure_workflow_permission(
         action,
         organization_id=workflow.organization_id,
     ):
-        if (
-            effective_auth_state == "none"
-            and workflow.organization_id
-            and not has_organization_scope_access(
-                db, current_user.id, workflow.organization_id
-            )
-        ):
-            raise HTTPException(status_code=404, detail="Workflow not found")
         record_permission_denied(
             current_user,
             "workflow",

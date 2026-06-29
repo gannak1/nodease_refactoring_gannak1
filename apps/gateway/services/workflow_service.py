@@ -65,6 +65,10 @@ class WorkflowService:
         )
 
         db.add(workflow)
+        db.flush()
+        AppService._grant_workflow_manager_permission(
+            db, workflow, user_id, organization_id
+        )
         db.commit()
         db.refresh(workflow)
 

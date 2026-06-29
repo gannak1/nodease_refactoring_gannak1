@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.shared.db.models.app import App
+from apps.shared.db.models.team import UserWorkflowPermission
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.user import User
+from apps.shared.permissions import AUTH_STATE_MANAGER
 from apps.shared.schemas.app import AppCreateRequest, AppUpdateRequest
 from apps.shared.services.permissions import (
     has_organization_scope_access,
@@ -75,6 +77,9 @@ class AppService:
 
         # App에 워크플로우 연결
         app.workflow_id = workflow.id
+        AppService._grant_workflow_manager_permission(
+            db, workflow, user_id, organization_id
+        )
 
         db.commit()
         db.refresh(app)
@@ -90,6 +95,25 @@ class AppService:
             if user:
                 # Pydantic 모델 변환 시 사용될 속성 할당
                 setattr(app, "owner_name", user.name)
+
+    @staticmethod
+    def _grant_workflow_manager_permission(
+        db: Session,
+        workflow: Workflow,
+        user_id,
+        organization_id,
+    ) -> None:
+        if not organization_id:
+            return
+        db.add(
+            UserWorkflowPermission(
+                grantee_organization_id=organization_id,
+                workflow_id=workflow.id,
+                user_id=user_id,
+                auth_state=AUTH_STATE_MANAGER,
+                assigned_by=user_id,
+            )
+        )
 
     @staticmethod
     def _populate_deployment_status(db: Session, app: App):
@@ -381,6 +405,9 @@ class AppService:
 
         # App에 워크플로우 연결
         new_app.workflow_id = new_workflow.id
+        AppService._grant_workflow_manager_permission(
+            db, new_workflow, user_id, organization_id
+        )
 
         db.commit()
         db.refresh(new_app)
