@@ -289,6 +289,33 @@ def test_llm_permission_sqlalchemy_rows_are_unpacked_before_ranking():
     )
 
 
+def test_llm_credential_scope_mismatch_denies_even_owner():
+    # Verifies credential organization mismatch fails closed before owner fallback MBA-43
+    owner_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    credential_organization_id = uuid.uuid4()
+    requested_organization_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=credential_id,
+                user_id=owner_id,
+                organization_id=credential_organization_id,
+            ),
+        ],
+    )
+
+    assert (
+        get_effective_llm_credential_auth_state(
+            db,
+            owner_id,
+            credential_id,
+            requested_organization_id,
+        )
+        == "none"
+    )
+
+
 def test_llm_credential_viewer_cannot_use():
     user_id = uuid.uuid4()
     owner_id = uuid.uuid4()

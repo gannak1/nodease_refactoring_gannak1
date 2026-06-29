@@ -5,17 +5,19 @@
 핵심: 기존 변수({{ ... }})를 보존하면서 템플릿 품질을 향상시킵니다.
 """
 
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.services.llm_organization_context import resolve_llm_organization_id
 from apps.gateway.services.llm_service import LLMService
-from apps.shared.db.models.llm import LLMCredential, LLMProvider
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
+from apps.shared.services.llm_errors import LLMRuntimeAccessError
 
 router = APIRouter()
 
@@ -24,6 +26,8 @@ router = APIRouter()
 
 
 class TemplateImproveRequest(BaseModel):
+    organization_id: UUID | None = None
+
     """템플릿 개선 요청"""
 
     template_type: Literal["email", "message", "report", "custom"]
@@ -104,19 +108,24 @@ PROVIDER_EFFICIENT_MODELS = {
 def check_credentials(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
-    """
-    현재 사용자가 유효한 LLM credential을 가지고 있는지 확인합니다.
-    """
-    credential = (
-        db.query(LLMCredential)
-        .filter(
-            LLMCredential.user_id == current_user.id, LLMCredential.is_valid == True
-        )
-        .first()
+    # Checks wizard credential availability through active organization runtime policy MBA-43
+    organization_id = resolve_llm_organization_id(x_organization_id)
+    candidate_models = set(PROVIDER_EFFICIENT_MODELS.values())
+    available_models = LLMService.get_my_available_models(
+        db,
+        current_user.id,
+        organization_id=organization_id,
     )
-
-    return {"has_credentials": credential is not None}
+    return {
+        "has_credentials": any(
+            model.model_id_for_api_call in candidate_models
+            for model in available_models
+        )
+    }
 
 
 @router.post("/improve", response_model=TemplateImproveResponse)
@@ -124,60 +133,25 @@ async def improve_template(
     request: TemplateImproveRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
-    """
-    AI를 사용하여 Jinja2 템플릿을 개선합니다.
-
-    사용자의 등록된 LLM credential을 사용하여 템플릿 개선을 수행합니다.
-    등록된 변수는 반드시 보존됩니다.
-    """
-    # 1. 유효한 credential 확인
-    credential = (
-        db.query(LLMCredential)
-        .filter(
-            LLMCredential.user_id == current_user.id, LLMCredential.is_valid == True
-        )
-        .first()
+    # Routes template wizard execution through scoped LLM credential policy MBA-43
+    organization_id = resolve_llm_organization_id(
+        x_organization_id,
+        request.organization_id,
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "LLM Provider가 등록되지 않았습니다. 설정에서 API Key를 등록해주세요.",
-                "credentials_required": True,
-            },
-        )
-
-    # 2. 원본 템플릿이 비어있으면 에러
     if not request.original_template.strip():
-        raise HTTPException(status_code=400, detail="개선할 템플릿을 입력해주세요.")
+        raise HTTPException(status_code=400, detail="template_required")
 
     try:
-        # 3. Provider 정보 조회 후 효율적인 모델 선택
-        provider = (
-            db.query(LLMProvider)
-            .filter(LLMProvider.id == credential.provider_id)
-            .first()
+        client, _model_id = LLMService.get_wizard_client_for_user(
+            db,
+            current_user.id,
+            list(PROVIDER_EFFICIENT_MODELS.values()),
+            organization_id=organization_id,
         )
-
-        if not provider:
-            raise HTTPException(
-                status_code=400, detail="Provider 정보를 찾을 수 없습니다."
-            )
-
-        provider_name = provider.name.lower()
-        model_id = PROVIDER_EFFICIENT_MODELS.get(provider_name)
-
-        if not model_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"현재 '{provider.name}'에서는 템플릿 마법사 기능을 사용할 수 없습니다. OpenAI, Google, Anthropic Provider를 이용해주세요.",
-            )
-
-        client = LLMService.get_client_for_user(db, current_user.id, model_id)
-
-        # 4. 변수 목록 포맷팅
         if request.registered_variables:
             variables_str = ", ".join(
                 [f"{{{{ {v} }}}}" for v in request.registered_variables]
@@ -185,14 +159,10 @@ async def improve_template(
         else:
             variables_str = "(등록된 변수 없음)"
 
-        # 5. 시스템 프롬프트 구성
         common_rules = COMMON_RULES.format(variables=variables_str)
-
         type_specific = TYPE_SPECIFIC_PROMPTS.get(
             request.template_type, TYPE_SPECIFIC_PROMPTS["custom"]
         )
-
-        # custom 타입일 때 사용자 지시사항 삽입
         if request.template_type == "custom":
             custom_instr = request.custom_instructions or "(추가 지시사항 없음)"
             type_specific = type_specific.format(custom_instructions=custom_instr)
@@ -200,7 +170,6 @@ async def improve_template(
         system_prompt = WIZARD_SYSTEM_PROMPT_TEMPLATE.format(
             common_rules=common_rules, type_specific=type_specific
         )
-
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -208,32 +177,26 @@ async def improve_template(
                 "content": f"다음 템플릿을 개선해주세요:\n\n{request.original_template}",
             },
         ]
-
-        # 6. LLM 호출
         response = await client.invoke(messages, temperature=0.7, max_tokens=2000)
-
-        # 7. 응답 파싱
         improved_template = (
             response.get("choices", [{}])[0].get("message", {}).get("content", "")
         )
-
         if not improved_template:
-            raise HTTPException(status_code=500, detail="AI 응답을 파싱할 수 없습니다.")
+            raise HTTPException(status_code=500, detail="llm_response_parse_failed")
 
-        # [Safety Logic] Jinja2 구문 오류 자동 수정
-        # LLM이 간혹 '{ { variable } }' 처럼 중괄호 사이에 공백을 넣는 경우가 있음
         import re
 
-        # 1. 여는 중괄호 수정: '{ {' -> '{{'
         improved_template = re.sub(r"\{\s+\{", "{{", improved_template)
-        # 2. 닫는 중괄호 수정: '} }' -> '}}'
         improved_template = re.sub(r"\}\s+\}", "}}", improved_template)
-
         return {"improved_template": improved_template.strip()}
 
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+    except HTTPException:
+        raise
+    except LLMRuntimeAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
         raise HTTPException(
-            status_code=500, detail=f"템플릿 개선 중 오류 발생: {str(e)}"
+            status_code=500, detail=f"템플릿 개선 중 오류 발생: {str(exc)}"
         )

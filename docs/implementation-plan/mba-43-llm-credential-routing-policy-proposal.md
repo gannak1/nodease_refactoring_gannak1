@@ -31,9 +31,9 @@ Implementation Note: MBA-43 gateway/workflow runtime code follows this proposal 
 - LLM credential/model HTTP API는 `X-Organization-Id` header를 우선 사용한다.
 - `LLMCredentialCreate.organization_id`가 함께 들어온 경우 header organization과 일치해야 한다.
 - Header organization과 body `organization_id`가 다르면 `400 Bad Request`로 실패한다.
-- `X-Organization-Id`가 없으면 기존 active organization fallback 정책을 따른다.
-- Credential 생성 scope 결정 순서는 `X-Organization-Id`, body `organization_id`, 기존 primary/default organization fallback 순서다.
-- 개인 workspace는 가능하면 default organization id를 `X-Organization-Id`로 명시한다. 단, header가 없는 legacy/과도기 경로는 기존 fallback 정책을 따른다.
+- `X-Organization-Id`가 없으면 body `organization_id`를 사용한다.
+- Header와 body 모두 없으면 `400 Bad Request`와 `detail: "organization_id_required"`로 실패한다.
+- 개인 workspace도 default organization id를 `X-Organization-Id` 또는 body `organization_id`로 명시해야 한다.
 
 ## Permission Tables
 
@@ -52,12 +52,12 @@ LLM credential 권한은 기존 table을 사용한다.
 ## Read vs Use
 
 - Credential 목록 조회는 credential `read` 권한 기준으로 노출한다.
-- Model 목록 조회와 embedding model 목록 조회도 credential `read` 권한과 verified credential-model relation 기준으로 노출한다.
-- Model 목록 응답에는 저장값이 아닌 계산값 `can_use`를 포함한다.
+- Model 목록 조회와 embedding model 목록 조회는 credential `use` 권한과 verified credential-model relation 기준으로 노출한다.
+- Model 목록 응답은 사용 가능한 model만 반환하며, 반환된 model의 `can_use`는 호환성을 위해 `true`로 표시한다.
 - Runtime LLM node 실행은 credential `use` 권한 기준으로 판정한다.
-- 사용자는 model 목록을 볼 수 있어도 `use` 권한이 없으면 실행할 수 없다.
+- 사용자는 `use` 권한이 없거나 model restriction policy로 deny된 model을 목록에서 볼 수 없다.
 
-`can_use`는 DB column이나 `options` 값이 아니다. 응답 생성 시 현재 user, active organization, team membership, credential permission, verified credential-model relation, model restriction policy를 기준으로 계산한다.
+`can_use`는 DB column이나 `options` 값이 아니다. 응답 생성 시 현재 user, active organization, team membership, credential `use` permission, verified credential-model relation, model restriction policy를 기준으로 계산하며, 반환된 model에서는 `true`이다.
 
 ## Runtime 적용 범위
 
@@ -79,7 +79,7 @@ Private/auth required app 실행은 접속한 로그인 user를 실행 주체로
 - 권한 부족은 숨기지 않고 `403 Forbidden` 또는 `permission.denied`로 처리한다.
 - Credential이 실제로 존재하지 않으면 `404 Not Found` 또는 `resource.not_found`로 처리한다.
 - Credential은 존재하지만 organization scope 또는 permission이 맞지 않으면 `403`으로 처리한다.
-- Runtime 실패 응답은 `403 permission.denied`로 단순화한다.
+- Runtime에서 사용할 수 있는 credential-model relation이 없으면 `404`로 처리하고, credential은 있으나 `use` 권한 또는 model restriction policy 때문에 거부되면 `403`으로 처리한다.
 - Runtime 실패 상세 사유는 내부 log 또는 audit metadata에 남긴다.
 - Secret, token, raw API key는 error message, log, audit metadata에 원문으로 남기지 않는다.
 
@@ -126,14 +126,14 @@ Pattern 문법:
 
 주의할 기존 정책 지점:
 
-- 기존 active organization 정책은 header 방식을 승인하면서도 legacy/default organization fallback을 일부 허용한다.
-- 기존 LLM credential API 문서는 body `organization_id` 또는 default organization fallback 설명을 포함할 수 있다.
-- 이 제안은 기존 fallback 정책을 제거하지 않고, `X-Organization-Id`가 있는 요청에서 header를 우선 scope로 사용하도록 정렬한다.
+- LLM credential/model API는 header 방식을 우선 사용하고 body `organization_id`를 보조 scope로 허용한다.
+- 기존 LLM credential API 문서의 default organization fallback 설명은 MBA-43 구현 기준과 맞지 않으므로 제거한다.
+- 이 제안은 LLM credential/model API에서 요청마다 explicit organization scope를 요구한다.
 
 이번 구현 반영 사항:
 
 - Header와 body `organization_id` mismatch는 `400 Bad Request`로 처리한다.
-- Model 목록 응답의 `can_use`는 DB/options에 저장하지 않고 응답 생성 시 계산한다.
+- Model 목록은 사용 가능한 model만 반환하고 `can_use=true`를 호환성 필드로 표시한다.
 - Model restriction은 `teams.options`와 `team_memberships.options`의 `model_policy.unallowed_model_patterns`를 사용한다.
 
 후속 결정 필요:

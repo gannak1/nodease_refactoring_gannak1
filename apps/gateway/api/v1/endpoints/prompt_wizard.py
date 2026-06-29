@@ -5,17 +5,19 @@
 """
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
-from apps.shared.db.models.llm import LLMCredential, LLMProvider
+from apps.gateway.services.llm_organization_context import resolve_llm_organization_id
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.gateway.services.llm_service import LLMService
+from apps.shared.services.llm_errors import LLMRuntimeAccessError
 
 router = APIRouter()
 
@@ -24,6 +26,8 @@ router = APIRouter()
 
 
 class PromptImproveRequest(BaseModel):
+    organization_id: UUID | None = None
+
     """프롬프트 개선 요청"""
 
     prompt_type: Literal["system", "user", "assistant"]
@@ -131,19 +135,24 @@ def _strip_unapproved_placeholders(text: str, allowed: set[str]) -> str:
 def check_credentials(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
-    """
-    현재 사용자가 유효한 LLM credential을 가지고 있는지 확인합니다.
-    """
-    credential = (
-        db.query(LLMCredential)
-        .filter(
-            LLMCredential.user_id == current_user.id, LLMCredential.is_valid == True
-        )
-        .first()
+    # Checks wizard credential availability through active organization runtime policy MBA-43
+    organization_id = resolve_llm_organization_id(x_organization_id)
+    candidate_models = set(LLMService.EFFICIENT_MODELS.values())
+    available_models = LLMService.get_my_available_models(
+        db,
+        current_user.id,
+        organization_id=organization_id,
     )
-
-    return {"has_credentials": credential is not None}
+    return {
+        "has_credentials": any(
+            model.model_id_for_api_call in candidate_models
+            for model in available_models
+        )
+    }
 
 
 @router.post("/improve", response_model=PromptImproveResponse)
@@ -151,65 +160,28 @@ async def improve_prompt(
     request: PromptImproveRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
-    """
-    AI를 사용하여 프롬프트를 개선합니다.
-
-    사용자의 등록된 LLM credential을 사용하여 프롬프트 개선을 수행합니다.
-    credential이 없으면 400 에러를 반환합니다.
-    """
-    # 1. 유효한 credential 확인
-    credential = (
-        db.query(LLMCredential)
-        .filter(
-            LLMCredential.user_id == current_user.id, LLMCredential.is_valid == True
-        )
-        .first()
+    # Routes prompt wizard execution through scoped LLM credential policy MBA-43
+    organization_id = resolve_llm_organization_id(
+        x_organization_id,
+        request.organization_id,
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "LLM Provider가 등록되지 않았습니다. 설정에서 API Key를 등록해주세요.",
-                "credentials_required": True,
-            },
-        )
-
-    # 2. 원본 프롬프트가 비어있으면 에러
-    # (최후의최후의최후 방어: 프론트에서 버튼 disabled로 이미 막아둠)
     if not request.original_prompt.strip():
-        raise HTTPException(status_code=400, detail="개선할 프롬프트를 입력해주세요.")
+        raise HTTPException(status_code=400, detail="prompt_required")
 
     try:
-        # 3. Provider 정보 조회 후 효율적인 모델 선택
-        provider = (
-            db.query(LLMProvider)
-            .filter(LLMProvider.id == credential.provider_id)
-            .first()
+        client, _model_id = LLMService.get_wizard_client_for_user(
+            db,
+            current_user.id,
+            list(LLMService.EFFICIENT_MODELS.values()),
+            organization_id=organization_id,
         )
-
-        if not provider:
-            raise HTTPException(
-                status_code=400, detail="Provider 정보를 찾을 수 없습니다."
-            )
-
-        provider_name = provider.name.lower()
-        model_id = LLMService.EFFICIENT_MODELS.get(provider_name)
-
-        if not model_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"현재 '{provider.name}'에서는 프롬프트 마법사 기능을 사용할 수 없습니다. OpenAI, Google, Anthropic Provider를 이용해주세요.",
-            )
-
-        client = LLMService.get_client_for_user(db, current_user.id, model_id)
-
-        # 4. 메시지 구성
         system_prompt = WIZARD_SYSTEM_PROMPTS.get(
             request.prompt_type, WIZARD_SYSTEM_PROMPTS["user"]
         )
-
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -217,29 +189,27 @@ async def improve_prompt(
                 "content": f"다음 프롬프트를 개선해주세요:\n\n{request.original_prompt}",
             },
         ]
-
-        # 5. LLM 호출
         response = await client.invoke(messages, temperature=0.7, max_tokens=2000)
-
-        # 6. 응답 파싱
         improved_prompt = (
             response.get("choices", [{}])[0].get("message", {}).get("content", "")
         )
-
         if not improved_prompt:
-            raise HTTPException(status_code=500, detail="AI 응답을 파싱할 수 없습니다.")
+            raise HTTPException(status_code=500, detail="llm_response_parse_failed")
 
         allowed_vars = _extract_placeholders(_normalize_braces(request.original_prompt))
         improved_prompt = _normalize_braces(improved_prompt)
         improved_prompt = _strip_unapproved_placeholders(
             improved_prompt, allowed_vars
         )
-
         return {"improved_prompt": improved_prompt.strip()}
 
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
+    except HTTPException:
+        raise
+    except LLMRuntimeAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
         raise HTTPException(
-            status_code=500, detail=f"프롬프트 개선 중 오류 발생: {str(e)}"
+            status_code=500, detail=f"프롬프트 개선 중 오류 발생: {str(exc)}"
         )

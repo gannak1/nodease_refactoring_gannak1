@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_llm_credential_permission
 from apps.gateway.utils.audit import audit
-from apps.gateway.services.organization_context import ensure_user_default_organization
+from apps.gateway.services.llm_organization_context import resolve_llm_organization_id
 from apps.gateway.services.llm_service import LLMService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMModel, LLMProvider, LLMUsageLog
@@ -40,17 +40,8 @@ def _resolve_llm_organization_id(
     body_organization_id: UUID | None = None,
 ) -> UUID:
     # HTTP 요청이 제대로 되었는지 확인하는 함수, x_organization, body_organization이 없고 body와 header의 organization이 다르면 에러 아니면 header 우선으로 리턴, body 후순위로 리턴
-    if (
-        x_organization_id is not None
-        and body_organization_id is not None
-        and x_organization_id != body_organization_id
-    ):
-        raise HTTPException(status_code=400, detail="organization_id_mismatch")
-    if x_organization_id is not None:
-        return x_organization_id
-    if body_organization_id is not None:
-        return body_organization_id
-    return ensure_user_default_organization(db, current_user.id)
+    # Keeps the endpoint-local compatibility wrapper while requiring explicit scope MBA-43
+    return resolve_llm_organization_id(x_organization_id, body_organization_id)
 
 # --- Providers (System) ---
 

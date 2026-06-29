@@ -5,17 +5,19 @@
 """
 
 import logging
-from typing import List
+from typing import Annotated, List
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.services.llm_organization_context import resolve_llm_organization_id
 from apps.gateway.services.llm_service import LLMService
-from apps.shared.db.models.llm import LLMCredential, LLMProvider
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
+from apps.shared.services.llm_errors import LLMRuntimeAccessError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,6 +25,8 @@ router = APIRouter()
 
 # === Request/Response Schemas ===
 class CodeGenerateRequest(BaseModel):
+    organization_id: UUID | None = None
+
     """코드 생성 요청"""
 
     description: str  # 사용자의 자연어 설명 (예: "두 숫자를 더해서 반환하는 코드")
@@ -145,17 +149,24 @@ PROVIDER_EFFICIENT_MODELS = {
 def check_credentials(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
-    """
-    현재 사용자가 유효한 LLM credential을 가지고 있는지 확인합니다.
-    """
-    credential = (
-        db.query(LLMCredential)
-        .filter(LLMCredential.user_id == current_user.id, LLMCredential.is_valid)
-        .first()
+    # Checks wizard credential availability through active organization runtime policy MBA-43
+    organization_id = resolve_llm_organization_id(x_organization_id)
+    candidate_models = set(PROVIDER_EFFICIENT_MODELS.values())
+    available_models = LLMService.get_my_available_models(
+        db,
+        current_user.id,
+        organization_id=organization_id,
     )
-
-    return {"has_credentials": credential is not None}
+    return {
+        "has_credentials": any(
+            model.model_id_for_api_call in candidate_models
+            for model in available_models
+        )
+    }
 
 
 @router.post("/generate", response_model=CodeGenerateResponse)
@@ -163,68 +174,32 @@ async def generate_code(
     request: CodeGenerateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    x_organization_id: Annotated[
+        UUID | None, Header(alias="X-Organization-Id")
+    ] = None,
 ):
-    """
-    AI를 사용하여 Python 코드를 생성합니다.
-
-    사용자의 등록된 LLM credential을 사용하여 코드 생성을 수행합니다.
-    credential이 없으면 400 에러를 반환합니다.
-    """
-    # 1. 유효한 credential 확인
-    credential = (
-        db.query(LLMCredential)
-        .filter(LLMCredential.user_id == current_user.id, LLMCredential.is_valid)
-        .first()
+    # Routes code wizard execution through scoped LLM credential policy MBA-43
+    organization_id = resolve_llm_organization_id(
+        x_organization_id,
+        request.organization_id,
     )
-
-    if not credential:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "LLM Provider가 등록되지 않았습니다. 설정에서 API Key를 등록해주세요.",
-                "credentials_required": True,
-            },
-        )
-
-    # 2. 설명이 비어있으면 에러
     if not request.description.strip():
-        raise HTTPException(
-            status_code=400, detail="생성할 코드에 대한 설명을 입력해주세요."
-        )
+        raise HTTPException(status_code=400, detail="code_description_required")
 
     try:
-        # 3. Provider 정보 조회 후 효율적인 모델 선택
-        provider = (
-            db.query(LLMProvider)
-            .filter(LLMProvider.id == credential.provider_id)
-            .first()
+        client, _model_id = LLMService.get_wizard_client_for_user(
+            db,
+            current_user.id,
+            list(PROVIDER_EFFICIENT_MODELS.values()),
+            organization_id=organization_id,
         )
 
-        if not provider:
-            raise HTTPException(
-                status_code=400, detail="Provider 정보를 찾을 수 없습니다."
-            )
-
-        provider_name = provider.name.lower()
-        model_id = PROVIDER_EFFICIENT_MODELS.get(provider_name)
-
-        if not model_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"현재 '{provider.name}'에서는 코드 마법사 기능을 사용할 수 없습니다. OpenAI, Google, Anthropic Provider를 이용해주세요.",
-            )
-
-        client = LLMService.get_client_for_user(db, current_user.id, model_id)
-
-        # 4. 입력 변수 목록 포맷팅
         if request.input_variables:
             input_vars_str = "\n".join([f"- {var}" for var in request.input_variables])
         else:
             input_vars_str = "(입력 변수 없음 - inputs 딕셔너리가 비어있을 수 있음)"
 
-        # 5. 시스템 프롬프트 구성
         system_prompt = CODE_WIZARD_SYSTEM_PROMPT.format(input_variables=input_vars_str)
-
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -232,53 +207,42 @@ async def generate_code(
                 "content": f"다음 기능을 수행하는 Python 코드를 생성해주세요:\n\n{request.description}",
             },
         ]
-
-        # 6. LLM 호출
         response = await client.invoke(messages, temperature=0.3, max_tokens=2000)
 
-        # 7. 응답 파싱 (여러 형식 지원)
         generated_code = ""
-
-        # OpenAI 형식: {"choices": [{"message": {"content": "..."}}]}
         if "choices" in response and response["choices"]:
             generated_code = (
                 response["choices"][0].get("message", {}).get("content", "")
             )
-        # 단순 content 형식
         elif "content" in response:
             generated_code = response["content"]
-        # 직접 텍스트 형식
         elif isinstance(response, str):
             generated_code = response
 
         if not generated_code:
             logger.error(f"Unknown response format: {response}")
-            raise HTTPException(status_code=500, detail="AI 응답을 파싱할 수 없습니다.")
+            raise HTTPException(status_code=500, detail="llm_response_parse_failed")
 
-        # 8. 코드 정제 (마크다운 코드 블록 제거)
         generated_code = _clean_code_response(generated_code)
-
-        # 9. 코드 검증 및 자동 수정
         validation_result = _validate_and_fix_code(generated_code)
+        generated_code = validation_result["code"]
         if validation_result["has_errors"]:
-            # 치명적 에러가 있으면 경고와 함께 반환
-            generated_code = validation_result["code"]
             warnings = validation_result["warnings"]
             if warnings:
-                # 경고가 있지만 코드는 반환 (프론트에서 표시 가능)
                 logger.warning(f"Code warnings: {warnings}")
-        else:
-            generated_code = validation_result["code"]
 
         return {"generated_code": generated_code}
 
-    except ValueError as e:
-        logger.error(f"ValueError: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=500, detail=f"코드 생성 중 오류 발생: {str(e)}")
-
+    except HTTPException:
+        raise
+    except LLMRuntimeAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except ValueError as exc:
+        logger.error(f"ValueError: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Error: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=500, detail=f"코드 생성 중 오류 발생: {str(exc)}")
 
 def _clean_code_response(code: str) -> str:
     """

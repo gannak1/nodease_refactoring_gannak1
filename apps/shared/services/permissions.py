@@ -126,7 +126,8 @@ def _llm_credential_scope(
         and requested_organization_uuid is not None
         and credential_organization_uuid != requested_organization_uuid
     ):
-        return credential, None
+        # Fails closed when a credential is addressed from another organization MBA-43
+        return None, None
 
     return credential, credential_organization_uuid or requested_organization_uuid
 
