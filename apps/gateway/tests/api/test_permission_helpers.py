@@ -64,3 +64,37 @@ def test_workflow_permission_denied_records_permission_audit(monkeypatch):
     assert events[0]["metadata"]["required_permission"] == "write"
     assert events[0]["metadata"]["permission_action"] == "write"
     assert events[0]["metadata"]["effective_auth_state"] == "viewer"
+
+
+def test_workflow_permission_denied_outside_organization_scope_is_404(monkeypatch):
+    workflow = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+    events = []
+
+    monkeypatch.setattr(
+        permissions,
+        "get_effective_workflow_auth_state",
+        lambda db, user_id, workflow_id, organization_id=None: "none",
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_workflow_permission",
+        lambda db, user_id, workflow_id, action, organization_id=None: False,
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_organization_scope_access",
+        lambda db, user_id, organization_id: False,
+    )
+    monkeypatch.setattr(
+        permissions,
+        "record_audit",
+        lambda **event: events.append(event),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_workflow_permission(FakeDb(workflow), user, workflow.id, "read")
+
+    assert exc_info.value.status_code == 404
+    assert getattr(exc_info.value, "audit_recorded", False) is False
+    assert events == []

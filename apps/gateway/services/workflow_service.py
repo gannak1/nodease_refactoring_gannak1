@@ -16,6 +16,7 @@ class WorkflowService:
         db: Session,
         request: WorkflowCreateRequest,
         user_id: UUID,
+        organization_id: UUID | None = None,
     ) -> Workflow:
         """
         새 워크플로우 생성
@@ -32,13 +33,23 @@ class WorkflowService:
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
 
-        if not AppService.can_manage_app(db, app, user_id):
-            raise HTTPException(status_code=403, detail="Forbidden")
+        if (
+            app.organization_id
+            and organization_id
+            and app.organization_id != organization_id
+        ):
+            raise HTTPException(status_code=404, detail="App not found")
 
-        # BACKLOG: ensure_user_default_organization fallback은 organization_id가 비어 있는
-        # legacy app 데이터 보정용이다. DB를 초기화하면 필요 없으므로 제거한다.
-        organization_id = app.organization_id or ensure_user_default_organization(
-            db, user_id
+        denial_status = AppService.access_denial_status(db, app, user_id, "manage")
+        if denial_status is not None:
+            detail = "Forbidden" if denial_status == 403 else "App not found"
+            raise HTTPException(status_code=denial_status, detail=detail)
+
+        # organization_id fallback은 organization scope가 없는 legacy app 보정용이다.
+        organization_id = (
+            app.organization_id
+            or organization_id
+            or ensure_user_default_organization(db, user_id)
         )
 
         # 새 워크플로우 생성
@@ -64,7 +75,7 @@ class WorkflowService:
         db: Session,
         workflow_id: str,
         request: WorkflowDraftRequest,
-        user_id: str = "default-user",
+        user_id: str,
     ):
         """
         워크플로우 초안을 PostgreSQL에 저장합니다.

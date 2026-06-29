@@ -9,6 +9,7 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.user import User
 from apps.shared.schemas.app import AppCreateRequest, AppUpdateRequest
 from apps.shared.services.permissions import (
+    has_organization_scope_access,
     has_organization_manager_permission,
     has_workflow_permission,
 )
@@ -29,13 +30,11 @@ class AppService:
             db: 데이터베이스 세션
             request: 앱 생성 요청 데이터
             user_id: 생성자 ID (필수)
-            organization_id: 테넌트 ID (선택, 기본값은 user_id)
+            organization_id: active organization ID. 없으면 legacy fallback 사용
 
         Returns:
             생성된 App 객체
         """
-        # BACKLOG: active organization을 명시적으로 받기 전까지 기본 조직을 사용하는 fallback이다.
-        # active organization 선택 흐름이 생기면 이 fallback을 제거한다.
         if not organization_id:
             organization_id = ensure_user_default_organization(db, user_id)
 
@@ -143,6 +142,29 @@ class AppService:
         return app.organization_id is None and app.created_by == user_id
 
     @staticmethod
+    def can_access_app_scope(db: Session, app: App, user_id) -> bool:
+        if app.organization_id:
+            return has_organization_scope_access(db, user_id, app.organization_id)
+        return app.created_by == user_id
+
+    @staticmethod
+    def access_denial_status(db: Session, app: App, user_id, action: str) -> int | None:
+        if action == "read":
+            if AppService.can_read_app(db, app, user_id):
+                return None
+        elif action == "manage":
+            if AppService.can_manage_app(db, app, user_id):
+                return None
+            if AppService.can_read_app(db, app, user_id):
+                return 403
+        else:
+            raise ValueError(f"Unsupported app permission action: {action}")
+
+        if AppService.can_access_app_scope(db, app, user_id):
+            return 403
+        return 404
+
+    @staticmethod
     def get_app(db: Session, app_id: str, user_id=None):
         """
         특정 앱을 조회합니다.
@@ -168,7 +190,7 @@ class AppService:
         return app
 
     @staticmethod
-    def get_user_apps(db: Session, user_id):
+    def get_user_apps(db: Session, user_id, organization_id: str = None):
         """
         특정 유저의 모든 앱을 조회합니다.
 
@@ -179,12 +201,11 @@ class AppService:
         Returns:
             App 객체 리스트
         """
-        apps = (
-            db.query(App)
-            # N+1 문제 방지를 위해 active_deployment 관계를 즉시 로딩 (Joined Load)
-            .options(joinedload(App.active_deployment))
-            .all()
-        )
+        query = db.query(App).options(joinedload(App.active_deployment))
+        if organization_id:
+            query = query.filter(App.organization_id == organization_id)
+
+        apps = query.all()
         apps = [app for app in apps if AppService.can_read_app(db, app, user_id)]
 
         for app in apps:
@@ -274,7 +295,12 @@ class AppService:
         return app
 
     @staticmethod
-    def clone_app(db: Session, source_app_id: str, user_id: str):
+    def clone_app(
+        db: Session,
+        source_app_id: str,
+        user_id: str,
+        organization_id: str = None,
+    ):
         """
         기존 앱을 복제합니다.
         """
@@ -309,7 +335,8 @@ class AppService:
         new_slug = AppService._generate_url_slug(db, f"{source_app.name} (복사본)")
         new_secret = secrets.token_urlsafe(32)
 
-        organization_id = ensure_user_default_organization(db, user_id)
+        if not organization_id:
+            organization_id = ensure_user_default_organization(db, user_id)
 
         new_app = App(
             organization_id=organization_id,
