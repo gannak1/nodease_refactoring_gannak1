@@ -78,7 +78,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | `users` | 사용자, 실행 actor, resource owner |
 | `organization` | 조직 범위, tenant-like boundary |
-| `organization_memberships` | MBA-66 DB foundation. User와 organization의 직접 소속 관계. Permission helper/API 전환은 후속 MBA-67/MBA-68 범위 |
+| `organization_memberships` | MBA-66 DB foundation. User와 organization의 직접 소속 관계. MBA-67에서 permission helper와 organization/team/user/permission API 일부가 이 기준으로 전환됐다. Organization member/invitation API와 FE 전환은 후속 MBA-68/MBA-69 범위 |
 | `teams` | 조직 내 권한 부여 단위 |
 | `team_memberships` | 사용자와 팀의 소속 관계 |
 | `team_workflow_permissions` | 팀 단위 workflow 권한 |
@@ -109,7 +109,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 
 ### Implemented Foundation Table
 
-아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. Permission helper, API endpoint, FE 전환은 아직 완료된 것이 아니며 후속 MBA-67/MBA-68 범위다.
+아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. MBA-67에서 permission helper와 일부 API endpoint가 organization membership 기준으로 전환됐다. Organization member/invitation API와 FE 전환은 아직 완료된 것이 아니며 후속 MBA-68/MBA-69 범위다.
 
 | Table | 도입 단계 | 목표 역할 |
 | --- | --- | --- |
@@ -1489,9 +1489,9 @@ MVP 목표 상태 결정:
 
 권한 판정 순서:
 
-1. 사용자의 active organization을 확인한다. 현재 코드는 organization owner/manager 또는 active `team_memberships` 기반으로 판정한다.
-2. MVP 2-0 이후에는 active `organization_memberships` row를 organization 소속의 기본 전제로 확인한다.
-3. user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
+1. 사용자의 active organization을 확인한다. MBA-67 이후 permission helper/API 전환 범위에서는 `organization_memberships` row를 organization 소속의 기본 전제로 확인한다.
+2. Active row는 `organization_auth_state`에 따라 member/manager로 판정하고, invited/suspended/removed row는 fail-closed 처리한다.
+3. Membership row 자체가 없고 user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
 4. 사용자가 속한 team을 `team_memberships`에서 조회한다.
 5. resource별 permission table에서 `auth_state`를 확인한다.
 6. 현재 구현된 workflow/LLM credential은 user direct permission table에서 해당 user의 `auth_state`를 확인한다. knowledge/audit user direct permission table은 MVP 2/3 목표 schema다.

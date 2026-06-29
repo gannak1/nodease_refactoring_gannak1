@@ -11,8 +11,9 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import is_
 
 from apps.gateway.main import app
-from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.team import (
     Team,
     TeamLLMPermission,
@@ -72,14 +73,18 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["grantee_organization_id"], str(organization_id))
+        self.assertEqual(
+            response.json()["grantee_organization_id"], str(organization_id)
+        )
         self.assertEqual(response.json()["workflow_id"], str(workflow_id))
         self.assertEqual(response.json()["team_id"], str(team_id))
         self.assertEqual(response.json()["auth_state"], "builder")
         self.assertEqual(response.json()["assigned_by"], str(user_id))
         self.assertEqual(len(session.added), 0)
         self.assertTrue(session.scalars_called)
-        _assert_organization_scope_filters(self, session.organization_query, organization_id)
+        _assert_organization_scope_filters(
+            self, session.organization_query, organization_id
+        )
         _assert_workflow_scope_filters(
             self,
             session.workflow_query,
@@ -336,7 +341,9 @@ class TestPermissionsApi(unittest.TestCase):
             organization_id,
         )
 
-    def test_put_team_workflow_permission_ignores_manager_permission_from_other_scope(self):
+    def test_put_team_workflow_permission_ignores_manager_permission_from_other_scope(
+        self,
+    ):
         # 다른 workflow/organization의 manager 권한은 현재 workflow 권한 변경에 쓰이면 안 된다.
         user_id = uuid4()
         organization_id = uuid4()
@@ -471,7 +478,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["grantee_organization_id"], str(organization_id))
+        self.assertEqual(
+            response.json()["grantee_organization_id"], str(organization_id)
+        )
         self.assertEqual(response.json()["llm_credential_id"], str(credential_id))
         self.assertEqual(response.json()["team_id"], str(team_id))
         self.assertEqual(response.json()["auth_state"], "operator")
@@ -850,7 +859,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), _error("resource.not_found", "Team not found."))
+        self.assertEqual(
+            response.json(), _error("resource.not_found", "Team not found.")
+        )
         _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
@@ -881,7 +892,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), _error("resource.not_found", "Team not found."))
+        self.assertEqual(
+            response.json(), _error("resource.not_found", "Team not found.")
+        )
         _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
@@ -953,8 +966,8 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertNotIn(Workflow, session.query_calls)
         self.assertFalse(session.scalars_called)
 
-    def test_put_team_workflow_permission_hides_inactive_membership_team(self):
-        # inactive team membership은 organization scope 진입 권한으로 인정하지 않는다.
+    def test_put_team_workflow_permission_hides_removed_organization_membership(self):
+        # removed organization membership은 organization scope 진입 권한으로 인정하지 않는다.
         user_id = uuid4()
         organization_id = uuid4()
         session = _Session(
@@ -962,7 +975,7 @@ class TestPermissionsApi(unittest.TestCase):
             membership=_membership(
                 user_id=user_id,
                 organization_id=organization_id,
-                team_is_active=False,
+                membership_state="removed",
             ),
         )
 
@@ -1272,7 +1285,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), _error("resource.not_found", "Team not found."))
+        self.assertEqual(
+            response.json(), _error("resource.not_found", "Team not found.")
+        )
         _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
@@ -1299,7 +1314,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), _error("resource.not_found", "Team not found."))
+        self.assertEqual(
+            response.json(), _error("resource.not_found", "Team not found.")
+        )
         _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
@@ -1325,6 +1342,10 @@ class TestPermissionsApi(unittest.TestCase):
             ),
             workflow=_workflow(id=workflow_id, organization_id=organization_id),
             target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
             user_upsert_result=upsert_result,
         )
 
@@ -1338,7 +1359,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["grantee_organization_id"], str(organization_id))
+        self.assertEqual(
+            response.json()["grantee_organization_id"], str(organization_id)
+        )
         self.assertEqual(response.json()["workflow_id"], str(workflow_id))
         self.assertEqual(response.json()["user_id"], str(target_user_id))
         self.assertEqual(response.json()["auth_state"], "builder")
@@ -1435,7 +1458,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), _error("resource.not_found", "User not found."))
+        self.assertEqual(
+            response.json(), _error("resource.not_found", "User not found.")
+        )
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
 
@@ -1468,7 +1493,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), _error("resource.not_found", "User not found."))
+        self.assertEqual(
+            response.json(), _error("resource.not_found", "User not found.")
+        )
         self.assertFalse(session.committed)
         self.assertFalse(session.scalars_called)
 
@@ -1510,7 +1537,9 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["grantee_organization_id"], str(organization_id))
+        self.assertEqual(
+            response.json()["grantee_organization_id"], str(organization_id)
+        )
         self.assertEqual(response.json()["llm_credential_id"], str(credential_id))
         self.assertEqual(response.json()["user_id"], str(target_user_id))
         self.assertEqual(response.json()["auth_state"], "operator")
@@ -1680,7 +1709,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
         self.assertNotIn(TeamMembership, session.query_calls)
-        _assert_organization_scope_filters(self, session.organization_query, organization_id)
+        _assert_organization_scope_filters(
+            self, session.organization_query, organization_id
+        )
         _assert_workflow_scope_filters(
             self,
             session.workflow_query,
@@ -2511,6 +2542,7 @@ class TestPermissionsApi(unittest.TestCase):
     ):
         """fake DB session과 fake 인증 결과로 권한 PUT endpoint를 호출한다."""
         # 각 테스트는 실제 DB 대신 fake session을 주입하고 인증 결과만 고정한다.
+        _ensure_active_user_row(session, user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {
             "X-Request-ID": "req-test",
@@ -2625,6 +2657,7 @@ class TestPermissionsApi(unittest.TestCase):
         auth_side_effect=None,
     ):
         """fake DB session과 fake 인증 결과로 LLM credential team 권한 PUT endpoint를 호출한다."""
+        _ensure_active_user_row(session, user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {
             "X-Request-ID": "req-test",
@@ -2841,11 +2874,18 @@ class TestPermissionsApi(unittest.TestCase):
 
 class _Query:
     # SQLAlchemy Query chain 중 이 테스트에서 사용하는 최소 동작만 흉내 낸다.
-    def __init__(self, first_result=None, items=None, apply_filters=False):
+    def __init__(
+        self,
+        first_result=None,
+        items=None,
+        apply_filters=False,
+        project_auth_state=False,
+    ):
         """first/all 결과와 필터 적용 여부를 받아 fake query를 구성한다."""
         self.first_result = first_result
         self.items = items or []
         self.apply_filters = apply_filters
+        self.project_auth_state = project_auth_state
         self.join_values = []
         self.filter_expressions = []
         self.options_values = []
@@ -2873,7 +2913,10 @@ class _Query:
 
     def first(self):
         """첫 fake row를 반환하고 필요하면 SQLAlchemy 조건을 흉내 낸다."""
-        if self.apply_filters and self.first_result is not None:
+        if self.first_result is None:
+            rows = self.all()
+            return rows[0] if rows else None
+        if self.apply_filters:
             for expression in self.filter_expressions:
                 if not _matches_expression(self.first_result, expression):
                     return None
@@ -2882,12 +2925,18 @@ class _Query:
     def all(self):
         """fake row 목록을 반환하고 필요하면 조건과 맞는 row만 남긴다."""
         if self.apply_filters:
-            return [
+            rows = [
                 item
                 for item in self.items
-                if all(_matches_expression(item, expr) for expr in self.filter_expressions)
+                if all(
+                    _matches_expression(item, expr) for expr in self.filter_expressions
+                )
             ]
-        return self.items
+        else:
+            rows = self.items
+        if self.project_auth_state:
+            return [item.auth_state for item in rows]
+        return rows
 
 
 class _ScalarResult:
@@ -2937,11 +2986,19 @@ class _Session:
             first_result=organization,
             apply_filters=True,
         )
-        self.membership_query = _Query(first_result=membership, apply_filters=True)
+        organization_memberships = [
+            row for row in (membership, target_membership) if row is not None
+        ]
+        self.membership_rows = organization_memberships
+        self.membership_query = _Query(
+            items=organization_memberships,
+            apply_filters=True,
+        )
         self.workflow_query = _Query(first_result=workflow, apply_filters=True)
         self.credential_query = _Query(first_result=credential, apply_filters=True)
         self.team_query = _Query(first_result=team, apply_filters=True)
-        self.user_query = _Query(first_result=target_user, apply_filters=True)
+        self.user_rows = _active_user_rows(organization, membership, target_user)
+        self.user_query = _Query(items=self.user_rows, apply_filters=True)
         self.target_membership_query = _Query(
             first_result=target_membership,
             apply_filters=True,
@@ -2986,6 +3043,13 @@ class _Session:
         self.query_calls.append(model)
         if model is Organization:
             return self.organization_query
+        if model is OrganizationMembership:
+            self.membership_query_count += 1
+            self.membership_query = _Query(
+                items=self.membership_rows,
+                apply_filters=True,
+            )
+            return self.membership_query
         if model is TeamMembership:
             self.membership_query_count += 1
             # target user 조회 이후의 membership 조회는 target user scope 검증용이다.
@@ -3000,6 +3064,7 @@ class _Session:
             return self.team_query
         if model is User:
             self.user_query_count += 1
+            self.user_query = _Query(items=self.user_rows, apply_filters=True)
             return self.user_query
         if model is TeamWorkflowPermission:
             self.workflow_permission_query_count += 1
@@ -3019,6 +3084,25 @@ class _Session:
                 )
                 return self.workflow_manager_query
             return _Query(first_result=self.existing_permission, apply_filters=True)
+        if model is TeamWorkflowPermission.auth_state:
+            self.workflow_permission_query_count += 1
+            if self.workflow_team_permissions is not None:
+                return _Query(
+                    items=self.workflow_team_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+            if (
+                self.manager_permissions is not None
+                and self.workflow_permission_query_count == 1
+            ):
+                self.workflow_manager_query = _Query(
+                    items=self.manager_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+                return self.workflow_manager_query
+            return _Query(items=[], apply_filters=True, project_auth_state=True)
         if model is TeamLLMPermission:
             self.llm_permission_query_count += 1
             if self.llm_team_permissions is not None:
@@ -3036,6 +3120,25 @@ class _Session:
                 )
                 return self.llm_manager_query
             return _Query(first_result=self.existing_llm_permission, apply_filters=True)
+        if model is TeamLLMPermission.auth_state:
+            self.llm_permission_query_count += 1
+            if self.llm_team_permissions is not None:
+                return _Query(
+                    items=self.llm_team_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+            if (
+                self.llm_manager_permissions is not None
+                and self.llm_permission_query_count == 1
+            ):
+                self.llm_manager_query = _Query(
+                    items=self.llm_manager_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+                return self.llm_manager_query
+            return _Query(items=[], apply_filters=True, project_auth_state=True)
         if model is UserWorkflowPermission:
             self.user_workflow_permission_query_count += 1
             if self.workflow_user_permissions is not None:
@@ -3058,6 +3161,25 @@ class _Session:
                 first_result=self.existing_user_permission,
                 apply_filters=True,
             )
+        if model is UserWorkflowPermission.auth_state:
+            self.user_workflow_permission_query_count += 1
+            if self.workflow_user_permissions is not None:
+                return _Query(
+                    items=self.workflow_user_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+            if (
+                self.user_direct_permissions
+                and self.user_workflow_permission_query_count == 1
+            ):
+                self.user_workflow_query = _Query(
+                    items=self.user_direct_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+                return self.user_workflow_query
+            return _Query(items=[], apply_filters=True, project_auth_state=True)
         if model is UserLLMPermission:
             self.user_llm_permission_query_count += 1
             if self.llm_user_permissions is not None:
@@ -3078,6 +3200,25 @@ class _Session:
                 first_result=self.existing_user_llm_permission,
                 apply_filters=True,
             )
+        if model is UserLLMPermission.auth_state:
+            self.user_llm_permission_query_count += 1
+            if self.llm_user_permissions is not None:
+                return _Query(
+                    items=self.llm_user_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+            if (
+                self.user_llm_direct_permissions
+                and self.user_llm_permission_query_count == 1
+            ):
+                self.user_llm_query = _Query(
+                    items=self.user_llm_direct_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+                return self.user_llm_query
+            return _Query(items=[], apply_filters=True, project_auth_state=True)
         raise AssertionError(f"Unexpected query model: {model}")
 
     def add(self, value):
@@ -3203,11 +3344,54 @@ def _user(id, email, name, deactivated_at=None):
     )
 
 
-def _membership(user_id, organization_id, team_is_active=True):
+def _active_user_rows(organization, membership, target_user):
+    """permission helper의 active user 조회에 필요한 fake user row를 만든다."""
+    rows = []
+    seen = set()
+
+    def add_user(user_id):
+        if user_id is None or user_id in seen:
+            return
+        seen.add(user_id)
+        rows.append(SimpleNamespace(id=user_id, deactivated_at=None))
+
+    if organization is not None:
+        add_user(organization.created_by)
+        add_user(organization.managed_by)
+    if membership is not None:
+        add_user(membership.user_id)
+    if target_user is not None:
+        if not hasattr(target_user, "deactivated_at"):
+            target_user.deactivated_at = None
+        if target_user.id not in seen:
+            seen.add(target_user.id)
+            rows.append(target_user)
+    return rows
+
+
+def _ensure_active_user_row(session, user_id):
+    """요청의 인증 user가 fake active user 조회에서 검색되도록 보강한다."""
+    if not hasattr(session, "user_rows"):
+        return
+    if any(row.id == user_id for row in session.user_rows):
+        return
+    session.user_rows.append(SimpleNamespace(id=user_id, deactivated_at=None))
+
+
+def _membership(
+    user_id,
+    organization_id,
+    team_is_active=True,
+    auth_state="member",
+    membership_state="active",
+):
     """active membership scope 검증용 fixture를 만든다."""
     return SimpleNamespace(
         id=uuid4(),
         user_id=user_id,
+        organization_id=organization_id,
+        membership_state=membership_state,
+        organization_auth_state=auth_state,
         grantee_organization_id=organization_id,
         team_organization_id=organization_id,
         team_is_active=team_is_active,
@@ -3343,6 +3527,17 @@ def _column_value(obj, column):
     value_by_column = {
         "organization.id": getattr(obj, "id", missing),
         "organization.is_active": getattr(obj, "is_active", missing),
+        "organization_memberships.user_id": getattr(obj, "user_id", missing),
+        "organization_memberships.organization_id": getattr(
+            obj,
+            "organization_id",
+            missing,
+        ),
+        "organization_memberships.membership_state": getattr(
+            obj,
+            "membership_state",
+            missing,
+        ),
         "users.id": getattr(obj, "id", missing),
         "users.deactivated_at": getattr(obj, "deactivated_at", None),
         "workflows.id": getattr(obj, "id", missing),
@@ -3437,35 +3632,17 @@ def _assert_organization_scope_filters(testcase, query, organization_id):
 
 
 def _assert_active_membership_filters(testcase, query, user_id, organization_id):
-    """active membership 조회가 필요한 scope 조건을 포함하는지 검증한다."""
-    _assert_join_predicate(
-        testcase,
-        query,
-        "teams.id",
-        "team_memberships.team_id",
-    )
-
-    user_filter = _find_filter(query, "team_memberships.user_id", eq)
+    """organization membership row 조회에 필요한 scope 조건을 포함하는지 검증한다."""
+    user_filter = _find_filter(query, "organization_memberships.user_id", eq)
     testcase.assertEqual(user_filter.right.value, user_id)
 
     org_filter = _find_filter(
         query,
-        "team_memberships.grantee_organization_id",
+        "organization_memberships.organization_id",
         eq,
         right_value=organization_id,
     )
     testcase.assertEqual(org_filter.right.value, organization_id)
-
-    team_org_filter = _find_filter(
-        query,
-        "team_memberships.grantee_organization_id",
-        eq,
-        right_text="teams.organization_id",
-    )
-    testcase.assertEqual(str(team_org_filter.right), "teams.organization_id")
-
-    active_filter = _find_filter(query, "teams.is_active", is_)
-    testcase.assertEqual(str(active_filter.right), "true")
 
 
 def _assert_workflow_scope_filters(testcase, query, workflow_id, organization_id):
@@ -3554,12 +3731,9 @@ def _assert_workflow_manage_filters(
         query,
         "teams.organization_id",
         eq,
-        right_text="team_workflow_permissions.grantee_organization_id",
+        right_value=organization_id,
     )
-    testcase.assertEqual(
-        str(team_org_filter.right),
-        "team_workflow_permissions.grantee_organization_id",
-    )
+    testcase.assertEqual(team_org_filter.right.value, organization_id)
 
     active_filter = _find_filter(query, "teams.is_active", is_)
     testcase.assertEqual(str(active_filter.right), "true")
@@ -3619,12 +3793,9 @@ def _assert_llm_manage_filters(
         query,
         "teams.organization_id",
         eq,
-        right_text="team_llm_permissions.grantee_organization_id",
+        right_value=organization_id,
     )
-    testcase.assertEqual(
-        str(team_org_filter.right),
-        "team_llm_permissions.grantee_organization_id",
-    )
+    testcase.assertEqual(team_org_filter.right.value, organization_id)
 
     active_filter = _find_filter(query, "teams.is_active", is_)
     testcase.assertEqual(str(active_filter.right), "true")
@@ -3661,7 +3832,10 @@ def _find_filter(query, left, operator, right_value=None, right_text=None):
     for expression in query.filter_expressions:
         if str(expression.left) != left or expression.operator is not operator:
             continue
-        if right_value is not None and getattr(expression.right, "value", None) != right_value:
+        if (
+            right_value is not None
+            and getattr(expression.right, "value", None) != right_value
+        ):
             continue
         if right_text is not None and str(expression.right) != right_text:
             continue

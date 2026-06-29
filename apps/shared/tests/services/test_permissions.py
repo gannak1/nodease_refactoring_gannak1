@@ -11,6 +11,7 @@ from apps.shared.permissions import (
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
+    has_active_organization_membership,
     has_llm_credential_permission,
     has_workflow_permission,
 )
@@ -47,6 +48,36 @@ class FakeSqlAlchemyRow:
         self._mapping = {"auth_state": auth_state}
 
 
+def _active_user(user_id):
+    return SimpleNamespace(id=user_id, deactivated_at=None)
+
+
+def _active_organization(organization_id, *, created_by=None, managed_by=None):
+    return SimpleNamespace(
+        id=organization_id,
+        created_by=created_by or uuid.uuid4(),
+        managed_by=managed_by,
+        is_active=True,
+    )
+
+
+def _inactive_organization(organization_id, *, created_by=None, managed_by=None):
+    organization = _active_organization(
+        organization_id,
+        created_by=created_by,
+        managed_by=managed_by,
+    )
+    organization.is_active = False
+    return organization
+
+
+def _organization_member(auth_state="member", membership_state="active"):
+    return SimpleNamespace(
+        membership_state=membership_state,
+        organization_auth_state=auth_state,
+    )
+
+
 def test_legacy_auth_states_normalize_to_mvp_auth_states():
     assert normalize_auth_state("read") == "viewer"
     assert normalize_auth_state("execute") == "operator"
@@ -73,6 +104,19 @@ def test_audit_only_states_fail_closed_for_resource_permissions():
     assert llm_credential_auth_state_allows("raw_auditor", "use") is False
 
 
+def test_active_organization_membership_requires_active_organization():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _inactive_organization(organization_id),
+        ]
+    )
+
+    assert has_active_organization_membership(db, user_id, organization_id) is False
+
+
 def test_organization_owner_gets_manager_for_workflow():
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -80,18 +124,118 @@ def test_organization_owner_gets_manager_for_workflow():
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=user_id,
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id, created_by=user_id),
+            None,
         ]
     )
 
     assert (
         get_effective_workflow_auth_state(db, user_id, workflow_id, organization_id)
         == "manager"
+    )
+
+
+def test_organization_manager_membership_gets_manager_for_workflow():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=workflow_id, organization_id=organization_id),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member("manager"),
+        ]
+    )
+
+    assert (
+        get_effective_workflow_auth_state(db, user_id, workflow_id, organization_id)
+        == "manager"
+    )
+
+
+def test_non_active_owner_membership_blocks_legacy_owner_fallback_for_workflow():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+
+    for membership_state in ("invited", "suspended", "removed"):
+        db = FakeDb(
+            first_values=[
+                SimpleNamespace(id=workflow_id, organization_id=organization_id),
+                _active_user(user_id),
+                _active_organization(organization_id, created_by=user_id),
+                _organization_member("manager", membership_state=membership_state),
+            ]
+        )
+
+        assert (
+            get_effective_workflow_auth_state(db, user_id, workflow_id, organization_id)
+            == "none"
+        )
+
+
+def test_legacy_workflow_without_organization_allows_creator_fallback():
+    user_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=workflow_id,
+                organization_id=None,
+                created_by=user_id,
+            ),
+            _active_user(user_id),
+        ]
+    )
+
+    assert get_effective_workflow_auth_state(db, user_id, workflow_id) == "manager"
+
+
+def test_org_scoped_workflow_mismatch_does_not_use_creator_fallback():
+    user_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    workflow_organization_id = uuid.uuid4()
+    requested_organization_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=workflow_id,
+                organization_id=workflow_organization_id,
+                created_by=user_id,
+            ),
+        ]
+    )
+
+    assert (
+        get_effective_workflow_auth_state(
+            db,
+            user_id,
+            workflow_id,
+            requested_organization_id,
+        )
+        == "none"
+    )
+
+
+def test_direct_workflow_permission_is_ignored_without_organization_scope():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=workflow_id, organization_id=organization_id),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            None,
+        ],
+        all_values=[[], [("manager",)]],
+    )
+
+    assert (
+        get_effective_workflow_auth_state(db, user_id, workflow_id, organization_id)
+        == "none"
     )
 
 
@@ -102,12 +246,9 @@ def test_workflow_permissions_fail_closed_without_rows():
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[], []],
     )
@@ -125,12 +266,9 @@ def test_direct_workflow_permission_is_additive_over_team_permission():
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[("viewer",)], [("builder",)]],
     )
@@ -148,12 +286,9 @@ def test_workflow_permission_sqlalchemy_rows_are_unpacked_before_ranking():
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[
             [FakeSqlAlchemyRow("viewer")],
@@ -174,12 +309,9 @@ def test_weaker_direct_workflow_permission_does_not_lower_team_permission():
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[("manager",)], [("viewer",)]],
     )
@@ -197,12 +329,9 @@ def test_audit_only_workflow_permission_does_not_override_valid_resource_permiss
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[("viewer",), ("raw_auditor",)], []],
     )
@@ -236,12 +365,9 @@ def test_llm_credential_effective_permission_allows_direct_operator_use():
                 user_id=owner_id,
                 organization_id=organization_id,
             ),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[], [("operator",)]],
     )
@@ -252,6 +378,59 @@ def test_llm_credential_effective_permission_allows_direct_operator_use():
         )
         == "operator"
     )
+
+
+def test_org_scoped_llm_credential_mismatch_does_not_use_owner_fallback():
+    user_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    credential_organization_id = uuid.uuid4()
+    requested_organization_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=credential_id,
+                user_id=user_id,
+                organization_id=credential_organization_id,
+            ),
+        ]
+    )
+
+    assert (
+        get_effective_llm_credential_auth_state(
+            db,
+            user_id,
+            credential_id,
+            requested_organization_id,
+        )
+        == "none"
+    )
+
+
+def test_non_active_owner_membership_blocks_legacy_owner_fallback_for_llm_credential():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+
+    for membership_state in ("invited", "suspended", "removed"):
+        db = FakeDb(
+            first_values=[
+                SimpleNamespace(
+                    id=credential_id,
+                    user_id=uuid.uuid4(),
+                    organization_id=organization_id,
+                ),
+                _active_user(user_id),
+                _active_organization(organization_id, managed_by=user_id),
+                _organization_member("manager", membership_state=membership_state),
+            ]
+        )
+
+        assert (
+            get_effective_llm_credential_auth_state(
+                db, user_id, credential_id, organization_id
+            )
+            == "none"
+        )
 
 
 def test_llm_permission_sqlalchemy_rows_are_unpacked_before_ranking():
@@ -266,12 +445,9 @@ def test_llm_permission_sqlalchemy_rows_are_unpacked_before_ranking():
                 user_id=owner_id,
                 organization_id=organization_id,
             ),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[
             [FakeSqlAlchemyRow("viewer")],
@@ -299,19 +475,19 @@ def test_llm_credential_viewer_cannot_use():
                 user_id=owner_id,
                 organization_id=organization_id,
             ),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[], [("viewer",)]],
     )
 
-    assert has_llm_credential_permission(
-        db, user_id, credential_id, "use", organization_id
-    ) is False
+    assert (
+        has_llm_credential_permission(
+            db, user_id, credential_id, "use", organization_id
+        )
+        is False
+    )
 
 
 def test_audit_only_llm_permission_does_not_grant_use():
@@ -326,19 +502,19 @@ def test_audit_only_llm_permission_does_not_grant_use():
                 user_id=owner_id,
                 organization_id=organization_id,
             ),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[("raw_auditor",)], []],
     )
 
-    assert has_llm_credential_permission(
-        db, user_id, credential_id, "use", organization_id
-    ) is False
+    assert (
+        has_llm_credential_permission(
+            db, user_id, credential_id, "use", organization_id
+        )
+        is False
+    )
 
 
 def test_has_workflow_permission_uses_effective_auth_state():
@@ -348,16 +524,14 @@ def test_has_workflow_permission_uses_effective_auth_state():
     db = FakeDb(
         first_values=[
             SimpleNamespace(id=workflow_id, organization_id=organization_id),
-            SimpleNamespace(
-                id=organization_id,
-                created_by=uuid.uuid4(),
-                managed_by=None,
-                is_active=True,
-            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
         ],
         all_values=[[("operator",)], []],
     )
 
-    assert has_workflow_permission(
-        db, user_id, workflow_id, "execute", organization_id
-    ) is True
+    assert (
+        has_workflow_permission(db, user_id, workflow_id, "execute", organization_id)
+        is True
+    )

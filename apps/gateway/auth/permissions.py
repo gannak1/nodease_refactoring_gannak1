@@ -102,6 +102,11 @@ def ensure_llm_credential_permission(
     if not credential:
         raise HTTPException(status_code=404, detail="Credential not found")
 
+    if credential.organization_id and not has_organization_scope_access(
+        db, current_user.id, credential.organization_id
+    ):
+        raise HTTPException(status_code=404, detail="Credential not found")
+
     effective_auth_state = get_effective_llm_credential_auth_state(
         db,
         current_user.id,
@@ -143,8 +148,6 @@ def require_llm_credential_permission(action: str):
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user),
     ) -> LLMCredential:
-        return ensure_llm_credential_permission(
-            db, current_user, credential_id, action
-        )
+        return ensure_llm_credential_permission(db, current_user, credential_id, action)
 
     return dependency

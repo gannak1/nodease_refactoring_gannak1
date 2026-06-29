@@ -12,6 +12,8 @@ from apps.gateway.api.v1.endpoints.organization import list_organizations
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import OrganizationMembership
+from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 
 
@@ -30,17 +32,24 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides = {}
 
     def test_list_organizations_uses_memberships_and_deduplicates(self):
-        # 현재 사용자의 active team membership 기준으로 조직을 조회하고 중복 조직을 제거하는지 검증한다.
+        # 현재 사용자의 active organization membership 기준으로 조직을 조회하고 중복 조직을 제거하는지 검증한다.
         user_id = uuid4()
         organization = _organization(id=uuid4(), name="Acme", created_by=user_id)
         other_organization = _organization(id=uuid4(), name="Beta")
-        query = _Query([organization, organization, other_organization])
-        db = SimpleNamespace(query=lambda model: query)
+        db = _Session(
+            [organization, organization, other_organization],
+            users=[_user(user_id)],
+            memberships=[
+                _membership(user_id, organization.id, auth_state="manager"),
+                _membership(user_id, other_organization.id),
+            ],
+        )
 
         response = list_organizations(
             db=db,
             current_user=SimpleNamespace(id=user_id),
         )
+        query = db.query_value
 
         self.assertEqual(
             [item.id for item in response],
@@ -49,24 +58,21 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertTrue(response[0].is_manager)
         self.assertFalse(response[1].is_manager)
         self.assertTrue(query.distinct_called)
-        self.assertEqual(len(query.join_values), 2)
+        self.assertEqual(len(query.join_values), 1)
 
-        user_filter, team_org_filter, team_active_filter, org_active_filter = (
+        user_filter, membership_state_filter, org_active_filter = (
             query.filter_expressions
         )
-        self.assertEqual(str(user_filter.left), "team_memberships.user_id")
+        self.assertEqual(str(user_filter.left), "organization_memberships.user_id")
         self.assertIs(user_filter.operator, eq)
         self.assertEqual(user_filter.right.value, user_id)
 
         self.assertEqual(
-            str(team_org_filter.left), "team_memberships.grantee_organization_id"
+            str(membership_state_filter.left),
+            "organization_memberships.membership_state",
         )
-        self.assertIs(team_org_filter.operator, eq)
-        self.assertEqual(str(team_org_filter.right), "teams.organization_id")
-
-        self.assertEqual(str(team_active_filter.left), "teams.is_active")
-        self.assertIs(team_active_filter.operator, is_)
-        self.assertEqual(str(team_active_filter.right), "true")
+        self.assertIs(membership_state_filter.operator, eq)
+        self.assertEqual(membership_state_filter.right.value, "active")
 
         self.assertEqual(str(org_active_filter.left), "organization.is_active")
         self.assertIs(org_active_filter.operator, is_)
@@ -86,12 +92,12 @@ class TestOrganizationsApi(unittest.TestCase):
             updated_at=updated_at,
         )
 
-        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
-            query=lambda model: _Query([organization])
+        app.dependency_overrides[get_db] = lambda: _Session(
+            [organization],
+            users=[_user(user_id)],
+            memberships=[_membership(user_id, organization_id, auth_state="manager")],
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get("/api/v1/organizations")
 
@@ -112,7 +118,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
     def test_route_returns_member_organization_detail(self):
-        # GET /api/v1/organizations/{organization_id}가 현재 사용자의 active team membership scope 안에 있는 조직만 반환하는지 검증한다.
+        # GET /api/v1/organizations/{organization_id}가 현재 사용자의 active organization membership scope 안에 있는 조직만 반환하는지 검증한다.
         organization_id = uuid4()
         user_id = uuid4()
         created_at = datetime(2026, 6, 27, 1, 2, 3, tzinfo=timezone.utc)
@@ -123,14 +129,13 @@ class TestOrganizationsApi(unittest.TestCase):
             created_at=created_at,
             updated_at=updated_at,
         )
-        query = _Query([organization])
-
-        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
-            query=lambda model: query
+        db = _Session(
+            [organization],
+            users=[_user(user_id)],
+            memberships=[_membership(user_id, organization_id)],
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(f"/api/v1/organizations/{organization_id}")
 
@@ -149,7 +154,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         _assert_active_membership_scope_filters(
-            self, query, organization_id, user_id
+            self, db.membership_query, organization_id, user_id
         )
 
     def test_route_returns_current_organization_from_header(self):
@@ -164,14 +169,13 @@ class TestOrganizationsApi(unittest.TestCase):
             created_at=created_at,
             updated_at=updated_at,
         )
-        query = _Query([organization])
-
-        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
-            query=lambda model: query
+        db = _Session(
+            [organization],
+            users=[_user(user_id)],
+            memberships=[_membership(user_id, organization_id)],
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(
             "/api/v1/organizations/current",
@@ -193,7 +197,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         _assert_active_membership_scope_filters(
-            self, query, organization_id, user_id
+            self, db.membership_query, organization_id, user_id
         )
 
     def test_route_marks_managed_by_user_as_manager(self):
@@ -209,14 +213,8 @@ class TestOrganizationsApi(unittest.TestCase):
             created_at=created_at,
             updated_at=updated_at,
         )
-        query = _Query([organization])
-
-        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
-            query=lambda model: query
-        )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_db] = lambda: _Session([organization])
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(f"/api/v1/organizations/{organization_id}")
 
@@ -230,9 +228,7 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: SimpleNamespace(
             query=lambda model: _Query([])
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(
             "/api/v1/organizations/current",
@@ -252,9 +248,7 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: SimpleNamespace(
             query=lambda model: _Query([])
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(
             "/api/v1/organizations/current",
@@ -282,9 +276,7 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: SimpleNamespace(
             query=lambda model: _Query([])
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(
             "/api/v1/organizations/current",
@@ -308,9 +300,7 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: SimpleNamespace(
             query=lambda model: _Query([])
         )
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).get(
             f"/api/v1/organizations/{organization_id}",
@@ -335,9 +325,7 @@ class TestOrganizationsApi(unittest.TestCase):
         db = _Session([organization])
 
         app.dependency_overrides[get_db] = lambda: db
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -361,9 +349,7 @@ class TestOrganizationsApi(unittest.TestCase):
         user_id = uuid4()
 
         app.dependency_overrides[get_db] = lambda: _Session([])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -382,9 +368,7 @@ class TestOrganizationsApi(unittest.TestCase):
         user_id = uuid4()
 
         app.dependency_overrides[get_db] = lambda: _Session([])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -411,9 +395,7 @@ class TestOrganizationsApi(unittest.TestCase):
         user_id = uuid4()
 
         app.dependency_overrides[get_db] = lambda: _Session([])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -435,10 +417,12 @@ class TestOrganizationsApi(unittest.TestCase):
         user_id = uuid4()
         organization = _organization(id=organization_id, name="Acme")
 
-        app.dependency_overrides[get_db] = lambda: _Session([organization])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
+        app.dependency_overrides[get_db] = lambda: _Session(
+            [organization],
+            users=[_user(user_id)],
+            memberships=[_membership(user_id, organization_id)],
         )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -455,14 +439,12 @@ class TestOrganizationsApi(unittest.TestCase):
             _error("permission.denied", "Permission denied."),
         )
 
-    def test_patch_organization_rejects_missing_or_out_of_scope_organization(self):
+    def test_patch_organization_hides_missing_or_out_of_scope_organization(self):
         organization_id = uuid4()
         user_id = uuid4()
 
         app.dependency_overrides[get_db] = lambda: _Session([])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -473,13 +455,13 @@ class TestOrganizationsApi(unittest.TestCase):
             json={"name": "Acme Korea"},
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(
             response.json(),
-            _error("permission.denied", "Permission denied."),
+            _error("resource.not_found", "Organization not found."),
         )
 
-    def test_patch_organization_rejects_different_organization_from_query(self):
+    def test_patch_organization_hides_different_organization_from_query(self):
         organization_id = uuid4()
         user_id = uuid4()
         organization = _organization(
@@ -489,9 +471,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         app.dependency_overrides[get_db] = lambda: _Session([organization])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -502,14 +482,14 @@ class TestOrganizationsApi(unittest.TestCase):
             json={"name": "Acme Korea"},
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(
             response.json(),
-            _error("permission.denied", "Permission denied."),
+            _error("resource.not_found", "Organization not found."),
         )
         self.assertEqual(organization.name, "Acme")
 
-    def test_patch_organization_rejects_inactive_organization(self):
+    def test_patch_organization_hides_inactive_organization(self):
         organization_id = uuid4()
         user_id = uuid4()
         organization = _organization(
@@ -520,9 +500,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         app.dependency_overrides[get_db] = lambda: _Session([organization])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -533,10 +511,10 @@ class TestOrganizationsApi(unittest.TestCase):
             json={"name": "Acme Korea"},
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(
             response.json(),
-            _error("permission.denied", "Permission denied."),
+            _error("resource.not_found", "Organization not found."),
         )
         self.assertEqual(organization.name, "Acme")
 
@@ -550,9 +528,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         app.dependency_overrides[get_db] = lambda: _Session([organization])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -579,9 +555,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         app.dependency_overrides[get_db] = lambda: _Session([organization])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -612,9 +586,7 @@ class TestOrganizationsApi(unittest.TestCase):
         )
 
         app.dependency_overrides[get_db] = lambda: _Session([organization])
-        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-            id=user_id
-        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         response = TestClient(app).patch(
             f"/api/v1/organizations/{organization_id}",
@@ -691,19 +663,49 @@ class _Query:
             return item.id == expression.right.value
         if left == "organization.is_active" and expression.operator is is_:
             return item.is_active is (str(expression.right) == "true")
+        if left == "users.id" and expression.operator is eq:
+            return item.id == expression.right.value
+        if left == "users.deactivated_at" and expression.operator is is_:
+            return item.deactivated_at is None
+        if left == "organization_memberships.user_id" and expression.operator is eq:
+            return item.user_id == expression.right.value
+        if (
+            left == "organization_memberships.organization_id"
+            and expression.operator is eq
+        ):
+            return item.organization_id == expression.right.value
+        if (
+            left == "organization_memberships.membership_state"
+            and expression.operator is eq
+        ):
+            return item.membership_state == expression.right.value
         if left.startswith("organization."):
             raise AssertionError(f"Unsupported organization filter: {expression}")
         return True
 
 
 class _Session:
-    def __init__(self, items):
-        self.query_value = _Query(items)
+    def __init__(self, items, users=None, memberships=None):
+        self.organizations = items
+        self.users = users if users is not None else _users_from_organizations(items)
+        self.memberships = memberships or []
+        self.query_value = None
+        self.membership_query = None
         self.commit_called = False
         self.refresh_values = []
 
     def query(self, model):
-        return self.query_value
+        if model is Organization:
+            query = _Query(self.organizations)
+            if self.query_value is None:
+                self.query_value = query
+            return query
+        if model is User:
+            return _Query(self.users)
+        if model is OrganizationMembership:
+            self.membership_query = _Query(self.memberships)
+            return self.membership_query
+        return _Query([])
 
     def commit(self):
         self.commit_called = True
@@ -735,6 +737,32 @@ def _organization(
     )
 
 
+def _user(user_id, deactivated_at=None):
+    return SimpleNamespace(id=user_id, deactivated_at=deactivated_at)
+
+
+def _users_from_organizations(organizations):
+    users = []
+    seen = set()
+    for organization in organizations:
+        for user_id in (organization.created_by, organization.managed_by):
+            if user_id is None or user_id in seen:
+                continue
+            seen.add(user_id)
+            users.append(_user(user_id))
+    return users
+
+
+def _membership(user_id, organization_id, auth_state="member", membership_state="active"):
+    return SimpleNamespace(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        membership_state=membership_state,
+        organization_auth_state=auth_state,
+    )
+
+
 def _assert_patch_scope_filters(test_case, query, organization_id):
     test_case.assertEqual(len(query.filter_expressions), 2)
     organization_filter, org_active_filter = query.filter_expressions
@@ -748,49 +776,23 @@ def _assert_patch_scope_filters(test_case, query, organization_id):
     test_case.assertEqual(str(org_active_filter.right), "true")
 
 
-def _assert_active_membership_scope_filters(
-    test_case, query, organization_id, user_id
-):
-    # 문서 기준 모델에 맞춰 organization, team_memberships, teams 조인과 active scope 조건을 사용해야 한다.
-    test_case.assertEqual(len(query.join_values), 2)
-    (
-        organization_filter,
-        user_filter,
-        membership_org_filter,
-        team_org_filter,
-        team_active_filter,
-        org_active_filter,
-    ) = query.filter_expressions
+def _assert_active_membership_scope_filters(test_case, query, organization_id, user_id):
+    # 문서 기준 모델에 맞춰 organization_memberships row를 조회한다.
+    # active 여부는 non-active row가 legacy owner/manager fallback으로 우회되지 않도록
+    # 서비스 로직에서 membership_state를 직접 판정한다.
+    test_case.assertEqual(len(query.join_values), 0)
+    user_filter, membership_org_filter = query.filter_expressions
 
-    test_case.assertEqual(str(organization_filter.left), "organization.id")
-    test_case.assertIs(organization_filter.operator, eq)
-    test_case.assertEqual(organization_filter.right.value, organization_id)
-
-    test_case.assertEqual(str(user_filter.left), "team_memberships.user_id")
+    test_case.assertEqual(str(user_filter.left), "organization_memberships.user_id")
     test_case.assertIs(user_filter.operator, eq)
     test_case.assertEqual(user_filter.right.value, user_id)
 
     test_case.assertEqual(
         str(membership_org_filter.left),
-        "team_memberships.grantee_organization_id",
+        "organization_memberships.organization_id",
     )
     test_case.assertIs(membership_org_filter.operator, eq)
-    test_case.assertEqual(str(membership_org_filter.right), "organization.id")
-
-    test_case.assertEqual(
-        str(team_org_filter.left),
-        "team_memberships.grantee_organization_id",
-    )
-    test_case.assertIs(team_org_filter.operator, eq)
-    test_case.assertEqual(str(team_org_filter.right), "teams.organization_id")
-
-    test_case.assertEqual(str(team_active_filter.left), "teams.is_active")
-    test_case.assertIs(team_active_filter.operator, is_)
-    test_case.assertEqual(str(team_active_filter.right), "true")
-
-    test_case.assertEqual(str(org_active_filter.left), "organization.is_active")
-    test_case.assertIs(org_active_filter.operator, is_)
-    test_case.assertEqual(str(org_active_filter.right), "true")
+    test_case.assertEqual(membership_org_filter.right.value, organization_id)
 
 
 def _error(code, message, details=None):
