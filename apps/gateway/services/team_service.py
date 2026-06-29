@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.permissions import record_permission_denied
@@ -68,11 +69,78 @@ def _ensure_organization_manager(
     raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def _get_team(db: Session, team_id: Any) -> Team:
-    team = db.query(Team).filter(Team.id == team_id).first()
+def _get_team(
+    db: Session,
+    team_id: Any,
+    organization_id: Any | None = None,
+    *,
+    active_only: bool = False,
+) -> Team:
+    # 변경 API는 X-Organization-Id에서 온 organization_id를 넘겨
+    # route team_id가 active organization scope 밖으로 나가지 못하게 한다.
+    filters = [Team.id == team_id]
+    if organization_id is not None:
+        filters.append(Team.organization_id == organization_id)
+    if active_only:
+        filters.append(Team.is_active.is_(True))
+
+    team = db.query(Team).filter(*filters).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     return team
+
+
+def _get_active_user(db: Session, user_id: Any) -> User:
+    # Team membership이 조직 소속 모델이므로 active user 계정만
+    # 새 membership subject로 추가할 수 있다.
+    user = (
+        db.query(User)
+        .filter(
+            User.id == user_id,
+            User.deactivated_at.is_(None),
+        )
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def _get_team_by_name(
+    db: Session,
+    organization_id: Any,
+    name: str,
+) -> Team | None:
+    return (
+        db.query(Team)
+        .filter(
+            Team.organization_id == organization_id,
+            Team.name == name,
+        )
+        .first()
+    )
+
+
+def _ensure_team_name_available(
+    db: Session,
+    organization_id: Any,
+    name: str,
+    exclude_team_id: Any | None = None,
+) -> None:
+    existing = _get_team_by_name(db, organization_id, name)
+    if existing is not None and existing.id != exclude_team_id:
+        raise HTTPException(status_code=409, detail="Team name already exists")
+
+
+def _commit_or_conflict(
+    db: Session,
+    message: str,
+) -> None:
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=message) from exc
 
 
 def _resource_organization_id(
@@ -233,16 +301,21 @@ class TeamService:
         request: TeamCreateRequest,
     ) -> Team:
         _ensure_organization_manager(db, current_user, request.organization_id)
+        name = request.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Team name is required")
+        _ensure_team_name_available(db, request.organization_id, name)
+
         team = Team(
             organization_id=request.organization_id,
-            name=request.name,
+            name=name,
             description=request.description,
             created_by=current_user.id,
             managed_by=current_user.id,
             is_auto_add=request.is_auto_add,
         )
         db.add(team)
-        db.commit()
+        _commit_or_conflict(db, "Team name already exists")
         db.refresh(team)
         return team
 
@@ -252,18 +325,34 @@ class TeamService:
         current_user: User,
         team_id: Any,
         request: TeamUpdateRequest,
+        organization_id: Any | None = None,
     ) -> Team:
-        team = _get_team(db, team_id)
+        team = _get_team(db, team_id, organization_id, active_only=True)
         _ensure_organization_manager(db, current_user, team.organization_id)
-        if request.name is not None:
-            team.name = request.name
-        if request.description is not None:
+
+        # PATCH는 description, managed_by 같은 nullable column에서
+        # 생략된 field와 명시적 null 값을 구분해야 한다.
+        fields = request.model_fields_set
+        if "name" in fields:
+            if request.name is None or request.name.strip() == "":
+                raise HTTPException(status_code=400, detail="Team name is required")
+            name = request.name.strip()
+            _ensure_team_name_available(
+                db,
+                team.organization_id,
+                name,
+                exclude_team_id=team.id,
+            )
+            team.name = name
+        if "description" in fields:
             team.description = request.description
-        if request.managed_by is not None:
+        if "managed_by" in fields:
+            if request.managed_by is not None:
+                _get_active_user(db, request.managed_by)
             team.managed_by = request.managed_by
-        if request.is_auto_add is not None:
+        if "is_auto_add" in fields:
             team.is_auto_add = request.is_auto_add
-        db.commit()
+        _commit_or_conflict(db, "Team name already exists")
         db.refresh(team)
         return team
 
@@ -282,9 +371,11 @@ class TeamService:
         current_user: User,
         team_id: Any,
         request: TeamMembershipRequest,
+        organization_id: Any | None = None,
     ) -> TeamMembership:
-        team = _get_team(db, team_id)
+        team = _get_team(db, team_id, organization_id, active_only=True)
         _ensure_organization_manager(db, current_user, team.organization_id)
+        _get_active_user(db, request.user_id)
         membership = (
             db.query(TeamMembership)
             .filter(
@@ -304,7 +395,25 @@ class TeamService:
             assigned_by=current_user.id,
         )
         db.add(membership)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            membership = (
+                db.query(TeamMembership)
+                .filter(
+                    TeamMembership.grantee_organization_id == team.organization_id,
+                    TeamMembership.team_id == team.id,
+                    TeamMembership.user_id == request.user_id,
+                )
+                .first()
+            )
+            if membership:
+                return membership
+            raise HTTPException(
+                status_code=409,
+                detail="Team membership already exists",
+            ) from exc
         db.refresh(membership)
         return membership
 
@@ -314,9 +423,11 @@ class TeamService:
         current_user: User,
         team_id: Any,
         user_id: Any,
+        organization_id: Any | None = None,
     ) -> dict:
-        team = _get_team(db, team_id)
+        team = _get_team(db, team_id, organization_id, active_only=True)
         _ensure_organization_manager(db, current_user, team.organization_id)
+        # 없는 member 제거는 admin UI 재시도 안정성을 위해 idempotent하게 처리한다.
         membership = (
             db.query(TeamMembership)
             .filter(

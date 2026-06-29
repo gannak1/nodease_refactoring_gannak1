@@ -11,7 +11,7 @@ Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-2026062
 
 Organization context, team/member 관리, resource permission grant/revoke API 계약을 정의한다.
 
-Organization context와 permission grant/revoke API는 `X-Organization-Id` header를 active organization scope로 사용한다. 일부 team mutation endpoint는 권한 관문만 구현되어 있고 request/response 세부 계약은 후속 구현 대상이다.
+Organization context, team/member 관리, permission grant/revoke API는 `X-Organization-Id` header를 active organization scope로 사용한다.
 
 ## Active Organization
 
@@ -29,10 +29,10 @@ Organization context와 permission grant/revoke API는 `X-Organization-Id` heade
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
 | Implemented | `GET` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization의 team 목록 |
-| Partial | `POST` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 생성 계약은 후속 구현 |
-| Partial | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 수정 계약은 후속 구현 |
-| Partial | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 membership 계약은 후속 구현 |
-| Partial | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` + `X-Organization-Id` | 권한 관문 구현, 세부 membership 계약은 후속 구현 |
+| Implemented | `POST` | `/api/v1/teams` | organization `manager` + `X-Organization-Id` | active organization에 team 생성 |
+| Implemented | `PATCH` | `/api/v1/teams/{team_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team 수정 |
+| Implemented | `POST` | `/api/v1/teams/{team_id}/members` | organization `manager` + `X-Organization-Id` | active organization 안의 active user를 team member로 추가 |
+| Implemented | `DELETE` | `/api/v1/teams/{team_id}/members/{user_id}` | organization `manager` + `X-Organization-Id` | active organization 안의 team member 제거 |
 
 ## Resource Permission
 
