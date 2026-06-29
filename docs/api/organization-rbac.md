@@ -24,6 +24,28 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 
 서버는 active organization을 session/cookie에 저장하지 않는다. `PATCH /organizations/current`는 만들지 않고, header와 path가 일치하는 `PATCH /organizations/{organization_id}`를 사용한다.
 
+Organization 조회/수정 API는 공통으로 `OrganizationResponse`를 반환한다.
+
+```json
+{
+  "id": "uuid",
+  "name": "Acme",
+  "options": {},
+  "is_active": true,
+  "is_manager": true,
+  "created_at": "2026-06-29T00:00:00Z",
+  "updated_at": "2026-06-29T00:00:00Z"
+}
+```
+
+`is_manager`는 현재 요청 user 기준 파생 필드다.
+
+- `organization.created_by == current_user.id`이면 `true`
+- `organization.managed_by == current_user.id`이면 `true`
+- 그 외에는 `false`
+
+MVP1에서는 `organization_memberships.organization_auth_state`가 아니라 기존 `created_by` / `managed_by` 기준을 따른다.
+
 ## User Directory
 
 | Status | Method | Path | Permission | 설명 |

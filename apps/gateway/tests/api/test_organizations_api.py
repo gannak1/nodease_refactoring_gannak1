@@ -32,7 +32,7 @@ class TestOrganizationsApi(unittest.TestCase):
     def test_list_organizations_uses_memberships_and_deduplicates(self):
         # 현재 사용자의 active team membership 기준으로 조직을 조회하고 중복 조직을 제거하는지 검증한다.
         user_id = uuid4()
-        organization = _organization(id=uuid4(), name="Acme")
+        organization = _organization(id=uuid4(), name="Acme", created_by=user_id)
         other_organization = _organization(id=uuid4(), name="Beta")
         query = _Query([organization, organization, other_organization])
         db = SimpleNamespace(query=lambda model: query)
@@ -42,7 +42,12 @@ class TestOrganizationsApi(unittest.TestCase):
             current_user=SimpleNamespace(id=user_id),
         )
 
-        self.assertEqual(response, [organization, other_organization])
+        self.assertEqual(
+            [item.id for item in response],
+            [organization.id, other_organization.id],
+        )
+        self.assertTrue(response[0].is_manager)
+        self.assertFalse(response[1].is_manager)
         self.assertTrue(query.distinct_called)
         self.assertEqual(len(query.join_values), 2)
 
@@ -76,6 +81,7 @@ class TestOrganizationsApi(unittest.TestCase):
         organization = _organization(
             id=organization_id,
             name="Acme",
+            created_by=user_id,
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -98,6 +104,7 @@ class TestOrganizationsApi(unittest.TestCase):
                     "name": "Acme",
                     "options": {},
                     "is_active": True,
+                    "is_manager": True,
                     "created_at": "2026-06-27T01:02:03Z",
                     "updated_at": "2026-06-27T04:05:06Z",
                 }
@@ -135,6 +142,7 @@ class TestOrganizationsApi(unittest.TestCase):
                 "name": "Acme",
                 "options": {},
                 "is_active": True,
+                "is_manager": False,
                 "created_at": "2026-06-27T01:02:03Z",
                 "updated_at": "2026-06-27T04:05:06Z",
             },
@@ -178,6 +186,7 @@ class TestOrganizationsApi(unittest.TestCase):
                 "name": "Acme",
                 "options": {},
                 "is_active": True,
+                "is_manager": False,
                 "created_at": "2026-06-27T01:02:03Z",
                 "updated_at": "2026-06-27T04:05:06Z",
             },
@@ -186,6 +195,33 @@ class TestOrganizationsApi(unittest.TestCase):
         _assert_active_membership_scope_filters(
             self, query, organization_id, user_id
         )
+
+    def test_route_marks_managed_by_user_as_manager(self):
+        # organization.managed_by인 사용자는 조회 응답에서 manager로 표시되어야 한다.
+        organization_id = uuid4()
+        user_id = uuid4()
+        created_at = datetime(2026, 6, 27, 1, 2, 3, tzinfo=timezone.utc)
+        updated_at = datetime(2026, 6, 27, 4, 5, 6, tzinfo=timezone.utc)
+        organization = _organization(
+            id=organization_id,
+            name="Acme",
+            managed_by=user_id,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+        query = _Query([organization])
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+            query=lambda model: query
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id=user_id
+        )
+
+        response = TestClient(app).get(f"/api/v1/organizations/{organization_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["is_manager"])
 
     def test_route_requires_current_organization_header(self):
         # Header가 없으면 active organization을 결정할 수 없으므로 organization.required를 반환한다.
@@ -312,6 +348,7 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["name"], "Acme Korea")
         self.assertEqual(response.json()["options"], {"theme": "modern"})
+        self.assertTrue(response.json()["is_manager"])
         self.assertEqual(organization.name, "Acme Korea")
         self.assertEqual(organization.options, {"theme": "modern"})
         self.assertEqual(db.query_value.join_values, [])
