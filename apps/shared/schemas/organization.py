@@ -17,5 +17,6 @@ class OrganizationResponse(BaseModel):
     name: str
     options: dict[str, Any]
     is_active: bool
+    is_manager: bool
     created_at: datetime
     updated_at: datetime
