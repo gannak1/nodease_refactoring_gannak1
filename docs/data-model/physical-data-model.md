@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md)
 
 ## 목적
@@ -16,8 +16,8 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 
 | 항목 | 기준 |
 | --- | --- |
-| 기준 브랜치 | `feature/mba-59` |
-| 확인 commit | `b92bc9e0f38588495d228fc0d17b10dfaaed03c1` |
+| 기준 브랜치 | `dev` |
+| 확인 commit | `c990b54e931b4de8023822f6dff14f43fc1d415f` |
 | 기준 모델 경로 | `apps/shared/db/models/*` |
 | 기준 migration 경로 | `apps/shared/alembic/versions/*` |
 | 기존 목표 초안 | 삭제된 로컬 폐기 초안. 구현 기준이 아니다. |
@@ -28,7 +28,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | 현재 물리 데이터 모델 보존 | 현재 코드에 존재하는 table과 column을 삭제, rename, 대체하지 않는다. |
 | 추가 schema 최소화 | MVP 목표 상태 기능은 우선 현재 코드의 기존 table 조합으로 구현하고, 필요한 경우 additive table만 추가한다. |
-| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 현재 코드의 `organization`, `teams`, `team_*_permissions`를 기본 권한 기준으로 사용한다. |
+| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 현재 코드는 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 기본 권한 기준으로 사용한다. MVP 2-0 목표 상태에서는 `organization_memberships`를 organization 소속 기준으로 추가하고 `team_memberships`는 team 배정 기준으로 유지한다. |
 | User direct grant | 현재 코드는 `user_workflow_permissions`, `user_llm_permissions`를 구현한다. 이후 개별 user 예외 권한은 resource별 `user_*_permissions` table로만 추가한다. direct grant는 additive allow 전용이다. |
 | Organization owner/manager | `organization.created_by` 또는 `organization.managed_by`에 해당하는 user는 해당 organization scope 안에서 `manager`급으로 판정한다. |
 | Audit 기준 | `audit_events`를 새로 만들지 않는다. 현재 코드의 `audit_logs`를 canonical audit table로 사용한다. |
@@ -45,7 +45,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | table 이름 | 현재 코드의 SQLAlchemy model `__tablename__`을 기준으로 쓴다. |
 | column 목록 | 전체 DDL 명세가 아니라 MVP 목표 상태 설계 판단에 필요한 주요 column 목록이다. nullable, index, ondelete의 최종 근거는 현재 코드 model과 Alembic migration이다. |
-| 관계 표기 | `A -> B`는 현재 코드 model에 FK 또는 relationship이 있는 경우에만 물리 데이터 모델 관계로 본다. JSONB metadata에 id를 넣는 방식은 관계가 아니라 application-level convention이다. |
+| 관계 표기 | `A.column -> B.column`은 FK가 `A.column`에서 `B.column`을 참조한다는 뜻이다. 특정 table 상세의 "관계" 목록은 해당 table이 참조하는 outgoing FK와 다른 table이 해당 table을 참조하는 incoming FK를 모두 포함할 수 있으므로, 방향을 column 기준으로 읽는다. JSONB metadata에 id를 넣는 방식은 관계가 아니라 application-level convention이다. |
 | `organization_id` | 현재 코드에서 nullable인 기존 column은 이 문서에서 non-null로 바꾸지 않는다. |
 | `auth_state` | 현재 DB enum이 아니다. 허용값과 의미는 `data-model/rbac-permission-policy.md`의 application-level matrix를 따른다. |
 | `audit_logs.status` | 현재 코드 기준 `success`/`failure` 상태만 저장한다. `pass`/`warn`/`block` 같은 정책 결과는 `audit_logs.audit_metadata.policy_result`에 저장한다. |
@@ -57,7 +57,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | 이전 결정 | 재설계 결정 |
 | --- | --- |
 | `roles` 신규 생성 | 생성하지 않는다. 현재 코드의 `teams`와 permission table을 사용한다. |
-| `user_roles` 신규 생성 | 생성하지 않는다. 사용자-팀 소속은 `team_memberships`를 사용한다. |
+| `user_roles` 신규 생성 | 생성하지 않는다. 현재 사용자-team 소속은 `team_memberships`를 사용한다. MVP 2-0 목표 상태의 사용자-organization 직접 소속은 `organization_memberships`로 추가한다. |
 | `resource_permissions` 신규 생성 | 생성하지 않는다. team 권한은 `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`를 사용한다. user 직접 권한은 resource별 `user_*_permissions`를 사용한다. |
 | `audit_events` 신규 생성 | 생성하지 않는다. `audit_logs`를 사용한다. |
 | `rag_retrieval_traces` 신규 생성 | 생성하지 않는다. trace 계열 테이블과 JSONB payload convention으로 처리한다. |
@@ -105,6 +105,14 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | `llm_credentials` | 사용자/조직 LLM credential |
 | `llm_rel_credential_models` | credential-model 사용 가능 관계 |
 | `llm_usage_logs` | LLM token/cost/latency 원천 |
+
+### Planned Foundation Table
+
+아래 table은 최신 코드에는 아직 없고, MVP 2 Governance/RAG/Audit 본작업 전에 추가할 MVP 2-0 foundation schema다.
+
+| Table | 도입 단계 | 목표 역할 |
+| --- | --- | --- |
+| `organization_memberships` | MVP 2-0 | 사용자와 organization의 직접 소속 관계. active organization 목록, organization manager 판정, team membership, user direct permission의 전제 조건 |
 
 ### Implemented Additive Table
 
@@ -192,21 +200,23 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 
 관계:
 
-- `users.id -> apps.created_by`
-- `users.id -> workflows.created_by`
-- `users.id -> workflows.updated_by`
-- `users.id -> workflow_deployments.created_by`
-- `users.id -> workflow_runs.user_id`
-- `users.id -> knowledge_bases.user_id`
-- `users.id -> connections.user_id`
-- `users.id -> llm_credentials.user_id`
-- `users.id -> llm_usage_logs.user_id`
-- `users.id -> organization.created_by`
-- `users.id -> organization.managed_by`
-- `users.id -> teams.created_by`
-- `users.id -> teams.managed_by`
-- `users.id -> team_memberships.user_id`
-- `users.id -> audit_logs.actor_id`
+아래는 `users.id`를 참조하는 incoming FK다.
+
+- `apps.created_by -> users.id`
+- `workflows.created_by -> users.id`
+- `workflows.updated_by -> users.id`
+- `workflow_deployments.created_by -> users.id`
+- `workflow_runs.user_id -> users.id`
+- `knowledge_bases.user_id -> users.id`
+- `connections.user_id -> users.id`
+- `llm_credentials.user_id -> users.id`
+- `llm_usage_logs.user_id -> users.id`
+- `organization.created_by -> users.id`
+- `organization.managed_by -> users.id`
+- `teams.created_by -> users.id`
+- `teams.managed_by -> users.id`
+- `team_memberships.user_id -> users.id`
+- `audit_logs.actor_id -> users.id`
 
 MVP 목표 상태 결정:
 
@@ -305,7 +315,8 @@ MVP 목표 상태 결정:
 역할:
 
 - 사용자를 팀에 소속시킨다.
-- 권한 판정의 subject membership 원천이다.
+- 현재 코드에서는 권한 판정의 subject membership 원천이자 organization 소속의 간접 원천이다.
+- MVP 2-0 이후에는 organization 소속 원천이 아니라 organization 안의 team 배정 정보로 유지한다.
 
 주요 column:
 
@@ -328,6 +339,46 @@ MVP 목표 상태 결정:
 제약:
 
 - 현재 코드 기준 unique constraint는 조직, 사용자, 팀 조합의 중복 소속을 막는다.
+
+### `organization_memberships`
+
+MVP 2-0 목표 table이다. 현재 코드에는 아직 구현되어 있지 않다.
+
+역할:
+
+- user와 organization의 직접 소속 관계를 표현한다.
+- active organization 목록 조회의 기준이다.
+- organization manager 권한의 기준이다.
+- team membership, user direct permission, MVP 2 knowledge permission의 전제 조건이다.
+
+주요 column:
+
+- `id`
+- `organization_id`
+- `user_id`
+- `membership_state`
+- `organization_auth_state`
+- `invited_by`
+- `invited_at`
+- `accepted_at`
+- `removed_at`
+- `created_at`
+- `updated_at`
+- `options`
+- `flags`
+
+관계:
+
+- `organization_memberships.organization_id -> organization.id`
+- `organization_memberships.user_id -> users.id`
+- `organization_memberships.invited_by -> users.id`
+
+제약:
+
+- `(organization_id, user_id)`는 unique여야 한다.
+- `membership_state`는 `invited`, `active`, `suspended`, `removed`를 사용한다.
+- `organization_auth_state`는 `member`, `manager`를 사용하며 resource `auth_state`와 섞지 않는다.
+- resource 접근은 active organization membership만으로 허용하지 않고, organization manager override 또는 resource permission을 함께 평가한다.
 
 ### `team_workflow_permissions`
 
@@ -361,6 +412,7 @@ MVP 목표 상태 결정:
 - workflow 권한은 `resource_permissions.resource_type='workflow'`로 표현하지 않는다.
 - 현재 코드의 `auth_state`와 application-level policy를 사용한다.
 - `auth_state` 값 집합은 DB enum으로 고정하지 않는다. MVP 목표 상태의 application-level 표준값과 의미는 `data-model/rbac-permission-policy.md`를 따른다.
+- 현재 team resource permission tables의 `auth_state`는 문자열 column이며 DB check constraint로 값 집합을 제한하지 않는다. canonical 값 제한은 API/service validation과 application-level normalization에서 수행한다.
 
 ### `team_knowledge_permissions`
 
@@ -491,6 +543,7 @@ MVP 목표 상태 결정:
 제약:
 
 - `(grantee_organization_id, user_id, workflow_id)`는 unique여야 한다.
+- 현재 코드에는 `auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')` check constraint가 있다.
 - `auth_state='none'`은 직접 권한 없음과 동일하게 처리한다.
 - direct user `auth_state`가 team `auth_state`보다 약해도 team 권한을 낮추지 않는다.
 
@@ -561,6 +614,7 @@ MVP 2 목표 table이다. 현재 코드에는 아직 구현되어 있지 않다.
 제약:
 
 - `(grantee_organization_id, user_id, llm_credential_id)`는 unique여야 한다.
+- 현재 코드에는 `auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')` check constraint가 있다.
 - model별 직접 권한은 만들지 않는다.
 - model 사용 제한은 credential 권한과 `llm_rel_credential_models`를 함께 평가한다.
 
@@ -811,7 +865,7 @@ MVP 목표 상태 결정:
 MVP 목표 상태 결정:
 
 - RAG retrieval lineage를 별도 table로 만들지 않고, run/node와 trace payload를 연결해서 표현한다.
-- API/Webhook/Scheduler/App 실행 구분은 현재 코드의 `trigger_mode`를 사용한다.
+- 물리 column/enum에는 `manual`/`api`/`webhook`/`scheduler`/`app` trigger mode가 있지만, 현재 실행 로그 정규화 경로는 배포 App/API 중심으로 기록될 수 있다. API/Webhook/Scheduler/App 구분 보존은 MVP 3의 trigger mode normalization 대상이다.
 
 ### `workflow_node_runs`
 
@@ -995,8 +1049,8 @@ MVP 목표 상태 결정:
 
 역할:
 
-- trace payload 조회 시도 기록
-- raw/redacted/prompt-completion payload 접근 감사
+- trace raw payload 조회 시도 기록
+- `view=raw` 접근 감사. prompt/completion payload도 raw view에서 접근될 때 기록된다. redacted/metadata 조회는 현재 이 테이블에 기록하지 않는다.
 
 주요 column:
 
@@ -1333,6 +1387,7 @@ MVP 목표 상태 결정:
 MVP 목표 상태 결정:
 
 - `encrypted_config` column은 그대로 둔다.
+- 현재 구현은 `encrypted_config`에 `{"apiKey": "...", "baseUrl": "..."}` JSON string을 그대로 저장한다. column 이름과 달리 암호화가 적용되어 있지 않으므로, 실제 암호화는 별도 보안 변경으로 처리해야 한다.
 - `tenant_id`를 사용하지 않는다.
 - credential 권한은 `team_llm_permissions`를 기준으로 한다.
 
@@ -1415,7 +1470,8 @@ MVP 목표 상태 결정:
 
 | 대상 | 기준 Table |
 | --- | --- |
-| 사용자 소속 | `team_memberships` |
+| 사용자 organization 소속 | 현재: `team_memberships`를 통한 간접 판정. MVP 2-0 목표: `organization_memberships` |
+| 사용자 team 배정 | `team_memberships` |
 | workflow team 권한 | `team_workflow_permissions` |
 | workflow user 직접 권한 | `user_workflow_permissions` |
 | knowledge base team 권한 | `team_knowledge_permissions` |
@@ -1427,14 +1483,15 @@ MVP 목표 상태 결정:
 
 권한 판정 순서:
 
-1. 사용자의 active organization을 확인한다.
-2. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
-3. 사용자가 속한 team을 `team_memberships`에서 조회한다.
-4. resource별 permission table에서 `auth_state`를 확인한다.
-5. resource별 user direct permission table에서 해당 user의 `auth_state`를 확인한다.
-6. team 권한과 user 직접 권한 중 가장 강한 허용 상태를 적용한다.
-7. application-level policy가 필요한 경우 `options`, `flags`, resource 상태를 함께 평가한다.
-8. 권한 부여/회수/차단 결과는 `audit_logs`에 기록한다.
+1. 사용자의 active organization을 확인한다. 현재 코드는 organization owner/manager 또는 active `team_memberships` 기반으로 판정한다.
+2. MVP 2-0 이후에는 active `organization_memberships` row를 organization 소속의 기본 전제로 확인한다.
+3. user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
+4. 사용자가 속한 team을 `team_memberships`에서 조회한다.
+5. resource별 permission table에서 `auth_state`를 확인한다.
+6. 현재 구현된 workflow/LLM credential은 user direct permission table에서 해당 user의 `auth_state`를 확인한다. knowledge/audit user direct permission table은 MVP 2/3 목표 schema다.
+7. team 권한과 user 직접 권한 중 가장 강한 허용 상태를 적용한다.
+8. application-level policy가 필요한 경우 `options`, `flags`, resource 상태를 함께 평가한다.
+9. 권한 부여/회수/차단 결과는 `audit_logs`에 기록한다.
 
 제약:
 
@@ -1640,7 +1697,7 @@ MVP 목표 데이터 모델 구현은 아래 조건을 만족해야 한다.
 
 1. 현재 코드에 이미 존재하는 table과 column을 삭제, rename, 대체하지 않는다.
 2. `roles`, `user_roles`, `resource_permissions`, `audit_events`를 생성하지 않는다.
-3. 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions` 기준으로 동작해야 한다.
+3. 현재 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions` 기준으로 동작해야 한다. MVP 2-0 이후에는 `organization_memberships` active row를 organization 소속 전제 조건으로 추가한다.
 4. 현재 코드의 user direct 권한은 `user_workflow_permissions`, `user_llm_permissions` 기준으로 additive allow만 제공해야 한다. MVP 2/3에서 `user_knowledge_permissions`, `user_audit_permissions`를 추가할 때도 같은 규칙을 따른다.
 5. user direct 권한은 team 권한을 deny하거나 낮추면 안 된다.
 6. audit은 `audit_logs` 기준으로 동작해야 한다.
@@ -1649,4 +1706,4 @@ MVP 목표 데이터 모델 구현은 아래 조건을 만족해야 한다.
 9. `apps`는 project boundary로 유지한다.
 10. workflow node는 별도 table이 아니라 graph 내부 id string reference로 유지한다.
 11. dashboard API는 raw query로 구현한다.
-12. 현재 물리 데이터 모델 밖의 추가 신규 table이 필요해지는 요구는 별도 schema extension 문서로 분리한다.
+12. 이 문서에 current 또는 planned table로 명시되지 않은 추가 신규 table이 필요해지는 요구는 별도 schema extension 문서로 분리한다.

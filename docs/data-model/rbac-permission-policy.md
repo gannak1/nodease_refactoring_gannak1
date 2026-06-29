@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
 
 ## 목적
 
 이 문서는 현재 workspace code의 조직/팀 권한 관련 물리 데이터 모델을 기준으로, 현재 구현과 MVP 목표 상태에서 사용할 권한 정책과 matrix를 정의한다.
 
-이 문서는 [physical-data-model.md](physical-data-model.md)를 따른다. 따라서 `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 기준으로 판정한다. 현재 코드는 workflow/LLM credential에 대해서만 user direct 권한을 구현하며, knowledge/audit user direct 권한은 MVP 2/3 목표 schema다.
+이 문서는 [physical-data-model.md](physical-data-model.md)를 따른다. 따라서 `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 현재 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 기준으로 판정한다. MVP 2-0 목표 상태에서는 `organization_memberships`를 organization 소속의 전제 조건으로 추가하고, `team_memberships`는 team permission 계산을 위한 team 배정 관계로 유지한다. 현재 코드는 workflow/LLM credential에 대해서만 user direct 권한을 구현하며, knowledge/audit user direct 권한은 MVP 2/3 목표 schema다.
 
 ## 빠른 구현 기준
 
@@ -19,14 +19,16 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 - 구현자는 권한 row 없음, `auth_state='none'`, user direct additive allow, audit 기록 조건을 우선 테스트한다.
 - `roles`, `user_roles`, polymorphic `resource_permissions`, `user_connection_permissions`, `user_app_permissions`, `user_document_permissions`, `user_model_permissions`는 만들지 않는다.
 - 현재 코드의 user direct table은 `user_workflow_permissions`, `user_llm_permissions`뿐이다.
+- `organization_memberships`는 현재 코드에는 없으며, MVP 2-0에서 active organization member 전제 조건으로 추가할 목표 table이다.
 
 ## 기준 테이블
 
 | Table | 역할 |
 | --- | --- |
 | `organization` | 조직 범위. app/workflow/knowledge base/LLM credential의 상위 scope |
+| `organization_memberships` | 목표: MVP 2-0에서 user와 organization의 직접 소속 관계 |
 | `teams` | 권한 부여 subject. 기존 role 개념은 team template으로 흡수 |
-| `team_memberships` | 사용자와 team의 소속 관계 |
+| `team_memberships` | 현재: 사용자 organization/team 소속의 간접 기준. MVP 2-0 이후: organization 안의 team 배정 관계 |
 | `team_workflow_permissions` | team별 workflow 권한 |
 | `team_knowledge_permissions` | team별 knowledge base 권한 |
 | `team_llm_permissions` | team별 LLM credential 권한 |
@@ -41,6 +43,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 | 원칙 | 내용 |
 | --- | --- |
 | Team 우선 | 기본 권한 subject는 team이다. |
+| Organization membership 전제 | 현재는 active team membership으로 organization scope를 주로 판정한다. MVP 2-0 이후에는 active organization membership이 resource permission subject의 필요조건이다. |
 | User direct grant | 예외적 추가 권한은 user별 permission table로 부여한다. |
 | Organization scope | team과 permission은 조직 범위 안에서 해석한다. |
 | `auth_state` 단일 상태 | 현재 권한 모델은 permission boolean set이 아니라 `auth_state` 문자열 하나를 가진다. |
@@ -138,7 +141,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - user direct permission이 더 약한 상태여도 team permission을 낮추지 않는다.
 - effective permission은 team permission과 user direct permission 중 가장 강한 허용 상태다.
 - `user_connection_permissions`, `user_app_permissions`, `user_document_permissions`, `user_model_permissions`는 이 문서에서 만들지 않는다.
-- connection `use`는 connection permission table이 아니라 consuming workflow/knowledge base 권한으로 허용한다.
+- connection `use`는 목표 상태에서 connection permission table이 아니라 consuming workflow/knowledge base 권한으로 허용한다. 현재 코드는 connector API와 DB source upload에서 owner 기준을 주로 사용하고, 저장된 DB source sync/processor 경로는 document metadata의 `connection_id`를 사용한다.
 
 ## Resource별 Matrix
 
@@ -172,7 +175,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - `team_knowledge_permissions`
 - 목표: `user_knowledge_permissions`
 
-현재 코드의 KB/RAG API는 `KnowledgeBase.user_id == current_user.id` 같은 owner/current-user scope를 주로 사용한다. 아래 matrix는 MVP 2에서 team permission과 planned user direct grant를 적용할 목표 정책이다.
+현재 코드의 Knowledge Base API는 `KnowledgeBase.user_id == current_user.id` 같은 owner/current-user scope를 주로 사용한다. RAG API는 endpoint별로 차이가 있으며 기존 KB upload, analyze, confirm, progress 경로는 owner/scope 검증이 약하다. 아래 matrix는 MVP 2에서 team permission과 planned user direct grant를 적용할 목표 정책이다.
 
 | `auth_state` | `read` | `write` | `use` | `manage` | 설명 |
 | --- | --- | --- | --- | --- | --- |
@@ -229,27 +232,27 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - `team_audit_permissions`
 - 목표: `user_audit_permissions`
 
-현재 코드에는 `team_audit_permissions` 물리 table과 trace visibility 정책 기반이 있다. `user_audit_permissions`는 아직 구현되지 않은 MVP 3 목표 table이다.
+현재 코드에는 `team_audit_permissions` 물리 table과 trace visibility 정책 기반이 있다. 다만 현재 등록된 audit log 조회 API는 `GET /api/v1/users/me/audit-logs` 자기 범위 조회뿐이며, organization-wide `/api/v1/audit/logs` 검색 API는 아직 없다. 현재 trace 상세/payload 접근 제어도 `team_audit_permissions`를 직접 조회하지 않고 system admin, app owner, workflow effective RBAC, visibility policy를 조합한다. `user_audit_permissions`는 아직 구현되지 않은 MVP 3 목표 table이다.
 
 | `auth_state` | `read` | `view_raw` | `manage` | 설명 |
 | --- | --- | --- | --- | --- |
 | `none` | No | No | No | audit 접근 불가 |
-| `auditor` | Yes | No | No | audit log와 redacted trace 조회 가능 |
-| `raw_auditor` | Yes | Yes | No | raw/prompt payload 조회 가능 |
-| `manager` | Yes | Yes | Yes | audit visibility policy 관리 가능 |
+| `auditor` | Yes | No | No | 목표: audit log와 redacted trace 조회 가능 |
+| `raw_auditor` | Yes | Yes | No | 목표: raw/prompt payload 조회 가능 |
+| `manager` | Yes | Yes | Yes | 목표: audit visibility policy 관리 가능 |
 
 적용 위치:
 
-- `audit_logs` 검색: `read`
-- `trace_payloads.redacted_payload` 조회: `read`
-- `trace_payloads.raw_payload_encrypted` 복호화 조회: `view_raw`
-- audit visibility permission 변경: `manage`
+- `audit_logs` 검색: 목표 `read`. 현재 구현은 자기 audit log 조회만 제공한다.
+- `trace_payloads.redacted_payload` 조회: 현재 `TraceAccessService`가 system admin, app owner, workflow effective auth state, visibility policy를 함께 평가한다.
+- `trace_payloads.raw_payload_encrypted` 복호화 조회: 현재 system admin은 admin raw policy, app owner는 owner raw policy, workflow RBAC 사용자는 workflow effective `manager`와 owner raw policy가 필요하다. prompt/completion payload raw 접근은 추가로 prompt/completion visibility flag가 허용되어야 한다.
+- audit visibility permission 변경: 목표 `manage`. 현재 policy management API는 `TraceRbacService` system admin provider를 사용한다.
 
 추가 정책:
 
-- raw trace 조회는 `team_audit_permissions`만으로 허용하지 않는다.
-- `trace_visibility_policies`와 `trace_payload_access_events`를 함께 적용한다.
-- raw trace 조회 시도는 성공/실패 모두 `trace_payload_access_events`에 기록한다.
+- raw trace 조회는 현재 `team_audit_permissions`를 사용하지 않는다.
+- 현재 trace 접근 제어는 audit permission table을 직접 조회하기보다 app owner/system admin/workflow effective RBAC와 `trace_visibility_policies`를 함께 적용한다. `team_audit_permissions` 기반 audit visibility는 organization-wide audit search가 추가될 때의 목표 모델이다.
+- raw trace 조회 시도는 성공/실패 모두 `trace_payload_access_events`에 기록한다. 허용된 raw 응답은 감사 기록이 먼저 성공해야 한다.
 
 ### App / Project Boundary
 
@@ -297,6 +300,8 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 `connections` 자체에는 `organization_id`가 없다. 따라서 직접 connection CRUD API는 `connections.user_id` owner를 기본 기준으로 삼고, organization owner/manager 판정은 connection이 active organization의 workflow/knowledge base에 연결되어 scope가 식별되는 경우에 적용한다.
 
+현재 코드 기준 직접 connector API와 신규 DB source upload는 `connections.user_id == current_user.id` owner scope를 확인한다. DB source가 저장된 뒤의 sync/processor 경로는 `KnowledgeBase.user_id == execution user`와 document metadata의 `connection_id`를 기준으로 connection을 조회하며, 별도 connection permission이나 consuming workflow/knowledge base 권한 기반 runtime `use` enforcement는 아직 없다. 아래 matrix는 MVP 2 목표 정책이며, 현재 구현과 다른 항목은 current note를 우선한다.
+
 확정 처리:
 
 | 행위 | 권한 기준 |
@@ -307,11 +312,11 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 | connection 수정/삭제/secret rotation | connection owner 또는 organization owner/manager |
 | workflow DB node에서 connection 선택/설정 | workflow `builder` 이상. 단, secret은 노출하지 않는다. |
 | knowledge base DB source에서 connection 선택/설정 | knowledge base `builder` 이상. 단, secret은 노출하지 않는다. |
-| runtime connection 사용 | consuming workflow `execute` 또는 knowledge base `use` |
+| runtime connection 사용 | 목표: consuming workflow `execute` 또는 knowledge base `use`. 현재 DB source sync/processor 경로는 저장된 `connection_id`를 server-side에서 사용 |
 
 주의:
 
-- connection `use`는 connection owner에게만 제한하지 않는다. 그렇게 제한하면 owner가 아닌 team member가 DB 기반 workflow/knowledge base를 실행할 수 없다.
+- 목표 상태의 connection `use`는 connection owner에게만 제한하지 않는다. 그렇게 제한하면 owner가 아닌 team member가 DB 기반 workflow/knowledge base를 실행할 수 없다.
 - runtime은 encrypted credential을 server-side에서만 복호화해서 사용하고, client/API 응답에 secret을 반환하지 않는다.
 - 연결된 외부 DB 내부의 table/row 권한은 Nodease RBAC에서 대신 관리하지 않는다. 외부 DB credential 자체의 권한 범위가 최종 DB 접근 범위를 제한한다.
 - connection을 workflow/knowledge base와 독립적으로 team/user에게 공유해야 하는 요구가 생기면 `team_connection_permissions`/`user_connection_permissions`를 별도 schema extension으로 검토한다.
@@ -324,15 +329,15 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 | Workflow save API | workflow `write` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Workflow execute API | workflow `execute` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Workflow engine LLM node | credential `use` | `team_llm_permissions`, `user_llm_permissions` |
-| Workflow engine RAG node | 목표: knowledge base `use` | 현재 코드: owner/current-user scope. 목표: `team_knowledge_permissions`, `user_knowledge_permissions` |
+| Workflow engine RAG node | 목표: knowledge base `use` | 현재 코드: LLM node RAG retrieval은 KB `use` enforcement 없음. 목표: `team_knowledge_permissions`, `user_knowledge_permissions` |
 | Workflow engine DB node | workflow `execute`; connection secret은 server-side runtime만 사용 | `team_workflow_permissions`, `user_workflow_permissions`, `connections` |
-| Knowledge base DB source 사용 | 목표: knowledge base `use`; connection secret은 server-side runtime만 사용 | 현재 코드: owner/current-user scope. 목표: `team_knowledge_permissions`, `user_knowledge_permissions`, `connections` |
+| Knowledge base DB source 사용 | 목표: knowledge base `use`; connection secret은 server-side runtime만 사용 | 현재 코드: DB source upload는 `connections.user_id == current_user.id`를 확인하지만 기존 KB scope 검증은 약함. 목표: `team_knowledge_permissions`, `user_knowledge_permissions`, `connections` |
 | Connection secret/manage | connection owner 또는 organization owner/manager | `connections` |
 | Deployment create | workflow `deploy` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Deployment activate | workflow `deploy` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Permission grant/revoke | organization owner/manager 또는 target resource `manage` | resource별 team/user permission table |
-| Audit log search | audit `read` | 현재/목표: `team_audit_permissions`; MVP 3 목표: `user_audit_permissions` |
-| Raw trace payload read | audit `view_raw` + trace visibility policy | 현재/목표: `team_audit_permissions`, `trace_visibility_policies`; MVP 3 목표: `user_audit_permissions` |
+| Audit log search | 목표: audit `read`; 현재: own audit read | 현재 API는 `users/me/audit-logs`; 목표: `team_audit_permissions`, MVP 3 `user_audit_permissions` |
+| Raw trace payload read | current trace access + trace visibility policy | 현재: system admin + admin raw policy, app owner + owner raw policy, workflow effective `manager` + owner raw policy. prompt/completion raw는 추가 visibility flag 필요. 목표: audit `view_raw`와 통합 |
 | Dashboard workflow metrics | workflow `read` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Dashboard cost metrics | workflow `read` + credential visibility policy | workflow/credential의 team/user permission |
 
@@ -354,15 +359,17 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 1. 사용자를 인증한다.
 2. 요청의 active organization을 결정한다.
-3. user가 `organization.created_by` 또는 `organization.managed_by`이면 해당 organization scope 안에서 `manager`로 판정한다.
-4. 사용자의 active organization 내 team 목록을 `team_memberships`에서 조회한다.
-5. 대상 resource의 organization scope를 확인한다.
-6. resource별 permission table에서 team들의 `auth_state`를 조회한다.
-7. 현재 구현된 workflow/LLM resource는 user direct permission table에서 해당 user의 `auth_state`를 조회한다. knowledge/audit user direct 조회는 MVP 2/3 table 추가 후 적용한다.
-8. team permission과 user direct permission 중 가장 강한 허용 상태를 적용한다.
-9. trace/raw/audit처럼 별도 visibility policy가 있으면 추가 평가한다.
-10. 최종 decision을 반환한다.
-11. 거부 또는 민감 action은 `audit_logs` 또는 `trace_payload_access_events`에 기록한다.
+3. 현재 구현에서는 organization owner/manager 또는 active `team_memberships`로 organization scope 안 여부를 판정한다.
+4. MVP 2-0 이후에는 active `organization_memberships` row가 없으면 일반 user의 resource permission은 fail-closed 처리한다.
+5. user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
+6. 사용자의 active organization 내 team 목록을 `team_memberships`에서 조회한다.
+7. 대상 resource의 organization scope를 확인한다.
+8. resource별 permission table에서 team들의 `auth_state`를 조회한다.
+9. 현재 구현된 workflow/LLM resource는 user direct permission table에서 해당 user의 `auth_state`를 조회한다. knowledge/audit user direct 조회는 MVP 2/3 table 추가 후 적용한다.
+10. team permission과 user direct permission 중 가장 강한 허용 상태를 적용한다.
+11. trace/raw/audit처럼 별도 visibility policy가 있으면 추가 평가한다.
+12. 최종 decision을 반환한다.
+13. 거부 또는 민감 action은 `audit_logs` 또는 `trace_payload_access_events`에 기록한다.
 
 ## 우선순위 규칙
 
@@ -376,7 +383,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 6. 여러 team 권한이 있으면 가장 높은 state를 적용한다.
 7. user direct permission이 있으면 team permission과 비교해 더 강한 state를 적용한다.
 8. user direct permission이 더 약해도 team permission을 낮추지 않는다.
-9. raw trace는 audit team/user permission과 `trace_visibility_policies`가 모두 허용해야 한다.
+9. 현재 raw trace는 system admin, app owner, workflow effective `manager` 수준 RBAC 중 하나와 `trace_visibility_policies`가 허용해야 한다. audit team/user permission과의 통합은 목표 상태다.
 10. legacy resource처럼 organization scope가 없는 경우에만 creator fallback을 제한적으로 적용한다.
 
 권한 강도 순서:
@@ -402,7 +409,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 - 위 matrix는 default preset이다.
 - 실제 권한은 resource별 permission row가 결정한다.
-- `Auditor`는 raw payload를 볼 수 없다. raw payload는 `raw_auditor` 또는 `manager`만 볼 수 있다.
+- `Auditor`는 목표 audit visibility model에서도 raw payload를 볼 수 없다. 현재 trace raw payload는 `raw_auditor`가 아니라 system admin/app owner/workflow effective `manager`와 visibility policy로 판정한다.
 
 ## Audit 기록 기준
 
@@ -421,7 +428,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |
-| raw trace 조회 | `trace_payload_access_events` | raw/redacted/prompt-completion 조회 성공/실패는 전용 access event table에 기록한다. `audit_logs`에 중복 action을 만들지 않는다. |
+| raw trace 조회 | `trace_payload_access_events` | `view=raw` 조회 성공/실패는 전용 access event table에 기록한다. prompt/completion은 raw view에서 payload kind로 평가될 때 기록된다. redacted/metadata 조회는 현재 이 테이블에 기록하지 않는다. `audit_logs`에 중복 action을 만들지 않는다. |
 
 `audit_logs.status`는 현재 코드 enum에 맞춰 `success` 또는 `failure`만 저장한다. `allow`, `deny`, `warn`, `block`은 `audit_logs.audit_metadata.policy_result`에 저장한다.
 
@@ -469,7 +476,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 | 항목 | 확정 |
 | --- | --- |
-| connection 권한 | `secret/manage`는 owner 또는 organization owner/manager로 제한하고, runtime `use`는 consuming workflow/knowledge base 권한으로 허용한다. |
+| connection 권한 | 현재 직접 connector API와 신규 DB source upload는 owner 기준이다. 목표 상태에서는 `secret/manage`를 owner 또는 organization owner/manager로 제한하고, runtime `use`는 consuming workflow/knowledge base 권한으로 허용한다. |
 | connection 전용 permission table | MVP 목표 상태에서는 만들지 않는다. 독립 connection 공유가 필요해질 때만 `team_connection_permissions`/`user_connection_permissions`를 별도 schema extension으로 검토한다. |
 
 ## 검증 기준
@@ -483,9 +490,9 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 5. workflow `builder`는 수정/실행 가능하지만 배포는 거부된다.
 6. workflow `manager`는 배포와 권한 관리가 가능하다.
 7. LLM node 실행 시 credential `use` 권한이 없으면 실행이 차단된다.
-8. MVP 2 목표: RAG node 실행 시 knowledge base `use` 권한이 없으면 실행이 차단된다. 현재 코드는 owner/current-user scope 중심이다.
-9. audit 조회는 `team_audit_permissions`의 유효 권한이 없으면 거부된다. MVP 3에서 `user_audit_permissions`를 추가하면 함께 합산한다.
-10. raw trace 조회는 audit permission과 `trace_visibility_policies`가 모두 허용해야 한다.
+8. MVP 2 목표: RAG node 실행 시 knowledge base `use` 권한이 없으면 실행이 차단된다. 현재 코드는 KB owner scope와 일부 RAG endpoint의 약한 id 기반 조회가 섞여 있다.
+9. 현재 audit log 조회는 자기 audit log API만 구현되어 있다. organization-wide audit 조회는 목표 상태에서 `team_audit_permissions`의 유효 권한이 없으면 거부하고, MVP 3에서 `user_audit_permissions`를 추가하면 함께 합산한다.
+10. 현재 raw trace 조회는 system admin/app owner/workflow effective `manager` 수준과 `trace_visibility_policies`가 모두 허용해야 한다. audit permission 기반 raw trace 조회는 목표 상태다.
 11. team `viewer` + user direct `builder`이면 최종 권한은 `builder`다.
 12. team `manager` + user direct `viewer`이면 최종 권한은 `manager`다.
 13. user direct permission은 team permission을 deny하거나 낮출 수 없다.

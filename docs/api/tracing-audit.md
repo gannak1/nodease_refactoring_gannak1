@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md)
 
 ## 범위
@@ -27,6 +27,16 @@ Workflow run trace, span, payload, trace policy, retention purge, audit log 조�
 | Implemented | `GET` | `/api/v1/tracing/policies/visibility` | query | `TracePolicyResponse` | system admin |
 | Implemented | `PATCH` | `/api/v1/tracing/policies/visibility` | `TraceVisibilityPolicyPatch` | `TracePolicyResponse` | system admin |
 
+현재 trace 조회 query:
+
+- `GET /api/v1/traces`는 `status`, `trigger_mode`, `from`, `to`, `app_id`, `workflow_id`, `deployment_id`, `user_id`, `correlation_id`, `page`, `limit`을 지원한다. `limit` 범위는 `1..100`이고 기본값은 `20`이다.
+- `GET /api/v1/traces/{trace_id}`는 `view`, `include_spans`, `include_payloads`를 지원한다.
+- payload 목록은 `view`, `payload_kind`, `node_run_id`, `history`, `page`, `limit`을 지원하며 `limit` 최대값은 `1000`이다.
+- Trace 목록 조회는 먼저 system admin 또는 app owner 범위로 DB 후보를 제한하고, 이후 각 run에 대해 `TraceAccessService.check_trace_access`를 다시 적용한다. 따라서 현재 목록 API는 workflow RBAC만 가진 non-owner trace를 넓게 검색하는 용도가 아니다.
+- Trace 상세/payload 접근 판정은 system admin, app owner, workflow effective `auth_state`, app/organization visibility policy를 함께 사용한다.
+
+Trace policy 및 retention purge API의 `system admin` 판정은 `TraceRbacService` provider에 위임한다. 현재 기본 provider는 deny-all이므로, 별도 RBAC provider를 설정하지 않은 런타임에서는 policy 변경과 retention purge가 `403 system_admin_required`로 차단된다. Policy schema에는 `organization` scope가 있지만 현재 management API는 `global`/`app` scope만 허용하고, organization scope 요청은 `organization_scope_policy_not_supported` 또는 `organization_scope_purge_not_supported`로 거부한다.
+
 ## Audit 엔드포인트
 
 | Status | Method | Path | Request | Response | Permission |
@@ -46,6 +56,8 @@ Workflow run trace, span, payload, trace policy, retention purge, audit log 조�
 
 ## Raw Payload 규칙
 
-- raw payload는 `raw_auditor` 또는 `manager` 수준 권한과 trace visibility policy가 모두 허용해야 반환한다.
-- raw payload 접근 시도는 `trace_payload_access_events`에 남긴다.
+- raw payload는 system admin, app owner, workflow effective `manager` 수준 RBAC 중 하나와 trace visibility policy가 모두 허용해야 반환한다.
+- app owner와 RBAC 사용자는 owner visibility flag(`owner_trace_access_enabled`, `owner_redacted_payload_access_enabled`, `owner_raw_payload_access_enabled`, prompt/completion flag)를 따른다.
+- raw payload 접근 시도는 응답 전에 `trace_payload_access_events`에 남긴다. 감사 기록 실패 시 허용된 raw 응답은 실패한다.
 - secret, token, credential 원문은 audit metadata에 저장하지 않는다.
+- `ViewLevel`은 현재 schema 기준 `metadata`, `redacted`, `raw`만 허용한다.

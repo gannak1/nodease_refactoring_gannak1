@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 목적
 
@@ -18,6 +18,7 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 | 서비스 경계, 레이어, 런타임 흐름, 보안 경계 | `architecture/*` |
 | 물리 데이터 모델, 테이블, 권한 정책, migration | `data-model/*` |
 | HTTP API, request/response, error contract | `api/*` |
+| 배포 런타임, 환경변수, 헬스체크, ingress, container entrypoint | `docker/**`, `infra/**`, `scripts/**`, root `README.md` |
 | 중요 설계 결정의 근거 | `decisions/*` |
 | 작업 순서, 이슈 분해, rollout | `implementation-plan/*` |
 | 과거 조사, 메모, 폐기 초안 | `references/*` |
@@ -38,12 +39,12 @@ Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
 Status: Draft | Accepted | Superseded
 Authority: Foundation | Requirements | Architecture | Data Model | API | Decision | Implementation Plan | Reference
 Source of Truth: Yes | No
-Verified Against: <branch> @ <commit>
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs:
 ```
 
 ## 현재 기준
 
-현재 active 문서 정합성 기준은 workspace code `feature/mba-59`의 `b92bc9e0f38588495d228fc0d17b10dfaaed03c1`다. 코드와 active 문서가 충돌하면 코드를 기준으로 active 문서를 수정한다.
+현재 active 문서 정합성 기준은 workspace code `dev`의 `c990b54e931b4de8023822f6dff14f43fc1d415f`다. 코드와 active 문서가 충돌하면 코드를 기준으로 active 문서를 수정한다.
 
 `references/moduly-architecture/`는 과거 `main` 기준 역공학 문서다. 이 문서는 현재 코드의 ERD나 tracing/RBAC 구조를 완전히 반영하지 않으므로 구현 기준으로 사용하지 않는다.

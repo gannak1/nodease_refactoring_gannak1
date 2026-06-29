@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
 
 ## 목표
@@ -36,7 +36,11 @@ MVP 3는 MVP 1, 2에서 쌓은 실행/비용/권한/RAG/audit 데이터를 운�
 
 ## 배포 권한과 이전 배포 활성화
 
-현재 Moduly 기준 deployment API에는 `create`, `get`, `toggle`, `delete`가 있고 별도 `rollback` API는 없다. 하지만 `toggle`로 예전 deployment를 다시 active로 만들면, 같은 app의 다른 active deployment가 비활성화되고 `app.active_deployment_id`가 그 deployment로 바뀐다.
+현재 Moduly 기준 deployment API에는 생성, 목록, node deployment 목록, 상세, public info, toggle, delete가 있고 별도 `rollback` API는 없다. API 표면은 `POST /api/v1/deployments`, `GET /api/v1/deployments`, `GET /api/v1/deployments/nodes`, `GET /api/v1/deployments/{deployment_id}`, `GET /api/v1/deployments/public/{url_slug}/info`, `PATCH /api/v1/deployments/{deployment_id}/toggle`, `DELETE /api/v1/deployments/{deployment_id}`를 기준으로 한다.
+
+`GET /api/v1/deployments`는 `app_id` 또는 `workflow_id` 중 하나가 없으면 빈 배열을 반환하고, `/deployments/nodes`는 active `WORKFLOW_NODE` deployment 중 현재 user가 workflow `read` 권한을 가진 항목만 반환한다. 배포 생성 시 `graph_snapshot`이 없으면 저장된 workflow draft를 snapshot으로 사용한다.
+
+`toggle`로 예전 deployment를 다시 active로 만들면, 같은 app의 다른 active deployment가 비활성화되고 `app.active_deployment_id`가 그 deployment로 바뀐다.
 
 따라서 사용자는 "이전 배포로 되돌리기"처럼 사용할 수 있지만, 제품/코드 레벨에서는 아직 `rollback`이라는 명시 기능이 아니라 deployment toggle 동작이다. 별도 rollback permission은 두지 않고 기본 권한은 workflow `deploy/manage`로 다룬다. 다른 deployment가 이미 active인 상태에서 이전 deployment를 다시 활성화하는 경우 `audit_logs.action='deployment.activate_previous'`로 남긴다. MVP 3의 배포 범위는 이 기본 권한이 아니라 deploy checklist, version diff, trigger mode 정합성 같은 운영 기능 강화다.
 

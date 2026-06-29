@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
 Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
@@ -59,3 +59,15 @@ Active organization은 request header로 전달한다. 서버는 active organiza
 | Legacy fallback | 없음 | organization context가 없는 과도기 경로에서 첫 active team membership을 primary organization으로 사용할 수 있다. |
 
 `GET /api/v1/organizations/current`는 `X-Organization-Id` 값을 검증해 현재 요청의 active organization을 반환한다. 상세 endpoint는 [organization-rbac.md](organization-rbac.md)를 따른다.
+
+## Cookie 및 Audit 구현 기준
+
+- `POST /api/v1/auth/signup`, `POST /api/v1/auth/login`, Google OAuth callback은 자체 JWT를 `auth_token` cookie에 저장한다.
+- email/password signup/login은 local host에서 `SameSite=Lax`, `Secure=false`로 설정한다.
+- email/password signup/login은 production host에서 `SameSite=None`, `Secure=true`로 설정하고, `COOKIE_DOMAIN`이 있으면 해당 domain을 사용한다. 없으면 요청 host의 상위 domain을 추론한다.
+- Google OAuth callback은 현재 코드 기준 host가 production이면 `Secure=true`와 추론/환경변수 기반 domain을 사용하지만, `SameSite`는 항상 `Lax`로 설정한다.
+- `auth_token` cookie의 `max_age`는 현재 코드 기준 6시간이다.
+- `GET /api/v1/auth/me`는 cookie에서 token을 읽어 `LoginResponse`를 재구성한다. 별도 bearer token header를 읽지 않는다.
+- signup/login 성공은 `user.signup`, `user.login` audit action으로 기록한다.
+- signup/login 실패는 `user.signup_failed`, `user.login_failed` audit action으로 기록하며 actor는 `system`이다.
+- logout은 cookie를 삭제하고 `user.logout`을 기록하지만, 현재 구현은 logout 시점의 user id를 별도 검증하지 않아 actor id 없이 기록한다.

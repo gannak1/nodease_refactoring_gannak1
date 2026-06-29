@@ -3,12 +3,14 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-59 @ b92bc9e0f38588495d228fc0d17b10dfaaed03c1
+Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
 
 ## 목표
 
 MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소스와 RAG 실행 경로에 적용한다.
+
+이 문서는 MVP 2 목표 상태를 정의한다. 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 코드에서는 Knowledge Base API가 주로 owner/current-user scope로 동작하지만, RAG API 일부 경로는 owner/scope 검증이 약하다. LLM node의 RAG retrieval은 knowledge base `use` 권한 enforcement를 아직 적용하지 않는다. `classification`, `policy.warn`, `policy.block`, `rag.retrieve`, 변경 문서 단위 re-index UI/API도 목표 범위다.
 
 결과물:
 
@@ -25,6 +27,7 @@ MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소�
 
 | 기반 | 재사용 방식 |
 | --- | --- |
+| MVP 2-0 organization membership foundation | `organization_memberships`를 organization 소속 기준으로 사용하고, active organization member만 team membership과 user direct permission의 대상이 되도록 전제 |
 | MVP 1 permission model | knowledge base `use` 권한과 document metadata policy로 확장. connection runtime `use`는 consuming workflow/knowledge base 권한으로 허용 |
 | MVP 1 `audit_logs` | 권한 변경, policy warn/block, RAG/re-index action 저장 |
 | MVP 1 policy decision | `allow/warn/block` 결과 저장 |
@@ -159,6 +162,24 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - 수동 classification과 간단한 regex 후보 기반 PII/confidential warning/block
 
 ## 작업 순서
+
+0. MVP 2-0 Organization Membership / Invitation Foundation
+
+작업:
+
+- `organization_memberships` table과 migration/backfill 추가
+- active organization membership 기반 permission helper 전환
+- organization member/invitation API 추가
+- team membership과 user direct permission의 grantee 검증 기준을 organization membership으로 변경
+- Organization Members UI와 team/direct permission picker 필터 반영
+
+검증:
+
+- 기존 team member와 organization creator/manager가 migration 후 active organization member가 됨
+- active organization member가 아니면 resource permission row가 있어도 접근 거부됨
+- team에 속하지 않은 active organization member에게 direct permission 부여 가능
+- member 제거 시 team membership과 user direct permission 정리
+- MVP 1 workflow/LLM permission demo 회귀 없음
 
 1. Data Source Permission Enforcement
 
