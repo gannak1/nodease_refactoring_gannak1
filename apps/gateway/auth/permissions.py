@@ -13,6 +13,7 @@ from apps.shared.db.session import get_db
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
+    has_organization_scope_access,
     has_llm_credential_permission,
     has_workflow_permission,
 )
@@ -73,6 +74,14 @@ def ensure_workflow_permission(
         action,
         organization_id=workflow.organization_id,
     ):
+        if (
+            effective_auth_state == "none"
+            and workflow.organization_id
+            and not has_organization_scope_access(
+                db, current_user.id, workflow.organization_id
+            )
+        ):
+            raise HTTPException(status_code=404, detail="Workflow not found")
         record_permission_denied(
             current_user,
             "workflow",
