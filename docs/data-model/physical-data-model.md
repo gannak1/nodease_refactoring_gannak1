@@ -78,6 +78,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | `users` | 사용자, 실행 actor, resource owner |
 | `organization` | 조직 범위, tenant-like boundary |
+| `organization_memberships` | MBA-66 DB foundation. User와 organization의 직접 소속 관계. Permission helper/API 전환은 후속 MBA-67/MBA-68 범위 |
 | `teams` | 조직 내 권한 부여 단위 |
 | `team_memberships` | 사용자와 팀의 소속 관계 |
 | `team_workflow_permissions` | 팀 단위 workflow 권한 |
@@ -106,13 +107,13 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | `llm_rel_credential_models` | credential-model 사용 가능 관계 |
 | `llm_usage_logs` | LLM token/cost/latency 원천 |
 
-### Planned Foundation Table
+### Implemented Foundation Table
 
-아래 table은 최신 코드에는 아직 없고, MVP 2 Governance/RAG/Audit 본작업 전에 추가할 MVP 2-0 foundation schema다.
+아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. Permission helper, API endpoint, FE 전환은 아직 완료된 것이 아니며 후속 MBA-67/MBA-68 범위다.
 
 | Table | 도입 단계 | 목표 역할 |
 | --- | --- | --- |
-| `organization_memberships` | MVP 2-0 | 사용자와 organization의 직접 소속 관계. active organization 목록, organization manager 판정, team membership, user direct permission의 전제 조건 |
+| `organization_memberships` | MBA-66 / MVP 2-0 | 사용자와 organization의 직접 소속 관계. active organization 목록, organization manager 판정, team membership, user direct permission의 전제 조건 |
 
 ### Implemented Additive Table
 
@@ -213,6 +214,8 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 - `llm_usage_logs.user_id -> users.id`
 - `organization.created_by -> users.id`
 - `organization.managed_by -> users.id`
+- `organization_memberships.user_id -> users.id`
+- `organization_memberships.invited_by -> users.id`
 - `teams.created_by -> users.id`
 - `teams.managed_by -> users.id`
 - `team_memberships.user_id -> users.id`
@@ -257,6 +260,7 @@ MVP 목표 상태 결정:
 - `llm_credentials.organization_id -> organization.id`
 - `llm_usage_logs.organization_id -> organization.id`
 - `teams.organization_id -> organization.id`
+- `organization_memberships.organization_id -> organization.id`
 - `team_memberships.grantee_organization_id -> organization.id`
 - `team_*_permissions.grantee_organization_id -> organization.id`
 - `team_audit_permissions.target_organization_id -> organization.id`
@@ -342,7 +346,7 @@ MVP 목표 상태 결정:
 
 ### `organization_memberships`
 
-MVP 2-0 목표 table이다. 현재 코드에는 아직 구현되어 있지 않다.
+MBA-66에서 추가된 MVP 2-0 foundation table이다. 현재 구현은 DB/model/migration까지이며, permission helper와 API가 organization membership 기준으로 완전히 전환된 상태는 아니다.
 
 역할:
 
@@ -379,6 +383,8 @@ MVP 2-0 목표 table이다. 현재 코드에는 아직 구현되어 있지 않�
 - `membership_state`는 `invited`, `active`, `suspended`, `removed`를 사용한다.
 - `organization_auth_state`는 `member`, `manager`를 사용하며 resource `auth_state`와 섞지 않는다.
 - resource 접근은 active organization membership만으로 허용하지 않고, organization manager override 또는 resource permission을 함께 평가한다.
+- MBA-66 schema migration은 `ix_organization_memberships_organization_id`, `ix_organization_memberships_user_id`, `ix_organization_memberships_membership_state`, `ix_organization_memberships_org_state`, `ix_organization_memberships_user_state`를 만든다.
+- `(organization_id, membership_state, organization_auth_state)` index는 MBA-66 범위에서 만들지 않고 MBA-67 helper query 확정 후 검토한다.
 
 ### `team_workflow_permissions`
 

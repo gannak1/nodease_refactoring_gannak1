@@ -7,11 +7,12 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 이 문서는 [physical-data-model.md](../physical-data-model.md)와 [rbac-permission-policy.md](../rbac-permission-policy.md)의 현재 코드 RBAC 관련 table 참조관계를 시각화한 보조 문서다. 구현 기준은 이 다이어그램이 아니라 물리 데이터 모델과 RBAC 권한 정책 문서다.
 
-`organization_memberships`는 MVP 2-0 planned foundation table이고, `user_knowledge_permissions`, `user_audit_permissions`는 MVP 2/3 planned additive table이므로 현재 코드 기준 다이어그램에서는 제외한다.
+`organization_memberships`는 MBA-66 DB foundation table로 포함한다. Permission helper/API 전환은 후속 범위이며, `user_knowledge_permissions`, `user_audit_permissions`는 MVP 2/3 planned additive table이므로 현재 코드 기준 다이어그램에서는 제외한다.
 
 ```mermaid
 erDiagram
   organization ||--o{ teams : owns
+  organization ||--o{ organization_memberships : has_members
   organization ||--o{ team_memberships : scopes
   organization ||--o{ team_workflow_permissions : scopes
   organization ||--o{ team_knowledge_permissions : scopes
@@ -20,6 +21,8 @@ erDiagram
   organization ||--o{ user_workflow_permissions : scopes
   organization ||--o{ user_llm_permissions : scopes
 
+  users ||--o{ organization_memberships : joins_orgs
+  users ||--o{ organization_memberships : invites
   users ||--o{ team_memberships : joins
   users ||--o{ user_workflow_permissions : direct_grant
   users ||--o{ user_llm_permissions : direct_grant

@@ -7,18 +7,21 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 이 문서는 [physical-data-model.md](../physical-data-model.md)의 현재 코드 table 참조관계를 시각화한 보조 문서다. 구현 기준은 Mermaid 다이어그램이 아니라 물리 데이터 모델 문서의 table, column, relationship 설명이다.
 
-`organization_memberships`는 MVP 2-0 planned foundation table이고, `user_knowledge_permissions`, `user_audit_permissions`는 MVP 2/3 planned additive table이므로 현재 코드 기준 다이어그램에서는 제외한다.
+`organization_memberships`는 MBA-66 DB foundation table로 포함한다. Permission helper/API 전환은 후속 범위이며, `user_knowledge_permissions`, `user_audit_permissions`는 MVP 2/3 planned additive table이므로 현재 코드 기준 다이어그램에서는 제외한다.
 
 ```mermaid
 erDiagram
   users ||--o{ organization : creates_manages
   organization ||--o{ teams : owns
+  organization ||--o{ organization_memberships : has_members
   organization ||--o{ apps : scopes
   organization ||--o{ workflows : scopes
   organization ||--o{ knowledge_bases : scopes
   organization ||--o{ llm_credentials : scopes
   organization ||--o{ llm_usage_logs : scopes
 
+  users ||--o{ organization_memberships : joins_orgs
+  users ||--o{ organization_memberships : invites
   users ||--o{ team_memberships : joins
   teams ||--o{ team_memberships : has_members
   teams ||--o{ team_workflow_permissions : grants
