@@ -143,5 +143,8 @@ lerna-debug.log*
 # Evaluation generated reports
 tests/evaluation/reports/
 
+# Codex local run logs
+.codex-run-logs/
+
 # 개인 폴더
 .ignore/
