@@ -1,26 +1,5 @@
-import axios from 'axios';
-import { attachActiveOrganizationHeader } from '@/lib/activeOrganization';
 import { DeploymentType } from '../../workflow/types/Deployment';
-
-const API_BASE_URL = '/api/v1';
-
-const api = axios.create({
-  baseURL: API_BASE_URL,
-  withCredentials: true,
-});
-
-attachActiveOrganizationHeader(api);
-
-// 401 에러 인터셉터
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      window.location.href = '/auth/login';
-    }
-    return Promise.reject(error);
-  },
-);
+import { apiClient as api, publicApiClient } from '@/lib/apiClient';
 
 export interface AppIcon {
   type: string;
@@ -70,7 +49,7 @@ export const appApi = {
 
   // 탐색 페이지 (공개 앱) 조회
   getExploreApps: async (): Promise<App[]> => {
-    const response = await api.get('/apps/explore');
+    const response = await publicApiClient.get('/apps/explore');
     return response.data;
   },
 

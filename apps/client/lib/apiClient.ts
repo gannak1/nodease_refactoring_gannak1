@@ -1,18 +1,19 @@
 import axios from 'axios';
 import { attachActiveOrganizationHeader } from './activeOrganization';
 
-export const apiClient = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL
-    ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1`
-    : '/api/v1',
+export const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL
+  ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1`
+  : '/api/v1';
+
+const createApiClient = () => axios.create({
+  baseURL: apiBaseUrl,
   withCredentials: true,
 });
 
-attachActiveOrganizationHeader(apiClient);
-
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
+const attachAuthRedirectInterceptor = (
+  client: ReturnType<typeof createApiClient>,
+) => {
+  client.interceptors.response.use((response) => response, (error) => {
     if (error.response?.status === 401) {
       // 로그인/회원가입 페이지에서는 리다이렉트하지 않음 (에러 메시지를 보여주기 위해)
       if (
@@ -24,5 +25,14 @@ apiClient.interceptors.response.use(
       }
     }
     return Promise.reject(error);
-  },
-);
+  });
+};
+
+export const publicApiClient = createApiClient();
+
+export const apiClient = createApiClient();
+
+attachActiveOrganizationHeader(apiClient);
+
+attachAuthRedirectInterceptor(publicApiClient);
+attachAuthRedirectInterceptor(apiClient);
