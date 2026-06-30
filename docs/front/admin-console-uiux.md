@@ -102,6 +102,53 @@ Settings는 “내가 보는 설정”이고 Admin Console은 “조직을 운�
 
 ## 탭별 화면 기준
 
+### 공통 목록 UX
+
+Admin Console의 `멤버`, `팀`, `권한`, `LLM Credentials` 탭은 row 수가 늘어나는 운영 화면이다. 단순히 전체 row를 세로로 나열하면 manager가 반복 업무에서 대상을 찾기 어렵고, 실수로 다른 대상에 destructive action을 수행할 위험이 커진다.
+
+공통 원칙:
+
+- 목록 상단에는 검색, 주요 필터, 결과 수, 새로고침 또는 reload 상태를 둔다.
+- 검색은 이름/email/설명처럼 사람이 기억하는 label 중심으로 동작한다.
+- 필터는 status, auth state, active state, resource type처럼 운영 판단에 직접 쓰이는 기준만 우선 제공한다.
+- row action은 오른쪽에 모으고, destructive action은 바로 실행하지 않고 확인 dialog를 거친다.
+- pagination 또는 `더 보기`는 row가 많아질 수 있는 탭에 기본으로 둔다. 서버 pagination API가 없으면 client-side pagination을 임시로 적용하되, 문서와 코드에 임시 범위를 명시한다.
+- 선택한 row의 세부 조작은 table 안에 form을 펼치기보다 drawer 또는 side panel을 우선한다. Table은 스캔과 선택에 집중시키고, 변경 작업은 별도 surface에서 처리한다.
+- empty state는 "없음"만 말하지 않고 다음 가능한 action을 보여준다. 단, API나 정책이 없는 action은 disabled CTA와 후속 범위를 함께 표시한다.
+
+탭별 최소 목록 control:
+
+| 탭 | 검색 | 필터 | pagination |
+| --- | --- | --- | --- |
+| 멤버 | 이름, email | membership state, organization auth state | 필요 |
+| 팀 | 팀 이름, 설명 | active/inactive, member count 유무 | 필요 |
+| 권한 | resource 이름, grantee 이름 | resource type, grantee type, auth state | 필요 |
+| LLM Credentials | provider, credential name | provider, valid/invalid | 필요 |
+| 지식 기반 | 이름, 설명 | 연결/문서 상태. 권한 API 확정 후 auth state | 필요 |
+| 감사 로그 | actor/action/target | 기간, action type, status | 서버 pagination 필요 |
+
+MVP에서는 `멤버`와 `팀` 탭부터 검색/필터/client pagination을 붙인다. 권한/credential 권한 관리는 실제 mutation UI 연결 시 같은 목록 패턴을 적용한다.
+
+MVP pagination 규칙:
+
+- 기본 page size는 20개다.
+- 검색어 또는 필터가 바뀌면 page는 1로 reset한다.
+- 서버 pagination API가 없는 목록은 client-side pagination을 임시로 적용한다.
+- 서버 pagination API가 생긴 목록은 query 기반 pagination으로 전환하되, toolbar와 table UX는 유지한다.
+- URL query 동기화는 MVP 기본 범위에 넣지 않는다. 운영 목록 공유/뒤로가기 요구가 명확해지면 후속으로 추가한다.
+
+### Destructive Action 기준
+
+운영 콘솔의 위험 action은 모두 같은 confirm을 쓰지 않는다. 실수 비용과 반복 사용 피로도를 기준으로 등급을 나눈다.
+
+| 등급 | 예시 | UI 기준 |
+| --- | --- | --- |
+| 일반 confirm | team member 제거, 권한 회수 | 짧은 confirm dialog |
+| 영향 요약 confirm | organization member 제거, team 비활성화, LLM credential 사용 중지 | 영향을 받는 team/permission/workflow/model 정보를 요약한 confirm |
+| action 차단 | 마지막 manager 강등/제거, 자기 자신 제거/강등 | action disabled와 이유 tooltip 또는 inline message |
+
+서버가 guard error를 반환하더라도 프론트는 가능한 한 action 전 단계에서 위험을 설명한다. 서버 error는 최종 방어선으로 보고, 사용자에게는 행동 기준 메시지로 번역한다.
+
 ### 멤버
 
 목적: organization member 상태와 조직 권한을 관리한다.
@@ -123,9 +170,19 @@ Settings는 “내가 보는 설정”이고 Admin Console은 “조직을 운�
 - 마지막 manager 보호 error 표시
 - 자기 자신 강등/제거 guard 표시
 
+UI/UX 구현 기준:
+
+- 상단 toolbar는 검색 input, 상태 필터, 조직 권한 필터, `초대` CTA로 구성한다.
+- 초대는 drawer 또는 modal에서 수행한다. 현재 구현 기준 입력은 기존 가입 user의 UUID와 조직 권한 선택으로 제한하고, 초대 후 row를 재조회한다.
+- 초대 drawer에는 "가입된 사용자 UUID만 초대할 수 있습니다"를 명시한다. Email 검색/user picker 초대는 user directory API가 생긴 뒤 후속으로 연결한다.
+- row action은 `정지`, `재활성화`, `관리자 승격`, `멤버로 강등`, `제거`를 상태와 권한에 따라 노출한다.
+- `제거`는 cleanup 결과를 보여줘야 한다. `OrganizationMemberRemoveResponse.removed_team_memberships`, `revoked_user_permissions`를 confirm 또는 success message에 반영한다.
+- 마지막 manager 제거/강등, 자기 자신 제거/강등은 서버 error를 그대로 노출하지 않고 "마지막 관리자는 제거할 수 없습니다"처럼 행동 기준 메시지로 표시한다.
+- invited member는 아직 accept 전이므로 `정지`보다 `제거` 또는 후속 `초대 취소/재전송` 정책을 우선 검토한다. 초대 취소/재전송 API가 확정되기 전까지는 별도 action으로 약속하지 않는다.
+
 초대 재전송/취소는 현재 확정 API 계약에 없으므로 기본 action으로 약속하지 않는다. 해당 UX가 필요하면 resend/cancel API 또는 기존 update/remove API로 대체 가능한지 별도 확인 후 후속 이슈로 분리한다.
 
-MVP에서 invite/accept UI flow가 아직 연결되지 않은 경우 초대 action은 disabled 또는 후속 이슈 안내로 둔다. 단, 상태 badge와 active member picker 기반은 MBA-84 구현을 재사용한다.
+MVP에서 invite/accept UI flow가 아직 연결되지 않은 경우 초대 action은 disabled 또는 후속 이슈 안내로 둔다. 상태 badge는 MBA-84 구현을 재사용한다. `ActiveOrganizationMemberPicker`는 이미 organization에 속한 active member를 고르는 용도이므로 초대 대상 선택에는 사용하지 않고, team member 추가와 user direct permission 부여에만 사용한다.
 
 ### 팀
 
@@ -135,7 +192,7 @@ MVP에서 invite/accept UI flow가 아직 연결되지 않은 경우 초대 acti
 
 - 팀 생성 button
 - active/inactive segmented control
-- team table 또는 two-column layout
+- team table과 row detail drawer
 - team detail drawer: member list, member 추가, member 제거
 
 작업:
@@ -146,6 +203,15 @@ MVP에서 invite/accept UI flow가 아직 연결되지 않은 경우 초대 acti
 - active organization member만 team에 추가
 - 이미 team에 속한 member 중복 제외
 - suspended/removed member가 기존 team에 남아 있는 경우 cleanup 안내
+
+UI/UX 구현 기준:
+
+- 상단 toolbar는 검색 input, active/inactive 필터, `팀 생성` CTA로 구성한다.
+- 팀 생성/수정은 drawer 또는 compact modal을 사용한다. 필드는 `name`, `description`, 필요 시 `is_auto_add`로 제한한다.
+- 팀 row에는 member preview를 모두 늘어놓지 않는다. 많은 member가 있는 팀은 첫 몇 명만 보여주고 `+N` 또는 detail drawer 진입을 제공한다.
+- 팀 detail drawer에서 member 추가/제거를 처리한다. 추가 대상은 `ActiveOrganizationMemberPicker`를 사용하고 이미 해당 team에 속한 user는 제외한다.
+- 팀 비활성화는 delete가 아니라 soft deactivate 성격이므로 label은 `비활성화`로 표시한다. 비활성화 confirm에는 기존 team permission과 member assignment가 화면에서 어떻게 보일지 안내한다.
+- inactive team에는 member 추가와 permission grant action을 막고, 필요한 경우 read-only detail만 보여준다.
 
 ### 권한
 
@@ -164,6 +230,17 @@ MVP에서 invite/accept UI flow가 아직 연결되지 않은 경우 초대 acti
 - team permission grant/update/revoke
 - user direct permission grant/update/revoke
 - 권한 출처 확인은 일반 member 화면에서는 `/apps/operations.permission_sources` 또는 `/permissions/me.sources`로 read-only 표시하고, Admin Console에서는 전체 권한 관리 표로 다룬다.
+
+UI/UX 구현 기준:
+
+- 권한 탭은 먼저 resource selector를 요구한다. MVP에서는 workflow를 우선 연결하고, LLM credential 권한은 `LLM Credentials` 탭 row에서 진입하는 방식도 허용한다.
+- 권한 목록은 `team permissions`와 `user direct permissions`를 분리해서 보여주되, 검색과 auth state 필터는 공통 toolbar에서 적용한다.
+- 권한 부여/수정은 inline row form보다 side panel을 우선한다. `resource`, `grantee type`, `grantee`, `auth state`를 한 번에 선택하고 저장한다.
+- 같은 grantee에 이미 권한이 있으면 `부여`가 아니라 `수정`으로 표시한다. API는 `PUT` upsert지만 UI 문구는 사용자의 의도를 드러내야 한다.
+- 권한 label은 resource 범위를 포함한다. 예를 들어 workflow `manager`는 `워크플로우 관리 가능`, LLM credential `manager`는 `Credential 관리 가능`처럼 표시한다.
+- 권한 selector와 badge에는 짧은 tooltip을 붙여 organization manager와 resource manager 의미가 섞이지 않게 한다.
+- revoke는 권한 회수 confirm을 띄운다. Team 권한 회수와 user direct 권한 회수를 label로 명확히 구분한다.
+- workflow manager가 organization manager가 아닌 경우의 resource-level 관리 화면은 Admin Console과 분리한다. Admin Console은 organization manager 전용이다.
 
 ### LLM Credentials
 
@@ -184,7 +261,39 @@ MVP에서 invite/accept UI flow가 아직 연결되지 않은 경우 초대 acti
 - credential 삭제
 - credential별 team/user 접근 권한 부여
 
-Member Settings에서는 credential 등록/삭제/sync를 노출하지 않는다. Manager action은 Admin Console로 이동한다.
+UI/UX 구현 기준:
+
+- 등록은 drawer/modal에서 `provider`, `credential_name`, `api_key`를 입력받는다. API key는 저장 후 다시 보여주지 않는다는 안내를 form 하단에 둔다.
+- provider별 list는 valid/invalid 상태, preview, model count를 보여준다. Sync 결과는 row 안의 temporary status로 표시한다.
+- delete는 `삭제`보다 실제 동작에 맞춰 `비활성화` 또는 `사용 중지` label을 검토한다. 현재 API는 `is_valid=false` soft disable 성격이다.
+- model sync는 row action으로 두고, 동기화 중/성공/실패 상태를 row 단위로 표시한다. 전체 목록 error로 띄우지 않는다.
+- credential 권한 관리는 credential row에서 `권한 관리` action으로 진입하거나, 권한 탭에서 resource type을 `LLM Credential`로 선택하게 한다. 두 진입점 중 하나를 primary로 정하고 중복 form을 만들지 않는다.
+- Member Settings에서는 credential 등록/삭제/sync를 노출하지 않는다. Manager action은 Admin Console로 이동한다.
+
+### LLM Credential 권한 관리
+
+목적: LLM credential에 대해 team/user direct 접근 권한을 관리한다.
+
+주요 UI:
+
+- credential selector 또는 credential row detail
+- grantee type: team, user direct
+- grantee picker: team list 또는 active organization member picker
+- auth state selector
+- team/user permission table
+
+작업:
+
+- team LLM credential permission grant/update/revoke
+- user direct LLM credential permission grant/update/revoke
+
+UI/UX 구현 기준:
+
+- Workflow 권한 관리와 같은 패턴을 재사용한다. 다만 resource selector의 primary label은 credential name과 provider name을 함께 보여준다.
+- credential read/write/manage 의미가 workflow viewer/operator/builder/manager와 다르게 느껴질 수 있으므로, badge tooltip 또는 짧은 help text로 권한 의미를 보강한다.
+- LLM credential 권한 badge label은 workflow 권한 badge label과 분리한다. 같은 `manager`라도 `Credential 관리 가능`으로 표시한다.
+- LLM credential 삭제 또는 invalid 상태일 때 권한 부여 action은 막고, 기존 권한 목록은 read-only로 확인 가능하게 둔다.
+- organization manager override로 권한을 관리하는 경우와 credential manage 권한으로 관리하는 경우의 노출 차이는 후속 resource-level 관리 화면에서 분리한다.
 
 ### 지식 기반
 
@@ -219,7 +328,7 @@ Member Settings에서는 credential 등록/삭제/sync를 노출하지 않는다
 - status 필터
 - audit table
 
-조직 전체 audit API가 확정된 뒤 목표로 삼을 표시 이벤트:
+현재 연결 가능한 API가 `/users/me/audit-logs`뿐이면 탭 title 또는 body에서 "내 활동 로그"임을 명확히 표시한다. 조직 전체 audit API가 확정된 뒤 목표로 삼을 표시 이벤트:
 
 - member 초대/정지/제거/권한 변경
 - team 생성/수정/비활성화/member 변경
@@ -266,6 +375,12 @@ Workflow manager는 특정 workflow의 권한 관리 권한을 가질 수 있지
 | empty credentials | credential 등록 CTA |
 | tab API error | 전체 Admin shell은 유지하고 해당 tab body만 error state |
 
+부분 실패 기준:
+
+- 탭의 핵심 목록 API가 실패하면 해당 tab body에 error state를 표시한다.
+- 하위 row 보조 API만 실패하면 전체 tab을 막지 않는다. 예를 들어 team 목록은 성공했지만 특정 team member 조회가 실패하면 해당 team row에 "멤버를 불러오지 못함"을 표시한다.
+- mutation 실패는 table 전체 error보다 action이 발생한 drawer, row, toast에 가깝게 표시한다.
+
 ## Layout 기준
 
 - Admin Console은 card-heavy landing page가 아니라 운영 콘솔이어야 한다.
@@ -290,29 +405,31 @@ Workflow manager는 특정 workflow의 권한 관리 권한을 가질 수 있지
 | `apps/client/app/dashboard/settings/page.tsx` | Settings의 조직 운영 탭 제거, credential/activity read-only 중심 정리 |
 | `apps/client/app/dashboard/page.tsx` | manager의 조직 접근 CTA를 Admin Console로 연결 |
 
-현재 Admin Console은 UI/UX 선행 구현이다. 연결 가능한 API는 실제 데이터를 사용하고, 정책/API 범위가 확정되지 않은 action은 disabled 또는 placeholder로 둔다.
+현재 Admin Console은 멤버/팀 운영 action을 우선 연결한 상태다. 연결 가능한 API 중 멤버/팀 MVP scope는 실제 mutation을 수행하고, 권한/credential/knowledge/audit처럼 후속 범위인 action은 disabled 또는 placeholder로 둔다.
 
 | 탭 | 현재 데이터 연결 |
 | --- | --- |
-| 멤버 | `GET /organizations/{id}/members` 기본 응답 실제 연결. active/invited/suspended 표시, 초대/상태 변경 action은 disabled |
-| 팀 | `GET /teams`, `GET /teams/{id}/members` 실제 연결. 생성/수정 action은 disabled |
+| 멤버 | `GET /organizations/{id}/members` 기본 응답과 `state=removed` 조회 연결. 검색/필터/client pagination, user id 기반 초대, 정지/재활성화, manager 승격/member 강등, 제거와 cleanup summary 연결 |
+| 팀 | `GET /teams`, `GET /teams/{id}/members` 실제 연결. 검색/필터/client pagination, 생성/수정, 비활성화, team detail drawer의 active member 추가/제거 연결 |
 | 권한 | legacy Settings permission UI 이동 예정 placeholder |
-| LLM Credentials | provider/credential 목록 실제 연결. 등록/삭제/sync action은 disabled |
+| LLM Credentials | provider/credential 목록 실제 연결. 등록 CTA는 disabled, 삭제/sync/권한 관리는 후속 action으로 미노출 또는 disabled 기준 |
 | 지식 기반 | 기존 knowledge base read list 실제 연결. Admin Console용 조직 관리 목록/권한 관리는 후속 API 확인 전까지 disabled |
 | 감사 로그 | 현재는 `/users/me/audit-logs` 기반 read-only. 조직 전체 audit API 확정 후 전환 |
 | 조직 설정 | 조직명 표시. 수정 action은 정책/API 확정 후 연결 |
 
 ## 현재 구현 스냅샷
 
-MBA-84 기준 현재 구현은 "관리 콘솔의 정보 구조와 공통 organization member 기반"을 먼저 만든 상태다.
+현재 구현은 MBA-84 공통 organization member 기반 위에 멤버/팀 운영 action까지 연결한 상태다.
 
 완료된 것:
 
 - sidebar `관리` 메뉴는 active organization의 `is_manager`가 `true`인 경우에만 표시한다.
 - `/dashboard/admin`은 manager guard를 먼저 수행하고, member에게는 manager-only API를 호출하지 않는다.
 - Admin Console은 `멤버`, `팀`, `권한`, `LLM Credentials`, `지식 기반`, `감사 로그`, `조직 설정` 상단 탭을 제공한다.
-- `멤버` 탭은 `GET /organizations/{id}/members` 기본 응답을 사용해 active/invited/suspended member를 read-only로 표시한다.
-- `팀` 탭은 기존 team API와 team member API를 read-only로 연결한다.
+- `멤버` 탭은 active/invited/suspended와 removed member를 표시하고, 검색/상태 필터/조직 권한 필터/client pagination을 제공한다.
+- `멤버` 탭은 user id 기반 초대, 정지/재활성화, manager 승격/member 강등, 제거를 실제 API에 연결한다.
+- `팀` 탭은 team list와 team member를 표시하고, 검색/상태 필터/member count 필터/client pagination을 제공한다. 현재 team list는 API `limit=100` 기준이며, 100개 이상일 가능성이 있으면 화면에 제한 안내를 표시한다.
+- `팀` 탭은 team 생성/수정/비활성화와 detail drawer의 active member 추가/제거를 실제 API에 연결한다.
 - `LLM Credentials`, `지식 기반`, `감사 로그`는 기존 read API가 있는 범위만 연결하고 manager mutation action은 disabled로 둔다.
 - Settings는 `조직 접근` 탭을 노출하지 않고, `LLM Credentials`와 `Activity` 중심으로 남긴다.
 - Settings의 LLM Credentials는 manager/member 모두 read-only이며 등록, 삭제, model sync, permission grant/revoke action을 제공하지 않는다.
@@ -321,20 +438,19 @@ MBA-84 기준 현재 구현은 "관리 콘솔의 정보 구조와 공통 organiz
 
 아직 구현하지 않은 것:
 
-- organization member invite/update/remove action 연결
-- team create/update/deactivate/member add/remove action 연결
+- email 또는 user directory 검색 기반 organization member 초대. 현재 초대 UI는 가입 user id 입력 방식으로만 연결한다.
 - workflow permission grant/update/revoke UI 이동
 - LLM credential 등록/삭제/sync/권한 관리 action 연결
 - knowledge base organization-level 관리 action 연결
 - organization 전체 audit API 전환
-- `removed` member를 기본 목록에 함께 보여줄지, 별도 필터 query로 조회할지에 대한 화면 정책
+- team 목록의 서버 pagination. 현재는 API limit 100개 기준 client pagination이다.
 
 주의할 점:
 
 - `GET /organizations/{id}/members` query가 없으면 removed member는 응답에 포함되지 않는다. 제거된 member까지 보여주는 화면은 `state=removed` query 또는 별도 필터 동작이 필요하다.
-- 현재 Admin Console의 제거 member count는 기본 member 응답 기준이다. 전체 removed total을 의미하지 않으며, 정확한 제거 상태 집계는 `state=removed` 조회나 전용 summary API가 연결된 뒤 확정한다.
+- 현재 Admin Console의 제거 member count는 기본 member 응답과 `state=removed` 조회를 합친 클라이언트 로드 범위 기준이다. 서버 전체 total summary API가 아니므로 대규모 조직의 정확한 집계 API가 필요하면 별도 endpoint를 검토한다.
 - Settings 내부에는 이전 `조직 접근` UI에 쓰이던 legacy branch/handler가 일부 남아 있을 수 있다. 현재 navigation에서는 접근되지 않지만, Admin Console mutation 전환이 완료되면 제거 범위를 다시 정리한다.
-- Admin Console의 disabled action은 API가 없다는 뜻이 아니라, MBA-84에서는 공통 기반과 read-only 정보 구조만 확정한다는 뜻이다. 실제 조작 action은 MBA-82/MBA-83 또는 후속 이슈에서 연결한다.
+- Admin Console의 disabled action은 API가 없다는 뜻이 아니라, 현재 MVP action scope 밖이라는 뜻일 수 있다. 멤버/팀 action은 연결됐고, 권한/credential/knowledge/audit action은 후속 이슈에서 연결한다.
 
 ## 구현 순서 제안
 
@@ -350,6 +466,32 @@ MBA-84 기준 현재 구현은 "관리 콘솔의 정보 구조와 공통 organiz
 | 8 | 지식 기반/감사 로그는 API 준비 상태에 따라 placeholder 또는 read-only list부터 연결 |
 | 9 | Settings는 개인 설정/read-only credential/activity 중심으로 정리 |
 
+## MVP Action Scope
+
+MBA-84 이후 바로 이어지는 manager 화면 구현은 범위를 좁힌다. 모든 탭의 mutation을 한 PR에 연결하지 않는다.
+
+우선 구현:
+
+- 멤버 목록 검색/필터/client pagination
+- 멤버 초대 drawer
+- 멤버 정지/재활성화
+- manager 승격/member 강등
+- 멤버 제거와 cleanup 결과 표시
+- 팀 목록 검색/필터/client pagination
+- 팀 생성/수정
+- 팀 비활성화
+- 팀 detail drawer에서 active member 추가/제거
+
+후속 구현:
+
+- workflow 권한 grant/update/revoke
+- LLM credential 등록/삭제/sync
+- LLM credential 권한 관리
+- 지식 기반 권한 관리
+- 조직 전체 audit log 전환
+
+이 범위는 QA 비용을 줄이기 위한 것이다. MBA-84에서 shell/read-only 기반은 이미 마련했으므로, 다음 단계는 멤버와 팀 운영 action을 먼저 완성한다.
+
 ## QA 체크리스트
 
 - [ ] manager에게 sidebar `관리`가 보인다.
@@ -357,8 +499,17 @@ MBA-84 기준 현재 구현은 "관리 콘솔의 정보 구조와 공통 organiz
 - [ ] member가 `/dashboard/admin` 직접 접근 시 manager-only API를 호출하지 않는다.
 - [ ] Admin Console 상단에 organization name과 `관리자` badge가 보인다.
 - [ ] Admin Console 탭이 `멤버`, `팀`, `권한`, `LLM Credentials`, `지식 기반`, `감사 로그`, `조직 설정` 순서로 보인다.
-- [ ] `멤버` 탭에서 기본 member 목록의 invited/active/suspended 상태가 구분된다.
-- [ ] `팀` 탭에서 team 목록과 기존 member가 read-only로 표시된다.
+- [ ] `멤버` 탭에서 invited/active/suspended/removed 상태가 구분된다.
+- [ ] `멤버` 탭 검색/상태 필터/조직 권한 필터/client pagination이 동작한다.
+- [ ] `멤버` 탭에서 user id 기반 초대가 동작하고, email 검색 초대가 아직 미지원임을 안내한다.
+- [ ] `멤버` 탭에서 정지/재활성화, manager 승격/member 강등, 제거가 동작한다.
+- [ ] `멤버` 제거 후 cleanup summary가 표시된다.
+- [ ] 마지막 manager와 자기 자신에 대한 위험 action은 차단된다.
+- [ ] `팀` 탭에서 team 검색/상태 필터/member count 필터/client pagination이 동작한다.
+- [ ] 팀 목록이 100개에 도달하면 API limit 기준 안내가 보인다.
+- [ ] `팀` 생성/수정/비활성화가 동작한다.
+- [ ] team detail drawer에서 active member 추가/제거가 동작한다.
+- [ ] 특정 team member 조회 실패가 tab 전체를 깨지 않고 해당 row/drawer에만 표시된다.
 - [ ] `권한` 탭은 legacy Settings permission UI 이동 전까지 placeholder로 표시된다.
 - [ ] LLM credential 등록/삭제/sync는 Admin Console에서 disabled manager action으로만 보인다.
 - [ ] tab 하나의 API 실패가 전체 Admin Console을 깨지 않는다.
