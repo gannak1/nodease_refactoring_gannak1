@@ -3,8 +3,8 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
-Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
+Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목표
 
@@ -108,7 +108,7 @@ MBA-75 기본 정책은 external LLM prompt path에서는 `pii`를 `policy.block
 
 ## RAG Retrieval Trace Metadata
 
-MVP 2에서 필요한 RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 기존 trace 계열 table에 저장한다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary만 저장한다.
+MVP 2에서 필요한 workflow runtime RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 기존 trace 계열 table에 저장한다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary만 저장한다.
 
 ```text
 trace_payloads.redacted_payload / redaction_metadata
@@ -136,9 +136,13 @@ workflow_runs.trace_metadata / workflow_node_runs.trace_metadata
   raw_content_returned
 ```
 
-이 trace는 "어떤 청크가 모델에 들어갔는가"를 설명하는 핵심 근거다. RAG 없는 LLM node는 기존처럼 동작해야 한다.
+이 trace는 workflow 실행에서 "어떤 청크가 모델에 들어갔는가"를 설명하는 핵심 근거다. RAG 없는 LLM node는 기존처럼 동작해야 한다.
 
 Workflow trace/run detail의 기본 응답은 raw chunk content 없이 citation metadata를 반환한다. Search-test response는 KB `use` 권한을 통과한 user에게 chunk content preview를 반환할 수 있지만, 그 content를 trace/audit metadata에 복사하지 않는다.
+
+Workflow run이 없는 standalone RAG Agent answer는 이 section의 `trace_payloads` 저장 계약을 그대로 쓰지 않는다. Standalone answer는 RAG 도메인의 목표 table인 `rag_answer_runs`에 redaction-safe retrieval/citation/answer/usage summary와 answer hash를 저장하고, trace/usage/audit과의 느슨한 연결은 opaque `correlation_id`로 한다. `trace_payloads.rag_answer_run_id`, `llm_usage_logs.rag_answer_run_id`, standalone answer 전용 `rag_retrieval_traces`는 만들지 않는다.
+
+Standalone answer의 기본 durable storage에는 raw user question, raw final answer, raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response를 저장하지 않는다. Usage summary는 token/cost/latency와 model/credential/provider 식별자 allowlist로 제한하고, query/answer hash가 필요하면 정규화 입력과 서버 측 salt/HMAC 정책을 먼저 확정한다.
 
 ## RAG 변경 정책과 Re-index
 
@@ -176,9 +180,14 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - `policy.warn`
 - `policy.block`
 - `rag.retrieve`
+- `rag.answer.requested`
+- `rag.answer.completed`
+- `rag.answer.failed`
+- `rag.answer.cancelled`
+- `rag.answer.purge`
 - re-index 관련 event
 
-`rag.retrieve`는 RAG retrieval 성공 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다. `policy.warn`/`policy.block`은 action 상수와 naming convention을 먼저 고정하고, 실제 document metadata policy enforcement는 후속 구현에서 연결한다.
+`rag.retrieve`는 RAG retrieval 성공 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다. Standalone Agent answer lifecycle은 `rag.answer.*` action과 `rag_answer_runs.status`로 추적한다. `rag.answer.requested`는 schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인을 모두 통과해 answer run을 생성할 때 남긴다. Scope 안 resource가 확인된 뒤 policy 또는 permission preflight 차단이 발생한 경우에만 `rag_answer_runs.status="blocked"`를 사용한다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied` audit으로 표현하고 별도 `rag.answer.blocked` action은 만들지 않는다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다. Retention purge aggregate는 `rag.answer.purge`로 기록한다. `policy.warn`/`policy.block`은 action 상수와 naming convention을 먼저 고정하고, 실제 document metadata policy enforcement는 후속 구현에서 연결한다.
 
 ## 사용자 흐름
 

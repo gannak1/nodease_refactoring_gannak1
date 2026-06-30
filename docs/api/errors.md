@@ -3,8 +3,8 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
-Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
+Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 범위
 
@@ -100,6 +100,8 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `invalid_chunking_mode` | `400` | upload form의 chunking mode 값이 허용 범위를 벗어남 |
 | `invalid_chunking_selection` | `400` | chunking mode와 selection option 조합이 지원되지 않음 |
 | `unsupported_chunking_mode_for_source` | `400` | 요청 source type에서 해당 chunking mode를 지원하지 않음 |
+| `invalid_correlation_id` | `400` | client가 제공한 correlation id가 길이/문자셋/보안 규칙을 만족하지 않음 |
+| `credential_selection_required` | `409` | 사용할 LLM credential/model을 deterministic하게 선택할 수 없음 |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
 
 ## 보안 규칙
