@@ -135,7 +135,7 @@ const canEditApp = (row: ModuleOperationRow, isOrgManager: boolean) =>
 const canToggleDeployment = (row: ModuleOperationRow) =>
   row.permissionStatus === 'loaded' &&
   Boolean(row.permission?.can_deploy || row.permission?.can_manage) &&
-  Boolean(row.app.active_deployment_id);
+  Boolean(row.deployment.deployment_id);
 
 const canOpenModule = (row: ModuleOperationRow) =>
   row.permissionStatus === 'loaded' && Boolean(row.permission?.can_read);
@@ -267,16 +267,21 @@ export default function MyModulePage() {
     router.push(`/modules/${targetId}`);
   };
 
-  const handleEditApp = (row: ModuleOperationRow) => {
+  const handleEditApp = async (row: ModuleOperationRow) => {
     if (!canEditApp(row, isOrgManager)) return;
-    setEditingApp(row.app);
+    try {
+      const app = await appApi.getApp(row.app.id);
+      setEditingApp(app);
+    } catch {
+      alert('앱 정보를 불러오지 못했습니다.');
+    }
   };
 
   const handleToggleDeployment = async (row: ModuleOperationRow) => {
-    if (!canToggleDeployment(row) || !row.app.active_deployment_id) return;
+    if (!canToggleDeployment(row) || !row.deployment.deployment_id) return;
 
     try {
-      await appApi.toggleDeployment(row.app.active_deployment_id);
+      await appApi.toggleDeployment(row.deployment.deployment_id);
       loadModules();
     } catch {
       alert('배포 상태 변경에 실패했습니다.');
@@ -294,7 +299,7 @@ export default function MyModulePage() {
             summary.unavailable > 0 && (
               <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
                 <AlertTriangle className="h-3.5 w-3.5" />
-                일부 권한 출처 또는 실행 상태는 API 연동 전이라 확인 필요로 표시됩니다.
+                일부 권한 출처 또는 실행 상태를 확인할 수 없어 확인 필요로 표시됩니다.
               </span>
             )
           }
@@ -594,9 +599,9 @@ function ModuleOperationTableRow({
         <Badge className={deploymentTone[deploymentState]}>
           {deploymentLabels[deploymentState]}
         </Badge>
-        {row.app.active_deployment_type && (
+        {row.deployment.type && (
           <p className="mt-2 text-xs text-slate-500">
-            {row.app.active_deployment_type}
+            {row.deployment.type}
           </p>
         )}
       </td>
@@ -635,7 +640,7 @@ function ModuleOperationTableRow({
             label={
               canToggle
                 ? '배포 상태 변경'
-                : row.app.active_deployment_id
+                : row.deployment.deployment_id
                   ? '배포 권한 필요'
                   : '배포 없음'
             }

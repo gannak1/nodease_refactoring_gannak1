@@ -269,6 +269,11 @@ class AppService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[AppOperationRow]:
+        """활성 organization 기준 `/apps/operations` 화면 요약을 반환한다.
+
+        운영 목록에는 공개 URL slug와 인증 secret이 노출되면 안 되므로
+        AppResponse 대신 목록 전용 안전 요약 응답 모델을 사용한다.
+        """
         query = db.query(App).options(joinedload(App.active_deployment))
         if organization_id:
             query = query.filter(App.organization_id == organization_id)
@@ -285,6 +290,8 @@ class AppService:
         should_filter_computed_fields = bool(
             permission or deployment_state or run_state
         )
+        # permission/deployment/run filter는 계산된 요약값에 의존한다. 해당 filter가
+        # 없으면 먼저 pagination을 적용해 downstream summary 집계 비용을 줄인다.
         candidate_apps = (
             readable_apps
             if should_filter_computed_fields
@@ -338,6 +345,8 @@ class AppService:
         permission_error = None
 
         if app.workflow_id:
+            # `/workflows/{workflow_id}/permissions/me`와 action 의미가 어긋나지
+            # 않도록 표준 workflow RBAC helper를 그대로 사용한다.
             auth_state = get_effective_workflow_auth_state(
                 db, user_id, app.workflow_id, organization_id=app.organization_id
             )
@@ -390,6 +399,8 @@ class AppService:
         if not workflow_ids:
             return {}
 
+        # workflow별 최신 run 1건만 SQL에서 고른다. 전체 실행 이력을 가져오면
+        # 운영 목록 비용이 누적 실행 로그 크기에 비례해 커진다.
         latest_run_ids = (
             db.query(
                 WorkflowRun.id.label("id"),
@@ -421,6 +432,8 @@ class AppService:
         if not app_ids:
             return {}
 
+        # inactive와 never deployed를 구분하려면 배포 이력 존재 여부가 필요하다.
+        # 다만 상태 계산에는 app별 최신 deployment 1건이면 충분하다.
         latest_deployment_ids = (
             db.query(
                 WorkflowDeployment.id.label("id"),
@@ -456,6 +469,8 @@ class AppService:
         app: App, latest_deployment: WorkflowDeployment | None
     ) -> AppOperationDeploymentSummary:
         active_deployment = app.active_deployment
+        # deployment 비활성화 시 app.active_deployment_id가 비워질 수 있으므로
+        # inactive 여부는 app field만 보지 않고 deployment 이력으로 판단한다.
         if active_deployment and active_deployment.is_active:
             return AppOperationDeploymentSummary(
                 state="active",
@@ -505,6 +520,8 @@ class AppService:
     def _safe_error_message(message: str | None) -> str | None:
         if not message:
             return None
+        # run error에는 prompt 일부, provider 응답, secret이 섞일 수 있다.
+        # 운영 요약에는 원문 대신 일반화된 실패 표시만 노출한다.
         return "execution_failed"
 
     @staticmethod
