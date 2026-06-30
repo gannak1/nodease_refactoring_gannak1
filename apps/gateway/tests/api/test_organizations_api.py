@@ -487,6 +487,31 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(service.call_args.args[3].user_id, target_user_id)
         self.assertEqual(service.call_args.args[3].organization_auth_state, "member")
 
+    def test_route_rejects_unknown_member_invite_field(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.invite_member",
+        ) as service:
+            response = TestClient(app).post(
+                f"/api/v1/organizations/{organization_id}/members/invitations",
+                headers={"X-Organization-Id": str(organization_id)},
+                json={
+                    "user_id": str(target_user_id),
+                    "organization_auth_sate": "manager",
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "validation.failed")
+        service.assert_not_called()
+
     def test_route_accepts_invitation_on_literal_me_path(self):
         organization_id = uuid4()
         user_id = uuid4()

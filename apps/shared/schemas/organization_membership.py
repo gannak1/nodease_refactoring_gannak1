@@ -55,7 +55,7 @@ def _validate_organization_auth_state(value: str | None) -> str | None:
 
 
 class OrganizationMemberInviteRequest(BaseModel):
-    model_config = ConfigDict(validate_default=True)
+    model_config = ConfigDict(extra="forbid", validate_default=True)
 
     user_id: UUID
     organization_auth_state: str = ORGANIZATION_AUTH_MEMBER

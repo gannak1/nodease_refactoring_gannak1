@@ -669,8 +669,20 @@ def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, ex
         lambda **event: events.append(event),
     )
 
-    with pytest.raises(HTTPException) as denied:
-        OrganizationMemberService.list_members(db, user, org.id)
+    token = set_current_metadata(
+        {
+            "ip": "127.0.0.1",
+            "method": "GET",
+            "path": f"/api/v1/organizations/{org.id}/members",
+            "user_agent": "test-agent",
+            "request_id": "req-test",
+        }
+    )
+    try:
+        with pytest.raises(HTTPException) as denied:
+            OrganizationMemberService.list_members(db, user, org.id)
+    finally:
+        clear_current_metadata(token)
 
     assert denied.value.status_code == expected_status
     if scope_access:
@@ -685,12 +697,24 @@ def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, ex
                 "target_id": org.id,
                 "status": "failure",
                 "metadata": {
+                    "ip": "127.0.0.1",
+                    "method": "GET",
+                    "path": f"/api/v1/organizations/{org.id}/members",
+                    "user_agent": "test-agent",
+                    "request_id": "req-test",
+                    "actor": {
+                        "id": str(user.id),
+                        "email": user.email,
+                        "name": user.name,
+                    },
                     "policy_result": "deny",
                     "resource_type": "organization",
                     "resource_id": str(org.id),
                     "required_permission": ORGANIZATION_AUTH_MANAGER,
                     "permission_action": "manage_members",
                     "effective_auth_state": ORGANIZATION_AUTH_MEMBER,
+                    "status_code": 403,
+                    "detail": "Organization manager permission is required.",
                 },
             }
         ]

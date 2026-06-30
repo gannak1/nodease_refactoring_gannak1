@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ PR #125 head
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
 편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
@@ -90,7 +90,7 @@ user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additiv
 
 ## 3. 목표
 
-아래 목록은 원 계획의 전체 목표다. Dev 기준 현재 완료된 foundation은 `organization_memberships` DB/model/migration/backfill과 permission helper 전환이며, member/invitation API, accept flow, full membership UI, cleanup/audit 확장은 남은 범위다.
+아래 목록은 원 계획의 전체 목표다. 현재 PR 기준 BE foundation은 `organization_memberships` DB/model/migration/backfill, permission helper 전환, member/invitation API, accept flow, remove cleanup/audit 확장까지 구현됐다. Full membership 관리 UI는 후속 범위다.
 
 1. organization manager가 기존 user를 organization에 초대할 수 있다.
 2. 초대받은 user는 organization membership 상태를 가진다.
@@ -1145,8 +1145,9 @@ MVP 2-0에서 audit에 남겨야 하는 action:
 
 민감 정보:
 
-- email은 audit metadata에 저장하지 않는다.
-- user id, organization id, membership id만 저장한다.
+- target user email은 audit metadata에 저장하지 않는다.
+- 요청 수행자 복원력을 위해 `audit_metadata.actor` snapshot에는 actor id/email/name을 저장한다.
+- target user id, organization id, membership id는 저장한다.
 
 Audit metadata 예시:
 

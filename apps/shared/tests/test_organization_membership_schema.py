@@ -61,6 +61,11 @@ def test_invite_request_rejects_unknown_auth_state():
         OrganizationMemberInviteRequest(user_id=uuid4(), organization_auth_state="owner")
 
 
+def test_invite_request_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        OrganizationMemberInviteRequest(user_id=uuid4(), organization_auth_sate="manager")
+
+
 @pytest.mark.parametrize(
     "membership_state",
     [ORGANIZATION_MEMBERSHIP_ACTIVE, ORGANIZATION_MEMBERSHIP_SUSPENDED],

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ PR #125 head
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
@@ -96,7 +96,7 @@ Organization member API의 현재 구현 세부사항:
 - Last manager demote/suspend/remove와 self demote/remove는 차단한다.
 - DELETE는 membership을 `removed`로 soft remove하고, 같은 transaction 안에서 `team_memberships`, `user_workflow_permissions`, `user_llm_permissions`를 cleanup한다. 아직 구현되지 않은 `user_knowledge_permissions`, `user_audit_permissions` count는 `0`이다.
 - Invite/accept/update/remove는 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove` audit action을 사용한다. Remove cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'`와 cleanup count를 저장한다.
-- Organization membership audit metadata에는 email을 저장하지 않는다.
+- Organization membership audit metadata에는 대상 user의 email을 저장하지 않는다. 요청 수행자 복원력을 위해 `audit_metadata.actor` snapshot에는 actor id/email/name을 저장한다.
 
 ## User Directory
 

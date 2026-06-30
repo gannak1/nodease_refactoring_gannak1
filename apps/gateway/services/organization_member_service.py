@@ -116,6 +116,7 @@ def _ensure_manager(db: Session, current_user: User, organization_id: Any) -> No
         return
     if not has_organization_scope_access(db, current_user.id, organization_id):
         raise HTTPException(status_code=404, detail="Organization not found.")
+    detail = "Organization manager permission is required."
     record_audit(
         action=AuditAction.PERMISSION_DENIED,
         category="action",
@@ -125,17 +126,21 @@ def _ensure_manager(db: Session, current_user: User, organization_id: Any) -> No
         target_id=organization_id,
         status="failure",
         metadata={
+            **get_current_metadata(),
+            "actor": _actor_snapshot(current_user),
             "policy_result": "deny",
             "resource_type": "organization",
             "resource_id": str(organization_id),
             "required_permission": ORGANIZATION_AUTH_MANAGER,
             "permission_action": "manage_members",
             "effective_auth_state": ORGANIZATION_AUTH_MEMBER,
+            "status_code": 403,
+            "detail": detail,
         },
     )
     exc = HTTPException(
         status_code=403,
-        detail="Organization manager permission is required.",
+        detail=detail,
     )
     setattr(exc, "audit_recorded", True)
     raise exc
