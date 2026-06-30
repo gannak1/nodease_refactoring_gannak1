@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-76 @ 3195a7fd40c4a10d66bbef032a40c76aafda0faf
+Verified Against: feature/mba-79 working tree
 
 ## 목적
 
@@ -45,7 +45,9 @@ Verified Against: feature/mba-76 @ 3195a7fd40c4a10d66bbef032a40c76aafda0faf
 | `apps/client/app/features/app/api/moduleOperationsApi.ts` | `/apps/operations` 호출과 `AppOperationRow` 응답 정규화 |
 | `apps/client/app/features/app/api/appApi.ts` | app 생성/수정/삭제, 상세 조회, deployment 토글 API |
 
-현재 화면 UI는 client-side 검색/권한/배포/실행 필터를 제공한다. `/apps/operations` API도 `q`, `permission`, `deployment_state`, `run_state`, `limit`, `offset` query를 지원하지만, 화면은 첫 페이지 100개를 가져온 뒤 UI 상태로 필터링한다. 서버 사이드 pagination/search/filter UI는 후속 개선으로 둔다.
+현재 화면 UI는 `/apps/operations`의 서버 query를 사용해 검색/권한/배포/실행 필터와 pagination을 처리한다. 첫 page는 `limit=100&offset=0`으로 가져오고, 더 볼 row가 있으면 `offset`을 증가시켜 `더 보기`로 이어 붙인다.
+
+화면 summary와 목록 count는 현재 로드된 row 기준이다. 전체 total count는 API가 아직 제공하지 않으므로 "전체 시스템 기준"으로 표현하지 않는다.
 
 ### 현재 운영 summary 응답으로 가능한 표시
 
@@ -120,7 +122,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | 오류 있음 | `latest_run.state === "failed"` | 가능 |
 | 내가 워크플로우 수정 가능 | `permission.can_write === true` | 가능 |
 | 내가 실행 가능 | `permission.can_execute === true` | 가능 |
-| 내가 관리 가능 | `permission.can_manage === true` | 가능 |
+| 내가 워크플로우 관리 가능 | `permission.can_manage === true` | 가능 |
 
 예시 문구:
 
@@ -129,7 +131,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 - `최근 오류 1`
 - `워크플로우 수정 가능 4`
 - `실행 가능 5`
-- `관리 가능 1`
+- `워크플로우 관리 가능 1`
 
 `최근 오류`는 `/apps/operations.latest_run` 기준으로 계산한다. 권한 출처만 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
 
@@ -166,14 +168,17 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 
 ### 검색
 
-검색 대상:
+현재 검색 대상:
 
 - 모듈명
 - 설명
+
+후속 검색 대상:
+
 - 소유자 이름
 - team 이름
 
-현재 구현은 모듈명/설명/소유자/권한 출처 label을 client-side로 검색한다. team 이름 검색은 `permission_sources` population 이후 정확해진다.
+현재 구현은 `/apps/operations?q=`로 모듈명/설명을 서버 검색한다. 소유자 이름과 team 이름 검색은 API query가 지원된 뒤 보강한다.
 
 ### 필터
 
@@ -181,7 +186,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 
 | 필터 | 값 | 현재 가능 여부 |
 | --- | --- | --- |
-| 내 권한 | 전체, 조회, 실행, 수정, 관리 | 가능 |
+| 내 권한 | 전체, 실행 가능, 워크플로우 수정 가능, 워크플로우 관리 가능 | 가능 |
 | 배포 상태 | 전체, 배포 중, 배포 꺼짐, 미배포 | 가능 |
 | 실행 상태 | 전체, 정상, 오류, 실행 중 | 가능 |
 | 접근 경로 | 전체, team, direct grant | `permission_sources` population 후 가능 |
@@ -192,7 +197,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 기본 필터 추천:
 
 - 검색 input
-- 권한 segmented control: `전체`, `실행 가능`, `워크플로우 수정 가능`, `관리 가능`
+- 권한 segmented control: `전체`, `실행 가능`, `워크플로우 수정 가능`, `워크플로우 관리 가능`
 - 배포 상태 select: `전체`, `배포 중`, `미배포`
 - 실행 상태 select: `전체`, `실행 중`, `오류만`
 
@@ -287,11 +292,13 @@ MVP1에서 BE 보강 없이 FE만 진행한다면 source UI는 노출하지 않�
 MBA-76 이후 `/dashboard/mymodule`은 `/apps/operations`를 기본 데이터 소스로 사용한다. 이전의 `/apps`, `permissions/me`, row별 run API 조합 adapter는 유지하지 않는다.
 
 ```text
-GET /api/v1/apps/operations?limit=100&offset=0
+GET /api/v1/apps/operations?q={검색어}&capability={execute|write|manage}&deployment_state={active|inactive|undeployed}&run_state={running|failed}&limit=100&offset={offset}
 -> AppOperationRow[]
 -> 화면 row view model normalize
--> 검색/권한/배포/실행 필터 적용
+-> 첫 page는 replace, 더 보기는 append
 ```
+
+`더 보기` 노출 기준은 응답 row 수로 판단한다. 응답 row 수가 `limit`보다 작으면 다음 page가 없다고 보고 버튼을 숨기고, `limit`과 같으면 다음 `offset` 요청이 가능하다고 본다.
 
 현재 구현에서 가능한 것:
 
@@ -300,18 +307,18 @@ GET /api/v1/apps/operations?limit=100&offset=0
 - 배포/미배포/배포 off 표시
 - effective permission 표시
 - 권한 기반 action disabled
-- 이름/설명/소유자/권한 출처 label 검색
+- 이름/설명 검색
 - 배포 상태 필터
 - 권한 필터
 - 실행 상태 필터
 - 최근 오류/실행 중/기록 없음 표시
+- `더 보기` pagination
 
 현재 구현에서 남는 것:
 
 - team별 권한 출처 population
 - team 필터
-- server-side pagination/search/filter UI 연결
-- 권한 필터를 서버로 넘길 때는 현재 UI의 capability 기준(`can_execute`, `can_write`, `can_manage`)과 API의 `permission` auth_state filter가 다르므로 별도 `capability` query 또는 명시적 auth_state 매핑 계약이 필요하다.
+- 전체 total count 표시. API가 total을 반환하지 않으므로 현재 로드된 범위만 표시한다.
 
 ### MBA-76 구현 API
 
@@ -410,28 +417,29 @@ GET /api/v1/apps/operations
 
 - team 권한 출처 표시
 - team 필터
-- server-side pagination/search/filter UI
+- 소유자/team 검색 query
 
-이 항목들은 `permission_sources` population 또는 pagination UX 결정 전까지 정확한 값을 만들기 어렵다.
+이 항목들은 `permission_sources` population 또는 검색 query 계약 보강 전까지 정확한 값을 만들기 어렵다.
 
 ### 이번 범위에서 제외
 
 - 전체 리브랜딩
 - 조직 전환 UI 완성
 - organization membership 기반 member 관리
-- 서버 사이드 pagination/search/filter
+- 전체 total count 표시
 - workflow run observability 상세 화면 개편
 
 ## 구현 단계 초안
 
 1. `ModuleOperationRow` view model을 `/apps/operations` 응답 기준으로 정의한다.
-2. `moduleOperationsApi.listModuleOperations()`에서 `/apps/operations?limit=100&offset=0` 첫 페이지를 호출한다.
+2. `moduleOperationsApi.listModuleOperations()`에서 `q`, `capability`, `deployment_state`, `run_state`, `limit`, `offset`을 query로 전달한다.
 3. 목록 app 요약은 safe summary로 취급하고, 수정 modal을 열 때는 `appApi.getApp(app.id)`로 full `AppResponse`를 다시 조회한다.
 4. deployment 상태와 permission 상태로 운영 현황 값을 계산한다.
 5. 기존 `AppCard` grid를 운영형 table/list로 교체한다.
-6. 검색, 권한 필터, 배포 필터, 실행 필터를 추가한다.
-7. row action을 permission boolean과 `deployment.deployment_id` 기준으로 제어한다.
-8. `permission_sources`는 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
+6. 검색, 권한 필터, 배포 필터, 실행 필터 변경 시 첫 page부터 다시 조회한다.
+7. `더 보기`를 누르면 다음 offset page를 append한다.
+8. row action을 permission boolean과 `deployment.deployment_id` 기준으로 제어한다.
+9. `permission_sources`는 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
 
 ## QA 체크리스트
 
@@ -443,7 +451,7 @@ GET /api/v1/apps/operations
 - [ ] `builder`는 수정/실행 가능으로 표시된다.
 - [ ] `manager`는 권한 관리 action이 가능하다.
 - [ ] 미배포 모듈과 배포 중 모듈을 필터링할 수 있다.
-- [ ] 검색어로 모듈명/설명/소유자를 필터링할 수 있다.
+- [ ] 검색어로 모듈명/설명을 필터링할 수 있다.
 - [ ] 권한 조회 실패 row가 전체 목록을 깨지 않는다.
 - [ ] 실행 상태/오류 상태는 `/apps/operations.latest_run` 값 기준으로 표시하고 raw error를 노출하지 않는다.
 
@@ -462,7 +470,7 @@ GET /api/v1/apps/operations
 아래 프롬프트를 다음 구현 작업 요청으로 사용할 수 있다.
 
 ```text
-MBA-76 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영형 모듈 목록으로 정리해줘.
+MBA-79 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영형 모듈 목록으로 정리해줘.
 
 목표:
 - 사용자가 각 모듈/workflow에 대해 어떤 권한으로 접근 가능한지 한눈에 볼 수 있어야 함.
@@ -477,10 +485,10 @@ MBA-76 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영�
 - 목록의 `app`은 safe summary이므로 수정 modal을 열 때는 `GET /api/v1/apps/{app_id}`로 full `AppResponse`를 다시 조회할 것.
 - 배포 토글은 `deployment.deployment_id`를 기준으로 수행할 것.
 - 소유자 표시는 `app.owner_name`을 사용할 것. `owner_name`은 RBAC `manager` 목록이 아니다.
-- 권한 필터: 전체, 실행 가능, 워크플로우 수정 가능, 관리 가능.
+- 권한 필터: 전체, 실행 가능, 워크플로우 수정 가능, 워크플로우 관리 가능.
 - 배포 필터: 전체, 배포 중, 배포 꺼짐, 미배포.
 - 실행 필터: 전체, 실행 중, 오류만.
-- 검색 대상: 모듈명, 설명, 소유자, 권한 출처.
+- 검색 대상: 모듈명, 설명. 소유자와 권한 출처 검색은 API query가 지원된 뒤 보강한다.
 
 아직 구현하지 말고 TODO로 남길 범위:
 - `permission_sources`를 실제 team/user direct source로 채우는 backend population.
@@ -499,6 +507,6 @@ UI/UX 기준:
 - `npx eslint app/dashboard/mymodule/page.tsx app/features/app/api/moduleOperationsApi.ts`
 - `npm run build`
 - localStorage에서 `moduly_active_organization_id`를 지운 뒤 `/dashboard/mymodule`에 직접 진입하면 organization 목록 조회 또는 선택 화면 redirect로 후보를 정한 뒤, `X-Organization-Id`가 준비된 상태에서 `/organizations/current`와 모듈 API를 호출해야 함. Header 없이 `/organizations/current`나 org-scoped API가 성공해야 한다는 의미가 아님.
-- Network에서 `/api/v1/apps/operations`가 호출되고 `/api/v1/apps` 기반 조합 adapter 호출이 없는지 확인.
-- 100개 초과 목록의 server-side pagination/search/filter UI는 후속 개선으로 분리.
+- Network에서 `/api/v1/apps/operations`가 `q`, `capability`, `deployment_state`, `run_state`, `limit`, `offset` query로 호출되고 `/api/v1/apps` 기반 조합 adapter 호출이 없는지 확인.
+- 100개 초과 목록은 `더 보기`를 눌러 다음 `offset` page를 불러올 수 있어야 함.
 ```

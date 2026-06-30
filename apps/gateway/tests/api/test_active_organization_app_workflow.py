@@ -174,6 +174,7 @@ def test_list_app_operations_uses_active_organization_header(monkeypatch):
         request=object(),
         q="문의",
         permission="builder",
+        capability="write",
         deployment_state="active",
         run_state="success",
         limit=20,
@@ -189,6 +190,7 @@ def test_list_app_operations_uses_active_organization_header(monkeypatch):
         "organization_id": organization_id,
         "q": "문의",
         "permission": "builder",
+        "capability": "write",
         "deployment_state": "active",
         "run_state": "success",
         "limit": 20,
@@ -360,6 +362,61 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     assert row["permission_sources"] == []
     assert row["deployment"]["state"] == "active"
     assert row["latest_run"]["state"] == "not_started"
+
+
+def test_list_app_operations_filters_by_capability(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="실행 전용 모듈",
+        description="operator 권한",
+        icon={"type": "emoji", "content": "N", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "operator",
+    )
+    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    executable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        capability="execute",
+    )
+    writable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        capability="write",
+    )
+    operator_writable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        permission="operator",
+        capability="write",
+    )
+
+    assert [row.app.name for row in executable_rows] == ["실행 전용 모듈"]
+    assert writable_rows == []
+    assert operator_writable_rows == []
 
 
 def test_list_app_operations_does_not_expose_market_app_without_workflow_read(

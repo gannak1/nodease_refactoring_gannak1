@@ -281,6 +281,7 @@ class AppService:
         organization_id: str,
         q: str | None = None,
         permission: str | None = None,
+        capability: str | None = None,
         deployment_state: str | None = None,
         run_state: str | None = None,
         limit: int = 50,
@@ -305,7 +306,7 @@ class AppService:
             app for app in apps if AppService.can_read_app_operations(db, app, user_id)
         ]
         should_filter_computed_fields = bool(
-            permission or deployment_state or run_state
+            permission or capability or deployment_state or run_state
         )
         if should_filter_computed_fields:
             return AppService._list_filtered_operation_rows(
@@ -313,6 +314,7 @@ class AppService:
                 readable_apps,
                 user_id,
                 permission,
+                capability,
                 deployment_state,
                 run_state,
                 limit,
@@ -360,6 +362,7 @@ class AppService:
         readable_apps: list[App],
         user_id,
         permission: str | None,
+        capability: str | None,
         deployment_state: str | None,
         run_state: str | None,
         limit: int,
@@ -375,7 +378,7 @@ class AppService:
             rows = AppService._build_operation_rows_for_apps(db, batch, user_id)
             for row in rows:
                 if not AppService._matches_operation_filters(
-                    row, permission, deployment_state, run_state
+                    row, permission, capability, deployment_state, run_state
                 ):
                     continue
                 if skipped < offset:
@@ -588,6 +591,7 @@ class AppService:
     def _matches_operation_filters(
         row: AppOperationRow,
         permission: str | None,
+        capability: str | None,
         deployment_state: str | None,
         run_state: str | None,
     ) -> bool:
@@ -596,6 +600,16 @@ class AppService:
                 return False
         elif permission:
             return False
+
+        if capability:
+            if row.permission is None:
+                return False
+            if capability == "execute" and not row.permission.can_execute:
+                return False
+            if capability == "write" and not row.permission.can_write:
+                return False
+            if capability == "manage" and not row.permission.can_manage:
+                return False
 
         if deployment_state and row.deployment.state != deployment_state:
             return False

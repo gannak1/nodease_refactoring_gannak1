@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-76 @ 3195a7fd40c4a10d66bbef032a40c76aafda0faf
+Verified Against: feature/mba-79 working tree
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -42,12 +42,15 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 | --- | --- | --- | --- |
 | `q` | string | No | app 이름/설명 부분 검색 |
 | `permission` | string | No | `viewer`, `operator`, `builder`, `manager` 등 effective workflow `auth_state` 필터. Capability filter가 아니라 auth state filter다. |
+| `capability` | string | No | `execute`, `write`, `manage` 중 하나. `permission.can_execute/write/manage` 기준 capability 필터다. |
 | `deployment_state` | string | No | `active`, `inactive`, `undeployed` |
 | `run_state` | string | No | `running`, `success`, `failed`, `not_started`, `unavailable` |
 | `limit` | integer | No | 기본 `50`, 허용 범위 `1..100` |
 | `offset` | integer | No | 기본 `0` |
 
-현재 구현은 `q`, `permission`, `deployment_state`, `run_state`, `limit`, `offset`을 지원한다.
+현재 구현은 `q`, `permission`, `capability`, `deployment_state`, `run_state`, `limit`, `offset`을 지원한다.
+
+여러 filter query를 동시에 전달하면 AND 조건으로 적용한다. 예를 들어 `capability=write&deployment_state=active`는 워크플로우 수정 권한이 있고 배포 중인 row만 반환한다.
 
 #### Response
 
@@ -193,7 +196,8 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 - FastAPI route는 `/apps/{app_id}`보다 `/apps/operations`를 먼저 등록해야 한다. 그렇지 않으면 `operations`가 `app_id` path param으로 해석될 수 있다.
 - 최신 run은 `workflow_runs.started_at desc` 기준 1건을 사용한다.
 - App, owner, active deployment, latest run, deployment history 조회는 service-level aggregation으로 묶는다. Effective permission 계산은 현재 workflow permission helper를 사용한다.
-- `permission`, `deployment_state`, `run_state`처럼 계산된 summary에 의존하는 filter는 필요한 page를 채울 때까지만 bounded batch로 summary를 계산한다.
+- `permission`, `capability`, `deployment_state`, `run_state`처럼 계산된 summary에 의존하는 filter는 필요한 page를 채울 때까지만 bounded batch로 summary를 계산한다.
+- 단, MBA-79 기준 app 후보 조회와 operations read 권한 판정은 아직 active organization app 후보 전체에 대해 수행한다. bounded batch는 owner/run/deployment/permission summary 계산 범위에 대한 최적화다.
 - 권한 출처는 MBA-74와 같은 `team`/`user` source schema를 사용한다. 같은 source schema를 두 endpoint에서 중복 정의하지 말고 shared schema로 분리하는 것을 권장한다.
 - 새로운 aggregate table은 만들지 않는다. MVP 기준 source of truth는 `apps`, `workflows`, `workflow_deployments`, `workflow_runs`, `team_workflow_permissions`, `user_workflow_permissions`, `organization_memberships`, `team_memberships`다.
 
