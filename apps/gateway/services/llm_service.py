@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -31,8 +32,38 @@ from apps.shared.services.permissions import (
 )
 from apps.shared.services.llm_client import get_llm_client
 from apps.shared.services.llm_usage_context import resolve_llm_usage_context
+from apps.shared.services.permission_audit import record_resource_permission_denied
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WizardLLMRuntime:
+    """Wizard 실행에 사용할 permission-aware LLM runtime 상태입니다. MBA-43"""
+
+    client: Any
+    credential_id: uuid.UUID
+    model_id: str
+    organization_id: uuid.UUID
+
+
+class LLMCredentialNotAvailableError(ValueError):
+    """사용 가능한 LLM credential runtime 후보가 없을 때 발생합니다. MBA-43"""
+
+    def __init__(
+        self,
+        reason: str,
+        message: str = "사용 가능한 LLM credential을 찾을 수 없습니다.",
+        *,
+        credential_id: Optional[uuid.UUID] = None,
+        model_id: Optional[str] = None,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.credential_id = credential_id
+        self.model_id = model_id
+        self.organization_id = organization_id
 
 
 class LLMService:
@@ -886,6 +917,263 @@ class LLMService:
             ):
                 return credential
         return None
+
+    @staticmethod
+    def _resolve_runtime_organization_id(
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> uuid.UUID:
+        """요청 organization이 없으면 기존 default organization fallback을 적용합니다. MBA-43"""
+        if organization_id:
+            try:
+                return uuid.UUID(str(organization_id))
+            except (TypeError, ValueError) as exc:
+                raise LLMCredentialNotAvailableError(
+                    "organization_scope_missing",
+                    "유효한 organization_id가 필요합니다.",
+                ) from exc
+
+        try:
+            return uuid.UUID(str(ensure_user_default_organization(db, user_id)))
+        except Exception as exc:
+            raise LLMCredentialNotAvailableError(
+                "organization_scope_missing",
+                "기본 organization scope를 확인할 수 없습니다.",
+            ) from exc
+
+    @staticmethod
+    def _load_wizard_runtime(
+        db: Session,
+        user_id: uuid.UUID,
+        provider_model_map: Dict[str, str],
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> WizardLLMRuntime:
+        """Wizard용 credential use 권한과 verified model relation을 함께 확인합니다. MBA-43"""
+        organization_uuid = LLMService._resolve_runtime_organization_id(
+            db, user_id, organization_id
+        )
+        credentials = (
+            db.query(LLMCredential)
+            .options(joinedload(LLMCredential.provider))
+            .filter(
+                LLMCredential.is_valid == True,
+                LLMCredential.organization_id == organization_uuid,
+            )
+            .order_by(LLMCredential.created_at.asc(), LLMCredential.id.asc())
+            .all()
+        )
+        if not credentials:
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "LLM Provider가 등록되지 않았습니다. 설정에서 API Key를 등록해주세요.",
+                organization_id=organization_uuid,
+            )
+
+        last_error: Optional[LLMCredentialNotAvailableError] = None
+        verified_candidates = []
+        for credential in credentials:
+            provider = credential.provider
+            provider_name = provider.name.lower() if provider else ""
+            model_id = provider_model_map.get(provider_name)
+            if not provider or not model_id:
+                continue
+
+            model = (
+                db.query(LLMModel)
+                .filter(
+                    LLMModel.provider_id == credential.provider_id,
+                    LLMModel.model_id_for_api_call == model_id,
+                )
+                .first()
+            )
+            if not model:
+                last_error = LLMCredentialNotAvailableError(
+                    "model_relation_not_verified",
+                    "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
+                    credential_id=credential.id,
+                    model_id=model_id,
+                    organization_id=organization_uuid,
+                )
+                continue
+            if not model.is_active:
+                last_error = LLMCredentialNotAvailableError(
+                    "model_inactive",
+                    "비활성화된 LLM 모델입니다.",
+                    credential_id=credential.id,
+                    model_id=model_id,
+                    organization_id=organization_uuid,
+                )
+                continue
+
+            relation = (
+                db.query(LLMRelCredentialModel)
+                .filter(
+                    LLMRelCredentialModel.credential_id == credential.id,
+                    LLMRelCredentialModel.model_id == model.id,
+                    LLMRelCredentialModel.is_verified == True,
+                )
+                .order_by(LLMRelCredentialModel.priority.asc())
+                .first()
+            )
+            if not relation:
+                last_error = LLMCredentialNotAvailableError(
+                    "model_relation_not_verified",
+                    "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
+                    credential_id=credential.id,
+                    model_id=model_id,
+                    organization_id=organization_uuid,
+                )
+                continue
+
+            verified_candidates.append(
+                (
+                    relation.priority,
+                    credential.created_at,
+                    credential.id,
+                    credential,
+                    provider,
+                    model_id,
+                )
+            )
+
+        verified_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+
+        for _priority, _created_at, _id, credential, provider, model_id in verified_candidates:
+            if not has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            ):
+                last_error = LLMCredentialNotAvailableError(
+                    "credential_use_denied",
+                    "LLM credential use 권한이 필요합니다.",
+                    credential_id=credential.id,
+                    model_id=model_id,
+                    organization_id=organization_uuid,
+                )
+                continue
+
+            try:
+                cfg = json.loads(credential.encrypted_config)
+                api_key = cfg.get("apiKey")
+                base_url = cfg.get("baseUrl")
+            except Exception as exc:
+                last_error = LLMCredentialNotAvailableError(
+                    "credential_not_available",
+                    "LLM credential 설정을 읽을 수 없습니다.",
+                    credential_id=credential.id,
+                    model_id=model_id,
+                    organization_id=organization_uuid,
+                )
+                logger.warning("[LLMService] Invalid wizard credential config: %s", exc)
+                continue
+
+            try:
+                client = get_llm_client(
+                    provider=provider.name,
+                    model_id=model_id,
+                    credentials={"apiKey": api_key, "baseUrl": base_url},
+                )
+            except Exception as exc:
+                last_error = LLMCredentialNotAvailableError(
+                    "credential_not_available",
+                    "LLM client를 생성할 수 없습니다.",
+                    credential_id=credential.id,
+                    model_id=model_id,
+                    organization_id=organization_uuid,
+                )
+                logger.warning("[LLMService] Wizard client creation failed: %s", exc)
+                continue
+
+            return WizardLLMRuntime(
+                client=client,
+                credential_id=credential.id,
+                model_id=model_id,
+                organization_id=organization_uuid,
+            )
+
+        if last_error:
+            raise last_error
+        raise LLMCredentialNotAvailableError(
+            "credential_not_available",
+            "Wizard에서 사용할 수 있는 LLM Provider가 없습니다.",
+            organization_id=organization_uuid,
+        )
+
+    @staticmethod
+    def _record_wizard_runtime_block(
+        user_id: uuid.UUID,
+        error: LLMCredentialNotAvailableError,
+        runtime_surface: str,
+    ) -> None:
+        """Wizard POST 최종 runtime 차단을 permission.denied audit으로 남깁니다. MBA-43"""
+        resource_id = error.credential_id or "unknown"
+        metadata: Dict[str, Any] = {
+            "credential_id": str(error.credential_id) if error.credential_id else None,
+            "reason": error.reason,
+            "runtime_surface": runtime_surface,
+        }
+        if error.model_id:
+            metadata["model_id"] = error.model_id
+
+        record_resource_permission_denied(
+            user_id=user_id,
+            resource_type="llm_credential",
+            resource_id=resource_id,
+            action="use",
+            effective_auth_state="none",
+            organization_id=error.organization_id,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def get_wizard_client_for_user(
+        db: Session,
+        user_id: uuid.UUID,
+        provider_model_map: Dict[str, str],
+        organization_id: Optional[uuid.UUID] = None,
+        *,
+        runtime_surface: str = "wizard",
+        audit_on_failure: bool = True,
+    ) -> WizardLLMRuntime:
+        """Wizard POST가 공통 LLM credential runtime 정책을 통과한 client를 받게 합니다. MBA-43"""
+        try:
+            return LLMService._load_wizard_runtime(
+                db,
+                user_id=user_id,
+                provider_model_map=provider_model_map,
+                organization_id=organization_id,
+            )
+        except LLMCredentialNotAvailableError as exc:
+            if audit_on_failure:
+                LLMService._record_wizard_runtime_block(
+                    user_id=user_id,
+                    error=exc,
+                    runtime_surface=runtime_surface,
+                )
+            raise
+
+    @staticmethod
+    def has_wizard_runtime_credential(
+        db: Session,
+        user_id: uuid.UUID,
+        provider_model_map: Dict[str, str],
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> bool:
+        """Wizard GET credential check는 audit 없이 runtime 가능 여부만 반환합니다. MBA-43"""
+        try:
+            LLMService._load_wizard_runtime(
+                db,
+                user_id=user_id,
+                provider_model_map=provider_model_map,
+                organization_id=organization_id,
+            )
+            return True
+        except LLMCredentialNotAvailableError:
+            return False
 
     @staticmethod
     def get_my_available_models(

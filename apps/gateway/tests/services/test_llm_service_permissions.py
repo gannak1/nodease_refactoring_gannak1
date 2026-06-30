@@ -7,7 +7,10 @@ from fastapi import HTTPException
 
 from apps.gateway.api.v1.endpoints import llm as llm_endpoint
 from apps.gateway.services import llm_service
-from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.llm_service import (
+    LLMCredentialNotAvailableError,
+    LLMService,
+)
 from apps.shared.db.models.user import User
 from apps.shared.schemas.llm import LLMCredentialCreate, LLMModelPricingUpdate
 
@@ -41,6 +44,43 @@ class FakeDb:
 
     def query(self, *args, **kwargs):
         return FakeQuery(self.value)
+
+
+class FakeWizardRuntimeQuery:
+    def __init__(self, db, model):
+        self.db = db
+        self.model = model
+
+    def options(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        if self.model is llm_service.LLMCredential:
+            return self.db.credentials
+        return []
+
+    def first(self):
+        if self.model is llm_service.LLMModel:
+            return self.db.model
+        if self.model is llm_service.LLMRelCredentialModel:
+            return self.db.relations.pop(0)
+        return None
+
+
+class FakeWizardRuntimeDb:
+    def __init__(self, credentials, model, relations):
+        self.credentials = credentials
+        self.model = model
+        self.relations = list(relations)
+
+    def query(self, *args, **kwargs):
+        return FakeWizardRuntimeQuery(self, args[0])
 
 
 class FakeCredentialRegisterQuery:
@@ -577,3 +617,99 @@ def test_agent_answer_options_endpoint_sanitizes_unexpected_errors(monkeypatch):
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "Agent answer options lookup failed."
     assert "secret" not in exc_info.value.detail
+
+
+def test_wizard_runtime_uses_relation_priority_before_credential_created_at(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    older_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "older-key", "baseUrl": "https://older.example"}',
+    )
+    priority_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "priority-key", "baseUrl": "https://priority.example"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    db = FakeWizardRuntimeDb(
+        credentials=[older_credential, priority_credential],
+        model=model,
+        relations=[
+            SimpleNamespace(priority=10),
+            SimpleNamespace(priority=1),
+        ],
+    )
+    client_configs = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **kwargs: client_configs.append(kwargs["credentials"])
+        or SimpleNamespace(),
+    )
+
+    runtime = LLMService.get_wizard_client_for_user(
+        db,
+        user_id,
+        {"openai": "gpt-4o-mini"},
+        organization_id=organization_id,
+        audit_on_failure=False,
+    )
+
+    assert runtime.credential_id == priority_credential.id
+    assert client_configs == [
+        {"apiKey": "priority-key", "baseUrl": "https://priority.example"}
+    ]
+
+
+def test_wizard_runtime_block_uses_unknown_target_without_credential(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    audit_calls = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    error = LLMCredentialNotAvailableError(
+        "credential_not_available",
+        "missing",
+        model_id="gpt-4o-mini",
+        organization_id=organization_id,
+    )
+
+    LLMService._record_wizard_runtime_block(  # noqa: SLF001 - MBA-43 audit helper
+        user_id,
+        error,
+        "prompt_wizard",
+    )
+
+    assert audit_calls[0]["resource_type"] == "llm_credential"
+    assert audit_calls[0]["resource_id"] == "unknown"
+    assert audit_calls[0]["organization_id"] == organization_id
+    assert audit_calls[0]["metadata"]["credential_id"] is None
+    assert audit_calls[0]["metadata"]["model_id"] == "gpt-4o-mini"
+    assert audit_calls[0]["metadata"]["reason"] == "credential_not_available"
