@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-84 working tree
 
 ## 목적
 
@@ -68,8 +68,9 @@ MBA-71 프론트는 `OrganizationResponse.is_manager`를 화면 분기의 기준
 | 파일 | 현재 역할 | MBA-71에서 확인할 점 |
 | --- | --- | --- |
 | `apps/client/app/dashboard/page.tsx` | 정적 홈 quick action 화면 | manager/member별 organization/team/workflow summary를 추가할 위치 |
-| `apps/client/app/dashboard/settings/page.tsx` | Settings access/credentials/activity 탭과 RBAC 관리 UI | `OrganizationResponse.is_manager` 기준으로 access 탭 노출과 action 제어 |
-| `apps/client/app/features/dashboard/components/Sidebar.tsx` | dashboard navigation과 organization 이름 표시 | member에게 Settings 전체 또는 조직 접근만 숨길지 결정 |
+| `apps/client/app/dashboard/settings/page.tsx` | Settings credentials/activity 탭과 member read-only 확인 | organization 운영 기능은 Admin Console로 이동 |
+| `apps/client/app/dashboard/admin/page.tsx` | manager-only Admin Console | `OrganizationResponse.is_manager` 기준으로 member/team/권한/credential 관리 UI 진입 제어 |
+| `apps/client/app/features/dashboard/components/Sidebar.tsx` | dashboard navigation과 organization 이름 표시 | manager에게만 `관리` 메뉴 노출 |
 | `apps/client/lib/activeOrganization.ts` | active organization id localStorage 저장과 `X-Organization-Id` header 생성 | 홈과 설정에서 같은 active organization 기준 사용 |
 | `apps/client/app/features/app/api/appApi.ts` | `/apps` API client | 홈에서 접근 가능한 app/workflow 목록 조회 |
 | `apps/client/app/features/workflow/api/workflowApi.ts` | workflow 상세와 `/permissions/me` 조회 | workflow별 내 권한 badge 계산 |
@@ -84,15 +85,15 @@ MBA-71 프론트는 `OrganizationResponse.is_manager`를 화면 분기의 기준
 | `GET /api/v1/organizations/current` | active organization 검증 | `OrganizationResponse.is_manager`로 manager/member 화면을 분기한다. |
 | `GET /api/v1/organizations/{organization_id}` | organization 상세 조회 | 필요 시 동일한 `is_manager` 계약을 사용한다. |
 
-`is_manager`는 `api/organization-rbac.md`의 `OrganizationResponse` 계약에 포함된 현재 요청 user 기준 파생 필드다. MBA-71은 별도 manager 판정 API를 만들지 않고 이 필드를 기준으로 Settings access tab, Home summary, manager-only API 호출 여부를 제어한다.
+`is_manager`는 `api/organization-rbac.md`의 `OrganizationResponse` 계약에 포함된 현재 요청 user 기준 파생 필드다. MBA-71 이후 프론트는 별도 manager 판정 API를 만들지 않고 이 필드를 기준으로 Admin Console, Home summary, manager-only API 호출 여부를 제어한다.
 
 ### Manager 전용 Team API
 
 | API | 용도 | 화면 |
 | --- | --- | --- |
-| `GET /api/v1/users?organization_id={id}` | active organization member user 목록. Team member 추가 대상도 이 목록에서 선택 | manager 홈, Settings access |
-| `GET /api/v1/teams` | team 목록 | manager 홈, Settings access |
-| `GET /api/v1/teams/{team_id}/members` | team별 member map | manager 홈, Settings access |
+| `GET /api/v1/users?organization_id={id}` | legacy active organization member user 목록 | Admin Console 전환 후 직접 사용 축소 |
+| `GET /api/v1/teams` | team 목록 | manager 홈, Admin Console |
+| `GET /api/v1/teams/{team_id}/members` | team별 member map | manager 홈, Admin Console |
 | `POST /api/v1/teams` | team 생성 | manager 화면 |
 | `PATCH /api/v1/teams/{team_id}` | team 수정 | manager 화면 |
 | `DELETE /api/v1/teams/{team_id}` | team soft delete, 즉 비활성화 | manager 화면 |
@@ -145,7 +146,7 @@ Manager 홈은 반복 사용을 위한 운영 화면이어야 한다. 기존 mar
 | Team list | team name, active/inactive 상태, member preview, 관리 action |
 | Workflow access list | app/workflow 이름, 내 권한, 관리 가능 여부 |
 
-Manager 홈에서 destructive action을 직접 제공할 경우 확인 dialog를 유지한다. 홈에서 모든 form을 넣기보다 Settings access로 이동하는 action을 둘 수도 있다.
+Manager 홈에서 destructive action을 직접 제공할 경우 확인 dialog를 유지한다. 홈에서 모든 form을 넣기보다 Admin Console로 이동하는 action을 둔다.
 
 ### Member 홈
 
@@ -165,44 +166,44 @@ Member에게 manager 전용 CTA를 노출하지 않는다. 권한이 부족한 a
 
 | 상태 | Settings 탭 |
 | --- | --- |
-| manager | `조직 접근`, `LLM Credentials`, `Activity` 표시 |
-| member | `조직 접근` 숨김. 기본 탭은 `LLM Credentials` 또는 `Activity`로 이동 |
+| manager | `LLM Credentials`, `Activity` 표시. 조직 운영은 Admin Console로 이동 |
+| member | `LLM Credentials`, `Activity` 표시. 조직 운영 탭 없음 |
 
-member가 직접 `/dashboard/settings`로 진입했을 때 `activeTab === 'access'`가 되지 않도록 초기 탭과 탭 전환을 제어한다. MBA-71 기본값은 member를 `LLM Credentials` 탭으로 보낸다. 직접 URL로 access 상태가 복원되는 구조가 생기면 permission denied state를 보여준다.
+Settings는 더 이상 조직 운영 탭을 기본 navigation에 노출하지 않는다. 조직 운영 진입점은 sidebar `관리`와 Home의 관리 CTA로 통일한다.
 
-#### LLM Credentials member view
+#### LLM Credentials Settings view
 
-`LLM Credentials` 탭은 manager와 member 모두 볼 수 있지만, credential 등록과 관리 action은 manager 전용이다.
+`LLM Credentials` 탭은 manager와 member 모두 볼 수 있지만, Settings에서는 credential 목록 확인과 read-only 안내만 제공한다. Credential 등록, 삭제, model sync, permission grant/revoke는 Admin Console 책임으로 이동한다.
 
-Backend 기준 `POST /api/v1/llm/credentials`는 organization manager 권한을 요구한다. 따라서 member 화면에 provider 선택, alias, API key 입력, 등록 버튼을 노출하면 사용자가 값을 입력한 뒤 `403`을 받는 흐름이 된다.
+Backend 기준 `POST /api/v1/llm/credentials`는 organization manager 권한을 요구한다. 따라서 Settings에 provider 선택, alias, API key 입력, 등록 버튼을 계속 남기면 member는 값을 입력한 뒤 `403`을 받고, manager는 Admin Console과 Settings 양쪽에서 같은 action을 보게 된다.
 
-API 계약상 credential 삭제와 model sync는 credential `write`, permission grant/revoke는 credential `manage` 또는 organization `manager` 권한으로도 가능하다. 그러나 MBA-71은 manager/member 화면 분리가 목적이므로 member용 `LLM Credentials` 탭을 API 계약보다 보수적인 read-only view로 제한한다. 세분화된 credential write/manage UI는 별도 작업에서 다룬다.
+API 계약상 credential 삭제와 model sync는 credential `write`, permission grant/revoke는 credential `manage` 또는 organization `manager` 권한으로도 가능하다. 그러나 Admin Console 분리 이후 Settings는 manager/member 모두에게 보수적인 read-only view로 제한한다. 세분화된 credential write/manage UI는 Admin Console 후속 작업에서 다룬다.
 
 | 기능 | organization manager | member |
 | --- | --- | --- |
 | credential 목록 조회 | 가능 | 접근 권한이 있는 credential만 가능 |
-| credential 등록 form | 표시 | 숨김 |
-| credential 등록 버튼 | 표시 | 숨김 |
-| credential 삭제 | 가능 | 숨김 |
-| credential model sync | 가능 | 숨김 |
-| credential permission grant/revoke | 가능 | 숨김 |
+| credential 등록 form | Settings에서는 숨김 | 숨김 |
+| credential 등록 버튼 | Settings에서는 숨김 | 숨김 |
+| credential 삭제 | Settings에서는 숨김 | 숨김 |
+| credential model sync | Settings에서는 숨김 | 숨김 |
+| credential permission grant/revoke | Settings에서는 숨김 | 숨김 |
 
-member에게 credential이 없는 경우에도 등록 CTA를 보여주지 않는다. 대신 "관리자에게 credential 등록 또는 권한 부여를 요청하세요" 성격의 read-only empty state를 보여준다.
+credential이 없는 경우에도 Settings에서는 등록 CTA를 보여주지 않는다. 대신 "등록, 삭제, 모델 동기화는 관리 화면에서 다룹니다" 성격의 read-only 안내를 보여준다.
 
 ## 권한별 UI 동작
 
 | 화면/행동 | manager | member |
 | --- | --- | --- |
-| Settings 조직 접근 탭 | 표시 | 숨김 또는 접근 차단 |
+| Admin Console 관리 메뉴 | 표시 | 숨김 또는 접근 차단 |
 | team 목록 조회 | 가능 | dedicated API 없으면 미노출 |
 | team 생성 | 가능 | 숨김 |
 | team 수정 | 가능 | 숨김 |
 | team 비활성화 | 가능 | 숨김 |
 | team member 추가/제거 | 가능 | 숨김 |
 | workflow permission grant/revoke | 가능 | 숨김 |
-| LLM credential permission grant/revoke | 가능 | 숨김 |
-| LLM credential 등록 | 가능 | 숨김 |
-| LLM credential 삭제/동기화 | 가능 | 숨김 |
+| LLM credential permission grant/revoke | Admin Console 후속 action | 숨김 |
+| LLM credential 등록 | Admin Console 후속 action | 숨김 |
+| LLM credential 삭제/동기화 | Admin Console 후속 action | 숨김 |
 | app/workflow 목록 | 접근 권한 기준 표시 | 접근 권한 기준 표시 |
 | workflow 권한 badge | 표시 | 표시 |
 
@@ -219,12 +220,12 @@ member에게 credential이 없는 경우에도 등록 CTA를 보여주지 않는
 
 ## 구현 순서
 
-MBA-71은 Settings access tab 노출 문제가 먼저 사용자에게 보이는 문제이므로 Settings를 먼저 고치고 Home을 확장한다.
+MBA-71 이후 조직 운영 기능은 Settings에서 Admin Console로 이동한다. Settings는 개인/credential read-only/activity 중심으로 축소하고 Home의 조직 접근 CTA도 Admin Console로 보낸다.
 
 | 순서 | 작업 | 기준 |
 | --- | --- | --- |
 | 1 | `OrganizationResponse` 프론트 타입 확인 | `is_manager`를 필수 필드로 사용 |
-| 2 | Settings tab guard | member에게 `조직 접근` 탭 미노출, 기본 탭은 `LLM Credentials` |
+| 2 | Settings tab 정리 | manager/member 모두 조직 운영 탭 미노출, 기본 탭은 `LLM Credentials` |
 | 3 | Settings API 호출 분리 | manager 전용 API는 `OrganizationResponse.is_manager === true`일 때만 호출 |
 | 4 | Settings error state 정리 | member 화면에서 manager-only API 실패가 `Request failed`로 노출되지 않게 처리 |
 | 5 | LLM Credentials action guard | member에게 credential 등록/삭제/동기화/권한 관리 UI 미노출 |
@@ -235,23 +236,26 @@ MBA-71은 Settings access tab 노출 문제가 먼저 사용자에게 보이는 
 ## 구현 메모
 
 1. `OrganizationResponse.is_manager`는 API 응답 계약으로 존재하므로 프론트는 이 값을 기준으로 분기한다.
-2. `SettingsPage`는 manager가 아닐 때 `access` 탭을 렌더링하지 않는다.
-3. `SettingsPage.loadData()`는 manager 전용 API와 공용 API를 분리 호출한다. member가 `GET /users`, `GET /teams`, permission grant list API 실패 때문에 전체 설정 화면이 깨지면 안 된다.
-4. `SettingsPage`는 member에게 LLM credential 등록 form, 삭제, sync, permission grant/revoke action을 렌더링하지 않는다.
+2. `SettingsPage`는 manager/member 모두에게 조직 운영 탭을 렌더링하지 않는다.
+3. `SettingsPage.loadData()`는 organization member/team/permission 관리 API를 호출하지 않는다. 조직 운영 데이터는 Admin Console에서 로드한다.
+4. `SettingsPage`는 manager/member 모두에게 LLM credential 등록 form, 삭제, sync, permission grant/revoke action을 렌더링하지 않는다.
 5. Home은 organization/app/workflow permission 조회를 병렬화하되, 개별 permission 조회 실패가 전체 Home 실패가 되지 않게 한다.
 6. inactive team은 `is_active`와 `deactivated_at`을 기준으로 UI에서 구분한다.
 7. member용 "내 team 목록"은 현재 API가 없으므로 MBA-71 FE-only 범위에서는 manager 전용 API를 우회 호출하지 않는다.
+8. Settings 내부의 legacy 조직 접근 branch/handler는 현재 navigation에서 접근되지 않는다. Admin Console action 연결이 완료되면 제거 범위를 별도로 정리한다.
 
 ## QA 체크리스트
 
-- [ ] manager 로그인 시 Settings > 조직 접근 탭이 보인다.
-- [ ] manager는 team 생성, member 추가/제거, team 비활성화를 수행할 수 있다.
-- [ ] manager는 workflow/LLM credential permission grant/revoke UI를 볼 수 있다.
-- [ ] manager는 LLM credential 등록 form과 등록 버튼을 볼 수 있다.
+- [ ] manager 로그인 시 sidebar `관리`와 `/dashboard/admin`이 보인다.
+- [ ] Admin Console 멤버 탭에서 기본 member 목록과 상태 badge가 read-only로 보인다.
+- [ ] Admin Console 팀 탭에서 team 목록과 기존 member가 read-only로 보인다.
+- [ ] Admin Console 권한 탭은 실제 grant/revoke 연결 전까지 placeholder로 보인다.
+- [ ] Admin Console LLM Credentials 탭은 목록을 표시하고 등록/삭제/sync action은 disabled로 보인다.
 - [ ] inactive team은 active team과 구분된다.
-- [ ] member 로그인 시 Settings > 조직 접근 탭이 보이지 않는다.
+- [ ] member 로그인 시 sidebar `관리`와 Settings 조직 운영 탭이 보이지 않는다.
 - [ ] member 로그인 시 LLM credential 등록 form과 등록 버튼이 보이지 않는다.
 - [ ] member 로그인 시 LLM credential 삭제와 model sync action이 보이지 않는다.
+- [ ] manager 로그인 시에도 Settings에서는 LLM credential 등록/삭제/sync action이 보이지 않는다.
 - [ ] member가 설정에 직접 진입해도 manager 전용 API 실패가 전체 화면을 깨지 않는다.
 - [ ] member 홈에서 접근 가능한 app/workflow 목록이 보인다.
 - [ ] member 홈에서 workflow 권한 badge가 표시된다.

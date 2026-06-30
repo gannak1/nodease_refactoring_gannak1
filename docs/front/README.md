@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-74 @ PR #131 head
+Verified Against: feature/mba-84 working tree
 
 이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 
@@ -58,9 +58,10 @@ Verified Against: feature/mba-74 @ PR #131 head
 | [rbac-permission-ui-overview.md](rbac-permission-ui-overview.md) | RBAC 프론트 작업 범위, 관련 화면, 사용자 역할, 제외 범위 |
 | [rbac-workflow-access-matrix.md](rbac-workflow-access-matrix.md) | workflow `none/viewer/operator/builder/manager`별 화면과 action 제어 |
 | [rbac-permission-management-flow.md](rbac-permission-management-flow.md) | organization manager 또는 workflow manager의 team/user workflow 권한 부여/회수 흐름 |
-| [rbac-permission-api-integration.md](rbac-permission-api-integration.md) | organization, team, workflow permission API 연결과 상태 반영 기준 |
+| [rbac-permission-api-integration.md](rbac-permission-api-integration.md) | organization/member/team/workflow permission API 연결, active member picker, 상태 반영 기준 |
 | [rbac-permission-ui-qa.md](rbac-permission-ui-qa.md) | RBAC workflow 권한 UI QA 시나리오와 기대 결과 |
 | [rbac-mvp1-manager-member-home-settings.md](rbac-mvp1-manager-member-home-settings.md) | MBA-71 manager/member 홈·설정 화면 분리와 team 기반 멤버 관리 UX |
+| [admin-console-uiux.md](admin-console-uiux.md) | manager-only 관리 콘솔 분리, sidebar `관리`, 상단 탭 IA와 탭별 UI/UX 기준 |
 | [module-list-access-operations-ui.md](module-list-access-operations-ui.md) | 내 모듈 화면의 team/RBAC 기반 운영형 목록, 권한/배포/검색·필터 UX |
 
 ## 현재 RBAC 프론트 작업 문서
@@ -72,9 +73,10 @@ RBAC와 workflow 권한 UI 구현을 위해 현재 정리된 작업 문서는 �
 | `rbac-permission-ui-overview.md`     | RBAC 프론트 작업 범위, 관련 화면, 사용자 역할, 구현하지 않을 범위                                                              |
 | `rbac-workflow-access-matrix.md`     | `none`, `viewer`, `operator`, `builder`, `manager`별 workflow 목록, 상세, 편집, 실행, 배포, 권한 관리 UI 동작           |
 | `rbac-permission-management-flow.md` | organization manager가 team/user에게 workflow 권한을 부여/회수하는 화면 흐름                                           |
-| `rbac-permission-api-integration.md` | `/organizations`, `/teams`, `/permissions/workflows` 등 프론트 API 연결 방식 |
+| `rbac-permission-api-integration.md` | `/organizations`, organization member, active member picker, `/teams`, `/permissions/workflows` 등 프론트 API 연결 방식 |
 | `rbac-permission-ui-qa.md`           | 권한 조합별 테스트 케이스와 기대 결과                                                                                  |
 | `rbac-mvp1-manager-member-home-settings.md` | manager/member 홈·설정 화면 분리, team 기반 멤버 관리, member 권한 표시와 제외 범위 |
+| `admin-console-uiux.md` | manager-only 관리 콘솔을 Settings에서 분리하는 sidebar/top tab IA와 탭별 UI/UX 기준 |
 | `module-list-access-operations-ui.md` | `/dashboard/mymodule`의 운영형 모듈 목록, 권한 badge, 배포 상태, 검색·필터 기준 |
 
 `/api/v1/workflows/{workflow_id}/permissions/me`의 기본 effective permission과 `sources` 계약은 `api/apps-workflows.md`를 따른다. team/direct grant 출처를 보여줄 때는 `sources`를 사용하고, 전체 권한 관리 표가 필요한 화면만 별도 permission 목록 API를 조회한다.
