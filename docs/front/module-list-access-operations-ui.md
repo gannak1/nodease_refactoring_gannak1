@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-76 @ 3195a7fd40c4a10d66bbef032a40c76aafda0faf
 
 ## 목적
 
@@ -41,40 +41,42 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 | 위치 | 현재 역할 |
 | --- | --- |
-| `apps/client/app/dashboard/mymodule/page.tsx` | 검색어 state, app 목록 로딩, 카드 grid 렌더링 |
-| `apps/client/app/features/app/api/appApi.ts` | `/apps`, `/apps/explore`, app 생성/수정/삭제, deployment 조회/토글 API |
-| `apps/client/app/features/app/components/AppCard.tsx` | 카드형 모듈 표시, 더보기 메뉴, 배포 토글, 배포 목록 모달 |
+| `apps/client/app/dashboard/mymodule/page.tsx` | 운영 summary 목록 렌더링, 검색/권한/배포/실행 필터, row action 제어 |
+| `apps/client/app/features/app/api/moduleOperationsApi.ts` | `/apps/operations` 호출과 `AppOperationRow` 응답 정규화 |
+| `apps/client/app/features/app/api/appApi.ts` | app 생성/수정/삭제, 상세 조회, deployment 토글 API |
 
-현재 필터는 이름 검색만 제공한다.
+현재 화면 UI는 client-side 검색/권한/배포/실행 필터를 제공한다. `/apps/operations` API도 `q`, `permission`, `deployment_state`, `run_state`, `limit`, `offset` query를 지원하지만, 화면은 첫 페이지 100개를 가져온 뒤 UI 상태로 필터링한다. 서버 사이드 pagination/search/filter UI는 후속 개선으로 둔다.
 
-### 현재 App 응답으로 가능한 표시
+### 현재 운영 summary 응답으로 가능한 표시
 
-`AppResponse` 기준으로 프론트가 바로 표시할 수 있는 값은 다음이다.
+MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 있는 값은 다음이다.
 
 | 필드 | 화면 의미 |
 | --- | --- |
-| `name` | 모듈명 |
-| `description` | 모듈 설명 |
-| `workflow_id` | 권한 조회와 workflow 진입 기준 |
-| `is_market` | 마켓 공개 여부 |
-| `active_deployment_id` | 배포 존재 여부 |
-| `active_deployment_type` | 배포 타입 |
-| `active_deployment_is_active` | 활성 배포 on/off |
-| `owner_name` | 소유자 표시 후보 |
-| `created_at`, `updated_at` | 생성/수정 시각 |
+| `app.name` | 모듈명 |
+| `app.description` | 모듈 설명 |
+| `app.workflow_id` | workflow 진입 기준 |
+| `app.owner_name` | 소유자 표시 이름 |
+| `app.created_at`, `app.updated_at` | 생성/수정 시각 |
+| `permission.auth_state` | 현재 user의 effective workflow 권한 |
+| `permission.can_read/write/execute/deploy/manage` | row action 제어 기준 |
+| `deployment.state` | `active`, `inactive`, `undeployed` 배포 상태 |
+| `deployment.deployment_id`, `deployment.type`, `deployment.is_active` | 배포 토글과 배포 타입 표시 |
+| `latest_run.state` | 최근 실행 상태 |
+| `latest_run.started_at`, `latest_run.finished_at` | 최근 실행 시각 |
 
-### 현재 App 응답만으로 부족한 표시
+### 현재 운영 summary 응답만으로 부족한 표시
 
-사용자가 요청한 "어느 team으로서 어떤 권한으로 접근 가능한지"는 현재 `AppResponse`만으로는 알 수 없다.
+사용자가 요청한 "어느 team으로서 어떤 권한으로 접근 가능한지"는 `permission_sources` population이 후속 구현이라 아직 정확히 알 수 없다. MBA-76 현재 구현은 빈 배열을 반환하고, MBA-74 source 계약 구현 후 같은 필드에 team/user direct source를 채운다.
 
 | 필요한 정보 | 현재 API 상태 | 판단 |
 | --- | --- | --- |
-| effective workflow 권한 | `GET /workflows/{workflow_id}/permissions/me`로 가능 | FE에서 workflow별 추가 조회 필요 |
-| team 권한 출처 | 현재 `permissions/me` 응답에 source team 목록 없음 | BE 응답 보강 필요 |
-| user direct permission 출처 | 현재 `permissions/me` 응답에 source 정보 없음 | BE 응답 보강 필요 |
-| 최근 실행 상태 | app 목록 응답에는 없음 | workflow run/status API 또는 summary API 필요 |
-| 오류 상태 | app 목록 응답에는 없음 | 최근 run 실패/trace summary API 필요 |
-| 배포 상세 상태 | active deployment 요약은 있음 | 상세 필터는 deployment API 추가 조회 필요 |
+| effective workflow 권한 | `/apps/operations`의 `permission`으로 가능 | 구현됨 |
+| team 권한 출처 | `/apps/operations.permission_sources`는 현재 빈 배열 | MBA-74 source 계약 구현 후 보강 |
+| user direct permission 출처 | `/apps/operations.permission_sources`는 현재 빈 배열 | MBA-74 source 계약 구현 후 보강 |
+| 최근 실행 상태 | `/apps/operations.latest_run`으로 가능 | 구현됨 |
+| 오류 상태 | `/apps/operations.latest_run`으로 가능. raw error는 노출하지 않음 | 구현됨 |
+| 배포 상세 상태 | `/apps/operations.deployment`으로 가능 | 구현됨 |
 
 ## 목표 화면
 
@@ -112,24 +114,24 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 | 항목 | 의미 | 현재 가능 여부 |
 | --- | --- | --- |
-| 배포 중 | `active_deployment_id`가 있고 `active_deployment_is_active === true` | 가능 |
-| 배포 꺼짐 | active deployment는 있으나 inactive | 가능 |
-| 미배포 | `active_deployment_id` 없음 | 가능 |
-| 오류 있음 | 최근 실행 실패 또는 최근 배포 오류 | `/workflows/{workflow_id}/runs` best-effort 조회로 일부 가능. 화면 단위 summary API는 후속 보강 필요 |
-| 내가 수정 가능 | `can_write === true` | `permissions/me` 조회 필요 |
-| 내가 실행 가능 | `can_execute === true` | `permissions/me` 조회 필요 |
-| 내가 관리 가능 | `can_manage === true` | `permissions/me` 조회 필요 |
+| 배포 중 | `deployment.state === "active"` | 가능 |
+| 배포 꺼짐 | `deployment.state === "inactive"` | 가능 |
+| 미배포 | `deployment.state === "undeployed"` | 가능 |
+| 오류 있음 | `latest_run.state === "failed"` | 가능 |
+| 내가 워크플로우 수정 가능 | `permission.can_write === true` | 가능 |
+| 내가 실행 가능 | `permission.can_execute === true` | 가능 |
+| 내가 관리 가능 | `permission.can_manage === true` | 가능 |
 
 예시 문구:
 
 - `배포 중 3`
 - `미배포 2`
 - `최근 오류 1`
-- `수정 가능 4`
+- `워크플로우 수정 가능 4`
 - `실행 가능 5`
 - `관리 가능 1`
 
-`최근 오류`는 현재 app 목록만으로 계산하지 않는다. API가 없으면 placeholder 또는 "오류 상태 연동 예정"으로 표시해야 한다.
+`최근 오류`는 `/apps/operations.latest_run` 기준으로 계산한다. 권한 출처만 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
 
 ## 모듈 목록 row 설계
 
@@ -137,13 +139,13 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 | 컬럼 | 표시 내용 | 근거 |
 | --- | --- | --- |
-| 모듈 | icon, name, description, updated_at | `AppResponse` |
-| 소유자 | `owner_name` | 현재 응답은 manager 목록이 아니라 소유자/생성자 표시 후보 |
-| 내 권한 | `viewer/operator/builder/manager` badge | `permissions/me` |
-| 접근 경로 | team 이름 또는 direct grant | 추가 API 필요 |
-| 배포 | 배포 중/꺼짐/미배포, type | `AppResponse` |
-| 실행 상태 | 최근 성공/실패/실행 중 | `/workflows/{workflow_id}/runs` best-effort 조회로 일부 가능. N+1 제거와 정확한 운영 summary는 후속 API 필요 |
-| 마지막 활동 | updated_at 또는 최근 run time | 일부 가능 |
+| 모듈 | icon, name, description, updated_at | `app` safe summary |
+| 소유자 | `app.owner_name` | manager 목록이 아니라 생성자 표시 이름 |
+| 내 권한 | `viewer/operator/builder/manager` badge | `permission` |
+| 접근 경로 | team 이름 또는 direct grant | `permission_sources`, 현재는 후속 population |
+| 배포 | 배포 중/꺼짐/미배포, type | `deployment` |
+| 실행 상태 | 최근 성공/실패/실행 중 | `latest_run` |
+| 마지막 활동 | updated_at 또는 최근 run time | `app.updated_at`, `latest_run.started_at` |
 | action | 열기, 실행, 수정, 배포, 권한 관리 | permission boolean |
 
 ### Action 노출 기준
@@ -152,7 +154,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 | --- | --- | --- |
 | 열기 | `can_read` | 기본 row click |
 | 실행 | `can_execute` | 버튼 활성 |
-| 수정 | `can_write` | 버튼 활성 |
+| 워크플로우 수정 | `can_write` | 버튼 활성 |
 | 배포 생성/활성화 | `can_deploy` | 버튼 활성 |
 | 배포 삭제/위험 변경 | `can_manage` | 버튼 활성 |
 | 권한 관리 | `can_manage` 또는 organization manager | 버튼 활성 |
@@ -171,7 +173,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 - 소유자 이름
 - team 이름
 
-초기 구현에서는 모듈명/설명만 FE filter로 처리할 수 있다. team 이름 검색은 권한 출처 API가 생긴 뒤 가능하다.
+현재 구현은 모듈명/설명/소유자/권한 출처 label을 client-side로 검색한다. team 이름 검색은 `permission_sources` population 이후 정확해진다.
 
 ### 필터
 
@@ -179,22 +181,20 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 | 필터 | 값 | 현재 가능 여부 |
 | --- | --- | --- |
-| 내 권한 | 전체, 조회, 실행, 수정, 관리 | `permissions/me` 필요 |
+| 내 권한 | 전체, 조회, 실행, 수정, 관리 | 가능 |
 | 배포 상태 | 전체, 배포 중, 배포 꺼짐, 미배포 | 가능 |
-| 실행 상태 | 전체, 정상, 오류, 실행 중 | workflow별 `/runs` best-effort 조회로 일부 가능. 화면 단위 summary와 정확한 N+1 없는 필터는 후속 API 필요 |
-| 접근 경로 | 전체, team, direct grant | 추가 API 필요 |
-| team | team 목록 | 추가 API 필요 |
+| 실행 상태 | 전체, 정상, 오류, 실행 중 | 가능 |
+| 접근 경로 | 전체, team, direct grant | `permission_sources` population 후 가능 |
+| team | team 목록 | `permission_sources` population 후 가능 |
 | 소유자 | 소유자 이름 | `owner_name` 기반 제한적 가능 |
-| 마켓 공개 | 전체, 공개, 비공개 | 가능 |
+| 마켓 공개 | 전체, 공개, 비공개 | `/apps/operations` safe summary에는 없음. 필요하면 별도 정책 결정 |
 
 기본 필터 추천:
 
 - 검색 input
-- 권한 segmented control: `전체`, `실행 가능`, `수정 가능`, `관리 가능`
+- 권한 segmented control: `전체`, `실행 가능`, `워크플로우 수정 가능`, `관리 가능`
 - 배포 상태 select: `전체`, `배포 중`, `미배포`
-- 오류만 보기 toggle
-
-`오류만 보기`는 API 연동 전에는 비활성 또는 숨김 처리한다.
+- 실행 상태 select: `전체`, `실행 중`, `오류만`
 
 ## 권한 출처 표시
 
@@ -234,7 +234,7 @@ AI 운영팀 외 2개 team
 
 ### 필요한 BE 응답 보강
 
-`GET /api/v1/workflows/{workflow_id}/permissions/me` 응답에 source 정보를 추가하는 방식을 권장한다.
+MBA-74에서 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 `sources` 계약을 확정하고, `/apps/operations.permission_sources`도 같은 schema로 채우는 방식을 권장한다.
 
 예시:
 
@@ -267,7 +267,7 @@ MVP1에서 BE 보강 없이 FE만 진행한다면 source UI는 노출하지 않�
 
 ## 실행 상태 표시
 
-사용자가 말한 "실행중이고 오류고 그런 정보"는 workflow runtime 상태다. 현재 `AppResponse`에는 없다.
+사용자가 말한 "실행중이고 오류고 그런 정보"는 workflow runtime 상태다. MBA-76에서는 `/apps/operations.latest_run`으로 표시한다.
 
 권장 상태:
 
@@ -278,51 +278,44 @@ MVP1에서 BE 보강 없이 FE만 진행한다면 source UI는 노출하지 않�
 | 오류 | 최근 run이 failure/error |
 | 기록 없음 | run이 없음 |
 
-필요한 API 선택지는 다음이다.
-
-| 선택지 | 설명 | 장점 | 단점 |
-| --- | --- | --- | --- |
-| A. row별 run API 호출 | 각 workflow별 `/runs?limit=1` 호출 | BE 변경 적음 | N+1 호출 |
-| B. module list summary API 추가 | app 목록과 권한/배포/최근 run 요약을 한 번에 반환 | 화면에 가장 적합 | BE 작업 필요 |
-| C. 운영 현황만 후속 처리 | 우선 배포/권한만 표시 | FE 범위 작음 | 사용자가 원하는 실행 상태 부족 |
-
-추천은 B다. `내 모듈`은 운영형 목록이므로 API가 화면 단위 summary를 제공하는 편이 장기적으로 맞다. 단, MBA-71 내 FE-only로 빠르게 가야 하면 A 또는 C로 제한한다.
+`latest_run.error_message`는 raw error를 그대로 노출하지 않고, backend가 안전하게 일반화한 문자열만 사용한다.
 
 ## API 연동 설계
 
-### FE-only 1차 구현
+### 기본 연동
 
-1차 구현은 현재 API로 가능한 범위만 다룬다. MBA-71 병합 기준 현재 구현은 app list와 workflow permission을 조합하고, workflow별 `/runs` 조회를 best-effort로 시도한다. Run 조회가 실패하면 전체 목록을 깨지 않고 해당 row를 `확인 필요`/`연동 예정` 상태로 표시한다.
+MBA-76 이후 `/dashboard/mymodule`은 `/apps/operations`를 기본 데이터 소스로 사용한다. 이전의 `/apps`, `permissions/me`, row별 run API 조합 adapter는 유지하지 않는다.
 
 ```text
-GET /api/v1/apps
--> app list
--> workflow_id 있는 app마다 GET /api/v1/workflows/{workflow_id}/permissions/me
--> app + effective permission merge
--> 검색/권한/배포 필터 적용
+GET /api/v1/apps/operations?limit=100&offset=0
+-> AppOperationRow[]
+-> 화면 row view model normalize
+-> 검색/권한/배포/실행 필터 적용
 ```
 
-1차 구현에서 가능한 것:
+현재 구현에서 가능한 것:
 
 - 카드 grid를 list/table로 전환
 - 소유자 이름 표시
 - 배포/미배포/배포 off 표시
 - effective permission 표시
 - 권한 기반 action disabled
-- 이름/설명 검색
+- 이름/설명/소유자/권한 출처 label 검색
 - 배포 상태 필터
 - 권한 필터
-- workflow별 `/runs` best-effort 조회를 통한 최근 실행 상태 표시
+- 실행 상태 필터
+- 최근 오류/실행 중/기록 없음 표시
 
-1차 구현에서 하지 않는 것:
+현재 구현에서 남는 것:
 
-- team별 권한 출처 표시
+- team별 권한 출처 population
 - team 필터
-- 오류만 보기
+- server-side pagination/search/filter UI 연결
+- 권한 필터를 서버로 넘길 때는 현재 UI의 capability 기준(`can_execute`, `can_write`, `can_manage`)과 API의 `permission` auth_state filter가 다르므로 별도 `capability` query 또는 명시적 auth_state 매핑 계약이 필요하다.
 
-### 목표 API 보강 제안
+### MBA-76 구현 API
 
-장기적으로는 다음 API가 필요하다. 이 endpoint는 프론트 작업 문서의 미승인 제안이며, `docs/api/`에 반영되기 전까지 구현 기준이나 API 계약으로 취급하지 않는다.
+MBA-76에서 다음 화면 전용 summary API를 구현했다. 프론트는 이 API를 기본 데이터 소스로 사용하고, 이전 FE-only 조합 adapter는 유지하지 않는다.
 
 ```text
 GET /api/v1/apps/operations
@@ -337,33 +330,43 @@ GET /api/v1/apps/operations
       "id": "...",
       "name": "고객 문의 분류",
       "description": "...",
+      "icon": { "type": "emoji", "content": "📨", "background_color": "#E0F2FE" },
       "workflow_id": "...",
       "owner_name": "어드민",
+      "created_at": "...",
       "updated_at": "..."
     },
     "permission": {
+      "workflow_id": "...",
+      "organization_id": "...",
       "auth_state": "builder",
       "can_read": true,
       "can_write": true,
       "can_execute": true,
       "can_deploy": false,
-      "can_manage": false,
-      "sources": []
+      "can_manage": false
     },
+    "permission_status": "loaded",
+    "permission_sources": [],
     "deployment": {
       "state": "active",
-      "type": "webhook"
+      "deployment_id": "...",
+      "type": "webhook",
+      "is_active": true
     },
     "latest_run": {
       "state": "success",
+      "run_id": "...",
+      "raw_status": "success",
       "started_at": "...",
-      "finished_at": "..."
+      "finished_at": "...",
+      "error_message": null
     }
   }
 ]
 ```
 
-이 API는 FE에서 N+1 permission/run 조회를 줄이고, 검색/필터를 서버로 넘길 수 있게 한다.
+실제 응답 field contract는 `docs/api/apps-workflows.md`의 `AppOperationRow` 계약을 우선한다. 이 API는 FE에서 N+1 permission/run 조회를 줄이고, 검색/필터를 서버로 넘길 수 있게 한다.
 
 ## 화면 상태
 
@@ -395,22 +398,21 @@ GET /api/v1/apps/operations
 
 ### 지금 적용
 
-- `내 모듈`을 list/table 중심으로 재구성
+- `/apps/operations` 기반으로 `내 모듈`을 list/table 중심으로 재구성
 - `DashboardPageHeader`, `DashboardPanel` 같은 dashboard 공통 UI 재사용
-- app list + workflow permission merge
-- 배포 상태, 소유자, 권한 badge 표시
+- 배포 상태, 최근 run 상태, 소유자, 권한 badge 표시
 - 검색/권한/배포 필터
+- 실행 상태 필터
 - 권한별 action enable/disable
+- 수정 modal은 목록 safe summary가 아니라 `GET /apps/{app_id}` full 응답으로 열기
 
 ### 짧게 소개하고 보류
 
 - team 권한 출처 표시
-- 실행 중/오류 상태 표시
-- 오류만 보기 필터
 - team 필터
-- 운영 현황의 최근 실행 지표
+- server-side pagination/search/filter UI
 
-이 항목들은 API 보강 전까지 정확한 값을 만들기 어렵다.
+이 항목들은 `permission_sources` population 또는 pagination UX 결정 전까지 정확한 값을 만들기 어렵다.
 
 ### 이번 범위에서 제외
 
@@ -422,15 +424,14 @@ GET /api/v1/apps/operations
 
 ## 구현 단계 초안
 
-1. `ModuleAccessRow` view model을 정의한다.
-2. `appApi.listApps()` 결과를 가져온다.
-3. `workflow_id`가 있는 app에 대해 `permissions/me`를 병렬 조회한다.
-4. permission 실패는 row 단위 error로 보존한다.
-5. deployment 상태와 permission 상태로 운영 현황 값을 계산한다.
-6. 기존 `AppCard` grid를 `ModuleAccessTable` 또는 `ModuleAccessList`로 교체한다.
-7. 검색, 권한 필터, 배포 필터를 추가한다.
-8. row action을 permission boolean 기준으로 제어한다.
-9. team 출처는 API 보강 TODO로 남기고, 실행 상태는 workflow별 `/runs` best-effort 조회 결과가 있을 때만 표시한다.
+1. `ModuleOperationRow` view model을 `/apps/operations` 응답 기준으로 정의한다.
+2. `moduleOperationsApi.listModuleOperations()`에서 `/apps/operations?limit=100&offset=0` 첫 페이지를 호출한다.
+3. 목록 app 요약은 safe summary로 취급하고, 수정 modal을 열 때는 `appApi.getApp(app.id)`로 full `AppResponse`를 다시 조회한다.
+4. deployment 상태와 permission 상태로 운영 현황 값을 계산한다.
+5. 기존 `AppCard` grid를 운영형 table/list로 교체한다.
+6. 검색, 권한 필터, 배포 필터, 실행 필터를 추가한다.
+7. row action을 permission boolean과 `deployment.deployment_id` 기준으로 제어한다.
+8. `permission_sources`는 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
 
 ## QA 체크리스트
 
@@ -442,18 +443,18 @@ GET /api/v1/apps/operations
 - [ ] `builder`는 수정/실행 가능으로 표시된다.
 - [ ] `manager`는 권한 관리 action이 가능하다.
 - [ ] 미배포 모듈과 배포 중 모듈을 필터링할 수 있다.
-- [ ] 검색어로 모듈명/설명을 필터링할 수 있다.
+- [ ] 검색어로 모듈명/설명/소유자를 필터링할 수 있다.
 - [ ] 권한 조회 실패 row가 전체 목록을 깨지 않는다.
-- [ ] 실행 상태/오류 상태는 API가 없으면 허위로 표시하지 않는다.
+- [ ] 실행 상태/오류 상태는 `/apps/operations.latest_run` 값 기준으로 표시하고 raw error를 노출하지 않는다.
 
 ## 남은 결정
 
 | 결정 | 질문 | 권장 |
 | --- | --- | --- |
-| team 권한 출처 API | `permissions/me`에 `sources`를 추가할까? | 추가 권장 |
-| 운영 summary API | `/apps/operations` 같은 화면 전용 summary API를 만들까? | 장기적으로 권장 |
+| team 권한 출처 API | `/apps/operations.permission_sources`를 어떤 source schema로 채울까? | MBA-74 `permissions/me.sources`와 같은 schema 사용 |
+| 운영 summary API | `/apps/operations`를 기본 데이터 소스로 사용할까? | MBA-76 이후 기본 사용 |
 | member의 새 모듈 생성 | member도 app을 만들 수 있는가? | 제품 결정 필요 |
-| 실행 상태 연동 | 최근 run API를 row별 호출할까, summary API로 묶을까? | summary API 권장 |
+| 실행 상태 연동 | 최근 run을 row별 호출할까, summary API로 묶을까? | `/apps/operations.latest_run` 사용 |
 | 목록 형태 | table vs dense list | 운영 화면이면 dense table/list 권장 |
 
 ## 구현 요청 프롬프트
@@ -461,7 +462,7 @@ GET /api/v1/apps/operations
 아래 프롬프트를 다음 구현 작업 요청으로 사용할 수 있다.
 
 ```text
-MBA-71의 `/dashboard/mymodule` 화면을 카드형 모듈 grid에서 team/RBAC 기반 운영형 모듈 목록으로 개편해줘.
+MBA-76 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영형 모듈 목록으로 정리해줘.
 
 목표:
 - 사용자가 각 모듈/workflow에 대해 어떤 권한으로 접근 가능한지 한눈에 볼 수 있어야 함.
@@ -471,23 +472,21 @@ MBA-71의 `/dashboard/mymodule` 화면을 카드형 모듈 grid에서 team/RBAC 
 - 검색과 필터를 제공할 것.
 
 현재 API로 구현할 범위:
-- `GET /api/v1/apps`로 app list 조회.
-- 각 app의 `workflow_id`가 있으면 `GET /api/v1/workflows/{workflow_id}/permissions/me`로 내 effective permission 조회.
-- app + permission을 merge해서 row view model을 만들 것.
-- 배포 상태는 `active_deployment_id`, `active_deployment_type`, `active_deployment_is_active`로 계산할 것.
-- 소유자 표시는 현재 `owner_name`을 사용할 것. `owner_name`은 RBAC `manager` 목록이 아니다.
-- 권한 필터: 전체, 실행 가능, 수정 가능, 관리 가능.
+- `GET /api/v1/apps/operations`로 운영 summary row를 조회.
+- app 목록, effective permission, 배포 상태, 최근 run 상태는 이 API 응답을 기본 source로 사용할 것.
+- 목록의 `app`은 safe summary이므로 수정 modal을 열 때는 `GET /api/v1/apps/{app_id}`로 full `AppResponse`를 다시 조회할 것.
+- 배포 토글은 `deployment.deployment_id`를 기준으로 수행할 것.
+- 소유자 표시는 `app.owner_name`을 사용할 것. `owner_name`은 RBAC `manager` 목록이 아니다.
+- 권한 필터: 전체, 실행 가능, 워크플로우 수정 가능, 관리 가능.
 - 배포 필터: 전체, 배포 중, 배포 꺼짐, 미배포.
-- 검색 대상: 모듈명, 설명.
-- permission 조회 실패는 전체 화면 실패로 만들지 말고 row에 `권한 확인 실패`로 표시할 것.
+- 실행 필터: 전체, 실행 중, 오류만.
+- 검색 대상: 모듈명, 설명, 소유자, 권한 출처.
 
 아직 구현하지 말고 TODO로 남길 범위:
-- 어느 team 권한으로 접근 가능한지 표시.
-- user direct permission 출처 표시.
-- 실행 중/오류/최근 실행 상태의 정확한 화면 단위 summary.
-- team 필터, 오류만 보기 필터.
+- `permission_sources`를 실제 team/user direct source로 채우는 backend population.
+- team 필터.
 
-이 TODO는 현재 API 응답만으로 정확히 구현하기 어렵다. 문서 기준은 `docs/front/module-list-access-operations-ui.md`를 따른다.
+`permission_sources` TODO는 MBA-74 source 계약 구현 전까지 정확히 구현하기 어렵다. 문서 기준은 `docs/front/module-list-access-operations-ui.md`와 `docs/api/apps-workflows.md`를 따른다.
 
 UI/UX 기준:
 - SaaS 운영 도구처럼 조용하고 정보 밀도 있게 만들 것.
@@ -497,7 +496,9 @@ UI/UX 기준:
 - 직접 QA는 manager `dev@moduly.app`, member `hyeyeon@moduly.app`로 확인할 것.
 
 검증:
-- `npx eslint app/dashboard/mymodule/page.tsx app/features/app/api/appApi.ts`
+- `npx eslint app/dashboard/mymodule/page.tsx app/features/app/api/moduleOperationsApi.ts`
 - `npm run build`
 - localStorage에서 `moduly_active_organization_id`를 지운 뒤 `/dashboard/mymodule`에 직접 진입하면 organization 목록 조회 또는 선택 화면 redirect로 후보를 정한 뒤, `X-Organization-Id`가 준비된 상태에서 `/organizations/current`와 모듈 API를 호출해야 함. Header 없이 `/organizations/current`나 org-scoped API가 성공해야 한다는 의미가 아님.
+- Network에서 `/api/v1/apps/operations`가 호출되고 `/api/v1/apps` 기반 조합 adapter 호출이 없는지 확인.
+- 100개 초과 목록의 server-side pagination/search/filter UI는 후속 개선으로 분리.
 ```

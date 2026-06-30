@@ -1,10 +1,6 @@
-import axios from 'axios';
 import { apiClient } from '@/lib/apiClient';
-import { appApi, type App } from './appApi';
-import type {
-  WorkflowPermissionResponse,
-  WorkflowRun,
-} from '../../workflow/types/Api';
+import type { WorkflowPermissionResponse } from '../../workflow/types/Api';
+import type { AppIcon } from './appApi';
 
 export type ModulePermissionSource = {
   type: 'team' | 'user';
@@ -22,13 +18,32 @@ export type ModuleRunState =
   | 'not_started'
   | 'unavailable';
 
+export type ModuleOperationAppSummary = {
+  id: string;
+  name: string;
+  description?: string;
+  icon?: AppIcon;
+  workflow_id?: string;
+  owner_name?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ModuleOperationDeployment = {
+  state: 'active' | 'inactive' | 'undeployed';
+  deployment_id?: string;
+  type?: string;
+  is_active?: boolean;
+};
+
 export type ModuleOperationRow = {
-  app: App;
+  app: ModuleOperationAppSummary;
   permission?: WorkflowPermissionResponse;
   permissionStatus: ModulePermissionStatus;
   permissionSources: ModulePermissionSource[];
   permissionError?: string;
-  deploymentState: 'active' | 'inactive' | 'undeployed';
+  deployment: ModuleOperationDeployment;
+  deploymentState: ModuleOperationDeployment['state'];
   latestRun: {
     state: ModuleRunState;
     started_at?: string;
@@ -36,7 +51,6 @@ export type ModuleOperationRow = {
     error_message?: string;
   };
   dataQuality: {
-    source: 'operations-api' | 'composed-adapter';
     permissionSourcesUnavailable: boolean;
     latestRunUnavailable: boolean;
   };
@@ -45,7 +59,7 @@ export type ModuleOperationRow = {
 export type ModulePermissionStatus = 'loaded' | 'failed' | 'not_available';
 
 type OperationsApiRow = {
-  app: App;
+  app: ModuleOperationAppSummary;
   permission?: WorkflowPermissionResponse;
   permission_status?: ModulePermissionStatus;
   permissionStatus?: ModulePermissionStatus;
@@ -53,107 +67,18 @@ type OperationsApiRow = {
   permissionError?: string;
   permission_sources?: ModulePermissionSource[];
   permissionSources?: ModulePermissionSource[];
-  deployment?: { state?: ModuleOperationRow['deploymentState'] };
+  deployment?: ModuleOperationDeployment;
   latest_run?: ModuleOperationRow['latestRun'];
   latestRun?: ModuleOperationRow['latestRun'];
-};
-
-const deploymentStateOf = (app: App): ModuleOperationRow['deploymentState'] => {
-  if (!app.active_deployment_id) return 'undeployed';
-  return app.active_deployment_is_active ? 'active' : 'inactive';
-};
-
-const normalizeRunState = (status?: string): ModuleRunState => {
-  const normalized = status?.toLowerCase();
-  if (!normalized) return 'not_started';
-  if (['running', 'pending', 'queued', 'in_progress'].includes(normalized)) {
-    return 'running';
-  }
-  if (['success', 'succeeded', 'completed'].includes(normalized)) {
-    return 'success';
-  }
-  if (['failed', 'failure', 'error'].includes(normalized)) {
-    return 'failed';
-  }
-  return 'unavailable';
-};
-
-const latestRunFromApi = (
-  run?: WorkflowRun,
-): ModuleOperationRow['latestRun'] | undefined => {
-  if (!run) return undefined;
-
-  return {
-    state: normalizeRunState(run.status),
-    started_at: run.started_at,
-    finished_at: run.finished_at,
-    error_message: run.error_message,
-  };
-};
-
-const composeOperationRow = async (app: App): Promise<ModuleOperationRow> => {
-  let permission: WorkflowPermissionResponse | undefined;
-  let permissionStatus: ModuleOperationRow['permissionStatus'] =
-    'not_available';
-  let permissionError: string | undefined;
-  let latestRun: ModuleOperationRow['latestRun'] = {
-    state: app.active_deployment_id ? 'unavailable' : 'not_started',
-  };
-  let latestRunUnavailable = Boolean(app.active_deployment_id);
-
-  if (app.workflow_id) {
-    try {
-      const response = await apiClient.get<WorkflowPermissionResponse>(
-        `/workflows/${app.workflow_id}/permissions/me`,
-      );
-      permission = response.data;
-      permissionStatus = 'loaded';
-    } catch {
-      permissionStatus = 'failed';
-      permissionError = '권한 확인 실패';
-    }
-
-    try {
-      const response = await apiClient.get<{ items: WorkflowRun[] }>(
-        `/workflows/${app.workflow_id}/runs`,
-        { params: { page: 1, limit: 1 } },
-      );
-      const apiLatestRun = latestRunFromApi(response.data.items[0]);
-      if (apiLatestRun) {
-        latestRun = apiLatestRun;
-        latestRunUnavailable = false;
-      } else {
-        latestRun = { state: 'not_started' };
-        latestRunUnavailable = false;
-      }
-    } catch {
-      latestRun = { state: 'unavailable' };
-      latestRunUnavailable = true;
-    }
-  }
-
-  return {
-    app,
-    permission,
-    permissionStatus,
-    permissionSources: [],
-    permissionError,
-    deploymentState: deploymentStateOf(app),
-    latestRun,
-    dataQuality: {
-      source: 'composed-adapter',
-      permissionSourcesUnavailable: true,
-      latestRunUnavailable,
-    },
-  };
 };
 
 const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow => {
   const app = row.app;
   const permissionSources = row.permission_sources || row.permissionSources || [];
+  const deployment = row.deployment || { state: 'undeployed' };
   const latestRun = row.latest_run ||
     row.latestRun || {
-      state: app.active_deployment_id ? 'unavailable' : 'not_started',
+      state: deployment.deployment_id ? 'unavailable' : 'not_started',
     };
 
   return {
@@ -165,10 +90,10 @@ const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow =>
       (row.permission ? 'loaded' : 'not_available'),
     permissionSources,
     permissionError: row.permission_error || row.permissionError,
-    deploymentState: row.deployment?.state || deploymentStateOf(app),
+    deployment,
+    deploymentState: deployment.state,
     latestRun,
     dataQuality: {
-      source: 'operations-api',
       permissionSourcesUnavailable: permissionSources.length === 0,
       latestRunUnavailable: latestRun.state === 'unavailable',
     },
@@ -177,30 +102,9 @@ const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow =>
 
 export const moduleOperationsApi = {
   listModuleOperations: async (): Promise<ModuleOperationRow[]> => {
-    if (process.env.NEXT_PUBLIC_ENABLE_APPS_OPERATIONS_API === 'true') {
-      try {
-        const response = await apiClient.get<OperationsApiRow[]>(
-          '/apps/operations',
-        );
-        if (Array.isArray(response.data)) {
-          return response.data.map(normalizeOperationsApiRow);
-        }
-      } catch (error) {
-        if (!axios.isAxiosError(error)) {
-          throw error;
-        }
-
-        const status = error.response?.status ?? 0;
-        const canFallbackToComposedAdapter = [400, 404, 405, 422, 501].includes(
-          status,
-        );
-        if (!canFallbackToComposedAdapter) {
-          throw error;
-        }
-      }
-    }
-
-    const apps = await appApi.listApps();
-    return Promise.all(apps.map(composeOperationRow));
+    const response = await apiClient.get<OperationsApiRow[]>('/apps/operations', {
+      params: { limit: 100, offset: 0 },
+    });
+    return response.data.map(normalizeOperationsApiRow);
   },
 };
