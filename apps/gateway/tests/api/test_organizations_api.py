@@ -447,7 +447,8 @@ class TestOrganizationsApi(unittest.TestCase):
             return_value=[member],
         ) as service:
             response = TestClient(app).get(
-                f"/api/v1/organizations/{organization_id}/members?state=active"
+                f"/api/v1/organizations/{organization_id}/members?state=active",
+                headers={"X-Organization-Id": str(organization_id)},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -476,6 +477,7 @@ class TestOrganizationsApi(unittest.TestCase):
         ) as service:
             response = TestClient(app).post(
                 f"/api/v1/organizations/{organization_id}/members/invitations",
+                headers={"X-Organization-Id": str(organization_id)},
                 json={"user_id": str(target_user_id)},
             )
 
@@ -530,6 +532,7 @@ class TestOrganizationsApi(unittest.TestCase):
         ) as service:
             response = TestClient(app).patch(
                 f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                headers={"X-Organization-Id": str(organization_id)},
                 json={"organization_auth_state": "manager"},
             )
 
@@ -559,7 +562,8 @@ class TestOrganizationsApi(unittest.TestCase):
             ),
         ) as service:
             response = TestClient(app).delete(
-                f"/api/v1/organizations/{organization_id}/members/{target_user_id}"
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                headers={"X-Organization-Id": str(organization_id)},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -567,6 +571,89 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(response.json()["removed_team_memberships"], 1)
         self.assertEqual(service.call_args.args[2], organization_id)
         self.assertEqual(service.call_args.args[3], target_user_id)
+
+    def test_member_management_routes_require_matching_organization_header(self):
+        organization_id = uuid4()
+        header_organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        cases = [
+            (
+                "get",
+                f"/api/v1/organizations/{organization_id}/members",
+                "list_members",
+                None,
+            ),
+            (
+                "post",
+                f"/api/v1/organizations/{organization_id}/members/invitations",
+                "invite_member",
+                {"user_id": str(target_user_id)},
+            ),
+            (
+                "patch",
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                "update_member",
+                {"organization_auth_state": "manager"},
+            ),
+            (
+                "delete",
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                "remove_member",
+                None,
+            ),
+        ]
+        header_cases = [
+            (
+                {"X-Request-ID": "req-test"},
+                400,
+                _error("organization.required", "X-Organization-Id header is required."),
+            ),
+            (
+                {
+                    "X-Organization-Id": "not-a-uuid",
+                    "X-Request-ID": "req-test",
+                },
+                422,
+                _error(
+                    "validation.failed",
+                    "X-Organization-Id must be a valid UUID.",
+                    {"field": "X-Organization-Id"},
+                ),
+            ),
+            (
+                {
+                    "X-Organization-Id": str(header_organization_id),
+                    "X-Request-ID": "req-test",
+                },
+                404,
+                _error("resource.not_found", "Organization not found."),
+            ),
+        ]
+
+        for method, path, service_name, payload in cases:
+            for headers, status_code, expected in header_cases:
+                with self.subTest(method=method, path=path, headers=headers):
+                    with patch(
+                        "apps.gateway.api.v1.endpoints.organization."
+                        f"OrganizationMemberService.{service_name}",
+                    ) as service:
+                        kwargs = {}
+                        if payload is not None:
+                            kwargs["json"] = payload
+                        response = getattr(TestClient(app), method)(
+                            path,
+                            headers=headers,
+                            **kwargs,
+                        )
+
+                    self.assertEqual(response.status_code, status_code)
+                    self.assertEqual(response.json(), expected)
+                    service.assert_not_called()
 
     def test_member_routes_wrap_service_errors(self):
         organization_id = uuid4()
@@ -617,9 +704,12 @@ class TestOrganizationsApi(unittest.TestCase):
                     kwargs = {}
                     if method in {"post", "patch"} and service_name != "accept_invitation":
                         kwargs["json"] = {"user_id": str(target_user_id)}
+                    headers = {"X-Request-ID": "req-test"}
+                    if service_name != "accept_invitation":
+                        headers["X-Organization-Id"] = str(organization_id)
                     response = getattr(TestClient(app), method)(
                         path,
-                        headers={"X-Request-ID": "req-test"},
+                        headers=headers,
                         **kwargs,
                     )
 

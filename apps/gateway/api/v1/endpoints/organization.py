@@ -73,6 +73,22 @@ def _get_organization_in_active_membership_scope(
     return organization
 
 
+def _ensure_matching_active_organization_header(
+    request: Request,
+    path_organization_id: UUID,
+    raw_organization_id: str | None,
+) -> UUID:
+    organization_id = parse_organization_id(request, raw_organization_id)
+    if organization_id != path_organization_id:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+    return organization_id
+
+
 def _to_organization_response(
     db: Session,
     organization: Organization,
@@ -144,9 +160,15 @@ def list_members(
     request: Request,
     organization_id: UUID,
     state: str | None = None,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
     try:
         return OrganizationMemberService.list_members(
             db,
@@ -167,9 +189,15 @@ def invite_member(
     request: Request,
     organization_id: UUID,
     payload: OrganizationMemberInviteRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
     try:
         return OrganizationMemberService.invite_member(
             db,
@@ -212,9 +240,15 @@ def update_member(
     organization_id: UUID,
     user_id: UUID,
     payload: OrganizationMemberUpdateRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
     try:
         return OrganizationMemberService.update_member(
             db,
@@ -236,9 +270,15 @@ def remove_member(
     request: Request,
     organization_id: UUID,
     user_id: UUID,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
     try:
         return OrganizationMemberService.remove_member(
             db,
@@ -285,15 +325,11 @@ def update_organization(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    parsed_organization_id = parse_organization_id(request, x_organization_id)
-
-    if parsed_organization_id != organization_id:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "Organization not found.",
-        )
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
 
     fields = payload.model_fields_set
     if not fields:

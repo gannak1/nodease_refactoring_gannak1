@@ -76,11 +76,11 @@ MBA-67 이후 manager 판정은 organization membership helper를 기준으로 �
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Implemented | `GET` | `/api/v1/organizations/{organization_id}/members` | organization `manager` | organization member 목록 |
-| Implemented | `POST` | `/api/v1/organizations/{organization_id}/members/invitations` | organization `manager` | 기존 가입 user 초대 |
+| Implemented | `GET` | `/api/v1/organizations/{organization_id}/members` | organization `manager` + matching `X-Organization-Id` | organization member 목록 |
+| Implemented | `POST` | `/api/v1/organizations/{organization_id}/members/invitations` | organization `manager` + matching `X-Organization-Id` | 기존 가입 user 초대 |
 | Implemented | `POST` | `/api/v1/organizations/{organization_id}/members/me/accept` | invited user 본인 | 본인 초대 수락 |
-| Implemented | `PATCH` | `/api/v1/organizations/{organization_id}/members/{user_id}` | organization `manager` | member state/auth state 변경 |
-| Implemented | `DELETE` | `/api/v1/organizations/{organization_id}/members/{user_id}` | organization `manager` | member 제거와 team/direct permission cleanup |
+| Implemented | `PATCH` | `/api/v1/organizations/{organization_id}/members/{user_id}` | organization `manager` + matching `X-Organization-Id` | member state/auth state 변경 |
+| Implemented | `DELETE` | `/api/v1/organizations/{organization_id}/members/{user_id}` | organization `manager` + matching `X-Organization-Id` | member 제거와 team/direct permission cleanup |
 
 Organization member API의 현재 구현 세부사항:
 
