@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { isAxiosError } from 'axios';
 import {
   Activity,
   AlertTriangle,
@@ -9,19 +10,30 @@ import {
   Database,
   Key,
   Lock,
+  Pencil,
+  Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
+  UserPlus,
   Users,
+  X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { apiClient } from '@/lib/apiClient';
 import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
+import { authApi } from '@/app/features/auth/api/authApi';
 import { organizationApi } from '@/app/features/organization/api/organizationApi';
+import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
 import { MemberStateBadge } from '@/app/features/organization/components/MemberStateBadge';
 import { OrganizationAuthBadge } from '@/app/features/organization/components/OrganizationAuthBadge';
 import type {
   MembershipState,
+  OrganizationAuthState,
   OrganizationMember,
+  OrganizationMemberRemoveResponse,
   OrganizationResponse,
 } from '@/app/features/organization/types/Organization';
 import {
@@ -47,8 +59,10 @@ type TeamResponse = {
   id: string;
   organization_id: string;
   name: string;
-  description?: string;
+  description?: string | null;
   is_active: boolean;
+  is_auto_add?: boolean;
+  deactivated_at?: string | null;
 };
 
 type TeamMemberResponse = {
@@ -84,6 +98,19 @@ type AuditItem = {
   status: string;
 };
 
+type ConfirmState = {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  tone?: 'default' | 'danger';
+  details?: string[];
+  onConfirm: () => Promise<void>;
+};
+
+type TeamEditorState =
+  | { mode: 'create'; team?: undefined }
+  | { mode: 'edit'; team: TeamResponse };
+
 const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'members', label: '멤버' },
   { key: 'teams', label: '팀' },
@@ -93,6 +120,9 @@ const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'audit', label: '감사 로그' },
   { key: 'organization', label: '조직 설정' },
 ];
+
+const PAGE_SIZE = 20;
+const AUTH_STATES: OrganizationAuthState[] = ['member', 'manager'];
 
 const stateOrder: Record<MembershipState, number> = {
   active: 0,
@@ -104,15 +134,37 @@ const stateOrder: Record<MembershipState, number> = {
 const formatDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString() : '-';
 
+const getErrorMessage = (error: unknown, fallback: string) => {
+  if (isAxiosError(error)) {
+    const data = error.response?.data as
+      | { detail?: string; message?: string; error?: { message?: string } }
+      | undefined;
+    return data?.detail || data?.message || data?.error?.message || error.message;
+  }
+  return error instanceof Error ? error.message : fallback;
+};
+
+const uniqueMembers = (items: OrganizationMember[]) =>
+  Array.from(new Map(items.map((member) => [member.id, member])).values());
+
+const normalizeText = (value?: string | null) => (value || '').toLowerCase();
+
+const paginate = <T,>(items: T[], page: number) =>
+  items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
 export default function AdminConsolePage() {
   const [activeTab, setActiveTab] = useState<AdminTab>('members');
   const [organization, setOrganization] = useState<OrganizationResponse | null>(
     null,
   );
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [members, setMembers] = useState<OrganizationMember[]>([]);
   const [teams, setTeams] = useState<TeamResponse[]>([]);
   const [teamMembers, setTeamMembers] = useState<
     Record<string, TeamMemberResponse[]>
+  >({});
+  const [teamMemberLoadErrors, setTeamMemberLoadErrors] = useState<
+    Record<string, boolean>
   >({});
   const [providers, setProviders] = useState<LLMProviderResponse[]>([]);
   const [credentials, setCredentials] = useState<LLMCredentialResponse[]>([]);
@@ -122,6 +174,41 @@ export default function AdminConsolePage() {
   const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const [memberQuery, setMemberQuery] = useState('');
+  const [memberStateFilter, setMemberStateFilter] = useState<
+    MembershipState | 'all'
+  >('all');
+  const [memberAuthFilter, setMemberAuthFilter] = useState<
+    OrganizationAuthState | 'all'
+  >('all');
+  const [memberPage, setMemberPage] = useState(1);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteForm, setInviteForm] = useState({
+    userId: '',
+    authState: 'member' as OrganizationAuthState,
+  });
+
+  const [teamQuery, setTeamQuery] = useState('');
+  const [teamStateFilter, setTeamStateFilter] = useState<
+    'all' | 'active' | 'inactive'
+  >('all');
+  const [teamMemberFilter, setTeamMemberFilter] = useState<
+    'all' | 'has_members' | 'empty'
+  >('all');
+  const [teamPage, setTeamPage] = useState(1);
+  const [teamEditor, setTeamEditor] = useState<TeamEditorState | null>(null);
+  const [teamForm, setTeamForm] = useState({
+    name: '',
+    description: '',
+    isAutoAdd: false,
+  });
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [teamMemberUserId, setTeamMemberUserId] = useState('');
+
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [actionPending, setActionPending] = useState(false);
 
   const memberCounts = useMemo(
     () =>
@@ -135,9 +222,24 @@ export default function AdminConsolePage() {
     [members],
   );
 
+  const activeMembers = useMemo(
+    () => members.filter((member) => member.membership_state === 'active'),
+    [members],
+  );
+
   const activeTeams = useMemo(
     () => teams.filter((team) => team.is_active),
     [teams],
+  );
+
+  const activeManagerCount = useMemo(
+    () =>
+      members.filter(
+        (member) =>
+          member.membership_state === 'active' &&
+          member.organization_auth_state === 'manager',
+      ).length,
+    [members],
   );
 
   const totalTeamAssignments = useMemo(
@@ -149,28 +251,122 @@ export default function AdminConsolePage() {
     [teamMembers],
   );
 
-  const sortedMembers = useMemo(
-    () =>
-      [...members].sort((left, right) => {
+  const filteredMembers = useMemo(() => {
+    const query = normalizeText(memberQuery);
+    return [...members]
+      .filter((member) => {
+        if (
+          memberStateFilter !== 'all' &&
+          member.membership_state !== memberStateFilter
+        ) {
+          return false;
+        }
+        if (
+          memberAuthFilter !== 'all' &&
+          member.organization_auth_state !== memberAuthFilter
+        ) {
+          return false;
+        }
+        if (!query) return true;
+        return (
+          normalizeText(member.user_name).includes(query) ||
+          normalizeText(member.user_email).includes(query)
+        );
+      })
+      .sort((left, right) => {
         const stateDiff =
           stateOrder[left.membership_state] - stateOrder[right.membership_state];
         if (stateDiff !== 0) return stateDiff;
         return left.user_name.localeCompare(right.user_name);
-      }),
-    [members],
+      });
+  }, [memberAuthFilter, memberQuery, memberStateFilter, members]);
+
+  const filteredTeams = useMemo(() => {
+    const query = normalizeText(teamQuery);
+    return teams
+      .filter((team) => {
+        if (teamStateFilter === 'active' && !team.is_active) return false;
+        if (teamStateFilter === 'inactive' && team.is_active) return false;
+        const memberLoadFailed = teamMemberLoadErrors[team.id] === true;
+        const count = teamMembers[team.id]?.length || 0;
+        if (memberLoadFailed && teamMemberFilter !== 'all') return false;
+        if (teamMemberFilter === 'has_members' && count === 0) return false;
+        if (teamMemberFilter === 'empty' && count > 0) return false;
+        if (!query) return true;
+        return (
+          normalizeText(team.name).includes(query) ||
+          normalizeText(team.description).includes(query)
+        );
+      })
+      .sort((left, right) => {
+        if (left.is_active !== right.is_active) return left.is_active ? -1 : 1;
+        return left.name.localeCompare(right.name);
+      });
+  }, [
+    teamMemberFilter,
+    teamMemberLoadErrors,
+    teamMembers,
+    teamQuery,
+    teamStateFilter,
+    teams,
+  ]);
+
+  const selectedTeam = useMemo(
+    () => teams.find((team) => team.id === selectedTeamId) || null,
+    [selectedTeamId, teams],
   );
+
+  const selectedTeamMemberUserIds = useMemo(
+    () => (selectedTeamId ? teamMembers[selectedTeamId] || [] : []).map(
+      (member) => member.user_id,
+    ),
+    [selectedTeamId, teamMembers],
+  );
+
+  const loadTeamMembers = async (items: TeamResponse[]) => {
+    const entries = await Promise.all(
+      items.map(async (team) => {
+        try {
+          const response = await apiClient.get<TeamMemberResponse[]>(
+            `/teams/${team.id}/members`,
+          );
+          return [team.id, response.data, false] as const;
+        } catch {
+          return [team.id, [], true] as const;
+        }
+      }),
+    );
+    setTeamMembers(
+      entries.reduce<Record<string, TeamMemberResponse[]>>(
+        (acc, [teamId, items]) => ({ ...acc, [teamId]: [...items] }),
+        {},
+      ),
+    );
+    setTeamMemberLoadErrors(
+      Object.fromEntries(
+        entries
+          .filter(([, , failed]) => failed)
+          .map(([teamId]) => [teamId, true]),
+      ),
+    );
+  };
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const org = await organizationApi.getCurrentOrganization();
+      const [org, me] = await Promise.all([
+        organizationApi.getCurrentOrganization(),
+        authApi.me().catch(() => null),
+      ]);
       setOrganization(org);
+      setCurrentUserId(me?.user.id || null);
 
       if (!org.is_manager) {
         setMembers([]);
         setTeams([]);
         setTeamMembers({});
+        setTeamMemberLoadErrors({});
         setProviders([]);
         setCredentials([]);
         setKnowledgeBases([]);
@@ -178,16 +374,17 @@ export default function AdminConsolePage() {
         return;
       }
 
-      const [memberData, teamData] = await Promise.all([
+      const [defaultMembers, removedMembers, teamData] = await Promise.all([
         organizationApi.listMembers(org.id),
+        organizationApi.listMembers(org.id, 'removed').catch(() => []),
         apiClient
           .get<TeamResponse[]>('/teams', {
-            params: { organization_id: org.id },
+            params: { organization_id: org.id, limit: 100 },
           })
           .then((response) => response.data),
       ]);
 
-      setMembers(memberData);
+      setMembers(uniqueMembers([...defaultMembers, ...removedMembers]));
       setTeams(teamData);
 
       const [providerData, credentialData, knowledgeData, auditData] =
@@ -213,23 +410,9 @@ export default function AdminConsolePage() {
       setCredentials(credentialData);
       setKnowledgeBases(knowledgeData);
       setAuditItems(auditData);
-
-      const memberEntries = await Promise.all(
-        teamData.map(async (team) => {
-          const teamMemberData = await apiClient
-            .get<TeamMemberResponse[]>(`/teams/${team.id}/members`)
-            .then((response) => response.data)
-            .catch(() => []);
-          return [team.id, teamMemberData] as const;
-        }),
-      );
-      setTeamMembers(Object.fromEntries(memberEntries));
+      await loadTeamMembers(teamData);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : '관리 콘솔 데이터를 불러오지 못했습니다.',
-      );
+      setError(getErrorMessage(err, '관리 콘솔 데이터를 불러오지 못했습니다.'));
     } finally {
       setLoading(false);
     }
@@ -242,6 +425,170 @@ export default function AdminConsolePage() {
       window.removeEventListener(ACTIVE_ORGANIZATION_CHANGED_EVENT, loadData);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setMemberPage(1);
+  }, [memberAuthFilter, memberQuery, memberStateFilter]);
+
+  useEffect(() => {
+    setTeamPage(1);
+  }, [teamMemberFilter, teamQuery, teamStateFilter]);
+
+  useEffect(() => {
+    if (!selectedTeamId) return;
+    const nextCandidate = activeMembers.find(
+      (member) => !selectedTeamMemberUserIds.includes(member.user_id),
+    );
+    setTeamMemberUserId(nextCandidate?.user_id || '');
+  }, [activeMembers, selectedTeamId, selectedTeamMemberUserIds]);
+
+  const refreshMembers = async () => {
+    if (!organization) return;
+    const [defaultMembers, removedMembers] = await Promise.all([
+      organizationApi.listMembers(organization.id),
+      organizationApi.listMembers(organization.id, 'removed').catch(() => []),
+    ]);
+    setMembers(uniqueMembers([...defaultMembers, ...removedMembers]));
+  };
+
+  const refreshTeams = async () => {
+    const response = await apiClient.get<TeamResponse[]>('/teams', {
+      params: { organization_id: organization?.id, limit: 100 },
+    });
+    setTeams(response.data);
+    await loadTeamMembers(response.data);
+  };
+
+  const refreshTeamMember = async (teamId: string) => {
+    try {
+      const response = await apiClient.get<TeamMemberResponse[]>(
+        `/teams/${teamId}/members`,
+      );
+      setTeamMembers((prev) => ({ ...prev, [teamId]: response.data }));
+      setTeamMemberLoadErrors((prev) => {
+        const next = { ...prev };
+        delete next[teamId];
+        return next;
+      });
+    } catch {
+      setTeamMemberLoadErrors((prev) => ({ ...prev, [teamId]: true }));
+    }
+  };
+
+  const runAction = async (action: () => Promise<void>) => {
+    setActionPending(true);
+    try {
+      await action();
+      return true;
+    } catch (err) {
+      toast.error(getErrorMessage(err, '작업에 실패했습니다.'));
+      return false;
+    } finally {
+      setActionPending(false);
+    }
+  };
+
+  const openConfirm = (state: ConfirmState) => setConfirmState(state);
+
+  const handleConfirm = async () => {
+    if (!confirmState) return;
+    const success = await runAction(confirmState.onConfirm);
+    if (success) {
+      setConfirmState(null);
+    }
+  };
+
+  const updateMember = async (
+    member: OrganizationMember,
+    payload: Parameters<typeof organizationApi.updateMember>[2],
+    successMessage: string,
+  ) => {
+    if (!organization) return;
+    await organizationApi.updateMember(organization.id, member.user_id, payload);
+    toast.success(successMessage);
+    await refreshMembers();
+  };
+
+  const removeMember = async (member: OrganizationMember) => {
+    if (!organization) return;
+    const result = await organizationApi.removeMember(
+      organization.id,
+      member.user_id,
+    );
+    const summary = removeSummary(result);
+    setNotice(summary);
+    toast.success(summary);
+    await Promise.all([refreshMembers(), refreshTeams()]);
+  };
+
+  const submitInvite = async () => {
+    if (!organization || !inviteForm.userId.trim()) return;
+    await runAction(async () => {
+      await organizationApi.inviteMember(organization.id, {
+        user_id: inviteForm.userId.trim(),
+        organization_auth_state: inviteForm.authState,
+      });
+      toast.success('멤버 초대를 생성했습니다.');
+      setInviteOpen(false);
+      setInviteForm({ userId: '', authState: 'member' });
+      await refreshMembers();
+    });
+  };
+
+  const openTeamEditor = (state: TeamEditorState) => {
+    setTeamEditor(state);
+    setTeamForm({
+      name: state.team?.name || '',
+      description: state.team?.description || '',
+      isAutoAdd: state.team?.is_auto_add || false,
+    });
+  };
+
+  const submitTeamForm = async () => {
+    if (!teamForm.name.trim()) return;
+    await runAction(async () => {
+      if (teamEditor?.mode === 'edit') {
+        await apiClient.patch(`/teams/${teamEditor.team.id}`, {
+          name: teamForm.name.trim(),
+          description: teamForm.description.trim() || null,
+          is_auto_add: teamForm.isAutoAdd,
+        });
+        toast.success('팀을 수정했습니다.');
+      } else {
+        await apiClient.post('/teams', {
+          name: teamForm.name.trim(),
+          description: teamForm.description.trim() || null,
+          is_auto_add: teamForm.isAutoAdd,
+        });
+        toast.success('팀을 생성했습니다.');
+      }
+      setTeamEditor(null);
+      await refreshTeams();
+    });
+  };
+
+  const deactivateTeam = async (team: TeamResponse) => {
+    await apiClient.delete(`/teams/${team.id}`);
+    toast.success('팀을 비활성화했습니다.');
+    await refreshTeams();
+  };
+
+  const addTeamMember = async () => {
+    if (!selectedTeamId || !teamMemberUserId) return;
+    await runAction(async () => {
+      await apiClient.post(`/teams/${selectedTeamId}/members`, {
+        user_id: teamMemberUserId,
+      });
+      toast.success('팀 멤버를 추가했습니다.');
+      await refreshTeamMember(selectedTeamId);
+    });
+  };
+
+  const removeTeamMember = async (teamId: string, member: TeamMemberResponse) => {
+    await apiClient.delete(`/teams/${teamId}/members/${member.user_id}`);
+    toast.success('팀 멤버를 제거했습니다.');
+    await refreshTeamMember(teamId);
+  };
 
   if (!loading && organization && !organization.is_manager) {
     return (
@@ -275,6 +622,18 @@ export default function AdminConsolePage() {
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="flex items-start justify-between gap-3 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          <span>{notice}</span>
+          <button
+            onClick={() => setNotice(null)}
+            className="rounded p-0.5 text-green-700 hover:bg-green-100"
+            title="알림 닫기"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
@@ -330,10 +689,88 @@ export default function AdminConsolePage() {
           </div>
 
           {activeTab === 'members' && (
-            <MembersTab members={sortedMembers} />
+            <MembersTab
+              members={filteredMembers}
+              page={memberPage}
+              onPageChange={setMemberPage}
+              query={memberQuery}
+              onQueryChange={setMemberQuery}
+              stateFilter={memberStateFilter}
+              onStateFilterChange={setMemberStateFilter}
+              authFilter={memberAuthFilter}
+              onAuthFilterChange={setMemberAuthFilter}
+              onInvite={() => setInviteOpen(true)}
+              currentUserId={currentUserId}
+              activeManagerCount={activeManagerCount}
+              actionPending={actionPending}
+              onUpdateMember={(member, payload, message) =>
+                payload.organization_auth_state
+                  ? openConfirm({
+                      title:
+                        payload.organization_auth_state === 'manager'
+                          ? '관리자로 승격할까요?'
+                          : '멤버로 강등할까요?',
+                      description:
+                        payload.organization_auth_state === 'manager'
+                          ? '이 사용자는 조직 멤버와 팀, 권한 관리 화면에 접근할 수 있습니다.'
+                          : '이 사용자는 더 이상 조직 관리 화면에 접근할 수 없습니다.',
+                      confirmLabel:
+                        payload.organization_auth_state === 'manager'
+                          ? '승격'
+                          : '강등',
+                      details: [`${member.user_name} (${member.user_email})`],
+                      onConfirm: () => updateMember(member, payload, message),
+                    })
+                  : runAction(() => updateMember(member, payload, message))
+              }
+              onRemoveMember={(member) =>
+                openConfirm({
+                  title: '멤버를 제거할까요?',
+                  description:
+                    '멤버를 제거하면 팀 배정과 직접 권한이 함께 정리됩니다.',
+                  confirmLabel: '제거',
+                  tone: 'danger',
+                  details: [
+                    `${member.user_name} (${member.user_email})`,
+                    '팀 멤버십, workflow 직접 권한, LLM credential 직접 권한 cleanup이 실행됩니다.',
+                  ],
+                  onConfirm: () => removeMember(member),
+                })
+              }
+            />
           )}
           {activeTab === 'teams' && (
-            <TeamsTab teams={teams} teamMembers={teamMembers} />
+            <TeamsTab
+              teams={filteredTeams}
+              page={teamPage}
+              onPageChange={setTeamPage}
+              query={teamQuery}
+              onQueryChange={setTeamQuery}
+              stateFilter={teamStateFilter}
+              onStateFilterChange={setTeamStateFilter}
+              memberFilter={teamMemberFilter}
+              onMemberFilterChange={setTeamMemberFilter}
+              teamMembers={teamMembers}
+              teamMemberLoadErrors={teamMemberLoadErrors}
+              isLimited={teams.length >= 100}
+              onCreateTeam={() => openTeamEditor({ mode: 'create' })}
+              onEditTeam={(team) => openTeamEditor({ mode: 'edit', team })}
+              onDeactivateTeam={(team) =>
+                openConfirm({
+                  title: '팀을 비활성화할까요?',
+                  description:
+                    '팀은 삭제되지 않고 비활성 상태가 됩니다. 비활성 팀에는 멤버 추가와 권한 부여를 하지 않습니다.',
+                  confirmLabel: '비활성화',
+                  tone: 'danger',
+                  details: [
+                    team.name,
+                    `현재 멤버 ${teamMembers[team.id]?.length || 0}명`,
+                  ],
+                  onConfirm: () => deactivateTeam(team),
+                })
+              }
+              onOpenTeam={setSelectedTeamId}
+            />
           )}
           {activeTab === 'permissions' && <PermissionsTab />}
           {activeTab === 'credentials' && (
@@ -351,9 +788,227 @@ export default function AdminConsolePage() {
           )}
         </>
       )}
+
+      {inviteOpen && (
+        <SidePanel title="멤버 초대" onClose={() => setInviteOpen(false)}>
+          <div className="space-y-4">
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+              현재 API는 가입된 user id만 초대할 수 있습니다. email 검색 초대는
+              별도 user directory API가 필요합니다. 가입 user UUID는 DB 또는
+              관리 도구에서 확인해야 합니다.
+            </div>
+            <LabelledField label="User ID">
+              <input
+                value={inviteForm.userId}
+                onChange={(event) =>
+                  setInviteForm((prev) => ({
+                    ...prev,
+                    userId: event.target.value,
+                  }))
+                }
+                className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
+                placeholder="초대할 가입 user UUID"
+              />
+            </LabelledField>
+            <LabelledField label="조직 권한">
+              <select
+                value={inviteForm.authState}
+                onChange={(event) =>
+                  setInviteForm((prev) => ({
+                    ...prev,
+                    authState: event.target.value as OrganizationAuthState,
+                  }))
+                }
+                className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
+              >
+                {AUTH_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {state === 'manager' ? '관리자' : '멤버'}
+                  </option>
+                ))}
+              </select>
+            </LabelledField>
+            <PanelActions
+              onCancel={() => setInviteOpen(false)}
+              onSubmit={submitInvite}
+              submitLabel="초대"
+              disabled={!inviteForm.userId.trim() || actionPending}
+            />
+          </div>
+        </SidePanel>
+      )}
+
+      {teamEditor && (
+        <SidePanel
+          title={teamEditor.mode === 'edit' ? '팀 수정' : '팀 생성'}
+          onClose={() => setTeamEditor(null)}
+        >
+          <div className="space-y-4">
+            <LabelledField label="팀 이름">
+              <input
+                value={teamForm.name}
+                onChange={(event) =>
+                  setTeamForm((prev) => ({ ...prev, name: event.target.value }))
+                }
+                className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
+                placeholder="팀 이름"
+              />
+            </LabelledField>
+            <LabelledField label="설명">
+              <textarea
+                value={teamForm.description}
+                onChange={(event) =>
+                  setTeamForm((prev) => ({
+                    ...prev,
+                    description: event.target.value,
+                  }))
+                }
+                className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                placeholder="팀 설명"
+              />
+            </LabelledField>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={teamForm.isAutoAdd}
+                onChange={(event) =>
+                  setTeamForm((prev) => ({
+                    ...prev,
+                    isAutoAdd: event.target.checked,
+                  }))
+                }
+              />
+              신규 멤버 자동 추가
+            </label>
+            <PanelActions
+              onCancel={() => setTeamEditor(null)}
+              onSubmit={submitTeamForm}
+              submitLabel={teamEditor.mode === 'edit' ? '수정' : '생성'}
+              disabled={!teamForm.name.trim() || actionPending}
+            />
+          </div>
+        </SidePanel>
+      )}
+
+      {selectedTeam && (
+        <SidePanel title={selectedTeam.name} onClose={() => setSelectedTeamId(null)}>
+          <div className="space-y-5">
+            <div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                    selectedTeam.is_active
+                      ? 'bg-green-50 text-green-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {selectedTeam.is_active ? '활성' : '비활성'}
+                </span>
+                <span className="text-xs text-slate-500">
+                  멤버 {teamMembers[selectedTeam.id]?.length || 0}명
+                </span>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                {selectedTeam.description || '설명 없음'}
+              </p>
+            </div>
+
+            {selectedTeam.is_active ? (
+              <div className="rounded-md border border-slate-200 p-3">
+                <p className="mb-2 text-sm font-semibold text-slate-900">
+                  멤버 추가
+                </p>
+                <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                  <ActiveOrganizationMemberPicker
+                    members={activeMembers}
+                    value={teamMemberUserId}
+                    onChange={setTeamMemberUserId}
+                    excludedUserIds={selectedTeamMemberUserIds}
+                    emptyLabel="추가 가능한 활성 멤버 없음"
+                  />
+                  <button
+                    onClick={addTeamMember}
+                    disabled={!teamMemberUserId || actionPending}
+                    className="h-10 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    추가
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                비활성 팀에는 멤버를 추가할 수 없습니다.
+              </div>
+            )}
+
+            <div>
+              <p className="mb-2 text-sm font-semibold text-slate-900">
+                팀 멤버
+              </p>
+              {teamMemberLoadErrors[selectedTeam.id] ? (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  멤버를 불러오지 못했습니다.
+                </div>
+              ) : (teamMembers[selectedTeam.id] || []).length === 0 ? (
+                <div className="rounded-md border border-slate-200 px-3 py-6 text-center text-sm text-slate-500">
+                  소속 멤버가 없습니다.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 rounded-md border border-slate-200">
+                  {(teamMembers[selectedTeam.id] || []).map((member) => (
+                    <div
+                      key={member.id}
+                      className="flex items-center justify-between gap-3 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">
+                          {member.name}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          {member.email}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() =>
+                          openConfirm({
+                            title: '팀 멤버를 제거할까요?',
+                            description:
+                              '이 작업은 organization membership을 제거하지 않고 팀 배정만 제거합니다.',
+                            confirmLabel: '제거',
+                            tone: 'danger',
+                            details: [`${member.name} (${member.email})`],
+                            onConfirm: () =>
+                              removeTeamMember(selectedTeam.id, member),
+                          })
+                        }
+                        className="rounded-md border border-slate-200 p-2 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+                        title="팀 멤버 제거"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </SidePanel>
+      )}
+
+      {confirmState && (
+        <ConfirmDialog
+          state={confirmState}
+          pending={actionPending}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={handleConfirm}
+        />
+      )}
     </AdminShell>
   );
 }
+
+const removeSummary = (result: OrganizationMemberRemoveResponse) =>
+  `멤버를 제거했습니다. 팀 ${result.removed_team_memberships}건, workflow ${result.revoked_user_permissions.workflow}건, credential ${result.revoked_user_permissions.llm_credential}건을 정리했습니다.`;
 
 function AdminShell({
   organization,
@@ -398,21 +1053,95 @@ function AdminShell({
   );
 }
 
-function MembersTab({ members }: { members: OrganizationMember[] }) {
+function MembersTab({
+  members,
+  page,
+  onPageChange,
+  query,
+  onQueryChange,
+  stateFilter,
+  onStateFilterChange,
+  authFilter,
+  onAuthFilterChange,
+  onInvite,
+  currentUserId,
+  activeManagerCount,
+  actionPending,
+  onUpdateMember,
+  onRemoveMember,
+}: {
+  members: OrganizationMember[];
+  page: number;
+  onPageChange: (page: number) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
+  stateFilter: MembershipState | 'all';
+  onStateFilterChange: (state: MembershipState | 'all') => void;
+  authFilter: OrganizationAuthState | 'all';
+  onAuthFilterChange: (state: OrganizationAuthState | 'all') => void;
+  onInvite: () => void;
+  currentUserId: string | null;
+  activeManagerCount: number;
+  actionPending: boolean;
+  onUpdateMember: (
+    member: OrganizationMember,
+    payload: {
+      membership_state?: 'active' | 'suspended' | null;
+      organization_auth_state?: OrganizationAuthState | null;
+    },
+    message: string,
+  ) => void;
+  onRemoveMember: (member: OrganizationMember) => void;
+}) {
+  const pageItems = paginate(members, page);
+  const totalPages = Math.max(1, Math.ceil(members.length / PAGE_SIZE));
+
   return (
     <DashboardPanel
       title="멤버"
       icon={Users}
       aside={
         <button
-          disabled
-          className="h-9 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white opacity-40"
-          title="초대 UI flow 연결 후 활성화"
+          onClick={onInvite}
+          className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800"
         >
+          <UserPlus className="h-4 w-4" />
           초대
         </button>
       }
     >
+      <ListToolbar
+        query={query}
+        onQueryChange={onQueryChange}
+        placeholder="이름, email 검색"
+        resultText={`결과 ${members.length}명`}
+      >
+        <select
+          value={stateFilter}
+          onChange={(event) =>
+            onStateFilterChange(event.target.value as MembershipState | 'all')
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 상태</option>
+          <option value="active">활성</option>
+          <option value="invited">초대 중</option>
+          <option value="suspended">정지</option>
+          <option value="removed">제거</option>
+        </select>
+        <select
+          value={authFilter}
+          onChange={(event) =>
+            onAuthFilterChange(event.target.value as OrganizationAuthState | 'all')
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 권한</option>
+          <option value="manager">관리자</option>
+          <option value="member">멤버</option>
+        </select>
+      </ListToolbar>
+
       <div className="overflow-x-auto">
         <table className="min-w-full text-left text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase text-slate-500">
@@ -426,123 +1155,383 @@ function MembersTab({ members }: { members: OrganizationMember[] }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {members.length === 0 ? (
+            {pageItems.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-5 py-10 text-center text-slate-500">
-                  표시할 멤버가 없습니다.
+                  조건에 맞는 멤버가 없습니다.
                 </td>
               </tr>
             ) : (
-              members.map((member) => (
-                <tr key={member.id} className="bg-white">
-                  <td className="px-5 py-4">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-slate-950">
-                        {member.user_name}
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        {member.user_email}
-                      </p>
-                    </div>
-                  </td>
-                  <td className="px-5 py-4">
-                    <MemberStateBadge state={member.membership_state} />
-                  </td>
-                  <td className="px-5 py-4">
-                    <OrganizationAuthBadge
-                      state={member.organization_auth_state}
-                    />
-                  </td>
-                  <td className="px-5 py-4 text-xs text-slate-500">
-                    {formatDateTime(member.invited_at)}
-                  </td>
-                  <td className="px-5 py-4 text-xs text-slate-500">
-                    {formatDateTime(member.accepted_at)}
-                  </td>
-                  <td className="px-5 py-4">
-                    <button
-                      disabled
-                      className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-400"
-                    >
-                      관리 예정
-                    </button>
-                  </td>
-                </tr>
-              ))
+              pageItems.map((member) => {
+                const isSelf = currentUserId === member.user_id;
+                const isSelfUnknown = currentUserId === null;
+                const isLastActiveManager =
+                  member.membership_state === 'active' &&
+                  member.organization_auth_state === 'manager' &&
+                  activeManagerCount <= 1;
+                return (
+                  <tr key={member.id} className="bg-white">
+                    <td className="px-5 py-4">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-950">
+                          {member.user_name}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {member.user_email}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4">
+                      <MemberStateBadge state={member.membership_state} />
+                    </td>
+                    <td className="px-5 py-4">
+                      <OrganizationAuthBadge
+                        state={member.organization_auth_state}
+                      />
+                    </td>
+                    <td className="px-5 py-4 text-xs text-slate-500">
+                      {formatDateTime(member.invited_at)}
+                    </td>
+                    <td className="px-5 py-4 text-xs text-slate-500">
+                      {formatDateTime(member.accepted_at)}
+                    </td>
+                    <td className="px-5 py-4">
+                      <MemberActions
+                        member={member}
+                        isSelf={isSelf}
+                        isSelfUnknown={isSelfUnknown}
+                        isLastActiveManager={isLastActiveManager}
+                        actionPending={actionPending}
+                        onUpdateMember={onUpdateMember}
+                        onRemoveMember={onRemoveMember}
+                      />
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        totalItems={members.length}
+        onPageChange={onPageChange}
+      />
     </DashboardPanel>
+  );
+}
+
+function MemberActions({
+  member,
+  isSelf,
+  isSelfUnknown,
+  isLastActiveManager,
+  actionPending,
+  onUpdateMember,
+  onRemoveMember,
+}: {
+  member: OrganizationMember;
+  isSelf: boolean;
+  isSelfUnknown: boolean;
+  isLastActiveManager: boolean;
+  actionPending: boolean;
+  onUpdateMember: (
+    member: OrganizationMember,
+    payload: {
+      membership_state?: 'active' | 'suspended' | null;
+      organization_auth_state?: OrganizationAuthState | null;
+    },
+    message: string,
+  ) => void;
+  onRemoveMember: (member: OrganizationMember) => void;
+}) {
+  if (member.membership_state === 'removed') {
+    return <span className="text-xs text-slate-400">제거됨</span>;
+  }
+  const blockedManagerAction = isSelfUnknown || isSelf || isLastActiveManager;
+  const blockTitle = isSelfUnknown
+    ? '현재 사용자 확인 전에는 위험 작업을 할 수 없습니다.'
+    : isSelf
+      ? '자기 자신에게는 이 작업을 할 수 없습니다.'
+      : '마지막 관리자는 변경할 수 없습니다.';
+  const blockedAction = actionPending || isSelfUnknown;
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {member.membership_state === 'active' && (
+        <button
+          onClick={() =>
+            onUpdateMember(
+              member,
+              { membership_state: 'suspended' },
+              '멤버를 정지했습니다.',
+            )
+          }
+          disabled={blockedAction}
+          title={isSelfUnknown ? blockTitle : undefined}
+          className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          정지
+        </button>
+      )}
+      {member.membership_state === 'suspended' && (
+        <button
+          onClick={() =>
+            onUpdateMember(
+              member,
+              { membership_state: 'active' },
+              '멤버를 재활성화했습니다.',
+            )
+          }
+          disabled={blockedAction}
+          title={isSelfUnknown ? blockTitle : undefined}
+          className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          재활성화
+        </button>
+      )}
+      {member.membership_state === 'active' &&
+        member.organization_auth_state === 'member' && (
+          <button
+            onClick={() =>
+              onUpdateMember(
+                member,
+                { organization_auth_state: 'manager' },
+                '관리자로 승격했습니다.',
+              )
+            }
+            disabled={blockedAction}
+            title={isSelfUnknown ? blockTitle : undefined}
+            className="rounded-md border border-blue-200 px-2 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            관리자 승격
+          </button>
+        )}
+      {member.membership_state === 'active' &&
+        member.organization_auth_state === 'manager' && (
+          <button
+            onClick={() =>
+              onUpdateMember(
+                member,
+                { organization_auth_state: 'member' },
+                '멤버로 강등했습니다.',
+              )
+            }
+            disabled={actionPending || blockedManagerAction}
+            title={blockedManagerAction ? blockTitle : undefined}
+            className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            멤버로 강등
+          </button>
+        )}
+      <button
+        onClick={() => onRemoveMember(member)}
+        disabled={actionPending || blockedManagerAction}
+        title={blockedManagerAction ? blockTitle : undefined}
+        className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        제거
+      </button>
+    </div>
   );
 }
 
 function TeamsTab({
   teams,
+  page,
+  onPageChange,
+  query,
+  onQueryChange,
+  stateFilter,
+  onStateFilterChange,
+  memberFilter,
+  onMemberFilterChange,
   teamMembers,
+  teamMemberLoadErrors,
+  isLimited,
+  onCreateTeam,
+  onEditTeam,
+  onDeactivateTeam,
+  onOpenTeam,
 }: {
   teams: TeamResponse[];
+  page: number;
+  onPageChange: (page: number) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
+  stateFilter: 'all' | 'active' | 'inactive';
+  onStateFilterChange: (state: 'all' | 'active' | 'inactive') => void;
+  memberFilter: 'all' | 'has_members' | 'empty';
+  onMemberFilterChange: (state: 'all' | 'has_members' | 'empty') => void;
   teamMembers: Record<string, TeamMemberResponse[]>;
+  teamMemberLoadErrors: Record<string, boolean>;
+  isLimited: boolean;
+  onCreateTeam: () => void;
+  onEditTeam: (team: TeamResponse) => void;
+  onDeactivateTeam: (team: TeamResponse) => void;
+  onOpenTeam: (teamId: string) => void;
 }) {
+  const pageItems = paginate(teams, page);
+  const totalPages = Math.max(1, Math.ceil(teams.length / PAGE_SIZE));
+
   return (
     <DashboardPanel
       title="팀"
       icon={Building2}
       aside={
         <button
-          disabled
-          className="h-9 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white opacity-40"
+          onClick={onCreateTeam}
+          className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800"
         >
+          <Plus className="h-4 w-4" />
           팀 생성
         </button>
       }
     >
-      <div className="divide-y divide-slate-100">
-        {teams.length === 0 ? (
-          <div className="px-5 py-10 text-center text-sm text-slate-500">
-            표시할 팀이 없습니다.
-          </div>
-        ) : (
-          teams.map((team) => (
-            <div
-              key={team.id}
-              className="grid gap-4 px-5 py-4 md:grid-cols-[minmax(0,1fr)_260px]"
-            >
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-semibold text-slate-950">{team.name}</p>
-                  <span
-                    className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
-                      team.is_active
-                        ? 'bg-green-50 text-green-700'
-                        : 'bg-slate-100 text-slate-600'
-                    }`}
-                  >
-                    {team.is_active ? '활성' : '비활성'}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-slate-500">
-                  {team.description || '설명 없음'}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {(teamMembers[team.id] || []).length === 0 ? (
-                  <span className="text-xs text-slate-400">멤버 없음</span>
-                ) : (
-                  (teamMembers[team.id] || []).map((member) => (
-                    <span
-                      key={member.id}
-                      className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700"
-                    >
-                      {member.name}
-                    </span>
-                  ))
-                )}
-              </div>
-            </div>
-          ))
-        )}
+      <ListToolbar
+        query={query}
+        onQueryChange={onQueryChange}
+        placeholder="팀 이름, 설명 검색"
+        resultText={`결과 ${teams.length}개`}
+      >
+        <select
+          value={stateFilter}
+          onChange={(event) =>
+            onStateFilterChange(event.target.value as 'all' | 'active' | 'inactive')
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 상태</option>
+          <option value="active">활성</option>
+          <option value="inactive">비활성</option>
+        </select>
+        <select
+          value={memberFilter}
+          onChange={(event) =>
+            onMemberFilterChange(
+              event.target.value as 'all' | 'has_members' | 'empty',
+            )
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 멤버</option>
+          <option value="has_members">멤버 있음</option>
+          <option value="empty">멤버 없음</option>
+        </select>
+      </ListToolbar>
+      {isLimited && (
+        <div className="border-b border-amber-100 bg-amber-50 px-5 py-2 text-xs text-amber-800">
+          현재 팀 목록은 API limit 100개 기준입니다. 100개 이상 조직은 서버
+          pagination 연결 전까지 일부 팀이 보이지 않을 수 있습니다.
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead className="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase text-slate-500">
+            <tr>
+              <th className="px-5 py-3">팀</th>
+              <th className="px-5 py-3">상태</th>
+              <th className="px-5 py-3">멤버</th>
+              <th className="px-5 py-3">작업</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {pageItems.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
+                  조건에 맞는 팀이 없습니다.
+                </td>
+              </tr>
+            ) : (
+              pageItems.map((team) => {
+                const members = teamMembers[team.id] || [];
+                return (
+                  <tr key={team.id} className="bg-white">
+                    <td className="px-5 py-4">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-950">{team.name}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {team.description || '설명 없음'}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4">
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                          team.is_active
+                            ? 'bg-green-50 text-green-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {team.is_active ? '활성' : '비활성'}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4">
+                      {teamMemberLoadErrors[team.id] ? (
+                        <span className="text-xs text-red-600">
+                          멤버를 불러오지 못함
+                        </span>
+                      ) : members.length === 0 ? (
+                        <span className="text-xs text-slate-400">멤버 없음</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {members.slice(0, 3).map((member) => (
+                            <span
+                              key={member.id}
+                              className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700"
+                            >
+                              {member.name}
+                            </span>
+                          ))}
+                          {members.length > 3 && (
+                            <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500">
+                              +{members.length - 3}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => onOpenTeam(team.id)}
+                          className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                        >
+                          상세
+                        </button>
+                        <button
+                          onClick={() => onEditTeam(team)}
+                          className="rounded-md border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50"
+                          title="팀 수정"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => onDeactivateTeam(team)}
+                          disabled={!team.is_active}
+                          className="rounded-md border border-red-200 p-1.5 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          title="팀 비활성화"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        totalItems={teams.length}
+        onPageChange={onPageChange}
+      />
     </DashboardPanel>
   );
 }
@@ -552,7 +1541,7 @@ function PermissionsTab() {
     <DashboardPanel title="권한" icon={SlidersHorizontal}>
       <Placeholder
         title="권한 관리 UI 이동 예정"
-        description="현재 Settings의 workflow/team/user direct permission 관리 UI를 Admin Console로 옮기는 단계에서 실제 grant/update/revoke action을 연결합니다."
+        description="멤버/팀 운영 action 이후 workflow/team/user direct permission 관리 UI를 연결합니다."
       />
     </DashboardPanel>
   );
@@ -772,6 +1761,200 @@ function OrganizationTab({
         </div>
       </div>
     </DashboardPanel>
+  );
+}
+
+function ListToolbar({
+  query,
+  onQueryChange,
+  placeholder,
+  resultText,
+  children,
+}: {
+  query: string;
+  onQueryChange: (query: string) => void;
+  placeholder: string;
+  resultText: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="relative min-w-0 flex-1">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm"
+          placeholder={placeholder}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {children}
+        <span className="text-xs font-medium text-slate-500">{resultText}</span>
+      </div>
+    </div>
+  );
+}
+
+function Pagination({
+  page,
+  totalPages,
+  totalItems,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  onPageChange: (page: number) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-sm">
+      <span className="text-slate-500">
+        {totalItems}개 중 page {page}/{totalPages}
+      </span>
+      <div className="flex gap-2">
+        <button
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          disabled={page <= 1}
+          className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          이전
+        </button>
+        <button
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+          className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          다음
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SidePanel({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30">
+      <div className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+          <h2 className="text-base font-semibold text-slate-950">{title}</h2>
+          <button
+            onClick={onClose}
+            className="rounded-md p-2 text-slate-500 hover:bg-slate-100"
+            title="닫기"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="px-5 py-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  state,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  state: ConfirmState;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isDanger = state.tone === 'danger';
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 px-4">
+      <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
+        <h2 className="text-base font-semibold text-slate-950">{state.title}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          {state.description}
+        </p>
+        {state.details && state.details.length > 0 && (
+          <ul className="mt-3 space-y-1 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            {state.details.map((detail) => (
+              <li key={detail}>{detail}</li>
+            ))}
+          </ul>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 rounded-md border border-slate-300 px-3 text-sm font-semibold text-slate-700 disabled:opacity-40"
+          >
+            취소
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={pending}
+            className={`h-9 rounded-md px-3 text-sm font-semibold text-white disabled:opacity-40 ${
+              isDanger
+                ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-slate-950 hover:bg-slate-800'
+            }`}
+          >
+            {state.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LabelledField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-sm font-semibold text-slate-800">
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function PanelActions({
+  onCancel,
+  onSubmit,
+  submitLabel,
+  disabled,
+}: {
+  onCancel: () => void;
+  onSubmit: () => void;
+  submitLabel: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+      <button
+        onClick={onCancel}
+        className="h-10 rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+      >
+        취소
+      </button>
+      <button
+        onClick={onSubmit}
+        disabled={disabled}
+        className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {submitLabel}
+      </button>
+    </div>
   );
 }
 
