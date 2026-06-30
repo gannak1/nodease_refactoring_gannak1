@@ -38,12 +38,16 @@ from apps.shared.schemas.log import (
     WorkflowRunSchema,
 )
 from apps.shared.schemas.llm import LLMTraceListResponse
+from apps.shared.schemas.permission import WorkflowPermissionResponse
 from apps.shared.schemas.workflow import (
     WorkflowCreateRequest,
     WorkflowDraftRequest,
     WorkflowResponse,
 )
-from apps.shared.services.permissions import get_effective_workflow_auth_state
+from apps.shared.services.permissions import (
+    get_effective_workflow_auth_state,
+    get_workflow_permission_sources,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -588,7 +592,10 @@ def get_workflow(
     }
 
 
-@router.get("/{workflow_id}/permissions/me")
+@router.get(
+    "/{workflow_id}/permissions/me",
+    response_model=WorkflowPermissionResponse,
+)
 def get_my_workflow_permission(
     workflow_id: str,
     db: Session = Depends(get_db),
@@ -596,6 +603,12 @@ def get_my_workflow_permission(
 ):
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "read")
     auth_state = get_effective_workflow_auth_state(
+        db,
+        current_user.id,
+        workflow.id,
+        organization_id=workflow.organization_id,
+    )
+    sources = get_workflow_permission_sources(
         db,
         current_user.id,
         workflow.id,
@@ -612,6 +625,7 @@ def get_my_workflow_permission(
         "can_execute": workflow_auth_state_allows(auth_state, "execute"),
         "can_deploy": workflow_auth_state_allows(auth_state, "deploy"),
         "can_manage": workflow_auth_state_allows(auth_state, "manage"),
+        "sources": sources,
     }
 
 

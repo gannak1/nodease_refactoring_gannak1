@@ -152,6 +152,7 @@ class TestWorkflowLlmTracesApi:
         workflow_id = uuid4()
         organization_id = uuid4()
         user_id = uuid4()
+        source_team_id = uuid4()
 
         app.dependency_overrides[get_db] = lambda: MagicMock()
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
@@ -167,6 +168,17 @@ class TestWorkflowLlmTracesApi:
                 "apps.gateway.api.v1.endpoints.workflow.get_effective_workflow_auth_state",
                 return_value="operator",
             ) as effective_state,
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.get_workflow_permission_sources",
+                return_value=[
+                    {
+                        "type": "team",
+                        "team_id": source_team_id,
+                        "team_name": "운영팀",
+                        "auth_state": "operator",
+                    }
+                ],
+            ) as permission_sources,
         ):
             response = self.client.get(
                 f"/api/v1/workflows/{workflow_id}/permissions/me"
@@ -175,7 +187,9 @@ class TestWorkflowLlmTracesApi:
         assert response.status_code == 200
         ensure_read.assert_called_once()
         effective_state.assert_called_once()
-        assert response.json() == {
+        permission_sources.assert_called_once()
+        payload = response.json()
+        assert payload == {
             "workflow_id": str(workflow_id),
             "organization_id": str(organization_id),
             "auth_state": "operator",
@@ -184,4 +198,14 @@ class TestWorkflowLlmTracesApi:
             "can_execute": True,
             "can_deploy": False,
             "can_manage": False,
+            "sources": [
+                {
+                    "type": "team",
+                    "auth_state": "operator",
+                    "team_id": str(source_team_id),
+                    "team_name": "운영팀",
+                    "user_id": None,
+                    "user_name": None,
+                }
+            ],
         }

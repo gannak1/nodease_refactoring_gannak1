@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-79 @ PR #127 head
+Verified Against: feature/mba-74 working tree
 
 ## 목적
 
@@ -67,15 +67,15 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | `latest_run.state` | 최근 실행 상태 |
 | `latest_run.started_at`, `latest_run.finished_at` | 최근 실행 시각 |
 
-### 현재 운영 summary 응답만으로 부족한 표시
+### MBA-74 기준 운영 summary 응답으로 가능한 표시
 
-사용자가 요청한 "어느 team으로서 어떤 권한으로 접근 가능한지"는 `permission_sources` population이 후속 구현이라 아직 정확히 알 수 없다. MBA-76 현재 구현은 빈 배열을 반환하고, MBA-74 source 계약 구현 후 같은 필드에 team/user direct source를 채운다.
+사용자가 요청한 "어느 team으로서 어떤 권한으로 접근 가능한지"는 `permission_sources`로 표시한다. MBA-74 기준 `/apps/operations.permission_sources`는 `GET /api/v1/workflows/{workflow_id}/permissions/me.sources`와 같은 schema로 team/user direct source를 반환한다.
 
-| 필요한 정보 | 현재 API 상태 | 판단 |
+| 필요한 정보 | API 상태 | 판단 |
 | --- | --- | --- |
 | effective workflow 권한 | `/apps/operations`의 `permission`으로 가능 | 구현됨 |
-| team 권한 출처 | `/apps/operations.permission_sources`는 현재 빈 배열 | MBA-74 source 계약 구현 후 보강 |
-| user direct permission 출처 | `/apps/operations.permission_sources`는 현재 빈 배열 | MBA-74 source 계약 구현 후 보강 |
+| team 권한 출처 | `/apps/operations.permission_sources` | 가능 |
+| user direct permission 출처 | `/apps/operations.permission_sources` | 가능 |
 | 최근 실행 상태 | `/apps/operations.latest_run`으로 가능 | 구현됨 |
 | 오류 상태 | `/apps/operations.latest_run`으로 가능. raw error는 노출하지 않음 | 구현됨 |
 | 배포 상세 상태 | `/apps/operations.deployment`으로 가능 | 구현됨 |
@@ -133,7 +133,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 - `실행 가능 5`
 - `워크플로우 관리 가능 1`
 
-`최근 오류`는 `/apps/operations.latest_run` 기준으로 계산한다. 권한 출처만 MBA-74 source population 전까지 `출처 연동 예정`으로 표시한다.
+`최근 오류`는 `/apps/operations.latest_run` 기준으로 계산한다. 권한 출처는 `permission_sources`의 team/user direct source label을 표시한다. `permission_sources=[]`이면 source가 없는 override 또는 legacy fallback일 수 있으므로 오류로 보지 않는다.
 
 ## 모듈 목록 row 설계
 
@@ -144,7 +144,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | 모듈 | icon, name, description, updated_at | `app` safe summary |
 | 소유자 | `app.owner_name` | manager 목록이 아니라 생성자 표시 이름 |
 | 내 권한 | `viewer/operator/builder/manager` badge | `permission` |
-| 접근 경로 | team 이름 또는 direct grant | `permission_sources`, 현재는 후속 population |
+| 접근 경로 | team 이름 또는 direct grant | `permission_sources` |
 | 배포 | 배포 중/꺼짐/미배포, type | `deployment` |
 | 실행 상태 | 최근 성공/실패/실행 중 | `latest_run` |
 | 마지막 활동 | updated_at 또는 최근 run time | `app.updated_at`, `latest_run.started_at` |
@@ -189,8 +189,8 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | 내 권한 | 전체, 실행 가능, 워크플로우 수정 가능, 워크플로우 관리 가능 | 가능 |
 | 배포 상태 | 전체, 배포 중, 배포 꺼짐, 미배포 | 가능 |
 | 실행 상태 | 전체, 실행 중, 오류만 | 가능 |
-| 접근 경로 | 전체, team, direct grant | `permission_sources` population 후 가능 |
-| team | team 목록 | `permission_sources` population 후 가능 |
+| 접근 경로 | 전체, team, direct grant | 표시는 가능. 필터 query는 후속 |
+| team | team 목록 | 표시는 가능. team filter query는 후속 |
 | 소유자 | 소유자 이름 | `owner_name` 기반 제한적 가능 |
 | 마켓 공개 | 전체, 공개, 비공개 | `/apps/operations` safe summary에는 없음. 필요하면 별도 정책 결정 |
 
@@ -237,9 +237,9 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 AI 운영팀 외 2개 team
 ```
 
-### 필요한 BE 응답 보강
+### 권한 출처 표시 기준
 
-MBA-74에서 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 `sources` 계약을 확정하고, `/apps/operations.permission_sources`도 같은 schema로 채우는 방식을 권장한다.
+`GET /api/v1/workflows/{workflow_id}/permissions/me.sources`와 `/apps/operations.permission_sources`는 같은 schema를 사용한다.
 
 예시:
 
@@ -268,7 +268,12 @@ MBA-74에서 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 `sources` �
 }
 ```
 
-MVP1에서 BE 보강 없이 FE만 진행한다면 source UI는 노출하지 않고 `권한 출처 연동 예정`으로 문서에 남긴다.
+표시 기준은 다음과 같다.
+
+- 첫 source가 team이면 `team_name`을 우선 표시한다.
+- 첫 source가 user이면 `user_name`이 있으면 표시하고, 없으면 `개인 직접 권한`으로 표시한다.
+- 복수 source면 `첫 source label 외 N개`로 축약한다.
+- `sources=[]`이면 권한 출처가 없는 override 또는 legacy fallback일 수 있으므로 오류로 보지 않는다.
 
 ## 실행 상태 표시
 
@@ -316,8 +321,8 @@ GET /api/v1/apps/operations?q={검색어}&capability={execute|write|manage}&depl
 
 현재 구현에서 남는 것:
 
-- team별 권한 출처 population
 - team 필터
+- 권한 출처 검색 query
 - 전체 total count 표시. API가 total을 반환하지 않으므로 현재 로드된 범위만 표시한다.
 
 ### MBA-76 구현 API
@@ -354,7 +359,20 @@ GET /api/v1/apps/operations
       "can_manage": false
     },
     "permission_status": "loaded",
-    "permission_sources": [],
+    "permission_sources": [
+      {
+        "type": "team",
+        "team_id": "...",
+        "team_name": "워크플로우 빌더팀",
+        "auth_state": "builder"
+      },
+      {
+        "type": "user",
+        "user_id": "...",
+        "user_name": "혜연",
+        "auth_state": "operator"
+      }
+    ],
     "deployment": {
       "state": "active",
       "deployment_id": "...",
@@ -393,7 +411,7 @@ GET /api/v1/apps/operations
 | --- | --- | --- |
 | 전체 모듈 조회 | organization scope + read 가능 목록 | read 가능 목록 |
 | team 권한 출처 | 표시 | 표시 |
-| team 필터 | 가능 | 본인이 속한 team 기준만 가능 |
+| team 출처 표시 | 표시 가능 | 표시 가능 |
 | 권한 관리 action | 가능 | 숨김 |
 | 배포 생성/활성화 action | `can_deploy` | 권한 있을 때만 가능 |
 | 배포 삭제/위험 변경 action | `can_manage` | 권한 있을 때만 가능 |
@@ -415,11 +433,10 @@ GET /api/v1/apps/operations
 
 ### 짧게 소개하고 보류
 
-- team 권한 출처 표시
 - team 필터
-- 소유자/team 검색 query
+- 소유자/team/권한 출처 검색 query
 
-이 항목들은 `permission_sources` population 또는 검색 query 계약 보강 전까지 정확한 값을 만들기 어렵다.
+이 항목들은 검색/filter query 계약 보강 전까지 정확한 값을 만들기 어렵다.
 
 ### 이번 범위에서 제외
 
@@ -439,7 +456,7 @@ GET /api/v1/apps/operations
 6. 검색, 권한 필터, 배포 필터, 실행 필터 변경 시 첫 page부터 다시 조회한다.
 7. `더 보기`를 누르면 다음 offset page를 append한다.
 8. row action을 permission boolean과 `deployment.deployment_id` 기준으로 제어한다.
-9. `permission_sources`는 MBA-74 source population 전까지 `출처 연동 예정`으로 표시한다.
+9. `permission_sources`가 있으면 team/user direct 접근 경로를 표시하고, 빈 배열이면 source가 없는 override 또는 legacy fallback으로 취급한다.
 
 ## QA 체크리스트
 
@@ -459,7 +476,6 @@ GET /api/v1/apps/operations
 
 | 결정 | 질문 | 권장 |
 | --- | --- | --- |
-| team 권한 출처 API | `/apps/operations.permission_sources`를 어떤 source schema로 채울까? | MBA-74 `permissions/me.sources`와 같은 schema 사용 |
 | 운영 summary API | `/apps/operations`를 기본 데이터 소스로 사용할까? | MBA-76 이후 기본 사용 |
 | member의 새 모듈 생성 | member도 app을 만들 수 있는가? | 제품 결정 필요 |
 | 실행 상태 연동 | 최근 run을 row별 호출할까, summary API로 묶을까? | `/apps/operations.latest_run` 사용 |
@@ -482,6 +498,7 @@ MBA-79 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영�
 현재 API로 구현할 범위:
 - `GET /api/v1/apps/operations`로 운영 summary row를 조회.
 - app 목록, effective permission, 배포 상태, 최근 run 상태는 이 API 응답을 기본 source로 사용할 것.
+- MBA-74 이후 권한 출처는 `permission_sources`의 team/user direct source를 사용할 것.
 - 목록의 `app`은 safe summary이므로 수정 modal을 열 때는 `GET /api/v1/apps/{app_id}`로 full `AppResponse`를 다시 조회할 것.
 - 배포 토글은 `deployment.deployment_id`를 기준으로 수행할 것.
 - 소유자 표시는 `app.owner_name`을 사용할 것. `owner_name`은 RBAC `manager` 목록이 아니다.
@@ -491,10 +508,10 @@ MBA-79 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영�
 - 검색 대상: 모듈명, 설명. 소유자와 권한 출처 검색은 API query가 지원된 뒤 보강한다.
 
 아직 구현하지 말고 TODO로 남길 범위:
-- `permission_sources`를 실제 team/user direct source로 채우는 backend population.
 - team 필터.
+- 소유자/권한 출처 검색 query.
 
-`permission_sources` TODO는 MBA-74 source 계약 구현 전까지 정확히 구현하기 어렵다. 문서 기준은 `docs/front/module-list-access-operations-ui.md`와 `docs/api/apps-workflows.md`를 따른다.
+`permission_sources` schema는 MBA-74 `permissions/me.sources`와 같은 계약을 따른다.
 
 UI/UX 기준:
 - SaaS 운영 도구처럼 조용하고 정보 밀도 있게 만들 것.

@@ -25,6 +25,7 @@ from apps.shared.schemas.app import (
 )
 from apps.shared.services.permissions import (
     get_effective_workflow_auth_state,
+    get_workflow_permission_sources_by_workflow_ids,
     has_organization_scope_access,
     has_organization_manager_permission,
     has_workflow_permission,
@@ -389,6 +390,17 @@ class AppService:
         deployment_history = AppService._deployment_history_by_app_id(
             db, [app.id for app in candidate_apps]
         )
+        workflow_ids = [app.workflow_id for app in candidate_apps if app.workflow_id]
+        permission_sources_by_workflow_id = (
+            get_workflow_permission_sources_by_workflow_ids(
+                db,
+                user_id,
+                workflow_ids,
+                organization_id=candidate_apps[0].organization_id,
+            )
+            if candidate_apps and workflow_ids
+            else {}
+        )
 
         rows = [
             AppService._build_operation_row(
@@ -397,6 +409,7 @@ class AppService:
                 owner_names,
                 latest_runs,
                 deployment_history,
+                permission_sources_by_workflow_id,
                 db,
             )
             for app in candidate_apps
@@ -448,9 +461,11 @@ class AppService:
         owner_names: dict[Any, str | None],
         latest_runs: dict[Any, WorkflowRun],
         deployment_history: dict[Any, WorkflowDeployment],
+        permission_sources_by_workflow_id: dict[Any, list],
         db: Session,
     ) -> AppOperationRow:
         permission_summary = None
+        permission_sources = []
         permission_status = "not_available"
         permission_error = None
 
@@ -470,6 +485,9 @@ class AppService:
                 can_deploy=workflow_auth_state_allows(auth_state, "deploy"),
                 can_manage=workflow_auth_state_allows(auth_state, "manage"),
             )
+            permission_sources = permission_sources_by_workflow_id.get(
+                app.workflow_id, []
+            )
             permission_status = "loaded"
 
         return AppOperationRow(
@@ -485,7 +503,7 @@ class AppService:
             ),
             permission=permission_summary,
             permission_status=permission_status,
-            permission_sources=[],
+            permission_sources=permission_sources,
             permission_error=permission_error,
             deployment=AppService._operation_deployment_summary(
                 app, deployment_history.get(app.id)
