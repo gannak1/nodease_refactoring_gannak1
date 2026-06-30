@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.operators import is_
+from sqlalchemy.sql.operators import in_op, is_
 
 from apps.gateway.api.v1.endpoints.organization import list_organizations
 from apps.gateway.auth.dependencies import get_current_user
@@ -38,16 +38,18 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides = {}
 
     def test_list_organizations_uses_memberships_and_deduplicates(self):
-        # 현재 사용자의 active organization membership 기준으로 조직을 조회하고 중복 조직을 제거하는지 검증한다.
+        # 현재 사용자의 active/invited organization membership 기준으로 조직을 조회하는지 검증한다.
         user_id = uuid4()
         organization = _organization(id=uuid4(), name="Acme", created_by=user_id)
         other_organization = _organization(id=uuid4(), name="Beta")
+        removed_organization = _organization(id=uuid4(), name="Removed")
         db = _Session(
-            [organization, organization, other_organization],
+            [organization, other_organization, removed_organization],
             users=[_user(user_id)],
             memberships=[
                 _membership(user_id, organization.id, auth_state="manager"),
-                _membership(user_id, other_organization.id),
+                _membership(user_id, other_organization.id, membership_state="invited"),
+                _membership(user_id, removed_organization.id, membership_state="removed"),
             ],
         )
 
@@ -61,9 +63,10 @@ class TestOrganizationsApi(unittest.TestCase):
             [item.id for item in response],
             [organization.id, other_organization.id],
         )
-        self.assertTrue(response[0].is_manager)
-        self.assertFalse(response[1].is_manager)
-        self.assertTrue(query.distinct_called)
+        self.assertEqual(response[0].membership_state, "active")
+        self.assertEqual(response[0].organization_auth_state, "manager")
+        self.assertEqual(response[1].membership_state, "invited")
+        self.assertFalse(query.distinct_called)
         self.assertEqual(len(query.join_values), 1)
 
         user_filter, membership_state_filter, org_active_filter = (
@@ -77,8 +80,11 @@ class TestOrganizationsApi(unittest.TestCase):
             str(membership_state_filter.left),
             "organization_memberships.membership_state",
         )
-        self.assertIs(membership_state_filter.operator, eq)
-        self.assertEqual(membership_state_filter.right.value, "active")
+        self.assertIs(membership_state_filter.operator, in_op)
+        self.assertEqual(
+            set(membership_state_filter.right.value),
+            {"active", "invited"},
+        )
 
         self.assertEqual(str(org_active_filter.left), "organization.is_active")
         self.assertIs(org_active_filter.operator, is_)
@@ -87,6 +93,7 @@ class TestOrganizationsApi(unittest.TestCase):
     def test_route_returns_current_user_organizations(self):
         # GET /api/v1/organizations 라우터가 현재 사용자의 조직 목록을 응답 스키마로 직렬화하는지 검증한다.
         organization_id = uuid4()
+        invited_organization_id = uuid4()
         user_id = uuid4()
         created_at = datetime(2026, 6, 27, 1, 2, 3, tzinfo=timezone.utc)
         updated_at = datetime(2026, 6, 27, 4, 5, 6, tzinfo=timezone.utc)
@@ -97,11 +104,25 @@ class TestOrganizationsApi(unittest.TestCase):
             created_at=created_at,
             updated_at=updated_at,
         )
+        invited_organization = _organization(
+            id=invited_organization_id,
+            name="Beta",
+            created_by=user_id,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
 
         app.dependency_overrides[get_db] = lambda: _Session(
-            [organization],
+            [organization, invited_organization],
             users=[_user(user_id)],
-            memberships=[_membership(user_id, organization_id, auth_state="manager")],
+            memberships=[
+                _membership(user_id, organization_id, auth_state="manager"),
+                _membership(
+                    user_id,
+                    invited_organization_id,
+                    membership_state="invited",
+                ),
+            ],
         )
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -114,11 +135,16 @@ class TestOrganizationsApi(unittest.TestCase):
                 {
                     "id": str(organization_id),
                     "name": "Acme",
-                    "options": {},
+                    "membership_state": "active",
+                    "organization_auth_state": "manager",
                     "is_active": True,
-                    "is_manager": True,
-                    "created_at": "2026-06-27T01:02:03Z",
-                    "updated_at": "2026-06-27T04:05:06Z",
+                },
+                {
+                    "id": str(invited_organization_id),
+                    "name": "Beta",
+                    "membership_state": "invited",
+                    "organization_auth_state": "member",
+                    "is_active": True,
                 }
             ],
         )
@@ -885,6 +911,37 @@ class _Query:
         return True
 
 
+class _OrganizationMembershipQuery(_Query):
+    def __init__(self, organizations, memberships):
+        rows = []
+        by_id = {organization.id: organization for organization in organizations}
+        for membership in memberships:
+            organization = by_id.get(membership.organization_id)
+            if organization is not None:
+                rows.append((organization, membership))
+        super().__init__(rows)
+
+    def all(self):
+        return [item for item in self.items if self._matches_filters(item)]
+
+    def _matches_filter(self, item, expression):
+        if not hasattr(expression, "left"):
+            return True
+
+        organization, membership = item
+        left = str(expression.left)
+        if left == "organization_memberships.user_id" and expression.operator is eq:
+            return membership.user_id == expression.right.value
+        if (
+            left == "organization_memberships.membership_state"
+            and expression.operator is in_op
+        ):
+            return membership.membership_state in expression.right.value
+        if left == "organization.is_active" and expression.operator is is_:
+            return organization.is_active is (str(expression.right) == "true")
+        return True
+
+
 class _Session:
     def __init__(self, items, users=None, memberships=None):
         self.organizations = items
@@ -895,15 +952,20 @@ class _Session:
         self.commit_called = False
         self.refresh_values = []
 
-    def query(self, model):
-        if model is Organization:
+    def query(self, *models):
+        if models == (Organization,):
             query = _Query(self.organizations)
             if self.query_value is None:
                 self.query_value = query
             return query
-        if model is User:
+        if models == (Organization, OrganizationMembership):
+            query = _OrganizationMembershipQuery(self.organizations, self.memberships)
+            if self.query_value is None:
+                self.query_value = query
+            return query
+        if models == (User,):
             return _Query(self.users)
-        if model is OrganizationMembership:
+        if models == (OrganizationMembership,):
             self.membership_query = _Query(self.memberships)
             return self.membership_query
         return _Query([])

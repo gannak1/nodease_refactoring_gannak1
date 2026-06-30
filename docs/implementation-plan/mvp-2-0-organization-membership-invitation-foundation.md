@@ -822,12 +822,17 @@ Permission:
 
 Response:
 
+기존 Organization API 계약을 유지해 `OrganizationResponse`를 반환한다.
+
 ```json
 {
   "id": "uuid",
   "name": "Acme",
-  "membership_state": "active",
-  "organization_auth_state": "member"
+  "options": {},
+  "is_active": true,
+  "is_manager": false,
+  "created_at": "2026-06-29T00:00:00Z",
+  "updated_at": "2026-06-29T00:00:00Z"
 }
 ```
 
@@ -1070,7 +1075,6 @@ OrganizationMemberInviteRequest
 OrganizationMemberUpdateRequest
 OrganizationMemberResponse
 OrganizationSummaryResponse
-OrganizationCurrentResponse
 OrganizationMemberRemoveResponse
 ```
 

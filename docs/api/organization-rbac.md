@@ -17,14 +17,35 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Implemented | `GET` | `/api/v1/organizations` | authenticated | 사용자가 속한 active organization 목록 |
+| Implemented | `GET` | `/api/v1/organizations` | authenticated | 사용자가 active member이거나 invited 상태인 organization 목록 |
 | Implemented | `GET` | `/api/v1/organizations/current` | authenticated + `X-Organization-Id` | header로 전달한 active organization 조회 |
 | Implemented | `GET` | `/api/v1/organizations/{organization_id}` | authenticated | 접근 가능한 organization 상세 조회 |
 | Implemented | `PATCH` | `/api/v1/organizations/{organization_id}` | organization `manager` + matching `X-Organization-Id` | organization 이름/options 수정 |
 
 서버는 active organization을 session/cookie에 저장하지 않는다. `PATCH /organizations/current`는 만들지 않고, header와 path가 일치하는 `PATCH /organizations/{organization_id}`를 사용한다.
 
-Organization 조회/수정 API는 공통으로 `OrganizationResponse`를 반환한다.
+`GET /api/v1/organizations`는 organization membership 목록 성격의 `OrganizationSummaryResponse[]`를 반환한다. `membership_state='invited'`인 항목은 초대 수락 UI에 표시할 수 있지만 resource 화면 진입이나 `X-Organization-Id` active context로 사용하면 안 된다.
+
+```json
+[
+  {
+    "id": "uuid",
+    "name": "Acme",
+    "membership_state": "active",
+    "organization_auth_state": "manager",
+    "is_active": true
+  },
+  {
+    "id": "uuid",
+    "name": "Beta",
+    "membership_state": "invited",
+    "organization_auth_state": "member",
+    "is_active": true
+  }
+]
+```
+
+`GET /api/v1/organizations/current`, `GET /api/v1/organizations/{organization_id}`, `PATCH /api/v1/organizations/{organization_id}`는 `OrganizationResponse`를 반환한다.
 
 `PATCH /api/v1/organizations/{organization_id}`는 path organization과 `X-Organization-Id`가 일치해야 한다. Organization이 없거나 inactive이거나 요청 user의 scope 밖이면 `404 resource.not_found`로 숨기고, 같은 scope 안이지만 manager가 아니면 `403 permission.denied`를 반환한다.
 
@@ -47,6 +68,29 @@ Organization 조회/수정 API는 공통으로 `OrganizationResponse`를 반환�
 - 그 외에는 `false`
 
 MBA-67 이후 manager 판정은 organization membership helper를 기준으로 한다. Legacy `created_by` / `managed_by` fallback은 MBA-66 이전 데이터 호환용이며, membership row 자체가 없는 경우에만 적용한다. Invited/suspended/removed row가 있으면 fallback을 적용하지 않고 `false`로 닫는다.
+
+## Organization Member / Invitation
+
+| Status | Method | Path | Permission | 설명 |
+| --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/organizations/{organization_id}/members` | organization `manager` | organization member 목록 |
+| Implemented | `POST` | `/api/v1/organizations/{organization_id}/members/invitations` | organization `manager` | 기존 가입 user 초대 |
+| Implemented | `POST` | `/api/v1/organizations/{organization_id}/members/me/accept` | invited user 본인 | 본인 초대 수락 |
+| Implemented | `PATCH` | `/api/v1/organizations/{organization_id}/members/{user_id}` | organization `manager` | member state/auth state 변경 |
+| Implemented | `DELETE` | `/api/v1/organizations/{organization_id}/members/{user_id}` | organization `manager` | member 제거와 team/direct permission cleanup |
+
+Organization member API의 현재 구현 세부사항:
+
+- `GET /members`는 `state=active|invited|suspended|removed` query를 받을 수 있다. Query가 없으면 `active`, `invited`, `suspended`를 반환하고 `removed`는 명시 query가 있을 때만 반환한다.
+- Member response는 membership id, organization id, user id, user email/name, membership state, organization auth state, invite/accept/remove timestamp를 포함한다.
+- Invite는 기존 가입 user만 대상으로 한다. Missing target user는 `404 resource.not_found`이고, self invite는 `400 validation.failed`다. Deactivated user는 초대할 수 없다.
+- 이미 active 또는 invited 상태인 member를 다시 초대하면 기존 membership을 idempotent하게 반환한다. Removed row는 같은 row를 `invited`로 재활성화하고, suspended row는 `409 resource.conflict`를 반환한다.
+- Accept는 `/members/me/accept`만 구현되어 있으며 manager-side forced accept endpoint는 만들지 않는다. 이미 active이면 idempotent success이고, suspended/removed는 `409 resource.conflict`다.
+- PATCH는 `membership_state='active'|'suspended'`와 `organization_auth_state='member'|'manager'`만 허용한다. Invited member를 PATCH로 active 처리하지 않고, removed member는 PATCH하지 않는다.
+- Last manager demote/suspend/remove와 self demote/remove는 차단한다.
+- DELETE는 membership을 `removed`로 soft remove하고, 같은 transaction 안에서 `team_memberships`, `user_workflow_permissions`, `user_llm_permissions`를 cleanup한다. 아직 구현되지 않은 `user_knowledge_permissions`, `user_audit_permissions` count는 `0`이다.
+- Invite/accept/update/remove는 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove` audit action을 사용한다. Remove cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'`와 cleanup count를 저장한다.
+- Organization membership audit metadata에는 email을 저장하지 않는다.
 
 ## User Directory
 

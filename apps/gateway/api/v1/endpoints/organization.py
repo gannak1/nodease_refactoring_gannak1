@@ -14,10 +14,6 @@ from apps.gateway.utils.api_errors import (
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.organization_membership import (
-    ORGANIZATION_MEMBERSHIP_ACTIVE,
-    OrganizationMembership,
-)
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.organization import (
@@ -29,6 +25,7 @@ from apps.shared.schemas.organization_membership import (
     OrganizationMemberRemoveResponse,
     OrganizationMemberResponse,
     OrganizationMemberUpdateRequest,
+    OrganizationSummaryResponse,
 )
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
@@ -92,32 +89,13 @@ def _to_organization_response(
     )
 
 
-# 인증된 사용자가 속한 active organization 목록을 조회하는 API.
-@router.get("", response_model=list[OrganizationResponse])
+# 인증된 사용자가 속한 active/invited organization 목록을 조회하는 API.
+@router.get("", response_model=list[OrganizationSummaryResponse])
 def list_organizations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    organizations = (
-        db.query(Organization)
-        .join(
-            OrganizationMembership,
-            OrganizationMembership.organization_id == Organization.id,
-        )
-        .filter(
-            OrganizationMembership.user_id == current_user.id,
-            OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
-            Organization.is_active.is_(True),
-        )
-        .distinct()
-        .order_by(Organization.created_at.asc(), Organization.id.asc())
-        .all()
-    )
-
-    return [
-        _to_organization_response(db, organization, current_user.id)
-        for organization in organizations
-    ]
+    return OrganizationMemberService.list_organizations(db, current_user)
 
 
 # literal path인 current가 /{organization_id} UUID path parameter로 해석되지 않도록
