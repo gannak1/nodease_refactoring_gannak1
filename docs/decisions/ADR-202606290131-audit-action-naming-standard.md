@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Created At: 2026-06-29 01:31 KST
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
 
@@ -26,6 +26,10 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | team knowledge base permission row 회수 | `team_knowledge_permission.deleted` | 현재 table/listener 기준. KB permission API/enforcement 연결은 MVP 2 범위 |
 | user knowledge base permission row 생성/수정 | `user_knowledge_permission.created/updated` | MVP 2 user direct table/API 구현 시 고정 |
 | user knowledge base permission row 회수 | `user_knowledge_permission.deleted` | MVP 2 user direct table/API 구현 시 고정 |
+| organization member 초대 생성 | `organization.invite` | MVP 2.0 organization membership 현재 구현 |
+| organization member 초대 수락 | `organization.member.accept` | MVP 2.0 organization membership 현재 구현 |
+| organization member 상태 또는 organization auth_state 변경 | `organization.member.update` | MVP 2.0 organization membership 현재 구현 |
+| organization member 제거 | `organization.member.remove` | MVP 2.0 organization membership 현재 구현 |
 | data/model/trace policy 차단 | `policy.block` | MVP 2 |
 | data/model/trace policy 경고 | `policy.warn` | MVP 2 |
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
@@ -50,6 +54,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Resource permission helper는 RBAC 거부를 `permission.denied`로 기록한다.
 - 전역 HTTP 401/403 handler는 helper에서 이미 기록하지 않은 인증/권한 실패를 `auth.permission_denied`로 기록한다.
 - 현재 등록된 `/api/v1/permissions/*` router의 team/user permission grant/update/revoke 흐름은 permission row별 data-change action인 `team_workflow_permission.created/updated/deleted`, `user_workflow_permission.created/updated/deleted`, `team_llm_permission.created/updated/deleted`, `user_llm_permission.created/updated/deleted`를 기록한다.
+- Organization member invite/accept/update/remove 흐름은 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove`를 기록한다. Member 제거에 따른 permission cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'` metadata를 남긴다.
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
@@ -59,6 +64,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 
 - MVP 1 요구사항의 `workflow.blocked` action 표기를 제거하고 `permission.denied`와 `auth.permission_denied`로 분리한다.
 - MVP 1에서 permission grant/update/revoke audit을 현재 permission row별 data-change action으로 기록하는 것을 명시한다.
+- Organization membership API의 invite/accept/update/remove audit action을 canonical action table에 포함한다.
 - MVP 2 knowledge base permission API/enforcement를 구현할 때 grant/update/revoke도 같은 permission row별 data-change action 규칙을 고정한다.
 - MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`, `rag.retrieve`를 검색 대상으로 삼는다.
 - Data model의 대표 action convention에 `permission.denied`와 `auth.permission_denied`를 포함한다.

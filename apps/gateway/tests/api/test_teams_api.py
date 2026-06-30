@@ -11,6 +11,11 @@ from sqlalchemy.sql.operators import eq, is_
 
 from apps.gateway.main import app
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_AUTH_MEMBER,
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    OrganizationMembership,
+)
 from apps.shared.db.models.team import Team, TeamMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
@@ -269,7 +274,7 @@ class TestTeamsApi(unittest.TestCase):
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_list_teams_rejects_member_without_manager_permission(self):
         user_id = uuid4()
@@ -485,7 +490,7 @@ class TestTeamsApi(unittest.TestCase):
                 "Organization manager permission is required.",
             ),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_create_team_hides_organization_outside_user_scope(self):
         user_id = uuid4()
@@ -507,7 +512,7 @@ class TestTeamsApi(unittest.TestCase):
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_update_team_updates_team_in_active_organization(self):
         user_id = uuid4()
@@ -863,7 +868,7 @@ class TestTeamsApi(unittest.TestCase):
                 "Organization manager permission is required.",
             ),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_update_team_hides_organization_outside_user_scope(self):
         user_id = uuid4()
@@ -886,7 +891,7 @@ class TestTeamsApi(unittest.TestCase):
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_add_team_member_adds_membership_in_active_organization(self):
         user_id = uuid4()
@@ -908,6 +913,9 @@ class TestTeamsApi(unittest.TestCase):
                 )
             ],
             user=_user(id=member_user_id),
+            organization_memberships=[
+                _organization_membership(member_user_id, organization_id)
+            ],
         )
 
         response = self._post_team_member(
@@ -1021,6 +1029,9 @@ class TestTeamsApi(unittest.TestCase):
                 )
             ],
             user=_user(id=member_user_id),
+            organization_memberships=[
+                _organization_membership(member_user_id, organization_id)
+            ],
             membership_after_rollback=membership,
             commit_error=IntegrityError("insert", {}, Exception("duplicate")),
         )
@@ -1180,7 +1191,7 @@ class TestTeamsApi(unittest.TestCase):
                 "Organization manager permission is required.",
             ),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_add_team_member_hides_organization_outside_user_scope(self):
         user_id = uuid4()
@@ -1203,7 +1214,7 @@ class TestTeamsApi(unittest.TestCase):
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_remove_team_member_removes_membership_in_active_organization(self):
         user_id = uuid4()
@@ -1431,7 +1442,7 @@ class TestTeamsApi(unittest.TestCase):
                 "Organization manager permission is required.",
             ),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_remove_team_member_hides_organization_outside_user_scope(self):
         user_id = uuid4()
@@ -1454,7 +1465,7 @@ class TestTeamsApi(unittest.TestCase):
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def test_deactivate_team_deactivates_team_in_active_organization(self):
         user_id = uuid4()
@@ -1577,7 +1588,7 @@ class TestTeamsApi(unittest.TestCase):
                 "Organization manager permission is required.",
             ),
         )
-        self.assertIn(TeamMembership, session.query_calls)
+        self.assertIn(OrganizationMembership, session.query_calls)
 
     def _get_teams(
         self,
@@ -1587,6 +1598,7 @@ class TestTeamsApi(unittest.TestCase):
         raw_organization_id=None,
         query="",
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1612,6 +1624,7 @@ class TestTeamsApi(unittest.TestCase):
         organization_id=None,
         raw_organization_id=None,
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1637,6 +1650,7 @@ class TestTeamsApi(unittest.TestCase):
         raw_organization_id=None,
         payload=None,
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1664,6 +1678,7 @@ class TestTeamsApi(unittest.TestCase):
         raw_organization_id=None,
         payload=None,
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1691,6 +1706,7 @@ class TestTeamsApi(unittest.TestCase):
         raw_organization_id=None,
         payload=None,
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1718,6 +1734,7 @@ class TestTeamsApi(unittest.TestCase):
         organization_id=None,
         raw_organization_id=None,
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1743,6 +1760,7 @@ class TestTeamsApi(unittest.TestCase):
         organization_id=None,
         raw_organization_id=None,
     ):
+        session.authenticate(user_id)
         app.dependency_overrides[get_db] = lambda: session
         headers = {"X-Request-ID": "req-test"}
         if raw_organization_id is not None:
@@ -1824,6 +1842,7 @@ class _Session:
         teams=None,
         team=None,
         memberships=None,
+        organization_memberships=None,
         user=None,
         membership_after_rollback=None,
         commit_error=None,
@@ -1831,8 +1850,11 @@ class _Session:
         self.organization = organization
         self.membership = membership
         self.memberships = memberships or ([] if membership is None else [membership])
+        self.explicit_organization_memberships = organization_memberships or []
         self.teams = teams or ([] if team is None else [team])
         self.user = user
+        self.users = [] if user is None else [user]
+        self.current_user_id = None
         self.membership_after_rollback = membership_after_rollback
         self.commit_error = commit_error
         self.organization_query = _Query(first_result=organization)
@@ -1849,11 +1871,21 @@ class _Session:
         self.commit_calls = 0
         self.rolled_back = False
 
+    def authenticate(self, user_id):
+        self.current_user_id = user_id
+        if all(user.id != user_id for user in self.users):
+            self.users.append(_user(id=user_id))
+
     def query(self, model):
         self.query_calls.append(model)
         if model is Organization:
             self.organization_query = _Query(first_result=self.organization)
             return self.organization_query
+        if model is OrganizationMembership:
+            self.organization_membership_query = _Query(
+                items=self._organization_memberships()
+            )
+            return self.organization_membership_query
         if model is TeamMembership:
             self.membership_query = _Query(
                 first_result=self.membership,
@@ -1864,9 +1896,30 @@ class _Session:
             self.team_query = _Query(items=self.teams)
             return self.team_query
         if model is User:
-            self.user_query = _Query(first_result=self.user)
+            self.user_query = _Query(items=self.users)
             return self.user_query
         raise AssertionError(f"Unexpected query model: {model}")
+
+    def _organization_memberships(self):
+        if self.organization is None:
+            return []
+        organization_id = self.organization.id
+        rows = []
+        rows.extend(self.explicit_organization_memberships)
+        if (
+            self.current_user_id is not None
+            and self.membership is not None
+            and not hasattr(self.membership, "user_id")
+        ):
+            rows.append(_organization_membership(self.current_user_id, organization_id))
+        for membership in self.memberships:
+            user_id = getattr(membership, "user_id", None)
+            grantee_organization_id = getattr(
+                membership, "grantee_organization_id", organization_id
+            )
+            if user_id is not None:
+                rows.append(_organization_membership(user_id, grantee_organization_id))
+        return rows
 
     def add(self, row):
         _hydrate_defaults(row)
@@ -1991,6 +2044,16 @@ def _membership(
     return membership
 
 
+def _organization_membership(user_id, organization_id):
+    return OrganizationMembership(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE,
+        organization_auth_state=ORGANIZATION_AUTH_MEMBER,
+    )
+
+
 def _hydrate_defaults(row):
     now = datetime.now(timezone.utc)
     if getattr(row, "id", None) is None:
@@ -2060,6 +2123,13 @@ def _column_value(obj, column):
             obj,
             "membership_grantee_organization_id",
             getattr(obj, "grantee_organization_id", _ANY),
+        ),
+        "organization_memberships.user_id": getattr(obj, "user_id", _ANY),
+        "organization_memberships.organization_id": getattr(
+            obj, "organization_id", _ANY
+        ),
+        "organization_memberships.membership_state": getattr(
+            obj, "membership_state", _ANY
         ),
         "users.id": getattr(obj, "id", _ANY),
         "users.deactivated_at": getattr(obj, "deactivated_at", _ANY),

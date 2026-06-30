@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
-편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 아직 후속 범위다.
+편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
 
 ## 1. 목적
 
-이 문서는 MVP 2의 Governance/RAG/Audit 개발 전에 선행해야 했던 `MVP 2-0` 작업을 정의한 계획서다. Dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐고, 현재는 완료된 foundation과 남은 member/invitation/API/UI 범위를 구분해 읽는다.
+이 문서는 MVP 2의 Governance/RAG/Audit 개발 전에 선행해야 했던 `MVP 2-0` 작업을 정의한 계획서다. Dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐고, 현재는 완료된 BE foundation과 남은 full membership UI 범위를 구분해 읽는다.
 
 MVP 1이 완료되었다고 가정하면 현재 RBAC foundation은 다음 구조를 가진다.
 
@@ -90,7 +90,7 @@ user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additiv
 
 ## 3. 목표
 
-아래 목록은 원 계획의 전체 목표다. Dev 기준 현재 완료된 foundation은 `organization_memberships` DB/model/migration/backfill과 permission helper 전환이며, member/invitation API, accept flow, full membership UI, cleanup/audit 확장은 남은 범위다.
+아래 목록은 원 계획의 전체 목표다. 현재 PR 기준 BE foundation은 `organization_memberships` DB/model/migration/backfill, permission helper 전환, member/invitation API, accept flow, remove cleanup/audit 확장까지 구현됐다. Full membership 관리 UI는 후속 범위다.
 
 1. organization manager가 기존 user를 organization에 초대할 수 있다.
 2. 초대받은 user는 organization membership 상태를 가진다.
@@ -792,6 +792,40 @@ Permission:
 
 Response:
 
+기존 MVP 1 frontend 호환을 위해 active organization context 후보인 `OrganizationResponse[]`를 반환한다. `invited`, `suspended`, `removed` membership은 포함하지 않는다.
+
+```json
+[
+  {
+    "id": "uuid",
+    "name": "Acme",
+    "options": {},
+    "is_active": true,
+    "is_manager": true,
+    "created_at": "2026-06-29T00:00:00Z",
+    "updated_at": "2026-06-29T00:00:00Z"
+  }
+]
+```
+
+조회 기준:
+
+- current user의 active `organization_memberships`
+- `membership_state == 'active'`
+- 응답 항목은 `X-Organization-Id` active context 후보로 사용할 수 있다.
+
+### 13.1.1 Organization membership list
+
+```text
+GET /api/v1/organizations/memberships
+```
+
+Permission:
+
+- authenticated
+
+Response:
+
 ```json
 [
   {
@@ -808,7 +842,8 @@ Response:
 
 - current user의 `organization_memberships`
 - `membership_state in ('active', 'invited')`
-- 기본 UI에서는 active와 invited를 구분 표시한다.
+- 초대 수락 UI에서는 active와 invited를 구분 표시한다.
+- invited membership은 `X-Organization-Id` active context 후보로 저장하지 않는다.
 
 ### 13.2 Current organization
 
@@ -822,12 +857,17 @@ Permission:
 
 Response:
 
+기존 Organization API 계약을 유지해 `OrganizationResponse`를 반환한다.
+
 ```json
 {
   "id": "uuid",
   "name": "Acme",
-  "membership_state": "active",
-  "organization_auth_state": "member"
+  "options": {},
+  "is_active": true,
+  "is_manager": false,
+  "created_at": "2026-06-29T00:00:00Z",
+  "updated_at": "2026-06-29T00:00:00Z"
 }
 ```
 
@@ -1052,8 +1092,10 @@ MVP 2-0에서 기존 MVP 1 API는 다음처럼 유지한다.
 | workflow user permission grant/revoke | 유지 | grantee 검증 기준만 team membership에서 organization membership으로 변경 |
 | LLM credential team permission grant/revoke | 유지 | 기존 request/response 유지 |
 | LLM credential user permission grant/revoke | 유지 | grantee 검증 기준만 team membership에서 organization membership으로 변경 |
+| `GET /api/v1/organizations` | 유지 | 기존 response shape 유지, active membership만 반환 |
+| `GET /api/v1/organizations/memberships` | 신규 | membership 상태 목록과 invited organization은 새 endpoint에서 제공 |
 
-즉 MVP 1 client 코드는 가능한 한 수정하지 않고, 새 Members UI와 picker filtering만 추가한다.
+즉 MVP 1 client 코드는 가능한 한 수정하지 않고, 새 Members UI와 초대 수락 UI는 membership 전용 endpoint를 사용한다.
 
 ## 14. Schema 작업
 
@@ -1070,7 +1112,6 @@ OrganizationMemberInviteRequest
 OrganizationMemberUpdateRequest
 OrganizationMemberResponse
 OrganizationSummaryResponse
-OrganizationCurrentResponse
 OrganizationMemberRemoveResponse
 ```
 
@@ -1104,8 +1145,9 @@ MVP 2-0에서 audit에 남겨야 하는 action:
 
 민감 정보:
 
-- email은 audit metadata에 저장하지 않는다.
-- user id, organization id, membership id만 저장한다.
+- target user email은 audit metadata에 저장하지 않는다.
+- 요청 수행자 복원력을 위해 `audit_metadata.actor` snapshot에는 actor id/email/name을 저장한다.
+- target user id, organization id, membership id는 저장한다.
 
 Audit metadata 예시:
 
@@ -1196,9 +1238,9 @@ MVP 2-0 invite modal:
 
 MVP 2-0에서 다중 organization switcher를 넣을 수 있다면 다음 기준을 따른다.
 
-- organization list는 `organization_memberships` 기준
-- invited organization은 "초대됨" 상태로 보이되 resource 화면으로 진입하지 않는다.
-- active organization 변경은 header/session/cookie 중 하나로 API 계약을 먼저 확정한 뒤 active API/architecture 문서에 반영한다.
+- active organization switcher는 `GET /api/v1/organizations`를 사용해 active membership organization만 표시한다.
+- 초대 수락 UI는 `GET /api/v1/organizations/memberships`를 사용해 invited organization을 "초대됨" 상태로 표시하되 resource 화면으로 진입하지 않는다.
+- active organization 변경은 선택한 organization id를 client state/localStorage 등에 저장하고, 이후 organization-scoped 요청에 `X-Organization-Id` header로 전달한다.
 
 다중 switcher가 MVP 2-0 범위를 넘으면 최소한 현재 organization 표시와 organization list API만 추가한다.
 
@@ -1301,7 +1343,7 @@ MBA-66 구현 메모:
 - schema migration과 data/backfill migration을 분리한다.
 - MBA-67에서 permission helper와 일부 API endpoint 전환이 진행됐다.
 - MBA-71에서 active organization과 manager/member 화면 분기 일부가 반영됐다.
-- Organization member/invitation API와 full membership 관리 UI는 후속 범위로 유지한다.
+- Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 후속 범위로 유지한다.
 
 ### Issue 0-2. `[BE][RBAC] organization membership 기반 permission helper 전환`
 
@@ -1505,19 +1547,19 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 
 ## 22. 완료 기준
 
-아래 표는 원 계획의 전체 완료 기준과 dev 기준 현재 상태를 함께 기록한다.
+아래 표는 원 계획의 전체 완료 기준과 현재 PR 기준 상태를 함께 기록한다.
 
-| 영역 | 원 계획 완료 기준 | dev 기준 현재 상태 |
+| 영역 | 원 계획 완료 기준 | 현재 PR 기준 상태 |
 | --- | --- | --- |
 | DB | `organization_memberships` table과 migration/backfill 완료 | 완료 |
 | Organization context | active organization 조회가 organization membership 기준으로 동작 | helper/API 전환 범위 완료. Legacy fallback 축소는 후속 |
-| Invitation | manager가 기존 user를 organization에 invite 가능 | 남음 |
-| Acceptance | user가 invite를 accept하여 active member가 됨 | 남음 |
+| Invitation | manager가 기존 user를 organization에 invite 가능 | BE 완료. Full membership UI는 후속 |
+| Acceptance | user가 invite를 accept하여 active member가 됨 | BE 완료. Full membership UI는 후속 |
 | Team | active organization member만 team에 추가 가능 | 완료된 foundation 위에서 유지 |
 | User direct permission | team 소속이 없어도 active organization member면 direct permission 가능 | workflow/LLM permission 전환 범위 완료. Knowledge/audit user direct permission은 MVP 2/3 후속 |
 | Enforcement | active organization member가 아니면 resource permission row가 있어도 접근 차단 | workflow/LLM permission helper 전환 범위 완료. KB/RAG enforcement는 MVP 2 후속 |
-| Cleanup | organization member 제거 시 team/direct permission 정리 | 남음 |
-| Audit | invite/accept/update/remove/cleanup event 기록 | 남음 |
+| Cleanup | organization member 제거 시 team/direct permission 정리 | BE 완료. Full membership UI 연동은 후속 |
+| Audit | invite/accept/update/remove/cleanup event 기록 | BE 완료. Full membership UI 연동은 후속 |
 | UI | members list, invite, state 표시, team/direct permission picker 반영 | full membership UI는 남음. MBA-71의 manager/member 화면 분기 일부만 반영 |
 | Regression | MVP1 workflow/LLM permission demo가 계속 통과 | 완료된 foundation 변경의 회귀 기준으로 유지 |
 
