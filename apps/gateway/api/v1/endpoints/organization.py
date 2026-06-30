@@ -1,10 +1,16 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
-from apps.gateway.utils.api_errors import parse_organization_id, raise_api_error
+from apps.gateway.services.organization_member_service import OrganizationMemberService
+from apps.gateway.utils.api_errors import (
+    error_response,
+    parse_organization_id,
+    raise_api_error,
+)
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.organization import Organization
@@ -18,12 +24,34 @@ from apps.shared.schemas.organization import (
     OrganizationPatchRequest,
     OrganizationResponse,
 )
+from apps.shared.schemas.organization_membership import (
+    OrganizationMemberInviteRequest,
+    OrganizationMemberRemoveResponse,
+    OrganizationMemberResponse,
+    OrganizationMemberUpdateRequest,
+)
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
 )
 
 router = APIRouter()
+
+
+def _service_error_response(request: Request, exc: HTTPException) -> JSONResponse:
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+
+    message = str(exc.detail)
+    if exc.status_code == 404:
+        return error_response(request, 404, "resource.not_found", message)
+    if exc.status_code == 409:
+        return error_response(request, 409, "resource.conflict", message)
+    if exc.status_code == 403:
+        return error_response(request, 403, "permission.denied", message)
+    if exc.status_code == 400:
+        return error_response(request, 400, "validation.failed", message)
+    return error_response(request, exc.status_code, "operation.failed", message)
 
 
 def _get_organization_in_active_membership_scope(
@@ -101,8 +129,6 @@ def get_current_organization(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # current organization 상태를 session/cookie에 저장하지 않고
-    # 매 요청의 header 값을 검증한다.
     organization_id = parse_organization_id(request, x_organization_id)
     organization = _get_organization_in_active_membership_scope(
         db,
@@ -111,14 +137,119 @@ def get_current_organization(
     )
 
     if organization is None:
-        raise_api_error(
-            request,
-            404,
-            "resource.not_found",
-            "Organization not found.",
-        )
+        raise_api_error(request, 404, "resource.not_found", "Organization not found.")
 
     return _to_organization_response(db, organization, current_user.id)
+
+
+@router.get(
+    "/{organization_id}/members",
+    response_model=list[OrganizationMemberResponse],
+)
+def list_members(
+    request: Request,
+    organization_id: UUID,
+    state: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return OrganizationMemberService.list_members(
+            db,
+            current_user,
+            organization_id,
+            state,
+        )
+    except HTTPException as exc:
+        return _service_error_response(request, exc)
+
+
+@router.post(
+    "/{organization_id}/members/invitations",
+    response_model=OrganizationMemberResponse,
+)
+def invite_member(
+    request: Request,
+    organization_id: UUID,
+    payload: OrganizationMemberInviteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return OrganizationMemberService.invite_member(
+            db,
+            current_user,
+            organization_id,
+            payload,
+        )
+    except HTTPException as exc:
+        return _service_error_response(request, exc)
+
+
+@router.post(
+    "/{organization_id}/members/me/accept",
+    response_model=OrganizationMemberResponse,
+)
+def accept_invitation(
+    request: Request,
+    organization_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return OrganizationMemberService.accept_invitation(
+            db,
+            current_user,
+            organization_id,
+        )
+    except HTTPException as exc:
+        return _service_error_response(request, exc)
+
+
+@router.patch(
+    "/{organization_id}/members/{user_id}",
+    response_model=OrganizationMemberResponse,
+)
+def update_member(
+    request: Request,
+    organization_id: UUID,
+    user_id: UUID,
+    payload: OrganizationMemberUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return OrganizationMemberService.update_member(
+            db,
+            current_user,
+            organization_id,
+            user_id,
+            payload,
+        )
+    except HTTPException as exc:
+        return _service_error_response(request, exc)
+
+
+@router.delete(
+    "/{organization_id}/members/{user_id}",
+    response_model=OrganizationMemberRemoveResponse,
+)
+def remove_member(
+    request: Request,
+    organization_id: UUID,
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return OrganizationMemberService.remove_member(
+            db,
+            current_user,
+            organization_id,
+            user_id,
+        )
+    except HTTPException as exc:
+        return _service_error_response(request, exc)
 
 
 # 인증된 사용자가 접근 가능한 특정 active organization 상세를 조회하는 API.

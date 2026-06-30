@@ -57,9 +57,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _commit_or_conflict(db: Session, message: str) -> None:
+def _flush_or_conflict(db: Session, message: str) -> None:
+    # INSERT는 commit이 아니라 flush 시점에 실행되므로, unique 충돌을 409로
+    # 변환하려면 flush를 감싸야 한다. commit을 감싸면 race를 놓친다.
     try:
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=message) from exc
@@ -370,7 +372,7 @@ class OrganizationMemberService:
             membership.user = target_user
             db.add(membership)
 
-        db.flush()
+        _flush_or_conflict(db, "Organization membership already exists.")
         _add_audit_log(
             db,
             AuditAction.ORGANIZATION_INVITE,
@@ -384,7 +386,7 @@ class OrganizationMemberService:
                 next_organization_auth_state=membership.organization_auth_state,
             ),
         )
-        _commit_or_conflict(db, "Organization membership already exists.")
+        db.commit()
         db.refresh(membership)
         return _member_response(membership)
 

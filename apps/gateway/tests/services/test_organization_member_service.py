@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.operators import eq, in_op, is_
 
 from apps.gateway.services.organization_member_service import OrganizationMemberService
@@ -414,6 +415,37 @@ def test_invite_conflict_and_not_found_cases(monkeypatch):
     assert deactivated.value.status_code == 404
     assert missing.value.status_code == 404
     assert db.audit_logs == []
+
+
+def test_invite_conflict_on_flush_returns_409(monkeypatch):
+    # 동시 invite로 unique 제약이 깨지면 INSERT(flush) 시점에 IntegrityError가 나고,
+    # 이를 409로 변환하면서 audit/commit은 일어나지 않아야 한다.
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[_membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER)],
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    def _raise_integrity_error():
+        raise IntegrityError("INSERT", {}, Exception("duplicate"))
+
+    monkeypatch.setattr(db, "flush", _raise_integrity_error)
+
+    with pytest.raises(HTTPException) as conflict:
+        OrganizationMemberService.invite_member(
+            db, manager, org.id, OrganizationMemberInviteRequest(user_id=target.id)
+        )
+
+    assert conflict.value.status_code == 409
+    assert db.audit_logs == []
+    assert db.commits == 0
 
 
 def test_accept_is_idempotent_when_already_active():

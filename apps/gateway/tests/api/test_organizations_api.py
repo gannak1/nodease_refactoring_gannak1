@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.sql.operators import is_
 
@@ -15,6 +16,11 @@ from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
+from apps.shared.schemas.organization_membership import (
+    OrganizationMemberRemoveResponse,
+    OrganizationMemberResponse,
+    RevokedUserPermissionCounts,
+)
 
 
 class TestOrganizationsApi(unittest.TestCase):
@@ -174,6 +180,7 @@ class TestOrganizationsApi(unittest.TestCase):
             users=[_user(user_id)],
             memberships=[_membership(user_id, organization_id)],
         )
+
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -291,6 +298,200 @@ class TestOrganizationsApi(unittest.TestCase):
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
+
+    def test_route_lists_members(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        member = _member_response(organization_id=organization_id)
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.list_members",
+            return_value=[member],
+        ) as service:
+            response = TestClient(app).get(
+                f"/api/v1/organizations/{organization_id}/members?state=active"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]["id"], str(member.id))
+        service.assert_called_once()
+        self.assertEqual(service.call_args.args[2], organization_id)
+        self.assertEqual(service.call_args.args[3], "active")
+
+    def test_route_invites_member(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+        member = _member_response(
+            organization_id=organization_id,
+            user_id=target_user_id,
+            membership_state="invited",
+        )
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.invite_member",
+            return_value=member,
+        ) as service:
+            response = TestClient(app).post(
+                f"/api/v1/organizations/{organization_id}/members/invitations",
+                json={"user_id": str(target_user_id)},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["membership_state"], "invited")
+        self.assertEqual(service.call_args.args[2], organization_id)
+        self.assertEqual(service.call_args.args[3].user_id, target_user_id)
+        self.assertEqual(service.call_args.args[3].organization_auth_state, "member")
+
+    def test_route_accepts_invitation_on_literal_me_path(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        member = _member_response(
+            organization_id=organization_id,
+            user_id=user_id,
+            membership_state="active",
+        )
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.accept_invitation",
+            return_value=member,
+        ) as service:
+            response = TestClient(app).post(
+                f"/api/v1/organizations/{organization_id}/members/me/accept"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["membership_state"], "active")
+        self.assertEqual(service.call_args.args[2], organization_id)
+
+    def test_route_updates_member(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+        member = _member_response(
+            organization_id=organization_id,
+            user_id=target_user_id,
+            organization_auth_state="manager",
+        )
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.update_member",
+            return_value=member,
+        ) as service:
+            response = TestClient(app).patch(
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                json={"organization_auth_state": "manager"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["organization_auth_state"], "manager")
+        self.assertEqual(service.call_args.args[2], organization_id)
+        self.assertEqual(service.call_args.args[3], target_user_id)
+
+    def test_route_removes_member(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.remove_member",
+            return_value=OrganizationMemberRemoveResponse(
+                status="removed",
+                removed_team_memberships=1,
+                revoked_user_permissions=RevokedUserPermissionCounts(
+                    workflow=2,
+                    llm_credential=1,
+                ),
+            ),
+        ) as service:
+            response = TestClient(app).delete(
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "removed")
+        self.assertEqual(response.json()["removed_team_memberships"], 1)
+        self.assertEqual(service.call_args.args[2], organization_id)
+        self.assertEqual(service.call_args.args[3], target_user_id)
+
+    def test_member_routes_wrap_service_errors(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        cases = [
+            (
+                "get",
+                f"/api/v1/organizations/{organization_id}/members?state=bad",
+                "list_members",
+                HTTPException(status_code=400, detail="Invalid membership state."),
+                "validation.failed",
+            ),
+            (
+                "post",
+                f"/api/v1/organizations/{organization_id}/members/invitations",
+                "invite_member",
+                HTTPException(status_code=403, detail="Permission denied."),
+                "permission.denied",
+            ),
+            (
+                "post",
+                f"/api/v1/organizations/{organization_id}/members/me/accept",
+                "accept_invitation",
+                HTTPException(status_code=404, detail="Invitation not found."),
+                "resource.not_found",
+            ),
+            (
+                "patch",
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                "update_member",
+                HTTPException(status_code=409, detail="Invitation cannot be accepted."),
+                "resource.conflict",
+            ),
+        ]
+
+        for method, path, service_name, exc, code in cases:
+            with self.subTest(method=method, path=path):
+                with patch(
+                    "apps.gateway.api.v1.endpoints.organization."
+                    f"OrganizationMemberService.{service_name}",
+                    side_effect=exc,
+                ):
+                    kwargs = {}
+                    if method in {"post", "patch"} and service_name != "accept_invitation":
+                        kwargs["json"] = {"user_id": str(target_user_id)}
+                    response = getattr(TestClient(app), method)(
+                        path,
+                        headers={"X-Request-ID": "req-test"},
+                        **kwargs,
+                    )
+
+                self.assertEqual(response.status_code, exc.status_code)
+                self.assertEqual(response.json()["error"]["code"], code)
+                self.assertEqual(response.json()["error"]["request_id"], "req-test")
 
     def test_route_hides_organization_outside_user_memberships(self):
         # 조직이 없거나 현재 사용자의 membership scope 밖이면 존재 여부를 노출하지 않고 404로 숨긴다.
@@ -760,6 +961,30 @@ def _membership(user_id, organization_id, auth_state="member", membership_state=
         organization_id=organization_id,
         membership_state=membership_state,
         organization_auth_state=auth_state,
+    )
+
+
+def _member_response(
+    organization_id,
+    user_id=None,
+    membership_state="active",
+    organization_auth_state="member",
+):
+    now = datetime(2026, 6, 27, 1, 2, 3, tzinfo=timezone.utc)
+    return OrganizationMemberResponse(
+        id=uuid4(),
+        organization_id=organization_id,
+        user_id=user_id or uuid4(),
+        user_email="member@example.com",
+        user_name="Member",
+        membership_state=membership_state,
+        organization_auth_state=organization_auth_state,
+        invited_by=uuid4(),
+        invited_at=now,
+        accepted_at=now if membership_state == "active" else None,
+        removed_at=None,
+        created_at=now,
+        updated_at=now,
     )
 
 
