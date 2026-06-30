@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 목적
 
@@ -115,7 +115,7 @@ Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
 | 배포 중 | `active_deployment_id`가 있고 `active_deployment_is_active === true` | 가능 |
 | 배포 꺼짐 | active deployment는 있으나 inactive | 가능 |
 | 미배포 | `active_deployment_id` 없음 | 가능 |
-| 오류 있음 | 최근 실행 실패 또는 최근 배포 오류 | 추가 API 필요 |
+| 오류 있음 | 최근 실행 실패 또는 최근 배포 오류 | `/workflows/{workflow_id}/runs` best-effort 조회로 일부 가능. 화면 단위 summary API는 후속 보강 필요 |
 | 내가 수정 가능 | `can_write === true` | `permissions/me` 조회 필요 |
 | 내가 실행 가능 | `can_execute === true` | `permissions/me` 조회 필요 |
 | 내가 관리 가능 | `can_manage === true` | `permissions/me` 조회 필요 |
@@ -142,7 +142,7 @@ Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
 | 내 권한 | `viewer/operator/builder/manager` badge | `permissions/me` |
 | 접근 경로 | team 이름 또는 direct grant | 추가 API 필요 |
 | 배포 | 배포 중/꺼짐/미배포, type | `AppResponse` |
-| 실행 상태 | 최근 성공/실패/실행 중 | 추가 API 필요 |
+| 실행 상태 | 최근 성공/실패/실행 중 | `/workflows/{workflow_id}/runs` best-effort 조회로 일부 가능. N+1 제거와 정확한 운영 summary는 후속 API 필요 |
 | 마지막 활동 | updated_at 또는 최근 run time | 일부 가능 |
 | action | 열기, 실행, 수정, 배포, 권한 관리 | permission boolean |
 
@@ -181,7 +181,7 @@ Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
 | --- | --- | --- |
 | 내 권한 | 전체, 조회, 실행, 수정, 관리 | `permissions/me` 필요 |
 | 배포 상태 | 전체, 배포 중, 배포 꺼짐, 미배포 | 가능 |
-| 실행 상태 | 전체, 정상, 오류, 실행 중 | 추가 API 필요 |
+| 실행 상태 | 전체, 정상, 오류, 실행 중 | workflow별 `/runs` best-effort 조회로 일부 가능. 화면 단위 summary와 정확한 N+1 없는 필터는 후속 API 필요 |
 | 접근 경로 | 전체, team, direct grant | 추가 API 필요 |
 | team | team 목록 | 추가 API 필요 |
 | 소유자 | 소유자 이름 | `owner_name` 기반 제한적 가능 |
@@ -292,7 +292,7 @@ MVP1에서 BE 보강 없이 FE만 진행한다면 source UI는 노출하지 않�
 
 ### FE-only 1차 구현
 
-1차 구현은 현재 API로 가능한 범위만 다룬다.
+1차 구현은 현재 API로 가능한 범위만 다룬다. MBA-71 병합 기준 현재 구현은 app list와 workflow permission을 조합하고, workflow별 `/runs` 조회를 best-effort로 시도한다. Run 조회가 실패하면 전체 목록을 깨지 않고 해당 row를 `확인 필요`/`연동 예정` 상태로 표시한다.
 
 ```text
 GET /api/v1/apps
@@ -312,11 +312,11 @@ GET /api/v1/apps
 - 이름/설명 검색
 - 배포 상태 필터
 - 권한 필터
+- workflow별 `/runs` best-effort 조회를 통한 최근 실행 상태 표시
 
 1차 구현에서 하지 않는 것:
 
 - team별 권한 출처 표시
-- 최근 실행 오류/실행 중 표시
 - team 필터
 - 오류만 보기
 
@@ -430,7 +430,7 @@ GET /api/v1/apps/operations
 6. 기존 `AppCard` grid를 `ModuleAccessTable` 또는 `ModuleAccessList`로 교체한다.
 7. 검색, 권한 필터, 배포 필터를 추가한다.
 8. row action을 permission boolean 기준으로 제어한다.
-9. team 출처와 실행 상태는 API 보강 TODO로 남긴다.
+9. team 출처는 API 보강 TODO로 남기고, 실행 상태는 workflow별 `/runs` best-effort 조회 결과가 있을 때만 표시한다.
 
 ## QA 체크리스트
 
@@ -484,7 +484,7 @@ MBA-71의 `/dashboard/mymodule` 화면을 카드형 모듈 grid에서 team/RBAC 
 아직 구현하지 말고 TODO로 남길 범위:
 - 어느 team 권한으로 접근 가능한지 표시.
 - user direct permission 출처 표시.
-- 실행 중/오류/최근 실행 상태 표시.
+- 실행 중/오류/최근 실행 상태의 정확한 화면 단위 summary.
 - team 필터, 오류만 보기 필터.
 
 이 TODO는 현재 API 응답만으로 정확히 구현하기 어렵다. 문서 기준은 `docs/front/module-list-access-operations-ui.md`를 따른다.

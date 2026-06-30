@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
 
 ## 1. 목적
@@ -14,7 +14,7 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 
 | 기준 | 내용 |
 | --- | --- |
-| 현재 코드 구현 | 로컬 `dev` 브랜치의 `c990b54e931b4de8023822f6dff14f43fc1d415f` 코드 |
+| 현재 코드 구현 | 로컬 `dev` 브랜치의 `ec576b4f24155697aed8843acc6e5a3fc835f7e1` 코드 |
 | MVP 1 목표 문서 | `requirements/mvp-1-foundation-llmops.md` |
 | Linear 참고 | Linear All Issues에서 확인한 미완료 이슈 목록 |
 
@@ -25,9 +25,9 @@ Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permissio
 | 항목 | 값 |
 | --- | --- |
 | 확인 브랜치 | `dev` |
-| 확인 commit | `c990b54e931b4de8023822f6dff14f43fc1d415f` |
-| commit 요약 | `Merge pull request #98 from nodease/feature/mba-63` |
-| 확인 시점 | 2026-06-29 |
+| 확인 commit | `ec576b4f24155697aed8843acc6e5a3fc835f7e1` |
+| commit 요약 | `Merge pull request #118 from nodease/feature/mba-71` |
+| 확인 시점 | 2026-06-30 |
 
 참고한 주요 문서:
 

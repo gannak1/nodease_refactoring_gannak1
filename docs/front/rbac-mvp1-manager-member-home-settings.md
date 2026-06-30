@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-71 @ 119dc71f817f0860c3a7d544802f87d43b3b378c
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 목적
 
@@ -68,7 +68,7 @@ MBA-71 프론트는 `OrganizationResponse.is_manager`를 화면 분기의 기준
 | 파일 | 현재 역할 | MBA-71에서 확인할 점 |
 | --- | --- | --- |
 | `apps/client/app/dashboard/page.tsx` | 정적 홈 quick action 화면 | manager/member별 organization/team/workflow summary를 추가할 위치 |
-| `apps/client/app/dashboard/settings/page.tsx` | Settings access/credentials/activity 탭과 RBAC 관리 UI | `organization.is_manager` 기준으로 access 탭 노출과 action 제어 |
+| `apps/client/app/dashboard/settings/page.tsx` | Settings access/credentials/activity 탭과 RBAC 관리 UI | `OrganizationResponse.is_manager` 기준으로 access 탭 노출과 action 제어 |
 | `apps/client/app/features/dashboard/components/Sidebar.tsx` | dashboard navigation과 organization 이름 표시 | member에게 Settings 전체 또는 조직 접근만 숨길지 결정 |
 | `apps/client/lib/activeOrganization.ts` | active organization id localStorage 저장과 `X-Organization-Id` header 생성 | 홈과 설정에서 같은 active organization 기준 사용 |
 | `apps/client/app/features/app/api/appApi.ts` | `/apps` API client | 홈에서 접근 가능한 app/workflow 목록 조회 |
@@ -84,13 +84,13 @@ MBA-71 프론트는 `OrganizationResponse.is_manager`를 화면 분기의 기준
 | `GET /api/v1/organizations/current` | active organization 검증 | `OrganizationResponse.is_manager`로 manager/member 화면을 분기한다. |
 | `GET /api/v1/organizations/{organization_id}` | organization 상세 조회 | 필요 시 동일한 `is_manager` 계약을 사용한다. |
 
-`organization.is_manager`는 MBA-72에서 API 계약과 백엔드 응답에 반영된 필드다. MBA-71은 별도 manager 판정 API를 만들지 않고 이 필드를 기준으로 Settings access tab, Home summary, manager-only API 호출 여부를 제어한다.
+`is_manager`는 `api/organization-rbac.md`의 `OrganizationResponse` 계약에 포함된 현재 요청 user 기준 파생 필드다. MBA-71은 별도 manager 판정 API를 만들지 않고 이 필드를 기준으로 Settings access tab, Home summary, manager-only API 호출 여부를 제어한다.
 
 ### Manager 전용 Team API
 
 | API | 용도 | 화면 |
 | --- | --- | --- |
-| `GET /api/v1/users?organization_id={id}` | team 기반 active user 목록 | manager 홈, Settings access |
+| `GET /api/v1/users?organization_id={id}` | active organization member user 목록. Team member 추가 대상도 이 목록에서 선택 | manager 홈, Settings access |
 | `GET /api/v1/teams` | team 목록 | manager 홈, Settings access |
 | `GET /api/v1/teams/{team_id}/members` | team별 member map | manager 홈, Settings access |
 | `POST /api/v1/teams` | team 생성 | manager 화면 |
@@ -126,7 +126,7 @@ MBA-71에서 "member가 자신이 속한 team 목록을 본다"를 반드시 만
 | API | 용도 | 주의 |
 | --- | --- | --- |
 | `GET /api/v1/apps` | 접근 가능한 app 목록 | app read는 organization manager 또는 primary workflow read 권한 기준 |
-| `GET /api/v1/workflows/{workflow_id}/permissions/me` | 내 workflow effective permission 조회 | read 권한이 있어야 응답할 수 있으므로 `none` 상태 응답 정책은 API 문서 보강 필요 |
+| `GET /api/v1/workflows/{workflow_id}/permissions/me` | 내 workflow effective permission 조회 | `api/apps-workflows.md` 기준 workflow `read` 권한이 필요하므로 `none` 사용자는 보통 선행 403/404로 차단 |
 
 홈에서 app/workflow 권한 badge를 표시하려면 `/apps` 응답의 `workflow_id`가 있는 항목마다 `/workflows/{workflow_id}/permissions/me`를 호출한다. 실패한 항목은 전체 홈 로드를 깨지 말고, 해당 row에 권한 조회 실패 상태를 표시한다.
 
@@ -225,7 +225,7 @@ MBA-71은 Settings access tab 노출 문제가 먼저 사용자에게 보이는 
 | --- | --- | --- |
 | 1 | `OrganizationResponse` 프론트 타입 확인 | `is_manager`를 필수 필드로 사용 |
 | 2 | Settings tab guard | member에게 `조직 접근` 탭 미노출, 기본 탭은 `LLM Credentials` |
-| 3 | Settings API 호출 분리 | manager 전용 API는 `organization.is_manager === true`일 때만 호출 |
+| 3 | Settings API 호출 분리 | manager 전용 API는 `OrganizationResponse.is_manager === true`일 때만 호출 |
 | 4 | Settings error state 정리 | member 화면에서 manager-only API 실패가 `Request failed`로 노출되지 않게 처리 |
 | 5 | LLM Credentials action guard | member에게 credential 등록/삭제/동기화/권한 관리 UI 미노출 |
 | 6 | Manager Home 보강 | team summary, inactive team 구분, workflow access summary |
@@ -234,7 +234,7 @@ MBA-71은 Settings access tab 노출 문제가 먼저 사용자에게 보이는 
 
 ## 구현 메모
 
-1. `organization.is_manager`는 API 응답 계약으로 존재하므로 프론트는 이 값을 기준으로 분기한다.
+1. `OrganizationResponse.is_manager`는 API 응답 계약으로 존재하므로 프론트는 이 값을 기준으로 분기한다.
 2. `SettingsPage`는 manager가 아닐 때 `access` 탭을 렌더링하지 않는다.
 3. `SettingsPage.loadData()`는 manager 전용 API와 공용 API를 분리 호출한다. member가 `GET /users`, `GET /teams`, permission grant list API 실패 때문에 전체 설정 화면이 깨지면 안 된다.
 4. `SettingsPage`는 member에게 LLM credential 등록 form, 삭제, sync, permission grant/revoke action을 렌더링하지 않는다.

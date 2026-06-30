@@ -3,10 +3,10 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
-편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation은 구현됐으며, permission helper/API/FE 전환은 후속 Issue 0-2 이후 범위다.
+편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 아직 후속 범위다.
 
 ## 1. 목적
 
@@ -77,16 +77,16 @@ MVP 2에서는 이 기준을 변경한다.
 
 ### 2.2 현재 코드 기준
 
-현 코드에는 다음 team membership 의존이 있다.
+원 계획 작성 당시에는 active organization과 user direct permission의 전제 조건이 `team_memberships`에 과도하게 의존했다. 최신 dev 기준으로 일부 전환은 완료됐고, 남은 작업은 organization member/invitation 제품 흐름과 full membership 관리 UI다.
 
-| 파일 | 현재 역할 | 변경 방향 |
+| 파일 | 최신 dev 상태 | 남은 방향 |
 | --- | --- | --- |
-| `apps/gateway/services/organization_context.py` | 첫 active team membership으로 primary organization 추정 | active `organization_memberships` 기준으로 변경 |
-| `apps/gateway/services/team_service.py` | user direct permission 부여 전에 team membership 확인 | organization membership 확인으로 변경 |
-| `apps/shared/services/permissions.py` | team permission 계산 시 team membership join | team permission 계산은 유지하되, resource 계산 전 organization membership 확인 추가 |
-| `apps/shared/db/models/team.py` | `TeamMembership`이 organization-user-team 관계까지 포함 | team 배정 역할로 유지 |
-| `docs/data-model/physical-data-model.md` | 사용자 소속을 `team_memberships`로 설명 | `organization_memberships`를 기준 table로 추가 |
-| `docs/api/organization-rbac.md` | team/member 관리와 resource permission 중심 | organization member/invite API 추가 |
+| `apps/gateway/services/organization_context.py` | active `organization_memberships` 기반 primary organization/helper 사용 | legacy fallback 제거 시점은 별도 결정 필요 |
+| `apps/gateway/services/team_service.py` | team member 추가와 user direct permission grant 대상에 active organization membership을 요구 | organization invite/accept flow가 생기면 대상 선택 UX와 연결 |
+| `apps/shared/services/permissions.py` | organization scope/manager 판정은 `organization_memberships` 우선, team permission 계산은 `team_memberships` join 유지 | knowledge/audit user direct permission 추가 시 같은 전제 조건 적용 |
+| `apps/shared/db/models/team.py` | `TeamMembership`은 organization 안의 team 배정 역할로 유지 | organization 소속 자체를 대신하지 않도록 유지 |
+| `docs/data-model/physical-data-model.md` | `organization_memberships`를 현재 organization 소속 기준으로 반영 | 후속 schema extension 시 planned table 상태 갱신 |
+| `docs/api/organization-rbac.md` | user directory, team, permission API의 membership 전제 조건을 반영 | organization member/invite API 추가 |
 
 ## 3. 목표
 
@@ -1299,7 +1299,9 @@ MBA-66 구현 메모:
 
 - `organization_memberships` DB/model/migration foundation을 추가한다.
 - schema migration과 data/backfill migration을 분리한다.
-- API endpoint, permission helper 전환, FE 전환은 Issue 0-2 이후 범위로 유지한다.
+- MBA-67에서 permission helper와 일부 API endpoint 전환이 진행됐다.
+- MBA-71에서 active organization과 manager/member 화면 분기 일부가 반영됐다.
+- Organization member/invitation API와 full membership 관리 UI는 후속 범위로 유지한다.
 
 ### Issue 0-2. `[BE][RBAC] organization membership 기반 permission helper 전환`
 

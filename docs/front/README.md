@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 
@@ -53,7 +53,7 @@ Verified Against: feature/mba-71 @ d2e791bab6920429bd3e4a15f50d5d3a14158ef6
 
 | 문서 | 범위 |
 | --- | --- |
-| [workflow-canvas-uiux-spec.md](workflow-canvas-uiux-spec.md) | Workflow canvas, node detail view, 변수 칩, 테스트 실행 안정화, 보고 페이지 등 `feature/mba-6` 프론트 UI/UX 작업 |
+| [workflow-canvas-uiux-spec.md](workflow-canvas-uiux-spec.md) | Workflow canvas, node detail view, 변수 칩, 테스트 실행 안정화, 보고 페이지 등 프론트 UI/UX 작업 |
 | [workflow-test-run-graph-snapshot-spec.md](workflow-test-run-graph-snapshot-spec.md) | 테스트 실행 시 프론트 graph snapshot 생성, 검증, draft 저장, 실행 요청 흐름 |
 | [rbac-permission-ui-overview.md](rbac-permission-ui-overview.md) | RBAC 프론트 작업 범위, 관련 화면, 사용자 역할, 제외 범위 |
 | [rbac-workflow-access-matrix.md](rbac-workflow-access-matrix.md) | workflow `none/viewer/operator/builder/manager`별 화면과 action 제어 |

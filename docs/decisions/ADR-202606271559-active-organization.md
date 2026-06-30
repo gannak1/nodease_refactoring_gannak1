@@ -3,7 +3,7 @@
 Status: Proposed
 Authority: Decision
 Source of Truth: No
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Created At: 2026-06-27 15:59 KST
 
 ## 배경

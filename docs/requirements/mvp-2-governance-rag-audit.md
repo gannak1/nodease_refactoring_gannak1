@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
 
 ## 목표
 
 MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소스와 RAG 실행 경로에 적용한다.
 
-이 문서는 MVP 2 목표 상태를 정의한다. 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 코드에서는 Knowledge Base API가 주로 owner/current-user scope로 동작하지만, RAG API 일부 경로는 owner/scope 검증이 약하다. LLM node의 RAG retrieval은 knowledge base `use` 권한 enforcement를 아직 적용하지 않는다. `classification`, `policy.warn`, `policy.block`, `rag.retrieve`, 변경 문서 단위 re-index UI/API도 목표 범위다.
+이 문서는 MVP 2 목표 상태를 정의한다. 현재 `dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1` 코드에서는 Knowledge Base API가 주로 owner/current-user scope로 동작하지만, RAG API 일부 경로는 owner/scope 검증이 약하다. LLM node의 RAG retrieval은 knowledge base `use` 권한 enforcement를 아직 적용하지 않는다. `classification`, `policy.warn`, `policy.block`, `rag.retrieve`, 변경 문서 단위 re-index UI/API도 목표 범위다.
 
 결과물:
 
