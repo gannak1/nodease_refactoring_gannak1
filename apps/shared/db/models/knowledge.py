@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from apps.shared.db.base import Base
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -131,6 +131,13 @@ class DocumentChunk(Base):
     """
 
     __tablename__ = "document_chunks"
+    __table_args__ = (
+        Index(
+            "ix_document_chunks_knowledge_base_id_chunk_level",
+            "knowledge_base_id",
+            "chunk_level",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
@@ -152,6 +159,20 @@ class DocumentChunk(Base):
 
     # 문서 내 순서 (나중에 앞뒤 문맥 가져올 때 사용)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    parent_chunk_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # 기존 row의 NULL은 application layer에서 flat chunk로 해석한다.
+    chunk_level: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    section_path: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    heading: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     # 토큰 수 (LLM Context Window 계산용)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
