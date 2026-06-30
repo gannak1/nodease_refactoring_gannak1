@@ -6,9 +6,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_AUTH_MEMBER,
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_MEMBERSHIP_ACTIVE,
     ORGANIZATION_MEMBERSHIP_INVITED,
@@ -113,10 +115,29 @@ def _ensure_manager(db: Session, current_user: User, organization_id: Any) -> No
         return
     if not has_organization_scope_access(db, current_user.id, organization_id):
         raise HTTPException(status_code=404, detail="Organization not found.")
-    raise HTTPException(
+    record_audit(
+        action=AuditAction.PERMISSION_DENIED,
+        category="action",
+        actor_id=current_user.id,
+        actor_type="user",
+        target_type="organization",
+        target_id=organization_id,
+        status="failure",
+        metadata={
+            "policy_result": "deny",
+            "resource_type": "organization",
+            "resource_id": str(organization_id),
+            "required_permission": ORGANIZATION_AUTH_MANAGER,
+            "permission_action": "manage_members",
+            "effective_auth_state": ORGANIZATION_AUTH_MEMBER,
+        },
+    )
+    exc = HTTPException(
         status_code=403,
         detail="Organization manager permission is required.",
     )
+    setattr(exc, "audit_recorded", True)
+    raise exc
 
 
 def _member_response(membership: OrganizationMembership) -> OrganizationMemberResponse:

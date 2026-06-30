@@ -548,6 +548,7 @@ def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, ex
     user = _user()
     org = _organization("Acme", created_by=user.id)
     db = _Db(users=[user], organizations=[org], memberships=[])
+    events = []
     monkeypatch.setattr(
         "apps.gateway.services.organization_member_service.has_organization_manager_permission",
         lambda *args: False,
@@ -556,11 +557,39 @@ def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, ex
         "apps.gateway.services.organization_member_service.has_organization_scope_access",
         lambda *args: scope_access,
     )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.record_audit",
+        lambda **event: events.append(event),
+    )
 
     with pytest.raises(HTTPException) as denied:
         OrganizationMemberService.list_members(db, user, org.id)
 
     assert denied.value.status_code == expected_status
+    if scope_access:
+        assert getattr(denied.value, "audit_recorded", False) is True
+        assert events == [
+            {
+                "action": AuditAction.PERMISSION_DENIED,
+                "category": "action",
+                "actor_id": user.id,
+                "actor_type": "user",
+                "target_type": "organization",
+                "target_id": org.id,
+                "status": "failure",
+                "metadata": {
+                    "policy_result": "deny",
+                    "resource_type": "organization",
+                    "resource_id": str(org.id),
+                    "required_permission": ORGANIZATION_AUTH_MANAGER,
+                    "permission_action": "manage_members",
+                    "effective_auth_state": ORGANIZATION_AUTH_MEMBER,
+                },
+            }
+        ]
+    else:
+        assert getattr(denied.value, "audit_recorded", False) is False
+        assert events == []
 
 
 class _Db:
