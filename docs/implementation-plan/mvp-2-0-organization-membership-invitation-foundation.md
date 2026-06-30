@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ PR #125 head
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
 편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
 
 ## 1. 목적
 
-이 문서는 MVP 2의 Governance/RAG/Audit 개발 전에 선행해야 했던 `MVP 2-0` 작업을 정의한 계획서다. Dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐고, 현재는 완료된 foundation과 남은 member/invitation/API/UI 범위를 구분해 읽는다.
+이 문서는 MVP 2의 Governance/RAG/Audit 개발 전에 선행해야 했던 `MVP 2-0` 작업을 정의한 계획서다. Dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐고, 현재는 완료된 BE foundation과 남은 full membership UI 범위를 구분해 읽는다.
 
 MVP 1이 완료되었다고 가정하면 현재 RBAC foundation은 다음 구조를 가진다.
 
@@ -1547,19 +1547,19 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 
 ## 22. 완료 기준
 
-아래 표는 원 계획의 전체 완료 기준과 dev 기준 현재 상태를 함께 기록한다.
+아래 표는 원 계획의 전체 완료 기준과 현재 PR 기준 상태를 함께 기록한다.
 
-| 영역 | 원 계획 완료 기준 | dev 기준 현재 상태 |
+| 영역 | 원 계획 완료 기준 | 현재 PR 기준 상태 |
 | --- | --- | --- |
 | DB | `organization_memberships` table과 migration/backfill 완료 | 완료 |
 | Organization context | active organization 조회가 organization membership 기준으로 동작 | helper/API 전환 범위 완료. Legacy fallback 축소는 후속 |
-| Invitation | manager가 기존 user를 organization에 invite 가능 | 남음 |
-| Acceptance | user가 invite를 accept하여 active member가 됨 | 남음 |
+| Invitation | manager가 기존 user를 organization에 invite 가능 | BE 완료. Full membership UI는 후속 |
+| Acceptance | user가 invite를 accept하여 active member가 됨 | BE 완료. Full membership UI는 후속 |
 | Team | active organization member만 team에 추가 가능 | 완료된 foundation 위에서 유지 |
 | User direct permission | team 소속이 없어도 active organization member면 direct permission 가능 | workflow/LLM permission 전환 범위 완료. Knowledge/audit user direct permission은 MVP 2/3 후속 |
 | Enforcement | active organization member가 아니면 resource permission row가 있어도 접근 차단 | workflow/LLM permission helper 전환 범위 완료. KB/RAG enforcement는 MVP 2 후속 |
-| Cleanup | organization member 제거 시 team/direct permission 정리 | 남음 |
-| Audit | invite/accept/update/remove/cleanup event 기록 | 남음 |
+| Cleanup | organization member 제거 시 team/direct permission 정리 | BE 완료. Full membership UI 연동은 후속 |
+| Audit | invite/accept/update/remove/cleanup event 기록 | BE 완료. Full membership UI 연동은 후속 |
 | UI | members list, invite, state 표시, team/direct permission picker 반영 | full membership UI는 남음. MBA-71의 manager/member 화면 분기 일부만 반영 |
 | Regression | MVP1 workflow/LLM permission demo가 계속 통과 | 완료된 foundation 변경의 회귀 기준으로 유지 |
 

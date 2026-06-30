@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Decision
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ PR #125 head
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 
 중요한 정책, 아키텍처, 데이터 저장, 접근 제어 결정을 기록한다. 작은 구현 기본값은 각 도메인 문서나 구현 계획에 둔다.
 

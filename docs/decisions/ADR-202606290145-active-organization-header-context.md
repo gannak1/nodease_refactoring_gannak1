@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ PR #125 head
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Created At: 2026-06-29 01:45 KST
 Related ADRs: [ADR-202606271559-active-organization](ADR-202606271559-active-organization.md)
 
