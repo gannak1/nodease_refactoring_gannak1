@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Created At: 2026-06-29 14:51 KST
 Related ADRs: [ADR-202606290145-active-organization-header-context](ADR-202606290145-active-organization-header-context.md), [ADR-202606291315-resource-access-403-404-policy](ADR-202606291315-resource-access-403-404-policy.md)
 
@@ -30,13 +30,13 @@ MVP 1 문서는 team 생성, member 추가/제거, team 비활성화를 요구�
 5. Team 목록 조회는 `TeamService.list_teams()`가 수행한다. Team member 목록 조회는 `TeamService.list_members()`가 수행한다. 관리 화면에서 비활성화 상태를 확인할 수 있도록 organization scope 안의 team을 상태값과 함께 반환한다.
 6. `DELETE /api/v1/teams/{team_id}`를 등록 router에 추가하고, `X-Organization-Id`와 team organization이 일치할 때만 비활성화한다.
 7. 이미 inactive인 team에 대한 `DELETE /api/v1/teams/{team_id}`는 같은 organization scope 안 manager 요청이면 `{"status": "deactivated"}`를 반환하고 추가 commit은 하지 않는다.
-8. `managed_by`는 active user이면서 해당 organization owner/manager 또는 active team membership scope 안에 있는 user만 허용한다.
+8. `managed_by`는 active user이면서 해당 organization scope 안에 있는 user만 허용한다. MBA-67 이후 scope 판정은 active organization membership 또는 membership row 자체가 없는 legacy owner/manager fallback을 따른다.
 
 ## 근거
 
 권한 판정을 service로 모으면 endpoint마다 owner/manager와 membership scope를 다시 구현하면서 기준이 갈라지는 문제를 줄일 수 있다. 또한 등록 router가 이미 `team.py`로 단일화된 최신 dev 기준을 유지하면서 controller/service 책임 경계를 명확히 할 수 있다.
 
-Team 비활성화는 MVP 1 요구사항이며, organization owner/manager의 team 관리 권한 범위 안에 있다. 최신 resource 접근 ADR은 organization scope 안 여부를 organization owner/manager 또는 active team membership으로 정의한다. 따라서 `managed_by`를 같은 organization scope 안 user로 제한하면 외부 user가 운영 UI나 audit 문맥에서 team manager로 보이는 문제를 막을 수 있다.
+Team 비활성화는 MVP 1 요구사항이며, organization owner/manager의 team 관리 권한 범위 안에 있다. 최신 resource 접근 ADR과 MBA-67 helper 전환은 organization scope 안 여부를 organization membership helper로 정의한다. 따라서 `managed_by`를 같은 organization scope 안 user로 제한하면 외부 user가 운영 UI나 audit 문맥에서 team manager로 보이는 문제를 막을 수 있다.
 
 ## Team 비활성화 재시도 정책
 

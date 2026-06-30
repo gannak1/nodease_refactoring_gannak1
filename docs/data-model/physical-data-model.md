@@ -3,8 +3,8 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
-Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md)
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
 
@@ -17,7 +17,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | 항목 | 기준 |
 | --- | --- |
 | 기준 브랜치 | `dev` |
-| 확인 commit | `c990b54e931b4de8023822f6dff14f43fc1d415f` |
+| 확인 commit | `ec576b4f24155697aed8843acc6e5a3fc835f7e1` |
 | 기준 모델 경로 | `apps/shared/db/models/*` |
 | 기준 migration 경로 | `apps/shared/alembic/versions/*` |
 | 기존 목표 초안 | 삭제된 로컬 폐기 초안. 구현 기준이 아니다. |
@@ -28,9 +28,9 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | 현재 물리 데이터 모델 보존 | 현재 코드에 존재하는 table과 column을 삭제, rename, 대체하지 않는다. |
 | 추가 schema 최소화 | MVP 목표 상태 기능은 우선 현재 코드의 기존 table 조합으로 구현하고, 필요한 경우 additive table만 추가한다. |
-| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 현재 코드는 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 기본 권한 기준으로 사용한다. MVP 2-0 목표 상태에서는 `organization_memberships`를 organization 소속 기준으로 추가하고 `team_memberships`는 team 배정 기준으로 유지한다. |
+| RBAC 기준 | `roles`, `user_roles`, polymorphic `resource_permissions`를 새로 만들지 않는다. 현재 코드는 `organization_memberships`를 organization 소속과 manager 판정의 우선 기준으로 사용하고, `teams`, `team_memberships`, `team_*_permissions`를 team 배정과 team resource permission 기준으로 유지한다. |
 | User direct grant | 현재 코드는 `user_workflow_permissions`, `user_llm_permissions`를 구현한다. 이후 개별 user 예외 권한은 resource별 `user_*_permissions` table로만 추가한다. direct grant는 additive allow 전용이다. |
-| Organization owner/manager | `organization.created_by` 또는 `organization.managed_by`에 해당하는 user는 해당 organization scope 안에서 `manager`급으로 판정한다. |
+| Organization owner/manager | active `organization_memberships.organization_auth_state == "manager"`를 우선 기준으로 판정한다. Membership row 자체가 없는 legacy data에서만 `organization.created_by` 또는 `organization.managed_by` user를 manager fallback으로 인정한다. Invited/suspended/removed row가 있으면 fallback 없이 fail-closed 처리한다. |
 | Audit 기준 | `audit_events`를 새로 만들지 않는다. 현재 코드의 `audit_logs`를 canonical audit table로 사용한다. |
 | Trace 기준 | `rag_retrieval_traces`를 새로 만들지 않는다. 현재 코드의 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies`, `trace_payload_access_events`를 trace 기준으로 사용한다. |
 | Tenant 기준 | `tenant_id`를 새로 설계하지 않는다. 현재 코드의 `organization_id`를 조직 범위 기준으로 사용한다. |
@@ -57,7 +57,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | 이전 결정 | 재설계 결정 |
 | --- | --- |
 | `roles` 신규 생성 | 생성하지 않는다. 현재 코드의 `teams`와 permission table을 사용한다. |
-| `user_roles` 신규 생성 | 생성하지 않는다. 현재 사용자-team 소속은 `team_memberships`를 사용한다. MVP 2-0 목표 상태의 사용자-organization 직접 소속은 `organization_memberships`로 추가한다. |
+| `user_roles` 신규 생성 | 생성하지 않는다. 사용자-organization 직접 소속은 `organization_memberships`를 사용하고, 사용자-team 배정은 `team_memberships`를 사용한다. |
 | `resource_permissions` 신규 생성 | 생성하지 않는다. team 권한은 `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`를 사용한다. user 직접 권한은 resource별 `user_*_permissions`를 사용한다. |
 | `audit_events` 신규 생성 | 생성하지 않는다. `audit_logs`를 사용한다. |
 | `rag_retrieval_traces` 신규 생성 | 생성하지 않는다. trace 계열 테이블과 JSONB payload convention으로 처리한다. |
@@ -78,7 +78,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | `users` | 사용자, 실행 actor, resource owner |
 | `organization` | 조직 범위, tenant-like boundary |
-| `organization_memberships` | MBA-66 DB foundation. User와 organization의 직접 소속 관계. Permission helper/API 전환은 후속 MBA-67/MBA-68 범위 |
+| `organization_memberships` | User와 organization의 직접 소속 관계. MBA-67에서 permission helper와 organization/team/user/permission API 일부가 이 기준으로 전환됐다. MBA-71에서 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 후속 범위 |
 | `teams` | 조직 내 권한 부여 단위 |
 | `team_memberships` | 사용자와 팀의 소속 관계 |
 | `team_workflow_permissions` | 팀 단위 workflow 권한 |
@@ -109,7 +109,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 
 ### Implemented Foundation Table
 
-아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. Permission helper, API endpoint, FE 전환은 아직 완료된 것이 아니며 후속 MBA-67/MBA-68 범위다.
+아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. MBA-67에서 permission helper와 일부 API endpoint가 organization membership 기준으로 전환됐고, MBA-71에서 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 아직 완료된 것이 아니며 후속 범위다.
 
 | Table | 도입 단계 | 목표 역할 |
 | --- | --- | --- |
@@ -319,8 +319,8 @@ MVP 목표 상태 결정:
 역할:
 
 - 사용자를 팀에 소속시킨다.
-- 현재 코드에서는 권한 판정의 subject membership 원천이자 organization 소속의 간접 원천이다.
-- MVP 2-0 이후에는 organization 소속 원천이 아니라 organization 안의 team 배정 정보로 유지한다.
+- 현재 코드 기준 team permission 계산의 team 배정 원천이다.
+- 과거/legacy backfill에서는 organization 소속을 유도하는 입력으로 사용됐지만, 현재 organization 소속과 manager/member 판정의 기준은 `organization_memberships`다.
 
 주요 column:
 
@@ -346,7 +346,7 @@ MVP 목표 상태 결정:
 
 ### `organization_memberships`
 
-MBA-66에서 추가된 MVP 2-0 foundation table이다. 현재 구현은 DB/model/migration까지이며, permission helper와 API가 organization membership 기준으로 완전히 전환된 상태는 아니다.
+MBA-66에서 추가된 MVP 2-0 foundation table이다. MBA-67 이후 permission helper와 일부 API endpoint는 이 table을 organization scope와 manager 판정의 우선 기준으로 사용한다. Organization member/invitation API와 full membership 관리 UI는 아직 후속 범위다.
 
 역할:
 
@@ -1006,7 +1006,8 @@ MVP 목표 상태 결정:
 
 MVP 목표 상태 결정:
 
-- trace 조회 권한은 team permission과 이 visibility policy를 함께 판정한다.
+- 현재 trace 상세/payload 접근은 system admin, app owner, workflow effective RBAC와 이 visibility policy를 함께 판정한다.
+- 목표 organization-wide audit search/view_raw는 audit permission model과 visibility policy를 통합한다.
 
 ### `trace_payloads`
 
@@ -1128,9 +1129,13 @@ MVP 목표 상태 결정:
 | user workflow 권한 생성/수정/삭제 | `user_workflow_permission.created`, `user_workflow_permission.updated`, `user_workflow_permission.deleted` |
 | team LLM credential 권한 생성/수정/삭제 | `team_llm_permission.created`, `team_llm_permission.updated`, `team_llm_permission.deleted` |
 | user LLM credential 권한 생성/수정/삭제 | `user_llm_permission.created`, `user_llm_permission.updated`, `user_llm_permission.deleted` |
+| 현재 ORM data-change listener가 기록할 수 있는 team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
+| MVP 2 user knowledge permission table/API 구현 시 고정할 user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
 | 권한 부족 거부 | `permission.denied` |
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |
+| LLM 호출 | `llm.call` |
+| 목표: RAG retrieval 성공 | `rag.retrieve` |
 | 배포 생성 | `workflow.deploy` |
 | 배포 일반 toggle | `deployment.toggle` |
 | 이전 배포 활성화 | `deployment.activate_previous` |
@@ -1182,6 +1187,7 @@ MVP 목표 상태 결정:
 
 - `classification` column을 추가하지 않는다.
 - classification 기능은 `documents.meta_info`나 trace/audit metadata convention으로 처리한다. `knowledge_bases.classification` column 기반 필터링이 필요하면 별도 schema 변경으로 분리한다.
+- metadata는 permission source of truth가 아니다. Active organization membership은 KB organization scope와 permission subject의 전제 조건이고, 이 membership만으로 KB `read`/`use`를 허용하지 않는다. Knowledge base resource 허용은 organization manager override와 `team_knowledge_permissions`, 목표 `user_knowledge_permissions`의 effective permission으로 판정한다.
 
 ### `documents`
 
@@ -1218,6 +1224,8 @@ MVP 목표 상태 결정:
 
 - `classification` column을 추가하지 않는다.
 - classification 값은 `documents.meta_info.classification` metadata convention으로 저장할 수 있다.
+- `classification` 허용값은 MVP 2 기준 `public`, `internal`, `confidential`, `pii`다. 누락 시 application layer에서 `internal`로 해석한다.
+- `tags`, `source_type`, `source_hash`, `document_version`, `effective_from`, `effective_to`, `metadata_version` 같은 metadata key는 retrieval filter와 citation evidence에 사용할 수 있다.
 - `needs_reindex` 같은 상태가 필요하면 현재 코드의 `meta_info`에 application-level metadata로 저장한다.
 - re-index 때문에 `status` enum/table을 새로 만들지 않는다.
 
@@ -1250,6 +1258,10 @@ MVP 목표 상태 결정:
 
 - chunk-level incremental indexing table은 만들지 않는다.
 - retrieval 결과의 chunk reference는 trace payload 내부 metadata로 저장한다.
+- `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다. `documents.meta_info`와 충돌하면 document metadata를 우선한다.
+- MBA-75 hierarchical schema extension 후보는 nullable `parent_chunk_id`, `chunk_level`, `section_path`, `heading` column 추가다. 이 column들은 현재 코드에는 없으며, 추가 시 기존 flat KB가 fallback으로 동작해야 한다.
+- `parent_chunk_id`와 `chunk_level`은 hierarchy의 canonical field다. 같은 값을 JSON metadata에 중복 저장하지 않는다.
+- Hierarchical retrieval index 후보는 `(knowledge_base_id, chunk_level)`, `(parent_chunk_id)`, `(document_id, chunk_index)`다. JSONB GIN index는 실제 metadata filter query pattern이 확정된 뒤 추가한다.
 
 ### `connections`
 
@@ -1290,6 +1302,8 @@ MVP 목표 상태 결정:
 - connection `secret/manage` 권한은 `connections.user_id` owner 또는 organization owner/manager로 제한한다.
 - `connections` 자체에는 `organization_id`가 없으므로, 직접 connection CRUD API는 `connections.user_id` owner를 기본 기준으로 삼는다. organization owner/manager 판정은 connection이 active organization의 workflow/knowledge base에 연결되어 scope가 식별되는 경우에 적용한다.
 - connection `use` 권한은 connection을 직접 기준으로 판정하지 않고, connection을 소비하는 workflow 또는 knowledge base 권한으로 판정한다.
+- 연결된 workflow/knowledge base가 없거나 active organization scope를 단일하게 식별할 수 없으면 organization owner/manager override를 적용하지 않고 deny한다.
+- 하나의 connection이 서로 다른 organization의 resource와 충돌하는 방식으로 연결되면 implicit sharing으로 해석하지 않고 deny한다. Cross-organization sharing이 필요하면 별도 schema/permission extension 승인이 필요하다.
 - workflow/knowledge base 실행 중 connection credential은 사용자에게 노출하지 않고 server-side runtime에서만 사용한다.
 - 연결된 외부 DB 내부의 table/row 권한은 Nodease RBAC에서 대신 관리하지 않는다. 외부 DB credential 자체의 권한 범위가 최종 DB 접근 범위를 제한한다.
 - connection을 workflow/knowledge base와 독립적으로 team/user에게 공유해야 하는 요구가 생기면 별도 schema extension 승인이 필요하다.
@@ -1476,7 +1490,7 @@ MVP 목표 상태 결정:
 
 | 대상 | 기준 Table |
 | --- | --- |
-| 사용자 organization 소속 | 현재: `team_memberships`를 통한 간접 판정. MVP 2-0 목표: `organization_memberships` |
+| 사용자 organization 소속 | `organization_memberships`. Membership row가 없는 legacy owner/manager만 제한적으로 `organization.created_by`/`managed_by` fallback |
 | 사용자 team 배정 | `team_memberships` |
 | workflow team 권한 | `team_workflow_permissions` |
 | workflow user 직접 권한 | `user_workflow_permissions` |
@@ -1489,9 +1503,9 @@ MVP 목표 상태 결정:
 
 권한 판정 순서:
 
-1. 사용자의 active organization을 확인한다. 현재 코드는 organization owner/manager 또는 active `team_memberships` 기반으로 판정한다.
-2. MVP 2-0 이후에는 active `organization_memberships` row를 organization 소속의 기본 전제로 확인한다.
-3. user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
+1. 사용자의 active organization을 확인한다. MBA-67 이후 permission helper/API 전환 범위에서는 `organization_memberships` row를 organization 소속의 기본 전제로 확인한다.
+2. Active row는 `organization_auth_state`에 따라 member/manager로 판정하고, invited/suspended/removed row는 fail-closed 처리한다.
+3. Membership row 자체가 없고 user가 `organization.created_by` 또는 `organization.managed_by`이면 legacy 호환으로 해당 organization scope 안에서 `manager`로 판정한다.
 4. 사용자가 속한 team을 `team_memberships`에서 조회한다.
 5. resource별 permission table에서 `auth_state`를 확인한다.
 6. 현재 구현된 workflow/LLM credential은 user direct permission table에서 해당 user의 `auth_state`를 확인한다. knowledge/audit user direct permission table은 MVP 2/3 목표 schema다.
@@ -1532,16 +1546,25 @@ RAG retrieval 전용 table은 만들지 않는다.
 - payload 접근 감사: `trace_payload_access_events`
 - 문서/청크 원천: `documents`, `document_chunks`
 
-`trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 다음 정보를 application-level convention으로 저장할 수 있다.
+`trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 per-chunk evidence로 다음 정보를 application-level convention으로 저장할 수 있다.
 
+- `payload_kind = "rag.retrieval"`
 - `knowledge_base_id`
 - `document_id`
 - `chunk_id`
+- `parent_chunk_id`
 - `rank`
 - `score`
 - `token_count`
+- `metadata_summary`
+
+`audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이다. `payload_kind='rag.retrieval'`은 trace payload 분류값이며 audit action을 대체하지 않는다.
 
 이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 현재 물리 데이터 모델 보존 조건 밖의 별도 설계가 필요하다.
+
+Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다. 현재 코드의 tracing metadata sanitizer는 legacy RAG summary field만 허용하므로, MBA-75 목표 allowlist를 사용하려면 sanitizer와 테스트 fixture를 함께 갱신한다.
+
+RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 기본 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
 
 ### Deployment Checklist
 
@@ -1643,6 +1666,7 @@ DB 변경:
 
 - `rag_retrieval_traces`를 만들지 않는다.
 - `knowledge_bases.classification`, `documents.classification`을 추가하지 않는다.
+- MBA-75 hierarchical retrieval을 위해 `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` nullable column을 추가할 수 있다.
 - `user_knowledge_permissions`를 생성한다. 현재 코드에는 아직 없다.
 
 구현:
@@ -1653,6 +1677,7 @@ DB 변경:
 4. RAG data source 접근은 우선 `team_knowledge_permissions`로 제한하고, `user_knowledge_permissions` 추가 후 user direct grant를 합산한다.
 5. document re-index 필요 상태는 `documents.meta_info` metadata로 관리한다.
 6. 감사 검색 API는 `audit_logs`와 `trace_payload_access_events`를 구분해서 조회한다.
+7. Hierarchical retrieval은 parent chunk를 coarse retrieval에 사용하고 child chunk를 final evidence로 반환한다.
 
 작동하는 MVP 산출물:
 
@@ -1691,6 +1716,7 @@ DB 변경:
 | 역할 catalog를 DB에서 1급으로 관리 | `roles`, `user_roles` |
 | 임의 resource polymorphic permission | `resource_permissions` |
 | RAG retrieval FK 무결성 보장 | `rag_retrieval_traces` |
+| Hierarchical RAG 구조 | nullable `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` |
 | deployment checklist 독립 검색/통계 | `deployment_check_runs`, `deployment_check_items` |
 | recommendation 장기 상태 관리 | `recommendation_events` |
 | connection을 workflow/knowledge base와 독립적으로 team/user에게 공유 | `team_connection_permissions`, `user_connection_permissions` |
@@ -1703,7 +1729,7 @@ MVP 목표 데이터 모델 구현은 아래 조건을 만족해야 한다.
 
 1. 현재 코드에 이미 존재하는 table과 column을 삭제, rename, 대체하지 않는다.
 2. `roles`, `user_roles`, `resource_permissions`, `audit_events`를 생성하지 않는다.
-3. 현재 기본 권한은 `organization`, `teams`, `team_memberships`, `team_*_permissions` 기준으로 동작해야 한다. MVP 2-0 이후에는 `organization_memberships` active row를 organization 소속 전제 조건으로 추가한다.
+3. 현재 기본 권한은 `organization_memberships` active row를 organization 소속 전제 조건으로 사용하고, `teams`, `team_memberships`, `team_*_permissions`를 team 배정과 team resource permission 기준으로 사용해야 한다.
 4. 현재 코드의 user direct 권한은 `user_workflow_permissions`, `user_llm_permissions` 기준으로 additive allow만 제공해야 한다. MVP 2/3에서 `user_knowledge_permissions`, `user_audit_permissions`를 추가할 때도 같은 규칙을 따른다.
 5. user direct 권한은 team 권한을 deny하거나 낮추면 안 된다.
 6. audit은 `audit_logs` 기준으로 동작해야 한다.

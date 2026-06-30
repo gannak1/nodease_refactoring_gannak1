@@ -7,14 +7,20 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
-from apps.gateway.services.organization_context import ensure_user_default_organization
+from apps.gateway.services.organization_context import get_user_primary_organization_id
 from apps.shared.db.models.audit_log import ActorType, AuditLog, AuditStatus
-from apps.shared.db.models.team import Team, TeamMembership
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    OrganizationMembership,
+)
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.audit import AuditLogListResponse
 from apps.shared.schemas.auth import UserResponse
-from apps.shared.services.permissions import has_organization_manager_permission
+from apps.shared.services.permissions import (
+    has_organization_manager_permission,
+    has_organization_scope_access,
+)
 
 router = APIRouter()
 
@@ -27,21 +33,21 @@ def list_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    organization_id = organization_id or ensure_user_default_organization(
-        db, current_user
-    )
+    if organization_id is None:
+        organization_id = get_user_primary_organization_id(db, current_user.id)
+        if organization_id is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+    if not has_organization_scope_access(db, current_user.id, organization_id):
+        raise HTTPException(status_code=404, detail="Organization not found")
     if not has_organization_manager_permission(db, current_user.id, organization_id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     query = (
         db.query(User)
-        .join(TeamMembership, TeamMembership.user_id == User.id)
-        .join(Team, Team.id == TeamMembership.team_id)
+        .join(OrganizationMembership, OrganizationMembership.user_id == User.id)
         .filter(
-            TeamMembership.grantee_organization_id == organization_id,
-            TeamMembership.grantee_organization_id == Team.organization_id,
-            Team.organization_id == organization_id,
-            Team.is_active.is_(True),
+            OrganizationMembership.organization_id == organization_id,
+            OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
             User.deactivated_at.is_(None),
         )
         .distinct()

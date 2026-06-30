@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 목적
 
@@ -56,7 +56,7 @@ Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 | Workflow report/log page | `read` 권한 기준으로 run/log/stat 조회 |
 | Permission denied 화면 | 직접 URL 접근 또는 권한 만료 시 차단 안내 |
 
-현재 코드에서 Settings 화면은 `apps/client/app/dashboard/settings/page.tsx`에 있고, workflow 권한 조회는 `apps/client/app/features/workflow/api/workflowApi.ts`의 `getWorkflowPermission`에서 `/workflows/{workflow_id}/permissions/me`를 호출한다. 이 endpoint는 코드 연결 지점으로 기록하되, 최종 API 계약은 `api/` 문서 보강 후 확정한다.
+현재 코드에서 Settings 화면은 `apps/client/app/dashboard/settings/page.tsx`에 있고, workflow 권한 조회는 `apps/client/app/features/workflow/api/workflowApi.ts`의 `getWorkflowPermission`에서 `/workflows/{workflow_id}/permissions/me`를 호출한다. 이 endpoint의 기본 계약과 `read` 권한 요구사항은 `api/apps-workflows.md`를 따른다. 권한 출처 표시가 필요하면 `api/organization-rbac.md`의 permission 목록 API를 함께 사용한다.
 
 ## 사용자 역할
 
@@ -123,9 +123,9 @@ App 또는 workflow 진입
 - `PUT /api/v1/permissions/workflows/{workflow_id}/users/{user_id}`
 - `DELETE /api/v1/permissions/workflows/{workflow_id}/users/{user_id}`
 
-추가 확인 API:
+내 권한 조회 API:
 
-- `GET /api/v1/workflows/{workflow_id}/permissions/me`: 현재 client 코드에서 사용하지만 `api/` 계약 문서 보강이 필요하다.
+- `GET /api/v1/workflows/{workflow_id}/permissions/me`: `api/apps-workflows.md`의 공식 계약이며, workflow `read` 권한이 있는 사용자의 effective permission을 반환한다.
 
 모든 organization/team/permission 관리 API는 active organization을 `X-Organization-Id` header로 전달해야 한다.
 

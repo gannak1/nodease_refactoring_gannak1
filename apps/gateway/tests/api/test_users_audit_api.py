@@ -2,12 +2,14 @@ import unittest
 from datetime import datetime, timezone
 from operator import eq, ge, lt
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from apps.gateway.api.v1.endpoints.users import list_my_audit_logs, list_users
 from apps.gateway.auth.dependencies import get_current_user
-from apps.gateway.api.v1.endpoints.users import list_my_audit_logs
 from apps.gateway.main import app
 from apps.shared.db.models.audit_log import (
     ActorType,
@@ -185,6 +187,119 @@ class TestUsersAuditApi(unittest.TestCase):
         )
 
 
+class TestUsersDirectoryApi(unittest.TestCase):
+    def test_list_users_uses_primary_organization_without_bootstrap_write(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        db = _UserDirectorySession()
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.users.get_user_primary_organization_id",
+                return_value=organization_id,
+            ) as primary_organization,
+            patch(
+                "apps.gateway.api.v1.endpoints.users.has_organization_manager_permission",
+                return_value=True,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.users.has_organization_scope_access",
+                return_value=True,
+            ),
+        ):
+            response = list_users(
+                organization_id=None,
+                q=None,
+                limit=50,
+                db=db,
+                current_user=SimpleNamespace(id=user_id),
+            )
+
+        self.assertEqual(response, [])
+        primary_organization.assert_called_once_with(db, user_id)
+        self.assertFalse(db.commit_called)
+
+    def test_list_users_without_primary_organization_returns_not_found(self):
+        user_id = uuid4()
+        db = _UserDirectorySession()
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.users.get_user_primary_organization_id",
+            return_value=None,
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                list_users(
+                    organization_id=None,
+                    q=None,
+                    limit=50,
+                    db=db,
+                    current_user=SimpleNamespace(id=user_id),
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 404)
+        self.assertEqual(exc_info.exception.detail, "Organization not found")
+        self.assertFalse(db.commit_called)
+
+    def test_list_users_outside_organization_scope_returns_not_found(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        db = _UserDirectorySession()
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.users.has_organization_scope_access",
+                return_value=False,
+            ) as scope_access,
+            patch(
+                "apps.gateway.api.v1.endpoints.users.has_organization_manager_permission",
+                return_value=True,
+            ) as manager_permission,
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                list_users(
+                    organization_id=organization_id,
+                    q=None,
+                    limit=50,
+                    db=db,
+                    current_user=SimpleNamespace(id=user_id),
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 404)
+        self.assertEqual(exc_info.exception.detail, "Organization not found")
+        scope_access.assert_called_once_with(db, user_id, organization_id)
+        manager_permission.assert_not_called()
+        self.assertFalse(db.commit_called)
+
+    def test_list_users_in_scope_non_manager_returns_forbidden(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        db = _UserDirectorySession()
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.users.has_organization_scope_access",
+                return_value=True,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.users.has_organization_manager_permission",
+                return_value=False,
+            ) as manager_permission,
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                list_users(
+                    organization_id=organization_id,
+                    q=None,
+                    limit=50,
+                    db=db,
+                    current_user=SimpleNamespace(id=user_id),
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 403)
+        self.assertEqual(exc_info.exception.detail, "Forbidden")
+        manager_permission.assert_called_once_with(db, user_id, organization_id)
+        self.assertFalse(db.commit_called)
+
+
 class _Query:
     def __init__(self, items):
         self.items = items
@@ -230,6 +345,41 @@ class _Query:
         start = self.offset_value or 0
         end = None if self.limit_value is None else start + self.limit_value
         return self.items[start:end]
+
+
+class _UserDirectoryQuery:
+    def __init__(self):
+        self.limit_value = None
+
+    def join(self, *args):
+        return self
+
+    def filter(self, *args):
+        return self
+
+    def distinct(self):
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def limit(self, value):
+        self.limit_value = value
+        return self
+
+    def all(self):
+        return []
+
+
+class _UserDirectorySession:
+    def __init__(self):
+        self.commit_called = False
+
+    def query(self, model):
+        return _UserDirectoryQuery()
+
+    def commit(self):
+        self.commit_called = True
 
 
 if __name__ == "__main__":

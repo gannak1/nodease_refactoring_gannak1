@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Documentation Index
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 이 디렉터리가 현재 저장소의 active documentation root다. 문서 내부 링크와 권위 규칙은 이 `docs/` 디렉터리를 문서 루트로 간주한다.
 
@@ -32,13 +32,13 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 활성 문서
 
-`Source of Truth: Yes`인 active 문서는 아래와 같다. 세부 충돌은 [foundation/document-authority.md](foundation/document-authority.md)의 권위 순서를 따른다.
+주요 source-of-truth 문서는 아래와 같다. 세부 충돌은 [foundation/document-authority.md](foundation/document-authority.md)의 권위 순서를 따른다.
 
 | 영역 | Active source-of-truth 문서 |
 | --- | --- |
 | Foundation | [foundation/document-authority.md](foundation/document-authority.md), [foundation/product-scope.md](foundation/product-scope.md), [foundation/glossary.md](foundation/glossary.md) |
 | Requirements | [requirements/overview.md](requirements/overview.md), [requirements/mvp-1-foundation-llmops.md](requirements/mvp-1-foundation-llmops.md), [requirements/mvp-2-governance-rag-audit.md](requirements/mvp-2-governance-rag-audit.md), [requirements/mvp-3-enterprise-ops.md](requirements/mvp-3-enterprise-ops.md) |
-| Architecture | [architecture/system-overview.md](architecture/system-overview.md), [architecture/auth-rbac.md](architecture/auth-rbac.md), [architecture/tracing-audit.md](architecture/tracing-audit.md) |
+| Architecture | [architecture/system-overview.md](architecture/system-overview.md), [architecture/auth-rbac.md](architecture/auth-rbac.md), [architecture/tracing-audit.md](architecture/tracing-audit.md), [architecture/knowledge-rag.md](architecture/knowledge-rag.md) |
 | Data Model | [data-model/physical-data-model.md](data-model/physical-data-model.md), [data-model/rbac-permission-policy.md](data-model/rbac-permission-policy.md) |
 | API | [api/README.md](api/README.md), [api/auth.md](api/auth.md), [api/organization-rbac.md](api/organization-rbac.md), [api/apps-workflows.md](api/apps-workflows.md), [api/llm-credentials.md](api/llm-credentials.md), [api/knowledge-rag.md](api/knowledge-rag.md), [api/tracing-audit.md](api/tracing-audit.md), [api/deployments.md](api/deployments.md), [api/supporting-endpoints.md](api/supporting-endpoints.md), [api/errors.md](api/errors.md) |
 | Decisions | [decisions/README.md](decisions/README.md) 및 `Status: Accepted` ADR |

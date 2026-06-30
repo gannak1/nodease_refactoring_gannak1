@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Created At: 2026-06-29 13:15 KST
 Related ADRs: [ADR-202606290145-active-organization-header-context](ADR-202606290145-active-organization-header-context.md), [ADR-202606290131-audit-action-naming-standard](ADR-202606290131-audit-action-naming-standard.md)
 
@@ -26,7 +26,7 @@ MVP 1 App/Workflow 접근은 hybrid 정책을 사용한다.
 
 ## 구현 기준
 
-- Organization scope 안 여부는 organization owner/manager 또는 active team membership으로 판정한다.
+- Organization scope 안 여부는 MBA-67 이후 organization membership helper로 판정한다. Active row는 `organization_auth_state`에 따르고, invited/suspended/removed row는 fail-closed 된다. Membership row 자체가 없는 legacy owner/manager만 호환 fallback으로 manager scope를 받는다.
 - App 접근은 app 전용 permission table 없이 primary workflow 권한과 organization owner/manager 권한으로 판정한다.
 - Workflow 접근은 workflow의 effective auth state와 organization scope 접근 여부를 함께 본다.
 - `viewer`가 workflow 저장/실행을 시도하거나, `operator`가 draft 저장을 시도하는 경우는 같은 scope 안 action 권한 부족이므로 `403 permission.denied`다.

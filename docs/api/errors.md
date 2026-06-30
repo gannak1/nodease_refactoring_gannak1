@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -101,6 +101,7 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 ## 보안 규칙
 
 - secret, token, credential, raw API key 원문은 error message에 포함하지 않는다.
+- 현재 일부 legacy/helper endpoint가 내부 예외 문자열을 `detail` 또는 응답 field에 포함하는 경우에는 각 API 문서에 current behavior로 명시한다. 운영 목표 계약은 sanitized error code와 request/correlation id만 반환하고 내부 예외 세부 내용은 server log/observability에만 남기는 것이다.
 - 401/403은 `audit_logs`에 기록할 수 있다.
 - 401/403 `HTTPException`은 해당 예외에 `audit_recorded`가 없으면 Gateway exception handler에서 permission denied audit를 기록한다.
 - permission 실패 metadata에는 resource/action/effective permission 정도만 남기고 secret payload를 남기지 않는다.

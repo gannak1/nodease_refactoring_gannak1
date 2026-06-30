@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 작성 기준
 
@@ -40,7 +40,7 @@ Moduly는 이미 워크플로우 편집, 실행, 배포, RAG, LLM credential, us
 - 비용/품질 비교와 추천
 - 배포 전 체크와 운영 대시보드
 
-이 requirements 문서는 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 구현 사실과 MVP 목표 상태를 함께 다룬다. "현재 코드", "현재 구현"으로 표시한 내용은 이미 코드 기준으로 확인한 동작이고, MVP 2/3의 governance, deploy checklist, recommendation, operations dashboard 항목은 목표 범위다.
+이 requirements 문서는 현재 `dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1` 구현 사실과 MVP 목표 상태를 함께 다룬다. "현재 코드", "현재 구현"으로 표시한 내용은 이미 코드 기준으로 확인한 동작이고, MVP 2/3의 governance, deploy checklist, recommendation, operations dashboard 항목은 목표 범위다.
 
 ## 왜 RBAC가 먼저인가
 
@@ -101,7 +101,7 @@ Team/User Permission Model
   -> MVP 3 Optimization + Operations
 ```
 
-MVP 2 본작업 전에는 [MVP 2-0 Organization Membership / Invitation Foundation](../implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md)을 선행한다. 이 단계는 `organization_memberships`를 사용자 organization 소속의 기준으로 추가하고, team membership과 user direct permission이 active organization member를 전제로 동작하도록 정리한다.
+MVP 2 본작업 전제인 [MVP 2-0 Organization Membership / Invitation Foundation](../implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md)은 dev 기준 DB/model/migration/backfill과 permission helper 전환까지 완료됐다. 남은 범위는 organization member/invitation API, full membership 관리 UI, legacy owner/manager fallback 축소 정책이다.
 
 ## 작동하는 MVP의 기준
 
@@ -126,7 +126,7 @@ MVP 2 본작업 전에는 [MVP 2-0 Organization Membership / Invitation Foundati
 5. `Admin`, `Builder`, `Operator`, `Viewer`, `Auditor`는 DB role이 아니라 team template 또는 UI preset으로 취급한다.
 6. audit은 신규 `audit_events`가 아니라 현재 코드의 `audit_logs`를 사용한다.
 7. canonical action은 `audit_logs.action`에 저장하고, 정책 결과는 `audit_logs.audit_metadata.policy_result`에 저장한다.
-8. RAG trace는 신규 `rag_retrieval_traces`가 아니라 `trace_payloads`와 metadata로 chunk id/run id를 연결한다.
+8. RAG trace는 신규 `rag_retrieval_traces`가 아니라 기존 trace 계열 table을 사용한다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`에 저장하고, run/node metadata에는 retrieved chunk count, document/citation id, score summary 같은 요약 field만 저장한다.
 9. 비용 추천과 quality score는 MVP 3까지 rule-based 또는 사용자 평가 중심으로 제한한다.
 10. 현재 Moduly에는 명시적 rollback API가 없다. 이전 배포 활성화는 `toggle` 기반 `deployment.activate_previous` 이벤트로 표현하고 별도 rollback permission은 두지 않는다.
 11. "컴플라이언스 준수"라고 과장하지 않고 "컴플라이언스 대응 가능한 audit/data governance 구조"라고 표현한다.

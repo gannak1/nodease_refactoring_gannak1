@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 목적
 
@@ -117,7 +117,7 @@ workflow route 진입
 | --- | --- | --- |
 | `GET /api/v1/workflows/{workflow_id}` | `read` | workflow metadata 로드 |
 | `GET /api/v1/workflows/{workflow_id}/draft` | `read` | editor graph 로드 |
-| `GET /api/v1/workflows/{workflow_id}/permissions/me` | API 문서 보강 필요 | 내 권한 상태 로드 |
+| `GET /api/v1/workflows/{workflow_id}/permissions/me` | `read` | 내 권한 상태 로드 |
 | `POST /api/v1/workflows/{workflow_id}/draft` | `write` | 저장 |
 | `POST /api/v1/workflows/{workflow_id}/execute` | `execute` | 실행 |
 | `POST /api/v1/workflows/{workflow_id}/stream` | `execute` | 스트리밍 실행 |
@@ -126,7 +126,7 @@ workflow route 진입
 | deployment create/activate | `deploy` | 배포 |
 | permission grant/revoke | `manage` | 권한 관리 |
 
-`permissions/me`는 현재 프론트 코드의 권한 상태 조회 지점이지만 `api/apps-workflows.md`에는 아직 별도 계약으로 없다. 이 문서에서는 UI 상태 계산에 필요한 연동 지점으로만 기록하고, endpoint의 권한 요구사항과 `none` 응답 정책은 API 문서에서 확정해야 한다.
+`permissions/me`는 `api/apps-workflows.md`의 공식 계약에 포함된 endpoint이며 workflow `read` 권한을 요구한다. 따라서 권한이 전혀 없는 사용자는 이 endpoint의 `none` payload를 기대하기보다, 선행 workflow 조회 또는 permission 조회 단계의 403/404를 접근 차단 상태로 처리한다.
 
 ## UI 제어 기준
 

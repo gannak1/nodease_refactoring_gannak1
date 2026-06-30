@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Architecture
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 아키텍처 문서는 서비스 경계, 런타임 흐름, 보안/RBAC 적용 위치를 정의한다.
 
@@ -11,6 +11,7 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 | --- | --- |
 | [system-overview.md](system-overview.md) | 상위 서비스 구조와 책임 |
 | [auth-rbac.md](auth-rbac.md) | 인증, organization context, RBAC enforcement 위치 |
+| [knowledge-rag.md](knowledge-rag.md) | Knowledge/RAG metadata, permission, hierarchy, trace 경계 |
 | [tracing-audit.md](tracing-audit.md) | audit/tracing 경계와 raw payload 접근 원칙 |
 
 ## 권위

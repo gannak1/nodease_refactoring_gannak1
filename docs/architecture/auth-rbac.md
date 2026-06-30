@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Architecture
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 Background ADRs: [ADR-202606271559-active-organization](../decisions/ADR-202606271559-active-organization.md)
 
@@ -15,9 +15,9 @@ RBAC enforcement의 목표 경계는 Gateway endpoint와 runtime service가 함�
 
 ## Organization Context
 
-권한 판단에는 organization context가 필요하다. MVP 1의 active organization context는 `X-Organization-Id` request header로 전달하고, 서버는 session/cookie에 active organization을 저장하지 않는다. Organization, team, permission API는 header 값이 현재 user의 organization scope 안에 있는지 검증한다. 현재 organization scope는 organization owner/manager 또는 active team membership으로 판정한다.
+권한 판단에는 organization context가 필요하다. MVP 1의 active organization context는 `X-Organization-Id` request header로 전달하고, 서버는 session/cookie에 active organization을 저장하지 않는다. Organization, team, permission API는 header 값이 현재 user의 organization scope 안에 있는지 검증한다. MBA-67 이후 organization scope는 `organization_memberships` row를 먼저 확인해 판정한다. Active row는 active user와 active organization 안에서만 `organization_auth_state`에 따라 member/manager가 되고, inactive organization과 invited/suspended/removed row는 fail-closed 된다. Membership row 자체가 없는 legacy `organization.created_by`/`managed_by` user만 호환 fallback으로 manager scope를 인정한다.
 
-첫 active team membership 기반 primary organization helper는 organization context가 없는 legacy/과도기 경로의 fallback으로만 사용한다. 승인 근거는 [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)를 따른다.
+첫 active organization membership 기반 primary organization helper는 organization context가 없는 legacy/과도기 경로의 fallback으로만 사용한다. 승인 근거는 [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)를 따른다.
 
 ## 권한 모델
 
