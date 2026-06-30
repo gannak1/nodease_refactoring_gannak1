@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-76 @ 0c760199dc6090b08eaee15340f8b989c38c2391
+Verified Against: feature/mba-76 @ 3195a7fd40c4a10d66bbef032a40c76aafda0faf
 
 ## 목적
 
