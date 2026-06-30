@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   AlertTriangle,
@@ -25,6 +25,7 @@ import { appApi, type App } from '@/app/features/app/api/appApi';
 import {
   moduleOperationsApi,
   type ModuleOperationRow,
+  type ModuleOperationsListParams,
   type ModuleRunState,
 } from '@/app/features/app/api/moduleOperationsApi';
 import { apiClient } from '@/lib/apiClient';
@@ -38,9 +39,11 @@ type PermissionFilter = 'all' | 'executable' | 'editable' | 'manageable';
 type DeploymentFilter = 'all' | 'active' | 'inactive' | 'undeployed';
 type RunFilter = 'all' | 'running' | 'failed';
 
+const PAGE_SIZE = 100;
+
 const permissionLabels: Record<string, string> = {
-  manager: '관리 가능',
-  builder: '수정 가능',
+  manager: '워크플로우 관리 가능',
+  builder: '워크플로우 수정 가능',
   operator: '실행 가능',
   viewer: '조회 가능',
   none: '권한 없음',
@@ -117,7 +120,7 @@ const permissionLabelOf = (row: ModuleOperationRow) => {
 
 const sourceLabelOf = (row: ModuleOperationRow) => {
   if (!row.app.workflow_id) return '권한 확인 대기';
-  if (row.permissionSources.length === 0) return '출처 확인 필요';
+  if (row.permissionSources.length === 0) return '출처 연동 예정';
 
   const [firstSource, ...rest] = row.permissionSources;
   const sourceName =
@@ -132,19 +135,32 @@ const canEditApp = (row: ModuleOperationRow, isOrgManager: boolean) =>
   isOrgManager ||
   (row.permissionStatus === 'loaded' && Boolean(row.permission?.can_manage));
 
+const canWriteWorkflow = (row: ModuleOperationRow) =>
+  row.permissionStatus === 'loaded' && Boolean(row.permission?.can_write);
+
 const canToggleDeployment = (row: ModuleOperationRow) =>
   row.permissionStatus === 'loaded' &&
   Boolean(row.permission?.can_deploy || row.permission?.can_manage) &&
-  Boolean(row.app.active_deployment_id);
+  Boolean(row.deployment.deployment_id);
 
 const canOpenModule = (row: ModuleOperationRow) =>
   row.permissionStatus === 'loaded' && Boolean(row.permission?.can_read);
+
+const capabilityParamOf = (
+  filter: PermissionFilter,
+): ModuleOperationsListParams['capability'] => {
+  if (filter === 'executable') return 'execute';
+  if (filter === 'editable') return 'write';
+  if (filter === 'manageable') return 'manage';
+  return undefined;
+};
 
 export default function MyModulePage() {
   const router = useRouter();
   const [rows, setRows] = useState<ModuleOperationRow[]>([]);
   const [isOrgManager, setIsOrgManager] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [permissionFilter, setPermissionFilter] =
     useState<PermissionFilter>('all');
   const [deploymentFilter, setDeploymentFilter] =
@@ -153,32 +169,80 @@ export default function MyModulePage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<App | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState('');
+  const requestSeqRef = useRef(0);
 
-  const loadModules = async () => {
-    try {
-      setIsLoading(true);
-      setError('');
-      const data = await moduleOperationsApi.listModuleOperations();
-      setRows(data);
+  const buildListParams = useCallback(
+    (offset: number): ModuleOperationsListParams => {
+      const trimmedQuery = debouncedSearchQuery.trim();
+      return {
+        q: trimmedQuery || undefined,
+        capability: capabilityParamOf(permissionFilter),
+        deployment_state:
+          deploymentFilter === 'all' ? undefined : deploymentFilter,
+        run_state: runFilter === 'all' ? undefined : runFilter,
+        limit: PAGE_SIZE,
+        offset,
+      };
+    },
+    [debouncedSearchQuery, deploymentFilter, permissionFilter, runFilter],
+  );
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  const loadModules = useCallback(
+    async ({ offset = 0, append = false } = {}) => {
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
       try {
-        const organizationResponse =
-          await apiClient.get<OrganizationResponse>('/organizations/current');
-        setIsOrgManager(Boolean(organizationResponse.data.is_manager));
+        if (append) {
+          setIsLoadingMore(true);
+        } else {
+          setIsLoading(true);
+        }
+        setError('');
+        const data = await moduleOperationsApi.listModuleOperations(
+          buildListParams(offset),
+        );
+        if (requestSeq !== requestSeqRef.current) return;
+        setRows((currentRows) => (append ? [...currentRows, ...data] : data));
+        setHasMore(data.length === PAGE_SIZE);
+
+        try {
+          const organizationResponse =
+            await apiClient.get<OrganizationResponse>('/organizations/current');
+          if (requestSeq !== requestSeqRef.current) return;
+          setIsOrgManager(Boolean(organizationResponse.data.is_manager));
+        } catch {
+          if (requestSeq !== requestSeqRef.current) return;
+          setIsOrgManager(false);
+        }
       } catch {
-        setIsOrgManager(false);
+        if (requestSeq !== requestSeqRef.current) return;
+        setError('모듈 운영 현황을 불러오지 못했습니다.');
+      } finally {
+        if (requestSeq === requestSeqRef.current) {
+          setIsLoading(false);
+          setIsLoadingMore(false);
+        }
       }
-    } catch {
-      setError('모듈 운영 현황을 불러오지 못했습니다.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    },
+    [buildListParams],
+  );
 
   useEffect(() => {
     loadModules();
+  }, [loadModules]);
 
+  useEffect(() => {
     const handleOpenModal = () => {
       setIsCreateModalOpen(true);
     };
@@ -188,49 +252,6 @@ export default function MyModulePage() {
       window.removeEventListener('openCreateAppModal', handleOpenModal);
   }, []);
 
-  const filteredRows = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase();
-
-    return rows.filter((row) => {
-      const searchable = [
-        row.app.name,
-        row.app.description,
-        row.app.owner_name,
-        sourceLabelOf(row),
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      const matchesSearch =
-        normalizedQuery.length === 0 || searchable.includes(normalizedQuery);
-
-      const matchesPermission =
-        permissionFilter === 'all' ||
-        (permissionFilter === 'executable' &&
-          Boolean(row.permission?.can_execute)) ||
-        (permissionFilter === 'editable' && canEditApp(row, isOrgManager)) ||
-        (permissionFilter === 'manageable' &&
-          Boolean(row.permission?.can_manage));
-
-      const matchesDeployment =
-        deploymentFilter === 'all' || row.deploymentState === deploymentFilter;
-
-      const matchesRun =
-        runFilter === 'all' || row.latestRun.state === runFilter;
-
-      return (
-        matchesSearch && matchesPermission && matchesDeployment && matchesRun
-      );
-    });
-  }, [
-    deploymentFilter,
-    isOrgManager,
-    permissionFilter,
-    rows,
-    runFilter,
-    searchQuery,
-  ]);
-
   const summary = useMemo(
     () => ({
       active: rows.filter((row) => row.deploymentState === 'active').length,
@@ -238,7 +259,7 @@ export default function MyModulePage() {
         .length,
       failed: rows.filter((row) => row.latestRun.state === 'failed').length,
       running: rows.filter((row) => row.latestRun.state === 'running').length,
-      editable: rows.filter((row) => canEditApp(row, isOrgManager)).length,
+      editable: rows.filter(canWriteWorkflow).length,
       manageable: rows.filter((row) => canEditApp(row, isOrgManager)).length,
       runUnavailable: rows.filter((row) => row.dataQuality.latestRunUnavailable)
         .length,
@@ -251,32 +272,27 @@ export default function MyModulePage() {
     [isOrgManager, rows],
   );
 
-  const hasConfirmedRunData = rows.some(
-    (row) => !row.dataQuality.latestRunUnavailable,
-  );
-
-  useEffect(() => {
-    if (!hasConfirmedRunData && runFilter !== 'all') {
-      setRunFilter('all');
-    }
-  }, [hasConfirmedRunData, runFilter]);
-
   const handleModuleClick = (row: ModuleOperationRow) => {
     if (!canOpenModule(row)) return;
     const targetId = row.app.workflow_id || row.app.id;
     router.push(`/modules/${targetId}`);
   };
 
-  const handleEditApp = (row: ModuleOperationRow) => {
+  const handleEditApp = async (row: ModuleOperationRow) => {
     if (!canEditApp(row, isOrgManager)) return;
-    setEditingApp(row.app);
+    try {
+      const app = await appApi.getApp(row.app.id);
+      setEditingApp(app);
+    } catch {
+      alert('앱 정보를 불러오지 못했습니다.');
+    }
   };
 
   const handleToggleDeployment = async (row: ModuleOperationRow) => {
-    if (!canToggleDeployment(row) || !row.app.active_deployment_id) return;
+    if (!canToggleDeployment(row) || !row.deployment.deployment_id) return;
 
     try {
-      await appApi.toggleDeployment(row.app.active_deployment_id);
+      await appApi.toggleDeployment(row.deployment.deployment_id);
       loadModules();
     } catch {
       alert('배포 상태 변경에 실패했습니다.');
@@ -294,14 +310,14 @@ export default function MyModulePage() {
             summary.unavailable > 0 && (
               <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
                 <AlertTriangle className="h-3.5 w-3.5" />
-                일부 권한 출처 또는 실행 상태는 API 연동 전이라 확인 필요로 표시됩니다.
+                일부 권한 출처 또는 실행 상태를 확인할 수 없어 확인 필요로 표시됩니다.
               </span>
             )
           }
           action={
             <div className="flex items-center gap-2">
               <button
-                onClick={loadModules}
+                onClick={() => loadModules()}
                 className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-100"
               >
                 <RefreshCw className="h-4 w-4" />
@@ -330,27 +346,27 @@ export default function MyModulePage() {
             value={`${summary.active}개`}
             icon={Rocket}
             iconClassName="text-green-600"
-            description="현재 활성 배포가 켜진 모듈"
+            description="현재 로드된 결과 기준"
           />
           <DashboardSummaryCard
             label="최근 오류"
             value={`${summary.failed}개`}
             icon={AlertTriangle}
             iconClassName="text-red-600"
-            description="확인 가능한 최근 실행 기준"
+            description="현재 로드된 결과 기준"
           />
           <DashboardSummaryCard
             label="실행 중"
             value={`${summary.running}개`}
             icon={Clock3}
-            description="확인 가능한 최근 실행 기준"
+            description="현재 로드된 결과 기준"
           />
           <DashboardSummaryCard
-            label="앱 수정 가능"
+            label="앱 설정 관리"
             value={`${summary.manageable}개`}
             icon={ShieldCheck}
             iconClassName="text-violet-600"
-            description={`수정 가능 ${summary.editable}개`}
+            description={`로드된 결과 중 수정 가능 ${summary.editable}개`}
           />
         </section>
 
@@ -359,7 +375,7 @@ export default function MyModulePage() {
           icon={SlidersHorizontal}
           aside={
             <span className="text-xs text-slate-500">
-              표시 {filteredRows.length} / 전체 {rows.length}
+              현재 로드 {rows.length}개{hasMore ? ' 이상' : ''}
             </span>
           }
         >
@@ -369,7 +385,7 @@ export default function MyModulePage() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="모듈명, 설명, 소유자, 팀 검색"
+                  placeholder="모듈명, 설명 검색"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   className="h-10 w-full rounded-md border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
@@ -385,8 +401,8 @@ export default function MyModulePage() {
                 options={[
                   ['all', '전체 권한'],
                   ['executable', '실행 가능'],
-                  ['editable', '앱 수정 가능'],
-                  ['manageable', '관리 가능'],
+                  ['editable', '워크플로우 수정 가능'],
+                  ['manageable', '워크플로우 관리 가능'],
                 ]}
               />
               <FilterSelect
@@ -406,7 +422,6 @@ export default function MyModulePage() {
                 label="실행"
                 value={runFilter}
                 onChange={(value) => setRunFilter(value as RunFilter)}
-                disabled={!hasConfirmedRunData}
                 options={[
                   ['all', '전체 실행'],
                   ['running', '실행 중'],
@@ -414,16 +429,11 @@ export default function MyModulePage() {
                 ]}
               />
             </div>
-            {!hasConfirmedRunData && rows.length > 0 && (
-              <p className="mt-2 text-xs font-medium text-amber-700">
-                실행 상태 API가 확인되지 않아 실행 필터는 비활성화했습니다.
-              </p>
-            )}
           </div>
 
           {isLoading ? (
             <ModuleListSkeleton />
-          ) : filteredRows.length === 0 ? (
+          ) : rows.length === 0 ? (
             <div className="px-5 py-12 text-center">
               <p className="text-sm font-semibold text-slate-700">
                 조건에 맞는 모듈이 없습니다.
@@ -454,7 +464,7 @@ export default function MyModulePage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
-                  {filteredRows.map((row) => (
+                  {rows.map((row) => (
                     <ModuleOperationTableRow
                       key={row.app.id}
                       row={row}
@@ -466,6 +476,22 @@ export default function MyModulePage() {
                   ))}
                 </tbody>
               </table>
+              {hasMore && (
+                <div className="border-t border-slate-100 bg-white px-5 py-4 text-center">
+                  <button
+                    onClick={() =>
+                      loadModules({ offset: rows.length, append: true })
+                    }
+                    disabled={isLoadingMore}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <RefreshCw
+                      className={`h-4 w-4 ${isLoadingMore ? 'animate-spin' : ''}`}
+                    />
+                    {isLoadingMore ? '불러오는 중' : '더 보기'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </DashboardPanel>
@@ -594,9 +620,9 @@ function ModuleOperationTableRow({
         <Badge className={deploymentTone[deploymentState]}>
           {deploymentLabels[deploymentState]}
         </Badge>
-        {row.app.active_deployment_type && (
+        {row.deployment.type && (
           <p className="mt-2 text-xs text-slate-500">
-            {row.app.active_deployment_type}
+            {row.deployment.type}
           </p>
         )}
       </td>
@@ -625,7 +651,7 @@ function ModuleOperationTableRow({
             <ExternalLink className="h-4 w-4" />
           </IconButton>
           <IconButton
-            label={canEdit ? '앱 정보 수정' : '관리 권한 필요'}
+            label={canEdit ? '앱 설정 수정' : '앱 설정 관리 권한 필요'}
             onClick={onEdit}
             disabled={!canEdit}
           >
@@ -635,7 +661,7 @@ function ModuleOperationTableRow({
             label={
               canToggle
                 ? '배포 상태 변경'
-                : row.app.active_deployment_id
+                : row.deployment.deployment_id
                   ? '배포 권한 필요'
                   : '배포 없음'
             }

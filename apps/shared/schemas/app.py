@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AppIcon(BaseModel):
@@ -50,3 +50,64 @@ class AppResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AppOperationAppSummary(BaseModel):
+    """Safe app summary for the module operations list."""
+
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    icon: Optional[AppIcon] = None
+    workflow_id: Optional[UUID] = None
+    owner_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AppOperationPermissionSource(BaseModel):
+    """Permission source placeholder aligned with MBA-74 sources contract."""
+
+    type: Literal["team", "user"]
+    team_id: Optional[UUID] = None
+    team_name: Optional[str] = None
+    user_id: Optional[UUID] = None
+    user_name: Optional[str] = None
+    auth_state: str
+
+
+class AppOperationPermissionSummary(BaseModel):
+    workflow_id: UUID
+    organization_id: Optional[UUID] = None
+    auth_state: str
+    can_read: bool
+    can_write: bool
+    can_execute: bool
+    can_deploy: bool
+    can_manage: bool
+
+
+class AppOperationDeploymentSummary(BaseModel):
+    state: Literal["active", "inactive", "undeployed"]
+    deployment_id: Optional[UUID] = None
+    type: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class AppOperationLatestRunSummary(BaseModel):
+    state: Literal["running", "success", "failed", "not_started", "unavailable"]
+    run_id: Optional[UUID] = None
+    raw_status: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+class AppOperationRow(BaseModel):
+    app: AppOperationAppSummary
+    permission: Optional[AppOperationPermissionSummary] = None
+    permission_status: Literal["loaded", "failed", "not_available"]
+    permission_sources: list[AppOperationPermissionSource] = Field(default_factory=list)
+    permission_error: Optional[str] = None
+    deployment: AppOperationDeploymentSummary
+    latest_run: AppOperationLatestRunSummary

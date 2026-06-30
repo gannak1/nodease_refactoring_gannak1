@@ -154,6 +154,50 @@ def test_list_apps_uses_active_organization_header(monkeypatch):
     }
 
 
+def test_list_app_operations_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    monkeypatch.setattr(
+        app_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "list_app_operations",
+        lambda db, **kwargs: captured.update(kwargs) or ["operation"],
+    )
+
+    result = app_endpoint.list_app_operations(
+        request=object(),
+        q="문의",
+        permission="builder",
+        capability="write",
+        deployment_state="active",
+        run_state="success",
+        limit=20,
+        offset=5,
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result == ["operation"]
+    assert captured == {
+        "user_id": user.id,
+        "organization_id": organization_id,
+        "q": "문의",
+        "permission": "builder",
+        "capability": "write",
+        "deployment_state": "active",
+        "run_state": "success",
+        "limit": 20,
+        "offset": 5,
+    }
+
+
 def test_create_workflow_uses_active_organization_header(monkeypatch):
     organization_id = uuid.uuid4()
     user = SimpleNamespace(id=uuid.uuid4())
@@ -204,6 +248,8 @@ class _FakeQuery:
     def __init__(self, value):
         self.value = value
         self.filters = []
+        self.offset_value = 0
+        self.limit_value = None
 
     def filter(self, *args, **kwargs):
         self.filters.extend(args)
@@ -212,11 +258,24 @@ class _FakeQuery:
     def options(self, *args, **kwargs):
         return self
 
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def offset(self, value):
+        self.offset_value = value
+        return self
+
+    def limit(self, value):
+        self.limit_value = value
+        return self
+
     def first(self):
         return self.value
 
     def all(self):
-        return self.value
+        if self.limit_value is None:
+            return self.value[self.offset_value :]
+        return self.value[self.offset_value : self.offset_value + self.limit_value]
 
 
 class _FakeDb:
@@ -235,6 +294,7 @@ def test_get_user_apps_filters_by_active_organization_before_permission_filter(m
         workflow_id=uuid.uuid4(),
         created_by=uuid.uuid4(),
         active_deployment_id=None,
+        is_market=False,
     )
     db = _FakeDb([app])
 
@@ -251,6 +311,249 @@ def test_get_user_apps_filters_by_active_organization_before_permission_filter(m
         and expression.right.value == organization_id
         for expression in db.query_obj.filters
     )
+
+
+def test_list_app_operations_returns_safe_summary(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    deployment_id = uuid.uuid4()
+    deployment = SimpleNamespace(
+        id=deployment_id,
+        app_id=uuid.uuid4(),
+        type=SimpleNamespace(value="webhook"),
+        is_active=True,
+    )
+    app = SimpleNamespace(
+        id=deployment.app_id,
+        organization_id=organization_id,
+        name="고객 문의 분류",
+        description="문의 분류",
+        icon={"type": "emoji", "content": "📨", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=deployment,
+        active_deployment_id=deployment_id,
+        created_by=user_id,
+        created_at=now,
+        updated_at=now,
+        url_slug="app-secret",
+        auth_secret="sk-secret",
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "builder",
+    )
+    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"})
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(
+        AppService,
+        "_deployment_history_by_app_id",
+        lambda *a: {app.id: deployment},
+    )
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+
+    assert len(rows) == 1
+    row = rows[0].model_dump()
+    assert row["app"]["name"] == "고객 문의 분류"
+    assert row["app"]["owner_name"] == "혜연"
+    assert "auth_secret" not in row["app"]
+    assert "url_slug" not in row["app"]
+    assert row["permission"]["auth_state"] == "builder"
+    assert row["permission"]["can_write"] is True
+    assert row["permission"]["can_deploy"] is False
+    assert row["permission_sources"] == []
+    assert row["deployment"]["state"] == "active"
+    assert row["latest_run"]["state"] == "not_started"
+
+
+def test_list_app_operations_filters_by_capability(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="실행 전용 모듈",
+        description="operator 권한",
+        icon={"type": "emoji", "content": "N", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "operator",
+    )
+    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    executable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        capability="execute",
+    )
+    writable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        capability="write",
+    )
+    operator_writable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        permission="operator",
+        capability="write",
+    )
+
+    assert [row.app.name for row in executable_rows] == ["실행 전용 모듈"]
+    assert writable_rows == []
+    assert operator_writable_rows == []
+
+
+def test_list_app_operations_stops_permission_scan_after_page_is_filled(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    apps = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            name=f"모듈 {index}",
+            description=None,
+            icon=None,
+            workflow_id=uuid.uuid4(),
+            active_deployment=None,
+            active_deployment_id=None,
+            created_by=user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        for index in range(3)
+    ]
+    db = _FakeDb(apps)
+    checked_app_ids = []
+
+    def can_read(db, app, user_id):
+        checked_app_ids.append(app.id)
+        return True
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", can_read)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        limit=1,
+    )
+
+    assert [row.app.name for row in rows] == ["모듈 0"]
+    assert checked_app_ids == [apps[0].id]
+
+
+def test_escape_like_pattern_treats_wildcards_as_literals():
+    assert AppService._escape_like_pattern(r"50%_done\test") == r"50\%\_done\\test"
+
+
+def test_list_app_operations_does_not_expose_market_app_without_workflow_read(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="공개 앱",
+        description="마켓 공개 앱",
+        icon={"type": "emoji", "content": "N", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=uuid.uuid4(),
+        created_at=now,
+        updated_at=now,
+        is_market=True,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(
+        app_service,
+        "has_organization_manager_permission",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: False)
+    def latest_runs_for_empty_candidates(db, workflow_ids):
+        assert workflow_ids == []
+        return {}
+
+    def deployment_history_for_empty_candidates(db, app_ids):
+        assert app_ids == []
+        return {}
+
+    monkeypatch.setattr(
+        AppService,
+        "_latest_runs_by_workflow_id",
+        latest_runs_for_empty_candidates,
+    )
+    monkeypatch.setattr(
+        AppService,
+        "_deployment_history_by_app_id",
+        deployment_history_for_empty_candidates,
+    )
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+
+    assert rows == []
+
+
+def test_operation_latest_run_summary_does_not_expose_raw_error_message():
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=SimpleNamespace(value="failed"),
+        started_at=datetime.now(timezone.utc),
+        finished_at=datetime.now(timezone.utc),
+        error_message="secret token and prompt text",
+    )
+
+    summary = AppService._operation_latest_run_summary(run)
+
+    assert summary.state == "failed"
+    assert summary.raw_status == "failed"
+    assert summary.error_message == "execution_failed"
 
 
 def test_create_workflow_rejects_active_organization_mismatch(monkeypatch):
