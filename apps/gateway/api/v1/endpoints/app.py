@@ -21,6 +21,7 @@ from apps.gateway.services.app_service import AppService
 router = APIRouter()
 
 OperationPermissionFilter = Literal["viewer", "operator", "builder", "manager"]
+OperationCapabilityFilter = Literal["execute", "write", "manage"]
 OperationDeploymentFilter = Literal["active", "inactive", "undeployed"]
 OperationRunFilter = Literal[
     "running", "success", "failed", "not_started", "unavailable"
@@ -128,6 +129,7 @@ def list_app_operations(
     request: Request,
     q: str | None = Query(default=None),
     permission: OperationPermissionFilter | None = Query(default=None),
+    capability: OperationCapabilityFilter | None = Query(default=None),
     deployment_state: OperationDeploymentFilter | None = Query(default=None),
     run_state: OperationRunFilter | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
@@ -148,6 +150,7 @@ def list_app_operations(
         organization_id=organization_id,
         q=q,
         permission=permission,
+        capability=capability,
         deployment_state=deployment_state,
         run_state=run_state,
         limit=limit,

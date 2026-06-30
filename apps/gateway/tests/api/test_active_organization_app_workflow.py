@@ -174,6 +174,7 @@ def test_list_app_operations_uses_active_organization_header(monkeypatch):
         request=object(),
         q="문의",
         permission="builder",
+        capability="write",
         deployment_state="active",
         run_state="success",
         limit=20,
@@ -189,6 +190,7 @@ def test_list_app_operations_uses_active_organization_header(monkeypatch):
         "organization_id": organization_id,
         "q": "문의",
         "permission": "builder",
+        "capability": "write",
         "deployment_state": "active",
         "run_state": "success",
         "limit": 20,
@@ -246,6 +248,8 @@ class _FakeQuery:
     def __init__(self, value):
         self.value = value
         self.filters = []
+        self.offset_value = 0
+        self.limit_value = None
 
     def filter(self, *args, **kwargs):
         self.filters.extend(args)
@@ -257,11 +261,21 @@ class _FakeQuery:
     def order_by(self, *args, **kwargs):
         return self
 
+    def offset(self, value):
+        self.offset_value = value
+        return self
+
+    def limit(self, value):
+        self.limit_value = value
+        return self
+
     def first(self):
         return self.value
 
     def all(self):
-        return self.value
+        if self.limit_value is None:
+            return self.value[self.offset_value :]
+        return self.value[self.offset_value : self.offset_value + self.limit_value]
 
 
 class _FakeDb:
@@ -360,6 +374,113 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     assert row["permission_sources"] == []
     assert row["deployment"]["state"] == "active"
     assert row["latest_run"]["state"] == "not_started"
+
+
+def test_list_app_operations_filters_by_capability(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="실행 전용 모듈",
+        description="operator 권한",
+        icon={"type": "emoji", "content": "N", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "operator",
+    )
+    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    executable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        capability="execute",
+    )
+    writable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        capability="write",
+    )
+    operator_writable_rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        permission="operator",
+        capability="write",
+    )
+
+    assert [row.app.name for row in executable_rows] == ["실행 전용 모듈"]
+    assert writable_rows == []
+    assert operator_writable_rows == []
+
+
+def test_list_app_operations_stops_permission_scan_after_page_is_filled(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    apps = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            name=f"모듈 {index}",
+            description=None,
+            icon=None,
+            workflow_id=uuid.uuid4(),
+            active_deployment=None,
+            active_deployment_id=None,
+            created_by=user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        for index in range(3)
+    ]
+    db = _FakeDb(apps)
+    checked_app_ids = []
+
+    def can_read(db, app, user_id):
+        checked_app_ids.append(app.id)
+        return True
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", can_read)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        limit=1,
+    )
+
+    assert [row.app.name for row in rows] == ["모듈 0"]
+    assert checked_app_ids == [apps[0].id]
+
+
+def test_escape_like_pattern_treats_wildcards_as_literals():
+    assert AppService._escape_like_pattern(r"50%_done\test") == r"50\%\_done\\test"
 
 
 def test_list_app_operations_does_not_expose_market_app_without_workflow_read(
