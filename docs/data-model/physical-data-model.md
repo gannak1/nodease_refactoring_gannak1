@@ -1232,7 +1232,7 @@ MVP 목표 상태 결정:
 - MBA-78 1차 retrieval filter key는 `classification`, `tags`, `source_type`, `effective_from`, `effective_to` convention에 한정한다. `source_hash`, `document_version`, `metadata_version` 같은 metadata key는 citation evidence 또는 후속 filter 확장 후보로 사용할 수 있다.
 - `effective_from`/`effective_to`는 `documents.meta_info`에 UTC ISO 문자열(`YYYY-MM-DDTHH:MM:SS+00:00`)로 정규화해 저장한다. 비어 있거나 누락된 값은 열린 구간으로 해석하고, 값이 있지만 형식이 다르면 retrieval filter에서 match하지 않는다. `document_chunks.metadata`에 복제된 값은 denormalized cache/citation evidence이며, MBA-78 1차 filter source로 보지 않는다.
 - `needs_reindex` 같은 상태가 필요하면 현재 코드의 `meta_info`에 application-level metadata로 저장한다.
-- MBA-85 hierarchical ingestion provenance는 `documents.meta_info.chunking_mode`, `hierarchy_version`, `hierarchy_parent_target_size`, `hierarchy_child_size`, `hierarchy_child_overlap`, `chunking_fingerprint_hash` 같은 application-level metadata로 저장할 수 있다.
+- MBA-85 hierarchical ingestion provenance는 `documents.meta_info.chunking_mode`, `hierarchy_version`, `hierarchy_parent_target_size`, `hierarchy_parent_overlap`, `hierarchy_child_size`, `hierarchy_child_overlap`, `chunking_fingerprint_hash` 같은 application-level metadata로 저장할 수 있다.
 - `chunking_fingerprint_hash`는 `content_hash` 기반 재처리 skip이 chunking 설정 변경을 놓치지 않도록 사용하는 application-level fingerprint다. 입력에는 `chunking_mode`, `hierarchy_version`, `chunk_size`, `chunk_overlap`, `segment_identifier`, preprocess flag, selection setting 같은 redaction-safe 설정만 포함하고 secret, header, credential, raw content는 포함하지 않는다.
 - Hierarchy provenance metadata는 권한 source가 아니며, retrieval filter의 canonical source도 아니다. 권한은 KB organization scope와 effective permission으로 판단하고, retrieval filter는 문서 metadata allowlist 계약을 따른다.
 - re-index 때문에 `status` enum/table을 새로 만들지 않는다.

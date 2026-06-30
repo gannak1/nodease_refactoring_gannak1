@@ -53,9 +53,20 @@ from apps.shared.services.permissions import (
     has_organization_scope_access,
 )
 from apps.shared.services.rag_filters import normalize_metadata_filter
+from apps.shared.services.rag_hierarchy import (
+    RAGHierarchyError,
+    validate_chunking_request,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"reason": exc.reason, "message": exc.message},
+    )
 
 
 def _require_search_knowledge_base_id(request: Request, query: SearchQuery) -> UUID:
@@ -245,6 +256,7 @@ async def upload_document(
     # 문서별 청킹 설정
     chunk_size: int = Form(1000, alias="chunkSize"),
     chunk_overlap: int = Form(200, alias="chunkOverlap"),
+    chunking_mode: str = Form("flat", alias="chunkingMode"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -285,7 +297,15 @@ async def upload_document(
     try:
         source_enum = SourceType(source_type)
     except ValueError:
-        source_enum = SourceType.FILE
+        raise HTTPException(status_code=400, detail="Invalid source type")
+
+    try:
+        normalized_chunking_mode = validate_chunking_request(
+            chunking_mode=chunking_mode,
+            source_type=source_enum,
+        )
+    except RAGHierarchyError as exc:
+        raise _chunking_http_exception(exc)
 
     if source_enum == SourceType.FILE:
         # [NEW] S3 Direct Upload 방식
@@ -315,6 +335,9 @@ async def upload_document(
         )
     else:
         raise HTTPException(status_code=400, detail="Invalid source type")
+
+    meta_info = dict(meta_info or {})
+    meta_info["chunking_mode"] = normalized_chunking_mode
 
     # 4. DB 레코드 생성 (Pending 상태)
     doc_id = local_service.create_pending_document(
@@ -399,10 +422,7 @@ async def confirm_document_parsing(
     # 기존 설정(청크 사이즈 등)은 DB doc에 저장되어 있으므로 불러와서 쓴다고 가정
     ingestion_service = IngestionService(db, user_id=current_user.id)
 
-    background_tasks.add_task(
-        ingestion_service.process_document,  # Was resume_processing, but process_document handles it if logic supports
-        document_id,
-    )
+    background_tasks.add_task(ingestion_service.resume_processing, document_id, strategy)
 
     return {
         "message": f"Parsing resumed with strategy: {strategy}",
