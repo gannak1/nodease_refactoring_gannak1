@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-76 working tree after PR #119 review fixes
+Verified Against: feature/mba-76 @ c02598ef1f8ba36a6e70389b08b436b5b87335b8
 
 ## 목적
 
