@@ -124,7 +124,11 @@ def list_apps(
     return apps
 
 
-@router.get("/operations", response_model=List[AppOperationRow])
+@router.get(
+    "/operations",
+    response_model=List[AppOperationRow],
+    response_model_exclude_none=True,
+)
 def list_app_operations(
     request: Request,
     q: str | None = Query(default=None),

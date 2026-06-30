@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RESOURCE_AUTH_STATE_RANKS = {
     "workflow": {
@@ -93,6 +93,37 @@ class AuditPermissionGrantRequest(BaseModel):
 
 class PermissionGrantRequest(WorkflowPermissionGrantRequest):
     """Backward-compatible alias for workflow permission grant requests."""
+
+
+class WorkflowPermissionSource(BaseModel):
+    """현재 user의 workflow effective permission 출처."""
+
+    type: Literal["team", "user"]
+    auth_state: str
+    team_id: UUID | None = None
+    team_name: str | None = None
+    user_id: UUID | None = None
+    user_name: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source_identity(self) -> "WorkflowPermissionSource":
+        if self.type == "team" and (self.team_id is None or not self.team_name):
+            raise ValueError("team source requires team_id and team_name")
+        if self.type == "user" and self.user_id is None:
+            raise ValueError("user source requires user_id")
+        return self
+
+
+class WorkflowPermissionResponse(BaseModel):
+    workflow_id: UUID
+    organization_id: UUID | None = None
+    auth_state: str
+    can_read: bool
+    can_write: bool
+    can_execute: bool
+    can_deploy: bool
+    can_manage: bool
+    sources: list[WorkflowPermissionSource] = Field(default_factory=list)
 
 
 class TeamWorkflowPermissionResponse(BaseModel):

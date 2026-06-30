@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-74 @ PR #131 head
 
 ## 목적
 
@@ -93,7 +93,7 @@ active organization은 서버 session에 저장하지 않는다. 프론트가 �
 | `POST /api/v1/workflows/{workflow_id}/execute` | 실행 | run result |
 | `POST /api/v1/workflows/{workflow_id}/stream` | streaming 실행 | event stream |
 
-`GET /api/v1/workflows/{workflow_id}/permissions/me`는 `api/apps-workflows.md`의 공식 계약에 포함된 endpoint다. 호출에는 workflow `read` 권한이 필요하므로, 프론트는 이 응답을 "이미 읽을 수 있는 workflow의 내 effective permission" 조회로 사용한다. 권한 출처(team/direct)까지 표시하려면 `api/organization-rbac.md`의 permission 목록 API를 별도로 조회해야 한다.
+`GET /api/v1/workflows/{workflow_id}/permissions/me`는 `api/apps-workflows.md`의 공식 계약에 포함된 endpoint다. 호출에는 workflow `read` 권한이 필요하므로, 프론트는 이 응답을 "이미 읽을 수 있는 workflow의 내 effective permission" 조회로 사용한다. MBA-74 이후 권한 출처(team/direct)는 같은 응답의 `sources`로 표시한다. 전체 권한 관리 표가 필요할 때만 `api/organization-rbac.md`의 permission 목록 API를 별도로 조회한다.
 
 ## Response 매핑
 
@@ -130,10 +130,26 @@ type WorkflowPermissionResponse = {
   can_execute: boolean;
   can_deploy: boolean;
   can_manage: boolean;
+  sources: WorkflowPermissionSource[];
+};
+
+type WorkflowPermissionSource =
+  | {
+      type: 'team';
+      team_id: string;
+      team_name: string;
+      auth_state: 'viewer' | 'operator' | 'builder' | 'manager';
+    }
+  | {
+      type: 'user';
+      user_id: string;
+      user_name?: string | null;
+      auth_state: 'viewer' | 'operator' | 'builder' | 'manager';
+    };
 };
 ```
 
-UI는 가능하면 `can_*` boolean을 직접 사용하고, 표시 badge에는 `auth_state`를 사용한다.
+UI는 가능하면 `can_*` boolean을 직접 사용하고, 표시 badge에는 `auth_state`를 사용한다. 접근 경로 표시에는 `sources`를 사용한다. `sources=[]`는 오류가 아니라 source가 없는 override 또는 legacy fallback일 수 있다.
 
 ## Error 처리
 

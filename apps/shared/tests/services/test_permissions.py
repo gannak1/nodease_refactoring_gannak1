@@ -11,6 +11,7 @@ from apps.shared.permissions import (
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
+    get_workflow_permission_sources,
     has_active_organization_membership,
     has_llm_credential_permission,
     has_workflow_permission,
@@ -25,6 +26,9 @@ class FakeQuery:
         return self
 
     def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
         return self
 
     def first(self):
@@ -94,6 +98,149 @@ def test_workflow_permission_action_matrix():
     assert workflow_auth_state_allows("builder", "write") is True
     assert workflow_auth_state_allows("builder", "deploy") is False
     assert workflow_auth_state_allows("manager", "manage") is True
+
+
+def test_workflow_permission_sources_include_team_and_user_direct():
+    user_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    team_id = uuid.uuid4()
+    workflow = SimpleNamespace(id=workflow_id, organization_id=organization_id)
+    organization = SimpleNamespace(
+        id=organization_id,
+        is_active=True,
+        created_by=uuid.uuid4(),
+        managed_by=None,
+    )
+    membership = SimpleNamespace(
+        membership_state="active",
+        organization_auth_state="member",
+    )
+    team_permission = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=workflow_id,
+        auth_state="builder",
+    )
+    team = SimpleNamespace(id=team_id, name="워크플로우 빌더팀")
+    user_permission = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=workflow_id,
+        auth_state="operator",
+    )
+    user = SimpleNamespace(id=user_id, name=None, email="hyeyeon@moduly.local")
+    db = FakeDb(
+        first_values=[workflow, user, organization, membership],
+        all_values=[
+            [(team_permission, team)],
+            [(user_permission, user)],
+        ],
+    )
+
+    sources = get_workflow_permission_sources(
+        db,
+        user_id,
+        workflow_id,
+        organization_id,
+    )
+
+    assert [source.model_dump() for source in sources] == [
+        {
+            "type": "team",
+            "auth_state": "builder",
+            "team_id": team_id,
+            "team_name": "워크플로우 빌더팀",
+            "user_id": None,
+            "user_name": None,
+        },
+        {
+            "type": "user",
+            "auth_state": "operator",
+            "team_id": None,
+            "team_name": None,
+            "user_id": user_id,
+            "user_name": "hyeyeon@moduly.local",
+        },
+    ]
+
+
+def test_workflow_permission_sources_exclude_none_sources():
+    user_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow = SimpleNamespace(id=workflow_id, organization_id=organization_id)
+    organization = SimpleNamespace(
+        id=organization_id,
+        is_active=True,
+        created_by=uuid.uuid4(),
+        managed_by=None,
+    )
+    membership = SimpleNamespace(
+        membership_state="active",
+        organization_auth_state="member",
+    )
+    team_permission = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=workflow_id,
+        auth_state="none",
+    )
+    team = SimpleNamespace(id=uuid.uuid4(), name="조회팀")
+    db = FakeDb(
+        first_values=[workflow, SimpleNamespace(id=user_id), organization, membership],
+        all_values=[
+            [(team_permission, team)],
+            [],
+        ],
+    )
+
+    assert (
+        get_workflow_permission_sources(db, user_id, workflow_id, organization_id)
+        == []
+    )
+
+
+def test_workflow_permission_sources_sort_by_strongest_auth_state_first():
+    user_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow = SimpleNamespace(id=workflow_id, organization_id=organization_id)
+    organization = SimpleNamespace(
+        id=organization_id,
+        is_active=True,
+        created_by=uuid.uuid4(),
+        managed_by=None,
+    )
+    membership = SimpleNamespace(
+        membership_state="active",
+        organization_auth_state="member",
+    )
+    team_permission = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=workflow_id,
+        auth_state="viewer",
+    )
+    team = SimpleNamespace(id=uuid.uuid4(), name="조회팀")
+    user_permission = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=workflow_id,
+        auth_state="manager",
+    )
+    user = SimpleNamespace(id=user_id, name="혜연", email="hyeyeon@moduly.local")
+    db = FakeDb(
+        first_values=[workflow, user, organization, membership],
+        all_values=[
+            [(team_permission, team)],
+            [(user_permission, user)],
+        ],
+    )
+
+    sources = get_workflow_permission_sources(
+        db,
+        user_id,
+        workflow_id,
+        organization_id,
+    )
+
+    assert [source.auth_state for source in sources] == ["manager", "viewer"]
 
 
 def test_audit_only_states_fail_closed_for_resource_permissions():

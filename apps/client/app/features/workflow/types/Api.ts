@@ -11,7 +11,21 @@ export interface WorkflowResponse {
   updated_at: string;
 }
 
-export interface WorkflowPermissionResponse {
+export type WorkflowPermissionSource =
+  | {
+      type: 'team';
+      team_id: string;
+      team_name: string;
+      auth_state: string;
+    }
+  | {
+      type: 'user';
+      user_id: string;
+      user_name?: string | null;
+      auth_state: string;
+    };
+
+export interface WorkflowPermissionSummary {
   workflow_id: string;
   organization_id?: string | null;
   auth_state: string;
@@ -20,6 +34,10 @@ export interface WorkflowPermissionResponse {
   can_execute: boolean;
   can_deploy: boolean;
   can_manage: boolean;
+}
+
+export interface WorkflowPermissionResponse extends WorkflowPermissionSummary {
+  sources: WorkflowPermissionSource[];
 }
 
 export interface WorkflowCompareVariant {
