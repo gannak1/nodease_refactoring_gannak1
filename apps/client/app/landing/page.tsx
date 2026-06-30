@@ -833,12 +833,12 @@ export default function LandingPage() {
         <div className="flex items-center gap-8">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2 group">
-            <div className="relative w-24 h-8">
+            <div className="relative w-36 h-24">
               <Image
-                src="/moduly-logo.png"
-                alt="Moduly"
+                src="/logo.png"
+                alt="nodease"
                 fill
-                className="object-contain object-left"
+                className="object-cover object-left"
               />
             </div>
           </Link>
