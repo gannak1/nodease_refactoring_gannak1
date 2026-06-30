@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 목적
 
@@ -60,7 +60,7 @@ active organization은 서버 session에 저장하지 않는다. 프론트가 �
 | API | 사용 시점 | 성공 시 state |
 | --- | --- | --- |
 | `GET /api/v1/organizations` | Settings 또는 app 초기화 | 접근 가능한 organization 목록 |
-| `GET /api/v1/organizations/current` | active organization 검증 | 현재 organization |
+| `GET /api/v1/organizations/current` | `X-Organization-Id` 준비 후 active organization 검증 | 현재 organization |
 | `GET /api/v1/organizations/{organization_id}` | 상세 필요 시 | organization detail |
 
 ### Team / Member
@@ -93,7 +93,7 @@ active organization은 서버 session에 저장하지 않는다. 프론트가 �
 | `POST /api/v1/workflows/{workflow_id}/execute` | 실행 | run result |
 | `POST /api/v1/workflows/{workflow_id}/stream` | streaming 실행 | event stream |
 
-`GET /api/v1/workflows/{workflow_id}/permissions/me`는 현재 client 코드에서 내 workflow 권한 상태 조회에 사용하지만, `api/` 계약 문서에는 별도 endpoint로 정리되어 있지 않다. 프론트 구현에서는 임시 연동 지점으로 다루고, PR에서는 `api/apps-workflows.md` 또는 별도 API 문서 보강 여부를 함께 확인한다.
+`GET /api/v1/workflows/{workflow_id}/permissions/me`는 `api/apps-workflows.md`의 공식 계약에 포함된 endpoint다. 호출에는 workflow `read` 권한이 필요하므로, 프론트는 이 응답을 "이미 읽을 수 있는 workflow의 내 effective permission" 조회로 사용한다. 권한 출처(team/direct)까지 표시하려면 `api/organization-rbac.md`의 permission 목록 API를 별도로 조회해야 한다.
 
 ## Response 매핑
 
@@ -182,9 +182,9 @@ type RbacState = {
 
 | 항목 | 이유 |
 | --- | --- |
-| `GET /api/v1/users?organization_id={id}` 공식 API 문서 위치 | Settings page에서 사용 중이나 RBAC API 문서에는 아직 명확히 정리되지 않음 |
+| `GET /api/v1/users?organization_id={id}` 공식 API 계약 | `api/organization-rbac.md`에 정리되어 있으며, organization manager만 active organization member user 목록을 조회할 수 있음 |
 | `GET /api/v1/workflows/app/{app_id}`의 workflow별 permission filtering | `none` workflow 목록 노출 정책과 직접 연결 |
-| `permissions/me`가 `none` 상태에서도 응답할지 | 현재 read 권한이 있어야 호출 가능하면 `none`은 403이 먼저 발생할 수 있음 |
+| `permissions/me`가 `none` 상태에서도 응답할지 | 현재 공식 계약은 workflow `read` 권한을 요구하므로 일반적인 `none` 사용자는 403/404로 차단된다. `none` 응답은 관리자 진단용 별도 API가 생기기 전까지 UI 전제로 두지 않음 |
 
 ## QA 체크리스트
 

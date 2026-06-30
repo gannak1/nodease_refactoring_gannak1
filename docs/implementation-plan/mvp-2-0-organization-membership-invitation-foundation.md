@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
-편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation은 구현됐으며, permission helper/API/FE 전환은 후속 Issue 0-2 이후 범위다.
+편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 아직 후속 범위다.
 
 ## 1. 목적
 
-이 문서는 MVP 2의 Governance/RAG/Audit 개발을 시작하기 전에 선행해야 하는 `MVP 2-0` 작업을 정의한다.
+이 문서는 MVP 2의 Governance/RAG/Audit 개발 전에 선행해야 했던 `MVP 2-0` 작업을 정의한 계획서다. Dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐고, 현재는 완료된 foundation과 남은 member/invitation/API/UI 범위를 구분해 읽는다.
 
 MVP 1이 완료되었다고 가정하면 현재 RBAC foundation은 다음 구조를 가진다.
 
@@ -33,7 +33,7 @@ user_*_permissions
 5. 다중 organization 사용자가 늘어날수록 active organization 판단이 비직관적이다.
 6. MVP 2의 knowledge base/document permission은 organization member 기반으로 부여되어야 하는데, 현재 구조는 team membership에 과도하게 의존한다.
 
-따라서 MVP 2-0에서는 `organization_memberships`를 추가하여 다음 상태로 바꾼다.
+MVP 2-0 계획은 `organization_memberships`를 추가하는 방향으로 수립됐고, dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐다. 목표 상태는 다음과 같다.
 
 ```text
 organization
@@ -62,13 +62,13 @@ team: 기본 권한 subject. user는 team membership을 통해 권한을 얻는�
 user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additive allow만 부여한다.
 ```
 
-기존 물리 데이터 모델도 `team_memberships`를 사용자 소속 원천으로 둔다.
+원 계획 작성 당시에는 일부 문서와 구현 경로가 `team_memberships`를 organization 소속의 간접 원천처럼 해석했다. 이 전제는 현재 공식 데이터 모델 기준에서는 폐기된 전제다.
 
 ```text
-사용자 소속 = team_memberships
+폐기된 과거 전제: 사용자 소속 = team_memberships
 ```
 
-MVP 2에서는 이 기준을 변경한다.
+현재 기준은 다음처럼 분리한다.
 
 ```text
 사용자 organization 소속 = organization_memberships
@@ -77,20 +77,20 @@ MVP 2에서는 이 기준을 변경한다.
 
 ### 2.2 현재 코드 기준
 
-현 코드에는 다음 team membership 의존이 있다.
+원 계획 작성 당시에는 active organization과 user direct permission의 전제 조건이 `team_memberships`에 과도하게 의존했다. 최신 dev 기준으로 일부 전환은 완료됐고, 남은 작업은 organization member/invitation 제품 흐름과 full membership 관리 UI다.
 
-| 파일 | 현재 역할 | 변경 방향 |
+| 파일 | 최신 dev 상태 | 남은 방향 |
 | --- | --- | --- |
-| `apps/gateway/services/organization_context.py` | 첫 active team membership으로 primary organization 추정 | active `organization_memberships` 기준으로 변경 |
-| `apps/gateway/services/team_service.py` | user direct permission 부여 전에 team membership 확인 | organization membership 확인으로 변경 |
-| `apps/shared/services/permissions.py` | team permission 계산 시 team membership join | team permission 계산은 유지하되, resource 계산 전 organization membership 확인 추가 |
-| `apps/shared/db/models/team.py` | `TeamMembership`이 organization-user-team 관계까지 포함 | team 배정 역할로 유지 |
-| `docs/data-model/physical-data-model.md` | 사용자 소속을 `team_memberships`로 설명 | `organization_memberships`를 기준 table로 추가 |
-| `docs/api/organization-rbac.md` | team/member 관리와 resource permission 중심 | organization member/invite API 추가 |
+| `apps/gateway/services/organization_context.py` | active `organization_memberships` 기반 primary organization/helper 사용 | legacy fallback 제거 시점은 별도 결정 필요 |
+| `apps/gateway/services/team_service.py` | team member 추가와 user direct permission grant 대상에 active organization membership을 요구 | organization invite/accept flow가 생기면 대상 선택 UX와 연결 |
+| `apps/shared/services/permissions.py` | organization scope/manager 판정은 `organization_memberships` 우선, team permission 계산은 `team_memberships` join 유지 | knowledge/audit user direct permission 추가 시 같은 전제 조건 적용 |
+| `apps/shared/db/models/team.py` | `TeamMembership`은 organization 안의 team 배정 역할로 유지 | organization 소속 자체를 대신하지 않도록 유지 |
+| `docs/data-model/physical-data-model.md` | `organization_memberships`를 현재 organization 소속 기준으로 반영 | 후속 schema extension 시 planned table 상태 갱신 |
+| `docs/api/organization-rbac.md` | user directory, team, permission API의 membership 전제 조건을 반영 | organization member/invite API 추가 |
 
 ## 3. 목표
 
-MVP 2-0 완료 후에는 다음이 가능해야 한다.
+아래 목록은 원 계획의 전체 목표다. Dev 기준 현재 완료된 foundation은 `organization_memberships` DB/model/migration/backfill과 permission helper 전환이며, member/invitation API, accept flow, full membership UI, cleanup/audit 확장은 남은 범위다.
 
 1. organization manager가 기존 user를 organization에 초대할 수 있다.
 2. 초대받은 user는 organization membership 상태를 가진다.
@@ -1216,22 +1216,22 @@ audit log search
 
 `organization_memberships`는 그중 permission enforcement의 선행 조건이다.
 
-MVP 2의 code-level knowledge/RAG 권한 구현은 MVP 2-0 Issue 0-2 permission helper 전환과 Issue 0-4 team/direct permission 검증 기준 변경이 끝난 뒤 시작한다. 단, 전체 Data Source Permission Enforcement 이슈는 Issue 0-6 regression까지 끝난 뒤 착수한다.
+아래 병렬 작업 제한은 원 계획 작성 당시의 foundation 완료 전 gate였다. Dev 기준으로 `organization_memberships` DB/model/migration/backfill과 permission helper 전환이 완료됐으므로, 현재는 `user_knowledge_permissions`, knowledge base `use` permission helper, RAG execution fail-closed enforcement를 MVP 2/MBA-75 구현 단위에서 진행할 수 있다.
 
-허용되는 병렬 작업:
+foundation 완료 전 허용됐던 병렬 작업:
 
 - RAG trace payload shape 초안
 - audit search UI mock
 - re-index UI mock
 - test fixture 설계
 
-금지되는 병렬 작업:
+foundation 완료 전 금지됐던 병렬 작업:
 
 - `user_knowledge_permissions` migration 확정
 - knowledge base `use` permission helper 확정
 - RAG execution fail-closed enforcement
 
-이유는 user direct knowledge permission의 grantee 검증 기준이 `organization_memberships`에 의존하기 때문이다.
+당시 이유는 user direct knowledge permission의 grantee 검증 기준이 `organization_memberships`에 의존하기 때문이었다. 현재 구현에서는 이 전제 계층이 준비됐으므로, 남은 판단은 `user_knowledge_permissions`를 MBA-75에 포함할지 별도 이슈로 나눌지에 관한 구현 단위 결정이다.
 
 ### 17.1 `user_knowledge_permissions`
 
@@ -1299,7 +1299,9 @@ MBA-66 구현 메모:
 
 - `organization_memberships` DB/model/migration foundation을 추가한다.
 - schema migration과 data/backfill migration을 분리한다.
-- API endpoint, permission helper 전환, FE 전환은 Issue 0-2 이후 범위로 유지한다.
+- MBA-67에서 permission helper와 일부 API endpoint 전환이 진행됐다.
+- MBA-71에서 active organization과 manager/member 화면 분기 일부가 반영됐다.
+- Organization member/invitation API와 full membership 관리 UI는 후속 범위로 유지한다.
 
 ### Issue 0-2. `[BE][RBAC] organization membership 기반 permission helper 전환`
 
@@ -1479,7 +1481,7 @@ permission helper:
 
 후속 작업:
 
-- 문서에서 "사용자 소속 = team_memberships" 표현 제거
+- "사용자 소속 = team_memberships" 표현을 폐기된 과거 전제로 정리
 - team membership 기반 primary organization fallback 제거
 - email invitation 확장 검토
 
@@ -1503,21 +1505,21 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 
 ## 22. 완료 기준
 
-MVP 2-0은 다음을 만족해야 완료로 본다.
+아래 표는 원 계획의 전체 완료 기준과 dev 기준 현재 상태를 함께 기록한다.
 
-| 영역 | 완료 기준 |
-| --- | --- |
-| DB | `organization_memberships` table과 migration/backfill 완료 |
-| Organization context | active organization 조회가 organization membership 기준으로 동작 |
-| Invitation | manager가 기존 user를 organization에 invite 가능 |
-| Acceptance | user가 invite를 accept하여 active member가 됨 |
-| Team | active organization member만 team에 추가 가능 |
-| User direct permission | team 소속이 없어도 active organization member면 direct permission 가능 |
-| Enforcement | active organization member가 아니면 resource permission row가 있어도 접근 차단 |
-| Cleanup | organization member 제거 시 team/direct permission 정리 |
-| Audit | invite/accept/update/remove/cleanup event 기록 |
-| UI | members list, invite, state 표시, team/direct permission picker 반영 |
-| Regression | MVP1 workflow/LLM permission demo가 계속 통과 |
+| 영역 | 원 계획 완료 기준 | dev 기준 현재 상태 |
+| --- | --- | --- |
+| DB | `organization_memberships` table과 migration/backfill 완료 | 완료 |
+| Organization context | active organization 조회가 organization membership 기준으로 동작 | helper/API 전환 범위 완료. Legacy fallback 축소는 후속 |
+| Invitation | manager가 기존 user를 organization에 invite 가능 | 남음 |
+| Acceptance | user가 invite를 accept하여 active member가 됨 | 남음 |
+| Team | active organization member만 team에 추가 가능 | 완료된 foundation 위에서 유지 |
+| User direct permission | team 소속이 없어도 active organization member면 direct permission 가능 | workflow/LLM permission 전환 범위 완료. Knowledge/audit user direct permission은 MVP 2/3 후속 |
+| Enforcement | active organization member가 아니면 resource permission row가 있어도 접근 차단 | workflow/LLM permission helper 전환 범위 완료. KB/RAG enforcement는 MVP 2 후속 |
+| Cleanup | organization member 제거 시 team/direct permission 정리 | 남음 |
+| Audit | invite/accept/update/remove/cleanup event 기록 | 남음 |
+| UI | members list, invite, state 표시, team/direct permission picker 반영 | full membership UI는 남음. MBA-71의 manager/member 화면 분기 일부만 반영 |
+| Regression | MVP1 workflow/LLM permission demo가 계속 통과 | 완료된 foundation 변경의 회귀 기준으로 유지 |
 
 ## 23. Demo script
 

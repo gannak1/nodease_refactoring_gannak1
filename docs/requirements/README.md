@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 요구사항 문서는 무엇을 만들지와 MVP별 완료 기준을 정의한다.
 
