@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.services.ingestion.vector_store_service import VectorStoreService
+from apps.shared.services.permissions import has_knowledge_base_permission
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,27 @@ class SyncService:
     [Workflow Engine] 실행 전 DB 지식 베이스 동기화 서비스
     """
 
-    def __init__(self, db: Session, user_id: UUID):
+    def __init__(
+        self,
+        db: Session,
+        user_id: UUID,
+        organization_id: UUID | str | None = None,
+    ):
         self.db = db
         self.user_id = user_id
+        self.organization_id = self._coerce_uuid(organization_id)
         # Shared Processors & Services
         self.db_processor = DbProcessor(db_session=db, user_id=user_id)
         self.vector_store_service = VectorStoreService(db=db, user_id=user_id)
+
+    @staticmethod
+    def _coerce_uuid(value: UUID | str | None) -> UUID | None:
+        if value is None or isinstance(value, UUID):
+            return value
+        try:
+            return UUID(str(value))
+        except (TypeError, ValueError):
+            return None
 
     def sync_knowledge_bases(self, graph_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -46,12 +62,25 @@ class SyncService:
         synced_count = 0
         failed_docs = []
 
+        if self.organization_id is None:
+            logger.warning("[동기화] organization_id 없음, DB 지식 베이스 동기화 건너뜀")
+            return {
+                "synced_count": 0,
+                "failed": [
+                    {
+                        "filename": "knowledge_base_sync",
+                        "last_synced": "알 수 없음",
+                        "error": "organization_id_required",
+                    }
+                ],
+            }
+
         # DB 타입 KnowledgeBase만 필터링 조회
         kbs = (
             self.db.query(KnowledgeBase)
             .filter(
                 KnowledgeBase.id.in_(kb_ids),
-                KnowledgeBase.user_id == self.user_id,
+                KnowledgeBase.organization_id == self.organization_id,
                 # SourceType Check: KB 자체에는 type이 없으므로 Document에서 확인하거나,
                 # 여기서 KB를 가져온 후 Document를 조회할 때 필터링
             )
@@ -59,6 +88,22 @@ class SyncService:
         )
 
         for kb in kbs:
+            if not has_knowledge_base_permission(
+                self.db,
+                self.user_id,
+                kb.id,
+                "use",
+                organization_id=self.organization_id,
+            ):
+                failed_docs.append(
+                    {
+                        "filename": kb.name,
+                        "last_synced": "알 수 없음",
+                        "error": "knowledge_base_use_permission_required",
+                    }
+                )
+                continue
+
             # KB에 연결된 'SourceType.DB' 문서 조회
             documents = (
                 self.db.query(Document)
