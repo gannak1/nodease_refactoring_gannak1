@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Documentation Index
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 
 이 디렉터리가 현재 저장소의 active documentation root다. 문서 내부 링크와 권위 규칙은 이 `docs/` 디렉터리를 문서 루트로 간주한다.
 
@@ -42,7 +42,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 | Data Model | [data-model/physical-data-model.md](data-model/physical-data-model.md), [data-model/rbac-permission-policy.md](data-model/rbac-permission-policy.md) |
 | API | [api/README.md](api/README.md), [api/auth.md](api/auth.md), [api/organization-rbac.md](api/organization-rbac.md), [api/apps-workflows.md](api/apps-workflows.md), [api/llm-credentials.md](api/llm-credentials.md), [api/knowledge-rag.md](api/knowledge-rag.md), [api/tracing-audit.md](api/tracing-audit.md), [api/deployments.md](api/deployments.md), [api/supporting-endpoints.md](api/supporting-endpoints.md), [api/errors.md](api/errors.md) |
 | Decisions | [decisions/README.md](decisions/README.md) 및 `Status: Accepted` ADR |
-| Implementation Plan | [implementation-plan/mvp-1-development-issue-plan.md](implementation-plan/mvp-1-development-issue-plan.md), [implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md](implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md), [implementation-plan/risk-consistency-verification.md](implementation-plan/risk-consistency-verification.md) |
+| Implementation Plan | [implementation-plan/mvp-1-development-issue-plan.md](implementation-plan/mvp-1-development-issue-plan.md), [implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md](implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md), [implementation-plan/rag-agent-answer-phase-3.md](implementation-plan/rag-agent-answer-phase-3.md), [implementation-plan/risk-consistency-verification.md](implementation-plan/risk-consistency-verification.md) |
 
 ## 참조 문서
 

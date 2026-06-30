@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목표
@@ -187,7 +187,7 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - `rag.answer.purge`
 - re-index 관련 event
 
-`rag.retrieve`는 RAG retrieval 성공 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다. Standalone Agent answer lifecycle은 `rag.answer.*` action과 `rag_answer_runs.status`로 추적한다. `rag.answer.requested`는 schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인을 모두 통과해 answer run을 생성할 때 남긴다. Scope 안 resource가 확인된 뒤 policy 또는 permission preflight 차단이 발생한 경우에만 `rag_answer_runs.status="blocked"`를 사용한다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied` audit으로 표현하고 별도 `rag.answer.blocked` action은 만들지 않는다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다. Retention purge aggregate는 `rag.answer.purge`로 기록한다. `policy.warn`/`policy.block`은 action 상수와 naming convention을 먼저 고정하고, 실제 document metadata policy enforcement는 후속 구현에서 연결한다.
+`rag.retrieve`는 RAG retrieval 성공 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다. Standalone Agent answer lifecycle은 `rag.answer.*` action과 `rag_answer_runs.status`로 추적한다. `rag.answer.requested`는 schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, deterministic credential/model 선택 가능성 확인을 모두 통과해 answer run을 생성할 때 남긴다. Scope 안 resource가 확인된 뒤 policy 또는 permission preflight 차단이 발생한 경우에만 `rag_answer_runs.status="blocked"`를 사용한다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied` audit으로 표현하고 별도 `rag.answer.blocked` action은 만들지 않는다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 lifecycle audit을 만들지 않는다. Retention purge aggregate는 `rag.answer.purge`로 기록한다. `policy.warn`/`policy.block`은 action 상수와 naming convention을 먼저 고정하고, 실제 document metadata policy enforcement는 후속 구현에서 연결한다. RAG Agent answer 3단계는 external LLM prompt path의 final evidence `pii` block만 이번 범위에 포함하고, search-test/runtime 전체 policy enforcement 확장은 별도 범위다.
 
 ## 사용자 흐름
 

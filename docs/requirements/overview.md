@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 Related ADRs: [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 작성 기준

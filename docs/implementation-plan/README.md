@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 
 구현 계획 문서는 source-of-truth 문서를 실제 작업 순서와 이슈로 분해한다.
 
@@ -11,6 +11,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 | --- | --- |
 | [mvp-1-development-issue-plan.md](mvp-1-development-issue-plan.md) | MVP 1 개발 이슈 생성 계획 |
 | [mvp-2-0-organization-membership-invitation-foundation.md](mvp-2-0-organization-membership-invitation-foundation.md) | MVP 2 본작업 전 organization membership 및 초대 기반 구현 계획 |
+| [rag-agent-answer-phase-3.md](rag-agent-answer-phase-3.md) | RAG 확장 3단계 Agent answer 구현 계획 |
 | [risk-consistency-verification.md](risk-consistency-verification.md) | 리스크, 정합성, 검증 매트릭스 |
 | [implementation-decision-log.md](implementation-decision-log.md) | 구현 중 작은 결정, 기본값, 임시 호환 처리 기록 |
 
@@ -24,6 +25,7 @@ MVP 1 Foundation / LLMOps Observability
   -> MVP 2 Data Source Permission Enforcement
   -> MVP 2 Data Classification
   -> MVP 2 RAG Retrieval Trace Metadata
+  -> RAG Extension Phase 3 Agent Answer
   -> MVP 2 Re-index Flow
   -> MVP 2 Audit Log Search
 ```

@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 Created At: 2026-06-29 01:31 KST
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 

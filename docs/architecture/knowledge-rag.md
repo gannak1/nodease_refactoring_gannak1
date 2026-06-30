@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Architecture
 Source of Truth: Yes
-Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목적
@@ -112,7 +112,7 @@ MVP 2 목표 계약의 Knowledge/RAG permission gate는 KB의 `organization_id`�
 | `confidential` | KB `use` 통과 시 허용하되 audit/trace policy result 기록 |
 | `pii` | external LLM prompt path에서는 `policy.block`, internal-only search preview에서는 `policy.warn` |
 
-MBA-78 1차 구현은 위 policy action 이름과 RAG 권한/audit 경계를 먼저 고정한다. 실제 document metadata policy enforcement는 후속 구현 범위이며, 현재 RAG search-test와 Workflow runtime은 KB `use` 권한 통과 후 retrieval을 수행한다.
+MBA-78 1차 구현은 위 policy action 이름과 RAG 권한/audit 경계를 먼저 고정한다. 실제 document metadata policy enforcement는 MBA-78 기준 후속 구현 범위이며, 현재 RAG search-test와 Workflow runtime은 KB `use` 권한 통과 후 retrieval을 수행한다. RAG Agent answer 3단계는 external LLM prompt path의 final evidence `pii` block만 이번 범위에 포함하고, search-test/runtime 전체 policy enforcement 확장은 별도 범위다.
 
 Audit action:
 
@@ -276,7 +276,7 @@ LLM token/cost/latency의 원천은 `llm_usage_logs`다. Standalone answer와 us
 
 Standalone Agent answer의 durable `retrieval_summary`, `citation_summary`, `answer_summary`, `usage_summary`는 allowlist 기반 summary만 저장한다. Citation summary에는 document/chunk id, rank, score, heading, hierarchy path, safe metadata summary를 둘 수 있지만 raw chunk content는 저장하지 않는다. Answer summary에는 answer hash, length, cited document count, citation ids, policy result, completion status, 선택적 redacted summary만 둔다.
 
-Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. `rag.answer.requested`는 schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인을 모두 통과해 answer run을 생성할 때 남긴다. Retrieval 성공 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 상태 `rag_answer_runs.status`와 의미를 분리한다. Scope 안 resource가 확인된 뒤 policy 또는 permission preflight로 answer delta를 생성하지 못한 경우에만 `rag_answer_runs.status="blocked"`를 사용한다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied` audit으로 표현하고 별도 `rag.answer.blocked` action은 만들지 않는다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다.
+Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. `rag.answer.requested`는 schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, deterministic credential/model 선택 가능성 확인을 모두 통과해 answer run을 생성할 때 남긴다. Retrieval 성공 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 상태 `rag_answer_runs.status`와 의미를 분리한다. Scope 안 resource가 확인된 뒤 policy 또는 permission preflight로 answer delta를 생성하지 못한 경우에만 `rag_answer_runs.status="blocked"`를 사용한다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied` audit으로 표현하고 별도 `rag.answer.blocked` action은 만들지 않는다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 lifecycle audit을 만들지 않는다.
 
 Raw user question, raw final answer, raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 Agent answer summary, trace, audit, usage metadata에 기본 저장하지 않는다. `query_hash`와 `answer_hash`가 필요하면 정규화 입력, 서버 측 salt/HMAC 정책, `hash_version` 또는 동등 metadata convention을 별도 보안 설계로 확정한다. Answer history/replay가 필요하면 redacted answer snapshot과 retention/access policy를 별도 설계로 확정한다. `rag_answer_runs`를 도입하는 PR은 list/detail/delete/purge API를 포함하지 않더라도 90일 기본 보존, RAG domain scheduled worker purge, 실패 시 다음 run 재시도, `rag.answer.purge` aggregate audit을 함께 문서화해야 한다.
 

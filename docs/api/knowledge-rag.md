@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: origin/dev @ 860ece0 (2026-07-01 KST)
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 범위
@@ -66,7 +66,7 @@ Streaming 여부는 endpoint로 결정한다. `/api/v1/rag/agent/answer`는 일�
 
 3단계 초기 목표 guardrail은 다음과 같다. `top_k`는 기본값 8, 최대 8로 제한한다. Client가 최대값보다 큰 `top_k`를 보내면 `400 validation.failed`로 거부한다. Context token budget 8000, max output tokens 1000, citation preview 300 characters, provider timeout 60 seconds, SSE idle timeout 30 seconds는 서버 내부 cap이며 3단계 public request field로 열지 않는다. 제품/UX 검증 후 cap을 바꿔야 하면 구현 전에 API 문서와 운영 설정 문서를 함께 갱신한다.
 
-Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field처럼 answer 실행을 시작하기 전 판정 가능한 400/422 오류는 `rag_answer_runs` row를 만들지 않고 `rag.answer.*` lifecycle audit도 남기지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 answer run을 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인을 모두 통과한 뒤 answer run을 생성하고 `rag.answer.requested`를 기록한다.
+Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field, deterministic credential/model을 선택할 수 없는 `409 credential_selection_required`처럼 answer 실행을 시작하기 전 판정 가능한 오류는 `rag_answer_runs` row를 만들지 않고 `rag.answer.*` lifecycle audit도 남기지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 answer run을 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, deterministic credential/model 선택 가능성 확인을 모두 통과한 뒤 answer run을 생성하고 `rag.answer.requested`를 기록한다.
 
 목표 response 기준:
 
@@ -119,7 +119,9 @@ SSE event 계약은 다음 순서를 기본으로 한다. Stream 시작 전 검�
 
 SSE event 이름은 audit action이 아니다. 예를 들어 SSE `answer.completed` event와 audit action `rag.answer.completed`는 이름이 비슷하지만 서로 다른 저장 위치와 의미를 갖는다.
 
-RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 `policy.block` audit으로 표현한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 `blocked` status를 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
+RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 `policy.block` audit으로 표현한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 `blocked` status를 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
+
+Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scope 안 permission 또는 policy preflight가 차단되면 HTTP status는 `403`이고 응답의 safe error metadata에는 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 포함한다. 이 metadata는 운영 추적과 UI 상태 표시용이며 권한 판정이나 resource lookup key로 사용하지 않는다. Stream 시작 후 차단되면 terminal `error` event에 같은 safe field를 포함한다. Answer run을 만들지 않는 `resource.not_found`, scope 밖, organization mismatch, invalid header/validation, `409 credential_selection_required` 응답에는 `answer_run_id`를 포함하지 않는다.
 
 RAG 확장 3단계의 API 범위는 answer 생성과 streaming이다. `rag_answer_runs` list/detail/delete/purge API는 3단계 기본 범위에 포함하지 않으며, 필요하면 조회 권한, retention, 삭제 정책을 별도 API 계약으로 확정한다.
 
@@ -322,7 +324,7 @@ Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API
 - Workflow runtime RAG retrieval trace는 `rag_retrieval_traces` 신규 table이 아니라 trace payload/run metadata로 저장한다. Per-chunk evidence는 `trace_payloads`, run/node metadata는 summary allowlist로 분리한다.
 - Standalone RAG Agent answer는 `rag_answer_runs`와 opaque `correlation_id`로 trace/usage/audit을 연결한다. `trace_payloads.rag_answer_run_id`, `llm_usage_logs.rag_answer_run_id` 같은 RAG 전용 FK는 만들지 않는다.
 - Metadata filter는 allowlist 기반 schema로만 받는다. Metadata는 permission source of truth가 아니다.
-- `policy.warn`/`policy.block` document metadata enforcement는 후속 구현 범위다. MBA-78 1차는 action naming, KB `use` enforcement, `permission.denied`/`rag.retrieve` audit 경계를 먼저 고정한다.
+- `policy.warn`/`policy.block` document metadata enforcement는 MBA-78 기준 후속 구현 범위다. RAG Agent answer 3단계는 external LLM prompt path의 final evidence `pii` block만 이번 범위에 포함하고, search-test/runtime 전체 policy enforcement 확장은 별도 범위다. MBA-78 1차는 action naming, KB `use` enforcement, `permission.denied`/`rag.retrieve` audit 경계를 먼저 고정한다.
 - Hierarchical RAG는 nullable parent/child chunk schema와 flat fallback으로 도입한다. MBA-85 2단계는 FILE/API source의 opt-in hierarchical ingestion과 parent-child retrieval을 backend 범위에서 연결하며, DB source hierarchical chunking, frontend hierarchy UI, LLM 기반 parent summary 생성은 후속 범위다. Hierarchical parent/child 저장 경로에서 content 암호화가 실패하면 평문 fallback 없이 처리 실패로 닫고 기존 chunk를 보존한다. Hierarchical mode는 parent와 child를 모두 embedding하므로 같은 문서의 flat mode보다 처리 시간과 embedding 비용이 늘 수 있고, progress는 parent+child 저장 대상과 embedding batch 기준으로 계산한다.
 
 ## Knowledge/RAG 오류 reason
