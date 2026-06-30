@@ -124,9 +124,9 @@ const sourceLabelOf = (row: ModuleOperationRow) => {
 
   const [firstSource, ...rest] = row.permissionSources;
   const sourceName =
-    firstSource.team_name ||
-    firstSource.user_name ||
-    (firstSource.type === 'user' ? '개인 직접 권한' : '권한 출처');
+    firstSource.type === 'user'
+      ? '개인 직접 권한'
+      : firstSource.team_name || '권한 출처';
 
   return rest.length > 0 ? `${sourceName} 외 ${rest.length}개` : sourceName;
 };
