@@ -102,20 +102,9 @@ const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow =>
 
 export const moduleOperationsApi = {
   listModuleOperations: async (): Promise<ModuleOperationRow[]> => {
-    const pageSize = 100;
-    const rows: OperationsApiRow[] = [];
-    let offset = 0;
-
-    while (true) {
-      const response = await apiClient.get<OperationsApiRow[]>(
-        '/apps/operations',
-        { params: { limit: pageSize, offset } },
-      );
-      rows.push(...response.data);
-      if (response.data.length < pageSize) break;
-      offset += pageSize;
-    }
-
-    return rows.map(normalizeOperationsApiRow);
+    const response = await apiClient.get<OperationsApiRow[]>('/apps/operations', {
+      params: { limit: 100, offset: 0 },
+    });
+    return response.data.map(normalizeOperationsApiRow);
   },
 };

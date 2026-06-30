@@ -40,7 +40,7 @@ type RunFilter = 'all' | 'running' | 'failed';
 
 const permissionLabels: Record<string, string> = {
   manager: '관리 가능',
-  builder: '수정 가능',
+  builder: '워크플로우 수정 가능',
   operator: '실행 가능',
   viewer: '조회 가능',
   none: '권한 없음',
@@ -132,6 +132,9 @@ const canEditApp = (row: ModuleOperationRow, isOrgManager: boolean) =>
   isOrgManager ||
   (row.permissionStatus === 'loaded' && Boolean(row.permission?.can_manage));
 
+const canWriteWorkflow = (row: ModuleOperationRow) =>
+  row.permissionStatus === 'loaded' && Boolean(row.permission?.can_write);
+
 const canToggleDeployment = (row: ModuleOperationRow) =>
   row.permissionStatus === 'loaded' &&
   Boolean(row.permission?.can_deploy || row.permission?.can_manage) &&
@@ -208,7 +211,7 @@ export default function MyModulePage() {
         permissionFilter === 'all' ||
         (permissionFilter === 'executable' &&
           Boolean(row.permission?.can_execute)) ||
-        (permissionFilter === 'editable' && canEditApp(row, isOrgManager)) ||
+        (permissionFilter === 'editable' && canWriteWorkflow(row)) ||
         (permissionFilter === 'manageable' &&
           Boolean(row.permission?.can_manage));
 
@@ -224,7 +227,6 @@ export default function MyModulePage() {
     });
   }, [
     deploymentFilter,
-    isOrgManager,
     permissionFilter,
     rows,
     runFilter,
@@ -238,7 +240,7 @@ export default function MyModulePage() {
         .length,
       failed: rows.filter((row) => row.latestRun.state === 'failed').length,
       running: rows.filter((row) => row.latestRun.state === 'running').length,
-      editable: rows.filter((row) => canEditApp(row, isOrgManager)).length,
+      editable: rows.filter(canWriteWorkflow).length,
       manageable: rows.filter((row) => canEditApp(row, isOrgManager)).length,
       runUnavailable: rows.filter((row) => row.dataQuality.latestRunUnavailable)
         .length,
@@ -351,11 +353,11 @@ export default function MyModulePage() {
             description="확인 가능한 최근 실행 기준"
           />
           <DashboardSummaryCard
-            label="앱 수정 가능"
+            label="앱 설정 관리"
             value={`${summary.manageable}개`}
             icon={ShieldCheck}
             iconClassName="text-violet-600"
-            description={`수정 가능 ${summary.editable}개`}
+            description={`워크플로우 수정 가능 ${summary.editable}개`}
           />
         </section>
 
@@ -390,7 +392,7 @@ export default function MyModulePage() {
                 options={[
                   ['all', '전체 권한'],
                   ['executable', '실행 가능'],
-                  ['editable', '앱 수정 가능'],
+                  ['editable', '워크플로우 수정 가능'],
                   ['manageable', '관리 가능'],
                 ]}
               />
@@ -630,7 +632,7 @@ function ModuleOperationTableRow({
             <ExternalLink className="h-4 w-4" />
           </IconButton>
           <IconButton
-            label={canEdit ? '앱 정보 수정' : '관리 권한 필요'}
+            label={canEdit ? '앱 설정 수정' : '앱 설정 관리 권한 필요'}
             onClick={onEdit}
             disabled={!canEdit}
           >

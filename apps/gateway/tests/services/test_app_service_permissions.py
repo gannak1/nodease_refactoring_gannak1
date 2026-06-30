@@ -115,3 +115,40 @@ def test_app_read_allows_marketplace_app_without_permissions(monkeypatch):
     monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: False)
 
     assert AppService.can_read_app(SimpleNamespace(), app, user_id) is True
+
+
+def test_app_operations_read_denies_marketplace_app_without_workflow_read(
+    monkeypatch,
+):
+    app = SimpleNamespace(
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+        is_market=True,
+    )
+    user_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: False
+    )
+    monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: False)
+
+    assert AppService.can_read_app(SimpleNamespace(), app, user_id) is True
+    assert AppService.can_read_app_operations(SimpleNamespace(), app, user_id) is False
+
+
+def test_app_operations_read_allows_primary_workflow_reader(monkeypatch):
+    app = SimpleNamespace(
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+        is_market=True,
+    )
+    user_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: False
+    )
+    monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: True)
+
+    assert AppService.can_read_app_operations(SimpleNamespace(), app, user_id) is True

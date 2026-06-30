@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-76 @ 1b7ed0c0d00ca98c505810db73ae2df451f0d5e9
+Verified Against: feature/mba-76 working tree after PR #119 review fixes
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -16,7 +16,7 @@ App/project boundary, workflow CRUD, draft, execute, stream, run detail 계약�
 | --- | --- | --- | --- | --- | --- |
 | Implemented | `POST` | `/api/v1/apps` | `AppCreateRequest` | `AppResponse` | authenticated + `X-Organization-Id` active organization scope |
 | Implemented | `GET` | `/api/v1/apps` | query | `AppResponse[]` | `X-Organization-Id` active organization scope + app read |
-| Implemented | `GET` | `/api/v1/apps/operations` | query | `AppOperationRow[]` | `X-Organization-Id` active organization scope + app read |
+| Implemented | `GET` | `/api/v1/apps/operations` | query | `AppOperationRow[]` | `X-Organization-Id` active organization scope + operations read |
 | Implemented | `GET` | `/api/v1/apps/explore` | query | `AppResponse[]` | authenticated explore read |
 | Implemented | `GET` | `/api/v1/apps/{app_id}` | 없음 | `AppResponse` | app read |
 | Implemented | `PATCH` | `/api/v1/apps/{app_id}` | `AppUpdateRequest` | `AppResponse` | app settings/manage |
@@ -41,7 +41,7 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 | Query | Type | Required | 설명 |
 | --- | --- | --- | --- |
 | `q` | string | No | app 이름/설명 부분 검색 |
-| `permission` | string | No | `viewer`, `operator`, `builder`, `manager` 등 effective workflow `auth_state` 필터 |
+| `permission` | string | No | `viewer`, `operator`, `builder`, `manager` 등 effective workflow `auth_state` 필터. Capability filter가 아니라 auth state filter다. |
 | `deployment_state` | string | No | `active`, `inactive`, `undeployed` |
 | `run_state` | string | No | `running`, `success`, `failed`, `not_started`, `unavailable` |
 | `limit` | integer | No | 기본 `50`, 허용 범위 `1..100` |
@@ -180,18 +180,20 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 
 - `X-Organization-Id`는 필수다. Header가 없으면 `400 organization.required`를 반환한다.
 - active organization scope 밖이면 `404 resource.not_found`로 숨긴다.
-- 응답 row는 현재 user가 app read 권한을 가진 app만 포함한다.
+- 응답 row는 현재 user가 operations summary 노출 판정을 통과한 app만 포함한다. 이 문서의 `operations read`는 독립 RBAC action이 아니라 organization manager 또는 primary workflow `read` 기반의 화면 전용 노출 판정이다.
 - organization manager는 active organization 안의 app을 볼 수 있다.
 - 일반 member는 workflow effective `read` 이상 권한이 있는 app만 볼 수 있다.
+- Marketplace/public app read는 operations read로 간주하지 않는다. Public app이더라도 organization manager 또는 primary workflow read 권한이 없으면 deployment/latest run summary를 반환하지 않는다.
 - run/deployment join 과정에서 권한 없는 workflow, 다른 organization workflow, inactive organization resource가 누출되면 안 된다.
 - partial failure가 발생해도 권한 없는 resource를 placeholder row로 반환하지 않는다. 권한 계산 실패가 같은 scope 안의 내부 오류이면 해당 row의 `permission_status="failed"`와 `permission_error`를 사용할 수 있다.
 
 #### Implementation notes
 
-- 기본 정렬은 `app.updated_at desc`, `app.name asc`를 권장한다.
+- 기본 정렬은 `app.updated_at desc`, `app.name asc`, `app.id asc`를 사용한다. `app.id`는 offset pagination의 stable tie-breaker다.
 - FastAPI route는 `/apps/{app_id}`보다 `/apps/operations`를 먼저 등록해야 한다. 그렇지 않으면 `operations`가 `app_id` path param으로 해석될 수 있다.
 - 최신 run은 `workflow_runs.started_at desc` 기준 1건을 사용한다.
 - App, owner, active deployment, latest run, deployment history 조회는 service-level aggregation으로 묶는다. Effective permission 계산은 현재 workflow permission helper를 사용한다.
+- `permission`, `deployment_state`, `run_state`처럼 계산된 summary에 의존하는 filter는 필요한 page를 채울 때까지만 bounded batch로 summary를 계산한다.
 - 권한 출처는 MBA-74와 같은 `team`/`user` source schema를 사용한다. 같은 source schema를 두 endpoint에서 중복 정의하지 말고 shared schema로 분리하는 것을 권장한다.
 - 새로운 aggregate table은 만들지 않는다. MVP 기준 source of truth는 `apps`, `workflows`, `workflow_deployments`, `workflow_runs`, `team_workflow_permissions`, `user_workflow_permissions`, `organization_memberships`, `team_memberships`다.
 

@@ -166,6 +166,23 @@ class AppService:
         return app.organization_id is None and app.created_by == user_id
 
     @staticmethod
+    def can_read_app_operations(db: Session, app: App, user_id) -> bool:
+        """운영 현황 row는 marketplace public read보다 좁은 권한으로 제한한다."""
+        if app.organization_id and has_organization_manager_permission(
+            db, user_id, app.organization_id
+        ):
+            return True
+        if app.workflow_id and has_workflow_permission(
+            db,
+            user_id,
+            app.workflow_id,
+            "read",
+            organization_id=app.organization_id,
+        ):
+            return True
+        return app.organization_id is None and app.created_by == user_id
+
+    @staticmethod
     def can_manage_app(db: Session, app: App, user_id) -> bool:
         if app.organization_id and has_organization_manager_permission(
             db, user_id, app.organization_id
@@ -283,20 +300,35 @@ class AppService:
                 (App.name.ilike(pattern)) | (App.description.ilike(pattern))
             )
 
-        apps = query.order_by(App.updated_at.desc(), App.name.asc()).all()
+        apps = query.order_by(App.updated_at.desc(), App.name.asc(), App.id.asc()).all()
         readable_apps = [
-            app for app in apps if AppService.can_read_app(db, app, user_id)
+            app for app in apps if AppService.can_read_app_operations(db, app, user_id)
         ]
         should_filter_computed_fields = bool(
             permission or deployment_state or run_state
         )
-        # permission/deployment/run filter는 계산된 요약값에 의존한다. 해당 filter가
-        # 없으면 먼저 pagination을 적용해 downstream summary 집계 비용을 줄인다.
-        candidate_apps = (
-            readable_apps
-            if should_filter_computed_fields
-            else readable_apps[offset : offset + limit]
-        )
+        if should_filter_computed_fields:
+            return AppService._list_filtered_operation_rows(
+                db,
+                readable_apps,
+                user_id,
+                permission,
+                deployment_state,
+                run_state,
+                limit,
+                offset,
+            )
+
+        candidate_apps = readable_apps[offset : offset + limit]
+        return AppService._build_operation_rows_for_apps(db, candidate_apps, user_id)
+
+    @staticmethod
+    def _build_operation_rows_for_apps(
+        db: Session,
+        candidate_apps: list[App],
+        user_id,
+    ) -> list[AppOperationRow]:
+        """지정된 app batch에 대해서만 운영 현황 summary를 계산한다."""
 
         owner_names = AppService._owner_names_by_id(
             db, [app.created_by for app in candidate_apps if app.created_by]
@@ -320,16 +352,40 @@ class AppService:
             for app in candidate_apps
         ]
 
-        filtered_rows = [
-            row
-            for row in rows
-            if AppService._matches_operation_filters(
-                row, permission, deployment_state, run_state
-            )
-        ]
-        if should_filter_computed_fields:
-            return filtered_rows[offset : offset + limit]
-        return filtered_rows
+        return rows
+
+    @staticmethod
+    def _list_filtered_operation_rows(
+        db: Session,
+        readable_apps: list[App],
+        user_id,
+        permission: str | None,
+        deployment_state: str | None,
+        run_state: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[AppOperationRow]:
+        """계산형 filter는 bounded batch로 훑어 필요한 page만 채운다."""
+        batch_size = max(limit, 50)
+        matched_rows: list[AppOperationRow] = []
+        skipped = 0
+
+        for start in range(0, len(readable_apps), batch_size):
+            batch = readable_apps[start : start + batch_size]
+            rows = AppService._build_operation_rows_for_apps(db, batch, user_id)
+            for row in rows:
+                if not AppService._matches_operation_filters(
+                    row, permission, deployment_state, run_state
+                ):
+                    continue
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                matched_rows.append(row)
+                if len(matched_rows) >= limit:
+                    return matched_rows
+
+        return matched_rows
 
     @staticmethod
     def _build_operation_row(

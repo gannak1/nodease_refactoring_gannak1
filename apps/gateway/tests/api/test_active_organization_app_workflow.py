@@ -328,7 +328,7 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     )
     db = _FakeDb([app])
 
-    monkeypatch.setattr(AppService, "can_read_app", lambda *a: True)
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
     monkeypatch.setattr(
         app_service,
         "get_effective_workflow_auth_state",
@@ -360,6 +360,63 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     assert row["permission_sources"] == []
     assert row["deployment"]["state"] == "active"
     assert row["latest_run"]["state"] == "not_started"
+
+
+def test_list_app_operations_does_not_expose_market_app_without_workflow_read(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="공개 앱",
+        description="마켓 공개 앱",
+        icon={"type": "emoji", "content": "N", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=uuid.uuid4(),
+        created_at=now,
+        updated_at=now,
+        is_market=True,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(
+        app_service,
+        "has_organization_manager_permission",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: False)
+    def latest_runs_for_empty_candidates(db, workflow_ids):
+        assert workflow_ids == []
+        return {}
+
+    def deployment_history_for_empty_candidates(db, app_ids):
+        assert app_ids == []
+        return {}
+
+    monkeypatch.setattr(
+        AppService,
+        "_latest_runs_by_workflow_id",
+        latest_runs_for_empty_candidates,
+    )
+    monkeypatch.setattr(
+        AppService,
+        "_deployment_history_by_app_id",
+        deployment_history_for_empty_candidates,
+    )
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+
+    assert rows == []
 
 
 def test_operation_latest_run_summary_does_not_expose_raw_error_message():

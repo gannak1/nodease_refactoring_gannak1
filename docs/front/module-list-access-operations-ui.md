@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-76 @ 0d71ff9dd3025f1f5114d702f1d3b32464ca3ca6
+Verified Against: feature/mba-76 working tree after PR #119 review fixes
 
 ## 목적
 
@@ -45,7 +45,7 @@ Verified Against: feature/mba-76 @ 0d71ff9dd3025f1f5114d702f1d3b32464ca3ca6
 | `apps/client/app/features/app/api/moduleOperationsApi.ts` | `/apps/operations` 호출과 `AppOperationRow` 응답 정규화 |
 | `apps/client/app/features/app/api/appApi.ts` | app 생성/수정/삭제, 상세 조회, deployment 토글 API |
 
-현재 화면 UI는 client-side 검색/권한/배포/실행 필터를 제공한다. `/apps/operations` API도 `q`, `permission`, `deployment_state`, `run_state`, `limit`, `offset` query를 지원하지만, 화면은 전체 row를 가져온 뒤 UI 상태로 필터링한다.
+현재 화면 UI는 client-side 검색/권한/배포/실행 필터를 제공한다. `/apps/operations` API도 `q`, `permission`, `deployment_state`, `run_state`, `limit`, `offset` query를 지원하지만, 화면은 첫 페이지 100개를 가져온 뒤 UI 상태로 필터링한다. 서버 사이드 pagination/search/filter UI는 후속 개선으로 둔다.
 
 ### 현재 운영 summary 응답으로 가능한 표시
 
@@ -118,7 +118,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | 배포 꺼짐 | `deployment.state === "inactive"` | 가능 |
 | 미배포 | `deployment.state === "undeployed"` | 가능 |
 | 오류 있음 | `latest_run.state === "failed"` | 가능 |
-| 내가 수정 가능 | `permission.can_write === true` | 가능 |
+| 내가 워크플로우 수정 가능 | `permission.can_write === true` | 가능 |
 | 내가 실행 가능 | `permission.can_execute === true` | 가능 |
 | 내가 관리 가능 | `permission.can_manage === true` | 가능 |
 
@@ -127,7 +127,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 - `배포 중 3`
 - `미배포 2`
 - `최근 오류 1`
-- `수정 가능 4`
+- `워크플로우 수정 가능 4`
 - `실행 가능 5`
 - `관리 가능 1`
 
@@ -154,7 +154,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | --- | --- | --- |
 | 열기 | `can_read` | 기본 row click |
 | 실행 | `can_execute` | 버튼 활성 |
-| 수정 | `can_write` | 버튼 활성 |
+| 워크플로우 수정 | `can_write` | 버튼 활성 |
 | 배포 생성/활성화 | `can_deploy` | 버튼 활성 |
 | 배포 삭제/위험 변경 | `can_manage` | 버튼 활성 |
 | 권한 관리 | `can_manage` 또는 organization manager | 버튼 활성 |
@@ -192,7 +192,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 기본 필터 추천:
 
 - 검색 input
-- 권한 segmented control: `전체`, `실행 가능`, `수정 가능`, `관리 가능`
+- 권한 segmented control: `전체`, `실행 가능`, `워크플로우 수정 가능`, `관리 가능`
 - 배포 상태 select: `전체`, `배포 중`, `미배포`
 - 실행 상태 select: `전체`, `실행 중`, `오류만`
 
@@ -287,7 +287,7 @@ MVP1에서 BE 보강 없이 FE만 진행한다면 source UI는 노출하지 않�
 MBA-76 이후 `/dashboard/mymodule`은 `/apps/operations`를 기본 데이터 소스로 사용한다. 이전의 `/apps`, `permissions/me`, row별 run API 조합 adapter는 유지하지 않는다.
 
 ```text
-GET /api/v1/apps/operations
+GET /api/v1/apps/operations?limit=100&offset=0
 -> AppOperationRow[]
 -> 화면 row view model normalize
 -> 검색/권한/배포/실행 필터 적용
@@ -311,6 +311,7 @@ GET /api/v1/apps/operations
 - team별 권한 출처 population
 - team 필터
 - server-side pagination/search/filter UI 연결
+- 권한 필터를 서버로 넘길 때는 현재 UI의 capability 기준(`can_execute`, `can_write`, `can_manage`)과 API의 `permission` auth_state filter가 다르므로 별도 `capability` query 또는 명시적 auth_state 매핑 계약이 필요하다.
 
 ### MBA-76 구현 API
 
@@ -424,7 +425,7 @@ GET /api/v1/apps/operations
 ## 구현 단계 초안
 
 1. `ModuleOperationRow` view model을 `/apps/operations` 응답 기준으로 정의한다.
-2. `moduleOperationsApi.listModuleOperations()`에서 `/apps/operations`를 호출한다.
+2. `moduleOperationsApi.listModuleOperations()`에서 `/apps/operations?limit=100&offset=0` 첫 페이지를 호출한다.
 3. 목록 app 요약은 safe summary로 취급하고, 수정 modal을 열 때는 `appApi.getApp(app.id)`로 full `AppResponse`를 다시 조회한다.
 4. deployment 상태와 permission 상태로 운영 현황 값을 계산한다.
 5. 기존 `AppCard` grid를 운영형 table/list로 교체한다.
@@ -476,7 +477,7 @@ MBA-76 기준 `/dashboard/mymodule` 화면을 `/apps/operations` 기반 운영�
 - 목록의 `app`은 safe summary이므로 수정 modal을 열 때는 `GET /api/v1/apps/{app_id}`로 full `AppResponse`를 다시 조회할 것.
 - 배포 토글은 `deployment.deployment_id`를 기준으로 수행할 것.
 - 소유자 표시는 `app.owner_name`을 사용할 것. `owner_name`은 RBAC `manager` 목록이 아니다.
-- 권한 필터: 전체, 실행 가능, 수정 가능, 관리 가능.
+- 권한 필터: 전체, 실행 가능, 워크플로우 수정 가능, 관리 가능.
 - 배포 필터: 전체, 배포 중, 배포 꺼짐, 미배포.
 - 실행 필터: 전체, 실행 중, 오류만.
 - 검색 대상: 모듈명, 설명, 소유자, 권한 출처.
@@ -499,4 +500,5 @@ UI/UX 기준:
 - `npm run build`
 - localStorage에서 `moduly_active_organization_id`를 지운 뒤 `/dashboard/mymodule` 직접 진입해도 400이 나지 않아야 함.
 - Network에서 `/api/v1/apps/operations`가 호출되고 `/api/v1/apps` 기반 조합 adapter 호출이 없는지 확인.
+- 100개 초과 목록의 server-side pagination/search/filter UI는 후속 개선으로 분리.
 ```
