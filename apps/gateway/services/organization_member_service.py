@@ -257,7 +257,33 @@ def _cleanup_counts(
 
 class OrganizationMemberService:
     @staticmethod
-    def list_organizations(
+    def list_active_organizations(
+        db: Session,
+        current_user: User,
+    ) -> list[Organization]:
+        rows = (
+            db.query(Organization, OrganizationMembership)
+            .join(
+                OrganizationMembership,
+                OrganizationMembership.organization_id == Organization.id,
+            )
+            .filter(
+                OrganizationMembership.user_id == current_user.id,
+                OrganizationMembership.membership_state
+                == ORGANIZATION_MEMBERSHIP_ACTIVE,
+                Organization.is_active.is_(True),
+            )
+            .order_by(
+                OrganizationMembership.accepted_at.asc().nulls_last(),
+                OrganizationMembership.created_at.asc(),
+                Organization.name.asc(),
+            )
+            .all()
+        )
+        return [organization for organization, _membership in rows]
+
+    @staticmethod
+    def list_organization_memberships(
         db: Session,
         current_user: User,
     ) -> list[OrganizationSummaryResponse]:

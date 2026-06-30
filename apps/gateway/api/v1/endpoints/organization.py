@@ -89,13 +89,29 @@ def _to_organization_response(
     )
 
 
-# 인증된 사용자가 속한 active/invited organization 목록을 조회하는 API.
-@router.get("", response_model=list[OrganizationSummaryResponse])
+# 인증된 사용자가 active context로 사용할 수 있는 organization 목록을 조회하는 API.
+@router.get("", response_model=list[OrganizationResponse])
 def list_organizations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return OrganizationMemberService.list_organizations(db, current_user)
+    organizations = OrganizationMemberService.list_active_organizations(
+        db,
+        current_user,
+    )
+    return [
+        _to_organization_response(db, organization, current_user.id)
+        for organization in organizations
+    ]
+
+
+# 인증된 사용자가 속한 active/invited organization membership 목록을 조회하는 API.
+@router.get("/memberships", response_model=list[OrganizationSummaryResponse])
+def list_organization_memberships(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return OrganizationMemberService.list_organization_memberships(db, current_user)
 
 
 # literal path인 current가 /{organization_id} UUID path parameter로 해석되지 않도록

@@ -17,14 +17,17 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 
 | Status | Method | Path | Permission | 설명 |
 | --- | --- | --- | --- | --- |
-| Implemented | `GET` | `/api/v1/organizations` | authenticated | 사용자가 active member이거나 invited 상태인 organization 목록 |
+| Implemented | `GET` | `/api/v1/organizations` | authenticated | active organization context 후보 목록 |
+| Implemented | `GET` | `/api/v1/organizations/memberships` | authenticated | 사용자의 organization membership 목록, invited 포함 |
 | Implemented | `GET` | `/api/v1/organizations/current` | authenticated + `X-Organization-Id` | header로 전달한 active organization 조회 |
 | Implemented | `GET` | `/api/v1/organizations/{organization_id}` | authenticated | 접근 가능한 organization 상세 조회 |
 | Implemented | `PATCH` | `/api/v1/organizations/{organization_id}` | organization `manager` + matching `X-Organization-Id` | organization 이름/options 수정 |
 
 서버는 active organization을 session/cookie에 저장하지 않는다. `PATCH /organizations/current`는 만들지 않고, header와 path가 일치하는 `PATCH /organizations/{organization_id}`를 사용한다.
 
-`GET /api/v1/organizations`는 organization membership 목록 성격의 `OrganizationSummaryResponse[]`를 반환한다. `membership_state='invited'`인 항목은 초대 수락 UI에 표시할 수 있지만 resource 화면 진입이나 `X-Organization-Id` active context로 사용하면 안 된다.
+`GET /api/v1/organizations`는 기존 frontend 호환을 위해 active membership organization만 포함한 `OrganizationResponse[]`를 반환한다. 응답 항목은 `X-Organization-Id` active context 후보로 사용할 수 있다. `invited`, `suspended`, `removed` membership은 이 endpoint에 포함하지 않는다.
+
+`GET /api/v1/organizations/memberships`는 organization membership 목록 성격의 `OrganizationSummaryResponse[]`를 반환한다. `membership_state='invited'`인 항목은 초대 수락 UI에 표시할 수 있지만 resource 화면 진입이나 `X-Organization-Id` active context로 사용하면 안 된다.
 
 ```json
 [
@@ -45,7 +48,7 @@ Organization context, team/member 관리, permission grant/revoke API는 `X-Orga
 ]
 ```
 
-`GET /api/v1/organizations/current`, `GET /api/v1/organizations/{organization_id}`, `PATCH /api/v1/organizations/{organization_id}`는 `OrganizationResponse`를 반환한다.
+`GET /api/v1/organizations`, `GET /api/v1/organizations/current`, `GET /api/v1/organizations/{organization_id}`, `PATCH /api/v1/organizations/{organization_id}`는 `OrganizationResponse`를 반환한다.
 
 `PATCH /api/v1/organizations/{organization_id}`는 path organization과 `X-Organization-Id`가 일치해야 한다. Organization이 없거나 inactive이거나 요청 user의 scope 밖이면 `404 resource.not_found`로 숨기고, 같은 scope 안이지만 manager가 아니면 `403 permission.denied`를 반환한다.
 

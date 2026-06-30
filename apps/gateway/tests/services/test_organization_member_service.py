@@ -31,7 +31,25 @@ from apps.shared.schemas.organization_membership import (
 )
 
 
-def test_list_organizations_uses_active_and_invited_memberships():
+def test_list_active_organizations_uses_active_memberships_only():
+    user = _user()
+    active_org = _organization("Active", created_by=user.id)
+    invited_org = _organization("Invited", created_by=user.id)
+    db = _Db(
+        users=[user],
+        organizations=[active_org, invited_org],
+        memberships=[
+            _membership(user, active_org, ORGANIZATION_MEMBERSHIP_ACTIVE),
+            _membership(user, invited_org, ORGANIZATION_MEMBERSHIP_INVITED),
+        ],
+    )
+
+    result = OrganizationMemberService.list_active_organizations(db, user)
+
+    assert [item.id for item in result] == [active_org.id]
+
+
+def test_list_organization_memberships_uses_active_and_invited_memberships():
     user = _user()
     active_org = _organization("Active", created_by=user.id)
     invited_org = _organization("Invited", created_by=user.id)
@@ -46,7 +64,7 @@ def test_list_organizations_uses_active_and_invited_memberships():
         ],
     )
 
-    result = OrganizationMemberService.list_organizations(db, user)
+    result = OrganizationMemberService.list_organization_memberships(db, user)
 
     assert [item.id for item in result] == [active_org.id, invited_org.id]
     assert result[0].membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE
