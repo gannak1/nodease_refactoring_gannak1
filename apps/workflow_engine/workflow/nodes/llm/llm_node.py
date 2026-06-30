@@ -15,7 +15,10 @@ from apps.shared.schemas.rag import ChunkPreview
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import get_effective_knowledge_base_auth_state
 from apps.shared.utils.prompt_injection_guard import build_untrusted_context_block
-from apps.workflow_engine.services.llm_service import LLMService
+from apps.workflow_engine.services.llm_service import (
+    LLMCredentialNotAvailableError,
+    LLMService,
+)
 from apps.workflow_engine.services.retrieval import RetrievalService
 
 from ..base.node import Node
@@ -84,6 +87,7 @@ class LLMNode(Node[LLMNodeData]):
         db_session = None
         temp_session = None
         client_override = getattr(self, "_client_override", None)
+        selected_credential_id = None
 
         if not client_override:
             db_session, should_close_session = self._borrow_db_session()
@@ -107,16 +111,34 @@ class LLMNode(Node[LLMNodeData]):
                     raise ValueError(
                         "LLM 노드 실행에 유효한 user_id가 필요합니다."
                     ) from exc
-                organization_id = self.execution_context.get("organization_id")
+                organization_id = self._require_runtime_organization_id(
+                    user_id, self.data.model_id
+                )
 
                 try:
-                    client = LLMService.get_client_for_user(
+                    runtime_selection = LLMService.get_runtime_client_for_user(
                         db_session,
                         user_id=user_id,
                         model_id=self.data.model_id,
                         organization_id=organization_id,
                     )
+                    client = runtime_selection.client
+                    selected_credential_id = runtime_selection.credential_id
                 except Exception as primary_client_error:
+                    if (
+                        isinstance(
+                            primary_client_error, LLMCredentialNotAvailableError
+                        )
+                        and primary_client_error.reason == "organization_scope_missing"
+                    ):
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=self.data.model_id,
+                            organization_id=None,
+                            error=primary_client_error,
+                        )
+                        raise
+
                     # [FIX] API 키 조회 실패 시 fallback 모델로 시도
                     fallback_model_id = self.data.fallback_model_id
                     if fallback_model_id:
@@ -125,22 +147,36 @@ class LLMNode(Node[LLMNodeData]):
                             f"Trying fallback model: {fallback_model_id}"
                         )
                         try:
-                            client = LLMService.get_client_for_user(
+                            runtime_selection = LLMService.get_runtime_client_for_user(
                                 db_session,
                                 user_id=user_id,
                                 model_id=fallback_model_id,
                                 organization_id=organization_id,
                             )
+                            client = runtime_selection.client
+                            selected_credential_id = runtime_selection.credential_id
                             # fallback 성공 시 model_id도 변경
                             self.data.model_id = fallback_model_id
                         except Exception as fallback_client_error:
                             logger.error(
                                 f"[LLMNode] Fallback model client also failed: {fallback_client_error}"
                             )
+                            self._record_llm_runtime_permission_denied(
+                                user_id=user_id,
+                                model_id=fallback_model_id,
+                                organization_id=organization_id,
+                                error=fallback_client_error,
+                            )
                             raise primary_client_error  # 원래 에러로 raise
                     else:
                         logger.warning(
                             f"[LLMNode] User context found but failed to get client: {primary_client_error}."
+                        )
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=self.data.model_id,
+                            organization_id=organization_id,
+                            error=primary_client_error,
                         )
                         raise
 
@@ -253,17 +289,27 @@ class LLMNode(Node[LLMNodeData]):
                         raise ValueError(
                             "폴백 모델 실행에 유효한 user_id가 필요합니다."
                         ) from exc
-                    organization_id = self.execution_context.get("organization_id")
+                    organization_id = self._require_runtime_organization_id(
+                        user_id, fallback_model_id
+                    )
 
                     try:
-                        fallback_client = LLMService.get_client_for_user(
+                        runtime_selection = LLMService.get_runtime_client_for_user(
                             db_session,  # 같은 세션 사용
                             user_id=user_id,
                             model_id=fallback_model_id,
                             organization_id=organization_id,
                         )
+                        fallback_client = runtime_selection.client
+                        selected_credential_id = runtime_selection.credential_id
                     except Exception as e:
                         logger.error(f"[LLMNode] Fallback client load failed: {e}.")
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=fallback_model_id,
+                            organization_id=organization_id,
+                            error=e,
+                        )
                         raise
 
                 try:
@@ -288,53 +334,51 @@ class LLMNode(Node[LLMNodeData]):
             usage = response.get("usage", {}) if isinstance(response, dict) else {}
             # STEP 5. 결과 포맷팅 --------------------------------------------------
             cost = 0.0
-            if usage:
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-                try:
-                    # DB 세션이 있으면 비용 계산
-                    if db_session:
-                        cost = LLMService.calculate_cost(
-                            db_session, used_model_id, prompt_tokens, completion_tokens
-                        )
+            usage_for_log = usage or {}
+            prompt_tokens = usage_for_log.get("prompt_tokens", 0)
+            completion_tokens = usage_for_log.get("completion_tokens", 0)
+            try:
+                # 성공한 workflow LLM node 호출은 provider usage가 없어도 최소 row를 남깁니다. MBA-43
+                if db_session:
+                    cost = LLMService.calculate_cost(
+                        db_session, used_model_id, prompt_tokens, completion_tokens
+                    )
 
-                        # [NEW] Usage 로깅 저장
-                        user_id_str = self.execution_context.get("user_id")
-                        workflow_run_id_str = self.execution_context.get(
-                            "workflow_run_id"
-                        )
+                    user_id_str = self.execution_context.get("user_id")
+                    workflow_run_id_str = self.execution_context.get(
+                        "workflow_run_id"
+                    )
 
-                        if user_id_str:
-                            try:
-                                # workflow_run_id는 engine에서 string으로 넘겨준다고 가정 (execute_stream 참조)
-                                wf_run_uuid = (
-                                    uuid.UUID(workflow_run_id_str)
-                                    if workflow_run_id_str
-                                    else None
-                                )
+                    if user_id_str:
+                        try:
+                            # workflow_run_id는 engine에서 string으로 넘겨준다고 가정 (execute_stream 참조)
+                            wf_run_uuid = (
+                                uuid.UUID(workflow_run_id_str)
+                                if workflow_run_id_str
+                                else None
+                            )
 
-                                LLMService.log_usage(
-                                    db=db_session,
-                                    user_id=uuid.UUID(user_id_str),
-                                    model_id=used_model_id,
-                                    usage=usage,
-                                    cost=cost,
-                                    organization_id=self.execution_context.get(
-                                        "organization_id"
-                                    ),
-                                    workflow_id=self.execution_context.get(
-                                        "workflow_id"
-                                    ),
-                                    workflow_run_id=wf_run_uuid,
-                                    node_id=self.id,
-                                )
-                            except Exception as log_err:
-                                logger.error(
-                                    f"[LLMNode] Failed to save usage log: {log_err}"
-                                )
+                            LLMService.log_usage(
+                                db=db_session,
+                                user_id=uuid.UUID(user_id_str),
+                                model_id=used_model_id,
+                                usage=usage_for_log,
+                                cost=cost,
+                                organization_id=self.execution_context.get(
+                                    "organization_id"
+                                ),
+                                workflow_id=self.execution_context.get("workflow_id"),
+                                workflow_run_id=wf_run_uuid,
+                                node_id=self.id,
+                                credential_id=selected_credential_id,
+                            )
+                        except Exception as log_err:
+                            logger.error(
+                                f"[LLMNode] Failed to save usage log: {log_err}"
+                            )
 
-                except Exception as e:
-                    logger.error(f"[LLMNode] Cost calculation/logging failed: {e}")
+            except Exception as e:
+                logger.error(f"[LLMNode] Cost calculation/logging failed: {e}")
 
             self._trace_payloads = [
                 {
@@ -706,6 +750,83 @@ class LLMNode(Node[LLMNodeData]):
                 "workflow_run_id": self.execution_context.get("workflow_run_id"),
                 "node_id": self.id,
             },
+        )
+
+    def _require_runtime_organization_id(
+        self,
+        user_id: uuid.UUID,
+        model_id: str,
+    ) -> uuid.UUID:
+        """Workflow LLM runtime 실행 전에 organization scope를 검증하고 실패 audit을 남깁니다. MBA-43"""
+        organization_id = self.execution_context.get("organization_id")
+        organization_uuid = None
+        if organization_id:
+            try:
+                organization_uuid = uuid.UUID(str(organization_id))
+            except (TypeError, ValueError):
+                organization_uuid = None
+
+        if organization_uuid is None:
+            error = LLMCredentialNotAvailableError(
+                "organization_scope_missing",
+                "Workflow LLM runtime requires a valid organization_id.",
+                model_id=model_id,
+            )
+            self._record_llm_runtime_permission_denied(
+                user_id=user_id,
+                model_id=model_id,
+                organization_id=None,
+                error=error,
+            )
+            raise error
+
+        return organization_uuid
+
+    def _record_llm_runtime_permission_denied(
+        self,
+        user_id: uuid.UUID,
+        model_id: str,
+        organization_id: Any,
+        error: Optional[Exception] = None,
+    ) -> None:
+        """최종 LLM credential runtime 차단을 permission.denied audit으로 남깁니다. MBA-43"""
+        organization_uuid = None
+        try:
+            organization_uuid = uuid.UUID(str(organization_id))
+        except (TypeError, ValueError):
+            organization_uuid = None
+
+        reason = "credential_not_available"
+        credential_id = None
+        if isinstance(error, LLMCredentialNotAvailableError):
+            reason = error.reason
+            credential_id = error.credential_id
+            if error.model_id:
+                model_id = error.model_id
+            if error.organization_id:
+                organization_uuid = error.organization_id
+
+        metadata: Dict[str, Any] = {
+            "workflow_id": self.execution_context.get("workflow_id"),
+            "workflow_run_id": self.execution_context.get("workflow_run_id"),
+            "node_id": self.id,
+            "model_id": model_id,
+            "reason": reason,
+            "runtime_surface": "workflow_llm_node",
+        }
+        if error is not None:
+            metadata["error_type"] = type(error).__name__
+        if credential_id is None:
+            metadata["credential_id"] = None
+
+        record_resource_permission_denied(
+            user_id=user_id,
+            resource_type="llm_credential",
+            resource_id=credential_id or "unknown",
+            action="use",
+            effective_auth_state="none",
+            organization_id=organization_uuid,
+            metadata=metadata,
         )
 
     def _knowledge_trace_metadata(
