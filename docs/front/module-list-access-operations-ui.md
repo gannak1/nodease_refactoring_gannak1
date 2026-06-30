@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-79 @ fae46ba63a89204d31c82191fdffe219bc2738e2
+Verified Against: feature/mba-79 @ PR #127 head
 
 ## 목적
 
@@ -45,7 +45,7 @@ Verified Against: feature/mba-79 @ fae46ba63a89204d31c82191fdffe219bc2738e2
 | `apps/client/app/features/app/api/moduleOperationsApi.ts` | `/apps/operations` 호출과 `AppOperationRow` 응답 정규화 |
 | `apps/client/app/features/app/api/appApi.ts` | app 생성/수정/삭제, 상세 조회, deployment 토글 API |
 
-현재 화면 UI는 `/apps/operations`의 서버 query를 사용해 검색/권한/배포/실행 필터와 pagination을 처리한다. 첫 page는 `limit=100&offset=0`으로 가져오고, 더 볼 row가 있으면 `offset`을 증가시켜 `더 보기`로 이어 붙인다.
+현재 화면 UI는 `/apps/operations`의 서버 query를 사용해 검색/권한/배포/실행 필터와 pagination을 처리한다. 검색어는 300ms debounce 후 적용하고, 필터 select는 즉시 적용한다. 첫 page는 `limit=100&offset=0`으로 가져오고, 더 볼 row가 있으면 `offset`을 증가시켜 `더 보기`로 이어 붙인다.
 
 화면 summary와 목록 count는 현재 로드된 row 기준이다. 전체 total count는 API가 아직 제공하지 않으므로 "전체 시스템 기준"으로 표현하지 않는다.
 
@@ -133,7 +133,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 - `실행 가능 5`
 - `워크플로우 관리 가능 1`
 
-`최근 오류`는 `/apps/operations.latest_run` 기준으로 계산한다. 권한 출처만 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
+`최근 오류`는 `/apps/operations.latest_run` 기준으로 계산한다. 권한 출처만 MBA-74 source population 전까지 `출처 연동 예정`으로 표시한다.
 
 ## 모듈 목록 row 설계
 
@@ -188,7 +188,7 @@ MBA-76 `/apps/operations` 응답 기준으로 프론트가 바로 표시할 수 
 | --- | --- | --- |
 | 내 권한 | 전체, 실행 가능, 워크플로우 수정 가능, 워크플로우 관리 가능 | 가능 |
 | 배포 상태 | 전체, 배포 중, 배포 꺼짐, 미배포 | 가능 |
-| 실행 상태 | 전체, 정상, 오류, 실행 중 | 가능 |
+| 실행 상태 | 전체, 실행 중, 오류만 | 가능 |
 | 접근 경로 | 전체, team, direct grant | `permission_sources` population 후 가능 |
 | team | team 목록 | `permission_sources` population 후 가능 |
 | 소유자 | 소유자 이름 | `owner_name` 기반 제한적 가능 |
@@ -439,7 +439,7 @@ GET /api/v1/apps/operations
 6. 검색, 권한 필터, 배포 필터, 실행 필터 변경 시 첫 page부터 다시 조회한다.
 7. `더 보기`를 누르면 다음 offset page를 append한다.
 8. row action을 permission boolean과 `deployment.deployment_id` 기준으로 제어한다.
-9. `permission_sources`는 MBA-74 source population 전까지 `출처 확인 필요`로 표시한다.
+9. `permission_sources`는 MBA-74 source population 전까지 `출처 연동 예정`으로 표시한다.
 
 ## QA 체크리스트
 

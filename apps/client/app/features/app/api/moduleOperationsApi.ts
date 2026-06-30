@@ -105,7 +105,7 @@ const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow =>
     deploymentState: deployment.state,
     latestRun,
     dataQuality: {
-      permissionSourcesUnavailable: permissionSources.length === 0,
+      permissionSourcesUnavailable: false,
       latestRunUnavailable: latestRun.state === 'unavailable',
     },
   };

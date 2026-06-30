@@ -42,7 +42,7 @@ type RunFilter = 'all' | 'running' | 'failed';
 const PAGE_SIZE = 100;
 
 const permissionLabels: Record<string, string> = {
-  manager: '관리 가능',
+  manager: '워크플로우 관리 가능',
   builder: '워크플로우 수정 가능',
   operator: '실행 가능',
   viewer: '조회 가능',
@@ -120,7 +120,7 @@ const permissionLabelOf = (row: ModuleOperationRow) => {
 
 const sourceLabelOf = (row: ModuleOperationRow) => {
   if (!row.app.workflow_id) return '권한 확인 대기';
-  if (row.permissionSources.length === 0) return '출처 확인 필요';
+  if (row.permissionSources.length === 0) return '출처 연동 예정';
 
   const [firstSource, ...rest] = row.permissionSources;
   const sourceName =
@@ -160,6 +160,7 @@ export default function MyModulePage() {
   const [rows, setRows] = useState<ModuleOperationRow[]>([]);
   const [isOrgManager, setIsOrgManager] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [permissionFilter, setPermissionFilter] =
     useState<PermissionFilter>('all');
   const [deploymentFilter, setDeploymentFilter] =
@@ -175,7 +176,7 @@ export default function MyModulePage() {
 
   const buildListParams = useCallback(
     (offset: number): ModuleOperationsListParams => {
-      const trimmedQuery = searchQuery.trim();
+      const trimmedQuery = debouncedSearchQuery.trim();
       return {
         q: trimmedQuery || undefined,
         capability: capabilityParamOf(permissionFilter),
@@ -186,8 +187,16 @@ export default function MyModulePage() {
         offset,
       };
     },
-    [deploymentFilter, permissionFilter, runFilter, searchQuery],
+    [debouncedSearchQuery, deploymentFilter, permissionFilter, runFilter],
   );
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchQuery]);
 
   const loadModules = useCallback(
     async ({ offset = 0, append = false } = {}) => {

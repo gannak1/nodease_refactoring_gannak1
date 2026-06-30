@@ -295,23 +295,22 @@ class AppService:
         query = db.query(App).options(joinedload(App.active_deployment))
         if organization_id:
             query = query.filter(App.organization_id == organization_id)
-        if q:
-            pattern = f"%{q.strip()}%"
+        if q and q.strip():
+            escaped_query = AppService._escape_like_pattern(q.strip())
+            pattern = f"%{escaped_query}%"
             query = query.filter(
-                (App.name.ilike(pattern)) | (App.description.ilike(pattern))
+                (App.name.ilike(pattern, escape="\\"))
+                | (App.description.ilike(pattern, escape="\\"))
             )
 
-        apps = query.order_by(App.updated_at.desc(), App.name.asc(), App.id.asc()).all()
-        readable_apps = [
-            app for app in apps if AppService.can_read_app_operations(db, app, user_id)
-        ]
+        ordered_query = query.order_by(App.updated_at.desc(), App.name.asc(), App.id.asc())
         should_filter_computed_fields = bool(
             permission or capability or deployment_state or run_state
         )
         if should_filter_computed_fields:
             return AppService._list_filtered_operation_rows(
                 db,
-                readable_apps,
+                ordered_query,
                 user_id,
                 permission,
                 capability,
@@ -321,8 +320,57 @@ class AppService:
                 offset,
             )
 
-        candidate_apps = readable_apps[offset : offset + limit]
+        candidate_apps = AppService._list_readable_operation_apps(
+            db, ordered_query, user_id, limit, offset
+        )
         return AppService._build_operation_rows_for_apps(db, candidate_apps, user_id)
+
+    @staticmethod
+    def _escape_like_pattern(value: str) -> str:
+        """사용자 검색어를 SQL LIKE wildcard가 아닌 literal로 검색한다."""
+        return (
+            value.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+
+    @staticmethod
+    def _operation_app_batches(query, limit: int):
+        batch_size = max(limit, 50)
+        query_offset = 0
+
+        while True:
+            batch = query.offset(query_offset).limit(batch_size).all()
+            if not batch:
+                break
+            yield batch
+            if len(batch) < batch_size:
+                break
+            query_offset += batch_size
+
+    @staticmethod
+    def _list_readable_operation_apps(
+        db: Session,
+        query,
+        user_id,
+        limit: int,
+        offset: int,
+    ) -> list[App]:
+        selected_apps: list[App] = []
+        skipped = 0
+
+        for batch in AppService._operation_app_batches(query, limit):
+            for app in batch:
+                if not AppService.can_read_app_operations(db, app, user_id):
+                    continue
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                selected_apps.append(app)
+                if len(selected_apps) >= limit:
+                    return selected_apps
+
+        return selected_apps
 
     @staticmethod
     def _build_operation_rows_for_apps(
@@ -359,7 +407,7 @@ class AppService:
     @staticmethod
     def _list_filtered_operation_rows(
         db: Session,
-        readable_apps: list[App],
+        query,
         user_id,
         permission: str | None,
         capability: str | None,
@@ -369,13 +417,16 @@ class AppService:
         offset: int,
     ) -> list[AppOperationRow]:
         """계산형 filter는 bounded batch로 훑어 필요한 page만 채운다."""
-        batch_size = max(limit, 50)
         matched_rows: list[AppOperationRow] = []
         skipped = 0
 
-        for start in range(0, len(readable_apps), batch_size):
-            batch = readable_apps[start : start + batch_size]
-            rows = AppService._build_operation_rows_for_apps(db, batch, user_id)
+        for batch in AppService._operation_app_batches(query, limit):
+            readable_apps = [
+                app
+                for app in batch
+                if AppService.can_read_app_operations(db, app, user_id)
+            ]
+            rows = AppService._build_operation_rows_for_apps(db, readable_apps, user_id)
             for row in rows:
                 if not AppService._matches_operation_filters(
                     row, permission, capability, deployment_state, run_state
