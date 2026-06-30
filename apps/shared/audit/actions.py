@@ -20,6 +20,10 @@ class AuditAction:
 
     # 앱/워크플로우/배포: 사용자가 워크플로우 운영 단위에서 수행한 행동.
     ORGANIZATION_UPDATE = "organization.update"
+    ORGANIZATION_INVITE = "organization.invite"
+    ORGANIZATION_MEMBER_ACCEPT = "organization.member.accept"
+    ORGANIZATION_MEMBER_UPDATE = "organization.member.update"
+    ORGANIZATION_MEMBER_REMOVE = "organization.member.remove"
 
     APP_CREATE = "app.create"
     APP_UPDATE = "app.update"
