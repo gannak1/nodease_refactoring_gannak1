@@ -234,6 +234,7 @@ def test_last_manager_guard_blocks_demote_by_another_manager(monkeypatch):
         )
 
     assert last_manager.value.status_code == 409
+    assert db.for_update_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -561,6 +562,7 @@ class _Db:
         self.llm_permissions = llm_permissions or []
         self.audit_logs = []
         self.commits = 0
+        self.for_update_calls = 0
 
     def query(self, *models):
         if models == (Organization, OrganizationMembership):
@@ -570,21 +572,37 @@ class _Db:
                 for membership in self.memberships
                 if organization.id == membership.organization_id
             ]
-            return _Query(rows)
+            return _Query(rows, on_for_update=self._record_for_update)
         model = models[0]
         if model is Organization:
-            return _Query(self.organizations)
+            return _Query(self.organizations, on_for_update=self._record_for_update)
         if model is User:
-            return _Query(self.users)
+            return _Query(self.users, on_for_update=self._record_for_update)
         if model is OrganizationMembership:
-            return _Query(self.memberships)
+            return _Query(self.memberships, on_for_update=self._record_for_update)
         if model is TeamMembership:
-            return _Query(self.team_memberships, self.team_memberships)
+            return _Query(
+                self.team_memberships,
+                self.team_memberships,
+                on_for_update=self._record_for_update,
+            )
         if model is UserWorkflowPermission:
-            return _Query(self.workflow_permissions, self.workflow_permissions)
+            return _Query(
+                self.workflow_permissions,
+                self.workflow_permissions,
+                on_for_update=self._record_for_update,
+            )
         if model is UserLLMPermission:
-            return _Query(self.llm_permissions, self.llm_permissions)
-        return _Query([])
+            return _Query(
+                self.llm_permissions,
+                self.llm_permissions,
+                on_for_update=self._record_for_update,
+            )
+        return _Query([], on_for_update=self._record_for_update)
+
+    def _record_for_update(self):
+        # 실제 DB lock 대신 서비스가 with_for_update()를 호출했는지만 기록한다.
+        self.for_update_calls += 1
 
     def add(self, row):
         if isinstance(row, AuditLog):
@@ -608,10 +626,11 @@ class _Db:
 
 
 class _Query:
-    def __init__(self, items, backing=None):
+    def __init__(self, items, backing=None, on_for_update=None):
         self.items = list(items)
         self.backing = backing
         self.filters = []
+        self.on_for_update = on_for_update
 
     def join(self, *args, **kwargs):
         return self
@@ -624,6 +643,11 @@ class _Query:
         return self
 
     def order_by(self, *args):
+        return self
+
+    def with_for_update(self):
+        if self.on_for_update is not None:
+            self.on_for_update()
         return self
 
     def all(self):

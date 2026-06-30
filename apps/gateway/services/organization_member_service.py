@@ -202,16 +202,20 @@ def _add_audit_log(
     )
 
 
-def _manager_count(db: Session, organization_id: Any) -> int:
-    return (
+def _locked_manager_count(db: Session, organization_id: Any) -> int:
+    # count()는 row lock을 잡지 못하므로 실제 active manager row를 조회해 잠근다.
+    # 이렇게 해야 동시 강등/삭제 요청이 같은 manager 수를 보고 함께 통과하지 않는다.
+    active_managers = (
         db.query(OrganizationMembership)
         .filter(
             OrganizationMembership.organization_id == organization_id,
             OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
             OrganizationMembership.organization_auth_state == ORGANIZATION_AUTH_MANAGER,
         )
-        .count()
+        .with_for_update()
+        .all()
     )
+    return len(active_managers)
 
 
 def _guard_last_manager(
@@ -230,7 +234,7 @@ def _guard_last_manager(
         and next_auth_state == ORGANIZATION_AUTH_MANAGER
     ):
         return
-    if _manager_count(db, membership.organization_id) <= 1:
+    if _locked_manager_count(db, membership.organization_id) <= 1:
         raise HTTPException(
             status_code=409,
             detail="Cannot remove the last organization manager.",
