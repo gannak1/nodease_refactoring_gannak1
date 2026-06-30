@@ -3,8 +3,8 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
-Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
 
@@ -175,6 +175,8 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - `team_knowledge_permissions`
 - 목표: `user_knowledge_permissions`
 
+Active `organization_memberships` row는 KB가 속한 organization scope 안의 resource permission subject인지 확인하는 전제 조건이다. 이 membership만으로 KB `read`/`use`를 허용하지 않으며, 실제 허용은 organization manager override와 KB permission table의 effective permission으로 판정한다.
+
 현재 코드의 Knowledge Base API는 `KnowledgeBase.user_id == current_user.id` 같은 owner/current-user scope를 주로 사용한다. RAG API는 endpoint별로 차이가 있으며 기존 KB upload, analyze, confirm, progress 경로는 owner/scope 검증이 약하다. 아래 matrix는 MVP 2에서 team permission과 planned user direct grant를 적용할 목표 정책이다.
 
 | `auth_state` | `read` | `write` | `use` | `manage` | 설명 |
@@ -189,6 +191,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 - KB 목록/상세 조회: `read`
 - 문서 업로드/삭제/재색인: `write`
+- RAG search-test `chat`/`pure`: retrieval과 content preview를 수행하므로 목표 `use`
 - workflow RAG node 실행: `use`
 - KB permission 변경: `manage`
 
@@ -197,6 +200,9 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - 현재 물리 데이터 모델에는 document별 permission table이 없다.
 - document별 차단이 필요하면 `knowledge_base` 권한과 document metadata 정책으로 먼저 처리한다.
 - document별 강한 권한이 필요하면 별도 schema extension이 필요하다.
+- Metadata는 permission source of truth가 아니다. `documents.meta_info`와 `document_chunks.metadata`는 retrieval filter, policy decision, citation evidence에 사용할 수 있지만 권한 판정 source로 쓰지 않는다. Organization membership은 scope 전제 조건이고, KB `read`/`use` 허용은 organization manager override와 KB permission table의 effective permission을 따른다.
+- `classification=pii`는 external LLM prompt path에서 `policy.block`, internal-only search preview에서 `policy.warn`을 기본값으로 둔다.
+- `classification=confidential`은 KB `use` 권한을 통과하면 허용하되 audit/trace policy result를 남긴다.
 
 ### LLM Credential
 
@@ -232,7 +238,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - `team_audit_permissions`
 - 목표: `user_audit_permissions`
 
-현재 코드에는 `team_audit_permissions` 물리 table과 trace visibility 정책 기반이 있다. 다만 현재 등록된 audit log 조회 API는 `GET /api/v1/users/me/audit-logs` 자기 범위 조회뿐이며, organization-wide `/api/v1/audit/logs` 검색 API는 아직 없다. 현재 trace 상세/payload 접근 제어도 `team_audit_permissions`를 직접 조회하지 않고 system admin, app owner, workflow effective RBAC, visibility policy를 조합한다. `user_audit_permissions`는 아직 구현되지 않은 MVP 3 목표 table이다.
+현재 코드에는 `team_audit_permissions` 물리 table과 trace redaction/visibility policy 기반이 있다. 현재 trace 상세/payload 접근 제어는 구현되어 있지만 `team_audit_permissions`를 직접 조회하지 않고 system admin, app owner, workflow effective RBAC, visibility policy를 조합한다. 다만 현재 등록된 audit log 조회 API는 `GET /api/v1/users/me/audit-logs` 자기 범위 조회뿐이며, organization-wide `/api/v1/audit/logs` 검색 API와 audit permission 기반 통합 조회는 아직 없다. `user_audit_permissions`는 아직 구현되지 않은 MVP 3 목표 table이다.
 
 | `auth_state` | `read` | `view_raw` | `manage` | 설명 |
 | --- | --- | --- | --- | --- |
@@ -317,6 +323,8 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 주의:
 
 - 목표 상태의 connection `use`는 connection owner에게만 제한하지 않는다. 그렇게 제한하면 owner가 아닌 team member가 DB 기반 workflow/knowledge base를 실행할 수 없다.
+- 연결된 workflow/knowledge base가 없거나 active organization scope를 단일하게 식별할 수 없으면 organization owner/manager override를 적용하지 않고 deny한다.
+- 하나의 connection이 서로 다른 organization의 resource와 충돌하는 방식으로 연결되면 implicit sharing으로 해석하지 않고 deny한다. Cross-organization sharing이 필요하면 별도 schema/permission extension으로 다룬다.
 - runtime은 encrypted credential을 server-side에서만 복호화해서 사용하고, client/API 응답에 secret을 반환하지 않는다.
 - 연결된 외부 DB 내부의 table/row 권한은 Nodease RBAC에서 대신 관리하지 않는다. 외부 DB credential 자체의 권한 범위가 최종 DB 접근 범위를 제한한다.
 - connection을 workflow/knowledge base와 독립적으로 team/user에게 공유해야 하는 요구가 생기면 `team_connection_permissions`/`user_connection_permissions`를 별도 schema extension으로 검토한다.
@@ -413,7 +421,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 ## Audit 기록 기준
 
-권한 관련 event는 `audit_logs`에 기록한다. 현재 등록된 `/api/v1/permissions/*` router는 grant/revoke를 permission row별 data-change action으로 기록한다. 아래 표에는 현재 구현된 권한 event와 MVP 2 policy enforcement에서 추가할 목표 event를 함께 둔다.
+권한/정책 관련 event는 `audit_logs`에 기록한다. 현재 등록된 `/api/v1/permissions/*` router는 grant/revoke를 permission row별 data-change action으로 기록한다. 아래 표는 permission row 변경, permission denial, policy enforcement 관련 audit event 기준이다. RAG retrieval 성공 같은 일반 실행 감사 action은 [physical-data-model.md](physical-data-model.md)와 [ADR-202606290131](../decisions/ADR-202606290131-audit-action-naming-standard.md)을 따른다.
 
 | Event | `audit_logs.action` | 기록 조건 |
 | --- | --- | --- |
@@ -425,6 +433,10 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | team LLM credential 권한 회수 | `team_llm_permission.deleted` | team LLM permission row 삭제 |
 | user LLM credential 권한 생성/수정 | `user_llm_permission.created` 또는 `user_llm_permission.updated` | user LLM permission row 생성/변경 |
 | user LLM credential 권한 회수 | `user_llm_permission.deleted` | user LLM permission row 삭제 |
+| team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | 현재 `team_knowledge_permissions` row 생성/변경. KB permission API/enforcement 연결은 MVP 2 범위 |
+| team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | 현재 `team_knowledge_permissions` row 삭제. KB permission API/enforcement 연결은 MVP 2 범위 |
+| user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 생성/변경 |
+| user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 삭제 |
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |
@@ -459,15 +471,15 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 - knowledge base `read/write/use`
 - `user_knowledge_permissions` additive grant 추가
 - RAG node의 knowledge base `use` check
-- audit search permission
-- trace redaction/visibility policy 연동
+- organization-wide audit search permission과 audit permission 기반 조회 통합
+- 현재 trace redaction/visibility policy와 audit permission model의 관리/검색 통합
 
 ### MVP 3
 
 - deploy checklist, version diff, trigger mode 정합성
 - dashboard scope filtering
-- raw trace access control
-- audit visibility 관리
+- organization-wide raw trace access 권한을 audit permission model과 통합
+- audit visibility 관리 UI/API
 - `user_audit_permissions` additive grant 추가
 
 ## 확정 완료 항목

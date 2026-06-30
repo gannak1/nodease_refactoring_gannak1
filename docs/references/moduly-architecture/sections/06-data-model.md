@@ -336,9 +336,9 @@ Credential과 Model의 사용 가능 관계를 저장한다.
 파일: `apps/shared/db/seed.py`
 
 - placeholder user
-  - id: `12345678-1234-5678-1234-567812345678`
-  - email: `dev@moduly.app`
-  - password: `dev-password`
+  - id: `<placeholder-user-id>`
+  - email: `<placeholder-email>`
+  - password: `<placeholder-password>`
 - default providers
   - openai
   - anthropic

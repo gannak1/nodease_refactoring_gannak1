@@ -3,11 +3,11 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 문서 목적
 
-이 문서는 `feature/mba-6` 브랜치에서 dev 대비 추가된 워크플로우 Canvas UI/UX 작업 범위를 프론트 구현, 리뷰, QA 관점에서 정리한다.
+이 문서는 워크플로우 Canvas UI/UX 작업 범위를 프론트 구현, 리뷰, QA 관점에서 정리한다. 초기 MBA-6 작업 명세에서 출발했지만, 현재 기준은 최신 dev의 front/API 문서와 충돌하지 않는 범위다.
 
 기존 기능을 단순히 시각적으로 바꾸는 작업이 아니라, 다음 사용 흐름을 개선하는 것이 목표다.
 
@@ -292,7 +292,7 @@ Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
 
 기존에는 프론트 화면의 그래프와 DB에 저장된 draft 그래프가 어긋날 수 있었다. 이로 인해 화면에서는 삭제된 edge가 실제 실행에서는 남아 순환 오류를 만드는 문제가 있었다.
 
-이를 막기 위해 `feature/mba-6`의 프론트 구현 흐름은 다음과 같이 정리되어 있다. 백엔드 snapshot 우선 실행과 최종 HTTP 계약은 상세 문서의 API 계약 TODO를 따른다.
+이를 막기 위해 프론트 구현 흐름은 다음과 같이 정리되어 있다. 백엔드 snapshot 우선 실행과 최종 HTTP 계약은 `docs/api/apps-workflows.md`와 상세 snapshot 문서의 비권위 보조 설명을 따른다.
 
 1. 테스트 클릭
 2. 현재 프론트 그래프 snapshot 생성

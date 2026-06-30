@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
-Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목표
 
 MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소스와 RAG 실행 경로에 적용한다.
 
-이 문서는 MVP 2 목표 상태를 정의한다. 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 코드에서는 Knowledge Base API가 주로 owner/current-user scope로 동작하지만, RAG API 일부 경로는 owner/scope 검증이 약하다. LLM node의 RAG retrieval은 knowledge base `use` 권한 enforcement를 아직 적용하지 않는다. `classification`, `policy.warn`, `policy.block`, `rag.retrieve`, 변경 문서 단위 re-index UI/API도 목표 범위다.
+이 문서는 MVP 2 목표 상태를 정의한다. 현재 `dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1` 코드에서는 Knowledge Base API가 주로 owner/current-user scope로 동작하지만, RAG API 일부 경로는 owner/scope 검증이 약하다. LLM node의 RAG retrieval은 knowledge base `use` 권한 enforcement를 아직 적용하지 않는다. `classification`, `policy.warn`, `policy.block`, `rag.retrieve`, 변경 문서 단위 re-index UI/API도 목표 범위다.
 
 결과물:
 
@@ -22,6 +22,30 @@ MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소�
   + 문서 변경/재색인 흐름
   + audit log 검색
 ```
+
+## MBA-75 RAG 확장 범위
+
+MBA-75에서 사용하는 RAG 용어는 다음처럼 구분한다.
+
+| 용어 | 요구사항 의미 |
+| --- | --- |
+| Metadata-aware RAG | document/source/chunk metadata를 retrieval filter, policy decision, ranking hint, citation evidence에 사용 |
+| Permission-aware RAG | knowledge base `use` 권한과 document metadata policy를 RAG 실행 경로에서 강제 |
+| Hierarchical RAG | parent/child chunk 계층을 indexing/retrieval에 사용 |
+
+RBAC 기반 접근 제어는 Hierarchical RAG가 아니다. RBAC는 Permission-aware RAG의 access-control 경계이고, Hierarchical RAG는 검색/index 구조다.
+
+MBA-75 목표 범위:
+
+- metadata filter는 allowlist 기반 구조화 schema로 정의한다.
+- metadata는 permission source of truth가 아니다.
+- document metadata source of truth는 `documents.meta_info`다.
+- `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다.
+- RAG search-test와 Workflow Engine runtime retrieval은 같은 filter/policy semantics를 사용한다.
+- RAG search-test `chat`/`pure`는 retrieval과 content preview를 수행하므로 KB `use` 권한을 요구한다. 단순 KB/detail/document metadata 조회는 `read` 권한 기준이다.
+- KB 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. MVP 2 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. 현재 Knowledge/RAG API의 primary organization fallback과 owner/current-user scope는 과도기 구현으로만 본다.
+- parent chunk는 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
+- 기존 flat KB는 parent/child metadata가 없으면 flat retrieval로 fallback한다.
 
 ## 의존 기반
 
@@ -45,7 +69,7 @@ MVP 2에서 실제 enforcement를 붙이는 resource:
 
 | 대상 | 정책 |
 | --- | --- |
-| `knowledge_base` | HR team 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능 |
+| `knowledge_base` | active organization scope 안에서 허용된 team permission 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능. HR team은 예시 시나리오다. |
 | `document` | PII/confidential 문서는 `documents.meta_info` metadata policy로 warn/block 가능. document별 permission table은 만들지 않음 |
 | `connection` | 독립 permission resource가 아니다. secret/manage는 제한하고 runtime `use`는 workflow/knowledge base 권한으로 확인 |
 | `llm_model` | MVP 1의 credential `use` + credential-model relation 정책 유지 |
@@ -79,24 +103,41 @@ API에서만 체크하면 실행 경로 우회 문제가 생기므로 Workflow E
 
 MVP 2에서는 자동 PII 탐지를 완성하지 않는다. 초기 방식은 사용자가 classification을 수동 지정하고, 간단한 regex 기반 PII warning 후보를 제공하며, classification이 `pii`이면 외부 모델 호출 전 warn/block한다. 모든 policy decision은 `audit_logs.audit_metadata.policy_result`에 남긴다.
 
+MBA-75 기본 정책은 external LLM prompt path에서는 `pii`를 `policy.block`으로 차단하고, internal-only search preview에서는 `policy.warn`으로 감사 가능한 경고를 남기는 것이다. `confidential`은 KB `use` 권한을 통과하면 허용하되 audit/trace policy result를 남긴다.
+
 ## RAG Retrieval Trace Metadata
 
-MVP 2에서 필요한 RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 `trace_payloads` 또는 run/node trace metadata에 저장한다.
+MVP 2에서 필요한 RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 기존 trace 계열 table에 저장한다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary만 저장한다.
 
 ```text
-trace_payloads / trace metadata
+trace_payloads.redacted_payload / redaction_metadata
+  payload_kind = "rag.retrieval"
   workflow_run_id
+  workflow_node_run_id
   node_id
   knowledge_base_id
   retrieved_chunks[]
     document_id
     chunk_id
+    parent_chunk_id?
     rank
     score
     token_count
+    metadata_summary
+
+workflow_runs.trace_metadata / workflow_node_runs.trace_metadata
+  knowledge_base_id
+  retrieved_chunk_count
+  document_ids[]
+  citation_ids[]
+  score_summary
+  hierarchy_fallback
+  raw_content_returned
 ```
 
 이 trace는 "어떤 청크가 모델에 들어갔는가"를 설명하는 핵심 근거다. RAG 없는 LLM node는 기존처럼 동작해야 한다.
+
+Workflow trace/run detail의 기본 응답은 raw chunk content 없이 citation metadata를 반환한다. Search-test response는 KB `use` 권한을 통과한 user에게 chunk content preview를 반환할 수 있지만, 그 content를 trace/audit metadata에 복사하지 않는다.
 
 ## RAG 변경 정책과 Re-index
 
@@ -128,19 +169,20 @@ UI와 API는 최소한 아래 필터를 제공한다.
 
 MVP 2에서 검색해야 하는 대표 이벤트:
 
-- permission row data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`
+- 현재 ORM data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`, `team_knowledge_permission.*`
+- MVP 2 knowledge base permission API/enforcement 및 user direct grant 목표 action: `user_knowledge_permission.*`. `team_knowledge_permission.*`는 현재 table/listener 기준으로 이미 가능한 action이지만, KB permission API와 runtime enforcement 연결은 MVP 2 구현 범위다.
 - `permission.denied`
 - `policy.warn`
 - `policy.block`
 - `rag.retrieve`
 - re-index 관련 event
 
-`policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 구현 시 `AuditAction` 상수와 테스트를 함께 추가해야 하는 목표 action이다. 현재 코드의 MVP 1 `AuditAction`에는 아직 없다.
+`policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 구현 시 `AuditAction` 상수와 테스트를 함께 추가해야 하는 목표 action이다. 현재 코드의 MVP 1 `AuditAction`에는 아직 없다. `rag.retrieve`는 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다.
 
 ## 사용자 흐름
 
-1. organization owner/manager가 HR knowledge base를 만든다.
-2. HR team 또는 MVP 2에서 추가할 user direct grant를 받은 user만 해당 knowledge base를 `use`할 수 있게 설정한다.
+1. organization owner/manager가 예시 HR knowledge base를 만든다.
+2. 예시 HR team처럼 허용된 team permission 또는 MVP 2에서 추가할 user direct grant를 받은 user만 해당 knowledge base를 `use`할 수 있게 설정한다.
 3. `builder` 권한 user가 HR knowledge base를 사용하는 RAG workflow를 만든다.
 4. 권한 없는 사용자의 실행은 차단된다.
 5. 권한 있는 사용자의 실행은 성공한다.
@@ -153,6 +195,8 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 - knowledge base 권한 enforcement와 document metadata policy
 - `user_knowledge_permissions` additive grant 추가. 현재 코드에는 아직 없음
+- metadata-aware retrieval filter와 vector/keyword 동일 semantics
+- hierarchical chunk schema, ingestion, parent/child retrieval
 - DB connection secret/manage/use 분리 enforcement
 - RAG retrieval trace metadata 저장
 - data classification metadata convention 및 API/UI 노출
@@ -165,13 +209,17 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 0. MVP 2-0 Organization Membership / Invitation Foundation
 
-작업:
+상태:
 
-- `organization_memberships` table과 migration/backfill 추가
-- active organization membership 기반 permission helper 전환
+- `organization_memberships` table과 migration/backfill은 dev 기준 완료된 prerequisite이다.
+- active organization membership 기반 permission helper 전환도 dev 기준 완료된 prerequisite이다.
+- team membership과 user direct permission의 grantee 검증 기준을 organization membership으로 바꾸는 방향은 완료된 foundation 위에서 유지한다.
+
+남은 작업:
+
 - organization member/invitation API 추가
-- team membership과 user direct permission의 grantee 검증 기준을 organization membership으로 변경
 - Organization Members UI와 team/direct permission picker 필터 반영
+- legacy fallback 축소/제거 시점과 removed/suspended member 정리 정책 확정
 
 검증:
 
@@ -179,6 +227,7 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - active organization member가 아니면 resource permission row가 있어도 접근 거부됨
 - team에 속하지 않은 active organization member에게 direct permission 부여 가능
 - member 제거 시 team membership과 user direct permission 정리
+- legacy fallback 축소가 기존 MVP 1 workflow/LLM permission demo를 깨지 않음
 - MVP 1 workflow/LLM permission demo 회귀 없음
 
 1. Data Source Permission Enforcement
@@ -215,8 +264,9 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 작업:
 
 - retrieval 결과에서 document id, chunk id, score, rank 추출
-- `trace_payloads` 또는 run/node trace metadata에 저장
-- workflow run/node id와 metadata 연결
+- per-chunk evidence는 `trace_payloads.payload_kind='rag.retrieval'`에 저장
+- run/node trace metadata에는 retrieved chunk count, document/citation id, score summary, fallback flag 같은 summary만 저장
+- workflow run/node id와 trace payload 연결
 - run detail API에 trace 포함
 
 검증:
@@ -264,8 +314,8 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 ## Demo Script
 
 ```text
-1. organization owner/manager가 HR KB를 만들고 confidential로 분류한다.
-2. HR team 또는 MVP 2에서 추가할 user direct grant를 받은 user만 use 가능하게 설정한다.
+1. organization owner/manager가 예시 HR KB를 만들고 confidential로 분류한다.
+2. 예시 HR team처럼 허용된 team permission 또는 MVP 2에서 추가할 user direct grant를 받은 user만 use 가능하게 설정한다.
 3. `builder` 권한 user가 해당 KB를 쓰는 RAG workflow를 만든다.
 4. 권한 없는 사용자는 실행 차단된다.
 5. HR 권한 사용자는 실행 성공한다.

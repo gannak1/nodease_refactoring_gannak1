@@ -52,7 +52,7 @@ Password hash:
 
 | 항목 | 값 |
 | --- | --- |
-| secret | `SECRET_KEY` 환경변수, 기본값 `your-secret-key-change-in-production` |
+| secret | `SECRET_KEY` 환경변수, 기본값 `<placeholder-secret>` |
 | algorithm | HS256 |
 | expiry | 6시간 |
 | payload | `user_id`, `exp` |

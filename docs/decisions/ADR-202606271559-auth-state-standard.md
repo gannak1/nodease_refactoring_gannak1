@@ -3,12 +3,12 @@
 Status: Proposed
 Authority: Decision
 Source of Truth: No
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Created At: 2026-06-27 15:59 KST
 
 ## 배경
 
-이 ADR 작성 당시 일부 권한 경로는 `read`, `write`, `execute`, `admin` 값을 사용했다. 현재 `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` 코드는 `none`, `viewer`, `operator`, `builder`, `manager`, `auditor`, `raw_auditor`를 application-level 표준 상태로 사용하고, legacy `read/write/execute/admin` 값은 compatibility mapping으로 해석한다.
+이 ADR 작성 당시 일부 권한 경로는 `read`, `write`, `execute`, `admin` 값을 사용했다. 현재 `dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1` 코드는 `none`, `viewer`, `operator`, `builder`, `manager`, `auditor`, `raw_auditor`를 application-level 표준 상태로 사용하고, legacy `read/write/execute/admin` 값은 compatibility mapping으로 해석한다.
 
 두 체계를 동시에 방치하면 권한 판정, UI 표시, migration, 테스트 기준이 흔들릴 수 있다.
 
