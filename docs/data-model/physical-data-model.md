@@ -1131,6 +1131,10 @@ MVP 목표 상태 결정:
 | user LLM credential 권한 생성/수정/삭제 | `user_llm_permission.created`, `user_llm_permission.updated`, `user_llm_permission.deleted` |
 | 현재 ORM data-change listener가 기록할 수 있는 team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
 | MVP 2 user knowledge permission table/API 구현 시 고정할 user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
+| organization member 초대 생성 | `organization.invite` |
+| organization member 초대 수락 | `organization.member.accept` |
+| organization member 상태 또는 organization auth_state 변경 | `organization.member.update` |
+| organization member 제거 | `organization.member.remove` |
 | 권한 부족 거부 | `permission.denied` |
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |

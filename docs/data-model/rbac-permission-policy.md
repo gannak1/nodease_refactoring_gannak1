@@ -437,6 +437,11 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | 현재 `team_knowledge_permissions` row 삭제. KB permission API/enforcement 연결은 MVP 2 범위 |
 | user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 생성/변경 |
 | user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 삭제 |
+| organization member 초대 생성 | `organization.invite` | 기존 가입 user를 organization member로 초대 |
+| organization member 초대 수락 | `organization.member.accept` | 초대받은 user가 본인 초대를 수락 |
+| organization member 상태 또는 organization auth_state 변경 | `organization.member.update` | member state 또는 organization auth state 변경 |
+| organization member 제거 | `organization.member.remove` | membership soft remove와 같은 transaction의 permission cleanup 시작 |
+| organization member 제거 cleanup aggregate | `permission.revoke` | `audit_metadata.reason='organization.member.remove'`와 cleanup count 저장 |
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |
