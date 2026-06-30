@@ -8,6 +8,7 @@ from sqlalchemy.sql.operators import eq, in_op, is_
 
 from apps.gateway.services.organization_member_service import OrganizationMemberService
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
@@ -126,18 +127,24 @@ def test_invite_is_idempotent_and_reinvite_removed_records_audit(monkeypatch):
         lambda *args: True,
     )
 
-    response = OrganizationMemberService.invite_member(
-        db,
-        manager,
-        org.id,
-        OrganizationMemberInviteRequest(user_id=target.id),
+    token = set_current_metadata(
+        {"ip": "127.0.0.1", "user_agent": "test-agent", "request_id": "req-test"}
     )
-    again = OrganizationMemberService.invite_member(
-        db,
-        manager,
-        org.id,
-        OrganizationMemberInviteRequest(user_id=target.id),
-    )
+    try:
+        response = OrganizationMemberService.invite_member(
+            db,
+            manager,
+            org.id,
+            OrganizationMemberInviteRequest(user_id=target.id),
+        )
+        again = OrganizationMemberService.invite_member(
+            db,
+            manager,
+            org.id,
+            OrganizationMemberInviteRequest(user_id=target.id),
+        )
+    finally:
+        clear_current_metadata(token)
 
     assert response.id == removed_membership.id
     assert response.membership_state == ORGANIZATION_MEMBERSHIP_INVITED
@@ -145,7 +152,17 @@ def test_invite_is_idempotent_and_reinvite_removed_records_audit(monkeypatch):
     assert removed_membership.removed_at is None
     assert again.id == removed_membership.id
     assert _audit_actions(db) == [AuditAction.ORGANIZATION_INVITE]
-    assert "email" not in str(db.audit_logs[0].audit_metadata).lower()
+    metadata = db.audit_logs[0].audit_metadata
+    assert metadata["request_id"] == "req-test"
+    assert metadata["ip"] == "127.0.0.1"
+    assert metadata["user_agent"] == "test-agent"
+    assert metadata["actor"] == {
+        "id": str(manager.id),
+        "email": manager.email,
+        "name": manager.name,
+    }
+    assert "target_user_email" not in metadata
+    assert target.email not in str(metadata)
 
 
 def test_accept_update_guards_and_state_transitions(monkeypatch):
@@ -380,7 +397,13 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         lambda *args: True,
     )
 
-    response = OrganizationMemberService.remove_member(db, manager, org.id, target.id)
+    token = set_current_metadata(
+        {"ip": "127.0.0.1", "user_agent": "test-agent", "request_id": "req-test"}
+    )
+    try:
+        response = OrganizationMemberService.remove_member(db, manager, org.id, target.id)
+    finally:
+        clear_current_metadata(token)
 
     assert response.status == "removed"
     assert response.removed_team_memberships == 1
@@ -394,7 +417,18 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         AuditAction.ORGANIZATION_MEMBER_REMOVE,
         AuditAction.PERMISSION_REVOKE,
     ]
-    assert "email" not in str(db.audit_logs[0].audit_metadata).lower()
+    for audit_log in db.audit_logs:
+        metadata = audit_log.audit_metadata
+        assert metadata["request_id"] == "req-test"
+        assert metadata["ip"] == "127.0.0.1"
+        assert metadata["user_agent"] == "test-agent"
+        assert metadata["actor"] == {
+            "id": str(manager.id),
+            "email": manager.email,
+            "name": manager.name,
+        }
+        assert "target_user_email" not in metadata
+        assert target.email not in str(metadata)
 
 
 def test_invite_conflict_and_not_found_cases(monkeypatch):

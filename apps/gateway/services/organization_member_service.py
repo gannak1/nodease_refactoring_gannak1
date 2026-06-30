@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization import Organization
@@ -199,6 +200,24 @@ def _audit_metadata(
     return metadata
 
 
+def _actor_snapshot(user: User) -> dict[str, Any]:
+    return {
+        "id": str(user.id),
+        "email": getattr(user, "email", None),
+        "name": getattr(user, "name", None),
+    }
+
+
+def _merge_audit_context(
+    current_user: User,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = get_current_metadata()
+    enriched["actor"] = _actor_snapshot(current_user)
+    enriched.update(metadata)
+    return enriched
+
+
 def _add_audit_log(
     db: Session,
     action: str,
@@ -215,7 +234,7 @@ def _add_audit_log(
             target_type="organization_membership",
             target_id=str(membership.id),
             status="success",
-            audit_metadata=metadata,
+            audit_metadata=_merge_audit_context(current_user, metadata),
         )
     )
 
