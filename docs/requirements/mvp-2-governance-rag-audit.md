@@ -224,11 +224,12 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - `organization_memberships` table과 migration/backfill은 dev 기준 완료된 prerequisite이다.
 - active organization membership 기반 permission helper 전환도 dev 기준 완료된 prerequisite이다.
 - team membership과 user direct permission의 grantee 검증 기준을 organization membership으로 바꾸는 방향은 완료된 foundation 위에서 유지한다.
+- organization member/invitation BE API와 accept/remove cleanup audit은 dev 기준 구현된 prerequisite이다.
 
 남은 작업:
 
-- organization member/invitation API 추가
-- Organization Members UI와 team/direct permission picker 필터 반영
+- full membership 관리 UI와 Organization Members 화면 반영
+- team/direct permission picker 필터 반영
 - legacy fallback 축소/제거 시점과 removed/suspended member 정리 정책 확정
 
 검증:

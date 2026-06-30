@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 
 ## 목적
 
@@ -41,13 +41,13 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Status: Draft | Accepted | Superseded
 Authority: Foundation | Requirements | Architecture | Data Model | API | Frontend Implementation Guide | Decision | Implementation Plan | Reference
 Source of Truth: Yes | No
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: <branch or dev> @ <commit> 또는 <branch> current docs snapshot (<date/timezone>)
 Related ADRs:
 ```
 
 ## 현재 기준
 
-현재 active 문서 정합성 기준은 workspace code `dev`의 `ec576b4f24155697aed8843acc6e5a3fc835f7e1`다. `현재 코드`, `current behavior`, `Implemented`로 표시한 문장은 실제 코드와 일치해야 한다.
+현재 active 문서 정합성 기준은 각 문서 상단의 `Verified Against`가 가리키는 repository snapshot이다. `현재 코드`, `current behavior`, `Implemented`로 표시한 문장은 해당 snapshot의 실제 코드와 일치해야 한다.
 
 `목표`, `Planned`, `MVP 목표 계약`으로 표시한 요구사항, 아키텍처, 데이터 모델, API, ADR은 코드가 수렴해야 할 계약이다. 코드가 목표 계약과 다르면 목표 문서를 현재 코드로 낮추기보다 구현 보강 이슈, discrepancy report, 또는 단계별 migration 계획으로 추적한다.
 

@@ -77,7 +77,7 @@ user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additiv
 
 ### 2.2 현재 코드 기준
 
-원 계획 작성 당시에는 active organization과 user direct permission의 전제 조건이 `team_memberships`에 과도하게 의존했다. 최신 dev 기준으로 일부 전환은 완료됐고, 남은 작업은 organization member/invitation 제품 흐름과 full membership 관리 UI다.
+원 계획 작성 당시에는 active organization과 user direct permission의 전제 조건이 `team_memberships`에 과도하게 의존했다. 최신 dev 기준으로 BE foundation과 organization member/invitation API 전환은 완료됐고, 남은 작업은 full membership 관리 UI, team/direct permission picker 필터 반영, legacy fallback 축소 정책이다.
 
 | 파일 | 최신 dev 상태 | 남은 방향 |
 | --- | --- | --- |
@@ -86,7 +86,7 @@ user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additiv
 | `apps/shared/services/permissions.py` | organization scope/manager 판정은 `organization_memberships` 우선, team permission 계산은 `team_memberships` join 유지 | knowledge/audit user direct permission 추가 시 같은 전제 조건 적용 |
 | `apps/shared/db/models/team.py` | `TeamMembership`은 organization 안의 team 배정 역할로 유지 | organization 소속 자체를 대신하지 않도록 유지 |
 | `docs/data-model/physical-data-model.md` | `organization_memberships`를 현재 organization 소속 기준으로 반영 | 후속 schema extension 시 planned table 상태 갱신 |
-| `docs/api/organization-rbac.md` | user directory, team, permission API의 membership 전제 조건을 반영 | organization member/invite API 추가 |
+| `docs/api/organization-rbac.md` | user directory, team, permission API의 membership 전제 조건과 organization member/invitation BE API를 반영 | full membership UI와 permission picker 연동 시 API 사용 흐름 갱신 |
 
 ## 3. 목표
 
@@ -1362,7 +1362,7 @@ Acceptance Criteria:
 - membership row 자체가 없는 created_by/managed_by legacy fallback이 유지된다.
 - team permission 계산은 기존과 동일하게 동작한다.
 
-### Issue 0-3. `[BE][API] organization member/invitation API 추가`
+### Issue 0-3. `[BE][API] organization member/invitation API 추가` (BE 완료)
 
 작업:
 
@@ -1537,7 +1537,7 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 | `docs/data-model/rbac-permission-policy.md` | organization membership 전제 조건 추가 |
 | `docs/data-model/diagrams/rbac-relationships.md` | organization-user 직접 관계 추가 |
 | `docs/data-model/diagrams/data-model-overview.md` | organization memberships 관계 추가 |
-| `docs/api/organization-rbac.md` | organization member/invitation API 추가 |
+| `docs/api/organization-rbac.md` | organization member/invitation BE API 계약 반영 |
 | `docs/requirements/mvp-2-governance-rag-audit.md` | MVP2 선행 조건으로 organization membership 추가 |
 | `docs/architecture/auth-rbac.md` | active organization context source 변경 |
 | `docs/api/auth.md` | active organization 전달 계약이 바뀌는 경우 request/header/session 설명 갱신 |

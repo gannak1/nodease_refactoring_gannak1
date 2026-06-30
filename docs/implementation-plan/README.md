@@ -30,7 +30,7 @@ MVP 1 Foundation / LLMOps Observability
   -> MVP 2 Audit Log Search
 ```
 
-MVP 2-0의 `organization_memberships` DB/model/migration/backfill과 permission helper 전환은 dev 기준 완료된 prerequisite이다. 이후 남은 organization membership 범위는 member/invitation API, full membership 관리 UI, legacy owner/manager fallback 축소 정책이며, 그 위에서 `user_knowledge_permissions`, knowledge base `use` enforcement, RAG node execution check를 구현한다.
+MVP 2-0의 `organization_memberships` DB/model/migration/backfill, permission helper 전환, member/invitation BE API는 dev 기준 완료된 prerequisite이다. 이후 남은 organization membership 범위는 full membership 관리 UI, team/direct permission picker 필터 반영, legacy owner/manager fallback 축소 정책이며, 그 위에서 `user_knowledge_permissions`, knowledge base `use` enforcement, RAG node execution check를 구현한다.
 
 ## 권위
 
