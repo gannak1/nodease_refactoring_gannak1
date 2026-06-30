@@ -541,6 +541,28 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(service.call_args.args[2], organization_id)
         self.assertEqual(service.call_args.args[3], target_user_id)
 
+    def test_route_rejects_unknown_member_update_field(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        target_user_id = uuid4()
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.update_member",
+        ) as service:
+            response = TestClient(app).patch(
+                f"/api/v1/organizations/{organization_id}/members/{target_user_id}",
+                headers={"X-Organization-Id": str(organization_id)},
+                json={"organization_auth_sate": "manager"},
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "validation.failed")
+        service.assert_not_called()
+
     def test_route_removes_member(self):
         organization_id = uuid4()
         user_id = uuid4()
@@ -703,7 +725,10 @@ class TestOrganizationsApi(unittest.TestCase):
                 ):
                     kwargs = {}
                     if method in {"post", "patch"} and service_name != "accept_invitation":
-                        kwargs["json"] = {"user_id": str(target_user_id)}
+                        if method == "patch":
+                            kwargs["json"] = {"organization_auth_state": "manager"}
+                        else:
+                            kwargs["json"] = {"user_id": str(target_user_id)}
                     headers = {"X-Request-ID": "req-test"}
                     if service_name != "accept_invitation":
                         headers["X-Organization-Id"] = str(organization_id)

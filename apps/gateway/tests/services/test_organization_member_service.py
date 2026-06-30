@@ -210,6 +210,79 @@ def test_accept_update_guards_and_state_transitions(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    "update_request",
+    [
+        OrganizationMemberUpdateRequest(),
+        OrganizationMemberUpdateRequest(membership_state=None),
+    ],
+)
+def test_update_rejects_missing_update_fields(monkeypatch, update_request):
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            _membership(target, org),
+        ],
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    with pytest.raises(HTTPException) as missing_fields:
+        OrganizationMemberService.update_member(
+            db,
+            manager,
+            org.id,
+            target.id,
+            update_request,
+        )
+
+    assert missing_fields.value.status_code == 400
+    assert db.audit_logs == []
+    assert db.commits == 0
+
+
+def test_update_noop_returns_current_member_without_audit(monkeypatch):
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    target_membership = _membership(target, org)
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            target_membership,
+        ],
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    response = OrganizationMemberService.update_member(
+        db,
+        manager,
+        org.id,
+        target.id,
+        OrganizationMemberUpdateRequest(
+            membership_state=target_membership.membership_state
+        ),
+    )
+
+    assert response.id == target_membership.id
+    assert response.membership_state == target_membership.membership_state
+    assert response.organization_auth_state == target_membership.organization_auth_state
+    assert db.audit_logs == []
+    assert db.commits == 0
+
+
 def test_last_manager_and_self_remove_are_blocked(monkeypatch):
     manager = _user()
     other = _user()

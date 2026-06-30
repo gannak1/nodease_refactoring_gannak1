@@ -501,6 +501,14 @@ class OrganizationMemberService:
                 status_code=409,
                 detail="Removed member must be re-invited.",
             )
+        provided_fields = request.model_fields_set & {
+            "membership_state",
+            "organization_auth_state",
+        }
+        if not provided_fields or all(
+            getattr(request, field_name) is None for field_name in provided_fields
+        ):
+            raise HTTPException(status_code=400, detail="No update fields provided.")
 
         next_state = request.membership_state or membership.membership_state
         next_auth_state = (
@@ -520,6 +528,11 @@ class OrganizationMemberService:
         ):
             # 본인 권한 강등/상태 변경은 마지막 manager 회피나 셀프 잠금을 막기 위해 금지한다.
             raise HTTPException(status_code=400, detail="Cannot update yourself.")
+        if (
+            next_state == membership.membership_state
+            and next_auth_state == membership.organization_auth_state
+        ):
+            return _member_response(membership)
 
         _guard_last_manager(db, membership, next_state, next_auth_state)
         previous_state = membership.membership_state

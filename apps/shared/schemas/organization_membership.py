@@ -67,6 +67,8 @@ class OrganizationMemberInviteRequest(BaseModel):
 
 
 class OrganizationMemberUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     membership_state: str | None = None
     organization_auth_state: str | None = None
 

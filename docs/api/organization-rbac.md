@@ -89,7 +89,10 @@ Organization member API의 현재 구현 세부사항:
 - Invite는 기존 가입 user만 대상으로 한다. Missing target user는 `404 resource.not_found`이고, self invite는 `400 validation.failed`다. Deactivated user는 초대할 수 없다.
 - 이미 active 또는 invited 상태인 member를 다시 초대하면 기존 membership을 idempotent하게 반환한다. Removed row는 같은 row를 `invited`로 재활성화하고, suspended row는 `409 resource.conflict`를 반환한다.
 - Accept는 `/members/me/accept`만 구현되어 있으며 manager-side forced accept endpoint는 만들지 않는다. 이미 active이면 idempotent success이고, suspended/removed는 `409 resource.conflict`다.
-- PATCH는 `membership_state='active'|'suspended'`와 `organization_auth_state='member'|'manager'`만 허용한다. Invited member를 PATCH로 active 처리하지 않고, removed member는 PATCH하지 않는다.
+- PATCH request body는 `membership_state='active'|'suspended'`와 `organization_auth_state='member'|'manager'`만 허용한다. 알 수 없는 field는 request validation 단계에서 `422 validation.failed`로 거부한다.
+- PATCH request body에 제공된 update field가 없거나, 제공된 update field 값이 모두 `null`이면 `400 validation.failed`와 `No update fields provided.`로 거부한다.
+- PATCH가 유효한 field를 제공했지만 현재 값과 같아 실제 변경이 없으면 성공으로 본다. 이 경우 현재 member 상태를 `200`으로 반환하고 `organization.member.update` audit과 DB commit은 만들지 않는다.
+- PATCH는 invited member를 active 처리하지 않는다. Removed member는 PATCH하지 않는다.
 - Last manager demote/suspend/remove와 self demote/remove는 차단한다.
 - DELETE는 membership을 `removed`로 soft remove하고, 같은 transaction 안에서 `team_memberships`, `user_workflow_permissions`, `user_llm_permissions`를 cleanup한다. 아직 구현되지 않은 `user_knowledge_permissions`, `user_audit_permissions` count는 `0`이다.
 - Invite/accept/update/remove는 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove` audit action을 사용한다. Remove cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'`와 cleanup count를 저장한다.

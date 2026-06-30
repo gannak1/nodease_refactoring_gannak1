@@ -95,6 +95,11 @@ def test_update_request_rejects_unknown_auth_state():
         OrganizationMemberUpdateRequest(organization_auth_state="owner")
 
 
+def test_update_request_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        OrganizationMemberUpdateRequest(organization_auth_sate="manager")
+
+
 @pytest.mark.parametrize(
     "schema",
     [
