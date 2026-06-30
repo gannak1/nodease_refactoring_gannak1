@@ -343,6 +343,7 @@ class OrganizationMemberService:
         target_user = _get_active_user(db, request.user_id)
         membership = _get_membership(db, organization_id, request.user_id)
         if membership is not None:
+            # 이미 활동 중이거나 초대 중이면 초대 요청을 멱등하게 처리한다.
             if membership.membership_state in {
                 ORGANIZATION_MEMBERSHIP_ACTIVE,
                 ORGANIZATION_MEMBERSHIP_INVITED,
@@ -354,6 +355,7 @@ class OrganizationMemberService:
                     detail="Suspended member must be reactivated with PATCH.",
                 )
 
+            # removed row는 unique 제약을 유지한 채 기존 membership을 재초대 상태로 되살린다.
             previous_state = membership.membership_state
             previous_auth_state = membership.organization_auth_state
             membership.membership_state = ORGANIZATION_MEMBERSHIP_INVITED
@@ -409,6 +411,7 @@ class OrganizationMemberService:
         if membership.membership_state != ORGANIZATION_MEMBERSHIP_INVITED:
             raise HTTPException(status_code=409, detail="Invitation cannot be accepted.")
 
+        # 초대 수락은 사용자 본인만 수행하므로 manager 권한 검사를 하지 않는다.
         previous_state = membership.membership_state
         membership.membership_state = ORGANIZATION_MEMBERSHIP_ACTIVE
         membership.accepted_at = _now()
@@ -463,6 +466,7 @@ class OrganizationMemberService:
             next_auth_state != membership.organization_auth_state
             or next_state != membership.membership_state
         ):
+            # 본인 권한 강등/상태 변경은 마지막 manager 회피나 셀프 잠금을 막기 위해 금지한다.
             raise HTTPException(status_code=400, detail="Cannot update yourself.")
 
         _guard_last_manager(db, membership, next_state, next_auth_state)
@@ -521,6 +525,7 @@ class OrganizationMemberService:
         )
         previous_state = membership.membership_state
         previous_auth_state = membership.organization_auth_state
+        # 조직에서 제거되면 팀 소속과 사용자별 리소스 권한도 함께 회수한다.
         removed_team_memberships = (
             db.query(TeamMembership)
             .filter(

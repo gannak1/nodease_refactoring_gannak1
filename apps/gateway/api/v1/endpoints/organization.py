@@ -142,6 +142,7 @@ def list_members(
         return _service_error_response(request, exc)
 
 
+# 조직 관리자가 멤버를 초대하거나 제거된 멤버를 다시 초대하는 API.
 @router.post(
     "/{organization_id}/members/invitations",
     response_model=OrganizationMemberResponse,
@@ -164,6 +165,7 @@ def invite_member(
         return _service_error_response(request, exc)
 
 
+# 초대받은 사용자가 본인의 조직 초대를 수락하는 API.
 @router.post(
     "/{organization_id}/members/me/accept",
     response_model=OrganizationMemberResponse,
@@ -184,6 +186,7 @@ def accept_invitation(
         return _service_error_response(request, exc)
 
 
+# 조직 관리자가 멤버 상태와 권한을 변경하는 API.
 @router.patch(
     "/{organization_id}/members/{user_id}",
     response_model=OrganizationMemberResponse,
@@ -208,6 +211,7 @@ def update_member(
         return _service_error_response(request, exc)
 
 
+# 조직 관리자가 멤버를 제거하고 연결된 권한을 정리하는 API.
 @router.delete(
     "/{organization_id}/members/{user_id}",
     response_model=OrganizationMemberRemoveResponse,
