@@ -881,17 +881,15 @@ export default function LandingPage() {
           </div>
 
           <h1 className="text-5xl md:text-7xl font-bold tracking-tight text-slate-900 mb-6 animate-in fade-in slide-in-from-bottom-8 duration-700">
-            Modular AI System <br className="hidden md:block" />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
-              magic.
+            Nodease Enterprise <br className="hidden md:block" />
+            <span className="text-4xl md:text-6xl text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+              AI Workflow Platform
             </span>
           </h1>
 
           <p className="text-lg md:text-xl text-slate-500 max-w-2xl mx-auto mb-10 leading-relaxed animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
-            Moduly는 직관적인 노드와 유연한 모듈 시스템으로 강력한 LLM
-            오케스트레이션을 <br />
-            실현합니다. 코딩 없이 복잡한 AI 프로세스를 설계하고 비즈니스를
-            혁신하세요.
+            Nodease는 사내 데이터, LLM, 업무 도구를 노드 기반 워크플로우로 연결합니다. <br/>
+권한 기반 RAG와 LLMOps 기능을 통해 <br/>기업이 AI를 더 안전하고, 빠르고, 안정적으로 운영할 수 있도록 돕습니다.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-200">
