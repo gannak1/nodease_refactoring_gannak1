@@ -191,7 +191,7 @@ Backend unit/service:
 Backend API:
 
 - `/answer`와 `/answer/stream`의 권한/policy 결과 일치
-- 같은 scope 안 blocked 403 응답은 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 safe error metadata로 반환
+- 같은 scope 안 blocked 403 응답은 목표 error envelope의 `error.details`에 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 safe metadata로 반환
 - SSE event 순서와 terminal event
 - SSE event 이름과 `rag.answer.*` audit action 비혼동
 - raw chunk content, raw prompt/completion, credential 원문 미저장

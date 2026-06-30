@@ -1614,7 +1614,7 @@ RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API k
 
 - 사용자 질문에서 retrieval, generation, final answer까지 이어지는 RAG answer 실행 단위
 - redaction-safe retrieval summary와 citation summary 저장
-- redaction-safe answer summary/hash 저장. Raw final answer 또는 provider raw completion은 기본 저장하지 않는다.
+- redaction-safe answer summary와 top-level answer hash 저장. Raw final answer 또는 provider raw completion은 기본 저장하지 않는다.
 - policy result, answer status, latency/token/cost snapshot 저장
 - trace/usage/audit와 느슨하게 연결하기 위한 `correlation_id` 보관
 
@@ -1672,7 +1672,8 @@ MVP 목표 상태 결정:
 - Standalone answer의 retrieval evidence는 `rag_answer_runs.retrieval_summary`와 `citation_summary`에 redaction-safe summary로 저장한다.
 - `retrieval_summary` field allowlist는 `knowledge_base_id`, `hierarchy_mode`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `latency_ms`, `raw_content_returned`로 제한한다. `raw_content_returned`의 durable 저장값은 기본 `false`여야 한다.
 - `citation_summary` field allowlist는 citation별 `citation_id`, `document_id`, `chunk_id`, `rank`, `score`, `filename`, `heading`, `hierarchy_path`, `metadata_summary`로 제한한다. `metadata_summary`는 classification, tags, source_type, effective range 같은 safe metadata만 포함하고 chunk content를 포함하지 않는다.
-- `answer_summary` field allowlist는 `answer_hash`, `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `redacted_summary`를 저장할 때도 raw final answer 재구성이 가능할 정도의 긴 본문은 저장하지 않는다.
+- `answer_hash`는 `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다.
+- `answer_summary` field allowlist는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `redacted_summary`를 저장할 때도 raw final answer 재구성이 가능할 정도의 긴 본문은 저장하지 않는다.
 - `usage_summary`는 answer 실행 시점에 캡처한 denormalized snapshot이다. Canonical LLM token/cost/latency 원천은 `llm_usage_logs`이며, usage 도메인에 generic `correlation_id` 또는 metadata extension이 추가되기 전까지 `usage_summary`와 `llm_usage_logs` 사이의 강한 FK 정합성을 보장하지 않는다.
 - Durable/internal `usage_summary` field allowlist는 `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `model_id`, `model_name`, `provider`, `credential_id` 같은 집계/식별자 값으로 제한한다. Credential 원문, API key, token, encrypted_config, raw prompt/completion, provider raw response는 저장하지 않는다.
 - User-facing response의 `usage_summary`는 API별 whitelist를 따르며 일반 사용자 응답에는 `credential_id`와 internal `model_id`를 기본 노출하지 않는다.

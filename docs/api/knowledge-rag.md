@@ -91,13 +91,13 @@ Model/credential resolution은 다음 순서를 따른다.
 
 `answer_run_id`는 RAG 도메인의 `rag_answer_runs.id`다. Trace/usage table에 `rag_answer_run_id` FK를 추가하지 않는다. Workflow runtime에서 발생한 RAG retrieval evidence는 계속 `trace_payloads.payload_kind='rag.retrieval'`로 저장하지만, standalone Agent answer의 retrieval/citation evidence는 `rag_answer_runs`의 redaction-safe summary와 citation summary로 저장한다. Trace/usage/audit와의 느슨한 연결은 `correlation_id`로 한다.
 
-`answer`는 API/stream response로 반환되는 final answer다. 기본 durable storage는 raw final answer나 provider raw completion을 저장하지 않고, `rag_answer_runs`의 redaction-safe answer summary/hash, retrieval summary, citation summary, policy result, usage snapshot에 한정한다. 나중에 answer history/replay가 제품 요구사항이 되면 raw provider response가 아니라 별도 redacted answer snapshot과 retention/access policy를 공식 문서와 ADR로 먼저 확정한다.
+`answer`는 API/stream response로 반환되는 final answer다. 기본 durable storage는 raw final answer나 provider raw completion을 저장하지 않고, `rag_answer_runs`의 redaction-safe answer summary, top-level `answer_hash`, retrieval summary, citation summary, policy result, usage snapshot에 한정한다. 나중에 answer history/replay가 제품 요구사항이 되면 raw provider response가 아니라 별도 redacted answer snapshot과 retention/access policy를 공식 문서와 ADR로 먼저 확정한다.
 
 `retrieval_summary` durable field allowlist는 `knowledge_base_id`, `hierarchy_mode`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `latency_ms`, `raw_content_returned`로 제한한다. `raw_content_returned`는 기본 `false`여야 한다.
 
 `citation_summary` durable field allowlist는 citation별 `citation_id`, `document_id`, `chunk_id`, `rank`, `score`, `filename`, `heading`, `hierarchy_path`, `metadata_summary`로 제한한다. `metadata_summary`에는 classification, tags, source_type, effective range 같은 safe metadata만 포함하고 chunk content를 포함하지 않는다. API response의 `citations`가 제한 preview를 제공하더라도, durable `citation_summary`에는 raw chunk content나 긴 preview를 저장하지 않는다.
 
-`answer_summary` durable field allowlist는 `answer_hash`, `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `redacted_summary`는 raw final answer 재구성이 가능할 정도로 긴 본문을 저장하지 않는다.
+`answer_hash`는 `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary` durable field allowlist는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다. `redacted_summary`는 raw final answer 재구성이 가능할 정도로 긴 본문을 저장하지 않는다.
 
 Durable/internal `usage_summary`는 answer 실행 시점에 캡처한 denormalized token/cost/latency snapshot이다. Canonical LLM usage 원천은 계속 `llm_usage_logs`이며, usage 도메인에 generic `correlation_id` 또는 metadata extension이 추가되기 전까지 `usage_summary`와 `llm_usage_logs`가 강한 FK 정합성을 가진다고 보지 않는다. Durable/internal 허용 field는 `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `model_id`, `model_name`, `provider`, `credential_id` 같은 집계/식별자 값으로 제한한다. Credential 원문, API key, token, encrypted_config, raw prompt/completion, provider raw response는 `usage_summary`에 넣지 않는다.
 
@@ -121,7 +121,25 @@ SSE event 이름은 audit action이 아니다. 예를 들어 SSE `answer.complet
 
 RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 `policy.block` audit으로 표현한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 `blocked` status를 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
 
-Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scope 안 permission 또는 policy preflight가 차단되면 HTTP status는 `403`이고 응답의 safe error metadata에는 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 포함한다. 이 metadata는 운영 추적과 UI 상태 표시용이며 권한 판정이나 resource lookup key로 사용하지 않는다. Stream 시작 후 차단되면 terminal `error` event에 같은 safe field를 포함한다. Answer run을 만들지 않는 `resource.not_found`, scope 밖, organization mismatch, invalid header/validation, `409 credential_selection_required` 응답에는 `answer_run_id`를 포함하지 않는다.
+Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scope 안 permission 또는 policy preflight가 차단되면 HTTP status는 `403`이고 목표 error envelope의 `error.details`에 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 포함한다.
+
+```json
+{
+  "error": {
+    "code": "permission.denied",
+    "message": "요청한 작업을 수행할 권한이 없습니다.",
+    "request_id": "req_xxx",
+    "details": {
+      "answer_run_id": "uuid",
+      "correlation_id": "corr_xxx",
+      "status": "blocked",
+      "reason_code": "kb_use_denied"
+    }
+  }
+}
+```
+
+이 details metadata는 운영 추적과 UI 상태 표시용이며 권한 판정이나 resource lookup key로 사용하지 않는다. Stream 시작 후 차단되면 terminal `error` event에 같은 safe field를 포함한다. Answer run을 만들지 않는 `resource.not_found`, scope 밖, organization mismatch, invalid header/validation, `409 credential_selection_required` 응답에는 `answer_run_id`를 포함하지 않는다.
 
 RAG 확장 3단계의 API 범위는 answer 생성과 streaming이다. `rag_answer_runs` list/detail/delete/purge API는 3단계 기본 범위에 포함하지 않으며, 필요하면 조회 권한, retention, 삭제 정책을 별도 API 계약으로 확정한다.
 
