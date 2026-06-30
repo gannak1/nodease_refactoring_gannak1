@@ -58,6 +58,17 @@ export type ModuleOperationRow = {
 
 export type ModulePermissionStatus = 'loaded' | 'failed' | 'not_available';
 
+export type ModuleOperationCapabilityFilter = 'execute' | 'write' | 'manage';
+
+export type ModuleOperationsListParams = {
+  q?: string;
+  capability?: ModuleOperationCapabilityFilter;
+  deployment_state?: ModuleOperationDeployment['state'];
+  run_state?: ModuleRunState;
+  limit?: number;
+  offset?: number;
+};
+
 type OperationsApiRow = {
   app: ModuleOperationAppSummary;
   permission?: WorkflowPermissionResponse;
@@ -94,16 +105,18 @@ const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow =>
     deploymentState: deployment.state,
     latestRun,
     dataQuality: {
-      permissionSourcesUnavailable: permissionSources.length === 0,
+      permissionSourcesUnavailable: false,
       latestRunUnavailable: latestRun.state === 'unavailable',
     },
   };
 };
 
 export const moduleOperationsApi = {
-  listModuleOperations: async (): Promise<ModuleOperationRow[]> => {
+  listModuleOperations: async (
+    params: ModuleOperationsListParams = {},
+  ): Promise<ModuleOperationRow[]> => {
     const response = await apiClient.get<OperationsApiRow[]>('/apps/operations', {
-      params: { limit: 100, offset: 0 },
+      params,
     });
     return response.data.map(normalizeOperationsApiRow);
   },
