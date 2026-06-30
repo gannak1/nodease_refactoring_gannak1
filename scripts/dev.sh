@@ -119,7 +119,7 @@ echo -e "${GREEN}📝 Log-System Celery Worker 시작...${NC}"
         VENV_PYTHON="apps/log_system/.venv/bin/python"
     fi
     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.log_system.main worker -Q log -l info -P solo
+    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.log_system.main worker -n log@%h -Q log -l info -P solo
 ) &
 LOG_CELERY_PID=$!
 
@@ -135,7 +135,7 @@ echo -e "${GREEN}⚙️ Workflow-Engine Celery Worker 시작...${NC}"
         VENV_PYTHON="apps/workflow_engine/.venv/bin/python"
     fi
     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.workflow_engine.main worker -Q workflow -l info -P solo
+    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.workflow_engine.main worker -n workflow@%h -Q workflow -l info -P solo --concurrency=1 --without-gossip --without-mingle --without-heartbeat
 ) &
 WORKFLOW_CELERY_PID=$!
 
