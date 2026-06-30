@@ -81,7 +81,7 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 
 현재 KB 생성과 upload 기반 신규 KB 생성은 `get_user_primary_organization_id`로 첫 active organization membership의 organization을 저장한다. 명시적인 `X-Organization-Id` header를 받는 active organization 방식은 아직 Knowledge/RAG API에 적용되어 있지 않다.
 
-MBA-75 목표 계약에서 Knowledge/RAG 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교한다. `X-Organization-Id`를 도입하는 경우 header organization이 KB organization과 다르거나 user scope 밖이면 `404 resource.not_found`로 숨긴다. Header 도입 전 legacy 경로는 primary organization fallback 범위를 이 문서에 명시하고, active organization membership만으로 KB `read`/`use`를 허용하지 않는다. 실제 허용은 organization manager override와 KB effective permission으로 판정한다.
+MBA-75/MVP 2 목표 계약에서 Knowledge/RAG org-scoped API는 `X-Organization-Id` header를 사용한다. Header가 없으면 `400 organization.required`, header organization이 KB `organization_id`와 다르거나 요청 user scope 밖이면 `404 resource.not_found`로 숨긴다. Header 도입 전 primary organization fallback은 current behavior 호환 경로일 뿐 장기 계약이 아니다. Active organization membership만으로 KB `read`/`use`를 허용하지 않으며, 실제 허용은 organization manager override와 KB effective permission으로 판정한다.
 
 현재 RAG endpoint의 owner 검증은 일관적이지 않다. `DELETE /rag/document/{document_id}`는 `KnowledgeBase.user_id == current_user.id`를 확인하지만, `analyze`, `confirm`, `progress`, 기존 KB upload 경로는 document/KB id 중심으로 동작한다. 이 차이는 MVP 2의 KB permission enforcement에서 정렬해야 한다.
 
@@ -100,7 +100,27 @@ Proposed request extension:
 | `effective_at` | datetime | `effective_from <= effective_at < effective_to` time window filter |
 | `hierarchy_mode` | `auto/flat/parent_child` | 기존 KB는 `auto`에서 flat fallback 가능 |
 
-`metadata_filter`와 top-level convenience field가 함께 오면 precedence를 API schema에서 명시해야 한다. 기본 정책은 동일 key 중복을 validation error로 거부하는 것이다.
+`metadata_filter`와 top-level convenience field가 함께 오면 동일 key 중복을 validation error로 거부한다.
+
+중복 validation:
+
+| Top-level field | Canonical metadata key | 중복 조건 |
+| --- | --- | --- |
+| `classification_filter` | `metadata_filter.classification` | 둘 다 있으면 validation error |
+| `tags` | `metadata_filter.tags` | 둘 다 있으면 validation error |
+| `source_type` | `metadata_filter.source_type` | 둘 다 있으면 validation error |
+| `effective_at` | `metadata_filter.effective_at` | 둘 다 있으면 validation error |
+
+`hierarchy_mode`는 metadata key가 아니라 retrieval mode다. `metadata_filter.hierarchy_mode`는 허용하지 않는다.
+
+`TagFilter` validation:
+
+- `mode`는 `contains_any` 또는 `contains_all`만 허용한다.
+- `values`는 비어 있으면 validation error로 거부한다.
+- tag 값은 trim 후 빈 문자열이면 거부하고, 비교 정규화는 소문자 기준으로 한다.
+- 중복 tag는 정규화 후 하나로 합산한다.
+- 구현 기본값은 최대 20개 tag, tag 하나당 최대 64자다.
+- top-level `tags`와 `metadata_filter.tags`가 함께 오면 중복 조건으로 보고 validation error로 거부한다.
 
 Proposed response extension:
 
@@ -115,7 +135,7 @@ Search-test response는 retrieval과 content preview를 수행하므로 KB `use`
 
 ## MBA-75 Trace/Citation Contract
 
-RAG retrieval 전용 table은 만들지 않는다. Retrieval summary는 `trace_payloads` 또는 run/node trace metadata에 application-level convention으로 저장한다. 성공적인 retrieval의 audit event는 `audit_logs.action='rag.retrieve'`로 기록하고, 아래 `payload_kind='rag.retrieval'`은 trace payload 분류값으로만 사용한다.
+RAG retrieval 전용 table은 만들지 않는다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary allowlist만 저장한다. 성공적인 retrieval의 audit event는 `audit_logs.action='rag.retrieve'`로 기록하고, 아래 `payload_kind='rag.retrieval'`은 trace payload 분류값으로만 사용한다.
 
 권장 payload:
 
@@ -146,6 +166,10 @@ RAG retrieval 전용 table은 만들지 않는다. Retrieval summary는 `trace_p
 }
 ```
 
+Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열, raw chunk content, prompt/completion, provider raw response는 run/node metadata에 복사하지 않는다.
+
+현재 코드의 `TraceMetadataSanitizer`는 run/node RAG metadata에서 `retrieval_results`의 `document_id`, `filename`, `knowledge_base_id`, `page_number`, `similarity_score`와 `retrieved_context_payload_id`만 허용한다. MBA-75 구현에서 위 목표 allowlist를 사용하려면 sanitizer fixture와 테스트를 함께 갱신한다.
+
 Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다.
 
 ## MVP 2 변경 기준
@@ -156,6 +180,6 @@ Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API
 - `user_knowledge_permissions`는 현재 코드에 없으며 MVP 2에서 추가할 목표 table이다.
 - document별 permission table은 만들지 않는다.
 - document classification과 re-index flag는 `documents.meta_info` metadata convention으로 저장한다.
-- RAG retrieval trace는 `rag_retrieval_traces` 신규 table이 아니라 trace payload/run metadata로 저장한다.
+- RAG retrieval trace는 `rag_retrieval_traces` 신규 table이 아니라 trace payload/run metadata로 저장한다. Per-chunk evidence는 `trace_payloads`, run/node metadata는 summary allowlist로 분리한다.
 - Metadata filter는 allowlist 기반 schema로만 받는다. Metadata는 permission source of truth가 아니다.
 - Hierarchical RAG는 nullable parent/child chunk schema와 flat fallback으로 도입한다.

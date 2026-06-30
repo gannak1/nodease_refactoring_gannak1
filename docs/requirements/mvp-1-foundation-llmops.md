@@ -247,7 +247,7 @@ audit_logs
 | `credential.create` | LLM credential 생성 | MVP 1 |
 | `credential.delete` | LLM credential 삭제 | MVP 1 |
 
-MVP 2/3 목표 action인 `policy.warn`, `policy.block`, `deployment.check`, `recommendation.*`는 현재 코드의 `AuditAction` 상수에는 아직 없다. 구현 시 action 상수와 문서를 함께 추가한다.
+MVP 2/3 목표 action인 `policy.warn`, `policy.block`, `rag.retrieve`, `deployment.check`, `recommendation.*`는 현재 코드의 `AuditAction` 상수에는 아직 없다. 구현 시 action 상수와 문서를 함께 추가한다.
 
 현재 `AuditAction`에는 `permission.grant`, `permission.revoke` 상수가 있지만, 등록된 `/api/v1/permissions/*` router는 권한 부여/수정/회수를 위 permission row별 data-change action으로 기록한다.
 

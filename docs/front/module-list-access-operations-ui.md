@@ -434,7 +434,7 @@ GET /api/v1/apps/operations
 
 ## QA 체크리스트
 
-- [ ] localStorage에 active organization이 없어도 `/dashboard/mymodule` 직접 진입 시 current organization 조회/선택/redirect를 먼저 수행하고, `X-Organization-Id`가 준비된 뒤 org-scoped API를 호출한다.
+- [ ] localStorage에 active organization이 없어도 `/dashboard/mymodule` 직접 진입 시 organization 목록 조회 또는 선택 화면 redirect로 후보를 정한 뒤, `X-Organization-Id`가 준비되면 `/organizations/current`와 org-scoped API를 호출한다.
 - [ ] manager는 모듈 목록에서 소유자 이름, 배포 상태, 권한 badge를 볼 수 있다.
 - [ ] member는 접근 가능한 모듈만 볼 수 있다.
 - [ ] `viewer`는 수정/실행/배포 action이 막힌다.
@@ -499,5 +499,5 @@ UI/UX 기준:
 검증:
 - `npx eslint app/dashboard/mymodule/page.tsx app/features/app/api/appApi.ts`
 - `npm run build`
-- localStorage에서 `moduly_active_organization_id`를 지운 뒤 `/dashboard/mymodule`에 직접 진입하면 current organization 조회/선택/redirect 후 `X-Organization-Id`가 준비된 상태에서 모듈 API를 호출해야 함. Header 없이 org-scoped API가 성공해야 한다는 의미가 아님.
+- localStorage에서 `moduly_active_organization_id`를 지운 뒤 `/dashboard/mymodule`에 직접 진입하면 organization 목록 조회 또는 선택 화면 redirect로 후보를 정한 뒤, `X-Organization-Id`가 준비된 상태에서 `/organizations/current`와 모듈 API를 호출해야 함. Header 없이 `/organizations/current`나 org-scoped API가 성공해야 한다는 의미가 아님.
 ```

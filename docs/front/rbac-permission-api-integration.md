@@ -60,7 +60,7 @@ active organization은 서버 session에 저장하지 않는다. 프론트가 �
 | API | 사용 시점 | 성공 시 state |
 | --- | --- | --- |
 | `GET /api/v1/organizations` | Settings 또는 app 초기화 | 접근 가능한 organization 목록 |
-| `GET /api/v1/organizations/current` | active organization 검증 | 현재 organization |
+| `GET /api/v1/organizations/current` | `X-Organization-Id` 준비 후 active organization 검증 | 현재 organization |
 | `GET /api/v1/organizations/{organization_id}` | 상세 필요 시 | organization detail |
 
 ### Team / Member

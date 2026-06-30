@@ -27,7 +27,7 @@ Created At: 2026-06-27 15:59 KST
 - `rag_retrieval_traces`를 만들지 않는다.
 - canonical action은 `audit_logs.action`에 저장한다.
 - 정책 결과와 풍부한 context는 `audit_logs.audit_metadata`에 저장한다.
-- RAG retrieval trace metadata는 `trace_payloads` 또는 run/node trace metadata에 저장한다.
+- RAG retrieval의 per-chunk evidence는 `trace_payloads.payload_kind='rag.retrieval'`에 저장하고, run/node trace metadata에는 retrieved chunk count, document/citation id, score summary, fallback flag 같은 redaction-safe summary만 저장한다.
 
 ## 근거
 
@@ -42,6 +42,6 @@ Created At: 2026-06-27 15:59 KST
 
 ## 후속 검토
 
-- RAG retrieval summary metadata schema를 확정한다.
-- raw chunk text가 metadata에 복사되지 않도록 검증한다.
+- RAG retrieval summary metadata allowlist를 구현 fixture로 고정한다.
+- raw chunk text와 `retrieved_chunks` 배열이 run/node metadata에 복사되지 않도록 검증한다.
 - audit action과 trace payload access 기록 테스트를 추가한다.

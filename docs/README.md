@@ -32,7 +32,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 활성 문서
 
-`Source of Truth: Yes`인 active 문서는 아래와 같다. 세부 충돌은 [foundation/document-authority.md](foundation/document-authority.md)의 권위 순서를 따른다.
+주요 source-of-truth 문서는 아래와 같다. 세부 충돌은 [foundation/document-authority.md](foundation/document-authority.md)의 권위 순서를 따른다.
 
 | 영역 | Active source-of-truth 문서 |
 | --- | --- |

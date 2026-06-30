@@ -43,7 +43,7 @@ MBA-75 목표 범위:
 - `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다.
 - RAG search-test와 Workflow Engine runtime retrieval은 같은 filter/policy semantics를 사용한다.
 - RAG search-test `chat`/`pure`는 retrieval과 content preview를 수행하므로 KB `use` 권한을 요구한다. 단순 KB/detail/document metadata 조회는 `read` 권한 기준이다.
-- KB 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 현재 Knowledge/RAG API는 `X-Organization-Id` header 미적용 상태이므로 header 도입 여부와 primary organization fallback 범위를 API 문서에 먼저 확정한다.
+- KB 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. MVP 2 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. 현재 Knowledge/RAG API의 primary organization fallback과 owner/current-user scope는 과도기 구현으로만 본다.
 - parent chunk는 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
 - 기존 flat KB는 parent/child metadata가 없으면 flat retrieval로 fallback한다.
 
@@ -107,11 +107,13 @@ MBA-75 기본 정책은 external LLM prompt path에서는 `pii`를 `policy.block
 
 ## RAG Retrieval Trace Metadata
 
-MVP 2에서 필요한 RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 `trace_payloads` 또는 run/node trace metadata에 저장한다.
+MVP 2에서 필요한 RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 기존 trace 계열 table에 저장한다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary만 저장한다.
 
 ```text
-trace_payloads / trace metadata
+trace_payloads.redacted_payload / redaction_metadata
+  payload_kind = "rag.retrieval"
   workflow_run_id
+  workflow_node_run_id
   node_id
   knowledge_base_id
   retrieved_chunks[]
@@ -122,6 +124,15 @@ trace_payloads / trace metadata
     score
     token_count
     metadata_summary
+
+workflow_runs.trace_metadata / workflow_node_runs.trace_metadata
+  knowledge_base_id
+  retrieved_chunk_count
+  document_ids[]
+  citation_ids[]
+  score_summary
+  hierarchy_fallback
+  raw_content_returned
 ```
 
 이 trace는 "어떤 청크가 모델에 들어갔는가"를 설명하는 핵심 근거다. RAG 없는 LLM node는 기존처럼 동작해야 한다.
@@ -158,7 +169,8 @@ UI와 API는 최소한 아래 필터를 제공한다.
 
 MVP 2에서 검색해야 하는 대표 이벤트:
 
-- permission row data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`, 목표 `team_knowledge_permission.*`, `user_knowledge_permission.*`
+- 현재 ORM data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`, `team_knowledge_permission.*`
+- MVP 2 knowledge base permission API/enforcement 및 user direct grant 목표 action: `user_knowledge_permission.*`. `team_knowledge_permission.*`는 현재 table/listener 기준으로 이미 가능한 action이지만, KB permission API와 runtime enforcement 연결은 MVP 2 구현 범위다.
 - `permission.denied`
 - `policy.warn`
 - `policy.block`
@@ -252,8 +264,9 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 작업:
 
 - retrieval 결과에서 document id, chunk id, score, rank 추출
-- `trace_payloads` 또는 run/node trace metadata에 저장
-- workflow run/node id와 metadata 연결
+- per-chunk evidence는 `trace_payloads.payload_kind='rag.retrieval'`에 저장
+- run/node trace metadata에는 retrieved chunk count, document/citation id, score summary, fallback flag 같은 summary만 저장
+- workflow run/node id와 trace payload 연결
 - run detail API에 trace 포함
 
 검증:

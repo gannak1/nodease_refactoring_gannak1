@@ -319,8 +319,8 @@ MVP 목표 상태 결정:
 역할:
 
 - 사용자를 팀에 소속시킨다.
-- 현재 코드에서는 권한 판정의 subject membership 원천이자 organization 소속의 간접 원천이다.
-- MVP 2-0 이후에는 organization 소속 원천이 아니라 organization 안의 team 배정 정보로 유지한다.
+- 현재 코드 기준 team permission 계산의 team 배정 원천이다.
+- 과거/legacy backfill에서는 organization 소속을 유도하는 입력으로 사용됐지만, 현재 organization 소속과 manager/member 판정의 기준은 `organization_memberships`다.
 
 주요 column:
 
@@ -1006,7 +1006,8 @@ MVP 목표 상태 결정:
 
 MVP 목표 상태 결정:
 
-- trace 조회 권한은 team permission과 이 visibility policy를 함께 판정한다.
+- 현재 trace 상세/payload 접근은 system admin, app owner, workflow effective RBAC와 이 visibility policy를 함께 판정한다.
+- 목표 organization-wide audit search/view_raw는 audit permission model과 visibility policy를 통합한다.
 
 ### `trace_payloads`
 
@@ -1128,11 +1129,13 @@ MVP 목표 상태 결정:
 | user workflow 권한 생성/수정/삭제 | `user_workflow_permission.created`, `user_workflow_permission.updated`, `user_workflow_permission.deleted` |
 | team LLM credential 권한 생성/수정/삭제 | `team_llm_permission.created`, `team_llm_permission.updated`, `team_llm_permission.deleted` |
 | user LLM credential 권한 생성/수정/삭제 | `user_llm_permission.created`, `user_llm_permission.updated`, `user_llm_permission.deleted` |
-| KB permission API/enforcement 구현 시 고정할 team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
-| KB permission API/enforcement 구현 시 고정할 user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
+| 현재 ORM data-change listener가 기록할 수 있는 team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
+| MVP 2 user knowledge permission table/API 구현 시 고정할 user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
 | 권한 부족 거부 | `permission.denied` |
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |
+| LLM 호출 | `llm.call` |
+| 목표: RAG retrieval 성공 | `rag.retrieve` |
 | 배포 생성 | `workflow.deploy` |
 | 배포 일반 toggle | `deployment.toggle` |
 | 이전 배포 활성화 | `deployment.activate_previous` |
@@ -1299,6 +1302,8 @@ MVP 목표 상태 결정:
 - connection `secret/manage` 권한은 `connections.user_id` owner 또는 organization owner/manager로 제한한다.
 - `connections` 자체에는 `organization_id`가 없으므로, 직접 connection CRUD API는 `connections.user_id` owner를 기본 기준으로 삼는다. organization owner/manager 판정은 connection이 active organization의 workflow/knowledge base에 연결되어 scope가 식별되는 경우에 적용한다.
 - connection `use` 권한은 connection을 직접 기준으로 판정하지 않고, connection을 소비하는 workflow 또는 knowledge base 권한으로 판정한다.
+- 연결된 workflow/knowledge base가 없거나 active organization scope를 단일하게 식별할 수 없으면 organization owner/manager override를 적용하지 않고 deny한다.
+- 하나의 connection이 서로 다른 organization의 resource와 충돌하는 방식으로 연결되면 implicit sharing으로 해석하지 않고 deny한다. Cross-organization sharing이 필요하면 별도 schema/permission extension 승인이 필요하다.
 - workflow/knowledge base 실행 중 connection credential은 사용자에게 노출하지 않고 server-side runtime에서만 사용한다.
 - 연결된 외부 DB 내부의 table/row 권한은 Nodease RBAC에서 대신 관리하지 않는다. 외부 DB credential 자체의 권한 범위가 최종 DB 접근 범위를 제한한다.
 - connection을 workflow/knowledge base와 독립적으로 team/user에게 공유해야 하는 요구가 생기면 별도 schema extension 승인이 필요하다.
@@ -1541,7 +1546,7 @@ RAG retrieval 전용 table은 만들지 않는다.
 - payload 접근 감사: `trace_payload_access_events`
 - 문서/청크 원천: `documents`, `document_chunks`
 
-`trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 다음 정보를 application-level convention으로 저장할 수 있다.
+`trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 per-chunk evidence로 다음 정보를 application-level convention으로 저장할 수 있다.
 
 - `payload_kind = "rag.retrieval"`
 - `knowledge_base_id`
@@ -1556,6 +1561,8 @@ RAG retrieval 전용 table은 만들지 않는다.
 `audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이다. `payload_kind='rag.retrieval'`은 trace payload 분류값이며 audit action을 대체하지 않는다.
 
 이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 현재 물리 데이터 모델 보존 조건 밖의 별도 설계가 필요하다.
+
+Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다. 현재 코드의 tracing metadata sanitizer는 legacy RAG summary field만 허용하므로, MBA-75 목표 allowlist를 사용하려면 sanitizer와 테스트 fixture를 함께 갱신한다.
 
 RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 기본 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
 

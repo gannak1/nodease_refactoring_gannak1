@@ -49,11 +49,19 @@ Trace policy 및 retention purge API의 `system admin` 판정은 `TraceRbacServi
 
 현재 코드는 run/node 기준 LLM usage 조회를 별도 endpoint로 제공한다. 기존 run detail 응답에 LLM usage 요약을 포함하는 방식은 채택하지 않았다.
 
-| Status | Method | Path | 설명 |
-| --- | --- | --- | --- |
-| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 별도 LLM trace endpoint. `node_id`, `limit`, `offset` query를 지원 |
+| Status | Method | Path | Permission | 설명 |
+| --- | --- | --- | --- | --- |
+| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | workflow `read` | 별도 LLM trace endpoint. `node_id`, `limit`, `offset` query를 지원 |
+
+`run_id`는 URL의 `workflow_id`에 속한 workflow run이어야 한다. 해당 workflow에 속하지 않는 run id이거나 존재하지 않는 run id이면 LLM trace를 반환하지 않는다.
 
 중복 API를 만들지 않는다.
+
+LLM trace 응답 whitelist:
+
+- 허용: `id`, `workflow_id`, `workflow_run_id`, `node_id`, `model_id`, `model_name`, `provider`, `credential_id`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `status`, `created_at`
+- 금지: credential value, `encrypted_config` 값/content, API key, 인증 token, raw prompt, raw completion, provider raw response
+- `credential_id`는 secret이 아니라 어떤 등록 credential을 사용했는지 추적하기 위한 식별자다. 해당 id로 credential 원문을 조회하는 API는 별도 권한으로 보호해야 한다.
 
 ## Raw Payload 규칙
 

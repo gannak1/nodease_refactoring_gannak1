@@ -27,7 +27,7 @@ Gateway health 응답은 DB `SELECT 1`까지 확인한다.
 }
 ```
 
-DB 연결 실패 시 HTTP status는 `503`이고 `database` 값에 오류 메시지를 포함한다.
+현재 코드 기준 DB 연결 실패 시 HTTP status는 `503`이고 `database` 값에 내부 예외 문자열이 포함될 수 있다. 이는 current behavior 기록이며, 운영 목표 계약은 sanitized status/error code와 request/correlation id만 반환하고 내부 DB 오류 세부 내용은 server log/observability에만 남기는 것이다.
 
 Nginx 컨테이너의 `/health`는 Gateway health가 아니라 단순 reverse proxy health endpoint다. 현재 `docker/nginx/nginx.conf`는 `/health`에 대해 plain text `OK`를 즉시 반환한다.
 
@@ -36,15 +36,17 @@ Nginx 컨테이너의 `/health`는 Gateway health가 아니라 단순 reverse pr
 | Status | Method | Path | Request | Response | Permission |
 | --- | --- | --- | --- | --- | --- |
 | Implemented | `POST` | `/api/v1/connectors/test` | `DBConnectionTestRequest` | `DBConnectionTestResponse` | unauthenticated connection test helper |
-| Implemented | `POST` | `/api/v1/connectors` | `DBConnectionTestRequest` | save result | authenticated; connection owner becomes current user |
+| Implemented | `POST` | `/api/v1/connectors` | `DBConnectionTestRequest` | `{ "id": string, "success": boolean, "message": string }` | authenticated; connection owner becomes current user |
 | Implemented | `GET` | `/api/v1/connectors/{connection_id}` | 없음 | `DBConnectionDetailResponse` | connection owner |
-| Implemented | `GET` | `/api/v1/connectors/{connection_id}/schema` | 없음 | schema payload | connection owner |
+| Implemented | `GET` | `/api/v1/connectors/{connection_id}/schema` | 없음 | `{ "tables": [...] }` schema payload | connection owner |
 
 Connector response는 DB/SSH password, private key 같은 secret 원문을 반환하지 않는다. 현재 connector owner 기준 API는 MVP 2 connection policy 정렬 전의 current-user owner scope다.
 
-현재 지원 DB 타입은 `postgres`뿐이다. `POST /api/v1/connectors/test`는 인증 dependency가 없고, `POST /api/v1/connectors`는 저장 전 연결 테스트를 다시 수행한 뒤 DB/SSH secret을 암호화해서 저장한다.
+현재 지원 DB 타입은 `postgres`뿐이다. `POST /api/v1/connectors/test`는 인증 dependency가 없고 외부 DB/SSH host로 연결을 시도한다. 실패 응답은 현재 내부 예외 문자열을 포함할 수 있으므로, 운영 노출 전에는 인증 또는 내부망 제한, rate limit, 명시 timeout, egress allowlist, private/link-local/metadata network 차단, sanitized error response, secret value를 제외한 audit/structured logging을 적용해야 한다.
 
-`GET /api/v1/connectors/{connection_id}/schema`는 owner 확인 후 서버 내부에서 secret을 복호화해 DB에 접속한다. secret은 API 응답에 포함하지 않는다.
+`POST /api/v1/connectors`는 저장 전 연결 테스트를 다시 수행한 뒤 DB/SSH secret을 암호화해서 저장한다. 현재 저장 전 연결 테스트에는 10초 timeout이 적용되어 있고, 실패 응답은 내부 예외 문자열을 포함할 수 있다. 운영 목표는 내부 예외 문자열 대신 sanitized error code를 반환하는 것이다.
+
+`GET /api/v1/connectors/{connection_id}/schema`는 owner 확인 후 서버 내부에서 secret을 복호화해 DB에 접속한다. secret은 API 응답에 포함하지 않는다. 다만 table/column/schema 이름은 기업 환경에서 민감 metadata일 수 있으므로 raw schema payload를 server log, cache, audit metadata에 그대로 남기지 않는다. 필요하면 table count, selected table id, schema hash 같은 요약 field만 기록한다.
 
 ## Wizard Helpers
 

@@ -126,7 +126,7 @@ MVP 2 본작업 전제인 [MVP 2-0 Organization Membership / Invitation Foundati
 5. `Admin`, `Builder`, `Operator`, `Viewer`, `Auditor`는 DB role이 아니라 team template 또는 UI preset으로 취급한다.
 6. audit은 신규 `audit_events`가 아니라 현재 코드의 `audit_logs`를 사용한다.
 7. canonical action은 `audit_logs.action`에 저장하고, 정책 결과는 `audit_logs.audit_metadata.policy_result`에 저장한다.
-8. RAG trace는 신규 `rag_retrieval_traces`가 아니라 `trace_payloads`와 metadata로 chunk id/run id를 연결한다.
+8. RAG trace는 신규 `rag_retrieval_traces`가 아니라 기존 trace 계열 table을 사용한다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`에 저장하고, run/node metadata에는 retrieved chunk count, document/citation id, score summary 같은 요약 field만 저장한다.
 9. 비용 추천과 quality score는 MVP 3까지 rule-based 또는 사용자 평가 중심으로 제한한다.
 10. 현재 Moduly에는 명시적 rollback API가 없다. 이전 배포 활성화는 `toggle` 기반 `deployment.activate_previous` 이벤트로 표현하고 별도 rollback permission은 두지 않는다.
 11. "컴플라이언스 준수"라고 과장하지 않고 "컴플라이언스 대응 가능한 audit/data governance 구조"라고 표현한다.

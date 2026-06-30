@@ -323,6 +323,8 @@ Active `organization_memberships` row는 KB가 속한 organization scope 안의 
 주의:
 
 - 목표 상태의 connection `use`는 connection owner에게만 제한하지 않는다. 그렇게 제한하면 owner가 아닌 team member가 DB 기반 workflow/knowledge base를 실행할 수 없다.
+- 연결된 workflow/knowledge base가 없거나 active organization scope를 단일하게 식별할 수 없으면 organization owner/manager override를 적용하지 않고 deny한다.
+- 하나의 connection이 서로 다른 organization의 resource와 충돌하는 방식으로 연결되면 implicit sharing으로 해석하지 않고 deny한다. Cross-organization sharing이 필요하면 별도 schema/permission extension으로 다룬다.
 - runtime은 encrypted credential을 server-side에서만 복호화해서 사용하고, client/API 응답에 secret을 반환하지 않는다.
 - 연결된 외부 DB 내부의 table/row 권한은 Nodease RBAC에서 대신 관리하지 않는다. 외부 DB credential 자체의 권한 범위가 최종 DB 접근 범위를 제한한다.
 - connection을 workflow/knowledge base와 독립적으로 team/user에게 공유해야 하는 요구가 생기면 `team_connection_permissions`/`user_connection_permissions`를 별도 schema extension으로 검토한다.
@@ -419,7 +421,7 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 ## Audit 기록 기준
 
-권한 관련 event는 `audit_logs`에 기록한다. 현재 등록된 `/api/v1/permissions/*` router는 grant/revoke를 permission row별 data-change action으로 기록한다. 아래 표에는 현재 구현된 권한 event와 MVP 2 policy enforcement에서 추가할 목표 event를 함께 둔다.
+권한/정책 관련 event는 `audit_logs`에 기록한다. 현재 등록된 `/api/v1/permissions/*` router는 grant/revoke를 permission row별 data-change action으로 기록한다. 아래 표는 permission row 변경, permission denial, policy enforcement 관련 audit event 기준이다. RAG retrieval 성공 같은 일반 실행 감사 action은 [physical-data-model.md](physical-data-model.md)와 [ADR-202606290131](../decisions/ADR-202606290131-audit-action-naming-standard.md)을 따른다.
 
 | Event | `audit_logs.action` | 기록 조건 |
 | --- | --- | --- |
@@ -431,10 +433,10 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | team LLM credential 권한 회수 | `team_llm_permission.deleted` | team LLM permission row 삭제 |
 | user LLM credential 권한 생성/수정 | `user_llm_permission.created` 또는 `user_llm_permission.updated` | user LLM permission row 생성/변경 |
 | user LLM credential 권한 회수 | `user_llm_permission.deleted` | user LLM permission row 삭제 |
-| KB permission API/enforcement 구현 시 고정할 team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | team knowledge permission row 생성/변경 |
-| KB permission API/enforcement 구현 시 고정할 team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | team knowledge permission row 삭제 |
-| KB permission API/enforcement 구현 시 고정할 user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | user knowledge permission row 생성/변경 |
-| KB permission API/enforcement 구현 시 고정할 user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | user knowledge permission row 삭제 |
+| team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | 현재 `team_knowledge_permissions` row 생성/변경. KB permission API/enforcement 연결은 MVP 2 범위 |
+| team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | 현재 `team_knowledge_permissions` row 삭제. KB permission API/enforcement 연결은 MVP 2 범위 |
+| user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 생성/변경 |
+| user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 삭제 |
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |

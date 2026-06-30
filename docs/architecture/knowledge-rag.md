@@ -100,7 +100,7 @@ Scope prerequisite와 resource permission source:
 
 Document별 permission table은 만들지 않는다. Document access/policy는 KB permission과 `documents.meta_info` 기반 metadata policy를 조합한다.
 
-MBA-75 permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 현재 Knowledge/RAG API는 아직 `X-Organization-Id` header 방식을 적용하지 않고 primary organization fallback을 사용하므로, header 도입 여부와 legacy fallback 범위는 [knowledge-rag API 문서](../api/knowledge-rag.md)에서 먼저 확정한 뒤 구현한다.
+MBA-75 permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. 현재 Knowledge/RAG API의 primary organization fallback은 과도기 구현이며, 구현은 [knowledge-rag API 문서](../api/knowledge-rag.md)의 header 기반 400/404 계약으로 수렴한다.
 
 ## Document Metadata Policy
 
@@ -185,7 +185,7 @@ Fallback:
 
 ## Trace and Citation
 
-신규 `rag_retrieval_traces` table은 만들지 않는다. RAG retrieval summary는 `trace_payloads` 또는 run/node trace metadata에 저장한다.
+신규 `rag_retrieval_traces` table은 만들지 않는다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary allowlist만 저장한다.
 
 권장 payload convention:
 
@@ -215,6 +215,10 @@ Fallback:
   "raw_content_returned": false
 }
 ```
+
+Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다.
+
+현재 `TraceMetadataSanitizer`의 RAG run/node metadata allowlist는 legacy summary field 중심이다. MBA-75 구현은 `trace_payloads`의 per-chunk evidence fixture와 run/node summary allowlist fixture를 분리해 갱신해야 한다.
 
 `audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이다. 두 값을 같은 계약으로 합치지 않는다.
 

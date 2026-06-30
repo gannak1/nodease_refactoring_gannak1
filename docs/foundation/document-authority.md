@@ -47,7 +47,9 @@ Related ADRs:
 
 ## 현재 기준
 
-현재 active 문서 정합성 기준은 workspace code `dev`의 `ec576b4f24155697aed8843acc6e5a3fc835f7e1`다. 코드와 active 문서가 충돌하면 코드를 기준으로 active 문서를 수정한다.
+현재 active 문서 정합성 기준은 workspace code `dev`의 `ec576b4f24155697aed8843acc6e5a3fc835f7e1`다. `현재 코드`, `current behavior`, `Implemented`로 표시한 문장은 실제 코드와 일치해야 한다.
+
+`목표`, `Planned`, `MVP 목표 계약`으로 표시한 요구사항, 아키텍처, 데이터 모델, API, ADR은 코드가 수렴해야 할 계약이다. 코드가 목표 계약과 다르면 목표 문서를 현재 코드로 낮추기보다 구현 보강 이슈, discrepancy report, 또는 단계별 migration 계획으로 추적한다.
 
 `front/*` 비권위 작업 문서 규칙은 초기 프론트 문서 구조 정리 작업에서 추가했다. 이 규칙은 `front/*`를 active source of truth로 승격하지 않고, 상위 기준 문서를 프론트 구현 단위로 번역하는 보조 문서 영역으로만 정의한다.
 

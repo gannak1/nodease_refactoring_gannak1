@@ -16,7 +16,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 진행 순서
 
-현재 진행 계획은 MVP 1 foundation을 완료한 뒤, MVP 2 Governance/RAG/Audit 본작업에 들어가기 전에 [MVP 2-0 Organization Membership / Invitation Foundation](mvp-2-0-organization-membership-invitation-foundation.md)을 선행한다.
+현재 진행 계획은 MVP 1 foundation 위에서 [MVP 2-0 Organization Membership / Invitation Foundation](mvp-2-0-organization-membership-invitation-foundation.md)의 완료된 foundation을 전제로 MVP 2 Governance/RAG/Audit 본작업을 진행하는 것이다.
 
 ```text
 MVP 1 Foundation / LLMOps Observability
