@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
+Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 범위
@@ -51,6 +51,7 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 | `similarity` | `0.7` |
 | `chunkSize` | `1000` |
 | `chunkOverlap` | `200` |
+| `chunkingMode` | `flat` |
 
 ### `DocumentPreviewRequest` / process 기본값
 
@@ -64,8 +65,11 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 | `strategy` | `general` |
 | `source_type` | `FILE` |
 | `selection_mode` | `all` |
+| `chunking_mode` | `flat` |
 
 이 값은 구현 기본값이다. 저장량, retrieval 품질, 재색인 비용에 큰 영향을 주는 정책으로 확정하면 별도 ADR 후보로 올린다.
+
+`chunkingMode`/`chunking_mode`는 저장 또는 preview 시 chunk 생성 방식을 선택한다. 허용값은 `flat`, `hierarchical`이다. `DocumentPreviewRequest` 계열 JSON 입력은 `chunkingMode` alias를 허용하되, service layer 이후 내부 표준 field name은 `chunking_mode`다. MBA-85 2단계 1차는 고급 튜닝 입력인 `parentChunkSize`, `childChunkSize`, `childChunkOverlap`, arbitrary depth 설정을 공개 API로 열지 않는다. Child chunk는 기존 `chunkSize`/`chunkOverlap` 또는 `chunk_size`/`chunk_overlap` 값을 재사용하고, parent routing chunk 기본 크기는 implementation decision log에 기록된 내부 기본값을 따른다.
 
 ## Source Type 처리
 
@@ -77,6 +81,16 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 | `API` | `apiUrl`, `apiMethod`, `apiHeaders`, `apiBody` | encrypted headers, parsed body | authenticated user |
 | `DB` | `connectionId` | connection id/type/name | 현재 코드 기준 `connections.user_id == current_user.id` |
 
+MBA-85 hierarchical ingestion 지원 범위:
+
+| Source Type | `chunkingMode=flat` | `chunkingMode=hierarchical` |
+| --- | --- | --- |
+| `FILE` | 지원 | 지원 |
+| `API` | 지원 | 지원 |
+| `DB` | 지원 | 미지원. `400 unsupported_chunking_mode_for_source` |
+
+DB source는 table, row, join result가 이미 구조화된 데이터이므로 FILE/API의 document section hierarchy와 같은 의미로 다루지 않는다. DB row를 parent로 보고 row 내부 child를 만드는 설계는 후속 이슈로 분리한다. Workflow Engine DB sync와 shared `VectorStoreService` 경로는 MBA-85에서 flat-only로 유지하며, DB source의 저장 mode가 `hierarchical`이면 flat으로 조용히 downgrade하지 않고 `unsupported_chunking_mode_for_source`에 해당하는 실패로 닫는다.
+
 새 KB를 동시에 생성하는 upload 요청은 `embeddingModel`이 필수다. 기존 KB에 추가하는 요청은 기존 KB의 `embedding_model`을 사용한다. 현재 기존 `knowledgeBaseId` 경로는 KB 존재 여부만 확인하고 current user owner/scope를 확인하지 않는다.
 
 현재 KB 생성과 upload 기반 신규 KB 생성은 `get_user_primary_organization_id`로 첫 active organization membership의 organization을 저장한다. 명시적인 `X-Organization-Id` header를 받는 active organization 방식은 RAG search-test `chat`/`pure`에 먼저 적용되어 있으며, 나머지 Knowledge/RAG 생성/문서 API는 아직 primary organization fallback 또는 owner/current-user scope를 사용한다.
@@ -85,7 +99,19 @@ MBA-75/MVP 2 목표 계약에서 Knowledge/RAG org-scoped API는 `X-Organization
 
 현재 RAG endpoint의 owner 검증은 일관적이지 않다. `DELETE /rag/document/{document_id}`는 `KnowledgeBase.user_id == current_user.id`를 확인하지만, `analyze`, `confirm`, `progress`, 기존 KB upload 경로는 document/KB id 중심으로 동작한다. 이 차이는 MVP 2의 KB permission enforcement에서 정렬해야 한다.
 
-## MBA-75/MBA-78 Search Contract
+## Preview / Process Hierarchy 계약
+
+`DocumentPreviewRequest`와 이를 상속하는 process request는 `chunking_mode`를 받을 수 있다. `chunking_mode=hierarchical`은 저장된 `Document.source_type`이 `FILE` 또는 `API`인 문서에서만 지원한다. 저장된 `Document.source_type=DB` 문서에 hierarchical chunking을 요청하면 request body의 `source_type` 값과 무관하게 `400 unsupported_chunking_mode_for_source`를 반환한다.
+
+Preview response schema는 MBA-85 2단계 1차에서 확장하지 않는다. `DocumentPreviewResponse.segments[]`는 기존처럼 `content`, `token_count`, `char_count` 중심이며, hierarchical preview에서도 최종 evidence 단위인 child chunk content만 반환한다. Parent routing chunk는 preview `segments[]`의 독립 content 항목으로 노출하지 않는다. `chunk_level`, `parent_chunk_id`, `hierarchy_path` preview 노출은 후속 schema 확장으로 분리한다.
+
+`chunkingMode=hierarchical` 또는 `chunking_mode=hierarchical`과 `selection_mode=range` 조합은 hierarchy parent/child 번호와 기존 flat chunk 번호 의미가 충돌하므로 `400 invalid_chunking_selection`으로 거부한다.
+
+Upload에서 받은 `chunkingMode`는 `documents.meta_info.chunking_mode`에 저장한다. `POST /api/v1/knowledge/{kb_id}/documents/{document_id}/process`가 `chunking_mode`를 받으면 같은 field를 갱신한 뒤 처리한다. `POST /api/v1/rag/document/{document_id}/confirm`과 resume processing 경로는 request body가 아니라 저장된 `documents.meta_info.chunking_mode`를 사용한다. Confirm/resume에서 `strategy`를 갱신하더라도 `chunking_mode`는 덮어쓰지 않는다. Document sync는 DB source flat-only 경로이므로 저장된 mode가 `hierarchical`이면 실패 처리하고 기존 chunk를 보존한다.
+
+재처리 skip은 원문 `content_hash`와 embedding model만으로 판단하지 않는다. MBA-85 이후 process/confirm/resume 경로는 `chunking_mode`, `hierarchy_version`, `chunk_size`, `chunk_overlap`, `segment_identifier`, preprocess flag, selection setting을 포함한 chunking fingerprint가 기존 저장 fingerprint와 같을 때만 skip할 수 있다. Fingerprint가 없거나 달라지면 같은 원문이라도 재처리한다.
+
+## MBA-75/MBA-78/MBA-85 Search Contract
 
 `SearchQuery`는 기존 `query`, `top_k`, `knowledge_base_id`, `generation_model` request shape를 깨지 않는 optional field로 metadata-aware/hierarchical retrieval 계약을 확장한다.
 
@@ -98,7 +124,7 @@ Request extension:
 | `tags` | `TagFilter \| null` | `{ "mode": "contains_any" \| "contains_all", "values": string[] }`. `string[]` shorthand는 허용하지 않음 |
 | `source_type` | `("FILE" \| "API" \| "DB")[] \| null` | source type filter |
 | `effective_at` | datetime | `effective_from <= effective_at < effective_to` time window filter. 비교 기준은 UTC ISO 문자열(`YYYY-MM-DDTHH:MM:SS+00:00`) |
-| `hierarchy_mode` | `auto/flat/parent_child` | 기존 KB는 `auto`에서 flat fallback 가능 |
+| `hierarchy_mode` | `auto/flat/parent_child` | 기존 KB는 `auto`에서 flat fallback 가능. MBA-85부터 hierarchy data가 있는 KB는 parent-child retrieval을 사용할 수 있음 |
 
 `metadata_filter`와 top-level convenience field가 함께 오면 동일 key 중복을 validation error로 거부한다.
 
@@ -115,7 +141,21 @@ Request extension:
 
 `effective_from`/`effective_to`의 canonical 비교 값은 `documents.meta_info`에 저장된 UTC ISO 문자열(`YYYY-MM-DDTHH:MM:SS+00:00`)이다. 값이 비어 있거나 누락되면 열린 구간으로 해석하고, 값이 있지만 이 형식을 따르지 않으면 filter match에서 제외해 fail-closed로 처리한다. `document_chunks.metadata`에 복제된 값은 denormalized cache/citation evidence이며, MBA-78 1차 filter source로 보지 않는다. `Z`, offset이 다른 timestamp, 날짜 전용 문자열은 ingest/backfill 단계에서 `+00:00` 형식으로 정규화해야 한다.
 
-MBA-78 1차 구현에서 `hierarchy_mode=auto`와 `flat`은 기존 flat retrieval을 사용한다. 명시적 `parent_child` 요청은 hierarchy data/index가 아직 없으면 `422 hierarchy_unavailable`로 닫는다.
+MBA-78 1차 구현에서 `hierarchy_mode=auto`와 `flat`은 기존 flat retrieval을 사용하고, 명시적 `parent_child` 요청은 hierarchy data/index가 아직 없으면 `422 hierarchy_unavailable`로 닫는다. MBA-85 2단계 이후 mode별 계약은 다음과 같다.
+
+| `hierarchy_mode` | hierarchy data 있음 | hierarchy data 없음 |
+| --- | --- | --- |
+| `auto` | parent-child retrieval과 flat fallback 후보를 함께 사용 | flat retrieval |
+| `flat` | parent routing chunk를 제외하고 child/flat evidence chunk를 flat하게 검색 | flat retrieval |
+| `parent_child` | parent-child retrieval과 필요한 flat fallback 후보를 함께 사용 | `422 hierarchy_unavailable` |
+
+Parent routing chunk는 coarse retrieval에만 사용하고 최종 `ChunkPreview` evidence로 반환하지 않는다. 최종 evidence는 child chunk 또는 legacy/flat chunk 기준이다.
+
+최종 ranking score는 child 또는 flat/legacy evidence chunk의 직접 vector/keyword/rerank score 기준이다. Parent route score는 parent 후보 pool 제한, tie-break, 제한적인 boost 용도로만 사용하며, child score나 flat fallback score와 정규화 없이 단순 합산하지 않는다.
+
+Metadata filter의 canonical source는 `documents.meta_info`다. Parent routing 단계는 document-level filter를 기준으로 후보를 줄이고, child-only chunk metadata 때문에 parent 후보가 먼저 탈락하지 않도록 한다. `document_chunks.metadata`는 denormalized cache/citation evidence이며, child/flat evidence 단계의 safe fallback으로만 사용할 수 있다.
+
+`chunk_level` 값은 `parent`, `child`, `flat`, `NULL`만 의미를 갖는다. 알 수 없는 `chunk_level` row는 evidence 후보에서 제외하고, application layer에서 warning/metric 대상으로 다룬다. Unknown 값을 `flat`으로 해석하지 않는다.
 
 `TagFilter` validation:
 
@@ -183,7 +223,7 @@ Runtime node가 logger로 넘기는 payload body에는 `workflow_node_run_id`를
 
 Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열, raw chunk content, prompt/completion, provider raw response는 run/node metadata에 복사하지 않는다.
 
-현재 `TraceMetadataSanitizer`는 run/node RAG metadata에서 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `hierarchy_fallback`, `raw_content_returned`, `latency_ms`, `retrieval_payload_id`, `retrieved_context_payload_id` 같은 summary field만 허용한다. Legacy `retrieval_results` 입력은 저장하지 않고 summary field로 변환한다. Raw chunk content와 `retrieved_chunks` 배열은 run/node metadata allowlist에 포함하지 않는다.
+현재 `TraceMetadataSanitizer`는 run/node RAG metadata에서 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `hierarchy_fallback`, `raw_content_returned`, `latency_ms`, `retrieval_payload_id`, `retrieved_context_payload_id` 같은 summary field만 허용한다. MBA-85는 run/node metadata allowlist를 넓히지 않는다. `hierarchy_mode`, parent/child candidate count 같은 diagnostic 값이 필요하면 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload 안에만 둔다. Legacy `retrieval_results` 입력은 저장하지 않고 summary field로 변환한다. Raw chunk content와 `retrieved_chunks` 배열은 run/node metadata allowlist에 포함하지 않는다.
 
 Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다.
 
@@ -198,4 +238,13 @@ Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API
 - RAG retrieval trace는 `rag_retrieval_traces` 신규 table이 아니라 trace payload/run metadata로 저장한다. Per-chunk evidence는 `trace_payloads`, run/node metadata는 summary allowlist로 분리한다.
 - Metadata filter는 allowlist 기반 schema로만 받는다. Metadata는 permission source of truth가 아니다.
 - `policy.warn`/`policy.block` document metadata enforcement는 후속 구현 범위다. MBA-78 1차는 action naming, KB `use` enforcement, `permission.denied`/`rag.retrieve` audit 경계를 먼저 고정한다.
-- Hierarchical RAG는 nullable parent/child chunk schema와 flat fallback으로 도입한다.
+- Hierarchical RAG는 nullable parent/child chunk schema와 flat fallback으로 도입한다. MBA-85 2단계는 FILE/API source의 opt-in hierarchical ingestion과 parent-child retrieval을 backend 범위에서 연결하며, DB source hierarchical chunking, frontend hierarchy UI, LLM 기반 parent summary 생성은 후속 범위다. Hierarchical parent/child 저장 경로에서 content 암호화가 실패하면 평문 fallback 없이 처리 실패로 닫고 기존 chunk를 보존한다. Hierarchical mode는 parent와 child를 모두 embedding하므로 같은 문서의 flat mode보다 처리 시간과 embedding 비용이 늘 수 있고, progress는 parent+child 저장 대상과 embedding batch 기준으로 계산한다.
+
+## MBA-85 오류 reason
+
+| Code | HTTP | 조건 |
+| --- | --- | --- |
+| `invalid_chunking_mode` | `400` | upload form의 `chunkingMode`가 `flat/hierarchical` 외 값 |
+| `invalid_chunking_selection` | `400` | `chunkingMode=hierarchical` 또는 `chunking_mode=hierarchical`과 `selection_mode=range` 조합 |
+| `unsupported_chunking_mode_for_source` | `400` | upload form은 `chunkingMode=hierarchical`과 `sourceType=DB` 조합, process/preview는 `chunking_mode=hierarchical`과 저장된 `Document.source_type=DB` 조합 |
+| `hierarchy_unavailable` | `422` | `hierarchy_mode=parent_child` 요청에 사용할 유효 parent-child hierarchy data가 없음 |

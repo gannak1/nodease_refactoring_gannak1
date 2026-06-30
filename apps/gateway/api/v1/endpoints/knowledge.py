@@ -44,9 +44,20 @@ from apps.shared.schemas.rag import (
     KnowledgeBaseResponse,
     KnowledgeUpdate,
 )
+from apps.shared.services.rag_hierarchy import (
+    RAGHierarchyError,
+    validate_chunking_request,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"reason": exc.reason, "message": exc.message},
+    )
 
 
 @router.post(
@@ -522,6 +533,15 @@ async def process_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    try:
+        normalized_chunking_mode = validate_chunking_request(
+            chunking_mode=request.chunking_mode,
+            source_type=doc.source_type,
+            selection_mode=request.selection_mode,
+        )
+    except RAGHierarchyError as exc:
+        raise _chunking_http_exception(exc)
+
     # 2. 설정 업데이트
     doc.chunk_size = request.chunk_size
     doc.chunk_overlap = request.chunk_overlap
@@ -534,6 +554,7 @@ async def process_document(
             "remove_urls_emails": request.remove_urls_emails,
             "remove_whitespace": request.remove_whitespace,
             "strategy": request.strategy,  # LlamaParse 등 파싱 전략 저장
+            "chunking_mode": normalized_chunking_mode,
             "db_config": request.db_config,
             # 필터링 설정 저장
             "selection_mode": request.selection_mode,
@@ -606,6 +627,15 @@ def preview_document_chunking(
             status_code=400, detail="Document does not belong to this Knowledge Base"
         )
 
+    try:
+        normalized_chunking_mode = validate_chunking_request(
+            chunking_mode=request.chunking_mode,
+            source_type=doc.source_type,
+            selection_mode=request.selection_mode,
+        )
+    except RAGHierarchyError as exc:
+        raise _chunking_http_exception(exc)
+
     # 2. 서비스 호출
     service = IngestionService(db, user_id=current_user.id)
     try:
@@ -617,7 +647,8 @@ def preview_document_chunking(
             remove_urls_emails=request.remove_urls_emails,
             remove_whitespace=request.remove_whitespace,
             strategy=request.strategy,
-            source_type=request.source_type,
+            source_type=doc.source_type,
+            chunking_mode=normalized_chunking_mode,
             meta_info=doc.meta_info,
             db_config=request.db_config,
             # 필터링 파라미터 전달

@@ -17,6 +17,7 @@ for p in [ROOT, PARENT_OF_ROOT]:
         sys.path.append(str(p))
 
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402 - 테스트 경로 보정 이후 가져오기
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402 - 테스트 경로 보정 이후 가져오기
 from apps.workflow_engine.services.llm_service import LLMService  # noqa: E402 - 테스트 경로 보정 이후 가져오기
 from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402 - 테스트 경로 보정 이후 가져오기
     KnowledgeBaseRef,
@@ -166,7 +167,7 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
         score=0.92,
         rank=1,
         token_count=120,
-        metadata_summary={"classification": "internal"},
+        metadata_summary={"classification": "internal", "hierarchy_fallback": True},
         hierarchy_path=["Guide", "Intro"],
         metadata={"source": "kb"},
     )
@@ -180,7 +181,14 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
     assert metadata["parent_chunk_id"] == str(parent_chunk_id)
     assert metadata["score"] == 0.92
     assert metadata["token_count"] == 120
-    assert metadata["metadata_summary"] == {"classification": "internal"}
+    assert metadata["metadata_summary"] == {
+        "classification": "internal",
+        "hierarchy_fallback": True,
+    }
+    assert metadata["hierarchy_fallback"] is True
+    assert TraceMetadataSanitizer.summarize_rag_metadata([metadata])[
+        "hierarchy_fallback"
+    ] is True
     assert metadata["hierarchy_path"] == ["Guide", "Intro"]
     assert "content" not in metadata
     assert "metadata" not in metadata

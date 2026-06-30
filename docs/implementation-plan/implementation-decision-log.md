@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
+Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
 Related ADRs:
 
 ## 목적
@@ -102,6 +102,19 @@ Related ADRs:
 - 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [RBAC permission policy](../data-model/rbac-permission-policy.md), [audit action ADR](../decisions/ADR-202606290131-audit-action-naming-standard.md), [metadata-aware hierarchical RAG ADR](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 - 후속 검토: `policy.warn`/`policy.block` document metadata enforcement가 연결되면 permission denial audit와 policy audit가 중복되지 않는지 테스트한다. Trace payload access policy가 raw/evidence 조회와 UI citation 표시를 어떻게 분리할지도 별도 검증한다.
 - ADR 승격 여부: No. 기존 ADR/RBAC/trace 계약을 구현 경계에 적용한 결정이며 새 제품 정책을 추가하지 않는다.
+
+### MBA-85 hierarchical ingestion/retrieval 2단계 구현 경계
+
+- 상태: Active
+- 맥락: MBA-78 1차는 hierarchy column과 flat fallback, RAG 권한/trace 경계를 고정했지만 실제 parent-child ingestion과 parent-child retrieval은 후속 범위로 남겼다. MBA-85는 이 후속 범위를 backend 중심으로 연결한다. 다만 source type, preview schema, chunk tuning 입력, 저장 transaction 순서를 명확히 하지 않으면 기존 flat ingestion과 preview UI, DB source semantics를 깨뜨릴 수 있다.
+- 선택지: 1) 모든 source type에 hierarchical chunking을 열고 고급 chunk size 입력도 공개한다. 2) FILE/API source에만 opt-in hierarchical chunking을 열고 고급 입력은 내부 기본값으로 둔다. 3) ingestion 변경 없이 retrieval만 parent-child data가 있는 경우 처리한다.
+- 결정: 2안을 따른다. 공개 API는 `chunkingMode`/`chunking_mode=flat|hierarchical`만 추가한다. `DocumentPreviewRequest` 계열 JSON 입력은 `chunkingMode` alias를 허용하지만 service layer 이후 내부 표준 field는 `chunking_mode`다. `parentChunkSize`, `childChunkSize`, `childChunkOverlap`, arbitrary depth 설정은 공개하지 않는다. Parent routing chunk 내부 기본값은 `parent_target_size=min(max(child_chunk_size * 4, 2000), 8000)`, `parent_overlap=min(max(child_chunk_overlap * 2, 200), parent_target_size // 4)`로 계산한다. Hierarchical ingestion은 FILE/API source에만 적용하고 DB source는 `400 unsupported_chunking_mode_for_source`로 닫는다. Workflow Engine DB sync와 shared `VectorStoreService`는 MBA-85에서 flat-only 경로로 유지하며, DB source의 `chunking_mode=hierarchical` 또는 non-flat parent/child payload를 조용히 flat으로 변환하지 않는다. `chunkingMode=hierarchical`과 `selection_mode=range` 조합은 `400 invalid_chunking_selection`으로 닫는다. Preview response schema는 확장하지 않고 child evidence content만 기존 `DocumentSegment` shape로 반환한다. Parent routing chunk는 LLM summary가 아니며 preview/final response의 독립 evidence content로 노출하지 않는다. 모든 parent/child embedding, encryption, keyword/token 준비가 성공한 뒤 같은 transaction에서 기존 chunk 삭제, parent insert/flush, child insert, chunking fingerprint/provenance metadata 갱신, commit을 수행한다. Hierarchical path의 content 암호화 실패는 처리 실패로 닫고 평문 fallback을 만들지 않는다. `content_hash` 기반 skip은 `chunking_fingerprint_hash`까지 일치할 때만 허용한다. 최종 ranking score는 child/flat evidence score 기준이고 parent route score는 후보 제한/tie-break/boost 용도에 한정한다. Unknown `chunk_level`은 evidence 후보에서 제외한다. MBA-85는 run/node RAG metadata allowlist를 넓히지 않고, hierarchy diagnostic 값은 redacted trace payload에만 둔다.
+- 근거: FILE/API 문서는 section/텍스트 블록 기반 hierarchy를 만들 수 있지만 DB source는 row/table/join 구조라 별도 설계가 필요하다. DB sync/shared vector store 경로는 현재 DB processor 결과를 flat chunk로 저장하는 책임을 갖고 있어, 여기에 parent/child semantics를 섞으면 DB hierarchy 정책이 암묵적으로 생긴다. 고급 tuning 입력을 공개하면 frontend/API/test 계약이 과도하게 넓어진다. Preview schema를 유지하면 frontend 변경 없이 backend hierarchy builder를 검증할 수 있다. 기존 chunk 삭제를 마지막 transaction으로 미루면 embedding/encryption 실패 시 기존 retrieval 가능 상태를 보존할 수 있다. 신규 hierarchy path에서 평문 fallback을 금지하면 기존 flat 경로의 호환성은 건드리지 않으면서 새 저장 경로의 보안 기준을 높일 수 있다. Fingerprint를 두지 않으면 원문이 같다는 이유로 `flat -> hierarchical` 전환이 조기 종료될 수 있다. Parent score와 evidence score를 단순 혼합하면 mixed hierarchy/flat KB ranking이 불안정해진다. Run/node metadata allowlist를 넓히지 않으면 trace 노출면을 유지하면서 diagnostic은 payload로 분리할 수 있다.
+- 범위: MBA-85 backend hierarchical chunking, parent-child retrieval, preview/process/upload/confirm/sync 경로의 chunking mode 보존, RAG API/architecture/data-model/error 문서.
+- 영향 파일: `docs/api/knowledge-rag.md`, `docs/architecture/knowledge-rag.md`, `docs/data-model/physical-data-model.md`, `docs/api/errors.md`, `local/mba-85/implementation-plan.md`, RAG ingestion/retrieval/schema/tests.
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [physical data model](../data-model/physical-data-model.md), [metadata-aware hierarchical RAG ADR](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
+- 후속 검토: DB row/table 기반 hierarchical chunking, advanced tuning UI/API, preview hierarchy metadata 노출, frontend citation UI, LLM 기반 parent summary 생성, 기존 flat ingestion 암호화 실패 fallback 제거, hierarchy diagnostic run/node metadata 확장 여부는 별도 이슈로 분리한다.
+- ADR 승격 여부: No. 기존 ADR의 parent-child retrieval 경계를 구현 단계로 좁히는 결정이며, DB source hierarchy나 LLM summary 같은 새 제품 정책은 후속으로 분리한다.
 
 ### MBA-67 organization membership helper 전환
 - 상태: Active

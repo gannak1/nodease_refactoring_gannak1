@@ -8,6 +8,7 @@ CLASSIFICATION_VALUES = {"public", "internal", "confidential", "pii"}
 SOURCE_TYPE_VALUES = {"FILE", "API", "DB"}
 TAG_FILTER_MODES = {"contains_any", "contains_all"}
 HierarchyMode = Literal["auto", "flat", "parent_child"]
+ChunkingMode = Literal["flat", "hierarchical"]
 
 
 def _normalize_str_list(values: list[Any] | None) -> list[str] | None:
@@ -199,6 +200,8 @@ class RAGResponse(BaseModel):
 
 
 class DocumentPreviewRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     chunk_size: int = 500
     chunk_overlap: int = 50
     segment_identifier: str = "\n\n"
@@ -206,11 +209,28 @@ class DocumentPreviewRequest(BaseModel):
     remove_whitespace: bool = True
     strategy: str = "general"  # "general" or "llamaparse"
     source_type: str = "FILE"  # FILE or API
+    chunking_mode: ChunkingMode = Field(default="flat", alias="chunkingMode")
     db_config: Optional[Dict[str, Any]] = None
     # 필터링 파라미터 추가
     selection_mode: str = "all"  # 'all', 'range', 'keyword'
     chunk_range: Optional[str] = None
     keyword_filter: Optional[str] = None
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_preview_source_type(cls, value: str) -> str:
+        source_type = str(value or "FILE").upper()
+        if source_type not in SOURCE_TYPE_VALUES:
+            raise ValueError(f"unsupported source_type value: {source_type}")
+        return source_type
+
+    @field_validator("selection_mode")
+    @classmethod
+    def validate_selection_mode(cls, value: str) -> str:
+        selection_mode = str(value or "all").lower()
+        if selection_mode not in {"all", "range", "keyword"}:
+            raise ValueError("selection_mode must be all, range, or keyword")
+        return selection_mode
 
 
 class DocumentProcessRequest(DocumentPreviewRequest):

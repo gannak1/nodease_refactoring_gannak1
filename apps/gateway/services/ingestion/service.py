@@ -17,6 +17,19 @@ from apps.gateway.services.storage import get_storage_service
 from apps.shared.db.models.knowledge import Document, DocumentChunk, SourceType
 from apps.shared.db.session import SessionLocal
 from apps.shared.distributed_lock import DistributedLock
+from apps.shared.services.ingestion.hierarchical_chunker import (
+    HierarchicalChunker,
+    HierarchicalChunkerConfig,
+    filter_hierarchical_chunks,
+)
+from apps.shared.services.rag_hierarchy import (
+    CHUNKING_MODE_HIERARCHICAL,
+    HIERARCHY_VERSION,
+    chunking_fingerprint_hash,
+    parent_overlap_size,
+    parent_target_size,
+    validate_chunking_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +183,19 @@ class IngestionOrchestrator:
                     )
                     return
 
+                meta = dict(doc.meta_info or {})
+                chunking_mode = validate_chunking_request(
+                    chunking_mode=meta.get("chunking_mode"),
+                    source_type=doc.source_type,
+                    selection_mode=meta.get("selection_mode", "all"),
+                )
+                current_fingerprint = chunking_fingerprint_hash(
+                    meta_info=meta,
+                    chunk_size=doc.chunk_size,
+                    chunk_overlap=doc.chunk_overlap,
+                    source_type=doc.source_type,
+                )
+
                 full_text = "".join([b["content"] for b in raw_blocks])
                 new_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
                 # 실패했던 문서는 내용이 같아도 재처리 (status != 'failed' 조건 추가)
@@ -177,6 +203,7 @@ class IngestionOrchestrator:
                 if (
                     doc.content_hash == new_hash
                     and doc.embedding_model == self.ai_model
+                    and meta.get("chunking_fingerprint_hash") == current_fingerprint
                     and initial_status != "failed"
                 ):
                     self._update_status(document_id, "completed")
@@ -189,11 +216,38 @@ class IngestionOrchestrator:
                     final_chunks = self._refine_chunks(
                         raw_blocks, override_chunk_size=8000
                     )
+                    filtered_chunks = self._filter_chunks(
+                        final_chunks,
+                        meta.get("selection_mode", "all"),
+                        meta.get("chunk_range"),
+                        meta.get("keyword_filter"),
+                    )
+                elif chunking_mode == CHUNKING_MODE_HIERARCHICAL:
+                    preprocessed_blocks = self._preprocess_blocks(raw_blocks, meta)
+                    parent_size = parent_target_size(doc.chunk_size)
+                    chunker = HierarchicalChunker(
+                        HierarchicalChunkerConfig(
+                            child_chunk_size=doc.chunk_size,
+                            child_chunk_overlap=doc.chunk_overlap,
+                            segment_identifier=meta.get("segment_identifier", "\\n\\n"),
+                            parent_target_size=parent_size,
+                            parent_chunk_overlap=parent_overlap_size(
+                                doc.chunk_overlap,
+                                parent_size,
+                            ),
+                        )
+                    )
+                    final_chunks = chunker.build(preprocessed_blocks)
+                    filtered_chunks = filter_hierarchical_chunks(
+                        final_chunks,
+                        selection_mode=meta.get("selection_mode", "all"),
+                        keyword_filter=meta.get("keyword_filter"),
+                    )
                 else:
                     # 전처리 적용 (FILE, API 타입)
                     full_text = "\n".join([b["content"] for b in raw_blocks])
                     preprocessed_text = self.preprocess_text(
-                        full_text, doc.meta_info or {}
+                        full_text, meta
                     )
                     preprocessed_blocks = [
                         {"content": preprocessed_text, "metadata": {}}
@@ -202,7 +256,6 @@ class IngestionOrchestrator:
                     # [동적 Splitter 생성] 문서 설정 적용
                     chunk_size = doc.chunk_size
                     chunk_overlap = doc.chunk_overlap
-                    meta = doc.meta_info or {}
                     segment_identifier = meta.get("segment_identifier", "\\n\\n")
 
                     separators = ["\n\n", "\n", ".", " ", ""]
@@ -221,18 +274,19 @@ class IngestionOrchestrator:
                     final_chunks = self._refine_chunks(
                         preprocessed_blocks, splitter=doc_specific_splitter
                     )
+                    filtered_chunks = self._filter_chunks(
+                        final_chunks,
+                        meta.get("selection_mode", "all"),
+                        meta.get("chunk_range"),
+                        meta.get("keyword_filter"),
+                    )
 
-                # 필터링 적용
-                meta = doc.meta_info or {}
-                selection_mode = meta.get("selection_mode", "all")
-                chunk_range = meta.get("chunk_range")
-                keyword_filter = meta.get("keyword_filter")
-
-                filtered_chunks = self._filter_chunks(
-                    final_chunks, selection_mode, chunk_range, keyword_filter
+                self._save_to_vector_db(
+                    doc,
+                    filtered_chunks,
+                    chunking_mode=chunking_mode,
+                    chunking_fingerprint=current_fingerprint,
                 )
-
-                self._save_to_vector_db(doc, filtered_chunks)
                 self._update_status(document_id, "completed")
                 self._update_progress_redis(
                     document_id, 100, expire=True
@@ -303,6 +357,23 @@ class IngestionOrchestrator:
 
         self.process_document(document_id)
 
+    def _preprocess_blocks(
+        self, raw_blocks: List[Dict[str, Any]], meta_info: dict
+    ) -> List[Dict[str, Any]]:
+        blocks: List[Dict[str, Any]] = []
+        options = {
+            "remove_urls_emails": bool(meta_info.get("remove_urls_emails", False)),
+            "normalize_whitespace": bool(meta_info.get("remove_whitespace", True)),
+        }
+        for index, block in enumerate(raw_blocks, start=1):
+            content = self.preprocess_text(str(block.get("content") or ""), options)
+            if not content.strip():
+                continue
+            metadata = dict(block.get("metadata") or {})
+            metadata.setdefault("section_path", [f"Section {index}"])
+            blocks.append({"content": content, "metadata": metadata})
+        return blocks
+
     async def analyze_document(self, document_id: UUID) -> Dict[str, Any]:
         """
         문서 분석 (비용 예측)
@@ -351,6 +422,7 @@ class IngestionOrchestrator:
         remove_whitespace: bool = True,
         strategy: str = "general",
         source_type: SourceType = SourceType.FILE,
+        chunking_mode: str = "flat",
         meta_info: dict = None,
         db_config: dict = None,
         # 필터링 파라미터 추가
@@ -361,6 +433,11 @@ class IngestionOrchestrator:
         """
         미리보기 (DB 저장 없음)
         """
+        chunking_mode = validate_chunking_request(
+            chunking_mode=chunking_mode,
+            source_type=source_type,
+            selection_mode=selection_mode,
+        )
 
         processor = IngestionFactory.get_processor(source_type, self.db, self.user_id)
 
@@ -417,6 +494,7 @@ class IngestionOrchestrator:
             raise ValueError(result.metadata["error"])
 
         raw_blocks = result.chunks
+        meta_info = dict(meta_info or {})
 
         # DB인 경우 이미 Row 단위로 구조화되어 있으므로, Merge & Re-split 하지 않음
         if source_type == SourceType.DB:
@@ -444,6 +522,47 @@ class IngestionOrchestrator:
             return self._filter_chunks(
                 preview, selection_mode, chunk_range, keyword_filter
             )
+
+        if chunking_mode == CHUNKING_MODE_HIERARCHICAL:
+            preprocessed_blocks = self._preprocess_blocks(
+                raw_blocks,
+                {
+                    **meta_info,
+                    "remove_urls_emails": remove_urls_emails,
+                    "remove_whitespace": remove_whitespace,
+                },
+            )
+            parent_size = parent_target_size(chunk_size)
+            chunker = HierarchicalChunker(
+                HierarchicalChunkerConfig(
+                    child_chunk_size=chunk_size,
+                    child_chunk_overlap=chunk_overlap,
+                    segment_identifier=segment_identifier,
+                    parent_target_size=parent_size,
+                    parent_chunk_overlap=parent_overlap_size(
+                        chunk_overlap,
+                        parent_size,
+                    ),
+                )
+            )
+            hierarchy_chunks = filter_hierarchical_chunks(
+                chunker.build(preprocessed_blocks),
+                selection_mode=selection_mode,
+                keyword_filter=keyword_filter,
+            )
+            try:
+                encoding = tiktoken.encoding_for_model(self.ai_model)
+            except Exception:
+                encoding = tiktoken.get_encoding("cl100k_base")
+            return [
+                {
+                    "content": chunk["content"],
+                    "token_count": len(encoding.encode(chunk["content"])),
+                    "char_count": len(chunk["content"]),
+                }
+                for chunk in hierarchy_chunks
+                if chunk.get("chunk_level") == "child"
+            ]
 
         # 2. 전처리
         full_text = "\n".join([b["content"] for b in raw_blocks])
@@ -531,13 +650,21 @@ class IngestionOrchestrator:
                 refined.append({"content": split, "metadata": new_meta})
         return refined
 
-    def _save_to_vector_db(self, doc: Document, chunks: List[Dict[str, Any]]):
+    def _save_to_vector_db(
+        self,
+        doc: Document,
+        chunks: List[Dict[str, Any]],
+        *,
+        chunking_mode: str = "flat",
+        chunking_fingerprint: str | None = None,
+    ):
         import tiktoken
         from services.llm_service import LLMService
         from utils.encryption import encryption_manager
         from utils.template_utils import count_tokens
 
-        new_chunks = []
+        is_hierarchical = chunking_mode == CHUNKING_MODE_HIERARCHICAL
+        prepared_chunks = []
 
         # LLM 클라이언트 초기화 (임베딩 생성용)
         # API Key 오류 등 발생 시 즉시 실패 처리 (상위에서 catch)
@@ -641,7 +768,7 @@ class IngestionOrchestrator:
                 raise ValueError("LLM Client initialization failed.")
 
         # ========================================
-        # content 암호화 & DB 저장
+        # content 암호화 & DB 저장 준비
         # ========================================
         keyword_error_logged = False
         for i, chunk in enumerate(chunks):
@@ -691,32 +818,131 @@ class IngestionOrchestrator:
                 encrypted_content = encryption_manager.encrypt(content)
             except Exception as e:
                 logger.error(f"Failed to encrypt content for chunk {i}: {e}")
-                # 암호화 실패는 치명적일 수 있으나, 일단 원문 저장할지? -> 보안상 실패가 나을 수도.
-                # 현재 로직 유지 (원문 저장) 하되, 이번 Fix 범위 밖.
+                if is_hierarchical:
+                    raise RuntimeError(
+                        "hierarchical chunk encryption failed"
+                    ) from e
+                # 기존 flat 경로의 호환성은 이번 범위에서 유지한다.
                 encrypted_content = content
 
-            new_chunk = DocumentChunk(
-                document_id=doc.id,
-                knowledge_base_id=doc.knowledge_base_id,
-                content=encrypted_content,
-                chunk_index=i,
-                chunk_level="flat",
-                token_count=chunk.get("token_count", 0),
-                metadata_=chunk_metadata,
-                embedding=embedding,
+            chunk_level = chunk.get("chunk_level") or "flat"
+            if chunk_level not in {"flat", "parent", "child"}:
+                raise ValueError(f"Unsupported chunk_level: {chunk_level}")
+            if not is_hierarchical and chunk_level != "flat":
+                raise ValueError("non-flat chunk payload requires hierarchical mode")
+
+            prepared_chunks.append(
+                {
+                    "content": encrypted_content,
+                    "chunk_index": i,
+                    "chunk_level": chunk_level,
+                    "token_count": chunk.get("token_count", 0),
+                    "metadata": chunk_metadata,
+                    "embedding": embedding,
+                    "section_path": chunk.get("section_path"),
+                    "heading": chunk.get("heading"),
+                    "local_ref": chunk.get("local_ref"),
+                    "parent_ref": chunk.get("parent_ref"),
+                }
             )
-            new_chunks.append(new_chunk)
 
         # !!! CRITICAL: 기존 청크 삭제를 맨 마지막에 수행 (Atomic-like behavior) !!!
-        # 임베딩 생성 중 실패하면 삭제되지 않음.
+        # 임베딩/암호화 준비 중 실패하면 삭제되지 않음.
         self.db.query(DocumentChunk).filter(
             DocumentChunk.document_id == doc.id
         ).delete()
 
-        self.db.bulk_save_objects(new_chunks)
+        if is_hierarchical:
+            parent_objects = {}
+            child_payloads = []
+            for payload in prepared_chunks:
+                if payload["chunk_level"] == "parent":
+                    parent = DocumentChunk(
+                        document_id=doc.id,
+                        knowledge_base_id=doc.knowledge_base_id,
+                        content=payload["content"],
+                        chunk_index=payload["chunk_index"],
+                        chunk_level="parent",
+                        token_count=payload["token_count"],
+                        metadata_=payload["metadata"],
+                        embedding=payload["embedding"],
+                        section_path=payload["section_path"],
+                        heading=payload["heading"],
+                    )
+                    self.db.add(parent)
+                    parent_objects[payload["local_ref"]] = parent
+                elif payload["chunk_level"] == "child":
+                    child_payloads.append(payload)
+                else:
+                    self.db.add(
+                        DocumentChunk(
+                            document_id=doc.id,
+                            knowledge_base_id=doc.knowledge_base_id,
+                            content=payload["content"],
+                            chunk_index=payload["chunk_index"],
+                            chunk_level="flat",
+                            token_count=payload["token_count"],
+                            metadata_=payload["metadata"],
+                            embedding=payload["embedding"],
+                            section_path=payload["section_path"],
+                            heading=payload["heading"],
+                        )
+                    )
+
+            self.db.flush()
+            for payload in child_payloads:
+                parent = parent_objects.get(payload["parent_ref"])
+                if parent is None:
+                    raise ValueError("child chunk parent reference is missing")
+                self.db.add(
+                    DocumentChunk(
+                        document_id=doc.id,
+                        knowledge_base_id=doc.knowledge_base_id,
+                        content=payload["content"],
+                        chunk_index=payload["chunk_index"],
+                        parent_chunk_id=parent.id,
+                        chunk_level="child",
+                        token_count=payload["token_count"],
+                        metadata_=payload["metadata"],
+                        embedding=payload["embedding"],
+                        section_path=payload["section_path"],
+                        heading=payload["heading"],
+                    )
+                )
+        else:
+            self.db.bulk_save_objects(
+                [
+                    DocumentChunk(
+                        document_id=doc.id,
+                        knowledge_base_id=doc.knowledge_base_id,
+                        content=payload["content"],
+                        chunk_index=payload["chunk_index"],
+                        chunk_level="flat",
+                        token_count=payload["token_count"],
+                        metadata_=payload["metadata"],
+                        embedding=payload["embedding"],
+                    )
+                    for payload in prepared_chunks
+                ]
+            )
 
         # 임베딩 생성 시 사용한 모델명 저장
         doc.embedding_model = self.ai_model
+        new_meta = dict(doc.meta_info or {})
+        new_meta["chunking_mode"] = chunking_mode
+        if chunking_fingerprint:
+            new_meta["chunking_fingerprint_hash"] = chunking_fingerprint
+        if is_hierarchical:
+            parent_size = parent_target_size(doc.chunk_size)
+            new_meta["hierarchy_version"] = HIERARCHY_VERSION
+            new_meta["hierarchy_parent_target_size"] = parent_size
+            new_meta["hierarchy_parent_overlap"] = parent_overlap_size(
+                doc.chunk_overlap,
+                parent_size,
+            )
+            new_meta["hierarchy_child_size"] = doc.chunk_size
+            new_meta["hierarchy_child_overlap"] = doc.chunk_overlap
+        doc.meta_info = new_meta
         self.db.add(doc)
 
         self.db.commit()
