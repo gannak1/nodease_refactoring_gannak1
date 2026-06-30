@@ -5,13 +5,11 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from apps.gateway.services.organization_context import get_user_primary_organization_id
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
-    ORGANIZATION_AUTH_MEMBER,
     ORGANIZATION_MEMBERSHIP_ACTIVE,
     ORGANIZATION_MEMBERSHIP_INVITED,
     ORGANIZATION_MEMBERSHIP_REMOVED,
@@ -25,7 +23,6 @@ from apps.shared.db.models.team import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.schemas.organization_membership import (
-    OrganizationCurrentResponse,
     OrganizationMemberInviteRequest,
     OrganizationMemberRemoveResponse,
     OrganizationMemberResponse,
@@ -212,6 +209,8 @@ def _locked_manager_count(db: Session, organization_id: Any) -> int:
             OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
             OrganizationMembership.organization_auth_state == ORGANIZATION_AUTH_MANAGER,
         )
+        # ponytail: id 정렬로 동시 강등/제거 시 락 획득 순서를 고정해 데드락 회피
+        .order_by(OrganizationMembership.id)
         .with_for_update()
         .all()
     )
@@ -311,19 +310,6 @@ class OrganizationMemberService:
             _organization_summary(organization, membership)
             for organization, membership in rows
         ]
-
-    @staticmethod
-    def get_current_organization(
-        db: Session,
-        current_user: User,
-    ) -> OrganizationCurrentResponse | None:
-        organization_id = get_user_primary_organization_id(db, current_user.id)
-        if organization_id is None:
-            return None
-        organization = _get_active_organization(db, organization_id)
-        membership = _get_membership(db, organization_id, current_user.id)
-        summary = _organization_summary(organization, membership)
-        return OrganizationCurrentResponse(**summary.model_dump())
 
     @staticmethod
     def list_members(

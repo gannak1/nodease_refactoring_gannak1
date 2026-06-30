@@ -253,6 +253,7 @@ def test_last_manager_guard_blocks_demote_by_another_manager(monkeypatch):
 
     assert last_manager.value.status_code == 409
     assert db.for_update_calls == 1
+    assert db.for_update_order_by_args == [(OrganizationMembership.id,)]
 
 
 @pytest.mark.parametrize(
@@ -581,6 +582,7 @@ class _Db:
         self.audit_logs = []
         self.commits = 0
         self.for_update_calls = 0
+        self.for_update_order_by_args = []
 
     def query(self, *models):
         if models == (Organization, OrganizationMembership):
@@ -618,9 +620,10 @@ class _Db:
             )
         return _Query([], on_for_update=self._record_for_update)
 
-    def _record_for_update(self):
+    def _record_for_update(self, order_by_args=()):
         # 실제 DB lock 대신 서비스가 with_for_update()를 호출했는지만 기록한다.
         self.for_update_calls += 1
+        self.for_update_order_by_args.append(tuple(order_by_args))
 
     def add(self, row):
         if isinstance(row, AuditLog):
@@ -649,6 +652,7 @@ class _Query:
         self.backing = backing
         self.filters = []
         self.on_for_update = on_for_update
+        self.order_by_args = []
 
     def join(self, *args, **kwargs):
         return self
@@ -661,11 +665,12 @@ class _Query:
         return self
 
     def order_by(self, *args):
+        self.order_by_args.extend(args)
         return self
 
     def with_for_update(self):
         if self.on_for_update is not None:
-            self.on_for_update()
+            self.on_for_update(self.order_by_args)
         return self
 
     def all(self):
