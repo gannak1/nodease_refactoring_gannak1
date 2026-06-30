@@ -79,7 +79,7 @@ Gateway search-test와 Workflow Engine runtime retrieval은 같은 filter/policy
 
 `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다. `documents.meta_info`와 충돌하면 `documents.meta_info`를 우선한다. 문서 metadata가 바뀌면 chunk metadata를 동기화하거나 `documents.meta_info.needs_reindex=true`를 설정한다.
 
-Metadata는 permission source of truth가 아니다. `owner_team_id`, `owner_user_id` 같은 metadata field를 권한 판정에 사용하지 않는다. 권한은 organization membership, KB permission table, additive user direct permission을 기준으로 판정한다.
+Metadata는 permission source of truth가 아니다. `owner_team_id`, `owner_user_id` 같은 metadata field를 권한 판정에 사용하지 않는다. Active organization membership은 KB organization scope와 resource permission subject의 전제 조건이며, 이 membership만으로 KB `read`/`use`를 허용하지 않는다. 실제 resource 허용은 organization manager override, `team_knowledge_permissions`, 목표 `user_knowledge_permissions`의 effective permission으로 판정한다.
 
 ## Permission Architecture
 
@@ -87,20 +87,20 @@ RAG execution path는 knowledge base `use` 권한을 요구한다.
 
 적용 지점:
 
-- RAG search-test API
+- RAG search-test API. Retrieval과 content preview를 수행하므로 KB `use` 권한을 요구한다.
 - Workflow Engine LLM node retrieval 직전
 - retrieval 실행과 연결되는 DB/API source 사용 경로
 
-권한 source:
+Scope prerequisite와 resource permission source:
 
-- `organization_memberships`
-- `team_knowledge_permissions`
-- 목표: `user_knowledge_permissions`
-- organization manager 정책
+- Scope prerequisite: active `organization_memberships` row와 KB의 `organization_id`가 요청의 active organization context 안에 있는지 확인한다.
+- Resource permission source: organization manager override, `team_knowledge_permissions`, 목표 `user_knowledge_permissions`.
 
 `user_knowledge_permissions`는 MVP 2 목표 table이다. MBA-75에서 함께 구현할지, 선행/후속 이슈로 분리할지는 구현 계획에서 결정할 수 있지만, 장기 effective permission은 team permission과 additive user direct permission을 합산한다.
 
 Document별 permission table은 만들지 않는다. Document access/policy는 KB permission과 `documents.meta_info` 기반 metadata policy를 조합한다.
+
+MBA-75 permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 현재 Knowledge/RAG API는 아직 `X-Organization-Id` header 방식을 적용하지 않고 primary organization fallback을 사용하므로, header 도입 여부와 legacy fallback 범위는 [knowledge-rag API 문서](../api/knowledge-rag.md)에서 먼저 확정한 뒤 구현한다.
 
 ## Document Metadata Policy
 
@@ -116,6 +116,7 @@ Audit action:
 - RBAC 거부: `permission.denied`
 - policy 경고: `policy.warn`
 - policy 차단: `policy.block`
+- 성공한 retrieval 감사: `rag.retrieve`
 
 Policy result는 `audit_logs.audit_metadata.policy_result`에 저장한다.
 
@@ -215,8 +216,10 @@ Fallback:
 }
 ```
 
+`audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이다. 두 값을 같은 계약으로 합치지 않는다.
+
 Boundary:
 
-- search-test response는 권한을 통과한 user에게 chunk content preview를 반환할 수 있다.
+- search-test response는 KB `use` 권한을 통과한 user에게 chunk content preview를 반환할 수 있다.
 - workflow trace/run detail 기본 응답은 raw chunk content 없이 citation metadata만 반환한다.
 - raw content가 필요하면 기존 trace payload visibility/access policy를 따른다.

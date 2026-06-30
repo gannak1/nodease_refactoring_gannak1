@@ -81,6 +81,8 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 
 현재 KB 생성과 upload 기반 신규 KB 생성은 `get_user_primary_organization_id`로 첫 active organization membership의 organization을 저장한다. 명시적인 `X-Organization-Id` header를 받는 active organization 방식은 아직 Knowledge/RAG API에 적용되어 있지 않다.
 
+MBA-75 목표 계약에서 Knowledge/RAG 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교한다. `X-Organization-Id`를 도입하는 경우 header organization이 KB organization과 다르거나 user scope 밖이면 `404 resource.not_found`로 숨긴다. Header 도입 전 legacy 경로는 primary organization fallback 범위를 이 문서에 명시하고, active organization membership만으로 KB `read`/`use`를 허용하지 않는다. 실제 허용은 organization manager override와 KB effective permission으로 판정한다.
+
 현재 RAG endpoint의 owner 검증은 일관적이지 않다. `DELETE /rag/document/{document_id}`는 `KnowledgeBase.user_id == current_user.id`를 확인하지만, `analyze`, `confirm`, `progress`, 기존 KB upload 경로는 document/KB id 중심으로 동작한다. 이 차이는 MVP 2의 KB permission enforcement에서 정렬해야 한다.
 
 ## MBA-75 Proposed Search Contract
@@ -109,11 +111,11 @@ Proposed response extension:
 | `metadata_summary` | `ChunkPreview` 또는 trace payload | redaction-safe metadata summary |
 | `hierarchy_path` | `ChunkPreview` | section path, heading, parent/child 정보 |
 
-Search-test response는 권한을 통과한 user에게 chunk `content` preview를 반환할 수 있다. Workflow trace/run detail 기본 응답은 raw chunk content 없이 citation metadata만 반환해야 한다.
+Search-test response는 retrieval과 content preview를 수행하므로 KB `use` 권한을 통과한 user에게만 chunk `content` preview를 반환할 수 있다. KB 목록, 상세, document metadata 조회는 `read` 권한 기준으로 분리한다. Workflow trace/run detail 기본 응답은 raw chunk content 없이 citation metadata만 반환해야 한다.
 
 ## MBA-75 Trace/Citation Contract
 
-RAG retrieval 전용 table은 만들지 않는다. Retrieval summary는 `trace_payloads` 또는 run/node trace metadata에 application-level convention으로 저장한다.
+RAG retrieval 전용 table은 만들지 않는다. Retrieval summary는 `trace_payloads` 또는 run/node trace metadata에 application-level convention으로 저장한다. 성공적인 retrieval의 audit event는 `audit_logs.action='rag.retrieve'`로 기록하고, 아래 `payload_kind='rag.retrieval'`은 trace payload 분류값으로만 사용한다.
 
 권장 payload:
 
@@ -150,6 +152,7 @@ Trace/audit metadata에는 raw chunk content, raw prompt, credential, provider r
 
 - 현재 코드의 KB endpoint는 주로 owner/current-user scope지만, RAG endpoint 일부는 owner/scope 검증이 약하다. MVP 2에서 team-based KB `read/write/use` enforcement를 붙이고 RAG endpoint scope를 통일한다.
 - RAG node runtime은 knowledge base `use` 권한을 평가한다.
+- RAG search-test `chat`/`pure`는 retrieval과 content preview를 수행하므로 knowledge base `use` 권한을 평가한다. 단순 KB/detail/document metadata 조회는 `read` 권한 기준이다.
 - `user_knowledge_permissions`는 현재 코드에 없으며 MVP 2에서 추가할 목표 table이다.
 - document별 permission table은 만들지 않는다.
 - document classification과 re-index flag는 `documents.meta_info` metadata convention으로 저장한다.

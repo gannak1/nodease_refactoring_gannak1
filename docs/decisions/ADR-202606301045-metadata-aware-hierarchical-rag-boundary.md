@@ -34,13 +34,13 @@ MBA-75는 RAG를 metadata-aware retrieval, permission-aware retrieval, hierarchi
 
 1. 공식 용어는 `Metadata-aware RAG`, `Permission-aware RAG`, `Hierarchical RAG`로 나눈다.
 2. RBAC는 Permission-aware RAG 경계이고, parent/child chunk 구조는 Hierarchical RAG 경계다.
-3. Metadata는 permission source of truth가 아니다. 권한은 organization membership, team/user permission table, manager 정책으로 판정한다.
+3. Metadata는 permission source of truth가 아니다. Active organization membership은 KB organization scope와 resource permission subject의 전제 조건이고, 이 membership만으로 KB `read`/`use`를 허용하지 않는다. Resource 허용은 organization manager override와 team/user knowledge permission의 effective permission으로 판정한다.
 4. Metadata filter API는 allowlist 기반 구조화 schema만 허용한다. Free-form dict, JSONPath, raw SQL fragment, secret/header/prompt/completion/raw response 관련 key는 허용하지 않는다.
 5. Document metadata source of truth는 `documents.meta_info`다. `document_chunks.metadata`는 denormalized cache이며 충돌 시 document metadata를 우선한다.
 6. `pii` metadata policy는 external LLM prompt path에서 `policy.block`, internal-only search preview에서 `policy.warn`을 기본값으로 둔다.
 7. `confidential`은 KB `use` 통과 시 허용하되 audit/trace policy result를 남긴다.
 8. Hierarchical retrieval은 parent chunk를 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
-9. RAG trace에는 raw chunk content를 기본 저장하지 않는다. `payload_kind='rag.retrieval'` convention으로 chunk id, document id, rank, score, token count, metadata summary를 저장한다.
+9. RAG trace에는 raw chunk content를 기본 저장하지 않는다. `payload_kind='rag.retrieval'` convention으로 chunk id, document id, rank, score, token count, metadata summary를 저장한다. 성공한 retrieval 감사는 별도 `audit_logs.action='rag.retrieve'`로 기록한다.
 10. `user_knowledge_permissions`는 MVP 2 목표 table이다. MBA-75에서 함께 구현할지 별도 이슈로 나눌지는 구현 단위 결정이며, "추가 여부"를 다시 정책적으로 선택하는 문제가 아니다.
 
 ## Rationale
@@ -61,5 +61,6 @@ Access control과 retrieval hierarchy를 분리하면 KB `use` 권한 실패, do
 
 - MBA-75 구현 단위에서 `user_knowledge_permissions`를 함께 추가할지 별도 선행/후속 이슈로 분리할지 결정한다.
 - Hierarchical chunk column에 대한 실제 Alembic migration은 API/schema 구현 PR에서 별도 검증한다.
-- `policy.warn`, `policy.block`, `rag.retrieve` AuditAction 상수와 테스트를 MVP 2 구현 시 추가한다.
+- `policy.warn`, `policy.block`, `rag.retrieve` AuditAction 상수와 테스트를 MVP 2 구현 시 추가한다. `rag.retrieve` audit action과 `rag.retrieval` trace payload kind를 혼동하지 않도록 테스트 이름과 fixture를 분리한다.
 - Search preview content와 workflow trace metadata-only 응답 경계가 UI에서 섞이지 않는지 browser smoke로 확인한다.
+- Knowledge/RAG API의 `X-Organization-Id` 도입 여부와 primary organization fallback 범위를 확정한 뒤 KB organization scope 검증을 연결한다.

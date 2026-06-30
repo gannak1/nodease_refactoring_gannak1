@@ -42,6 +42,8 @@ MBA-75 목표 범위:
 - document metadata source of truth는 `documents.meta_info`다.
 - `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다.
 - RAG search-test와 Workflow Engine runtime retrieval은 같은 filter/policy semantics를 사용한다.
+- RAG search-test `chat`/`pure`는 retrieval과 content preview를 수행하므로 KB `use` 권한을 요구한다. 단순 KB/detail/document metadata 조회는 `read` 권한 기준이다.
+- KB 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 현재 Knowledge/RAG API는 `X-Organization-Id` header 미적용 상태이므로 header 도입 여부와 primary organization fallback 범위를 API 문서에 먼저 확정한다.
 - parent chunk는 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
 - 기존 flat KB는 parent/child metadata가 없으면 flat retrieval로 fallback한다.
 
@@ -67,7 +69,7 @@ MVP 2에서 실제 enforcement를 붙이는 resource:
 
 | 대상 | 정책 |
 | --- | --- |
-| `knowledge_base` | HR team 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능 |
+| `knowledge_base` | active organization scope 안에서 HR team 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능 |
 | `document` | PII/confidential 문서는 `documents.meta_info` metadata policy로 warn/block 가능. document별 permission table은 만들지 않음 |
 | `connection` | 독립 permission resource가 아니다. secret/manage는 제한하고 runtime `use`는 workflow/knowledge base 권한으로 확인 |
 | `llm_model` | MVP 1의 credential `use` + credential-model relation 정책 유지 |
@@ -124,7 +126,7 @@ trace_payloads / trace metadata
 
 이 trace는 "어떤 청크가 모델에 들어갔는가"를 설명하는 핵심 근거다. RAG 없는 LLM node는 기존처럼 동작해야 한다.
 
-Workflow trace/run detail의 기본 응답은 raw chunk content 없이 citation metadata를 반환한다. Search-test response는 권한을 통과한 user에게 chunk content preview를 반환할 수 있지만, 그 content를 trace/audit metadata에 복사하지 않는다.
+Workflow trace/run detail의 기본 응답은 raw chunk content 없이 citation metadata를 반환한다. Search-test response는 KB `use` 권한을 통과한 user에게 chunk content preview를 반환할 수 있지만, 그 content를 trace/audit metadata에 복사하지 않는다.
 
 ## RAG 변경 정책과 Re-index
 
@@ -163,7 +165,7 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - `rag.retrieve`
 - re-index 관련 event
 
-`policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 구현 시 `AuditAction` 상수와 테스트를 함께 추가해야 하는 목표 action이다. 현재 코드의 MVP 1 `AuditAction`에는 아직 없다.
+`policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 구현 시 `AuditAction` 상수와 테스트를 함께 추가해야 하는 목표 action이다. 현재 코드의 MVP 1 `AuditAction`에는 아직 없다. `rag.retrieve`는 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다.
 
 ## 사용자 흐름
 

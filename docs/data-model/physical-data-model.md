@@ -1182,7 +1182,7 @@ MVP 목표 상태 결정:
 
 - `classification` column을 추가하지 않는다.
 - classification 기능은 `documents.meta_info`나 trace/audit metadata convention으로 처리한다. `knowledge_bases.classification` column 기반 필터링이 필요하면 별도 schema 변경으로 분리한다.
-- metadata는 permission source of truth가 아니다. Knowledge base 권한은 permission table과 organization membership 기준으로 판정한다.
+- metadata는 permission source of truth가 아니다. Active organization membership은 KB organization scope와 permission subject의 전제 조건이고, 이 membership만으로 KB `read`/`use`를 허용하지 않는다. Knowledge base resource 허용은 organization manager override와 `team_knowledge_permissions`, 목표 `user_knowledge_permissions`의 effective permission으로 판정한다.
 
 ### `documents`
 
@@ -1551,9 +1551,11 @@ RAG retrieval 전용 table은 만들지 않는다.
 - `token_count`
 - `metadata_summary`
 
+`audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이다. `payload_kind='rag.retrieval'`은 trace payload 분류값이며 audit action을 대체하지 않는다.
+
 이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 현재 물리 데이터 모델 보존 조건 밖의 별도 설계가 필요하다.
 
-RAG trace metadata에는 raw chunk content, raw prompt, credential, provider raw response를 기본 저장하지 않는다. Search-test response는 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
+RAG trace metadata에는 raw chunk content, raw prompt, credential, provider raw response를 기본 저장하지 않는다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
 
 ### Deployment Checklist
 
