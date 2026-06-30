@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 
 ## 목표
@@ -247,7 +247,7 @@ audit_logs
 | `credential.create` | LLM credential 생성 | MVP 1 |
 | `credential.delete` | LLM credential 삭제 | MVP 1 |
 
-MVP 2/3 목표 action인 `policy.warn`, `policy.block`, `rag.retrieve`, `deployment.check`, `recommendation.*`는 현재 코드의 `AuditAction` 상수에는 아직 없다. 구현 시 action 상수와 문서를 함께 추가한다.
+MVP 2/3 목표 action 중 `policy.warn`, `policy.block`, `rag.retrieve`는 MBA-78에서 `AuditAction` 상수와 테스트로 먼저 고정한다. `rag.retrieve`는 RAG retrieval 성공 감사 action으로 사용하고, `policy.warn`/`policy.block`의 실제 document metadata policy enforcement 연결은 MVP 2 후속 구현 범위다. `deployment.check`, `recommendation.*`는 아직 목표 action이다.
 
 현재 `AuditAction`에는 `permission.grant`, `permission.revoke` 상수가 있지만, 등록된 `/api/v1/permissions/*` router는 권한 부여/수정/회수를 위 permission row별 data-change action으로 기록한다.
 

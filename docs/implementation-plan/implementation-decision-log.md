@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
 Related ADRs:
 
 ## 목적
@@ -64,6 +64,44 @@ Related ADRs:
 ```
 
 ## 2026-06-30
+
+### MBA-78 1차 구현 범위와 PR 분리
+
+- 상태: Active
+- 맥락: MBA-75에서 Metadata-aware/Hierarchical RAG 공식 문서와 ADR은 정리됐지만, 실제 RAG 구현은 MBA-78에서 진행한다. 구현 범위에는 metadata filter, KB `use` 권한, active organization header, retrieval trace/audit, hierarchy schema, ingestion, frontend UI가 함께 걸려 있어 한 PR에 모두 담으면 리뷰와 회귀 검증 범위가 과도해진다.
+- 결정: MBA-78 1차 구현은 백엔드 계약 고정에 집중한다. 포함 범위는 RAG 요청 스키마, metadata filter validation, KB `use` effective permission helper, Gateway search-test의 `X-Organization-Id` 적용, Gateway/Workflow retrieval filter 적용, Workflow runtime RAG 권한 적용, `rag.retrieve` audit action과 `rag.retrieval` trace payload 경계의 최소 구현, hierarchy column migration과 flat fallback 기반이다. Full parent-child ingestion, ranking 품질 튜닝, frontend filter/citation UI, `user_knowledge_permissions` model/API는 범위가 커지면 후속 PR로 분리한다.
+- 근거: 공식 문서는 `user_knowledge_permissions`를 MVP 2 목표 table로 두지만 현재 코드에는 model/migration이 없다. Phase 1 권한 원천은 organization manager override와 `team_knowledge_permissions`로 제한하고, active organization membership은 scope 전제 조건으로만 사용한다. Frontend와 full hierarchy ingestion은 backend contract 고정 이후 별도 검증이 더 적절하다.
+- 범위: MBA-78 구현 계획과 1차 PR 분리 기준.
+- 영향 파일: `local/mba-78/implementation-plan.md`, `local/mba-78/open-decisions.md`, RAG schema/permission/retrieval/trace 구현 파일.
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [RBAC permission policy](../data-model/rbac-permission-policy.md), [metadata-aware hierarchical RAG ADR](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
+- 후속 검토: 1차 PR의 변경 파일과 테스트 범위가 커지면 hierarchy ingestion 또는 frontend를 후속 PR로 확정 분리한다. `user_knowledge_permissions` 추가 이슈가 생성되면 KB effective permission helper에서 additive direct grant를 연결한다.
+- ADR 승격 여부: No. 공식 문서의 목표 계약을 PR/커밋 단위로 나누는 구현 계획이며 새 제품 정책을 만들지 않는다.
+
+### MBA-78 org-scoped RAG의 legacy KB organization 처리
+
+- 상태: Active
+- 맥락: 기존 `knowledge_bases.organization_id`는 nullable이고 legacy row가 남을 수 있다. MBA-78 1차 구현은 RAG search-test와 Workflow runtime retrieval을 org-scoped KB `use` 권한으로 전환한다. 이때 KB `organization_id`가 없으면 요청의 `X-Organization-Id` 또는 workflow execution organization으로 보정할지, 아니면 scope 밖 resource로 닫을지 결정해야 한다.
+- 선택지: 1) nullable KB를 요청 organization으로 보정한다. 2) nullable KB는 KB owner/current user fallback으로 허용한다. 3) org-scoped RAG에서는 KB `organization_id`를 필수로 보고 nullable KB를 fail-closed 처리한다.
+- 결정: 3안을 따른다. Org-scoped RAG는 KB `organization_id`가 반드시 있어야 하며, `organization_id=null` legacy KB는 backfill/reassignment 전까지 scope 밖 resource로 처리한다.
+- 근거: 공식 RAG/RBAC 문서는 active organization context와 KB `organization_id` 비교를 scope prerequisite로 둔다. 요청 header나 workflow context로 nullable KB를 보정하면 cross-tenant resource attribution이 불명확해지고, organization manager override와 team knowledge permission의 target organization도 방어하기 어렵다.
+- 범위: RAG search-test API, Workflow Engine LLM node RAG retrieval, KB effective permission helper, RAG 권한 테스트.
+- 영향 파일: `apps/shared/services/permissions.py`, `apps/shared/tests/services/test_permissions.py`, `docs/api/knowledge-rag.md`, `docs/architecture/knowledge-rag.md`
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [metadata-aware hierarchical RAG ADR](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
+- 후속 검토: Legacy KB backfill 또는 reassignment 관리 API가 도입되면 nullable KB를 운영에서 어떻게 발견/정리할지 migration/runbook으로 분리한다.
+- ADR 승격 여부: No. ADR의 org scope prerequisite를 구현에서 fail-closed로 적용한 범위이며, 별도 제품 정책을 새로 만들지 않는다.
+
+### MBA-78 RAG credential routing, denial audit, trace summary 경계
+
+- 상태: Active
+- 맥락: RAG retrieval은 embedding/query rewrite/generation 단계에서 LLM credential을 사용한다. MBA-78 1차 구현에서 RAG는 active organization scope를 필수로 전환했으므로, multi-organization user가 다른 organization credential로 routing되는 것을 막아야 한다. 또한 KB `use` 권한 거부는 resource permission 실패이고, per-chunk evidence는 run/node metadata가 아니라 trace payload에 남겨야 한다.
+- 선택지: 1) RetrievalService 내부 LLM 호출은 기존 user-only credential routing을 유지한다. 2) RetrievalService 생성 시 active organization을 전달하고 모든 내부 LLM client 조회에 사용한다. 3) Endpoint/runtime마다 credential을 미리 만들어 RetrievalService에 주입한다.
+- 결정: 2안을 따른다. Gateway와 Workflow Engine `RetrievalService`는 `organization_id`를 선택 인자로 받고, embedding/query rewrite/generation client 조회 시 `LLMService.get_client_for_user(..., organization_id=...)`로 전달한다. Workflow runtime은 여러 KB를 검색하기 전에 모든 KB의 `use` 권한을 먼저 검증한다. KB `use` 거부는 `audit_logs.action='permission.denied'`로 한 번 기록하고, successful retrieval은 `rag.retrieve`로 기록한다. Run/node RAG metadata는 `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary` 등 summary field만 저장하고 per-chunk evidence는 `trace_payloads.payload_kind='rag.retrieval'`로 분리한다. Runtime payload body에는 `workflow_node_run_id`를 중복 저장하지 않고 logger가 `trace_payloads.workflow_node_run_id` 컬럼으로 연결한다.
+- 근거: 공식 RAG/RBAC 문서는 active organization context와 KB organization scope 비교를 전제 조건으로 둔다. LLM credential routing에도 같은 organization context를 전달해야 cross-tenant credential 사용을 피할 수 있다. Permission denial과 policy block/warn은 audit action 의미가 다르므로 섞지 않는다. Run/node metadata에 per-chunk evidence를 복사하면 trace payload visibility/redaction 경계를 우회할 수 있다.
+- 범위: MBA-78 RAG search-test, Workflow Engine LLM node RAG retrieval, RetrievalService LLM client routing, trace metadata sanitizer.
+- 영향 파일: `apps/gateway/services/retrieval.py`, `apps/workflow_engine/services/retrieval.py`, `apps/gateway/api/v1/endpoints/rag.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py`, `apps/shared/services/permission_audit.py`, `apps/shared/services/tracing/metadata.py`, `apps/workflow_engine/workflow/core/workflow_engine.py`, RAG/trace/RBAC 문서와 테스트.
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [RBAC permission policy](../data-model/rbac-permission-policy.md), [audit action ADR](../decisions/ADR-202606290131-audit-action-naming-standard.md), [metadata-aware hierarchical RAG ADR](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
+- 후속 검토: `policy.warn`/`policy.block` document metadata enforcement가 연결되면 permission denial audit와 policy audit가 중복되지 않는지 테스트한다. Trace payload access policy가 raw/evidence 조회와 UI citation 표시를 어떻게 분리할지도 별도 검증한다.
+- ADR 승격 여부: No. 기존 ADR/RBAC/trace 계약을 구현 경계에 적용한 결정이며 새 제품 정책을 추가하지 않는다.
 
 ### MBA-67 organization membership helper 전환
 - 상태: Active
