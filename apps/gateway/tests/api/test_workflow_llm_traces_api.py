@@ -204,8 +204,6 @@ class TestWorkflowLlmTracesApi:
                     "auth_state": "operator",
                     "team_id": str(source_team_id),
                     "team_name": "운영팀",
-                    "user_id": None,
-                    "user_name": None,
                 }
             ],
         }

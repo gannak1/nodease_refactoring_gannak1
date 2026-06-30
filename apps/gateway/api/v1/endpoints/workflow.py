@@ -595,6 +595,7 @@ def get_workflow(
 @router.get(
     "/{workflow_id}/permissions/me",
     response_model=WorkflowPermissionResponse,
+    response_model_exclude_none=True,
 )
 def get_my_workflow_permission(
     workflow_id: str,

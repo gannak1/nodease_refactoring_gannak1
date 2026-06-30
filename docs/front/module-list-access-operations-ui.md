@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-74 working tree
+Verified Against: feature/mba-74 @ PR #131 head
 
 ## 목적
 
@@ -271,9 +271,10 @@ AI 운영팀 외 2개 team
 표시 기준은 다음과 같다.
 
 - 첫 source가 team이면 `team_name`을 우선 표시한다.
-- 첫 source가 user이면 `user_name`이 있으면 표시하고, 없으면 `개인 직접 권한`으로 표시한다.
+- 첫 source가 user이면 `user_name` 유무와 관계없이 `개인 직접 권한`으로 표시한다.
 - 복수 source면 `첫 source label 외 N개`로 축약한다.
 - `sources=[]`이면 권한 출처가 없는 override 또는 legacy fallback일 수 있으므로 오류로 보지 않는다.
+- `sources=[]`이면 `권한 출처 없음`처럼 중립 라벨로 표시하고, `출처 연동 예정`처럼 미구현 상태로 보이게 하지 않는다.
 
 ## 실행 상태 표시
 

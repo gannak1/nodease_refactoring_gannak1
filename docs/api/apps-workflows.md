@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-74 working tree
+Verified Against: feature/mba-74 @ PR #131 head
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -285,6 +285,8 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 | `user_id` | UUID | `type="user"`일 때 Yes | 직접 권한을 받은 user id |
 | `user_name` | string \| null | `type="user"`일 때 No | 백엔드가 만든 user 표시 문자열. user 이름이 없으면 email을 fallback으로 넣을 수 있다. |
 | `auth_state` | string | Yes | 해당 source row의 workflow auth_state |
+
+API 응답은 source type에 맞지 않는 sibling field를 생략한다. 예를 들어 team source에는 `user_id`, `user_name`을 내려주지 않고, user source에는 `team_id`, `team_name`을 내려주지 않는다.
 
 반환 규칙:
 

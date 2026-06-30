@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-74 working tree
+Verified Against: feature/mba-74 @ PR #131 head
 
 이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 

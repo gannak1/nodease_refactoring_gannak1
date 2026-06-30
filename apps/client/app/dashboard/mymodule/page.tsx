@@ -120,7 +120,7 @@ const permissionLabelOf = (row: ModuleOperationRow) => {
 
 const sourceLabelOf = (row: ModuleOperationRow) => {
   if (!row.app.workflow_id) return '권한 확인 대기';
-  if (row.permissionSources.length === 0) return '출처 연동 예정';
+  if (row.permissionSources.length === 0) return '권한 출처 없음';
 
   const [firstSource, ...rest] = row.permissionSources;
   const sourceName =

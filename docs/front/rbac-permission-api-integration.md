@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-74 working tree
+Verified Against: feature/mba-74 @ PR #131 head
 
 ## 목적
 
