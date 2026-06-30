@@ -18,6 +18,11 @@ from apps.gateway.services.app_service import AppService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_AUTH_MEMBER,
+    ORGANIZATION_MEMBERSHIP_ACTIVE,
+    OrganizationMembership,
+)
 from apps.shared.db.models.team import (
     TeamMembership,
     TeamWorkflowPermission,
@@ -319,6 +324,7 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     user_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
     deployment_id = uuid.uuid4()
+    team_id = uuid.uuid4()
     deployment = SimpleNamespace(
         id=deployment_id,
         app_id=uuid.uuid4(),
@@ -348,6 +354,20 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
         "get_effective_workflow_auth_state",
         lambda *a, **kwargs: "builder",
     )
+    monkeypatch.setattr(
+        app_service,
+        "get_workflow_permission_sources_by_workflow_ids",
+        lambda *a, **kwargs: {
+            workflow_id: [
+                {
+                    "type": "team",
+                    "team_id": team_id,
+                    "team_name": "운영팀",
+                    "auth_state": "builder",
+                }
+            ]
+        },
+    )
     monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"})
     monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
     monkeypatch.setattr(
@@ -371,7 +391,16 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     assert row["permission"]["auth_state"] == "builder"
     assert row["permission"]["can_write"] is True
     assert row["permission"]["can_deploy"] is False
-    assert row["permission_sources"] == []
+    assert row["permission_sources"] == [
+        {
+            "type": "team",
+            "auth_state": "builder",
+            "team_id": team_id,
+            "team_name": "운영팀",
+            "user_id": None,
+            "user_name": None,
+        }
+    ]
     assert row["deployment"]["state"] == "active"
     assert row["latest_run"]["state"] == "not_started"
 
@@ -401,6 +430,11 @@ def test_list_app_operations_filters_by_capability(monkeypatch):
         app_service,
         "get_effective_workflow_auth_state",
         lambda *a, **kwargs: "operator",
+    )
+    monkeypatch.setattr(
+        app_service,
+        "get_workflow_permission_sources_by_workflow_ids",
+        lambda *a, **kwargs: {},
     )
     monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
     monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
@@ -463,6 +497,11 @@ def test_list_app_operations_stops_permission_scan_after_page_is_filled(monkeypa
         app_service,
         "get_effective_workflow_auth_state",
         lambda *a, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(
+        app_service,
+        "get_workflow_permission_sources_by_workflow_ids",
+        lambda *a, **kwargs: {},
     )
     monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {})
     monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
@@ -589,6 +628,7 @@ def test_owner_or_manager_without_membership_can_create_and_list_apps_and_workfl
     organization_kwargs[manager_field] = user_id
     session = _RouteSession(
         organizations=[_route_organization(id=organization_id, **organization_kwargs)],
+        users=[_route_user(user_id)],
     )
     _override_route_dependencies(session, user_id)
 
@@ -640,9 +680,13 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
     organization_id = uuid.uuid4()
     session = _RouteSession(
         organizations=[_route_organization(id=organization_id, created_by=uuid.uuid4())],
+        organization_memberships=[
+            _route_organization_membership(user_id, organization_id)
+        ],
         memberships=[
             _route_membership(user_id=user_id, organization_id=organization_id)
         ],
+        users=[_route_user(user_id)],
     )
     _override_route_dependencies(session, user_id)
 
@@ -761,6 +805,7 @@ class _RouteSession:
         apps=None,
         workflows=None,
         users=None,
+        organization_memberships=None,
         team_workflow_permissions=None,
         user_workflow_permissions=None,
     ):
@@ -769,6 +814,7 @@ class _RouteSession:
         self.apps = list(apps or [])
         self.workflows = list(workflows or [])
         self.users = list(users or [])
+        self.organization_memberships = list(organization_memberships or [])
         self.team_workflow_permissions = list(team_workflow_permissions or [])
         self.user_workflow_permissions = list(user_workflow_permissions or [])
         self.added = []
@@ -860,6 +906,8 @@ class _RouteQuery:
             return self.session.workflows
         if self.model is User:
             return self.session.users
+        if self.model is OrganizationMembership:
+            return self.session.organization_memberships
         if self.model is TeamWorkflowPermission:
             return self.session.team_workflow_permissions
         if self.model is UserWorkflowPermission:
@@ -908,7 +956,15 @@ def _column_value(value, column):
     values = {
         "organization.id": getattr(value, "id", missing),
         "organization.is_active": getattr(value, "is_active", missing),
+        "organization_memberships.user_id": getattr(value, "user_id", missing),
+        "organization_memberships.organization_id": getattr(
+            value, "organization_id", missing
+        ),
+        "organization_memberships.membership_state": getattr(
+            value, "membership_state", missing
+        ),
         "users.id": getattr(value, "id", missing),
+        "users.deactivated_at": getattr(value, "deactivated_at", missing),
         "apps.id": getattr(value, "id", missing),
         "apps.organization_id": getattr(value, "organization_id", missing),
         "apps.name": getattr(value, "name", missing),
@@ -950,6 +1006,42 @@ def _route_organization(id, created_by, managed_by=None, is_active=True):
         is_active=is_active,
         created_at=now,
         updated_at=now,
+    )
+
+
+def _route_user(id, deactivated_at=None):
+    now = datetime.now(timezone.utc)
+    return User(
+        id=id,
+        email=f"{id.hex[:8]}@moduly.local",
+        name="Route User",
+        social_provider="local",
+        deactivated_at=deactivated_at,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _route_organization_membership(
+    user_id,
+    organization_id,
+    organization_auth_state=ORGANIZATION_AUTH_MEMBER,
+    membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE,
+):
+    now = datetime.now(timezone.utc)
+    return OrganizationMembership(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        user_id=user_id,
+        membership_state=membership_state,
+        organization_auth_state=organization_auth_state,
+        invited_by=user_id,
+        invited_at=now,
+        accepted_at=now,
+        created_at=now,
+        updated_at=now,
+        options={},
+        flags=0,
     )
 
 

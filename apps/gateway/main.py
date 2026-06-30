@@ -63,6 +63,8 @@ async def add_request_id(request: Request, call_next):
     token = set_current_metadata(
         {
             "ip": request.client.host if request.client else None,
+            "method": request.method,
+            "path": request.url.path,
             "user_agent": request.headers.get("user-agent"),
             "request_id": request_id,
         }

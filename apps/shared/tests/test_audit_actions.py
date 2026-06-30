@@ -6,3 +6,10 @@ def test_mba_44_canonical_audit_actions_are_defined():
     assert AuditAction.PERMISSION_DENIED == "permission.denied"
     assert AuditAction.LLM_CALL == "llm.call"
     assert AuditAction.DEPLOYMENT_ACTIVATE_PREVIOUS == "deployment.activate_previous"
+
+
+def test_organization_membership_audit_actions_are_defined():
+    assert AuditAction.ORGANIZATION_INVITE == "organization.invite"
+    assert AuditAction.ORGANIZATION_MEMBER_ACCEPT == "organization.member.accept"
+    assert AuditAction.ORGANIZATION_MEMBER_UPDATE == "organization.member.update"
+    assert AuditAction.ORGANIZATION_MEMBER_REMOVE == "organization.member.remove"

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
@@ -78,7 +78,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- |
 | `users` | 사용자, 실행 actor, resource owner |
 | `organization` | 조직 범위, tenant-like boundary |
-| `organization_memberships` | User와 organization의 직접 소속 관계. MBA-67에서 permission helper와 organization/team/user/permission API 일부가 이 기준으로 전환됐다. MBA-71에서 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 후속 범위 |
+| `organization_memberships` | User와 organization의 직접 소속 관계. MBA-67에서 permission helper와 organization/team/user/permission API 일부가 이 기준으로 전환됐다. MBA-71에서 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 후속 범위 |
 | `teams` | 조직 내 권한 부여 단위 |
 | `team_memberships` | 사용자와 팀의 소속 관계 |
 | `team_workflow_permissions` | 팀 단위 workflow 권한 |
@@ -109,7 +109,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 
 ### Implemented Foundation Table
 
-아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. MBA-67에서 permission helper와 일부 API endpoint가 organization membership 기준으로 전환됐고, MBA-71에서 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation API와 full membership 관리 UI는 아직 완료된 것이 아니며 후속 범위다.
+아래 table은 MBA-66에서 DB/model/migration foundation으로 추가되었다. MBA-67에서 permission helper와 일부 API endpoint가 organization membership 기준으로 전환됐고, MBA-71에서 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
 
 | Table | 도입 단계 | 목표 역할 |
 | --- | --- | --- |
@@ -346,7 +346,7 @@ MVP 목표 상태 결정:
 
 ### `organization_memberships`
 
-MBA-66에서 추가된 MVP 2-0 foundation table이다. MBA-67 이후 permission helper와 일부 API endpoint는 이 table을 organization scope와 manager 판정의 우선 기준으로 사용한다. Organization member/invitation API와 full membership 관리 UI는 아직 후속 범위다.
+MBA-66에서 추가된 MVP 2-0 foundation table이다. MBA-67 이후 permission helper와 일부 API endpoint는 이 table을 organization scope와 manager 판정의 우선 기준으로 사용한다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
 
 역할:
 
@@ -1131,6 +1131,10 @@ MVP 목표 상태 결정:
 | user LLM credential 권한 생성/수정/삭제 | `user_llm_permission.created`, `user_llm_permission.updated`, `user_llm_permission.deleted` |
 | 현재 ORM data-change listener가 기록할 수 있는 team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
 | MVP 2 user knowledge permission table/API 구현 시 고정할 user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
+| organization member 초대 생성 | `organization.invite` |
+| organization member 초대 수락 | `organization.member.accept` |
+| organization member 상태 또는 organization auth_state 변경 | `organization.member.update` |
+| organization member 제거 | `organization.member.remove` |
 | 권한 부족 거부 | `permission.denied` |
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -95,7 +95,7 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `organization.required` | `400` | active organization이 필요하지만 결정되지 않음 |
 | `resource.not_found` | `404` | 리소스 없음 |
 | `resource.conflict` | `409` | 중복 또는 상태 충돌 |
-| `validation.failed` | `422` | request schema validation 실패 |
+| `validation.failed` | `400` 또는 `422` | request schema validation 실패 또는 endpoint/service 단계의 의미상 validation 실패 |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
 
 ## 보안 규칙

@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
 Created At: 2026-06-29 01:45 KST
 Related ADRs: [ADR-202606271559-active-organization](ADR-202606271559-active-organization.md)
 
@@ -20,9 +20,10 @@ MVP 1 기준 active organization context는 request header 방식으로 승인�
 1. API 요청은 `X-Organization-Id` header로 active organization을 전달한다.
 2. 서버는 active organization을 session/cookie에 저장하지 않는다.
 3. `GET /api/v1/organizations/current`는 header 값을 검증해 현재 요청의 active organization을 반환한다.
-4. `GET /api/v1/organizations`는 사용자가 active membership으로 접근 가능한 organization 목록을 반환한다.
-5. `PATCH /api/v1/organizations/{organization_id}`는 header organization과 path organization이 일치해야 하며, organization owner/manager만 수정할 수 있다.
-6. header가 없는 legacy/과도기 경로에서는 첫 active organization membership 기반 primary organization fallback을 제한적으로 사용할 수 있다.
+4. `GET /api/v1/organizations`는 기존 frontend 호환을 위해 active organization context 후보만 반환한다. `invited` membership은 포함하지 않는다.
+5. `GET /api/v1/organizations/memberships`는 사용자의 organization membership 목록을 반환한다. 초대 수락 UX를 위해 `invited` membership을 포함할 수 있지만, `X-Organization-Id` active organization context로 인정되는 것은 `active` membership뿐이다.
+6. `PATCH /api/v1/organizations/{organization_id}`는 header organization과 path organization이 일치해야 하며, organization owner/manager만 수정할 수 있다.
+7. header가 없는 legacy/과도기 경로에서는 첫 active organization membership 기반 primary organization fallback을 제한적으로 사용할 수 있다.
 
 ## 구현 기준
 

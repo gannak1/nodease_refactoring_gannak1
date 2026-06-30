@@ -120,13 +120,13 @@ const permissionLabelOf = (row: ModuleOperationRow) => {
 
 const sourceLabelOf = (row: ModuleOperationRow) => {
   if (!row.app.workflow_id) return '권한 확인 대기';
-  if (row.permissionSources.length === 0) return '출처 연동 예정';
+  if (row.permissionSources.length === 0) return '권한 출처 없음';
 
   const [firstSource, ...rest] = row.permissionSources;
   const sourceName =
-    firstSource.team_name ||
-    firstSource.user_name ||
-    (firstSource.type === 'user' ? '개인 직접 권한' : '권한 출처');
+    firstSource.type === 'user'
+      ? '개인 직접 권한'
+      : firstSource.team_name || '권한 출처';
 
   return rest.length > 0 ? `${sourceName} 외 ${rest.length}개` : sourceName;
 };

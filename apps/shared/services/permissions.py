@@ -20,6 +20,7 @@ from apps.shared.db.models.team import (
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
+    AUTH_STATE_RANK,
     AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
     llm_credential_auth_state_allows,
@@ -27,6 +28,7 @@ from apps.shared.permissions import (
     stronger_resource_auth_state,
     workflow_auth_state_allows,
 )
+from apps.shared.schemas.permission import WorkflowPermissionSource
 from sqlalchemy.orm import Session
 
 
@@ -300,6 +302,146 @@ def get_effective_workflow_auth_state(
 
     effective_state = _strongest_auth_state(team_rows, AUTH_STATE_NONE)
     return _strongest_auth_state(direct_rows, effective_state)
+
+
+def get_workflow_permission_sources(
+    db: Session,
+    user_id: Any,
+    workflow_id: Any,
+    organization_id: Any = None,
+) -> list[WorkflowPermissionSource]:
+    """현재 user의 workflow 권한 출처를 team/user direct source로 반환한다."""
+    user_uuid = coerce_uuid(user_id)
+    workflow, organization_uuid = _workflow_scope(db, workflow_id, organization_id)
+    if user_uuid is None or workflow is None or organization_uuid is None:
+        return []
+    if get_organization_auth_state(db, user_uuid, organization_uuid) == AUTH_STATE_NONE:
+        return []
+
+    sources_by_workflow_id = _workflow_permission_sources_for_workflow_ids(
+        db,
+        user_uuid,
+        [workflow.id],
+        organization_uuid,
+    )
+    return sources_by_workflow_id.get(workflow.id, [])
+
+
+def get_workflow_permission_sources_by_workflow_ids(
+    db: Session,
+    user_id: Any,
+    workflow_ids: list[Any],
+    organization_id: Any,
+) -> dict[uuid.UUID, list[WorkflowPermissionSource]]:
+    """여러 workflow의 권한 출처를 한 번에 조회한다."""
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    workflow_uuid_list = [
+        workflow_uuid
+        for workflow_id in workflow_ids
+        if (workflow_uuid := coerce_uuid(workflow_id)) is not None
+    ]
+    if not workflow_uuid_list or user_uuid is None or organization_uuid is None:
+        return {}
+    if get_organization_auth_state(db, user_uuid, organization_uuid) == AUTH_STATE_NONE:
+        return {workflow_id: [] for workflow_id in workflow_uuid_list}
+
+    return _workflow_permission_sources_for_workflow_ids(
+        db,
+        user_uuid,
+        workflow_uuid_list,
+        organization_uuid,
+    )
+
+
+def _workflow_permission_sources_for_workflow_ids(
+    db: Session,
+    user_uuid: uuid.UUID,
+    workflow_ids: list[uuid.UUID],
+    organization_uuid: uuid.UUID,
+) -> dict[uuid.UUID, list[WorkflowPermissionSource]]:
+    workflow_id_set = set(workflow_ids)
+    sources_by_workflow_id: dict[uuid.UUID, list[WorkflowPermissionSource]] = {
+        workflow_id: [] for workflow_id in workflow_id_set
+    }
+    team_rows = (
+        db.query(TeamWorkflowPermission, Team)
+        .join(Team, Team.id == TeamWorkflowPermission.team_id)
+        .join(TeamMembership, TeamMembership.team_id == TeamWorkflowPermission.team_id)
+        .join(Workflow, Workflow.id == TeamWorkflowPermission.workflow_id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamWorkflowPermission.workflow_id.in_(workflow_id_set),
+            Workflow.organization_id == organization_uuid,
+            Team.is_active.is_(True),
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamWorkflowPermission.grantee_organization_id == organization_uuid,
+            TeamMembership.grantee_organization_id
+            == TeamWorkflowPermission.grantee_organization_id,
+            Team.organization_id == organization_uuid,
+        )
+        .order_by(Team.name.asc(), TeamWorkflowPermission.id.asc())
+        .all()
+    )
+    direct_rows = (
+        db.query(UserWorkflowPermission, User)
+        .join(User, User.id == UserWorkflowPermission.user_id)
+        .join(Workflow, Workflow.id == UserWorkflowPermission.workflow_id)
+        .filter(
+            UserWorkflowPermission.user_id == user_uuid,
+            UserWorkflowPermission.workflow_id.in_(workflow_id_set),
+            Workflow.organization_id == organization_uuid,
+            UserWorkflowPermission.grantee_organization_id == organization_uuid,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc(), UserWorkflowPermission.id.asc())
+        .all()
+    )
+
+    for permission, team in team_rows:
+        auth_state = normalize_resource_auth_state(permission.auth_state)
+        if auth_state == AUTH_STATE_NONE:
+            continue
+        sources_by_workflow_id.setdefault(permission.workflow_id, []).append(
+            WorkflowPermissionSource(
+                type="team",
+                team_id=team.id,
+                team_name=team.name,
+                auth_state=auth_state,
+            )
+        )
+
+    for permission, user in direct_rows:
+        auth_state = normalize_resource_auth_state(permission.auth_state)
+        if auth_state == AUTH_STATE_NONE:
+            continue
+        sources_by_workflow_id.setdefault(permission.workflow_id, []).append(
+            WorkflowPermissionSource(
+                type="user",
+                user_id=user.id,
+                user_name=user.name or user.email,
+                auth_state=auth_state,
+            )
+        )
+
+    return {
+        workflow_id: _sort_workflow_permission_sources(sources)
+        for workflow_id, sources in sources_by_workflow_id.items()
+    }
+
+
+def _sort_workflow_permission_sources(
+    sources: list[WorkflowPermissionSource],
+) -> list[WorkflowPermissionSource]:
+    return sorted(
+        sources,
+        key=lambda source: (
+            -AUTH_STATE_RANK.get(source.auth_state, 0),
+            0 if source.type == "team" else 1,
+            source.team_name or source.user_name or "",
+            str(source.team_id or source.user_id or ""),
+        ),
+    )
 
 
 def has_workflow_permission(
