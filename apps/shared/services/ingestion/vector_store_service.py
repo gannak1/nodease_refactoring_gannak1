@@ -169,6 +169,7 @@ class VectorStoreService:
                     knowledge_base_id=doc.knowledge_base_id,
                     content=encrypted_content,
                     chunk_index=i,
+                    chunk_level="flat",
                     token_count=chunk.get("token_count", 0),
                     metadata_=metadata,
                     embedding=embedding,

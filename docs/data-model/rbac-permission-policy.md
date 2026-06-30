@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
+Verified Against: feature/mba-78 @ HEAD (base dev d0c858e)
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
@@ -337,7 +337,7 @@ Active `organization_memberships` row는 KB가 속한 organization scope 안의 
 | Workflow save API | workflow `write` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Workflow execute API | workflow `execute` | `team_workflow_permissions`, `user_workflow_permissions` |
 | Workflow engine LLM node | credential `use` | `team_llm_permissions`, `user_llm_permissions` |
-| Workflow engine RAG node | 목표: knowledge base `use` | 현재 코드: LLM node RAG retrieval은 KB `use` enforcement 없음. 목표: `team_knowledge_permissions`, `user_knowledge_permissions` |
+| Workflow engine RAG node | knowledge base `use` | 현재 코드: MBA-78 1차에서 LLM node RAG retrieval은 KB `use`를 적용한다. Phase 1 권한 원천은 organization manager override와 `team_knowledge_permissions`이며, `user_knowledge_permissions` additive grant는 table/API 추가 후 연결한다. |
 | Workflow engine DB node | workflow `execute`; connection secret은 server-side runtime만 사용 | `team_workflow_permissions`, `user_workflow_permissions`, `connections` |
 | Knowledge base DB source 사용 | 목표: knowledge base `use`; connection secret은 server-side runtime만 사용 | 현재 코드: DB source upload는 `connections.user_id == current_user.id`를 확인하지만 기존 KB scope 검증은 약함. 목표: `team_knowledge_permissions`, `user_knowledge_permissions`, `connections` |
 | Connection secret/manage | connection owner 또는 organization owner/manager | `connections` |
@@ -433,8 +433,8 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | team LLM credential 권한 회수 | `team_llm_permission.deleted` | team LLM permission row 삭제 |
 | user LLM credential 권한 생성/수정 | `user_llm_permission.created` 또는 `user_llm_permission.updated` | user LLM permission row 생성/변경 |
 | user LLM credential 권한 회수 | `user_llm_permission.deleted` | user LLM permission row 삭제 |
-| team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | 현재 `team_knowledge_permissions` row 생성/변경. KB permission API/enforcement 연결은 MVP 2 범위 |
-| team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | 현재 `team_knowledge_permissions` row 삭제. KB permission API/enforcement 연결은 MVP 2 범위 |
+| team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | 현재 `team_knowledge_permissions` row 생성/변경. MBA-78 1차는 RAG search-test와 Workflow runtime의 KB `use` enforcement를 먼저 연결했고, 전체 KB permission API 정렬은 후속 범위 |
+| team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | 현재 `team_knowledge_permissions` row 삭제. MBA-78 1차는 RAG search-test와 Workflow runtime의 KB `use` enforcement를 먼저 연결했고, 전체 KB permission API 정렬은 후속 범위 |
 | user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 생성/변경 |
 | user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | MVP 2 `user_knowledge_permissions` table/API 구현 시 row 삭제 |
 | organization member 초대 생성 | `organization.invite` | 기존 가입 user를 organization member로 초대 |
@@ -473,9 +473,9 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 
 ### MVP 2
 
-- knowledge base `read/write/use`
+- knowledge base `read/write/use` endpoint 전체 정렬
 - `user_knowledge_permissions` additive grant 추가
-- RAG node의 knowledge base `use` check
+- RAG node knowledge base `use` check의 전체 회귀 고정과 stale legacy path 축소
 - organization-wide audit search permission과 audit permission 기반 조회 통합
 - 현재 trace redaction/visibility policy와 audit permission model의 관리/검색 통합
 

@@ -3,14 +3,14 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
 Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목표
 
 MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소스와 RAG 실행 경로에 적용한다.
 
-이 문서는 MVP 2 목표 상태를 정의한다. 현재 `dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1` 코드에서는 Knowledge Base API가 주로 owner/current-user scope로 동작하지만, RAG API 일부 경로는 owner/scope 검증이 약하다. LLM node의 RAG retrieval은 knowledge base `use` 권한 enforcement를 아직 적용하지 않는다. `classification`, `policy.warn`, `policy.block`, `rag.retrieve`, 변경 문서 단위 re-index UI/API도 목표 범위다.
+이 문서는 MVP 2 목표 상태를 정의한다. 현재 Knowledge Base API는 주로 owner/current-user scope로 동작한다. MBA-78 1차 구현은 RAG search-test와 Workflow Engine runtime retrieval에 KB `use` 권한 enforcement, metadata filter, `rag.retrieve` 감사 action의 최소 경계를 붙인다. `classification` 정책 enforcement, `policy.warn`, `policy.block`, 변경 문서 단위 re-index UI/API, 전체 Knowledge/RAG endpoint scope 정렬은 여전히 목표 범위다.
 
 결과물:
 
@@ -170,14 +170,14 @@ UI와 API는 최소한 아래 필터를 제공한다.
 MVP 2에서 검색해야 하는 대표 이벤트:
 
 - 현재 ORM data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`, `team_knowledge_permission.*`
-- MVP 2 knowledge base permission API/enforcement 및 user direct grant 목표 action: `user_knowledge_permission.*`. `team_knowledge_permission.*`는 현재 table/listener 기준으로 이미 가능한 action이지만, KB permission API와 runtime enforcement 연결은 MVP 2 구현 범위다.
+- MVP 2 knowledge base permission API 및 user direct grant 목표 action: `user_knowledge_permission.*`. `team_knowledge_permission.*`는 현재 table/listener 기준으로 이미 가능한 action이다. MBA-78 1차는 RAG search-test와 Workflow runtime의 KB `use` enforcement를 먼저 연결했고, 전체 Knowledge/RAG endpoint permission API 정렬과 user direct grant는 후속 범위다.
 - `permission.denied`
 - `policy.warn`
 - `policy.block`
 - `rag.retrieve`
 - re-index 관련 event
 
-`policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 구현 시 `AuditAction` 상수와 테스트를 함께 추가해야 하는 목표 action이다. 현재 코드의 MVP 1 `AuditAction`에는 아직 없다. `rag.retrieve`는 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다.
+`rag.retrieve`는 RAG retrieval 성공 audit action이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이므로 구현과 테스트에서 분리한다. `policy.warn`/`policy.block`은 action 상수와 naming convention을 먼저 고정하고, 실제 document metadata policy enforcement는 후속 구현에서 연결한다.
 
 ## 사용자 흐름
 
@@ -193,12 +193,12 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 ## 추가 개발 범위
 
-- knowledge base 권한 enforcement와 document metadata policy
+- RAG search-test/runtime 밖의 knowledge base 권한 enforcement와 document metadata policy
 - `user_knowledge_permissions` additive grant 추가. 현재 코드에는 아직 없음
-- metadata-aware retrieval filter와 vector/keyword 동일 semantics
-- hierarchical chunk schema, ingestion, parent/child retrieval
+- metadata-aware retrieval filter의 API/UI 확장과 품질 검증
+- hierarchical chunk schema 기반 ingestion, parent/child retrieval
 - DB connection secret/manage/use 분리 enforcement
-- RAG retrieval trace metadata 저장
+- RAG retrieval trace metadata의 run/node summary 확장과 UI/API 노출
 - data classification metadata convention 및 API/UI 노출
 - policy decision 저장
 - audit log 검색 API/UI
@@ -234,11 +234,12 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 작업:
 
-- knowledge base `use` 권한 체크
-- document metadata policy 체크와 connection secret/manage/use 분리 구현
-- LLM node 실행 전 knowledgeBases permission 검증
-- knowledge base `use` 권한 실패는 `permission.denied`로 `audit_logs`에 저장
-- document metadata/model/trace policy 차단은 `policy.block`으로 `audit_logs`에 저장
+- MBA-78 1차 완료: RAG search-test와 LLM node runtime의 knowledge base `use` 권한 체크
+- 후속: 전체 Knowledge/RAG endpoint permission API 정렬
+- 후속: document metadata policy 체크와 connection secret/manage/use 분리 구현
+- MBA-78 1차 완료: LLM node 실행 전 knowledgeBases permission 검증
+- MBA-78 1차 완료: knowledge base `use` 권한 실패는 `permission.denied`로 `audit_logs`에 저장
+- 후속: document metadata/model/trace policy 차단은 `policy.block`으로 `audit_logs`에 저장
 
 검증:
 

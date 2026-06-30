@@ -5,6 +5,9 @@ def test_mba_44_canonical_audit_actions_are_defined():
     assert AuditAction.WORKFLOW_EXECUTE == "workflow.execute"
     assert AuditAction.PERMISSION_DENIED == "permission.denied"
     assert AuditAction.LLM_CALL == "llm.call"
+    assert AuditAction.RAG_RETRIEVE == "rag.retrieve"
+    assert AuditAction.POLICY_WARN == "policy.warn"
+    assert AuditAction.POLICY_BLOCK == "policy.block"
     assert AuditAction.DEPLOYMENT_ACTIVATE_PREVIOUS == "deployment.activate_previous"
 
 

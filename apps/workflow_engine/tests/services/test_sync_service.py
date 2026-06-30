@@ -1,11 +1,21 @@
 import uuid
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
-from apps.shared.services.ingestion.processors.base import ProcessingResult
-from apps.workflow_engine.services.sync_service import SyncService
+sys.modules.setdefault("openai", SimpleNamespace(OpenAI=object))
+
+from apps.shared.db.models.knowledge import (  # noqa: E402 - openai 스텁 등록 이후 가져오기
+    Document,
+    KnowledgeBase,
+    SourceType,
+)
+from apps.shared.services.ingestion.processors.base import (  # noqa: E402 - openai 스텁 등록 이후 가져오기
+    ProcessingResult,
+)
+from apps.workflow_engine.services.sync_service import SyncService  # noqa: E402 - openai 스텁 등록 이후 가져오기
 
 
 @pytest.fixture
@@ -19,7 +29,12 @@ def mock_user_id():
 
 
 @pytest.fixture
-def sync_service(mock_db_session, mock_user_id):
+def mock_organization_id():
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def sync_service(mock_db_session, mock_user_id, mock_organization_id):
     # Mocking internal services to avoid actual instantiation
     with (
         patch(
@@ -28,11 +43,20 @@ def sync_service(mock_db_session, mock_user_id):
         patch(
             "apps.workflow_engine.services.sync_service.VectorStoreService"
         ) as MockVectorStoreService,
+        patch(
+            "apps.workflow_engine.services.sync_service.has_knowledge_base_permission",
+            return_value=True,
+        ) as mock_permission,
     ):
-        service = SyncService(db=mock_db_session, user_id=mock_user_id)
+        service = SyncService(
+            db=mock_db_session,
+            user_id=mock_user_id,
+            organization_id=mock_organization_id,
+        )
         service.db_processor = MockDbProcessor.return_value
         service.vector_store_service = MockVectorStoreService.return_value
-        return service
+        service.permission_mock = mock_permission
+        yield service
 
 
 def test_extract_knowledge_base_ids(sync_service):
@@ -70,6 +94,48 @@ def test_sync_knowledge_bases_no_kbs(sync_service):
     result = sync_service.sync_knowledge_bases(graph_data)
     assert result["synced_count"] == 0
     assert result["failed"] == []
+
+
+def test_sync_knowledge_bases_requires_organization_id(mock_db_session, mock_user_id):
+    """DB 타입 KB 동기화는 active organization context가 있어야 함"""
+    with (
+        patch("apps.workflow_engine.services.sync_service.DbProcessor"),
+        patch("apps.workflow_engine.services.sync_service.VectorStoreService"),
+    ):
+        service = SyncService(db=mock_db_session, user_id=mock_user_id)
+
+    graph_data = {
+        "nodes": [{"type": "llmNode", "data": {"knowledgeBases": [{"id": str(uuid.uuid4())}]}}]
+    }
+
+    result = service.sync_knowledge_bases(graph_data)
+
+    assert result["synced_count"] == 0
+    assert result["failed"][0]["error"] == "organization_id_required"
+
+
+def test_sync_knowledge_bases_invalid_organization_id_fails_closed(
+    mock_db_session, mock_user_id
+):
+    """잘못된 organization id도 scope 없음으로 닫음"""
+    with (
+        patch("apps.workflow_engine.services.sync_service.DbProcessor"),
+        patch("apps.workflow_engine.services.sync_service.VectorStoreService"),
+    ):
+        service = SyncService(
+            db=mock_db_session,
+            user_id=mock_user_id,
+            organization_id="not-a-uuid",
+        )
+
+    graph_data = {
+        "nodes": [{"type": "llmNode", "data": {"knowledgeBases": [{"id": str(uuid.uuid4())}]}}]
+    }
+
+    result = service.sync_knowledge_bases(graph_data)
+
+    assert result["synced_count"] == 0
+    assert result["failed"][0]["error"] == "organization_id_required"
 
 
 def test_sync_knowledge_bases_success(sync_service, mock_db_session):
@@ -150,6 +216,26 @@ def test_sync_knowledge_bases_success(sync_service, mock_db_session):
     assert kwargs["document_id"] == doc_id
     assert kwargs["model_name"] == "test-model"
     assert kwargs["chunks"] == [{"content": "abc"}]
+
+
+def test_sync_knowledge_bases_requires_kb_use_permission(sync_service, mock_db_session):
+    """KB use 권한이 없으면 외부 DB 동기화를 실행하지 않음"""
+    kb_id = uuid.uuid4()
+    graph_data = {
+        "nodes": [{"type": "llmNode", "data": {"knowledgeBases": [{"id": str(kb_id)}]}}]
+    }
+    mock_kb = KnowledgeBase(id=kb_id, name="TestDB")
+    sync_service.permission_mock.return_value = False
+
+    query_mock = MagicMock()
+    query_mock.filter.return_value.all.return_value = [mock_kb]
+    mock_db_session.query.return_value = query_mock
+
+    result = sync_service.sync_knowledge_bases(graph_data)
+
+    assert result["synced_count"] == 0
+    assert result["failed"][0]["error"] == "knowledge_base_use_permission_required"
+    sync_service.db_processor.process.assert_not_called()
 
 
 def test_sync_knowledge_bases_skip_if_no_connection_id(sync_service, mock_db_session):

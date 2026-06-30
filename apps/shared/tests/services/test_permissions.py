@@ -3,16 +3,19 @@ from types import SimpleNamespace
 
 from apps.shared.permissions import (
     auth_state_at_least,
+    knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
     normalize_auth_state,
     normalize_resource_auth_state,
     workflow_auth_state_allows,
 )
 from apps.shared.services.permissions import (
+    get_effective_knowledge_base_auth_state,
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
     get_workflow_permission_sources,
     has_active_organization_membership,
+    has_knowledge_base_permission,
     has_llm_credential_permission,
     has_workflow_permission,
 )
@@ -495,6 +498,12 @@ def test_llm_credential_use_requires_operator_or_builder():
     assert llm_credential_auth_state_allows("builder", "use") is True
 
 
+def test_knowledge_base_use_requires_operator_or_builder():
+    assert knowledge_base_auth_state_allows("viewer", "use") is False
+    assert knowledge_base_auth_state_allows("operator", "use") is True
+    assert knowledge_base_auth_state_allows("builder", "use") is True
+
+
 def test_llm_credential_write_requires_manager():
     assert llm_credential_auth_state_allows("builder", "write") is False
     assert llm_credential_auth_state_allows("manager", "write") is True
@@ -681,4 +690,128 @@ def test_has_workflow_permission_uses_effective_auth_state():
     assert (
         has_workflow_permission(db, user_id, workflow_id, "execute", organization_id)
         is True
+    )
+
+
+def test_organization_manager_gets_manager_for_knowledge_base():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=knowledge_base_id, organization_id=organization_id),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member("manager"),
+        ]
+    )
+
+    assert (
+        get_effective_knowledge_base_auth_state(
+            db, user_id, knowledge_base_id, organization_id
+        )
+        == "manager"
+    )
+
+
+def test_team_knowledge_permission_grants_use():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    auth_state_db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=knowledge_base_id, organization_id=organization_id),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[[("operator",)]],
+    )
+
+    assert (
+        get_effective_knowledge_base_auth_state(
+            auth_state_db, user_id, knowledge_base_id, organization_id
+        )
+        == "operator"
+    )
+    permission_db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=knowledge_base_id, organization_id=organization_id),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[[("operator",)]],
+    )
+    assert (
+        has_knowledge_base_permission(
+            permission_db, user_id, knowledge_base_id, "use", organization_id
+        )
+        is True
+    )
+
+
+def test_knowledge_base_owner_user_id_does_not_grant_without_permission_row():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[[]],
+    )
+
+    assert (
+        get_effective_knowledge_base_auth_state(
+            db, user_id, knowledge_base_id, organization_id
+        )
+        == "none"
+    )
+
+
+def test_org_scoped_knowledge_base_requires_knowledge_base_organization_id():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=knowledge_base_id,
+                organization_id=None,
+                user_id=user_id,
+            ),
+        ],
+        all_values=[[("manager",)]],
+    )
+
+    assert (
+        get_effective_knowledge_base_auth_state(
+            db, user_id, knowledge_base_id, organization_id
+        )
+        == "none"
+    )
+
+    permission_db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=knowledge_base_id,
+                organization_id=None,
+                user_id=user_id,
+            ),
+        ],
+        all_values=[[("manager",)]],
+    )
+    assert (
+        has_knowledge_base_permission(
+            permission_db, user_id, knowledge_base_id, "use", organization_id
+        )
+        is False
     )

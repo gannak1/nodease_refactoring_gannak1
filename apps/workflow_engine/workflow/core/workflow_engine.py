@@ -694,13 +694,13 @@ class WorkflowEngine:
             metadata["llm"] = llm_metadata
             knowledge = (result_dict.get("metadata") or {}).get("knowledge_search")
             if knowledge:
-                # knowledge_search는 LLM 노드에서 본문이 제거된 허용 목록 메타데이터만 전달됩니다.
-                metadata["rag"] = {
-                    "retrieval_results": TraceMetadataSanitizer.sanitize_rag_metadata(
-                        knowledge
-                    ),
-                    "latency_ms": latency_ms,
-                }
+                # Per-chunk evidence는 trace_payloads에 두고 run/node metadata에는 요약만 남깁니다.
+                rag_metadata = dict(metadata.get("rag") or {})
+                rag_metadata.update(
+                    TraceMetadataSanitizer.summarize_rag_metadata(knowledge)
+                )
+                rag_metadata["latency_ms"] = latency_ms
+                metadata["rag"] = rag_metadata
 
         elif node_type == "httpRequestNode":
             http_metadata = dict(metadata.get("http") or {})

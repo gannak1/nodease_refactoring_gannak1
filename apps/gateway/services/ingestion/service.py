@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import re
 import unicodedata
@@ -395,10 +396,8 @@ class IngestionOrchestrator:
             # api_config가 JSON string일 수 있으므로 파싱
             if isinstance(api_config, str):
                 try:
-                    import json
-
                     api_config = json.loads(api_config)
-                except:
+                except (TypeError, json.JSONDecodeError):
                     api_config = {}
             source_config = api_config
         elif source_type == SourceType.DB:
@@ -406,10 +405,8 @@ class IngestionOrchestrator:
             # db_config가 JSON string일 수 있으므로 파싱
             if isinstance(db_config, str):
                 try:
-                    import json
-
                     db_config = json.loads(db_config)
-                except:
+                except (TypeError, json.JSONDecodeError):
                     db_config = {}
             source_config = {**base_config, **(db_config or {})}
 
@@ -703,6 +700,7 @@ class IngestionOrchestrator:
                 knowledge_base_id=doc.knowledge_base_id,
                 content=encrypted_content,
                 chunk_index=i,
+                chunk_level="flat",
                 token_count=chunk.get("token_count", 0),
                 metadata_=chunk_metadata,
                 embedding=embedding,

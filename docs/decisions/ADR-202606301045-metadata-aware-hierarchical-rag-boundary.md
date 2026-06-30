@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
 
 ## Context
@@ -53,14 +53,14 @@ Access control과 retrieval hierarchy를 분리하면 KB `use` 권한 실패, do
 
 - `docs/architecture/knowledge-rag.md`가 Knowledge/RAG architecture source of truth가 된다.
 - `docs/api/knowledge-rag.md`는 metadata filter, hierarchy mode, trace/citation contract를 current/proposed 상태로 분리해야 한다.
-- `docs/data-model/physical-data-model.md`는 hierarchical chunk column을 current column이 아니라 MBA-75 schema extension 후보로 기록해야 한다.
+- `docs/data-model/physical-data-model.md`는 MBA-78 1차에서 추가한 nullable hierarchical chunk column을 current schema로 기록하고, full parent-child ingestion/ranking은 후속 구현 범위로 분리해야 한다.
 - `docs/data-model/rbac-permission-policy.md`는 KB `use` runtime enforcement와 metadata-not-permission-source 경계를 명시한다.
 - 구현 시 Gateway search-test와 Workflow Engine runtime retrieval은 같은 filter/policy helper를 공유해야 한다.
 
 ## Follow-up Review
 
 - MBA-75 구현 단위에서 `user_knowledge_permissions`를 함께 추가할지 별도 선행/후속 이슈로 분리할지 결정한다.
-- Hierarchical chunk column에 대한 실제 Alembic migration은 API/schema 구현 PR에서 별도 검증한다.
-- `policy.warn`, `policy.block`, `rag.retrieve` AuditAction 상수와 테스트를 MVP 2 구현 시 추가한다. `rag.retrieve` audit action과 `rag.retrieval` trace payload kind를 혼동하지 않도록 테스트 이름과 fixture를 분리한다.
+- Hierarchical chunk column에 대한 실제 Alembic migration은 MBA-78 1차 구현에서 추가됐으며, full parent-child ingestion/ranking 동작은 후속 PR에서 별도 검증한다.
+- `policy.warn`, `policy.block`, `rag.retrieve` AuditAction 상수와 테스트는 MBA-78 1차 구현에서 먼저 고정한다. `rag.retrieve`는 RAG retrieval 성공 감사에 사용하고, `rag.retrieval`은 trace payload kind로만 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement는 후속 구현 범위다.
 - Search preview content와 workflow trace metadata-only 응답 경계가 UI에서 섞이지 않는지 browser smoke로 확인한다.
 - Knowledge/RAG API를 `X-Organization-Id` 기반 active organization 계약으로 전환하고, primary organization fallback은 current behavior 호환 경로로만 유지할 범위를 테스트로 고정한다.

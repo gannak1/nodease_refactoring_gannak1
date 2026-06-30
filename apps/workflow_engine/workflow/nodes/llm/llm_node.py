@@ -5,10 +5,15 @@ from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment
 
+from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
+from apps.shared.permissions import knowledge_base_auth_state_allows
 from apps.shared.schemas.rag import ChunkPreview
+from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.permissions import get_effective_knowledge_base_auth_state
 from apps.shared.utils.prompt_injection_guard import build_untrusted_context_block
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.services.retrieval import RetrievalService
@@ -166,6 +171,8 @@ class LLMNode(Node[LLMNodeData]):
                         ) = self._execute_knowledge_search(
                             query=rendered_user_prompt, db_session=db_session
                         )
+                except PermissionError:
+                    raise
                 except Exception as e:
                     logger.error(f"[LLMNode] Knowledge search failed: {e}")
 
@@ -344,11 +351,10 @@ class LLMNode(Node[LLMNodeData]):
             if knowledge_context:
                 self._trace_payloads.append(
                     {
-                        "payload_kind": "retrieved_context",
-                        "payload": {
-                            "context": knowledge_context,
-                            "metadata": knowledge_metadata,
-                        },
+                        "payload_kind": "rag.retrieval",
+                        "payload": self._rag_retrieval_trace_payload(
+                            knowledge_metadata
+                        ),
                         "scope": "span",
                     }
                 )
@@ -429,9 +435,6 @@ class LLMNode(Node[LLMNodeData]):
         try:
             workflow_id = uuid.UUID(str(self.execution_context.get("workflow_id")))
             user_id = uuid.UUID(str(self.execution_context.get("user_id")))
-        except Exception:
-            return None
-
         except Exception:
             return None
 
@@ -562,7 +565,6 @@ class LLMNode(Node[LLMNodeData]):
             if exists:
                 return mid
         return fallback_model
-        return fallback_model
 
     def _execute_knowledge_search(
         self, query: str, db_session
@@ -583,24 +585,55 @@ class LLMNode(Node[LLMNodeData]):
                 pass
 
         if not user_id:
-            return "", []
+            raise PermissionError("RAG retrieval requires an active user context.")
+        organization_id = self.execution_context.get("organization_id")
+        try:
+            organization_uuid = uuid.UUID(str(organization_id))
+        except (TypeError, ValueError) as exc:
+            raise PermissionError(
+                "RAG retrieval requires an active organization context."
+            ) from exc
 
-        retrieval = RetrievalService(db_session, user_id)
+        retrieval = RetrievalService(
+            db_session,
+            user_id,
+            organization_id=organization_uuid,
+        )
 
         kb_ids = [kb.id for kb in self.data.knowledgeBases if kb.id]
         top_k = self.data.topK or 3
         threshold = self.data.scoreThreshold or 0.5
 
         all_chunks: List[tuple[str, ChunkPreview]] = []
+        authorized_kb_ids: List[str] = []
 
         for kb_id in kb_ids:
+            effective_auth_state = get_effective_knowledge_base_auth_state(
+                db_session,
+                user_id,
+                kb_id,
+                organization_id=organization_uuid,
+            )
+            if not knowledge_base_auth_state_allows(effective_auth_state, "use"):
+                self._record_knowledge_permission_denied(
+                    user_id,
+                    kb_id,
+                    effective_auth_state,
+                    organization_uuid,
+                )
+                raise PermissionError("Knowledge Base use permission is required.")
+            authorized_kb_ids.append(kb_id)
+
+        for kb_id in authorized_kb_ids:
             # [GEVENT] search_documents_sync 사용
             chunks = retrieval.search_documents_sync(
                 query,
                 knowledge_base_id=kb_id,
                 top_k=top_k,
                 threshold=threshold,
+                hierarchy_mode="auto",
             )
+            self._record_rag_retrieve_audit(user_id, kb_id, len(chunks))
             for chunk in chunks:
                 all_chunks.append((kb_id, chunk))
 
@@ -628,14 +661,92 @@ class LLMNode(Node[LLMNodeData]):
         combined_context = "\n\n".join(context_parts)
         return combined_context, metadata_list
 
+    def _record_rag_retrieve_audit(
+        self,
+        user_id: uuid.UUID,
+        knowledge_base_id: str,
+        result_count: int,
+    ) -> None:
+        metadata = {
+            "workflow_id": self.execution_context.get("workflow_id"),
+            "workflow_run_id": self.execution_context.get("workflow_run_id"),
+            "node_id": self.id,
+            "knowledge_base_id": str(knowledge_base_id),
+            "retrieval_mode": "auto",
+            "result_count": result_count,
+            "policy_result": "allow",
+        }
+        record_audit(
+            action=AuditAction.RAG_RETRIEVE,
+            category="action",
+            actor_id=user_id,
+            actor_type="user",
+            target_type="knowledge_base",
+            target_id=knowledge_base_id,
+            status="success",
+            metadata=metadata,
+        )
+
+    def _record_knowledge_permission_denied(
+        self,
+        user_id: uuid.UUID,
+        knowledge_base_id: str,
+        effective_auth_state: str,
+        organization_id: uuid.UUID,
+    ) -> None:
+        record_resource_permission_denied(
+            user_id=user_id,
+            resource_type="knowledge_base",
+            resource_id=knowledge_base_id,
+            action="use",
+            effective_auth_state=effective_auth_state,
+            organization_id=organization_id,
+            metadata={
+                "workflow_id": self.execution_context.get("workflow_id"),
+                "workflow_run_id": self.execution_context.get("workflow_run_id"),
+                "node_id": self.id,
+            },
+        )
+
     def _knowledge_trace_metadata(
         self, knowledge_base_id: str, chunk: ChunkPreview
     ) -> Dict[str, Any]:
         """추적 메타데이터에는 검색 출처 식별 정보만 남깁니다."""
         return {
             "knowledge_base_id": str(knowledge_base_id),
+            "chunk_id": str(chunk.chunk_id) if chunk.chunk_id else None,
+            "parent_chunk_id": (
+                str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None
+            ),
             "document_id": str(chunk.document_id),
             "filename": chunk.filename,
             "page_number": chunk.page_number,
             "similarity_score": chunk.similarity_score,
+            "score": chunk.score if chunk.score is not None else chunk.similarity_score,
+            "rank": chunk.rank,
+            "token_count": chunk.token_count,
+            "metadata_summary": chunk.metadata_summary or {},
+            "hierarchy_path": chunk.hierarchy_path or [],
         }
+
+    def _rag_retrieval_trace_payload(
+        self, retrieved_chunks: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """`rag.retrieval` payload body는 redaction-safe evidence만 포함한다."""
+        knowledge_base_ids: List[str] = []
+        for chunk in retrieved_chunks:
+            knowledge_base_id = chunk.get("knowledge_base_id")
+            if knowledge_base_id and knowledge_base_id not in knowledge_base_ids:
+                knowledge_base_ids.append(str(knowledge_base_id))
+
+        payload: Dict[str, Any] = {
+            "retrieved_chunks": retrieved_chunks,
+            "result_count": len(retrieved_chunks),
+            "policy_result": "allow",
+            "raw_content_returned": False,
+            "workflow_run_id": self.execution_context.get("workflow_run_id"),
+            "node_id": self.id,
+        }
+        if knowledge_base_ids:
+            payload["knowledge_base_ids"] = knowledge_base_ids
+        return {key: value for key, value in payload.items() if value is not None}

@@ -152,6 +152,7 @@ class WorkflowLogger:
             "prompt": ("llm", "prompt_payload_id"),
             "completion": ("llm", "completion_payload_id"),
             "retrieved_context": ("rag", "retrieved_context_payload_id"),
+            "rag.retrieval": ("rag", "retrieval_payload_id"),
             "http_request": ("http", "request_payload_id"),
             "http_response": ("http", "response_payload_id"),
             "stdout": ("sandbox", "stdout_payload_id"),

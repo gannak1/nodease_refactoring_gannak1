@@ -7,6 +7,12 @@ from sqlalchemy.orm import Session
 from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential, LLMModel, LLMProvider
 from apps.shared.schemas.rag import ChunkPreview, RAGResponse
+from apps.shared.services.rag_filters import (
+    NormalizedMetadataFilter,
+    bind_keyword_filter_params,
+    build_keyword_filter_clause,
+    build_sqlalchemy_filter_conditions,
+)
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.utils.encryption import encryption_manager
 
@@ -14,9 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 class RetrievalService:
-    def __init__(self, db: Session, user_id):
+    def __init__(self, db: Session, user_id, organization_id=None):
         self.db = db
         self.user_id = user_id
+        self.organization_id = organization_id
         self.llm_client = None
 
     def _get_efficient_rewrite_model(self) -> str:
@@ -25,14 +32,15 @@ class RetrievalService:
         Fallback: gpt-4o-mini
         """
         try:
-            credentials = (
-                self.db.query(LLMCredential)
-                .filter(
-                    LLMCredential.user_id == self.user_id,
-                    LLMCredential.is_valid == True,
-                )
-                .all()
+            credential_query = self.db.query(LLMCredential).filter(
+                LLMCredential.user_id == self.user_id,
+                LLMCredential.is_valid,
             )
+            if self.organization_id is not None:
+                credential_query = credential_query.filter(
+                    LLMCredential.organization_id == self.organization_id
+                )
+            credentials = credential_query.all()
 
             if not credentials:
                 return "gpt-4o-mini"
@@ -73,7 +81,10 @@ class RetrievalService:
         try:
             rewrite_model_id = self._get_efficient_rewrite_model()
             client = LLMService.get_client_for_user(
-                self.db, self.user_id, rewrite_model_id
+                self.db,
+                self.user_id,
+                rewrite_model_id,
+                organization_id=self.organization_id,
             )
 
             system_prompt = (
@@ -112,7 +123,10 @@ class RetrievalService:
         try:
             rewrite_model_id = self._get_efficient_rewrite_model()
             client = LLMService.get_client_for_user(
-                self.db, self.user_id, rewrite_model_id
+                self.db,
+                self.user_id,
+                rewrite_model_id,
+                organization_id=self.organization_id,
             )
 
             system_prompt = (
@@ -152,24 +166,45 @@ class RetrievalService:
             logger.error(f"[Multi-Query] Falling back to single query: {e}")
             return [await self._rewrite_query(query)]
 
-    def _vector_search(self, query_vector: list, knowledge_base_id: str, top_k: int):
+    def _vector_search(
+        self,
+        query_vector: list,
+        knowledge_base_id: str,
+        top_k: int,
+        metadata_filter: NormalizedMetadataFilter | None = None,
+    ):
         distance_col = DocumentChunk.embedding.cosine_distance(query_vector).label(
             "distance"
         )
+        conditions = [Document.knowledge_base_id == knowledge_base_id]
+        conditions.extend(build_sqlalchemy_filter_conditions(metadata_filter))
         stmt = (
             select(DocumentChunk, Document, distance_col)
             .join(Document)
-            .where(Document.knowledge_base_id == knowledge_base_id)
+            .where(*conditions)
             .order_by(distance_col)
             .limit(top_k)
         )
         return self.db.execute(stmt).all()
 
-    def _keyword_search(self, query: str, knowledge_base_id: str, top_k: int):
+    def _keyword_search(
+        self,
+        query: str,
+        knowledge_base_id: str,
+        top_k: int,
+        metadata_filter: NormalizedMetadataFilter | None = None,
+    ):
         from sqlalchemy import text
 
-        stmt = text("""
+        filter_clause = build_keyword_filter_clause(metadata_filter)
+        filter_sql = "".join(
+            f"\n              AND {fragment}" for fragment in filter_clause.fragments
+        )
+        stmt = text(f"""
             SELECT dc.id, dc.content, dc.metadata, dc.document_id, d.filename,
+                   d.meta_info, d.source_type,
+                   dc.parent_chunk_id, dc.chunk_level, dc.section_path, dc.heading,
+                   dc.token_count,
                    ts_rank(
                        to_tsvector('english', dc.content || ' ' || COALESCE(CAST(dc.metadata->'keywords' AS TEXT), '')),
                        websearch_to_tsquery('english', :query)
@@ -178,12 +213,14 @@ class RetrievalService:
             JOIN documents d ON dc.document_id = d.id
             WHERE dc.knowledge_base_id = :kb_id
               AND to_tsvector('english', dc.content || ' ' || COALESCE(CAST(dc.metadata->'keywords' AS TEXT), '')) @@ websearch_to_tsquery('english', :query)
+              {filter_sql}
             ORDER BY rank DESC
             LIMIT :top_k
         """)
-        return self.db.execute(
-            stmt, {"query": query, "kb_id": knowledge_base_id, "top_k": top_k}
-        ).fetchall()
+        stmt = bind_keyword_filter_params(stmt, filter_clause)
+        params = {"query": query, "kb_id": knowledge_base_id, "top_k": top_k}
+        params.update(filter_clause.params)
+        return self.db.execute(stmt, params).fetchall()
 
     def _rrf_fusion(self, vector_results, keyword_results, k=60):
         """
@@ -208,18 +245,48 @@ class RetrievalService:
             if doc_id not in fused_scores:
 
                 class DummyChunk:
-                    def __init__(self, c_id, content, metadata):
+                    def __init__(
+                        self,
+                        c_id,
+                        content,
+                        metadata,
+                        doc_meta_info,
+                        doc_source_type,
+                        parent_chunk_id,
+                        chunk_level,
+                        section_path,
+                        heading,
+                        token_count,
+                    ):
                         self.id = c_id
                         self.content = content
                         self.metadata_ = metadata
+                        self.parent_chunk_id = parent_chunk_id
+                        self.chunk_level = chunk_level
+                        self.section_path = section_path
+                        self.heading = heading
+                        self.token_count = token_count
 
                 class DummyDoc:
-                    def __init__(self, d_id, filename):
+                    def __init__(self, d_id, filename, meta_info, source_type):
                         self.id = d_id
                         self.filename = filename
+                        self.meta_info = meta_info or {}
+                        self.source_type = source_type
 
-                chunk = DummyChunk(row[0], row[1], row[2])
-                doc = DummyDoc(row[3], row[4])
+                chunk = DummyChunk(
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    row[11],
+                )
+                doc = DummyDoc(row[3], row[4], row[5], row[6])
                 fused_scores[doc_id] = {
                     "score": 0,
                     "chunk": chunk,
@@ -271,6 +338,8 @@ class RetrievalService:
         hybrid_search: bool = True,
         use_rerank: bool = True,
         use_multi_query: bool = False,
+        metadata_filter: NormalizedMetadataFilter | None = None,
+        hierarchy_mode: str = "auto",
     ) -> list[ChunkPreview]:
         """
         [Public API] Hybrid Search (Vector + Keyword) with optional Multi-Query and Reranking (비동기)
@@ -278,6 +347,8 @@ class RetrievalService:
         if not knowledge_base_id:
             logger.error("Missing knowledge_base_id")
             return []
+        if hierarchy_mode == "parent_child":
+            raise ValueError("hierarchy_unavailable")
 
         if use_multi_query:
             queries = await self._generate_multi_queries(query, num_variations=3)
@@ -286,7 +357,6 @@ class RetrievalService:
         else:
             queries = [query]
 
-        search_query = queries[0]
         all_candidates = {}
 
         try:
@@ -307,18 +377,27 @@ class RetrievalService:
                 return []
 
             embed_client = LLMService.get_client_for_user(
-                self.db, self.user_id, kb.embedding_model
+                self.db,
+                self.user_id,
+                kb.embedding_model,
+                organization_id=self.organization_id,
             )
 
             for i, q in enumerate(queries):
                 query_vector = await embed_client.embed(q)
                 vector_results = self._vector_search(
-                    query_vector, knowledge_base_id, top_k * 10
+                    query_vector,
+                    knowledge_base_id,
+                    top_k * 10,
+                    metadata_filter=metadata_filter,
                 )
 
                 if hybrid_search:
                     keyword_results = self._keyword_search(
-                        q, knowledge_base_id, top_k * 10
+                        q,
+                        knowledge_base_id,
+                        top_k * 10,
+                        metadata_filter=metadata_filter,
                     )
                     fused = self._rrf_fusion(vector_results, keyword_results)
                 else:
@@ -354,18 +433,19 @@ class RetrievalService:
                 candidates_to_rerank = merged_candidates[:100]
                 reranked = self._rerank(query, candidates_to_rerank, top_k)
 
-                for item in reranked:
+                for rank, item in enumerate(reranked, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
                     rerank_score = item.get("rerank_score", 0.0)
                     rrf_score = item.get("score", 0.0)  # 원본 RRF 점수
 
-                    meta = chunk.metadata_.copy() if chunk.metadata_ else {}
+                    meta = self._chunk_metadata(chunk, doc)
                     meta["search_method"] = (
                         "hybrid+rerank" if hybrid_search else "multi_query+rerank"
                     )
                     meta["rerank_score"] = float(rerank_score)
                     meta["rrf_score"] = float(rrf_score)  # RRF 점수도 저장
+                    meta["score"] = float(rerank_score)
                     if use_multi_query:
                         meta["num_queries"] = len(queries)
 
@@ -375,22 +455,30 @@ class RetrievalService:
                     final_list.append(
                         ChunkPreview(
                             content=content,
+                            chunk_id=chunk.id,
+                            parent_chunk_id=getattr(chunk, "parent_chunk_id", None),
                             document_id=doc.id,
                             filename=doc.filename,
                             page_number=meta.get("page"),
                             similarity_score=float(rerank_score),
-                            metadata=meta,
+                            score=float(rerank_score),
+                            rank=rank,
+                            token_count=getattr(chunk, "token_count", None),
+                            metadata_summary=self._metadata_summary(meta),
+                            hierarchy_path=self._hierarchy_path(meta),
+                            metadata=self._metadata_summary(meta),
                         )
                     )
             else:
-                for item in merged_candidates[:top_k]:
+                for rank, item in enumerate(merged_candidates[:top_k], start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
                     score = item["score"]
 
-                    meta = chunk.metadata_.copy() if chunk.metadata_ else {}
+                    meta = self._chunk_metadata(chunk, doc)
                     meta["search_method"] = "hybrid" if hybrid_search else "multi_query"
                     meta["rrf_score"] = float(score)
+                    meta["score"] = float(score)
                     if use_multi_query:
                         meta["num_queries"] = len(queries)
 
@@ -400,34 +488,116 @@ class RetrievalService:
                     final_list.append(
                         ChunkPreview(
                             content=content,
+                            chunk_id=chunk.id,
+                            parent_chunk_id=getattr(chunk, "parent_chunk_id", None),
                             document_id=doc.id,
                             filename=doc.filename,
                             page_number=meta.get("page"),
                             similarity_score=float(score),
-                            metadata=meta,
+                            score=float(score),
+                            rank=rank,
+                            token_count=getattr(chunk, "token_count", None),
+                            metadata_summary=self._metadata_summary(meta),
+                            hierarchy_path=self._hierarchy_path(meta),
+                            metadata=self._metadata_summary(meta),
                         )
                     )
         else:
-            for chunk, doc, distance in vector_results[:top_k]:
+            for rank, (chunk, doc, distance) in enumerate(vector_results[:top_k], start=1):
                 similarity = 1 - distance
                 if similarity < threshold:
                     continue
 
                 # 암호화된 content 복호화
+                meta = self._chunk_metadata(chunk, doc)
+                meta["score"] = float(similarity)
+                if use_rewrite:
+                    meta["original_query"] = query
                 content = self._decrypt_content(chunk.content)
 
                 final_list.append(
                     ChunkPreview(
                         content=content,
+                        chunk_id=chunk.id,
+                        parent_chunk_id=getattr(chunk, "parent_chunk_id", None),
                         document_id=doc.id,
                         filename=doc.filename,
-                        page_number=chunk.metadata_.get("page"),
+                        page_number=meta.get("page"),
                         similarity_score=float(similarity),
-                        metadata={"original_query": query} if use_rewrite else {},
+                        score=float(similarity),
+                        rank=rank,
+                        token_count=getattr(chunk, "token_count", None),
+                        metadata_summary=self._metadata_summary(meta),
+                        hierarchy_path=self._hierarchy_path(meta),
+                        metadata=self._metadata_summary(meta),
                     )
                 )
 
         return final_list
+
+    def _chunk_metadata(self, chunk, doc=None) -> dict:
+        chunk_metadata = dict(getattr(chunk, "metadata_", None) or {})
+        document_metadata = dict(getattr(doc, "meta_info", None) or {}) if doc else {}
+        metadata = dict(chunk_metadata)
+        for key, value in document_metadata.items():
+            if value is not None:
+                metadata[key] = value
+        if doc is not None and "source_type" not in metadata:
+            source_type = getattr(doc, "source_type", None)
+            if source_type is not None:
+                metadata["source_type"] = str(getattr(source_type, "value", source_type))
+        parent_chunk_id = getattr(chunk, "parent_chunk_id", None)
+        if parent_chunk_id is not None and "parent_chunk_id" not in metadata:
+            metadata["parent_chunk_id"] = str(parent_chunk_id)
+        token_count = getattr(chunk, "token_count", None)
+        if token_count is not None and "token_count" not in metadata:
+            metadata["token_count"] = token_count
+        if "chunk_level" not in metadata:
+            metadata["chunk_level"] = getattr(chunk, "chunk_level", None) or "flat"
+        section_path = getattr(chunk, "section_path", None)
+        if section_path is not None and "section_path" not in metadata:
+            metadata["section_path"] = section_path
+        heading = getattr(chunk, "heading", None)
+        if heading and "heading" not in metadata:
+            metadata["heading"] = heading
+        return metadata
+
+    def _metadata_summary(self, metadata: dict | None) -> dict:
+        if not metadata:
+            return {}
+        allowed_keys = {
+            "classification",
+            "tags",
+            "source_type",
+            "source_hash",
+            "document_version",
+            "effective_from",
+            "effective_to",
+            "metadata_version",
+            "search_method",
+            "rerank_score",
+            "rrf_score",
+            "score",
+            "parent_chunk_id",
+            "token_count",
+            "chunk_level",
+            "section_path",
+            "heading",
+        }
+        return {key: metadata[key] for key in allowed_keys if key in metadata}
+
+    def _hierarchy_path(self, metadata: dict | None) -> list[str] | None:
+        if not metadata:
+            return None
+        section_path = metadata.get("section_path")
+        if isinstance(section_path, list):
+            return [str(item) for item in section_path if str(item).strip()]
+        if isinstance(section_path, str) and section_path.strip():
+            return [part.strip() for part in section_path.split("/") if part.strip()]
+        heading = metadata.get("heading")
+        if heading:
+            return [str(heading)]
+        return None
 
     def _decrypt_content(self, content: str) -> str:
         """
@@ -468,6 +638,8 @@ class RetrievalService:
         threshold: float = 0.15,
         hybrid_search: bool = True,
         use_rerank: bool = True,
+        metadata_filter: NormalizedMetadataFilter | None = None,
+        hierarchy_mode: str = "auto",
     ) -> list[ChunkPreview]:
         """
         [GEVENT] 동기 검색 API - gevent pool 호환성을 위해.
@@ -478,6 +650,8 @@ class RetrievalService:
         if not knowledge_base_id:
             logger.error("Missing knowledge_base_id")
             return []
+        if hierarchy_mode == "parent_child":
+            raise ValueError("hierarchy_unavailable")
 
         all_candidates = {}
 
@@ -499,18 +673,27 @@ class RetrievalService:
                 return []
 
             embed_client = LLMService.get_client_for_user(
-                self.db, self.user_id, kb.embedding_model
+                self.db,
+                self.user_id,
+                kb.embedding_model,
+                organization_id=self.organization_id,
             )
 
             # [GEVENT] embed_sync 사용
             query_vector = embed_client.embed_sync(query)
             vector_results = self._vector_search(
-                query_vector, knowledge_base_id, top_k * 10
+                query_vector,
+                knowledge_base_id,
+                top_k * 10,
+                metadata_filter=metadata_filter,
             )
 
             if hybrid_search:
                 keyword_results = self._keyword_search(
-                    query, knowledge_base_id, top_k * 10
+                    query,
+                    knowledge_base_id,
+                    top_k * 10,
+                    metadata_filter=metadata_filter,
                 )
                 fused = self._rrf_fusion(vector_results, keyword_results)
             else:
@@ -546,91 +729,139 @@ class RetrievalService:
                 candidates_to_rerank = merged_candidates[:100]
                 reranked = self._rerank(query, candidates_to_rerank, top_k)
 
-                for item in reranked:
+                for rank, item in enumerate(reranked, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
                     rerank_score = item.get("rerank_score", 0.0)
                     rrf_score = item.get("score", 0.0)
 
-                    meta = chunk.metadata_.copy() if chunk.metadata_ else {}
+                    meta = self._chunk_metadata(chunk, doc)
                     meta["search_method"] = "hybrid+rerank"
                     meta["rerank_score"] = float(rerank_score)
                     meta["rrf_score"] = float(rrf_score)
+                    meta["score"] = float(rerank_score)
 
                     content = self._decrypt_content(chunk.content)
 
                     final_list.append(
                         ChunkPreview(
                             content=content,
+                            chunk_id=chunk.id,
+                            parent_chunk_id=getattr(chunk, "parent_chunk_id", None),
                             document_id=doc.id,
                             filename=doc.filename,
                             page_number=meta.get("page"),
                             similarity_score=float(rerank_score),
-                            metadata=meta,
+                            score=float(rerank_score),
+                            rank=rank,
+                            token_count=getattr(chunk, "token_count", None),
+                            metadata_summary=self._metadata_summary(meta),
+                            hierarchy_path=self._hierarchy_path(meta),
+                            metadata=self._metadata_summary(meta),
                         )
                     )
             else:
-                for item in merged_candidates[:top_k]:
+                for rank, item in enumerate(merged_candidates[:top_k], start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
                     score = item["score"]
 
-                    meta = chunk.metadata_.copy() if chunk.metadata_ else {}
+                    meta = self._chunk_metadata(chunk, doc)
                     meta["search_method"] = "hybrid"
                     meta["rrf_score"] = float(score)
+                    meta["score"] = float(score)
 
                     content = self._decrypt_content(chunk.content)
 
                     final_list.append(
                         ChunkPreview(
                             content=content,
+                            chunk_id=chunk.id,
+                            parent_chunk_id=getattr(chunk, "parent_chunk_id", None),
                             document_id=doc.id,
                             filename=doc.filename,
                             page_number=meta.get("page"),
                             similarity_score=float(score),
-                            metadata=meta,
+                            score=float(score),
+                            rank=rank,
+                            token_count=getattr(chunk, "token_count", None),
+                            metadata_summary=self._metadata_summary(meta),
+                            hierarchy_path=self._hierarchy_path(meta),
+                            metadata=self._metadata_summary(meta),
                         )
                     )
         else:
-            for chunk, doc, distance in vector_results[:top_k]:
+            for rank, (chunk, doc, distance) in enumerate(vector_results[:top_k], start=1):
                 similarity = 1 - distance
                 if similarity < threshold:
                     continue
 
+                meta = self._chunk_metadata(chunk, doc)
+                meta["score"] = float(similarity)
                 content = self._decrypt_content(chunk.content)
 
                 final_list.append(
                     ChunkPreview(
                         content=content,
+                        chunk_id=chunk.id,
+                        parent_chunk_id=getattr(chunk, "parent_chunk_id", None),
                         document_id=doc.id,
                         filename=doc.filename,
-                        page_number=chunk.metadata_.get("page"),
+                        page_number=meta.get("page"),
                         similarity_score=float(similarity),
-                        metadata={},
+                        score=float(similarity),
+                        rank=rank,
+                        token_count=getattr(chunk, "token_count", None),
+                        metadata_summary=self._metadata_summary(meta),
+                        hierarchy_path=self._hierarchy_path(meta),
+                        metadata=self._metadata_summary(meta),
                     )
                 )
 
         return final_list
 
     async def retrieve_context(
-        self, query: str, knowledge_base_id: str, top_k: int = 5
+        self,
+        query: str,
+        knowledge_base_id: str,
+        top_k: int = 5,
+        metadata_filter: NormalizedMetadataFilter | None = None,
+        hierarchy_mode: str = "auto",
     ) -> str:
         """
         [Public API] 검색된 문서들의 내용을 하나의 문자열로 합쳐서 반환합니다. (비동기)
         """
-        chunks = await self.search_documents(query, knowledge_base_id, top_k)
+        chunks = await self.search_documents(
+            query,
+            knowledge_base_id,
+            top_k,
+            metadata_filter=metadata_filter,
+            hierarchy_mode=hierarchy_mode,
+        )
         if not chunks:
             return ""
 
         return "\n\n".join([c.content for c in chunks])
 
     async def generate_answer(
-        self, query: str, knowledge_base_id: str, model_id: str = "gpt-4o"
+        self,
+        query: str,
+        knowledge_base_id: str,
+        model_id: str = "gpt-4o",
+        top_k: int = 5,
+        metadata_filter: NormalizedMetadataFilter | None = None,
+        hierarchy_mode: str = "auto",
     ) -> RAGResponse:
         """
         [Public API] 검색 + 답변 생성 (Chat Interface용, 비동기)
         """
-        relevant_chunks = await self.search_documents(query, knowledge_base_id)
+        relevant_chunks = await self.search_documents(
+            query,
+            knowledge_base_id,
+            top_k=top_k,
+            metadata_filter=metadata_filter,
+            hierarchy_mode=hierarchy_mode,
+        )
 
         if not relevant_chunks:
             return RAGResponse(
@@ -645,7 +876,10 @@ class RetrievalService:
         else:
             try:
                 self.llm_client = LLMService.get_client_for_user(
-                    self.db, self.user_id, model_id
+                    self.db,
+                    self.user_id,
+                    model_id,
+                    organization_id=self.organization_id,
                 )
             except Exception:
                 self.llm_client = None
@@ -653,7 +887,7 @@ class RetrievalService:
         if not self.llm_client:
             return RAGResponse(
                 answer=f"⚠️ 답변 생성을 위한 모델({model_id})을 찾을 수 없습니다. (Credential 등록 필요)",
-                references=[],
+                references=relevant_chunks,
             )
 
         system_prompt = (
