@@ -8,6 +8,8 @@ import pathlib
 import sys
 import uuid
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PARENT_OF_ROOT = ROOT.parent
 for p in [ROOT, PARENT_OF_ROOT]:
@@ -16,7 +18,11 @@ for p in [ROOT, PARENT_OF_ROOT]:
 
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402 - 테스트 경로 보정 이후 가져오기
 from apps.workflow_engine.services.llm_service import LLMService  # noqa: E402 - 테스트 경로 보정 이후 가져오기
-from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData, LLMVariable  # noqa: E402 - 테스트 경로 보정 이후 가져오기
+from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402 - 테스트 경로 보정 이후 가져오기
+    KnowledgeBaseRef,
+    LLMNodeData,
+    LLMVariable,
+)
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402 - 테스트 경로 보정 이후 가져오기
     SAFETY_SYSTEM_PROMPT,
     LLMNode,
@@ -147,12 +153,21 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
 
 def test_knowledge_trace_metadata_excludes_chunk_content():
     node = LLMNode.__new__(LLMNode)
+    chunk_id = uuid.uuid4()
+    parent_chunk_id = uuid.uuid4()
     chunk = ChunkPreview(
+        chunk_id=chunk_id,
+        parent_chunk_id=parent_chunk_id,
         content="검색 원문",
         document_id=uuid.uuid4(),
         filename="guide.md",
         page_number=3,
         similarity_score=0.91,
+        score=0.92,
+        rank=1,
+        token_count=120,
+        metadata_summary={"classification": "internal"},
+        hierarchy_path=["Guide", "Intro"],
         metadata={"source": "kb"},
     )
 
@@ -161,5 +176,131 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
     assert metadata["filename"] == "guide.md"
     assert metadata["page_number"] == 3
     assert metadata["knowledge_base_id"] == "kb-1"
+    assert metadata["chunk_id"] == str(chunk_id)
+    assert metadata["parent_chunk_id"] == str(parent_chunk_id)
+    assert metadata["score"] == 0.92
+    assert metadata["token_count"] == 120
+    assert metadata["metadata_summary"] == {"classification": "internal"}
+    assert metadata["hierarchy_path"] == ["Guide", "Intro"]
     assert "content" not in metadata
     assert "metadata" not in metadata
+
+
+def test_rag_retrieval_trace_payload_uses_redacted_contract():
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {"workflow_run_id": str(uuid.uuid4())}
+    chunk = ChunkPreview(
+        chunk_id=uuid.uuid4(),
+        content="검색 원문",
+        document_id=uuid.uuid4(),
+        filename="guide.md",
+        page_number=3,
+        similarity_score=0.91,
+        score=0.92,
+        rank=1,
+        token_count=120,
+        metadata_summary={"classification": "internal"},
+        hierarchy_path=["Guide", "Intro"],
+        metadata={"source": "kb"},
+    )
+    metadata = node._knowledge_trace_metadata("kb-1", chunk)  # noqa: SLF001 - 테스트용
+
+    payload = node._rag_retrieval_trace_payload([metadata])  # noqa: SLF001 - 테스트용
+
+    assert payload["knowledge_base_ids"] == ["kb-1"]
+    assert payload["result_count"] == 1
+    assert payload["policy_result"] == "allow"
+    assert payload["raw_content_returned"] is False
+    assert payload["node_id"] == "llm-1"
+    assert "workflow_node_run_id" not in payload
+    assert "content" not in payload["retrieved_chunks"][0]
+    assert "metadata" not in payload["retrieved_chunks"][0]
+
+
+def test_knowledge_search_requires_user_context():
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={"organization_id": str(uuid.uuid4())},
+    )
+
+    with pytest.raises(PermissionError, match="active user context"):
+        node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+
+def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    allowed_kb_id = uuid.uuid4()
+    denied_kb_id = uuid.uuid4()
+    retrieval_calls = []
+    audit_calls = []
+    captured_init = {}
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            captured_init["organization_id"] = organization_id
+
+        def search_documents_sync(self, *args, **kwargs):
+            retrieval_calls.append(kwargs["knowledge_base_id"])
+            return []
+
+    def fake_auth_state(db, user_id, knowledge_base_id, organization_id=None):
+        if str(knowledge_base_id) == str(allowed_kb_id):
+            return "manager"
+        if str(knowledge_base_id) == str(denied_kb_id):
+            return "none"
+        raise AssertionError(f"unexpected kb: {knowledge_base_id}")
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.get_effective_knowledge_base_auth_state",
+        fake_auth_state,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(allowed_kb_id), name="Allowed"),
+            KnowledgeBaseRef(id=str(denied_kb_id), name="Denied"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+
+    with pytest.raises(PermissionError, match="Knowledge Base use permission"):
+        node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+    assert captured_init["organization_id"] == organization_id
+    assert retrieval_calls == []
+    assert audit_calls[0]["resource_id"] == str(denied_kb_id)
+    assert audit_calls[0]["effective_auth_state"] == "none"
+    assert audit_calls[0]["organization_id"] == organization_id

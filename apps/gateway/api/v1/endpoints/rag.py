@@ -9,7 +9,9 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
+    Request,
     UploadFile,
 )
 from sqlalchemy.orm import Session
@@ -26,7 +28,13 @@ from apps.gateway.services.ingestion.service import (
 from apps.gateway.services.organization_context import get_user_primary_organization_id
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
+from apps.gateway.utils.api_errors import (
+    error_detail,
+    parse_organization_id,
+    raise_api_error,
+)
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.db.models.user import User
@@ -38,9 +46,116 @@ from apps.shared.schemas.rag import (
     RAGResponse,
     SearchQuery,
 )
+from apps.shared.permissions import knowledge_base_auth_state_allows
+from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.permissions import (
+    get_effective_knowledge_base_auth_state,
+    has_organization_scope_access,
+)
+from apps.shared.services.rag_filters import normalize_metadata_filter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _require_search_knowledge_base_id(request: Request, query: SearchQuery) -> UUID:
+    if query.knowledge_base_id is None:
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "knowledge_base_id is required for RAG search-test.",
+            {"field": "knowledge_base_id"},
+        )
+    return query.knowledge_base_id
+
+
+def _authorize_rag_use(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+) -> KnowledgeBase:
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_id).first()
+    if (
+        kb is None
+        or kb.organization_id != organization_id
+        or not has_organization_scope_access(db, current_user.id, organization_id)
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Knowledge Base not found.",
+        )
+
+    effective_auth_state = get_effective_knowledge_base_auth_state(
+        db,
+        current_user.id,
+        knowledge_base_id,
+        organization_id=organization_id,
+    )
+    if not knowledge_base_auth_state_allows(effective_auth_state, "use"):
+        record_resource_permission_denied(
+            user_id=current_user.id,
+            resource_type="knowledge_base",
+            resource_id=knowledge_base_id,
+            action="use",
+            effective_auth_state=effective_auth_state,
+            organization_id=organization_id,
+            metadata={
+                "request_id": getattr(request.state, "request_id", None),
+                "path": request.url.path,
+            },
+        )
+        exc = HTTPException(
+            status_code=403,
+            detail=error_detail(
+                request,
+                "permission.denied",
+                "Knowledge Base use permission is required.",
+            ),
+        )
+        setattr(exc, "audit_recorded", True)
+        raise exc
+
+    return kb
+
+
+def _record_rag_retrieve_audit(
+    request: Request,
+    current_user: User,
+    knowledge_base_id: UUID,
+    metadata_filter,
+    result_count: int,
+    mode: str,
+) -> None:
+    metadata = {
+        "actor": {
+            "id": str(current_user.id),
+            "email": getattr(current_user, "email", None),
+            "name": getattr(current_user, "name", None),
+        },
+        "request_id": getattr(request.state, "request_id", None),
+        "knowledge_base_id": str(knowledge_base_id),
+        "retrieval_mode": mode,
+        "result_count": result_count,
+        "metadata_filter": metadata_filter.audit_summary()
+        if metadata_filter is not None
+        else {},
+        "policy_result": "allow",
+    }
+    record_audit(
+        action=AuditAction.RAG_RETRIEVE,
+        category="action",
+        actor_id=current_user.id,
+        actor_type="user",
+        target_type="knowledge_base",
+        target_id=knowledge_base_id,
+        status="success",
+        metadata=metadata,
+    )
 
 
 @router.post("/upload/presigned-url")
@@ -335,6 +450,8 @@ def delete_document(
 @router.post("/search-test/chat", response_model=RAGResponse)
 async def search_test_chat(
     query: SearchQuery,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -342,12 +459,46 @@ async def search_test_chat(
     [Search Test] RAG Chat Mode
     벡터 검색 + LLM 답변 생성
     """
-    retrieval_service = RetrievalService(db, user_id=current_user.id)
-    kb_id_str = str(query.knowledge_base_id) if query.knowledge_base_id else None
-    response = await retrieval_service.generate_answer_for_test(
-        query.query,
-        knowledge_base_id=kb_id_str,
-        model_id=query.generation_model or "gpt-4o",
+    organization_id = parse_organization_id(request, x_organization_id)
+    knowledge_base_id = _require_search_knowledge_base_id(request, query)
+    _authorize_rag_use(request, db, current_user, organization_id, knowledge_base_id)
+    metadata_filter = normalize_metadata_filter(
+        metadata_filter=query.metadata_filter,
+        classification_filter=query.classification_filter,
+        tags=query.tags,
+        source_type=query.source_type,
+        effective_at=query.effective_at,
+    )
+    retrieval_service = RetrievalService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+    try:
+        response = await retrieval_service.generate_answer_for_test(
+            query.query,
+            knowledge_base_id=str(knowledge_base_id),
+            model_id=query.generation_model or "gpt-4o",
+            top_k=query.top_k or 5,
+            metadata_filter=metadata_filter,
+            hierarchy_mode=query.hierarchy_mode,
+        )
+    except ValueError as exc:
+        if str(exc) == "hierarchy_unavailable":
+            raise_api_error(
+                request,
+                422,
+                "hierarchy_unavailable",
+                "Hierarchical retrieval data is not available for this Knowledge Base.",
+            )
+        raise
+    _record_rag_retrieve_audit(
+        request,
+        current_user,
+        knowledge_base_id,
+        metadata_filter,
+        len(response.references),
+        query.hierarchy_mode,
     )
     return response
 
@@ -355,6 +506,8 @@ async def search_test_chat(
 @router.post("/search-test/pure", response_model=List[ChunkPreview])
 async def search_test_pure(
     query: SearchQuery,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -362,12 +515,47 @@ async def search_test_pure(
     [Search Test] Pure Retrieval Mode
     순수 벡터 검색 (LLM 생성 없음)
     """
-    retrieval_service = RetrievalService(db, user_id=current_user.id)
-    kb_id_str = str(query.knowledge_base_id) if query.knowledge_base_id else None
+    organization_id = parse_organization_id(request, x_organization_id)
+    knowledge_base_id = _require_search_knowledge_base_id(request, query)
+    _authorize_rag_use(request, db, current_user, organization_id, knowledge_base_id)
+    metadata_filter = normalize_metadata_filter(
+        metadata_filter=query.metadata_filter,
+        classification_filter=query.classification_filter,
+        tags=query.tags,
+        source_type=query.source_type,
+        effective_at=query.effective_at,
+    )
+    retrieval_service = RetrievalService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
 
     # RetrievalService.search_documents 직접 호출 (비동기)
-    results = await retrieval_service.search_documents(
-        query.query, knowledge_base_id=kb_id_str, top_k=query.top_k or 5
+    try:
+        results = await retrieval_service.search_documents(
+            query.query,
+            knowledge_base_id=str(knowledge_base_id),
+            top_k=query.top_k or 5,
+            metadata_filter=metadata_filter,
+            hierarchy_mode=query.hierarchy_mode,
+        )
+    except ValueError as exc:
+        if str(exc) == "hierarchy_unavailable":
+            raise_api_error(
+                request,
+                422,
+                "hierarchy_unavailable",
+                "Hierarchical retrieval data is not available for this Knowledge Base.",
+            )
+        raise
+    _record_rag_retrieve_audit(
+        request,
+        current_user,
+        knowledge_base_id,
+        metadata_filter,
+        len(results),
+        query.hierarchy_mode,
     )
     return results
 

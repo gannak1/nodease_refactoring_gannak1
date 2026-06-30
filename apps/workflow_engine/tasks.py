@@ -51,7 +51,11 @@ def execute_workflow(
                 from apps.workflow_engine.services.sync_service import SyncService
 
                 user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
+                syncer = SyncService(
+                    db=session,
+                    user_id=user_id,
+                    organization_id=execution_context.get("organization_id"),
+                )
                 sync_result = syncer.sync_knowledge_bases(graph)
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
@@ -125,7 +129,11 @@ def execute_deployed_workflow(
                 from apps.workflow_engine.services.sync_service import SyncService
 
                 user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
+                syncer = SyncService(
+                    db=session,
+                    user_id=user_id,
+                    organization_id=execution_context.get("organization_id"),
+                )
                 sync_result = syncer.sync_knowledge_bases(graph)
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
@@ -203,7 +211,11 @@ def execute_by_deployment(
                 from apps.workflow_engine.services.sync_service import SyncService
 
                 user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
+                syncer = SyncService(
+                    db=session,
+                    user_id=user_id,
+                    organization_id=execution_context.get("organization_id"),
+                )
                 sync_result = syncer.sync_knowledge_bases(deployment.graph_snapshot)
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
@@ -257,7 +269,11 @@ def stream_workflow(
                 from apps.workflow_engine.services.sync_service import SyncService
 
                 user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
+                syncer = SyncService(
+                    db=session,
+                    user_id=user_id,
+                    organization_id=execution_context.get("organization_id"),
+                )
                 sync_result = syncer.sync_knowledge_bases(graph)
 
                 if sync_result.get("failed"):

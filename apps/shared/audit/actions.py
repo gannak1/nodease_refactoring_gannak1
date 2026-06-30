@@ -56,3 +56,7 @@ class AuditAction:
     DOCUMENT_UPLOAD = "document.upload"
     DOCUMENT_PROCESS = "document.process"
     DOCUMENT_DELETE = "document.delete"
+    RAG_RETRIEVE = "rag.retrieve"
+
+    POLICY_WARN = "policy.warn"
+    POLICY_BLOCK = "policy.block"

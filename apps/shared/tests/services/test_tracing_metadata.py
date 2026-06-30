@@ -75,6 +75,43 @@ def test_rag_metadata_drops_scalar_retrieval_results():
     assert metadata["rag"] == {"retrieved_context_payload_id": "payload-1"}
 
 
+def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "rag": {
+                "retrieval_payload_id": "payload-2",
+                "retrieval_results": [
+                    {
+                        "knowledge_base_id": "kb-1",
+                        "chunk_id": "chunk-1",
+                        "parent_chunk_id": "parent-1",
+                        "document_id": "doc-1",
+                        "rank": 1,
+                        "similarity_score": 0.9,
+                        "score": 0.91,
+                        "token_count": 210,
+                        "metadata_summary": {"classification": "internal"},
+                        "hierarchy_fallback": True,
+                        "content": "raw chunk text",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert metadata["rag"]["retrieval_payload_id"] == "payload-2"
+    assert metadata["rag"]["knowledge_base_id"] == "kb-1"
+    assert metadata["rag"]["retrieved_chunk_count"] == 1
+    assert metadata["rag"]["document_ids"] == ["doc-1"]
+    assert metadata["rag"]["citation_ids"] == ["chunk-1"]
+    assert metadata["rag"]["score_summary"] == {"min": 0.91, "max": 0.91}
+    assert metadata["rag"]["hierarchy_fallback"] is True
+    assert metadata["rag"]["raw_content_returned"] is False
+    assert "retrieval_results" not in metadata["rag"]
+    assert "raw chunk text" not in str(metadata)
+
+
 def test_trace_detail_metadata_view_hides_error_message_and_sanitizes_metadata():
     run = SimpleNamespace(
         id=uuid.uuid4(),

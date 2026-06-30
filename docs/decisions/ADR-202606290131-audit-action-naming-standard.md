@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
+Verified Against: feature/mba-78 @ HEAD (base dev d0c858e)
 Created At: 2026-06-29 01:31 KST
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
 
@@ -58,7 +58,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
-- `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정하지만, 현재 코드의 `AuditAction` 상수에는 아직 없다. Policy/RAG enforcement 구현 시 상수와 테스트를 함께 추가한다.
+- `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정한다. MBA-78 1차 구현은 해당 `AuditAction` 상수와 테스트를 먼저 추가하며, `rag.retrieve`는 RAG retrieval 성공 감사에 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement 연결은 후속 구현 범위다.
 
 ## 영향
 

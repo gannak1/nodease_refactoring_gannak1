@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Architecture
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
@@ -96,11 +96,11 @@ Scope prerequisite와 resource permission source:
 - Scope prerequisite: active `organization_memberships` row와 KB의 `organization_id`가 요청의 active organization context 안에 있는지 확인한다.
 - Resource permission source: organization manager override, `team_knowledge_permissions`, 목표 `user_knowledge_permissions`.
 
-`user_knowledge_permissions`는 MVP 2 목표 table이다. MBA-75에서 함께 구현할지, 선행/후속 이슈로 분리할지는 구현 계획에서 결정할 수 있지만, 장기 effective permission은 team permission과 additive user direct permission을 합산한다.
+`user_knowledge_permissions`는 MVP 2 목표 table이며, MBA-78 1차 구현에는 포함하지 않는다. 장기 effective permission은 team permission과 additive user direct permission을 합산하되, table/API가 추가되기 전까지 user direct grant는 fail-closed로 둔다.
 
 Document별 permission table은 만들지 않는다. Document access/policy는 KB permission과 `documents.meta_info` 기반 metadata policy를 조합한다.
 
-MBA-75 permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. 현재 Knowledge/RAG API의 primary organization fallback은 과도기 구현이며, 구현은 [knowledge-rag API 문서](../api/knowledge-rag.md)의 header 기반 400/404 계약으로 수렴한다.
+MVP 2 목표 계약의 Knowledge/RAG permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. Org-scoped RAG에서 KB `organization_id`는 필수이며, legacy `organization_id=null` KB는 요청 header organization으로 보정하지 않고 backfill/reassignment 전까지 scope 밖 resource로 닫는다. 현재 Knowledge/RAG API의 primary organization fallback은 과도기 구현이며, MBA-78 1차 구현은 [knowledge-rag API 문서](../api/knowledge-rag.md)의 header 기반 400/404 계약으로 수렴하는 첫 범위다.
 
 ## Document Metadata Policy
 
@@ -110,6 +110,8 @@ MBA-75 permission gate는 KB의 `organization_id`와 요청의 active organizati
 | `internal` | KB `use` 통과 시 허용 |
 | `confidential` | KB `use` 통과 시 허용하되 audit/trace policy result 기록 |
 | `pii` | external LLM prompt path에서는 `policy.block`, internal-only search preview에서는 `policy.warn` |
+
+MBA-78 1차 구현은 위 policy action 이름과 RAG 권한/audit 경계를 먼저 고정한다. 실제 document metadata policy enforcement는 후속 구현 범위이며, 현재 RAG search-test와 Workflow runtime은 KB `use` 권한 통과 후 retrieval을 수행한다.
 
 Audit action:
 
@@ -134,10 +136,13 @@ Free-form dict filter를 받지 않는다. API는 allowlist 기반 `MetadataFilt
     "values": ["policy", "hr"]
   },
   "source_type": ["FILE", "API", "DB"],
-  "effective_at": "2026-06-30T00:00:00Z",
-  "document_version": ["v1", "v2"]
+  "effective_at": "2026-06-30T00:00:00+00:00"
 }
 ```
+
+MBA-78 1차 filter allowlist는 `classification`, `tags`, `source_type`, `effective_at`에 한정한다. `source_hash`, `document_version`, `metadata_version` 같은 key는 citation evidence 또는 후속 filter 확장 후보이지 현재 request filter key가 아니다.
+
+`effective_from`/`effective_to` metadata는 canonical source인 `documents.meta_info`에 UTC ISO 문자열(`YYYY-MM-DDTHH:MM:SS+00:00`)로 정규화해 저장한다. 누락/빈 값은 열린 구간이고, 값이 있지만 이 형식을 따르지 않으면 filter match에서 제외한다. `document_chunks.metadata`에 복제된 값은 denormalized cache/citation evidence이며, MBA-78 1차 filter source로 보지 않는다. Ingestion/backfill은 `Z` 또는 다른 timezone offset을 그대로 남기지 않고 `+00:00` 문자열로 정규화해야 한다.
 
 허용 operator:
 
@@ -156,11 +161,11 @@ Vector search와 keyword search는 동일 filter semantics를 적용해야 한�
 
 ## Hierarchical RAG
 
-MBA-75의 hierarchical schema extension 후보는 `document_chunks`에 nullable field를 추가하는 방향이다.
+MBA-78 1차 구현은 `document_chunks`에 nullable hierarchy field를 추가한다. 이 schema는 flat KB 호환 기반이며, full parent-child ingestion/ranking은 후속 구현 범위다.
 
 - `parent_chunk_id`: nullable FK to `document_chunks.id`
 - `chunk_level`: `parent | child | flat`
-- `section_path`: text nullable
+- `section_path`: JSON array nullable
 - `heading`: text nullable
 
 `parent_chunk_id`와 `chunk_level`은 canonical column이다. JSON metadata에 같은 값을 중복 저장하지 않는다.
@@ -182,43 +187,50 @@ Fallback:
 - parent chunk가 없는 KB는 flat retrieval
 - hierarchy field가 일부 누락된 document는 해당 document만 flat fallback
 - fallback 여부는 trace metadata에 기록
+- MBA-78 1차 구현에서 `hierarchy_mode=auto`와 `flat`은 기존 flat retrieval을 사용한다. 명시적 `parent_child` 요청은 hierarchy data/index가 아직 없으면 `422 hierarchy_unavailable`로 닫는다.
 
 ## Trace and Citation
 
 신규 `rag_retrieval_traces` table은 만들지 않는다. Per-chunk retrieval evidence는 `trace_payloads.payload_kind='rag.retrieval'`의 redacted payload convention으로 저장하고, run/node trace metadata에는 redaction-safe summary allowlist만 저장한다.
 
-권장 payload convention:
+권장 trace payload record convention:
 
 ```json
 {
   "payload_kind": "rag.retrieval",
-  "knowledge_base_id": "...",
-  "workflow_run_id": "...",
   "workflow_node_run_id": "...",
-  "node_id": "...",
-  "retrieved_chunks": [
-    {
-      "document_id": "...",
-      "chunk_id": "...",
-      "parent_chunk_id": "...",
-      "rank": 1,
-      "score": 0.83,
-      "token_count": 210,
-      "metadata_summary": {
-        "classification": "internal",
-        "tags": ["policy"],
-        "section_path": "Handbook > Leave",
-        "heading": "Leave Policy"
+  "redacted_payload": {
+    "knowledge_base_ids": ["..."],
+    "workflow_run_id": "...",
+    "node_id": "...",
+    "retrieved_chunks": [
+      {
+        "document_id": "...",
+        "chunk_id": "...",
+        "parent_chunk_id": "...",
+        "rank": 1,
+        "score": 0.83,
+        "token_count": 210,
+        "metadata_summary": {
+          "classification": "internal",
+          "tags": ["policy"],
+          "section_path": ["Handbook", "Leave"],
+          "heading": "Leave Policy"
+        }
       }
-    }
-  ],
-  "raw_content_returned": false
+    ],
+    "result_count": 1,
+    "policy_result": "allow",
+    "raw_content_returned": false
+  }
 }
 ```
 
+Runtime node payload body에는 `workflow_node_run_id`를 중복 저장하지 않고, 저장 시 `trace_payloads.workflow_node_run_id` 컬럼으로 연결한다.
+
 Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다.
 
-현재 `TraceMetadataSanitizer`의 RAG run/node metadata allowlist는 legacy summary field 중심이다. MBA-75 구현은 `trace_payloads`의 per-chunk evidence fixture와 run/node summary allowlist fixture를 분리해 갱신해야 한다.
+현재 `TraceMetadataSanitizer`의 RAG run/node metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `hierarchy_fallback`, `raw_content_returned`, `latency_ms`, `retrieval_payload_id`, `retrieved_context_payload_id` 같은 요약 field만 허용한다. Legacy `retrieval_results` 입력은 저장하지 않고 위 summary field로 변환한다. Per-chunk evidence fixture와 run/node summary allowlist fixture는 분리해 검증한다.
 
 `audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이고, `trace_payloads.payload_kind='rag.retrieval'`는 trace payload 분류값이다. 두 값을 같은 계약으로 합치지 않는다.
 

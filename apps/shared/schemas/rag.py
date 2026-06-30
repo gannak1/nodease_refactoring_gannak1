@@ -1,8 +1,82 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+CLASSIFICATION_VALUES = {"public", "internal", "confidential", "pii"}
+SOURCE_TYPE_VALUES = {"FILE", "API", "DB"}
+TAG_FILTER_MODES = {"contains_any", "contains_all"}
+HierarchyMode = Literal["auto", "flat", "parent_child"]
+
+
+def _normalize_str_list(values: list[Any] | None) -> list[str] | None:
+    if values is None:
+        return None
+    normalized = [str(value).strip() for value in values]
+    normalized = [value for value in normalized if value]
+    if not normalized:
+        raise ValueError("filter values must not be empty")
+    return list(dict.fromkeys(normalized))
+
+
+def _normalize_classification_values(values: list[str] | None) -> list[str] | None:
+    normalized = _normalize_str_list(values)
+    if normalized is None:
+        return None
+    result = [value.lower() for value in normalized]
+    invalid = sorted(set(result) - CLASSIFICATION_VALUES)
+    if invalid:
+        raise ValueError(f"unsupported classification value: {', '.join(invalid)}")
+    return result
+
+
+def _normalize_source_type_values(values: list[str] | None) -> list[str] | None:
+    normalized = _normalize_str_list(values)
+    if normalized is None:
+        return None
+    result = [value.upper() for value in normalized]
+    invalid = sorted(set(result) - SOURCE_TYPE_VALUES)
+    if invalid:
+        raise ValueError(f"unsupported source_type value: {', '.join(invalid)}")
+    return result
+
+
+class TagFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["contains_any", "contains_all"] = "contains_any"
+    values: List[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list[str]) -> list[str]:
+        normalized = _normalize_str_list(values)
+        if normalized is None:
+            raise ValueError("tag values are required")
+        result = [value.lower() for value in normalized]
+        if any(len(value) > 64 for value in result):
+            raise ValueError("tag values must be 64 characters or fewer")
+        return list(dict.fromkeys(result))
+
+
+class MetadataFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classification: Optional[List[str]] = None
+    tags: Optional[TagFilter] = None
+    source_type: Optional[List[str]] = None
+    effective_at: Optional[datetime] = None
+
+    @field_validator("classification")
+    @classmethod
+    def validate_classification(cls, values: list[str] | None) -> list[str] | None:
+        return _normalize_classification_values(values)
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type(cls, values: list[str] | None) -> list[str] | None:
+        return _normalize_source_type_values(values)
 
 
 # --- Dev A ---
@@ -59,17 +133,63 @@ class KnowledgeBaseDetailResponse(KnowledgeBaseResponse):
 # --- Retrieval Schemas (Dev B) ---
 class SearchQuery(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=20)
     knowledge_base_id: Optional[UUID] = None  # 특정 KB 검색 시 사용
     generation_model: Optional[str] = "gpt-4o"  # 답변 생성에 사용할 모델 ID
+    metadata_filter: Optional[MetadataFilter] = None
+    classification_filter: Optional[List[str]] = None
+    tags: Optional[TagFilter] = None
+    source_type: Optional[List[str]] = None
+    effective_at: Optional[datetime] = None
+    hierarchy_mode: HierarchyMode = "auto"
+
+    @field_validator("classification_filter")
+    @classmethod
+    def validate_classification_filter(
+        cls, values: list[str] | None
+    ) -> list[str] | None:
+        return _normalize_classification_values(values)
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type_filter(cls, values: list[str] | None) -> list[str] | None:
+        return _normalize_source_type_values(values)
+
+    @model_validator(mode="after")
+    def reject_duplicate_metadata_shortcuts(self) -> "SearchQuery":
+        if self.metadata_filter is None:
+            return self
+
+        duplicates = []
+        shortcut_pairs = {
+            "classification": self.classification_filter,
+            "tags": self.tags,
+            "source_type": self.source_type,
+            "effective_at": self.effective_at,
+        }
+        for key, shortcut_value in shortcut_pairs.items():
+            metadata_value = getattr(self.metadata_filter, key)
+            if shortcut_value is not None and metadata_value is not None:
+                duplicates.append(key)
+        if duplicates:
+            keys = ", ".join(sorted(duplicates))
+            raise ValueError(f"duplicate metadata filter shortcut: {keys}")
+        return self
 
 
 class ChunkPreview(BaseModel):
+    chunk_id: Optional[UUID] = None
+    parent_chunk_id: Optional[UUID] = None
     content: str
     document_id: UUID
     filename: str
     page_number: Optional[int] = None
     similarity_score: float
+    score: Optional[float] = None
+    rank: Optional[int] = None
+    token_count: Optional[int] = None
+    metadata_summary: Optional[Dict[str, Any]] = None
+    hierarchy_path: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
 
 

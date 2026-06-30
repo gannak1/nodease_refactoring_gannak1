@@ -1,6 +1,5 @@
 from typing import Any
 
-
 AUTH_STATE_NONE = "none"
 AUTH_STATE_VIEWER = "viewer"
 AUTH_STATE_OPERATOR = "operator"
@@ -59,6 +58,13 @@ LLM_CREDENTIAL_ACTION_MINIMUM_AUTH_STATE = {
     "manage": AUTH_STATE_MANAGER,
 }
 
+KNOWLEDGE_BASE_ACTION_MINIMUM_AUTH_STATE = {
+    "read": AUTH_STATE_VIEWER,
+    "use": AUTH_STATE_OPERATOR,
+    "write": AUTH_STATE_BUILDER,
+    "manage": AUTH_STATE_MANAGER,
+}
+
 
 def normalize_auth_state(auth_state: Any) -> str:
     value = str(auth_state or AUTH_STATE_NONE).lower()
@@ -110,6 +116,13 @@ def workflow_auth_state_allows(auth_state: Any, action: str) -> bool:
 
 def llm_credential_auth_state_allows(auth_state: Any, action: str) -> bool:
     minimum = LLM_CREDENTIAL_ACTION_MINIMUM_AUTH_STATE.get(action)
+    if minimum is None:
+        return False
+    return auth_state_at_least(normalize_resource_auth_state(auth_state), minimum)
+
+
+def knowledge_base_auth_state_allows(auth_state: Any, action: str) -> bool:
+    minimum = KNOWLEDGE_BASE_ACTION_MINIMUM_AUTH_STATE.get(action)
     if minimum is None:
         return False
     return auth_state_at_least(normalize_resource_auth_state(auth_state), minimum)

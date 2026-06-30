@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
+Verified Against: feature/mba-78 @ HEAD (base dev d0c858e)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
@@ -1139,7 +1139,7 @@ MVP 목표 상태 결정:
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |
 | LLM 호출 | `llm.call` |
-| 목표: RAG retrieval 성공 | `rag.retrieve` |
+| 현재 MBA-78 1차: RAG retrieval 성공 | `rag.retrieve` |
 | 배포 생성 | `workflow.deploy` |
 | 배포 일반 toggle | `deployment.toggle` |
 | 이전 배포 활성화 | `deployment.activate_previous` |
@@ -1229,7 +1229,8 @@ MVP 목표 상태 결정:
 - `classification` column을 추가하지 않는다.
 - classification 값은 `documents.meta_info.classification` metadata convention으로 저장할 수 있다.
 - `classification` 허용값은 MVP 2 기준 `public`, `internal`, `confidential`, `pii`다. 누락 시 application layer에서 `internal`로 해석한다.
-- `tags`, `source_type`, `source_hash`, `document_version`, `effective_from`, `effective_to`, `metadata_version` 같은 metadata key는 retrieval filter와 citation evidence에 사용할 수 있다.
+- MBA-78 1차 retrieval filter key는 `classification`, `tags`, `source_type`, `effective_from`, `effective_to` convention에 한정한다. `source_hash`, `document_version`, `metadata_version` 같은 metadata key는 citation evidence 또는 후속 filter 확장 후보로 사용할 수 있다.
+- `effective_from`/`effective_to`는 `documents.meta_info`에 UTC ISO 문자열(`YYYY-MM-DDTHH:MM:SS+00:00`)로 정규화해 저장한다. 비어 있거나 누락된 값은 열린 구간으로 해석하고, 값이 있지만 형식이 다르면 retrieval filter에서 match하지 않는다. `document_chunks.metadata`에 복제된 값은 denormalized cache/citation evidence이며, MBA-78 1차 filter source로 보지 않는다.
 - `needs_reindex` 같은 상태가 필요하면 현재 코드의 `meta_info`에 application-level metadata로 저장한다.
 - re-index 때문에 `status` enum/table을 새로 만들지 않는다.
 
@@ -1250,6 +1251,10 @@ MVP 목표 상태 결정:
 - `content`
 - `embedding`
 - `chunk_index`
+- `parent_chunk_id`
+- `chunk_level`
+- `section_path`
+- `heading`
 - `token_count`
 - `metadata`
 
@@ -1263,9 +1268,9 @@ MVP 목표 상태 결정:
 - chunk-level incremental indexing table은 만들지 않는다.
 - retrieval 결과의 chunk reference는 trace payload 내부 metadata로 저장한다.
 - `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다. `documents.meta_info`와 충돌하면 document metadata를 우선한다.
-- MBA-75 hierarchical schema extension 후보는 nullable `parent_chunk_id`, `chunk_level`, `section_path`, `heading` column 추가다. 이 column들은 현재 코드에는 없으며, 추가 시 기존 flat KB가 fallback으로 동작해야 한다.
+- MBA-78 1차 구현은 nullable `parent_chunk_id`, `chunk_level`, `section_path`, `heading` column을 추가한다. 기존 row의 `chunk_level IS NULL`은 application layer에서 `flat`으로 해석한다.
 - `parent_chunk_id`와 `chunk_level`은 hierarchy의 canonical field다. 같은 값을 JSON metadata에 중복 저장하지 않는다.
-- Hierarchical retrieval index 후보는 `(knowledge_base_id, chunk_level)`, `(parent_chunk_id)`, `(document_id, chunk_index)`다. JSONB GIN index는 실제 metadata filter query pattern이 확정된 뒤 추가한다.
+- Hierarchical retrieval index는 1차로 `(knowledge_base_id, chunk_level)`, `(parent_chunk_id)`를 추가한다. `(document_id, chunk_index)`와 JSONB GIN index는 실제 retrieval/query pattern이 확정된 뒤 추가 여부를 판단한다.
 
 ### `connections`
 
@@ -1553,7 +1558,9 @@ RAG retrieval 전용 table은 만들지 않는다.
 `trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 per-chunk evidence로 다음 정보를 application-level convention으로 저장할 수 있다.
 
 - `payload_kind = "rag.retrieval"`
-- `knowledge_base_id`
+- `knowledge_base_ids`
+- `workflow_run_id`
+- `node_id`
 - `document_id`
 - `chunk_id`
 - `parent_chunk_id`
@@ -1561,12 +1568,17 @@ RAG retrieval 전용 table은 만들지 않는다.
 - `score`
 - `token_count`
 - `metadata_summary`
+- `result_count`
+- `policy_result`
+- `raw_content_returned`
+
+`workflow_node_run_id`는 payload body에 중복 저장하지 않고 `trace_payloads.workflow_node_run_id` 컬럼으로 연결한다.
 
 `audit_logs.action='rag.retrieve'`는 성공한 retrieval 감사 event 이름이다. `payload_kind='rag.retrieval'`은 trace payload 분류값이며 audit action을 대체하지 않는다.
 
 이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 현재 물리 데이터 모델 보존 조건 밖의 별도 설계가 필요하다.
 
-Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다. 현재 코드의 tracing metadata sanitizer는 legacy RAG summary field만 허용하므로, MBA-75 목표 allowlist를 사용하려면 sanitizer와 테스트 fixture를 함께 갱신한다.
+Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다. 현재 tracing metadata sanitizer는 RAG summary field와 payload id reference만 허용하며, legacy `retrieval_results` 입력은 저장하지 않고 summary로 변환한다.
 
 RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 기본 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
 
@@ -1670,7 +1682,7 @@ DB 변경:
 
 - `rag_retrieval_traces`를 만들지 않는다.
 - `knowledge_bases.classification`, `documents.classification`을 추가하지 않는다.
-- MBA-75 hierarchical retrieval을 위해 `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` nullable column을 추가할 수 있다.
+- MBA-78 1차 구현에서 `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` nullable column을 추가한다.
 - `user_knowledge_permissions`를 생성한다. 현재 코드에는 아직 없다.
 
 구현:
@@ -1720,7 +1732,6 @@ DB 변경:
 | 역할 catalog를 DB에서 1급으로 관리 | `roles`, `user_roles` |
 | 임의 resource polymorphic permission | `resource_permissions` |
 | RAG retrieval FK 무결성 보장 | `rag_retrieval_traces` |
-| Hierarchical RAG 구조 | nullable `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` |
 | deployment checklist 독립 검색/통계 | `deployment_check_runs`, `deployment_check_items` |
 | recommendation 장기 상태 관리 | `recommendation_events` |
 | connection을 workflow/knowledge base와 독립적으로 team/user에게 공유 | `team_connection_permissions`, `user_connection_permissions` |
