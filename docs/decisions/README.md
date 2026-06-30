@@ -32,6 +32,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 | [ADR-202606290145-active-organization-header-context](ADR-202606290145-active-organization-header-context.md) | Accepted | Active organization header context 승인 | organization/team/permission API와 app 생성/목록/복제, workflow 생성 API에서 `X-Organization-Id` 검증 구현. MBA-67 이후 scope 판정은 active organization membership을 기준으로 하며, membership row 자체가 없는 legacy owner/manager만 fallback을 받는다 |
 | [ADR-202606291315-resource-access-403-404-policy](ADR-202606291315-resource-access-403-404-policy.md) | Accepted | Resource 접근 403/404 정책 | App/Workflow에서 organization scope 밖은 `404`, scope 안 action 권한 부족은 `403` |
 | [ADR-202606291451-team-router-rbac-service-boundary](ADR-202606291451-team-router-rbac-service-boundary.md) | Accepted | Team API RBAC service boundary | Team 관리 권한 판정과 team/team member 조회는 `TeamService`가 소유하고, 등록 router는 기존 `team.py` 기준 유지 |
+| [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md) | Accepted | Metadata-aware 및 Hierarchical RAG 경계 | Metadata filter는 allowlist schema, metadata는 permission source가 아니며, RAG trace는 raw chunk content 없이 citation metadata를 저장 |
 
 ## 참고 보고서
 

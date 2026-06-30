@@ -4,7 +4,7 @@ Status: Draft
 Authority: Data Model
 Source of Truth: Yes
 Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
-Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md)
+Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
 
@@ -189,6 +189,7 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 
 - KB 목록/상세 조회: `read`
 - 문서 업로드/삭제/재색인: `write`
+- RAG search-test: 목표 `use`
 - workflow RAG node 실행: `use`
 - KB permission 변경: `manage`
 
@@ -197,6 +198,9 @@ User direct permission은 team 권한으로 표현하기 어려운 예외적 추
 - 현재 물리 데이터 모델에는 document별 permission table이 없다.
 - document별 차단이 필요하면 `knowledge_base` 권한과 document metadata 정책으로 먼저 처리한다.
 - document별 강한 권한이 필요하면 별도 schema extension이 필요하다.
+- Metadata는 permission source of truth가 아니다. `documents.meta_info`와 `document_chunks.metadata`는 retrieval filter, policy decision, citation evidence에 사용할 수 있지만 권한 판정은 permission table과 organization membership 기준을 따른다.
+- `classification=pii`는 external LLM prompt path에서 `policy.block`, internal-only search preview에서 `policy.warn`을 기본값으로 둔다.
+- `classification=confidential`은 KB `use` 권한을 통과하면 허용하되 audit/trace policy result를 남긴다.
 
 ### LLM Credential
 

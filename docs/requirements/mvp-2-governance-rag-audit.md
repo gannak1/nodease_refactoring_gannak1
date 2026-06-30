@@ -4,7 +4,7 @@ Status: Draft
 Authority: Requirements
 Source of Truth: Yes
 Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
-Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md)
+Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목표
 
@@ -22,6 +22,28 @@ MVP 2는 MVP 1에서 설계한 RBAC/audit/policy 기반을 실제 데이터 소�
   + 문서 변경/재색인 흐름
   + audit log 검색
 ```
+
+## MBA-75 RAG 확장 범위
+
+MBA-75에서 사용하는 RAG 용어는 다음처럼 구분한다.
+
+| 용어 | 요구사항 의미 |
+| --- | --- |
+| Metadata-aware RAG | document/source/chunk metadata를 retrieval filter, policy decision, ranking hint, citation evidence에 사용 |
+| Permission-aware RAG | knowledge base `use` 권한과 document metadata policy를 RAG 실행 경로에서 강제 |
+| Hierarchical RAG | parent/child chunk 계층을 indexing/retrieval에 사용 |
+
+RBAC 기반 접근 제어는 Hierarchical RAG가 아니다. RBAC는 Permission-aware RAG의 access-control 경계이고, Hierarchical RAG는 검색/index 구조다.
+
+MBA-75 목표 범위:
+
+- metadata filter는 allowlist 기반 구조화 schema로 정의한다.
+- metadata는 permission source of truth가 아니다.
+- document metadata source of truth는 `documents.meta_info`다.
+- `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다.
+- RAG search-test와 Workflow Engine runtime retrieval은 같은 filter/policy semantics를 사용한다.
+- parent chunk는 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
+- 기존 flat KB는 parent/child metadata가 없으면 flat retrieval로 fallback한다.
 
 ## 의존 기반
 
@@ -79,6 +101,8 @@ API에서만 체크하면 실행 경로 우회 문제가 생기므로 Workflow E
 
 MVP 2에서는 자동 PII 탐지를 완성하지 않는다. 초기 방식은 사용자가 classification을 수동 지정하고, 간단한 regex 기반 PII warning 후보를 제공하며, classification이 `pii`이면 외부 모델 호출 전 warn/block한다. 모든 policy decision은 `audit_logs.audit_metadata.policy_result`에 남긴다.
 
+MBA-75 기본 정책은 external LLM prompt path에서는 `pii`를 `policy.block`으로 차단하고, internal-only search preview에서는 `policy.warn`으로 감사 가능한 경고를 남기는 것이다. `confidential`은 KB `use` 권한을 통과하면 허용하되 audit/trace policy result를 남긴다.
+
 ## RAG Retrieval Trace Metadata
 
 MVP 2에서 필요한 RAG trace 정보는 신규 `rag_retrieval_traces` table을 만들지 않고 `trace_payloads` 또는 run/node trace metadata에 저장한다.
@@ -91,12 +115,16 @@ trace_payloads / trace metadata
   retrieved_chunks[]
     document_id
     chunk_id
+    parent_chunk_id?
     rank
     score
     token_count
+    metadata_summary
 ```
 
 이 trace는 "어떤 청크가 모델에 들어갔는가"를 설명하는 핵심 근거다. RAG 없는 LLM node는 기존처럼 동작해야 한다.
+
+Workflow trace/run detail의 기본 응답은 raw chunk content 없이 citation metadata를 반환한다. Search-test response는 권한을 통과한 user에게 chunk content preview를 반환할 수 있지만, 그 content를 trace/audit metadata에 복사하지 않는다.
 
 ## RAG 변경 정책과 Re-index
 
@@ -153,6 +181,8 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 - knowledge base 권한 enforcement와 document metadata policy
 - `user_knowledge_permissions` additive grant 추가. 현재 코드에는 아직 없음
+- metadata-aware retrieval filter와 vector/keyword 동일 semantics
+- hierarchical chunk schema, ingestion, parent/child retrieval
 - DB connection secret/manage/use 분리 enforcement
 - RAG retrieval trace metadata 저장
 - data classification metadata convention 및 API/UI 노출

@@ -4,6 +4,7 @@ Status: Draft
 Authority: API
 Source of Truth: Yes
 Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 범위
 
@@ -82,6 +83,69 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 
 현재 RAG endpoint의 owner 검증은 일관적이지 않다. `DELETE /rag/document/{document_id}`는 `KnowledgeBase.user_id == current_user.id`를 확인하지만, `analyze`, `confirm`, `progress`, 기존 KB upload 경로는 document/KB id 중심으로 동작한다. 이 차이는 MVP 2의 KB permission enforcement에서 정렬해야 한다.
 
+## MBA-75 Proposed Search Contract
+
+현재 `SearchQuery`는 `query`, `top_k`, `knowledge_base_id`, `generation_model` 중심이다. MBA-75는 기존 request shape를 깨지 않는 optional field로 metadata-aware/hierarchical retrieval 계약을 추가한다.
+
+Proposed request extension:
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `metadata_filter` | `MetadataFilter \| null` | allowlist 기반 metadata filter. Free-form dict, JSONPath, raw SQL fragment는 허용하지 않음 |
+| `classification_filter` | `string[] \| null` | `public`, `internal`, `confidential`, `pii` 중 선택 |
+| `tags` | filter object 또는 `string[]` | `contains_any`, `contains_all` semantics를 명시해야 함 |
+| `source_type` | `FILE/API/DB[] \| null` | source type filter |
+| `effective_at` | datetime | `effective_from <= effective_at < effective_to` time window filter |
+| `hierarchy_mode` | `auto/flat/parent_child` | 기존 KB는 `auto`에서 flat fallback 가능 |
+
+`metadata_filter`와 top-level convenience field가 함께 오면 precedence를 API schema에서 명시해야 한다. 기본 정책은 동일 key 중복을 validation error로 거부하는 것이다.
+
+Proposed response extension:
+
+| Field | 위치 | 설명 |
+| --- | --- | --- |
+| `chunk_id` | `ChunkPreview` | 검색된 chunk id |
+| `rank` | `ChunkPreview` | 최종 ranking 순서 |
+| `metadata_summary` | `ChunkPreview` 또는 trace payload | redaction-safe metadata summary |
+| `hierarchy_path` | `ChunkPreview` | section path, heading, parent/child 정보 |
+
+Search-test response는 권한을 통과한 user에게 chunk `content` preview를 반환할 수 있다. Workflow trace/run detail 기본 응답은 raw chunk content 없이 citation metadata만 반환해야 한다.
+
+## MBA-75 Trace/Citation Contract
+
+RAG retrieval 전용 table은 만들지 않는다. Retrieval summary는 `trace_payloads` 또는 run/node trace metadata에 application-level convention으로 저장한다.
+
+권장 payload:
+
+```json
+{
+  "payload_kind": "rag.retrieval",
+  "knowledge_base_id": "uuid",
+  "workflow_run_id": "uuid",
+  "workflow_node_run_id": "uuid",
+  "node_id": "llm-node-id",
+  "retrieved_chunks": [
+    {
+      "document_id": "uuid",
+      "chunk_id": "uuid",
+      "parent_chunk_id": "uuid",
+      "rank": 1,
+      "score": 0.83,
+      "token_count": 210,
+      "metadata_summary": {
+        "classification": "internal",
+        "tags": ["policy"],
+        "section_path": "Handbook > Leave",
+        "heading": "Leave Policy"
+      }
+    }
+  ],
+  "raw_content_returned": false
+}
+```
+
+Trace/audit metadata에는 raw chunk content, raw prompt, credential, provider raw response를 저장하지 않는다.
+
 ## MVP 2 변경 기준
 
 - 현재 코드의 KB endpoint는 주로 owner/current-user scope지만, RAG endpoint 일부는 owner/scope 검증이 약하다. MVP 2에서 team-based KB `read/write/use` enforcement를 붙이고 RAG endpoint scope를 통일한다.
@@ -90,3 +154,5 @@ Knowledge base, document, chunk preview, RAG search test, ingestion 계약을 �
 - document별 permission table은 만들지 않는다.
 - document classification과 re-index flag는 `documents.meta_info` metadata convention으로 저장한다.
 - RAG retrieval trace는 `rag_retrieval_traces` 신규 table이 아니라 trace payload/run metadata로 저장한다.
+- Metadata filter는 allowlist 기반 schema로만 받는다. Metadata는 permission source of truth가 아니다.
+- Hierarchical RAG는 nullable parent/child chunk schema와 flat fallback으로 도입한다.

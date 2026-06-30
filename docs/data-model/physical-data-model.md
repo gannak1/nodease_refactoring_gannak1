@@ -4,7 +4,7 @@ Status: Draft
 Authority: Data Model
 Source of Truth: Yes
 Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
-Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md)
+Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목적
 
@@ -346,7 +346,7 @@ MVP 목표 상태 결정:
 
 ### `organization_memberships`
 
-MBA-66에서 추가된 MVP 2-0 foundation table이다. 현재 구현은 DB/model/migration까지이며, permission helper와 API가 organization membership 기준으로 완전히 전환된 상태는 아니다.
+MBA-66에서 추가된 MVP 2-0 foundation table이다. MBA-67 이후 permission helper와 일부 API endpoint는 이 table을 organization scope와 manager 판정의 우선 기준으로 사용한다. Organization member/invitation API와 full membership 관리 UI는 아직 후속 범위다.
 
 역할:
 
@@ -1182,6 +1182,7 @@ MVP 목표 상태 결정:
 
 - `classification` column을 추가하지 않는다.
 - classification 기능은 `documents.meta_info`나 trace/audit metadata convention으로 처리한다. `knowledge_bases.classification` column 기반 필터링이 필요하면 별도 schema 변경으로 분리한다.
+- metadata는 permission source of truth가 아니다. Knowledge base 권한은 permission table과 organization membership 기준으로 판정한다.
 
 ### `documents`
 
@@ -1218,6 +1219,8 @@ MVP 목표 상태 결정:
 
 - `classification` column을 추가하지 않는다.
 - classification 값은 `documents.meta_info.classification` metadata convention으로 저장할 수 있다.
+- `classification` 허용값은 MVP 2 기준 `public`, `internal`, `confidential`, `pii`다. 누락 시 application layer에서 `internal`로 해석한다.
+- `tags`, `source_type`, `source_hash`, `document_version`, `effective_from`, `effective_to`, `metadata_version` 같은 metadata key는 retrieval filter와 citation evidence에 사용할 수 있다.
 - `needs_reindex` 같은 상태가 필요하면 현재 코드의 `meta_info`에 application-level metadata로 저장한다.
 - re-index 때문에 `status` enum/table을 새로 만들지 않는다.
 
@@ -1250,6 +1253,10 @@ MVP 목표 상태 결정:
 
 - chunk-level incremental indexing table은 만들지 않는다.
 - retrieval 결과의 chunk reference는 trace payload 내부 metadata로 저장한다.
+- `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다. `documents.meta_info`와 충돌하면 document metadata를 우선한다.
+- MBA-75 hierarchical schema extension 후보는 nullable `parent_chunk_id`, `chunk_level`, `section_path`, `heading` column 추가다. 이 column들은 현재 코드에는 없으며, 추가 시 기존 flat KB가 fallback으로 동작해야 한다.
+- `parent_chunk_id`와 `chunk_level`은 hierarchy의 canonical field다. 같은 값을 JSON metadata에 중복 저장하지 않는다.
+- Hierarchical retrieval index 후보는 `(knowledge_base_id, chunk_level)`, `(parent_chunk_id)`, `(document_id, chunk_index)`다. JSONB GIN index는 실제 metadata filter query pattern이 확정된 뒤 추가한다.
 
 ### `connections`
 
@@ -1534,14 +1541,19 @@ RAG retrieval 전용 table은 만들지 않는다.
 
 `trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 다음 정보를 application-level convention으로 저장할 수 있다.
 
+- `payload_kind = "rag.retrieval"`
 - `knowledge_base_id`
 - `document_id`
 - `chunk_id`
+- `parent_chunk_id`
 - `rank`
 - `score`
 - `token_count`
+- `metadata_summary`
 
 이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 현재 물리 데이터 모델 보존 조건 밖의 별도 설계가 필요하다.
+
+RAG trace metadata에는 raw chunk content, raw prompt, credential, provider raw response를 기본 저장하지 않는다. Search-test response는 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
 
 ### Deployment Checklist
 
@@ -1643,6 +1655,7 @@ DB 변경:
 
 - `rag_retrieval_traces`를 만들지 않는다.
 - `knowledge_bases.classification`, `documents.classification`을 추가하지 않는다.
+- MBA-75 hierarchical retrieval을 위해 `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` nullable column을 추가할 수 있다.
 - `user_knowledge_permissions`를 생성한다. 현재 코드에는 아직 없다.
 
 구현:
@@ -1653,6 +1666,7 @@ DB 변경:
 4. RAG data source 접근은 우선 `team_knowledge_permissions`로 제한하고, `user_knowledge_permissions` 추가 후 user direct grant를 합산한다.
 5. document re-index 필요 상태는 `documents.meta_info` metadata로 관리한다.
 6. 감사 검색 API는 `audit_logs`와 `trace_payload_access_events`를 구분해서 조회한다.
+7. Hierarchical retrieval은 parent chunk를 coarse retrieval에 사용하고 child chunk를 final evidence로 반환한다.
 
 작동하는 MVP 산출물:
 
@@ -1691,6 +1705,7 @@ DB 변경:
 | 역할 catalog를 DB에서 1급으로 관리 | `roles`, `user_roles` |
 | 임의 resource polymorphic permission | `resource_permissions` |
 | RAG retrieval FK 무결성 보장 | `rag_retrieval_traces` |
+| Hierarchical RAG 구조 | nullable `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` |
 | deployment checklist 독립 검색/통계 | `deployment_check_runs`, `deployment_check_items` |
 | recommendation 장기 상태 관리 | `recommendation_events` |
 | connection을 workflow/knowledge base와 독립적으로 team/user에게 공유 | `team_connection_permissions`, `user_connection_permissions` |
