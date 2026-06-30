@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 구현 계획 문서는 source-of-truth 문서를 실제 작업 순서와 이슈로 분해한다.
 
@@ -16,7 +16,7 @@ Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
 
 ## 진행 순서
 
-현재 진행 계획은 MVP 1 foundation을 완료한 뒤, MVP 2 Governance/RAG/Audit 본작업에 들어가기 전에 [MVP 2-0 Organization Membership / Invitation Foundation](mvp-2-0-organization-membership-invitation-foundation.md)을 선행한다.
+현재 진행 계획은 MVP 1 foundation 위에서 [MVP 2-0 Organization Membership / Invitation Foundation](mvp-2-0-organization-membership-invitation-foundation.md)의 완료된 foundation을 전제로 MVP 2 Governance/RAG/Audit 본작업을 진행하는 것이다.
 
 ```text
 MVP 1 Foundation / LLMOps Observability
@@ -28,7 +28,7 @@ MVP 1 Foundation / LLMOps Observability
   -> MVP 2 Audit Log Search
 ```
 
-MVP 2-0에서는 `organization_memberships`를 organization 소속의 기준으로 추가하고, team membership과 user direct permission은 active organization membership을 전제로 동작하도록 전환한다. 이후 `user_knowledge_permissions`, knowledge base `use` enforcement, RAG node execution check를 구현한다.
+MVP 2-0의 `organization_memberships` DB/model/migration/backfill과 permission helper 전환은 dev 기준 완료된 prerequisite이다. 이후 남은 organization membership 범위는 member/invitation API, full membership 관리 UI, legacy owner/manager fallback 축소 정책이며, 그 위에서 `user_knowledge_permissions`, knowledge base `use` enforcement, RAG node execution check를 구현한다.
 
 ## 권위
 

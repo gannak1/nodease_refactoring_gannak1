@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: feature/mba-6 @ 87acaae777df37eb834d95d16c999b25c09b8d2d
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 목적
 
@@ -159,7 +159,7 @@ user direct permission은 team 권한을 낮추는 용도가 아니다.
 
 | 항목 | 이유 |
 | --- | --- |
-| user 목록 API의 organization filter 최종 계약 | 현재 FE 코드에서 `/users?organization_id={id}`를 사용하므로 API 문서화 상태 확인 필요 |
+| user 목록 API의 organization filter 계약 | `api/organization-rbac.md` 기준 manager 전용 active organization member 목록으로 정리됨. Team member 추가 대상도 이 목록에서 선택한다. |
 | workflow selector가 app primary workflow만 보여줄지 모든 workflow를 보여줄지 | `GET /api/v1/apps`와 `GET /api/v1/workflows/app/{app_id}`의 권한 필터링 정책에 영향 |
 | 권한 변경 audit를 UI에서 즉시 보여줄지 | 현재 audit tab과 permission UI의 연결 범위 확인 필요 |
 

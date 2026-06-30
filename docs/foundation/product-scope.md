@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: dev @ 08f6e301eea5f24b76ea0a53a957c7492622d455
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 
 ## 제품 정의
 
@@ -26,5 +26,5 @@ Nodease는 기존 Moduly의 workflow builder/runtime을 기반으로 LLMOps obse
 - 현재 코드의 아키텍처와 물리 데이터 모델을 우선 보존한다.
 - 큰 schema refactor보다 additive extension을 우선한다.
 - RBAC, audit, tracing은 controller가 아니라 service/helper 경계에서 적용한다.
-- secret, credential, raw payload는 문서와 로그에 노출하지 않는다.
+- secret value, credential 원문, API key, token, `encrypted_config` 값/content, raw payload는 문서와 로그에 노출하지 않는다. Column 이름과 현재 보안 TODO 설명은 허용한다. `credential_id` 같은 식별자는 권한 보호된 trace/API 응답 whitelist 안에서만 허용할 수 있다.
 - 구현 계획은 source-of-truth 문서의 파생물로 취급한다.

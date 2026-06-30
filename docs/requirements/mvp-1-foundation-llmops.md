@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606291451-team-router-rbac-service-boundary](../decisions/ADR-202606291451-team-router-rbac-service-boundary.md)
 
 ## 목표
@@ -153,13 +153,14 @@ Project boundary = App
 | `team` | 기본 권한 subject. user는 team membership을 통해 권한을 얻는다. | MVP 1 |
 | `user` | 예외적 추가 권한 subject. resource별 `user_*_permissions`로 additive allow만 부여한다. | MVP 1 |
 
-조직 범위는 현재 코드의 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`는 새로 만들지 않는다.
+조직 범위는 현재 코드의 `organization`, `organization_memberships`, `teams`, `team_memberships`, `team_*_permissions`를 사용한다. `organization_memberships`는 user와 organization의 직접 소속 전제이고, `team_memberships`는 team 배정 관계다. `roles`, `user_roles`, polymorphic `resource_permissions`는 새로 만들지 않는다.
 
 ## 권장 DB 모델
 
 ```text
 current code baseline
   organization
+  organization_memberships
   teams
   team_memberships
   team_workflow_permissions
@@ -246,7 +247,7 @@ audit_logs
 | `credential.create` | LLM credential 생성 | MVP 1 |
 | `credential.delete` | LLM credential 삭제 | MVP 1 |
 
-MVP 2/3 목표 action인 `policy.warn`, `policy.block`, `deployment.check`, `recommendation.*`는 현재 코드의 `AuditAction` 상수에는 아직 없다. 구현 시 action 상수와 문서를 함께 추가한다.
+MVP 2/3 목표 action인 `policy.warn`, `policy.block`, `rag.retrieve`, `deployment.check`, `recommendation.*`는 현재 코드의 `AuditAction` 상수에는 아직 없다. 구현 시 action 상수와 문서를 함께 추가한다.
 
 현재 `AuditAction`에는 `permission.grant`, `permission.revoke` 상수가 있지만, 등록된 `/api/v1/permissions/*` router는 권한 부여/수정/회수를 위 permission row별 data-change action으로 기록한다.
 
@@ -320,7 +321,7 @@ MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 �
 
 | 대상 | 예시 정책 |
 | --- | --- |
-| Knowledge Base | HR team 또는 직접 grant를 받은 user만 `use` 가능 |
+| Knowledge Base | 예: HR KB는 허용된 team permission 또는 향후 user direct grant를 받은 user만 `use` 가능 |
 | Document | PII 문서는 외부 모델 호출 전 warn/block |
 | LLM Credential/Model | 고가 모델은 허용된 credential, credential `use` 권한, verified credential-model relation을 가진 user만 사용 가능 |
 | Workflow | `viewer`는 `execute` 불가 |

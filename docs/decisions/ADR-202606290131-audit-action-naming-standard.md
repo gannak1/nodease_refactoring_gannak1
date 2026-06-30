@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: dev @ c990b54e931b4de8023822f6dff14f43fc1d415f
+Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 Created At: 2026-06-29 01:31 KST
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
 
@@ -22,9 +22,15 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | RBAC/resource permission 부족 | `permission.denied` | MVP 1 |
 | team/user resource permission row 생성/수정 | `team_workflow_permission.created/updated`, `user_workflow_permission.created/updated`, `team_llm_permission.created/updated`, `user_llm_permission.created/updated` | MVP 1 현재 구현 |
 | team/user resource permission row 회수 | `team_workflow_permission.deleted`, `user_workflow_permission.deleted`, `team_llm_permission.deleted`, `user_llm_permission.deleted` | MVP 1 현재 구현 |
+| team knowledge base permission row 생성/수정 | `team_knowledge_permission.created/updated` | 현재 table/listener 기준. KB permission API/enforcement 연결은 MVP 2 범위 |
+| team knowledge base permission row 회수 | `team_knowledge_permission.deleted` | 현재 table/listener 기준. KB permission API/enforcement 연결은 MVP 2 범위 |
+| user knowledge base permission row 생성/수정 | `user_knowledge_permission.created/updated` | MVP 2 user direct table/API 구현 시 고정 |
+| user knowledge base permission row 회수 | `user_knowledge_permission.deleted` | MVP 2 user direct table/API 구현 시 고정 |
 | data/model/trace policy 차단 | `policy.block` | MVP 2 |
 | data/model/trace policy 경고 | `policy.warn` | MVP 2 |
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
+| LLM 호출 | `llm.call` | MVP 1 현재 구현 |
+| RAG retrieval 성공 | `rag.retrieve` | MVP 2 목표 |
 | 인증 전 또는 resource helper 밖의 전역 401/403 | `auth.permission_denied` | MVP 1 |
 | deployment 생성 | `workflow.deploy` | MVP 1 |
 | deployment 일반 활성/비활성 toggle | `deployment.toggle` | MVP 1 |
@@ -47,17 +53,19 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
-- `policy.warn`, `policy.block`은 이 ADR에서 MVP 2 목표 action으로 확정하지만, 현재 코드의 `AuditAction` 상수에는 아직 없다. Policy enforcement 구현 시 상수와 테스트를 함께 추가한다.
+- `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정하지만, 현재 코드의 `AuditAction` 상수에는 아직 없다. Policy/RAG enforcement 구현 시 상수와 테스트를 함께 추가한다.
 
 ## 영향
 
 - MVP 1 요구사항의 `workflow.blocked` action 표기를 제거하고 `permission.denied`와 `auth.permission_denied`로 분리한다.
 - MVP 1에서 permission grant/update/revoke audit을 현재 permission row별 data-change action으로 기록하는 것을 명시한다.
-- MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`을 검색 대상으로 삼는다.
+- MVP 2 knowledge base permission API/enforcement를 구현할 때 grant/update/revoke도 같은 permission row별 data-change action 규칙을 고정한다.
+- MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`, `rag.retrieve`를 검색 대상으로 삼는다.
 - Data model의 대표 action convention에 `permission.denied`와 `auth.permission_denied`를 포함한다.
 - Deployment API 문서는 기본 권한 enforcement 구현 상태와 MVP 3 운영 기능 강화 범위를 구분한다.
 
 ## 후속 검토
 
 - Policy enforcement 구현 시 `policy.block`과 `permission.denied`가 섞이지 않도록 service/helper 경계를 테스트한다.
+- RAG retrieval 구현 시 성공 감사 action인 `rag.retrieve`와 trace payload kind인 `rag.retrieval`이 섞이지 않도록 상수와 fixture를 분리한다.
 - Audit UI가 "workflow 차단" 같은 사용자 친화 라벨을 canonical action에서 파생해 표시하는지 확인한다.
