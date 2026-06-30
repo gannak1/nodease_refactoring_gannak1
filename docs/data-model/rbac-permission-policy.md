@@ -431,6 +431,10 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | team LLM credential 권한 회수 | `team_llm_permission.deleted` | team LLM permission row 삭제 |
 | user LLM credential 권한 생성/수정 | `user_llm_permission.created` 또는 `user_llm_permission.updated` | user LLM permission row 생성/변경 |
 | user LLM credential 권한 회수 | `user_llm_permission.deleted` | user LLM permission row 삭제 |
+| 목표: team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | team knowledge permission row 생성/변경 |
+| 목표: team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | team knowledge permission row 삭제 |
+| 목표: user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | user knowledge permission row 생성/변경 |
+| 목표: user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | user knowledge permission row 삭제 |
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |

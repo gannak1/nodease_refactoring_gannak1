@@ -38,7 +38,7 @@ Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
 | --- | --- |
 | Foundation | [foundation/document-authority.md](foundation/document-authority.md), [foundation/product-scope.md](foundation/product-scope.md), [foundation/glossary.md](foundation/glossary.md) |
 | Requirements | [requirements/overview.md](requirements/overview.md), [requirements/mvp-1-foundation-llmops.md](requirements/mvp-1-foundation-llmops.md), [requirements/mvp-2-governance-rag-audit.md](requirements/mvp-2-governance-rag-audit.md), [requirements/mvp-3-enterprise-ops.md](requirements/mvp-3-enterprise-ops.md) |
-| Architecture | [architecture/system-overview.md](architecture/system-overview.md), [architecture/auth-rbac.md](architecture/auth-rbac.md), [architecture/tracing-audit.md](architecture/tracing-audit.md) |
+| Architecture | [architecture/system-overview.md](architecture/system-overview.md), [architecture/auth-rbac.md](architecture/auth-rbac.md), [architecture/tracing-audit.md](architecture/tracing-audit.md), [architecture/knowledge-rag.md](architecture/knowledge-rag.md) |
 | Data Model | [data-model/physical-data-model.md](data-model/physical-data-model.md), [data-model/rbac-permission-policy.md](data-model/rbac-permission-policy.md) |
 | API | [api/README.md](api/README.md), [api/auth.md](api/auth.md), [api/organization-rbac.md](api/organization-rbac.md), [api/apps-workflows.md](api/apps-workflows.md), [api/llm-credentials.md](api/llm-credentials.md), [api/knowledge-rag.md](api/knowledge-rag.md), [api/tracing-audit.md](api/tracing-audit.md), [api/deployments.md](api/deployments.md), [api/supporting-endpoints.md](api/supporting-endpoints.md), [api/errors.md](api/errors.md) |
 | Decisions | [decisions/README.md](decisions/README.md) 및 `Status: Accepted` ADR |

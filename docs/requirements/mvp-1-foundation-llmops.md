@@ -153,13 +153,14 @@ Project boundary = App
 | `team` | 기본 권한 subject. user는 team membership을 통해 권한을 얻는다. | MVP 1 |
 | `user` | 예외적 추가 권한 subject. resource별 `user_*_permissions`로 additive allow만 부여한다. | MVP 1 |
 
-조직 범위는 현재 코드의 `organization`, `teams`, `team_memberships`, `team_*_permissions`를 사용한다. `roles`, `user_roles`, polymorphic `resource_permissions`는 새로 만들지 않는다.
+조직 범위는 현재 코드의 `organization`, `organization_memberships`, `teams`, `team_memberships`, `team_*_permissions`를 사용한다. `organization_memberships`는 user와 organization의 직접 소속 전제이고, `team_memberships`는 team 배정 관계다. `roles`, `user_roles`, polymorphic `resource_permissions`는 새로 만들지 않는다.
 
 ## 권장 DB 모델
 
 ```text
 current code baseline
   organization
+  organization_memberships
   teams
   team_memberships
   team_workflow_permissions
@@ -320,7 +321,7 @@ MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 �
 
 | 대상 | 예시 정책 |
 | --- | --- |
-| Knowledge Base | HR team 또는 직접 grant를 받은 user만 `use` 가능 |
+| Knowledge Base | 예: HR KB는 허용된 team permission 또는 직접 grant를 받은 user만 `use` 가능 |
 | Document | PII 문서는 외부 모델 호출 전 warn/block |
 | LLM Credential/Model | 고가 모델은 허용된 credential, credential `use` 권한, verified credential-model relation을 가진 user만 사용 가능 |
 | Workflow | `viewer`는 `execute` 불가 |

@@ -69,7 +69,7 @@ MVP 2에서 실제 enforcement를 붙이는 resource:
 
 | 대상 | 정책 |
 | --- | --- |
-| `knowledge_base` | active organization scope 안에서 HR team 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능 |
+| `knowledge_base` | active organization scope 안에서 허용된 team permission 또는 MVP 2 planned user direct grant를 받은 user만 `use` 가능. HR team은 예시 시나리오다. |
 | `document` | PII/confidential 문서는 `documents.meta_info` metadata policy로 warn/block 가능. document별 permission table은 만들지 않음 |
 | `connection` | 독립 permission resource가 아니다. secret/manage는 제한하고 runtime `use`는 workflow/knowledge base 권한으로 확인 |
 | `llm_model` | MVP 1의 credential `use` + credential-model relation 정책 유지 |
@@ -158,7 +158,7 @@ UI와 API는 최소한 아래 필터를 제공한다.
 
 MVP 2에서 검색해야 하는 대표 이벤트:
 
-- permission row data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`
+- permission row data-change action: `team_workflow_permission.*`, `user_workflow_permission.*`, `team_llm_permission.*`, `user_llm_permission.*`, 목표 `team_knowledge_permission.*`, `user_knowledge_permission.*`
 - `permission.denied`
 - `policy.warn`
 - `policy.block`
@@ -169,8 +169,8 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 ## 사용자 흐름
 
-1. organization owner/manager가 HR knowledge base를 만든다.
-2. HR team 또는 MVP 2에서 추가할 user direct grant를 받은 user만 해당 knowledge base를 `use`할 수 있게 설정한다.
+1. organization owner/manager가 예시 HR knowledge base를 만든다.
+2. 예시 HR team처럼 허용된 team permission 또는 MVP 2에서 추가할 user direct grant를 받은 user만 해당 knowledge base를 `use`할 수 있게 설정한다.
 3. `builder` 권한 user가 HR knowledge base를 사용하는 RAG workflow를 만든다.
 4. 권한 없는 사용자의 실행은 차단된다.
 5. 권한 있는 사용자의 실행은 성공한다.
@@ -197,13 +197,17 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 
 0. MVP 2-0 Organization Membership / Invitation Foundation
 
-작업:
+상태:
 
-- `organization_memberships` table과 migration/backfill 추가
-- active organization membership 기반 permission helper 전환
+- `organization_memberships` table과 migration/backfill은 dev 기준 완료된 prerequisite이다.
+- active organization membership 기반 permission helper 전환도 dev 기준 완료된 prerequisite이다.
+- team membership과 user direct permission의 grantee 검증 기준을 organization membership으로 바꾸는 방향은 완료된 foundation 위에서 유지한다.
+
+남은 작업:
+
 - organization member/invitation API 추가
-- team membership과 user direct permission의 grantee 검증 기준을 organization membership으로 변경
 - Organization Members UI와 team/direct permission picker 필터 반영
+- legacy fallback 축소/제거 시점과 removed/suspended member 정리 정책 확정
 
 검증:
 
@@ -211,6 +215,7 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 - active organization member가 아니면 resource permission row가 있어도 접근 거부됨
 - team에 속하지 않은 active organization member에게 direct permission 부여 가능
 - member 제거 시 team membership과 user direct permission 정리
+- legacy fallback 축소가 기존 MVP 1 workflow/LLM permission demo를 깨지 않음
 - MVP 1 workflow/LLM permission demo 회귀 없음
 
 1. Data Source Permission Enforcement
@@ -296,8 +301,8 @@ MVP 2에서 검색해야 하는 대표 이벤트:
 ## Demo Script
 
 ```text
-1. organization owner/manager가 HR KB를 만들고 confidential로 분류한다.
-2. HR team 또는 MVP 2에서 추가할 user direct grant를 받은 user만 use 가능하게 설정한다.
+1. organization owner/manager가 예시 HR KB를 만들고 confidential로 분류한다.
+2. 예시 HR team처럼 허용된 team permission 또는 MVP 2에서 추가할 user direct grant를 받은 user만 use 가능하게 설정한다.
 3. `builder` 권한 user가 해당 KB를 쓰는 RAG workflow를 만든다.
 4. 권한 없는 사용자는 실행 차단된다.
 5. HR 권한 사용자는 실행 성공한다.

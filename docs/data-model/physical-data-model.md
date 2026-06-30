@@ -1128,6 +1128,8 @@ MVP 목표 상태 결정:
 | user workflow 권한 생성/수정/삭제 | `user_workflow_permission.created`, `user_workflow_permission.updated`, `user_workflow_permission.deleted` |
 | team LLM credential 권한 생성/수정/삭제 | `team_llm_permission.created`, `team_llm_permission.updated`, `team_llm_permission.deleted` |
 | user LLM credential 권한 생성/수정/삭제 | `user_llm_permission.created`, `user_llm_permission.updated`, `user_llm_permission.deleted` |
+| 목표: team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
+| 목표: user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
 | 권한 부족 거부 | `permission.denied` |
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |
@@ -1555,7 +1557,7 @@ RAG retrieval 전용 table은 만들지 않는다.
 
 이 구조는 DB FK를 추가하지 않는다. 따라서 RAG lineage의 강한 참조 무결성이 필요하면 현재 물리 데이터 모델 보존 조건 밖의 별도 설계가 필요하다.
 
-RAG trace metadata에는 raw chunk content, raw prompt, credential, provider raw response를 기본 저장하지 않는다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
+RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 기본 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
 
 ### Deployment Checklist
 

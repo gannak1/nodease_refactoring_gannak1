@@ -95,8 +95,8 @@ Proposed request extension:
 | --- | --- | --- |
 | `metadata_filter` | `MetadataFilter \| null` | allowlist 기반 metadata filter. Free-form dict, JSONPath, raw SQL fragment는 허용하지 않음 |
 | `classification_filter` | `string[] \| null` | `public`, `internal`, `confidential`, `pii` 중 선택 |
-| `tags` | filter object 또는 `string[]` | `contains_any`, `contains_all` semantics를 명시해야 함 |
-| `source_type` | `FILE/API/DB[] \| null` | source type filter |
+| `tags` | `TagFilter \| null` | `{ "mode": "contains_any" \| "contains_all", "values": string[] }`. `string[]` shorthand는 허용하지 않음 |
+| `source_type` | `("FILE" \| "API" \| "DB")[] \| null` | source type filter |
 | `effective_at` | datetime | `effective_from <= effective_at < effective_to` time window filter |
 | `hierarchy_mode` | `auto/flat/parent_child` | 기존 KB는 `auto`에서 flat fallback 가능 |
 
@@ -146,7 +146,7 @@ RAG retrieval 전용 table은 만들지 않는다. Retrieval summary는 `trace_p
 }
 ```
 
-Trace/audit metadata에는 raw chunk content, raw prompt, credential, provider raw response를 저장하지 않는다.
+Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다.
 
 ## MVP 2 변경 기준
 
