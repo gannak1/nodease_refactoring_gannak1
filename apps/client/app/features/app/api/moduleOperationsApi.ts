@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/apiClient';
-import type { WorkflowPermissionResponse } from '../../workflow/types/Api';
+import type { WorkflowPermissionSummary } from '../../workflow/types/Api';
 import type { AppIcon } from './appApi';
 
 export type ModulePermissionSource = {
@@ -38,7 +38,7 @@ export type ModuleOperationDeployment = {
 
 export type ModuleOperationRow = {
   app: ModuleOperationAppSummary;
-  permission?: WorkflowPermissionResponse;
+  permission?: WorkflowPermissionSummary;
   permissionStatus: ModulePermissionStatus;
   permissionSources: ModulePermissionSource[];
   permissionError?: string;
@@ -71,7 +71,7 @@ export type ModuleOperationsListParams = {
 
 type OperationsApiRow = {
   app: ModuleOperationAppSummary;
-  permission?: WorkflowPermissionResponse;
+  permission?: WorkflowPermissionSummary;
   permission_status?: ModulePermissionStatus;
   permissionStatus?: ModulePermissionStatus;
   permission_error?: string;

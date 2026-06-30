@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Frontend Implementation Guide
 Source of Truth: No
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-74 @ PR #131 head
 
 이 폴더는 Nodease 프론트엔드 작업자가 기능 구현 전에 화면, 상태, API 연결, 권한별 UI 동작을 정리하기 위한 비권위 작업 문서 공간이다.
 
@@ -77,7 +77,7 @@ RBAC와 workflow 권한 UI 구현을 위해 현재 정리된 작업 문서는 �
 | `rbac-mvp1-manager-member-home-settings.md` | manager/member 홈·설정 화면 분리, team 기반 멤버 관리, member 권한 표시와 제외 범위 |
 | `module-list-access-operations-ui.md` | `/dashboard/mymodule`의 운영형 모듈 목록, 권한 badge, 배포 상태, 검색·필터 기준 |
 
-`/api/v1/workflows/{workflow_id}/permissions/me`의 기본 effective permission 계약은 `api/apps-workflows.md`를 따른다. 다만 team/direct grant 출처를 보여주기 위한 `sources` 확장은 아직 API 계약에 없으므로, 프론트 문서에서는 별도 보강 TODO로 다룬다.
+`/api/v1/workflows/{workflow_id}/permissions/me`의 기본 effective permission과 `sources` 계약은 `api/apps-workflows.md`를 따른다. team/direct grant 출처를 보여줄 때는 `sources`를 사용하고, 전체 권한 관리 표가 필요한 화면만 별도 permission 목록 API를 조회한다.
 
 ## RBAC 프론트 문서 작성 기준
 

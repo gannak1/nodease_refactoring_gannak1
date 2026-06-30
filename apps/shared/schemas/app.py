@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from apps.shared.schemas.permission import WorkflowPermissionSource
+
 
 class AppIcon(BaseModel):
     type: str
@@ -65,17 +67,6 @@ class AppOperationAppSummary(BaseModel):
     updated_at: datetime
 
 
-class AppOperationPermissionSource(BaseModel):
-    """Permission source placeholder aligned with MBA-74 sources contract."""
-
-    type: Literal["team", "user"]
-    team_id: Optional[UUID] = None
-    team_name: Optional[str] = None
-    user_id: Optional[UUID] = None
-    user_name: Optional[str] = None
-    auth_state: str
-
-
 class AppOperationPermissionSummary(BaseModel):
     workflow_id: UUID
     organization_id: Optional[UUID] = None
@@ -107,7 +98,7 @@ class AppOperationRow(BaseModel):
     app: AppOperationAppSummary
     permission: Optional[AppOperationPermissionSummary] = None
     permission_status: Literal["loaded", "failed", "not_available"]
-    permission_sources: list[AppOperationPermissionSource] = Field(default_factory=list)
+    permission_sources: list[WorkflowPermissionSource] = Field(default_factory=list)
     permission_error: Optional[str] = None
     deployment: AppOperationDeploymentSummary
     latest_run: AppOperationLatestRunSummary

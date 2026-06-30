@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-79 @ PR #127 head
+Verified Against: feature/mba-74 @ PR #131 head
 Related ADRs: [ADR-202606290145-active-organization-header-context](../decisions/ADR-202606290145-active-organization-header-context.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -136,7 +136,7 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 
 현재 구현은 permission 계산 예외를 row 단위로 숨기지 않는다. `failed`와 `permission_error`는 향후 row-level partial failure를 도입할 때를 위한 예약 상태다.
 
-`permission_sources`는 MBA-74 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 `sources` 계약과 동일한 의미를 사용한다. 현재 구현은 빈 배열을 반환하고, MBA-74 구현 후 같은 source schema로 채운다.
+`permission_sources`는 MBA-74 `GET /api/v1/workflows/{workflow_id}/permissions/me`의 `sources` 계약과 동일한 source schema를 사용한다.
 
 ##### `AppOperationDeploymentSummary`
 
@@ -208,7 +208,7 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 | --- | --- | --- | --- | --- | --- |
 | Implemented | `POST` | `/api/v1/workflows` | `WorkflowCreateRequest` | `WorkflowResponse` | `X-Organization-Id` active organization scope + app manage; workflow inherits app organization |
 | Implemented | `GET` | `/api/v1/workflows/{workflow_id}` | 없음 | `WorkflowResponse` | workflow `read` |
-| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/permissions/me` | 없음 | effective permission payload | workflow `read` |
+| Implemented | `GET` | `/api/v1/workflows/{workflow_id}/permissions/me` | 없음 | `WorkflowPermissionResponse` | workflow `read` |
 | Implemented | `GET` | `/api/v1/workflows/app/{app_id}` | 없음 | `WorkflowResponse[]` | app read |
 | Implemented | `POST` | `/api/v1/workflows/{workflow_id}/draft` | `WorkflowDraftRequest` | message | workflow `write` |
 | Implemented | `GET` | `/api/v1/workflows/{workflow_id}/draft` | 없음 | draft graph | workflow `read` |
@@ -263,7 +263,7 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 
 ## Effective Permission 응답
 
-`GET /api/v1/workflows/{workflow_id}/permissions/me`는 현재 user의 effective workflow `auth_state`와 action별 boolean을 반환한다.
+`GET /api/v1/workflows/{workflow_id}/permissions/me`는 현재 user의 effective workflow `auth_state`, action별 boolean, 권한 출처 source 목록을 반환한다.
 
 | Field | 설명 |
 | --- | --- |
@@ -271,6 +271,63 @@ MBA-76에서 추가한 API다. `/dashboard/mymodule`이 app 목록, workflow eff
 | `organization_id` | workflow organization id. legacy workflow면 `null` 가능 |
 | `auth_state` | `none`, `viewer`, `operator`, `builder`, `manager` 중 effective 상태 |
 | `can_read` / `can_write` / `can_execute` / `can_deploy` / `can_manage` | 현재 상태가 각 action을 허용하는지 |
+| `sources` | 현재 user가 해당 workflow에 접근할 수 있게 한 team/user direct grant 출처 목록 |
+
+`sources`는 effective permission 계산에 사용된 resource-level grant의 근거를 설명하기 위한 목록이다. 기존 `auth_state`와 `can_*`는 그대로 유지한다.
+
+`sources`는 다음 schema를 사용한다.
+
+| Field | Type | Required | 설명 |
+| --- | --- | --- | --- |
+| `type` | `"team"` 또는 `"user"` | Yes | 권한 출처 종류 |
+| `team_id` | UUID | `type="team"`일 때 Yes | 권한을 부여한 team id |
+| `team_name` | string | `type="team"`일 때 Yes | 권한을 부여한 team 이름 |
+| `user_id` | UUID | `type="user"`일 때 Yes | 직접 권한을 받은 user id |
+| `user_name` | string \| null | `type="user"`일 때 No | 백엔드가 만든 user 표시 문자열. user 이름이 없으면 email을 fallback으로 넣을 수 있다. |
+| `auth_state` | string | Yes | 해당 source row의 workflow auth_state |
+
+API 응답은 source type에 맞지 않는 sibling field를 생략한다. 예를 들어 team source에는 `user_id`, `user_name`을 내려주지 않고, user source에는 `team_id`, `team_name`을 내려주지 않는다.
+
+반환 규칙:
+
+- team source는 active team, 현재 user의 active team membership, 같은 organization scope, 같은 `grantee_organization_id`, 같은 workflow scope를 만족하는 `team_workflow_permissions` row에서 만든다.
+- user source는 현재 user에게 직접 부여된 `user_workflow_permissions` row에서 만든다.
+- 복수 source가 있으면 모두 반환한다. effective `auth_state`는 기존 정책대로 source들 중 가장 강한 권한과 organization manager override를 반영한다.
+- user direct permission은 additive allow다. 더 약한 user direct source가 있어도 더 강한 team source를 낮추지 않는다.
+- organization manager override는 `auth_state=manager`로 반영되지만 MBA-74의 `sources`에는 team/user direct source만 포함한다. team/user direct source가 없으면 `sources=[]`다.
+- source가 없으면 빈 배열을 반환한다.
+- read 권한이 없는 workflow는 기존 접근 정책대로 이 endpoint 자체가 차단된다.
+
+예시:
+
+```json
+{
+  "workflow_id": "uuid",
+  "organization_id": "uuid",
+  "auth_state": "builder",
+  "can_read": true,
+  "can_write": true,
+  "can_execute": true,
+  "can_deploy": false,
+  "can_manage": false,
+  "sources": [
+    {
+      "type": "team",
+      "team_id": "uuid",
+      "team_name": "워크플로우 빌더팀",
+      "auth_state": "builder"
+    },
+    {
+      "type": "user",
+      "user_id": "uuid",
+      "user_name": "혜연",
+      "auth_state": "operator"
+    }
+  ]
+}
+```
+
+`/apps/operations.permission_sources`는 같은 source schema를 사용한다. `/apps/operations.permission`은 `permissions/me`의 `sources`를 제외한 effective permission summary와 같은 action boolean 의미를 사용하고, `permission_sources`에 source 목록을 둔다.
 
 ## MVP 1 변경 기준
 
