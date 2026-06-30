@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
 
 import pytest
-from apps.shared.schemas.rag import MetadataFilter, SearchQuery, TagFilter
+from apps.shared.schemas.rag import (
+    DocumentPreviewRequest,
+    MetadataFilter,
+    SearchQuery,
+    TagFilter,
+)
 from apps.shared.services.rag_filters import (
     build_keyword_filter_clause,
     build_sqlalchemy_filter_conditions,
@@ -40,6 +45,13 @@ def test_search_query_rejects_duplicate_shortcuts():
 def test_metadata_filter_rejects_free_form_keys():
     with pytest.raises(ValidationError):
         MetadataFilter(hierarchy_mode="parent_child")
+
+
+def test_document_preview_request_accepts_chunking_mode_alias():
+    request = DocumentPreviewRequest(chunkingMode="hierarchical")
+
+    assert request.chunking_mode == "hierarchical"
+    assert request.model_dump(by_alias=True)["chunkingMode"] == "hierarchical"
 
 
 def test_search_query_rejects_top_k_over_cap():

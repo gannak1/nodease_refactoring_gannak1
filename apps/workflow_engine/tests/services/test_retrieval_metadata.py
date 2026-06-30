@@ -89,6 +89,40 @@ def test_chunk_metadata_interprets_null_chunk_level_as_flat():
     assert metadata["chunk_level"] == "flat"
 
 
+def test_metadata_summary_preserves_hierarchy_fallback_flag():
+    service = RetrievalService(db=None, user_id=None)
+
+    summary = service._metadata_summary(
+        {
+            "hierarchy_fallback": True,
+            "classification": "internal",
+            "content": "원문",
+        }
+    )
+
+    assert summary["hierarchy_fallback"] is True
+    assert summary["classification"] == "internal"
+    assert "content" not in summary
+
+
+def test_search_method_labels_hierarchical_paths():
+    assert (
+        RetrievalService._search_method(
+            use_hierarchy=True,
+            hybrid_search=True,
+            use_rerank=True,
+        )
+        == "hierarchical_hybrid+rerank"
+    )
+    assert (
+        RetrievalService._search_method(
+            use_hierarchy=True,
+            hybrid_search=False,
+        )
+        == "hierarchical"
+    )
+
+
 def test_rewrite_query_passes_active_organization_to_llm(monkeypatch):
     captured = {}
     user_id = uuid.uuid4()

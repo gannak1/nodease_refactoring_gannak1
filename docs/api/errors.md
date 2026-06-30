@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-78 @ HEAD (base dev d0c858e)
+Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
 Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
 
 ## 범위
@@ -97,6 +97,9 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `resource.conflict` | `409` | 중복 또는 상태 충돌 |
 | `validation.failed` | `400` 또는 `422` | request schema validation 실패 또는 endpoint/service 단계의 의미상 validation 실패 |
 | `hierarchy_unavailable` | `422` | 명시적으로 요청한 hierarchical retrieval data/index가 없음 |
+| `invalid_chunking_mode` | `400` | upload form의 chunking mode 값이 허용 범위를 벗어남 |
+| `invalid_chunking_selection` | `400` | chunking mode와 selection option 조합이 지원되지 않음 |
+| `unsupported_chunking_mode_for_source` | `400` | 요청 source type에서 해당 chunking mode를 지원하지 않음 |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
 
 ## 보안 규칙

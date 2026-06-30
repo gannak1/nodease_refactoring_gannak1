@@ -76,7 +76,14 @@ def _string_tuple(values: Iterable[Any] | None, *, upper: bool = False) -> tuple
     return tuple(dict.fromkeys(normalized))
 
 
-def _tag_json_expr(document_ref: str, chunk_ref: str) -> str:
+def _tag_json_expr(document_ref: str, chunk_ref: str | None) -> str:
+    if chunk_ref is None:
+        return f"""
+        CASE
+            WHEN jsonb_typeof({document_ref}->'tags') = 'array' THEN {document_ref}->'tags'
+            ELSE '[]'::jsonb
+        END
+    """
     return f"""
         CASE
             WHEN jsonb_typeof({document_ref}->'tags') = 'array' THEN {document_ref}->'tags'
@@ -140,6 +147,8 @@ def normalize_metadata_filter(
 
 def build_sqlalchemy_filter_conditions(
     metadata_filter: NormalizedMetadataFilter | None,
+    *,
+    chunk_metadata_fallback: bool = True,
 ) -> list[Any]:
     """Document/DocumentChunk join query에 붙일 metadata filter 조건을 만든다."""
 
@@ -159,7 +168,10 @@ def build_sqlalchemy_filter_conditions(
 
     if metadata_filter.tags:
         tag_values = metadata_filter.tags.values
-        tag_expr = _tag_json_expr("documents.meta_info", "document_chunks.metadata")
+        tag_expr = _tag_json_expr(
+            "documents.meta_info",
+            "document_chunks.metadata" if chunk_metadata_fallback else None,
+        )
 
         def tag_condition(param_name: str, param_value: str) -> Any:
             condition = text(f"""
@@ -218,6 +230,8 @@ def build_sqlalchemy_filter_conditions(
 
 def build_keyword_filter_clause(
     metadata_filter: NormalizedMetadataFilter | None,
+    *,
+    chunk_metadata_fallback: bool = True,
 ) -> KeywordFilterClause:
     """Keyword search raw SQL에 안전하게 붙일 고정 filter 조각과 bind 값을 만든다."""
 
@@ -242,7 +256,10 @@ def build_keyword_filter_clause(
         expanding_params.append("metadata_source_type")
 
     if metadata_filter.tags:
-        tag_expr = _tag_json_expr("d.meta_info", "dc.metadata")
+        tag_expr = _tag_json_expr(
+            "d.meta_info",
+            "dc.metadata" if chunk_metadata_fallback else None,
+        )
         if metadata_filter.tags.mode == "contains_all":
             for index, tag in enumerate(metadata_filter.tags.values):
                 param_name = f"metadata_tag_{index}"

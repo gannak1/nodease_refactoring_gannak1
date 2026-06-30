@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-78 @ HEAD (base dev caaa4cd)
+Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
 Related ADRs: [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
 
 ## 목표
@@ -46,6 +46,7 @@ MBA-75 목표 범위:
 - KB 권한 검증은 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. MVP 2 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. 현재 Knowledge/RAG API의 primary organization fallback과 owner/current-user scope는 과도기 구현으로만 본다.
 - parent chunk는 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
 - 기존 flat KB는 parent/child metadata가 없으면 flat retrieval로 fallback한다.
+- MBA-85 2단계는 FILE/API source의 opt-in hierarchical ingestion과 parent-child retrieval을 backend 범위에서 먼저 구현한다. DB source hierarchical chunking, frontend hierarchy UI, advanced chunk tuning input, LLM 기반 parent summary 생성은 후속 범위다.
 
 ## 의존 기반
 
