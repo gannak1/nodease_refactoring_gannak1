@@ -101,7 +101,7 @@ MBA-75/MVP 2 목표 계약에서 Knowledge/RAG org-scoped API는 `X-Organization
 
 ## Preview / Process Hierarchy 계약
 
-`DocumentPreviewRequest`와 이를 상속하는 process request는 `chunking_mode`를 받을 수 있다. `chunking_mode=hierarchical`은 `source_type=FILE` 또는 `API`에서만 지원한다. `source_type=DB`와 함께 사용하면 `400 unsupported_chunking_mode_for_source`를 반환한다.
+`DocumentPreviewRequest`와 이를 상속하는 process request는 `chunking_mode`를 받을 수 있다. `chunking_mode=hierarchical`은 저장된 `Document.source_type`이 `FILE` 또는 `API`인 문서에서만 지원한다. 저장된 `Document.source_type=DB` 문서에 hierarchical chunking을 요청하면 request body의 `source_type` 값과 무관하게 `400 unsupported_chunking_mode_for_source`를 반환한다.
 
 Preview response schema는 MBA-85 2단계 1차에서 확장하지 않는다. `DocumentPreviewResponse.segments[]`는 기존처럼 `content`, `token_count`, `char_count` 중심이며, hierarchical preview에서도 최종 evidence 단위인 child chunk content만 반환한다. Parent routing chunk는 preview `segments[]`의 독립 content 항목으로 노출하지 않는다. `chunk_level`, `parent_chunk_id`, `hierarchy_path` preview 노출은 후속 schema 확장으로 분리한다.
 
@@ -246,5 +246,5 @@ Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API
 | --- | --- | --- |
 | `invalid_chunking_mode` | `400` | upload form의 `chunkingMode`가 `flat/hierarchical` 외 값 |
 | `invalid_chunking_selection` | `400` | `chunkingMode=hierarchical` 또는 `chunking_mode=hierarchical`과 `selection_mode=range` 조합 |
-| `unsupported_chunking_mode_for_source` | `400` | `chunkingMode=hierarchical` 또는 `chunking_mode=hierarchical`과 `sourceType=DB` 또는 `source_type=DB` 조합 |
+| `unsupported_chunking_mode_for_source` | `400` | upload form은 `chunkingMode=hierarchical`과 `sourceType=DB` 조합, process/preview는 `chunking_mode=hierarchical`과 저장된 `Document.source_type=DB` 조합 |
 | `hierarchy_unavailable` | `422` | `hierarchy_mode=parent_child` 요청에 사용할 유효 parent-child hierarchy data가 없음 |

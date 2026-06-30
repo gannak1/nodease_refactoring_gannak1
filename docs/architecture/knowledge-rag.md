@@ -169,7 +169,7 @@ MBA-78 1차 구현은 `document_chunks`에 nullable hierarchy field를 추가한
 - `section_path`: JSON array nullable
 - `heading`: text nullable
 
-`parent_chunk_id`와 `chunk_level`은 canonical column이다. JSON metadata에 같은 값을 중복 저장하지 않는다.
+`parent_chunk_id`, `chunk_level`, `section_path`, `heading`은 hierarchy canonical column이다. JSON metadata에 같은 값을 중복 저장하지 않는다.
 
 MBA-85 2단계 구현 기준:
 

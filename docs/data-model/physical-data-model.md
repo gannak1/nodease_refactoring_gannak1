@@ -1272,7 +1272,7 @@ MVP 목표 상태 결정:
 - retrieval 결과의 chunk reference는 trace payload 내부 metadata로 저장한다.
 - `document_chunks.metadata`는 retrieval/filter/citation 성능을 위한 denormalized cache다. `documents.meta_info`와 충돌하면 document metadata를 우선한다.
 - MBA-78 1차 구현은 nullable `parent_chunk_id`, `chunk_level`, `section_path`, `heading` column을 추가한다. 기존 row의 `chunk_level IS NULL`은 application layer에서 `flat`으로 해석한다.
-- `parent_chunk_id`와 `chunk_level`은 hierarchy의 canonical field다. 같은 값을 JSON metadata에 중복 저장하지 않는다.
+- `parent_chunk_id`, `chunk_level`, `section_path`, `heading`은 hierarchy의 canonical field다. 같은 값을 JSON metadata에 중복 저장하지 않는다.
 - Hierarchical retrieval index는 1차로 `(knowledge_base_id, chunk_level)`, `(parent_chunk_id)`를 추가한다. `(document_id, chunk_index)`와 JSONB GIN index는 실제 retrieval/query pattern이 확정된 뒤 추가 여부를 판단한다.
 
 `chunk_level` 역할:

@@ -813,6 +813,7 @@ class RetrievalService:
             "chunk_level",
             "section_path",
             "heading",
+            "hierarchy_fallback",
         }
         return {key: metadata[key] for key in allowed_keys if key in metadata}
 

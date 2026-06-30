@@ -712,7 +712,8 @@ class LLMNode(Node[LLMNodeData]):
         self, knowledge_base_id: str, chunk: ChunkPreview
     ) -> Dict[str, Any]:
         """추적 메타데이터에는 검색 출처 식별 정보만 남깁니다."""
-        return {
+        metadata_summary = chunk.metadata_summary or {}
+        metadata = {
             "knowledge_base_id": str(knowledge_base_id),
             "chunk_id": str(chunk.chunk_id) if chunk.chunk_id else None,
             "parent_chunk_id": (
@@ -725,9 +726,12 @@ class LLMNode(Node[LLMNodeData]):
             "score": chunk.score if chunk.score is not None else chunk.similarity_score,
             "rank": chunk.rank,
             "token_count": chunk.token_count,
-            "metadata_summary": chunk.metadata_summary or {},
+            "metadata_summary": metadata_summary,
             "hierarchy_path": chunk.hierarchy_path or [],
         }
+        if metadata_summary.get("hierarchy_fallback"):
+            metadata["hierarchy_fallback"] = True
+        return metadata
 
     def _rag_retrieval_trace_payload(
         self, retrieved_chunks: List[Dict[str, Any]]
