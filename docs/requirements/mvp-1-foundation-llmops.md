@@ -321,7 +321,7 @@ MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 �
 
 | 대상 | 예시 정책 |
 | --- | --- |
-| Knowledge Base | 예: HR KB는 허용된 team permission 또는 직접 grant를 받은 user만 `use` 가능 |
+| Knowledge Base | 예: HR KB는 허용된 team permission 또는 향후 user direct grant를 받은 user만 `use` 가능 |
 | Document | PII 문서는 외부 모델 호출 전 warn/block |
 | LLM Credential/Model | 고가 모델은 허용된 credential, credential `use` 권한, verified credential-model relation을 가진 user만 사용 가능 |
 | Workflow | `viewer`는 `execute` 불가 |

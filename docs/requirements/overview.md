@@ -101,7 +101,7 @@ Team/User Permission Model
   -> MVP 3 Optimization + Operations
 ```
 
-MVP 2 본작업 전에는 [MVP 2-0 Organization Membership / Invitation Foundation](../implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md)을 선행한다. 이 단계는 `organization_memberships`를 사용자 organization 소속의 기준으로 추가하고, team membership과 user direct permission이 active organization member를 전제로 동작하도록 정리한다.
+MVP 2 본작업 전제인 [MVP 2-0 Organization Membership / Invitation Foundation](../implementation-plan/mvp-2-0-organization-membership-invitation-foundation.md)은 dev 기준 DB/model/migration/backfill과 permission helper 전환까지 완료됐다. 남은 범위는 organization member/invitation API, full membership 관리 UI, legacy owner/manager fallback 축소 정책이다.
 
 ## 작동하는 MVP의 기준
 

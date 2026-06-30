@@ -103,7 +103,7 @@ MVP 1에서 하지 않는 것은 명확히 제외한다.
 - retry/cache/fallback 실행 정책
 - API key별 cost 제한
 - deployment checklist
-- raw trace access control 완성
+- organization-wide raw trace access를 audit permission model과 통합
 - 외부 IdP/OIDC
 - 별도 `roles`, `user_roles`, polymorphic `resource_permissions`
 - 별도 `audit_events`

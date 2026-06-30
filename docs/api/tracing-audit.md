@@ -34,6 +34,7 @@ Workflow run trace, span, payload, trace policy, retention purge, audit log 조�
 - payload 목록은 `view`, `payload_kind`, `node_run_id`, `history`, `page`, `limit`을 지원하며 `limit` 최대값은 `1000`이다.
 - Trace 목록 조회는 먼저 system admin 또는 app owner 범위로 DB 후보를 제한하고, 이후 각 run에 대해 `TraceAccessService.check_trace_access`를 다시 적용한다. 따라서 현재 목록 API는 workflow RBAC만 가진 non-owner trace를 넓게 검색하는 용도가 아니다.
 - Trace 상세/payload 접근 판정은 system admin, app owner, workflow effective `auth_state`, app/organization visibility policy를 함께 사용한다.
+- 위 표의 trace/audit `read`와 `view_raw`는 현재 구현에서 `team_audit_permissions`를 직접 조회한다는 뜻이 아니다. 현재 trace access control은 system admin, app owner, workflow RBAC, visibility policy 조합으로 구현되어 있고, audit permission 기반 organization-wide search/view_raw 통합은 후속 목표다.
 
 Trace policy 및 retention purge API의 `system admin` 판정은 `TraceRbacService` provider에 위임한다. 현재 기본 provider는 deny-all이므로, 별도 RBAC provider를 설정하지 않은 런타임에서는 policy 변경과 retention purge가 `403 system_admin_required`로 차단된다. Policy schema에는 `organization` scope가 있지만 현재 management API는 `global`/`app` scope만 허용하고, organization scope 요청은 `organization_scope_policy_not_supported` 또는 `organization_scope_purge_not_supported`로 거부한다.
 

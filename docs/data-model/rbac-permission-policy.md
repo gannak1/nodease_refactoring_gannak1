@@ -238,7 +238,7 @@ Active `organization_memberships` row는 KB가 속한 organization scope 안의 
 - `team_audit_permissions`
 - 목표: `user_audit_permissions`
 
-현재 코드에는 `team_audit_permissions` 물리 table과 trace visibility 정책 기반이 있다. 다만 현재 등록된 audit log 조회 API는 `GET /api/v1/users/me/audit-logs` 자기 범위 조회뿐이며, organization-wide `/api/v1/audit/logs` 검색 API는 아직 없다. 현재 trace 상세/payload 접근 제어도 `team_audit_permissions`를 직접 조회하지 않고 system admin, app owner, workflow effective RBAC, visibility policy를 조합한다. `user_audit_permissions`는 아직 구현되지 않은 MVP 3 목표 table이다.
+현재 코드에는 `team_audit_permissions` 물리 table과 trace redaction/visibility policy 기반이 있다. 현재 trace 상세/payload 접근 제어는 구현되어 있지만 `team_audit_permissions`를 직접 조회하지 않고 system admin, app owner, workflow effective RBAC, visibility policy를 조합한다. 다만 현재 등록된 audit log 조회 API는 `GET /api/v1/users/me/audit-logs` 자기 범위 조회뿐이며, organization-wide `/api/v1/audit/logs` 검색 API와 audit permission 기반 통합 조회는 아직 없다. `user_audit_permissions`는 아직 구현되지 않은 MVP 3 목표 table이다.
 
 | `auth_state` | `read` | `view_raw` | `manage` | 설명 |
 | --- | --- | --- | --- | --- |
@@ -431,10 +431,10 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 | team LLM credential 권한 회수 | `team_llm_permission.deleted` | team LLM permission row 삭제 |
 | user LLM credential 권한 생성/수정 | `user_llm_permission.created` 또는 `user_llm_permission.updated` | user LLM permission row 생성/변경 |
 | user LLM credential 권한 회수 | `user_llm_permission.deleted` | user LLM permission row 삭제 |
-| 목표: team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | team knowledge permission row 생성/변경 |
-| 목표: team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | team knowledge permission row 삭제 |
-| 목표: user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | user knowledge permission row 생성/변경 |
-| 목표: user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | user knowledge permission row 삭제 |
+| KB permission API/enforcement 구현 시 고정할 team knowledge base 권한 생성/수정 | `team_knowledge_permission.created` 또는 `team_knowledge_permission.updated` | team knowledge permission row 생성/변경 |
+| KB permission API/enforcement 구현 시 고정할 team knowledge base 권한 회수 | `team_knowledge_permission.deleted` | team knowledge permission row 삭제 |
+| KB permission API/enforcement 구현 시 고정할 user knowledge base 권한 생성/수정 | `user_knowledge_permission.created` 또는 `user_knowledge_permission.updated` | user knowledge permission row 생성/변경 |
+| KB permission API/enforcement 구현 시 고정할 user knowledge base 권한 회수 | `user_knowledge_permission.deleted` | user knowledge permission row 삭제 |
 | 권한 차단 | `permission.denied` | API 또는 engine에서 거부 |
 | 정책 경고 | `policy.warn` | 실행은 허용하지만 위험 표시 |
 | 정책 차단 | `policy.block` | data/model/trace policy로 차단 |
@@ -469,15 +469,15 @@ Team template은 신규 조직 생성 시 기본 권한 row를 만들기 위한 
 - knowledge base `read/write/use`
 - `user_knowledge_permissions` additive grant 추가
 - RAG node의 knowledge base `use` check
-- audit search permission
-- trace redaction/visibility policy 연동
+- organization-wide audit search permission과 audit permission 기반 조회 통합
+- 현재 trace redaction/visibility policy와 audit permission model의 관리/검색 통합
 
 ### MVP 3
 
 - deploy checklist, version diff, trigger mode 정합성
 - dashboard scope filtering
-- raw trace access control
-- audit visibility 관리
+- organization-wide raw trace access 권한을 audit permission model과 통합
+- audit visibility 관리 UI/API
 - `user_audit_permissions` additive grant 추가
 
 ## 확정 완료 항목

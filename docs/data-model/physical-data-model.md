@@ -1128,8 +1128,8 @@ MVP 목표 상태 결정:
 | user workflow 권한 생성/수정/삭제 | `user_workflow_permission.created`, `user_workflow_permission.updated`, `user_workflow_permission.deleted` |
 | team LLM credential 권한 생성/수정/삭제 | `team_llm_permission.created`, `team_llm_permission.updated`, `team_llm_permission.deleted` |
 | user LLM credential 권한 생성/수정/삭제 | `user_llm_permission.created`, `user_llm_permission.updated`, `user_llm_permission.deleted` |
-| 목표: team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
-| 목표: user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
+| KB permission API/enforcement 구현 시 고정할 team knowledge base 권한 생성/수정/삭제 | `team_knowledge_permission.created`, `team_knowledge_permission.updated`, `team_knowledge_permission.deleted` |
+| KB permission API/enforcement 구현 시 고정할 user knowledge base 권한 생성/수정/삭제 | `user_knowledge_permission.created`, `user_knowledge_permission.updated`, `user_knowledge_permission.deleted` |
 | 권한 부족 거부 | `permission.denied` |
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |

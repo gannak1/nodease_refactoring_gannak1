@@ -33,7 +33,7 @@ user_*_permissions
 5. 다중 organization 사용자가 늘어날수록 active organization 판단이 비직관적이다.
 6. MVP 2의 knowledge base/document permission은 organization member 기반으로 부여되어야 하는데, 현재 구조는 team membership에 과도하게 의존한다.
 
-따라서 MVP 2-0에서는 `organization_memberships`를 추가하여 다음 상태로 바꾼다.
+MVP 2-0 계획은 `organization_memberships`를 추가하는 방향으로 수립됐고, dev 기준 DB/model/migration/backfill과 permission helper 전환은 완료됐다. 목표 상태는 다음과 같다.
 
 ```text
 organization

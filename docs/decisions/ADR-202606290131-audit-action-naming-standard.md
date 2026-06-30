@@ -22,8 +22,8 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | RBAC/resource permission 부족 | `permission.denied` | MVP 1 |
 | team/user resource permission row 생성/수정 | `team_workflow_permission.created/updated`, `user_workflow_permission.created/updated`, `team_llm_permission.created/updated`, `user_llm_permission.created/updated` | MVP 1 현재 구현 |
 | team/user resource permission row 회수 | `team_workflow_permission.deleted`, `user_workflow_permission.deleted`, `team_llm_permission.deleted`, `user_llm_permission.deleted` | MVP 1 현재 구현 |
-| knowledge base permission row 생성/수정 | `team_knowledge_permission.created/updated`, `user_knowledge_permission.created/updated` | MVP 2 목표 |
-| knowledge base permission row 회수 | `team_knowledge_permission.deleted`, `user_knowledge_permission.deleted` | MVP 2 목표 |
+| knowledge base permission API/enforcement 구현 시 row 생성/수정 | `team_knowledge_permission.created/updated`, `user_knowledge_permission.created/updated` | MVP 2 기능 구현 시 고정 |
+| knowledge base permission API/enforcement 구현 시 row 회수 | `team_knowledge_permission.deleted`, `user_knowledge_permission.deleted` | MVP 2 기능 구현 시 고정 |
 | data/model/trace policy 차단 | `policy.block` | MVP 2 |
 | data/model/trace policy 경고 | `policy.warn` | MVP 2 |
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
@@ -55,7 +55,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 
 - MVP 1 요구사항의 `workflow.blocked` action 표기를 제거하고 `permission.denied`와 `auth.permission_denied`로 분리한다.
 - MVP 1에서 permission grant/update/revoke audit을 현재 permission row별 data-change action으로 기록하는 것을 명시한다.
-- MVP 2 knowledge base permission grant/update/revoke도 같은 permission row별 data-change action 규칙을 따른다.
+- MVP 2 knowledge base permission API/enforcement를 구현할 때 grant/update/revoke도 같은 permission row별 data-change action 규칙을 고정한다.
 - MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`을 검색 대상으로 삼는다.
 - Data model의 대표 action convention에 `permission.denied`와 `auth.permission_denied`를 포함한다.
 - Deployment API 문서는 기본 권한 enforcement 구현 상태와 MVP 3 운영 기능 강화 범위를 구분한다.
