@@ -1139,7 +1139,7 @@ MVP 목표 상태 결정:
 | 인증 전 또는 전역 401/403 거부 | `auth.permission_denied` |
 | workflow 실행 | `workflow.execute` |
 | LLM 호출 | `llm.call` |
-| 목표: RAG retrieval 성공 | `rag.retrieve` |
+| 현재 MBA-78 1차: RAG retrieval 성공 | `rag.retrieve` |
 | 배포 생성 | `workflow.deploy` |
 | 배포 일반 toggle | `deployment.toggle` |
 | 이전 배포 활성화 | `deployment.activate_previous` |

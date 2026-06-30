@@ -22,9 +22,9 @@ from apps.shared.db.models.team import (
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
-    AUTH_STATE_RANK,
     AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
+    AUTH_STATE_RANK,
     knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
     normalize_resource_auth_state,

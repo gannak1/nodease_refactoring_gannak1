@@ -96,11 +96,11 @@ Scope prerequisite와 resource permission source:
 - Scope prerequisite: active `organization_memberships` row와 KB의 `organization_id`가 요청의 active organization context 안에 있는지 확인한다.
 - Resource permission source: organization manager override, `team_knowledge_permissions`, 목표 `user_knowledge_permissions`.
 
-`user_knowledge_permissions`는 MVP 2 목표 table이다. MBA-75에서 함께 구현할지, 선행/후속 이슈로 분리할지는 구현 계획에서 결정할 수 있지만, 장기 effective permission은 team permission과 additive user direct permission을 합산한다.
+`user_knowledge_permissions`는 MVP 2 목표 table이며, MBA-78 1차 구현에는 포함하지 않는다. 장기 effective permission은 team permission과 additive user direct permission을 합산하되, table/API가 추가되기 전까지 user direct grant는 fail-closed로 둔다.
 
 Document별 permission table은 만들지 않는다. Document access/policy는 KB permission과 `documents.meta_info` 기반 metadata policy를 조합한다.
 
-MBA-75 permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. Org-scoped RAG에서 KB `organization_id`는 필수이며, legacy `organization_id=null` KB는 요청 header organization으로 보정하지 않고 backfill/reassignment 전까지 scope 밖 resource로 닫는다. 현재 Knowledge/RAG API의 primary organization fallback은 과도기 구현이며, 구현은 [knowledge-rag API 문서](../api/knowledge-rag.md)의 header 기반 400/404 계약으로 수렴한다.
+MVP 2 목표 계약의 Knowledge/RAG permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. Org-scoped RAG에서 KB `organization_id`는 필수이며, legacy `organization_id=null` KB는 요청 header organization으로 보정하지 않고 backfill/reassignment 전까지 scope 밖 resource로 닫는다. 현재 Knowledge/RAG API의 primary organization fallback은 과도기 구현이며, MBA-78 1차 구현은 [knowledge-rag API 문서](../api/knowledge-rag.md)의 header 기반 400/404 계약으로 수렴하는 첫 범위다.
 
 ## Document Metadata Policy
 
