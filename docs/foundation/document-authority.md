@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Foundation
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 
 ## 목적
 
@@ -41,13 +41,13 @@ Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
 Status: Draft | Accepted | Superseded
 Authority: Foundation | Requirements | Architecture | Data Model | API | Frontend Implementation Guide | Decision | Implementation Plan | Reference
 Source of Truth: Yes | No
-Verified Against: <branch or dev> @ <commit> 또는 <branch> current docs snapshot (<date/timezone>)
+Verified Against: dev @ <commit> 또는 <branch> @ <commit> (<date/timezone>)
 Related ADRs:
 ```
 
 ## 현재 기준
 
-현재 active 문서 정합성 기준은 각 문서 상단의 `Verified Against`가 가리키는 repository snapshot이다. `현재 코드`, `current behavior`, `Implemented`로 표시한 문장은 해당 snapshot의 실제 코드와 일치해야 한다.
+현재 active 문서 정합성 기준은 각 문서 상단의 `Verified Against`가 가리키는 repository code snapshot이다. 가능하면 재현 가능한 commit hash를 사용한다. 문서-only PR에서 목표 계약을 바꾸는 경우 PR 번호나 target contract 메모를 괄호에 덧붙일 수 있지만, branch의 current snapshot처럼 움직이는 기준을 최종 기준으로 두지 않는다. `현재 코드`, `current behavior`, `Implemented`로 표시한 문장은 해당 snapshot의 실제 코드와 일치해야 한다.
 
 `목표`, `Planned`, `MVP 목표 계약`으로 표시한 요구사항, 아키텍처, 데이터 모델, API, ADR은 코드가 수렴해야 할 계약이다. 코드가 목표 계약과 다르면 목표 문서를 현재 코드로 낮추기보다 구현 보강 이슈, discrepancy report, 또는 단계별 migration 계획으로 추적한다.
 

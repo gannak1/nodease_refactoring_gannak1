@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related ADRs:
 
 ## 목적

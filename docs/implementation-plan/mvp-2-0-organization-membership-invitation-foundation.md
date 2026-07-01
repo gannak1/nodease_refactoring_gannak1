@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
 편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
@@ -1604,7 +1604,7 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 | suspended member 권한 row 처리 | row 유지, helper에서 차단 | suspend를 "임시 차단"이 아니라 "권한 제거"로 쓰고 싶을 때 | reactivate 시 권한 복구 여부 |
 | removed member 권한 row 처리 | team/direct permission hard delete | 제거 후 재초대 시 과거 권한 복구를 원할 때 | 보안 기본값, audit/restore UX |
 | organization manager 초대 | manager invite 허용 | manager 권한 부여를 별도 approval로 제한하려는 순간 | admin UX, last-manager policy |
-| organization membership audit action | 명시 action 추가 | AuditAction enum/string policy를 확정하기 직전 | audit action vocabulary |
+| organization membership audit action | 결정 완료: `organization.invite`, `organization.member.accept/update/remove`, cleanup `permission.revoke` | canonical audit action ADR 변경 전 | audit action vocabulary |
 
 현재 권장 기본값은 모두 "MVP 1을 덜 건드리는 방향"이다.
 

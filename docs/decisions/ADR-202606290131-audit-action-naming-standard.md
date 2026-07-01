@@ -3,7 +3,7 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Created At: 2026-06-29 01:31 KST
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
@@ -65,7 +65,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
 - `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정한다. MBA-78 1차 구현은 해당 `AuditAction` 상수와 테스트를 먼저 추가하며, `rag.retrieve`는 RAG retrieval 성공 감사에 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement 연결은 후속 구현 범위다.
 - `rag.answer.*`는 standalone RAG Agent answer의 사용자-facing 실행 lifecycle 감사 action이다. Retrieval 성공 감사인 `rag.retrieve`, provider 호출 감사인 `llm.call`, answer 실행 상태 record인 `rag_answer_runs.status`를 대체하지 않고, answer 요청 단위의 검색/운영 이벤트로만 사용한다.
-- `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 만들지 못한 경우에만 사용한다. 별도 `rag.answer.blocked` action은 만들지 않는다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied`와 answer run status 조합으로 표현한다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다.
+- `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 만들지 못한 경우에만 사용한다. 별도 `rag.answer.blocked` action은 만들지 않는다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied`와 answer run status 조합으로 표현한다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, deterministic credential/model을 선택할 수 없는 `409 credential_selection_required`에는 answer run과 lifecycle audit을 만들지 않는다.
 - `rag.answer.purge`는 retention purge aggregate event다. 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록하고, `audit_metadata`는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status` 같은 운영 summary allowlist로 제한한다. Raw answer/query/chunk content는 metadata에 넣지 않는다.
 
 ## 영향

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 범위
@@ -92,6 +92,7 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `auth.required` | `401` | session/token 없음 |
 | `auth.invalid` | `401` | session/token invalid |
 | `permission.denied` | `403` | resource permission 부족 |
+| `policy.blocked` | `403` | 같은 scope 안 요청이 data/model/trace/RAG policy에 의해 차단됨 |
 | `organization.required` | `400` | active organization이 필요하지만 결정되지 않음 |
 | `resource.not_found` | `404` | 리소스 없음 |
 | `resource.conflict` | `409` | 중복 또는 상태 충돌 |

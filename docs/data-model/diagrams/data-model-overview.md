@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model Diagram
 Source of Truth: No
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 
 이 문서는 [physical-data-model.md](../physical-data-model.md)의 현재 코드 table 참조관계를 시각화한 보조 문서다. 구현 기준은 Mermaid 다이어그램이 아니라 물리 데이터 모델 문서의 table, column, relationship 설명이다.
 

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related Docs: [MVP 2 Governance/RAG/Audit](../requirements/mvp-2-governance-rag-audit.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [Knowledge/RAG API](../api/knowledge-rag.md), [Tracing/Audit API](../api/tracing-audit.md), [Physical data model](../data-model/physical-data-model.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목적
@@ -95,10 +95,13 @@ RAG preset은 공식 data model/API field, 권한, 우선순위가 확정된 뒤
 - `status` 값: `requested`, `running`, `completed`, `failed`, `cancelled`, `blocked`
 - `retention_expires_at`은 생성 시점에 설정하고 기본 보존 기간은 90일
 - 상태 전이는 `requested -> blocked`와 `requested -> running -> completed|failed|cancelled|blocked`를 모두 허용한다.
+- `query_hash`, `answer_hash`, `hash_version`은 nullable로 두고, 값을 저장할 때는 HMAC-SHA256, server-side secret/pepper, `hash_version`을 함께 사용한다. HMAC secret/pepper가 없으면 hash 값을 저장하지 않으며 unsalted hash fallback은 금지한다.
 
 ### C. API schema와 endpoint
 
 - `RAGAgentAnswerRequest`, `RAGAgentAnswerResponse`, SSE event payload schema를 추가한다.
+- `generation_model_id`는 3단계 request에서 필수로 둔다.
+- `credential_id`는 optional이며, 생략 시 active organization의 명시 default credential과 요청한 `generation_model_id`의 verified relation이 정확히 하나일 때만 선택한다.
 - `correlation_id`는 255자 이하의 UUID/ULID 또는 `[A-Za-z0-9._:-]` 범위 문자열만 허용한다.
 - `top_k`는 3단계 초기 목표 guardrail 기준 기본값 8, 최대 8이다.
 - `/answer`와 `/answer/stream`은 같은 service facade를 사용해 policy와 status 전이가 갈라지지 않게 한다.
@@ -110,15 +113,15 @@ RAG preset은 공식 data model/API field, 권한, 우선순위가 확정된 뒤
 1. request schema와 `X-Organization-Id`를 검증한다.
 2. active organization scope를 확인한다.
 3. KB existence, active 상태, organization match를 확인한다.
-4. 명시 `credential_id` 또는 `generation_model_id`가 있으면 existence, active 상태, organization match, scope visibility를 확인한다.
+4. 필수 `generation_model_id`는 existence와 active 상태를 확인하고, 명시 `credential_id`는 existence, active 상태, organization match, scope visibility를 확인한다.
 5. KB/credential/model 중 scope 밖, organization mismatch, 숨겨야 하는 not found는 answer run 생성 없이 `404 resource.not_found`로 닫는다.
-6. 명시 credential/preset이 없고 deterministic default credential/model을 선택할 수 없으면 answer run 생성 없이 `409 credential_selection_required`로 닫는다.
+6. 명시 credential이 없고 deterministic default credential과 요청한 model의 verified relation을 선택할 수 없으면 answer run 생성 없이 `409 credential_selection_required`로 닫는다.
 7. visible resource와 credential/model 선택 가능성이 확인되면 `rag_answer_runs` row를 만들고 `rag.answer.requested`를 기록한다.
 8. KB `use` 권한, credential/model `use` 권한, verified credential-model relation을 preflight로 검증한다.
-9. 같은 scope 안 resource에 대한 use 권한 또는 verified relation preflight 실패는 `status=blocked`와 `permission.denied`로 닫는다.
+9. 같은 scope 안 resource에 대한 use 권한 또는 verified relation preflight 실패는 HTTP `403`, `error.code="permission.denied"`, `status=blocked`, `permission.denied` audit으로 닫는다.
 10. retrieval/generation 시작 전 `running`으로 전환한다.
 11. retrieval을 수행하고 final evidence classification policy를 검증한다.
-12. `pii` evidence가 있으면 LLM 호출 전 `status=blocked`와 `policy.block`으로 종료한다.
+12. `pii` evidence가 있으면 LLM 호출 전 HTTP `403`, `error.code="policy.blocked"`, `status=blocked`, `policy.block` audit으로 종료한다.
 13. LLM answer를 생성하고 citation/summary/usage를 저장한다.
 14. 완료, 실패, 취소에 맞춰 status와 lifecycle audit을 기록한다.
 
@@ -146,7 +149,7 @@ SSE event 순서는 [Knowledge/RAG API](../api/knowledge-rag.md)의 계약을 �
 - 사용 가능한 KB 직접 선택
 - 질문 입력
 - streaming answer 표시
-- citation card와 제한 길이 content preview
+- citation card와 redaction된 300자 이하 `content_preview`
 - retrieval/usage summary
 - empty retrieval
 - `permission.denied`
@@ -177,23 +180,26 @@ Backend unit/service:
 - invalid `correlation_id` 400
 - missing/invalid organization header에서 answer run 미생성
 - KB 없음, inactive, scope 밖, organization mismatch에서 404와 answer run 미생성
-- 같은 scope 안 KB `use` 부족은 HTTP 403, `rag_answer_runs.status=blocked`, `permission.denied` audit을 함께 검증
+- 같은 scope 안 KB `use` 부족은 HTTP 403, `error.code="permission.denied"`, `rag_answer_runs.status=blocked`, `permission.denied` audit을 함께 검증
 - credential/model scope 밖, organization mismatch, 숨겨야 하는 not found는 404와 answer run 미생성
-- 같은 scope 안 credential/model `use` 또는 verified relation 부족은 HTTP 403, `rag_answer_runs.status=blocked`, `permission.denied` audit을 함께 검증
+- 같은 scope 안 credential/model `use` 또는 verified relation 부족은 HTTP 403, `error.code="permission.denied"`, `rag_answer_runs.status=blocked`, `permission.denied` audit을 함께 검증
 - default credential을 deterministic하게 선택할 수 없으면 409와 answer run 미생성
-- `pii` evidence 포함 시 LLM 호출 전 `policy.block`
+- `pii` evidence 포함 시 LLM 호출 전 HTTP 403, `error.code="policy.blocked"`, `policy.block` audit
 - retrieval 성공 뒤 `pii` policy block이 발생하면 `rag.retrieve`와 `policy.block` audit이 모두 남고 LLM 호출은 발생하지 않음
 - `confidential` evidence 포함 시 policy result 기록
 - `rag_answer_runs` status transition
 - nullable FK/ondelete 목표와 safe snapshot 저장
+- `query_hash`/`answer_hash`는 HMAC secret/pepper가 있을 때만 저장하고, 없으면 `null`로 유지
 - purge aggregate metadata allowlist
 
 Backend API:
 
 - `/answer`와 `/answer/stream`의 권한/policy 결과 일치
 - 같은 scope 안 blocked 403 응답은 목표 error envelope의 `error.details`에 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 safe metadata로 반환
+- permission block은 `error.code="permission.denied"`, policy block은 `error.code="policy.blocked"`를 반환
 - SSE event 순서와 terminal event
 - SSE event 이름과 `rag.answer.*` audit action 비혼동
+- `citations[].content_preview`는 user-facing JSON/SSE response에만 redaction된 300자 이하로 허용하고 durable summary/audit/trace/usage metadata에는 미저장
 - raw chunk content, raw prompt/completion, credential 원문 미저장
 
 Frontend:

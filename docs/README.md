@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Documentation Index
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 
 이 디렉터리가 현재 저장소의 active documentation root다. 문서 내부 링크와 권위 규칙은 이 `docs/` 디렉터리를 문서 루트로 간주한다.
 

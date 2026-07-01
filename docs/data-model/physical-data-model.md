@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목적
@@ -1614,7 +1614,7 @@ RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API k
 
 - 사용자 질문에서 retrieval, generation, final answer까지 이어지는 RAG answer 실행 단위
 - redaction-safe retrieval summary와 citation summary 저장
-- redaction-safe answer summary와 top-level answer hash 저장. Raw final answer 또는 provider raw completion은 기본 저장하지 않는다.
+- redaction-safe answer summary와 nullable top-level answer hash 저장. Raw final answer 또는 provider raw completion은 기본 저장하지 않는다.
 - policy result, answer status, latency/token/cost snapshot 저장
 - trace/usage/audit와 느슨하게 연결하기 위한 `correlation_id` 보관
 
@@ -1672,7 +1672,7 @@ MVP 목표 상태 결정:
 - Standalone answer의 retrieval evidence는 `rag_answer_runs.retrieval_summary`와 `citation_summary`에 redaction-safe summary로 저장한다.
 - `retrieval_summary` field allowlist는 `knowledge_base_id`, `hierarchy_mode`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `latency_ms`, `raw_content_returned`로 제한한다. `raw_content_returned`의 durable 저장값은 기본 `false`여야 한다.
 - `citation_summary` field allowlist는 citation별 `citation_id`, `document_id`, `chunk_id`, `rank`, `score`, `filename`, `heading`, `hierarchy_path`, `metadata_summary`로 제한한다. `metadata_summary`는 classification, tags, source_type, effective range 같은 safe metadata만 포함하고 chunk content를 포함하지 않는다.
-- `answer_hash`는 `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다.
+- `answer_hash`는 nullable이며, `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다.
 - `answer_summary` field allowlist는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `redacted_summary`를 저장할 때도 raw final answer 재구성이 가능할 정도의 긴 본문은 저장하지 않는다.
 - `usage_summary`는 answer 실행 시점에 캡처한 denormalized snapshot이다. Canonical LLM token/cost/latency 원천은 `llm_usage_logs`이며, usage 도메인에 generic `correlation_id` 또는 metadata extension이 추가되기 전까지 `usage_summary`와 `llm_usage_logs` 사이의 강한 FK 정합성을 보장하지 않는다.
 - Durable/internal `usage_summary` field allowlist는 `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `model_id`, `model_name`, `provider`, `credential_id` 같은 집계/식별자 값으로 제한한다. Credential 원문, API key, token, encrypted_config, raw prompt/completion, provider raw response는 저장하지 않는다.
@@ -1681,7 +1681,7 @@ MVP 목표 상태 결정:
 - Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. Retrieval 성공 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 상태 `rag_answer_runs.status`와 의미를 섞지 않는다.
 - Raw user question, raw final answer, raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 기본 저장하지 않는다.
 - Answer history/replay가 필요하면 raw provider response가 아니라 별도 redacted answer snapshot, retention, access control을 공식 문서와 ADR로 먼저 확정한다.
-- `query_hash`와 `answer_hash`가 필요하면 secret을 포함하지 않는 정규화 입력과 서버 측 salt/HMAC 정책을 별도 보안 설계에서 확정한다. Hash algorithm 또는 salt/HMAC 정책을 바꿀 수 있도록 `hash_version` 또는 동등한 metadata convention을 함께 저장한다.
+- `query_hash`, `answer_hash`, `hash_version`은 nullable이다. 값을 저장하려면 HMAC-SHA256, server-side secret/pepper, `hash_version`을 함께 사용해야 한다. HMAC secret/pepper가 설정되지 않았으면 값을 `null`로 두며, 일반 SHA-256 같은 unsalted hash fallback은 허용하지 않는다. Hash algorithm 또는 HMAC 정책을 바꿀 수 있도록 `hash_version` 또는 동등한 metadata convention을 함께 저장한다.
 - `retention_expires_at`은 answer run 생성 시점에 설정해야 하며 indefinite retention을 기본값으로 보지 않는다. 3단계 기본 보존 기간은 trace metadata 기본값과 맞춰 90일로 둔다. Purge는 RAG 도메인 service/scheduled worker가 소유하고, 실패 시 다음 scheduled run에서 idempotent하게 재시도한다. Purge 성공/실패 aggregate는 `audit_logs.action='rag.answer.purge'`로 남기되, 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록한다. `audit_metadata` allowlist는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status`로 제한하고 raw answer, raw query, raw chunk content는 포함하지 않는다. 3단계 기본 API에 list/detail/delete/purge를 포함하지 않으며, 수동 purge API를 별도로 만들 경우 권한, hard delete/soft delete 여부, 상세 응답 schema는 별도 API/ADR에서 확정한다.
 - Usage 도메인의 정확한 answer-run correlation이 필요하면 `llm_usage_logs`에 RAG 전용 FK를 추가하지 않고 generic `correlation_id` 또는 metadata extension을 별도 ADR로 설계한다.
 - `rag_answer_runs` 조회 권한은 KB `use` 권한, answer 생성자, organization manager override, retention/access policy를 함께 고려해야 한다. KB `read`만으로 answer content 성격의 summary/snapshot을 노출할지는 후속 API 문서에서 별도 확정한다.

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Requirements
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related ADRs: [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 작성 기준
@@ -41,7 +41,7 @@ Moduly는 이미 워크플로우 편집, 실행, 배포, RAG, LLM credential, us
 - 비용/품질 비교와 추천
 - 배포 전 체크와 운영 대시보드
 
-이 requirements 문서는 현재 `dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1` 구현 사실과 MVP 목표 상태를 함께 다룬다. "현재 코드", "현재 구현"으로 표시한 내용은 이미 코드 기준으로 확인한 동작이고, MVP 2/3의 governance, deploy checklist, recommendation, operations dashboard 항목은 목표 범위다.
+이 requirements 문서는 현재 `dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e` 구현 사실과 MVP 목표 상태를 함께 다룬다. "현재 코드", "현재 구현"으로 표시한 내용은 이미 코드 기준으로 확인한 동작이고, MVP 2/3의 governance, deploy checklist, recommendation, operations dashboard 항목은 목표 범위다.
 
 ## 왜 RBAC가 먼저인가
 

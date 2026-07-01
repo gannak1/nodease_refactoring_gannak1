@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-86 current docs snapshot (2026-07-01 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 범위
@@ -56,8 +56,8 @@ RAG 확장 3단계의 목표 request는 단일 `knowledge_base_id`만 지원한�
 - `tags`
 - `hierarchy_mode`
 - `top_k`
-- `generation_model_id`. Server-side RAG preset은 data model과 request field가 별도 공식화된 뒤 기본값 공급자로 추가할 수 있다.
-- `credential_id` optional. 생략하면 active organization의 명시 default credential 정책이 있을 때만 deterministic하게 선택한다.
+- `generation_model_id` required. 3단계에서는 generation model을 요청에서 명시해야 하며, 이름순/생성일순 같은 fallback으로 model을 고르지 않는다.
+- `credential_id` optional. 생략하면 active organization의 명시 default credential 정책과 요청한 `generation_model_id`의 verified relation이 정확히 하나일 때만 deterministic하게 선택한다.
 - `correlation_id` optional. 없으면 서버가 생성한다.
 
 Streaming 여부는 endpoint로 결정한다. `/api/v1/rag/agent/answer`는 일반 JSON response를 반환하고, `/api/v1/rag/agent/answer/stream`은 SSE stream을 반환한다. Request body의 `stream` flag는 목표 계약에 포함하지 않는다.
@@ -81,29 +81,29 @@ Request schema validation, invalid `correlation_id`, invalid organization header
 
 Model/credential resolution은 다음 순서를 따른다.
 
-- 명시 `credential_id`가 있으면 현재 user가 해당 credential `use` 권한을 가져야 하고, credential organization이 `X-Organization-Id`와 일치해야 한다.
-- Server-side RAG preset이 별도 공식화되고 credential/model을 지정하면 preset의 선택값을 우선하되, 최종 model/credential에 동일한 권한과 verified relation 검증을 적용한다.
-- `generation_model_id`가 있으면 해당 model이 active이고, selected credential과 verified credential-model relation을 가져야 한다.
-- `credential_id`가 없고 preset도 credential을 고정하지 않으면 서버는 active organization의 명시 default credential 정책이 있을 때만 선택한다.
-- default credential 정책이 없거나, 같은 조건을 만족하는 credential/model relation이 여러 개라 deterministic하게 선택할 수 없으면 `409 credential_selection_required`로 거부한다. 이름순/생성일순 같은 우발적 fallback으로 credential을 고르지 않는다.
+- `generation_model_id`는 3단계 request에서 필수다. 해당 model이 존재하지 않거나 inactive이거나 숨겨야 하는 scope 밖 resource이면 answer run 생성 없이 `404 resource.not_found`로 닫는다.
+- 명시 `credential_id`가 있으면 credential 존재, active 상태, credential organization과 `X-Organization-Id` 일치를 answer run 생성 전에 확인한다.
+- `credential_id`가 없으면 active organization의 명시 default credential 정책이 있고, 그 credential과 요청한 `generation_model_id` 사이 verified relation이 정확히 하나일 때만 선택한다.
+- default credential 정책이 없거나, 같은 조건을 만족하는 credential/model relation이 없거나 여러 개라 deterministic하게 선택할 수 없으면 `409 credential_selection_required`로 거부하고 answer run을 만들지 않는다. 이름순/생성일순 같은 우발적 fallback으로 credential을 고르지 않는다.
+- Server-side RAG preset은 data model과 request field가 별도 공식화된 뒤 기본값 공급자로 추가할 수 있다. Preset이 credential/model을 지정하더라도 최종 model/credential에 동일한 scope, `use` 권한, verified relation 검증을 적용한다.
 - 다른 organization credential로 fallback하지 않는다.
-- 검증 실패는 같은 organization scope 안 action 권한 부족이면 `403 permission.denied`, scope 밖 또는 mismatch resource이면 `404 resource.not_found` 정책을 따른다.
+- 검증 실패는 같은 organization scope 안 action 권한 또는 verified relation 부족이면 answer run 생성 뒤 `403 permission.denied`와 `status="blocked"`, scope 밖 또는 mismatch resource이면 answer run 생성 없이 `404 resource.not_found` 정책을 따른다.
 
 `answer_run_id`는 RAG 도메인의 `rag_answer_runs.id`다. Trace/usage table에 `rag_answer_run_id` FK를 추가하지 않는다. Workflow runtime에서 발생한 RAG retrieval evidence는 계속 `trace_payloads.payload_kind='rag.retrieval'`로 저장하지만, standalone Agent answer의 retrieval/citation evidence는 `rag_answer_runs`의 redaction-safe summary와 citation summary로 저장한다. Trace/usage/audit와의 느슨한 연결은 `correlation_id`로 한다.
 
-`answer`는 API/stream response로 반환되는 final answer다. 기본 durable storage는 raw final answer나 provider raw completion을 저장하지 않고, `rag_answer_runs`의 redaction-safe answer summary, top-level `answer_hash`, retrieval summary, citation summary, policy result, usage snapshot에 한정한다. 나중에 answer history/replay가 제품 요구사항이 되면 raw provider response가 아니라 별도 redacted answer snapshot과 retention/access policy를 공식 문서와 ADR로 먼저 확정한다.
+`answer`는 API/stream response로 반환되는 final answer다. 기본 durable storage는 raw final answer나 provider raw completion을 저장하지 않고, `rag_answer_runs`의 redaction-safe answer summary, nullable top-level `answer_hash`, retrieval summary, citation summary, policy result, usage snapshot에 한정한다. 나중에 answer history/replay가 제품 요구사항이 되면 raw provider response가 아니라 별도 redacted answer snapshot과 retention/access policy를 공식 문서와 ADR로 먼저 확정한다.
 
 `retrieval_summary` durable field allowlist는 `knowledge_base_id`, `hierarchy_mode`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `latency_ms`, `raw_content_returned`로 제한한다. `raw_content_returned`는 기본 `false`여야 한다.
 
-`citation_summary` durable field allowlist는 citation별 `citation_id`, `document_id`, `chunk_id`, `rank`, `score`, `filename`, `heading`, `hierarchy_path`, `metadata_summary`로 제한한다. `metadata_summary`에는 classification, tags, source_type, effective range 같은 safe metadata만 포함하고 chunk content를 포함하지 않는다. API response의 `citations`가 제한 preview를 제공하더라도, durable `citation_summary`에는 raw chunk content나 긴 preview를 저장하지 않는다.
+`citation_summary` durable field allowlist는 citation별 `citation_id`, `document_id`, `chunk_id`, `rank`, `score`, `filename`, `heading`, `hierarchy_path`, `metadata_summary`로 제한한다. `metadata_summary`에는 classification, tags, source_type, effective range 같은 safe metadata만 포함하고 chunk content를 포함하지 않는다. User-facing JSON/SSE response의 `citations[].content_preview`는 Agent answer response에서 허용되는 유일한 content-derived citation field이며, redaction을 거친 뒤 최대 300자로 제한한다. Durable `citation_summary`, audit metadata, trace metadata, usage metadata에는 `content_preview`나 raw chunk content를 저장하지 않는다.
 
-`answer_hash`는 `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary` durable field allowlist는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다. `redacted_summary`는 raw final answer 재구성이 가능할 정도로 긴 본문을 저장하지 않는다.
+`query_hash`, `answer_hash`, `hash_version`은 nullable이다. 값을 저장하려면 HMAC-SHA256, server-side secret/pepper, `hash_version`을 함께 사용하는 정책을 먼저 구현해야 한다. HMAC secret/pepper가 설정되지 않았으면 값을 `null`로 두며, 일반 SHA-256 같은 unsalted hash fallback은 허용하지 않는다. `answer_hash`는 `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary` durable field allowlist는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다. `redacted_summary`는 raw final answer 재구성이 가능할 정도로 긴 본문을 저장하지 않는다.
 
 Durable/internal `usage_summary`는 answer 실행 시점에 캡처한 denormalized token/cost/latency snapshot이다. Canonical LLM usage 원천은 계속 `llm_usage_logs`이며, usage 도메인에 generic `correlation_id` 또는 metadata extension이 추가되기 전까지 `usage_summary`와 `llm_usage_logs`가 강한 FK 정합성을 가진다고 보지 않는다. Durable/internal 허용 field는 `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `model_id`, `model_name`, `provider`, `credential_id` 같은 집계/식별자 값으로 제한한다. Credential 원문, API key, token, encrypted_config, raw prompt/completion, provider raw response는 `usage_summary`에 넣지 않는다.
 
 User-facing response의 `usage_summary`는 durable/internal snapshot보다 좁은 whitelist를 사용한다. 일반 사용자 응답에는 `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `model_name`, `provider`만 기본 포함하고, `credential_id`와 internal `model_id`는 privileged trace/audit response 또는 별도 admin API에서만 노출할 수 있다. `credential_id`는 secret이 아니지만 credential 원문 조회 권한을 의미하지 않으므로 일반 answer response의 기본 필드로 두지 않는다.
 
-Streaming 응답은 최종 answer chunk와 함께 citation summary, retrieval summary, usage summary, `answer_run_id`, `correlation_id`를 반환해야 한다. Raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 stream event나 저장 metadata에 기본 포함하지 않는다.
+Streaming 응답은 최종 answer chunk와 함께 citation summary, retrieval summary, usage summary, `answer_run_id`, `correlation_id`를 반환해야 한다. SSE의 `citations[].content_preview`도 JSON response와 같은 redaction 및 300자 cap을 따른다. Raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 stream event나 저장 metadata에 기본 포함하지 않는다.
 
 SSE event 계약은 다음 순서를 기본으로 한다. Stream 시작 전 검증 가능한 오류는 일반 HTTP status와 reason code로 반환한다. Stream이 시작된 뒤 오류가 발생하면 `error` event를 terminal event로 보내고 연결을 종료한다.
 
@@ -119,9 +119,9 @@ SSE event 계약은 다음 순서를 기본으로 한다. Stream 시작 전 검�
 
 SSE event 이름은 audit action이 아니다. 예를 들어 SSE `answer.completed` event와 audit action `rag.answer.completed`는 이름이 비슷하지만 서로 다른 저장 위치와 의미를 갖는다.
 
-RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 `policy.block` audit으로 표현한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 `blocked` status를 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
+RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 HTTP `error.code="policy.blocked"`와 `policy.block` audit으로 표현한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 HTTP `error.code="permission.denied"`와 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 `blocked` status를 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
 
-Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scope 안 permission 또는 policy preflight가 차단되면 HTTP status는 `403`이고 목표 error envelope의 `error.details`에 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 포함한다.
+Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scope 안 permission 또는 policy preflight가 차단되면 HTTP status는 `403`이고 목표 error envelope의 `error.details`에 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 포함한다. Permission block은 `error.code="permission.denied"`와 `reason_code="kb_use_denied"` 또는 `credential_use_denied` 계열을 사용하고, policy block은 `error.code="policy.blocked"`와 `reason_code="pii_policy_blocked"` 또는 `classification_policy_blocked` 계열을 사용한다.
 
 ```json
 {
