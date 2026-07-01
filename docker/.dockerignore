@@ -5,6 +5,9 @@
 **/.gitignore
 **/__pycache__
 **/.pytest_cache
+**/.tmp_pytest_cache
+**/.ruff_cache
+**/.mypy_cache
 **/.vscode
 **/.idea
 *.pyc

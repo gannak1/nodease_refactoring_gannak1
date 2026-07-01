@@ -20,6 +20,7 @@ from apps.gateway.api.v1.endpoints import (
     users,
     webhook,
     workflow,
+    workflow_builder_agent,
 )
 
 # 메인 API 라우터 생성
@@ -55,6 +56,11 @@ api_router.include_router(
 )
 api_router.include_router(
     template_wizard.router, prefix="/template-wizard", tags=["template-wizard"]
+)
+api_router.include_router(
+    workflow_builder_agent.router,
+    prefix="/workflow-builder-agent",
+    tags=["workflow-builder-agent"],
 )
 
 # Knowledge & RAG (Dev A)

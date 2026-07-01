@@ -1,6 +1,10 @@
+from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_GATEWAY_DIR = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -18,9 +22,21 @@ class Settings(BaseSettings):
     AWS_REGION: Optional[str] = None
     S3_BUCKET_NAME: Optional[str] = None
 
+    # Workflow Builder Agent
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    WORKFLOW_BUILDER_AGENT_SLACK_BOT_TOKEN: Optional[str] = None
+    WORKFLOW_BUILDER_DEMO_SLACK_BOT_TOKEN: Optional[str] = None
+
     # Load from .env file
     model_config = SettingsConfigDict(
-        env_file=".env", env_ignore_empty=True, extra="ignore"
+        env_file=(
+            str(_REPO_ROOT / ".env"),
+            str(_GATEWAY_DIR / ".env"),
+            ".env",
+        ),
+        env_ignore_empty=True,
+        extra="ignore",
     )
 
 

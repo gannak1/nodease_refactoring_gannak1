@@ -53,6 +53,7 @@ import { SettingsSidebar } from './SettingsSidebar';
 import { VersionHistorySidebar } from './VersionHistorySidebar';
 import { TestSidebar } from './TestSidebar';
 import { NodeFullscreenEditor } from './NodeFullscreenEditor';
+import { WorkflowBuilderAgentPanel } from './WorkflowBuilderAgentPanel';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
 
@@ -1212,6 +1213,8 @@ export default function NodeCanvas() {
                     setSearchModalContext({ isOpen: true })
                   }
                 />
+
+                <WorkflowBuilderAgentPanel />
 
                 {/* Context Menu UI */}
                 {contextMenu && !isReadOnly && (

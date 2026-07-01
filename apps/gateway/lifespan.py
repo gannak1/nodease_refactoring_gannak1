@@ -18,6 +18,7 @@ from apps.shared.db.models.schedule import Schedule  # noqa: F401
 from apps.shared.db.seed import (
     seed_default_llm_models,
     seed_default_llm_providers,
+    seed_demo_family_care_knowledge_base,
     seed_placeholder_user,
 )
 from apps.shared.db.session import engine
@@ -50,7 +51,10 @@ async def lifespan(app: FastAPI):
         # 2.3 기본 모델 시드
         seed_default_llm_models(db)
 
-        # 2.4 기존 모델 가격 동기화 (KNOWN_MODEL_PRICES 기반)
+        # 2.4 데모용 가족돌봄휴가 KB 시드
+        seed_demo_family_care_knowledge_base(db)
+
+        # 2.5 기존 모델 가격 동기화 (KNOWN_MODEL_PRICES 기반)
         from apps.gateway.services.llm_service import LLMService
 
         result = LLMService.sync_system_prices(db)
@@ -59,7 +63,7 @@ async def lifespan(app: FastAPI):
                 f"기존 모델 {result['updated_models']}개의 가격 정보 업데이트 완료"
             )
 
-        # 2.5 SchedulerService 초기화 (스케줄러 시작)
+        # 2.6 SchedulerService 초기화 (스케줄러 시작)
         from apps.gateway.services.scheduler_service import init_scheduler_service
 
         logger.info("SchedulerService 초기화 중...")

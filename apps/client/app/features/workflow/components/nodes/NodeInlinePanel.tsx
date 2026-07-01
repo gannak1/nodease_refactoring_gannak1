@@ -6,6 +6,7 @@ import { HttpRequestNodePanel } from './http/components/HttpRequestNodePanel';
 import { SlackPostNodePanel } from './slack/components/SlackPostNodePanel';
 import { CodeNodePanel } from './code/components/CodeNodePanel';
 import { ConditionNodePanel } from './condition/components/ConditionNodePanel';
+import { GuardrailNodePanel } from './guardrail/components/GuardrailNodePanel';
 import { LLMNodePanel } from './llm/components/LLMNodePanel';
 import { TemplateNodePanel } from './template/components/TemplateNodePanel';
 import { WorkflowNodePanel } from './workflow/components/WorkflowNodePanel';
@@ -49,6 +50,9 @@ const NodePanelBody = ({
   }
   if (node.type === 'conditionNode') {
     return <ConditionNodePanel nodeId={node.id} data={node.data} />;
+  }
+  if (node.type === 'guardrailNode') {
+    return <GuardrailNodePanel nodeId={node.id} data={node.data} />;
   }
   if (node.type === 'llmNode') {
     return (

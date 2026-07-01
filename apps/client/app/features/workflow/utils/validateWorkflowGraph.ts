@@ -9,6 +9,7 @@ export type GraphValidationIssueCode =
   | 'TRIGGER_NODE_HAS_INCOMING_EDGE'
   | 'TERMINAL_NODE_HAS_OUTGOING_EDGE'
   | 'INVALID_CONDITION_SOURCE_HANDLE'
+  | 'INVALID_GUARDRAIL_SOURCE_HANDLE'
   | 'DUPLICATE_EDGE'
   | 'CYCLE_DETECTED';
 
@@ -88,6 +89,15 @@ const getConditionSourceHandles = (node: AppNode) => {
           : '',
       )
       .filter(Boolean),
+  ]);
+};
+
+const getGuardrailSourceHandles = (node: AppNode) => {
+  const data = node.data as Record<string, unknown>;
+  return new Set([
+    'source',
+    String(data.pass_handle_id || 'pass'),
+    String(data.fail_handle_id || 'fail'),
   ]);
 };
 
@@ -209,6 +219,21 @@ const getDirectEdgeIssues = (
           toIssue(
             'INVALID_CONDITION_SOURCE_HANDLE',
             '존재하지 않는 IF/ELSE 분기에서 시작하는 연결입니다.',
+            edge,
+            sourceNode,
+            targetNode,
+          ),
+        );
+      }
+    }
+
+    if (sourceNode.type === 'guardrailNode') {
+      const sourceHandle = edge.sourceHandle || 'source';
+      if (!getGuardrailSourceHandles(sourceNode).has(sourceHandle)) {
+        issues.push(
+          toIssue(
+            'INVALID_GUARDRAIL_SOURCE_HANDLE',
+            '존재하지 않는 가드레일 분기에서 시작하는 연결입니다.',
             edge,
             sourceNode,
             targetNode,

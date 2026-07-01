@@ -148,6 +148,57 @@ export interface LLMNodeData extends BaseNodeData {
 }
 // ============================================================================
 
+// ======================== [Guardrail Node] ==================================
+export type GuardrailOperation = 'check_text' | 'sanitize_text';
+
+export type GuardrailBranchCondition = 'keyword_match' | 'regex_match';
+
+export type GuardrailCheckOption =
+  | 'Keywords'
+  | 'Jailbreak'
+  | 'NSFW'
+  | 'Personal Data (PII)'
+  | 'Secret Keys'
+  | 'Topical Alignment'
+  | 'URLs'
+  | 'Custom'
+  | 'Custom Regex';
+
+export type GuardrailSanitizeOption =
+  | 'PII'
+  | 'Secret Keys'
+  | 'URLs'
+  | 'Custom Regex';
+
+export type GuardrailOption =
+  | GuardrailCheckOption
+  | GuardrailSanitizeOption;
+
+export interface GuardrailVariable {
+  name: string;
+  value_selector: string[];
+}
+
+export interface GuardrailNodeData extends BaseNodeData {
+  operation: GuardrailOperation;
+  text_to_check: string;
+  input_selector?: string[];
+  system_message?: string;
+  guardrails: GuardrailOption[];
+  custom_keywords?: string;
+  custom_prompt?: string;
+  custom_regex?: string;
+  branching_enabled?: boolean;
+  branch_condition?: GuardrailBranchCondition;
+  match_keywords?: string[];
+  pass_label?: string;
+  fail_label?: string;
+  pass_handle_id?: string;
+  fail_handle_id?: string;
+  referenced_variables: GuardrailVariable[];
+}
+// ============================================================================
+
 // [TemplateNode]
 export interface TemplateVariable {
   name: string;
@@ -351,6 +402,7 @@ export type SlackPostNode = ReactFlowNode<SlackPostNodeData, 'slackPostNode'>;
 export type NoteNode = ReactFlowNode<NoteNodeData, 'note'>;
 export type LLMNode = ReactFlowNode<LLMNodeData, 'llmNode'>;
 export type ConditionNode = ReactFlowNode<ConditionNodeData, 'conditionNode'>;
+export type GuardrailNode = ReactFlowNode<GuardrailNodeData, 'guardrailNode'>;
 export type CodeNode = ReactFlowNode<CodeNodeData, 'codeNode'>;
 export type TemplateNode = ReactFlowNode<TemplateNodeData, 'templateNode'>;
 export type WorkflowNode = ReactFlowNode<WorkflowNodeData, 'workflowNode'>;
@@ -386,6 +438,7 @@ export type AppNode =
   | SlackPostNode
   | LLMNode
   | ConditionNode
+  | GuardrailNode
   | CodeNode
   | TemplateNode
   | FileExtractionNode
