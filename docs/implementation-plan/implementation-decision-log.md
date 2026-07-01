@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: dev @ 5e67adba265346009fbbc691ee16e287cd89548e (MBA-89 implementation branch base, 2026-07-01 KST)
+Verified Against: feature/mba-89 @ 3a1d6799118f5a6bb50414914b40865e6375e35f (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, PR #142 follow-up, 2026-07-01 KST)
 Related ADRs:
 
 ## 목적
@@ -121,7 +121,7 @@ Related ADRs:
 - 상태: Active
 - 맥락: Agent answer는 answer run을 만든 뒤 permission/model/credential preflight와 retrieval/generation을 수행한다. 이 구간에서 예상치 못한 내부 예외나 streaming generator 조기 종료가 발생하면 run이 `requested` 또는 `running`으로 남을 수 있다. 또한 일부 API reason code는 Pydantic 전역 validation의 기본 422와 다르게 400 계열 계약을 갖고, search-test `rag.retrieve` audit은 아직 policy enforcement를 수행하지 않는다. `rag_answer_runs.retention_expires_at`이 생기면 purge 실행 경로도 필요하다.
 - 선택지: 1) 예상치 못한 예외와 generator close를 기본 framework 동작에 맡긴다. 2) run 생성 이후 preflight는 try/except로 닫고, generator 종료 시 terminal status가 아니면 cancelled로 닫으며, 계약상 400 reason code는 service preflight에서 검증한다. Search-test audit은 policy 미평가를 명시하고, RAG answer purge는 domain service와 log-system task로 둔다. 3) 모든 preflight를 run 생성 전으로 옮기고 retention purge는 후속으로 낮춘다.
-- 결정: 2안을 따른다. Run 생성 이후 preflight에서 예상치 못한 예외가 나면 `status=failed`, `error_code=generation.failed`로 닫고 sanitized 500을 반환한다. Streaming generator가 terminal status 없이 닫히면 `status=cancelled`, `error_code=client.cancelled`, `rag.answer.cancelled` audit으로 마감한다. `top_k`와 `correlation_id`의 의미/보안 규칙은 answer run 생성 전 service preflight에서 각각 `400 validation.failed`, `400 invalid_correlation_id`로 닫는다. Search-test `rag.retrieve` audit은 성공 retrieval 사실과 `policy_evaluated=false`를 남긴다. `RAGAnswerRetentionService`와 `log.rag_answer_retention_purge` task가 만료 row 삭제와 aggregate audit을 담당하고, `dry_run=True`는 실제 삭제가 아니므로 `rag.answer.purge` audit을 남기지 않는다.
+- 결정: 2안을 따른다. Run 생성 이후 preflight에서 예상치 못한 예외가 나면 `status=failed`, `error_code=generation.failed`로 닫고 sanitized 500을 반환한다. Streaming generator가 terminal status 없이 닫히면 `status=cancelled`, `error_code=client.cancelled`, `rag.answer.cancelled` audit으로 마감한다. `top_k`와 `correlation_id`의 의미/보안 규칙은 answer run 생성 전 service preflight에서 각각 `400 validation.failed`, `400 invalid_correlation_id`로 닫는다. Search-test `rag.retrieve` audit은 성공 retrieval 사실과 `policy_evaluated=false`를 남긴다. `RAGAnswerRetentionService`와 `log.rag_answer_retention_purge` task가 만료 row 삭제와 aggregate audit을 담당하고, `dry_run=True`는 실제 삭제가 아니므로 `rag.answer.purge` audit을 남기지 않는다. Purge task의 `limit`은 내부 운영 입력 실수를 줄이기 위해 `1..5000` 범위로 검증하고, invalid request는 retry하지 않는다.
 - 근거: Permission denial은 문서상 `blocked` run을 남기므로 모든 preflight를 run 생성 전으로 옮기면 계약과 충돌한다. 반대로 내부 실패나 조기 종료를 열린 상태로 남기면 lifecycle/audit 정합성이 깨진다. Search-test의 성공 retrieval과 policy allow는 다른 의미다. Retention purge는 요청 경로가 아니라 RAG 도메인 service와 worker 책임으로 분리해야 한다.
 - 범위: Agent answer run status transition, validation reason code, search-test retrieval audit metadata, RAG answer retention purge.
 - 영향 파일: `apps/gateway/services/rag_agent_answer_service.py`, `apps/gateway/api/v1/endpoints/rag.py`, `apps/shared/schemas/rag.py`, `apps/shared/services/rag_answer_retention.py`, `apps/log_system/tasks.py`, 관련 테스트.
