@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import CheckConstraint
+from apps.shared.db.models.knowledge import RAGAnswerRun
 from apps.shared.schemas.rag import (
     DocumentPreviewRequest,
     MetadataFilter,
+    RAGAgentAnswerRequest,
     SearchQuery,
     TagFilter,
 )
@@ -57,6 +60,103 @@ def test_document_preview_request_accepts_chunking_mode_alias():
 def test_search_query_rejects_top_k_over_cap():
     with pytest.raises(ValidationError):
         SearchQuery(query="policy", top_k=21)
+
+
+def test_rag_agent_answer_request_requires_explicit_model_and_credential():
+    with pytest.raises(ValidationError) as exc:
+        RAGAgentAnswerRequest(
+            knowledge_base_id="00000000-0000-0000-0000-000000000001",
+            query="policy",
+            generation_model_id="00000000-0000-0000-0000-000000000002",
+        )
+
+    assert "credential_id" in str(exc.value)
+
+
+def test_rag_agent_answer_request_accepts_top_k_for_service_validation():
+    base = {
+        "knowledge_base_id": "00000000-0000-0000-0000-000000000001",
+        "query": "policy",
+        "generation_model_id": "00000000-0000-0000-0000-000000000002",
+        "credential_id": "00000000-0000-0000-0000-000000000003",
+    }
+
+    request = RAGAgentAnswerRequest(**base, top_k=9)
+
+    assert request.top_k == 9
+
+
+def test_rag_agent_answer_request_leaves_correlation_id_for_service_validation():
+    base = {
+        "knowledge_base_id": "00000000-0000-0000-0000-000000000001",
+        "query": "policy",
+        "generation_model_id": "00000000-0000-0000-0000-000000000002",
+        "credential_id": "00000000-0000-0000-0000-000000000003",
+    }
+
+    assert (
+        RAGAgentAnswerRequest(**base, correlation_id="contains space").correlation_id
+        == "contains space"
+    )
+    assert (
+        RAGAgentAnswerRequest(
+            **base,
+            correlation_id="trace-sk-testSecretValue",
+        ).correlation_id
+        == "trace-sk-testSecretValue"
+    )
+
+    request = RAGAgentAnswerRequest(**base, correlation_id="trace:rag-1")
+
+    assert request.top_k == 8
+    assert request.correlation_id == "trace:rag-1"
+
+
+def test_rag_answer_run_model_contract_matches_documented_statuses_and_indexes():
+    table = RAGAnswerRun.__table__
+    status_constraint = next(
+        constraint
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_rag_answer_runs_status"
+    )
+    status_sql = str(status_constraint.sqltext)
+
+    for status in (
+        "requested",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "blocked",
+    ):
+        assert status in status_sql
+
+    indexes = {
+        index.name: [column.name for column in index.columns]
+        for index in table.indexes
+    }
+    assert indexes["ix_rag_answer_runs_org_correlation_created"] == [
+        "organization_id",
+        "correlation_id",
+        "created_at",
+    ]
+    assert indexes["ix_rag_answer_runs_retention_expires_at"] == [
+        "retention_expires_at"
+    ]
+
+    assert table.c.organization_id.nullable is False
+    assert table.c.user_id.nullable is True
+    assert table.c.knowledge_base_id.nullable is True
+    assert table.c.generation_model_id.nullable is True
+    assert table.c.generation_credential_id.nullable is True
+    assert next(iter(table.c.user_id.foreign_keys)).ondelete == "SET NULL"
+    assert next(iter(table.c.knowledge_base_id.foreign_keys)).ondelete == "SET NULL"
+    assert next(iter(table.c.generation_model_id.foreign_keys)).ondelete == "SET NULL"
+    assert (
+        next(iter(table.c.generation_credential_id.foreign_keys)).ondelete
+        == "SET NULL"
+    )
 
 
 def test_tag_filter_rejects_contract_limit_violations():

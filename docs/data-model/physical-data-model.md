@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
+Verified Against: feature/mba-89 @ 3a1d6799118f5a6bb50414914b40865e6375e35f (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, PR #142 follow-up, 2026-07-01 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목적
@@ -133,7 +133,8 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- | --- |
 | `user_knowledge_permissions` | MVP 2 | 특정 user에게 knowledge base 직접 추가 권한 부여 |
 | `user_audit_permissions` | MVP 3 | 특정 user에게 target organization audit visibility 직접 추가 권한 부여 |
-| `rag_answer_runs` | RAG 확장 3단계 | Workflow run이 없는 standalone RAG Agent answer 실행 anchor. Trace/usage table에는 RAG 전용 FK를 추가하지 않고 `correlation_id`로 느슨하게 연결 |
+
+`rag_answer_runs`는 RAG 확장 3단계/MBA-89에서 additive current table로 도입한다. Workflow run이 없는 standalone RAG Agent answer 실행 anchor이며, trace/usage table에는 RAG 전용 FK를 추가하지 않고 `correlation_id`로 느슨하게 연결한다.
 
 이전 문서에서 신규 table로 다루던 기능은 다음 기준 table로 정리한다.
 
@@ -1608,7 +1609,7 @@ RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API k
 
 ### RAG Agent Answer Runs
 
-`rag_answer_runs`는 RAG 확장 3단계에서 도입할 목표 table이다. 현재 코드 기준 table이 아니며, Standalone RAG Agent answer의 실행 anchor 역할을 한다. 이 table은 workflow trace table을 대체하지 않고, workflow가 없는 질문/답변 실행을 RAG 도메인 안에서 추적하기 위한 additive table이다.
+`rag_answer_runs`는 RAG 확장 3단계/MBA-89에서 도입한 additive table이다. Standalone RAG Agent answer의 실행 anchor 역할을 하며, workflow trace table을 대체하지 않고 workflow가 없는 질문/답변 실행을 RAG 도메인 안에서 추적한다.
 
 역할:
 
@@ -1665,8 +1666,8 @@ MVP 목표 상태 결정:
 - `correlation_id`는 resource key가 아니므로 전역 unique로 강제하지 않는다. Server-generated 값은 answer run 단위로 충분히 고유하게 생성하고, client supplied 값은 여러 실행이 같은 값을 공유할 수 있는 grouping key로만 취급한다.
 - 목표 index는 `(organization_id, correlation_id, created_at)`이다. Correlation 조회는 organization/time 범위와 함께 사용해야 하며, `correlation_id` 단독 조회를 tenant scope 판정에 사용하지 않는다.
 - `status` 목표 값은 `requested`, `running`, `completed`, `failed`, `cancelled`, `blocked`이다. `blocked`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 않은 상태를 표현한다.
-- 상태 전이 기준은 `requested -> blocked`, `requested -> running -> completed|failed|cancelled|blocked` 두 경로다. Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field처럼 answer 실행 시작 전 확인되는 오류는 row를 만들지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 row를 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, required credential/model visibility 확인을 모두 통과한 뒤 row를 생성하고 `requested`로 시작한다. KB/credential/model `use` 권한 또는 verified relation preflight 차단은 retrieval/generation 전 `requested -> blocked`로 닫는다. Retrieval/generation을 시작하기 전에 `running`으로 전환한다. 정상 종료는 `completed`, provider 또는 내부 오류는 `failed`, client disconnect 또는 명시 취소는 `cancelled`, retrieval 이후 PII/classification policy 차단은 `running -> blocked`로 닫는다.
-- Lifecycle audit은 상태 전이를 그대로 대체하지 않는다. Answer run row 생성 시 `rag.answer.requested`, 정상 종료 시 `rag.answer.completed`, provider/internal 오류 시 `rag.answer.failed`, client disconnect/명시 취소 시 `rag.answer.cancelled`를 남긴다. Validation 400/422, invalid organization header, `resource.not_found`, scope 밖, organization mismatch처럼 row를 만들지 않는 오류는 `rag.answer.*` lifecycle audit 대상이 아니다. `blocked` 상태는 PII/classification/metadata policy 차단이면 `policy.block`, KB/credential/model permission preflight 차단이면 `permission.denied` audit과 함께 표현한다. 별도 `rag.answer.blocked` action은 만들지 않는다.
+- 상태 전이 기준은 `requested -> blocked`, `requested -> running -> completed|failed|cancelled|blocked` 두 경로다. Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field처럼 answer 실행 시작 전 확인되는 오류는 row를 만들지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 row를 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, required credential/model visibility 확인을 모두 통과한 뒤 row를 생성하고 `requested`로 시작한다. KB/credential/model `use` 권한 또는 verified relation preflight 차단은 retrieval/generation 전 `requested -> blocked`로 닫는다. Retrieval/generation을 시작하기 전에 `running`으로 전환한다. 정상 종료는 `completed`, provider 또는 내부 오류는 `failed`, terminal status 전 client disconnect 또는 명시 취소는 `cancelled`, retrieval 이후 PII/classification policy 차단은 `running -> blocked`로 닫는다. 이미 `completed`, `failed`, `blocked`로 마감된 뒤 response delivery 중 연결이 끊기면 기존 terminal status와 lifecycle audit을 유지한다.
+- Lifecycle audit은 상태 전이를 그대로 대체하지 않는다. Answer run row 생성 시 `rag.answer.requested`, 정상 종료 시 `rag.answer.completed`, provider/internal 오류 시 `rag.answer.failed`, terminal status 전 client disconnect/명시 취소 시 `rag.answer.cancelled`를 남긴다. Validation 400/422, invalid organization header, `resource.not_found`, scope 밖, organization mismatch처럼 row를 만들지 않는 오류는 `rag.answer.*` lifecycle audit 대상이 아니다. `blocked` 상태는 PII/classification/metadata policy 차단이면 `policy.block`, KB/credential/model permission preflight 차단이면 `permission.denied` audit과 함께 표현한다. 별도 `rag.answer.blocked` action은 만들지 않는다.
 - `trace_payloads.rag_answer_run_id`, `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다.
 - Workflow runtime RAG evidence는 계속 `trace_payloads.payload_kind='rag.retrieval'`에 저장한다.
 - Standalone answer의 retrieval evidence는 `rag_answer_runs.retrieval_summary`와 `citation_summary`에 redaction-safe summary로 저장한다.
@@ -1682,7 +1683,7 @@ MVP 목표 상태 결정:
 - Raw user question, raw final answer, raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 기본 저장하지 않는다.
 - Answer history/replay가 필요하면 raw provider response가 아니라 별도 redacted answer snapshot, retention, access control을 공식 문서와 ADR로 먼저 확정한다.
 - `query_hash`, `answer_hash`, `hash_version`은 nullable이다. 값을 저장하려면 HMAC-SHA256, server-side secret/pepper, `hash_version`을 함께 사용해야 한다. HMAC secret/pepper가 설정되지 않았으면 값을 `null`로 두며, 일반 SHA-256 같은 unsalted hash fallback은 허용하지 않는다. Hash algorithm 또는 HMAC 정책을 바꿀 수 있도록 `hash_version` 또는 동등한 metadata convention을 함께 저장한다.
-- `retention_expires_at`은 answer run 생성 시점에 설정해야 하며 indefinite retention을 기본값으로 보지 않는다. 3단계 기본 보존 기간은 trace metadata 기본값과 맞춰 90일로 둔다. Purge는 RAG 도메인 service/scheduled worker가 소유하고, 실패 시 다음 scheduled run에서 idempotent하게 재시도한다. Purge 성공/실패 aggregate는 `audit_logs.action='rag.answer.purge'`로 남기되, 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록한다. `audit_metadata` allowlist는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status`로 제한하고 raw answer, raw query, raw chunk content는 포함하지 않는다. 3단계 기본 API에 list/detail/delete/purge를 포함하지 않으며, 수동 purge API를 별도로 만들 경우 권한, hard delete/soft delete 여부, 상세 응답 schema는 별도 API/ADR에서 확정한다.
+- `retention_expires_at`은 answer run 생성 시점에 설정해야 하며 indefinite retention을 기본값으로 보지 않는다. 3단계 기본 보존 기간은 trace metadata 기본값과 맞춰 90일로 둔다. Purge는 RAG 도메인 service와 `log.rag_answer_retention_purge` Celery task가 소유하고, 실패 시 다음 scheduled/task run에서 idempotent하게 재시도한다. Purge 성공/실패 aggregate는 `audit_logs.action='rag.answer.purge'`로 남기되, 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록한다. `audit_metadata` allowlist는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status`로 제한하고 raw answer, raw query, raw chunk content는 포함하지 않는다. 3단계 기본 API에 list/detail/delete/purge를 포함하지 않으며, 수동 purge API를 별도로 만들 경우 권한, hard delete/soft delete 여부, 상세 응답 schema는 별도 API/ADR에서 확정한다.
 - Usage 도메인의 정확한 answer-run correlation이 필요하면 `llm_usage_logs`에 RAG 전용 FK를 추가하지 않고 generic `correlation_id` 또는 metadata extension을 별도 ADR로 설계한다.
 - `rag_answer_runs` 조회 권한은 KB `use` 권한, answer 생성자, organization manager override, retention/access policy를 함께 고려해야 한다. KB `read`만으로 answer content 성격의 summary/snapshot을 노출할지는 후속 API 문서에서 별도 확정한다.
 

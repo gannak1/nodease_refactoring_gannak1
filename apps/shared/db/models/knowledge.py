@@ -5,7 +5,17 @@ from typing import List, Optional
 
 from apps.shared.db.base import Base
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -54,6 +64,9 @@ class KnowledgeBase(Base):
     # Relationship
     documents: Mapped[List["Document"]] = relationship(
         "Document", back_populates="knowledge_base", cascade="all, delete-orphan"
+    )
+    answer_runs: Mapped[List["RAGAnswerRun"]] = relationship(
+        "RAGAnswerRun", back_populates="knowledge_base"
     )
 
 
@@ -184,3 +197,95 @@ class DocumentChunk(Base):
 
     # Relationships
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
+
+
+class RAGAnswerRun(Base):
+    """
+    Standalone RAG Agent answer 실행 기준 record.
+
+    raw query, raw answer, raw prompt/completion, raw chunk content는 저장하지 않고
+    redaction-safe summary와 correlation metadata만 저장한다.
+    """
+
+    __tablename__ = "rag_answer_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('requested', 'running', 'completed', 'failed', 'cancelled', 'blocked')",
+            name="ck_rag_answer_runs_status",
+        ),
+        Index(
+            "ix_rag_answer_runs_org_correlation_created",
+            "organization_id",
+            "correlation_id",
+            "created_at",
+        ),
+        Index("ix_rag_answer_runs_retention_expires_at", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    actor_user_ref: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    knowledge_base_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    knowledge_base_ref: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="requested")
+    query_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    retrieval_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    citation_summary: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    answer_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    answer_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    hash_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    policy_result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    generation_model_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_models.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    generation_model_snapshot: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )
+    generation_credential_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_credentials.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    generation_credential_ref: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )
+    usage_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    knowledge_base: Mapped[Optional["KnowledgeBase"]] = relationship(
+        "KnowledgeBase", back_populates="answer_runs"
+    )

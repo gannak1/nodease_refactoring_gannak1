@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
+Verified Against: feature/mba-89 @ 3a1d6799118f5a6bb50414914b40865e6375e35f (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, PR #142 follow-up, 2026-07-01 KST)
 Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 범위
@@ -103,7 +103,12 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `unsupported_chunking_mode_for_source` | `400` | 요청 source type에서 해당 chunking mode를 지원하지 않음 |
 | `invalid_correlation_id` | `400` | client가 제공한 correlation id가 길이/문자셋/보안 규칙을 만족하지 않음 |
 | `credential_selection_required` | `409` | 후속 default credential/preset 자동 선택에서 사용할 LLM credential/model을 deterministic하게 선택할 수 없음 |
+| `provider.timeout` | `504` 또는 SSE terminal `error` | 외부 LLM provider 호출이 endpoint별 timeout cap을 초과함. Stream 시작 후에는 terminal event reason code로 전달 |
+| `stream.timeout` | SSE terminal `error` | SSE stream이 endpoint별 stream/retrieval timeout cap을 초과함. Stream 시작 후에는 HTTP status를 바꾸지 않음 |
+| `generation.failed` | `500` | RAG Agent answer 또는 LLM generation 처리 중 sanitized internal failure가 발생함. Retrieval 내부 예외, provider/generation generic exception, invalid credential config, 기타 Agent answer 내부 실패를 포함한다. |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
+
+`generation.failed` 응답은 내부 실패를 사용자에게 노출하지 않는 안전한 envelope다. 응답 message/details에는 raw credential, `encrypted_config`, API key, token, provider raw error, stack trace, raw prompt/completion을 포함하지 않고, 필요한 경우 `request_id`, `answer_run_id`, `correlation_id` 같은 safe identifier만 포함한다. 원인 세부사항은 server log/observability에만 남긴다.
 
 ## 보안 규칙
 

@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
+Verified Against: feature/mba-89 @ 3a1d6799118f5a6bb50414914b40865e6375e35f (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, PR #142 follow-up, 2026-07-01 KST)
 Related ADRs:
 
 ## 목적
@@ -76,6 +76,71 @@ Related ADRs:
 - 영향 파일: [rag-agent-answer-phase-3.md](rag-agent-answer-phase-3.md), [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [physical data model](../data-model/physical-data-model.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 - 후속 검토: RAG preset이 필요해지면 먼저 `docs/api/knowledge-rag.md`, `docs/data-model/physical-data-model.md`, 필요 시 ADR을 갱신하고 별도 migration/API field/권한 정책으로 분리한다.
 - ADR 승격 여부: No. 이미 ADR과 권위 문서에 반영된 계약을 구현/PR 단위로 좁히는 결정이다.
+
+### MBA-89 Agent answer 저장과 usage 기록 경계
+
+- 상태: Active
+- 맥락: Agent answer API는 사용자에게 raw answer를 반환해야 하지만, 공식 문서는 raw final answer, raw provider response, raw prompt/completion, raw retrieved chunk content를 durable summary, audit, trace, usage metadata에 기본 저장하지 않는다고 정의한다. 동시에 canonical LLM token/cost/latency 원천은 `llm_usage_logs`로 유지해야 한다.
+- 선택지: 1) `rag_answer_runs.answer_summary`에 redacted answer preview를 저장하고 usage는 `usage_summary`에만 둔다. 2) raw answer는 response/SSE로만 반환하고, `answer_summary`에는 길이, citation id, status 같은 summary만 저장하며, 기존 `llm_usage_logs` row와 `usage_summary` snapshot을 함께 남긴다. 3) raw answer snapshot table 또는 `llm_usage_logs.rag_answer_run_id`를 추가한다.
+- 결정: 2안을 따른다. MBA-89는 raw answer를 DB에 저장하지 않고 response/SSE로만 반환한다. `answer_summary`에는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`만 저장한다. Usage는 `llm_usage_logs.rag_answer_run_id`를 추가하지 않고 `workflow_id=null`, `workflow_run_id=null`인 standalone usage row를 남기며, `rag_answer_runs.usage_summary`에는 실행 시점의 redaction-safe snapshot을 저장한다.
+- 근거: Answer history/replay는 별도 access-control, retention, redaction 설계가 필요하다. RAG 전용 FK 금지 ADR을 지키면서도 비용/사용량 dashboard의 canonical source인 `llm_usage_logs` 집계를 깨지 않아야 한다.
+- 범위: MBA-89 RAG Agent answer response, `rag_answer_runs.answer_summary`, `usage_summary`, standalone `llm_usage_logs` 기록.
+- 영향 파일: `apps/gateway/services/rag_agent_answer_service.py`, `apps/shared/db/models/knowledge.py`, `apps/shared/schemas/rag.py`, `docs/api/knowledge-rag.md`, `docs/data-model/physical-data-model.md`
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [physical data model](../data-model/physical-data-model.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
+- 후속 검토: 제품 요구사항으로 answer history가 필요해지면 redacted answer snapshot, 조회 권한, retention을 별도 ADR/API 문서로 확정한다. Standalone answer 단위 비용 집계 정확도가 더 필요하면 usage 도메인의 generic `correlation_id` 또는 metadata extension을 별도 ADR로 다룬다.
+- ADR 승격 여부: No. 기존 ADR과 data-model 경계를 구현에 적용한 결정이다.
+
+### MBA-89 명시 model/credential 실행과 option API
+
+- 상태: Active
+- 맥락: Agent answer request는 `generation_model_id`와 `credential_id`를 모두 required로 둔다. 기존 `LLMService.get_client_for_user()`는 model API id 문자열을 기준으로 사용할 수 있는 credential을 내부 선택할 수 있고, 기존 프론트는 `/llm/my-models`와 `/llm/credentials`를 따로 조회해 검증되지 않은 조합을 만들 수 있었다.
+- 선택지: 1) 기존 자동 credential 선택 helper와 독립 목록 UI를 유지한다. 2) `RAGAgentAnswerService`에서 명시 generation model/credential의 existence, organization match, `use` 권한, verified relation을 검증하고, 별도 option API가 verified model/credential pair만 반환한다. Retrieval query embedding은 KB의 `embedding_model` 기준 readiness preflight로 별도 검증한다. 3) `LLMService` public helper를 넓혀 모든 경로에 명시 credential 실행을 도입하고 request에 retrieval credential까지 노출한다.
+- 결정: 2안을 따른다. MBA-89는 Agent answer service가 요청된 generation model/credential을 직접 검증한 뒤 해당 credential로 generation client를 생성한다. Retrieval embedding은 KB가 저장한 `embedding_model`을 기준으로 same-organization valid credential, verified credential-model relation, credential `use` 권한이 있는지 preflight한다. UI는 `/api/v1/llm/agent-answer-options`가 반환하는 same-organization, valid credential, active chat model, `llm_rel_credential_models.is_verified == true`, credential `use` 권한 통과 pair만 사용한다. Option API의 credential field는 표시/선택에 필요한 전용 safe schema만 반환한다. Generic exception은 endpoint에서 sanitized 500으로 닫고 내부 예외 문자열을 응답에 노출하지 않는다.
+- 근거: generation credential 자동 선택은 MBA-89 공식 계약과 충돌한다. Retrieval embedding은 사용자가 answer generation에 고른 credential과 다른 모델/credential이 필요할 수 있으므로 request credential 하나로 전체 실행 credential을 대표하게 만들면 KB ingestion/retrieval 모델 구조와 맞지 않는다. 대신 retrieval 시작 전 embedding readiness를 fail-closed로 검증해 runtime 실패를 앞당기고, raw credential/config는 노출하지 않는다. Provider id만으로는 실제 verified relation과 credential `use` 권한을 보장할 수 없다. 새 endpoint는 credential/model 관계를 다루므로 legacy `str(exc)` 응답 패턴을 반복하지 않아야 한다.
+- 범위: Agent answer model/credential preflight, UI option 조회, endpoint error sanitization.
+- 영향 파일: `apps/gateway/services/rag_agent_answer_service.py`, `apps/gateway/api/v1/endpoints/llm.py`, `apps/gateway/services/llm_service.py`, `apps/shared/schemas/llm.py`, `apps/client/app/features/knowledge/api/knowledgeApi.ts`, `apps/client/app/features/knowledge/components/search-playground.tsx`, `docs/api/llm-credentials.md`
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [LLM credential API](../api/llm-credentials.md), [physical data model](../data-model/physical-data-model.md)
+- 후속 검토: RAG 외 다른 경로도 명시 credential 실행이 필요해지면 `LLMService` 공용 helper로 승격한다. Retrieval credential까지 사용자가 명시해야 하는 제품 요구가 생기면 `retrieval_credential_id` 또는 KB-level embedding credential binding을 별도 data model/API 계약으로 다룬다. Default credential/preset 정책이 공식화되면 option API가 preset 후보를 함께 반환할지 별도 endpoint로 분리할지 재검토한다. 현재 구현은 조직 내 verified credential-model 후보를 조회한 뒤 credential permission을 Python loop에서 필터링하므로, 운영 후보 수가 커지면 permission query batching 또는 DB 친화적인 permission join으로 최적화한다. LLM endpoint 전반의 legacy `str(exc)` 응답은 별도 보안 정렬 이슈에서 일괄 처리한다.
+- ADR 승격 여부: No. Agent answer UI/실행 경로의 구현 결정이며, default credential 같은 새 제품 정책은 후속으로 분리했다.
+
+### MBA-89 SSE와 policy block 경계
+
+- 상태: Active
+- 맥락: Agent answer streaming endpoint는 SSE event 계약을 제공해야 하지만 현재 provider client abstraction은 token streaming callback/interface를 제공하지 않는다. 또한 `retrieval.completed` event의 `citations[].content_preview`는 user-facing field지만 content-derived 값이므로 PII/classification policy block 이전에 전송되면 non-streaming 경로와 보안 의미가 달라진다.
+- 선택지: 1) provider별 token streaming client를 이번 범위에 추가한다. 2) run 생성과 permission preflight 후 stream을 열고 retrieval/generation 단계 event를 emit하되, provider 응답은 단일 full-answer delta로 보낸다. 3) stream endpoint를 보류한다.
+- 결정: 2안을 따른다. MBA-89는 run 생성, permission preflight, `rag.answer.requested`, `running` 전이를 마친 뒤 `retrieval.started`를 즉시 emit한다. Provider facade가 token streaming을 제공하지 않으므로 `answer.delta`는 token delta가 아니라 전체 answer를 한 번에 담는 full-answer delta일 수 있다. Streaming 경로는 citations 생성 직후 `retrieval.completed` emit 전에 PII/classification policy block을 평가하고, 차단 시 `policy.block` audit과 terminal `error` event만 남긴다. Stream 시작 후 timeout은 HTTP status가 아니라 terminal `error` event의 `reason_code`로 표현한다.
+- 근거: Provider streaming abstraction을 새로 만들면 LLMOps provider facade 범위까지 커진다. `content_preview`가 포함된 event를 policy block 전에 보내면 block 대상 evidence의 일부를 먼저 노출할 수 있다. HTTP response header가 확정된 뒤에는 status code를 바꿀 수 없으므로 SSE 오류는 event semantics로 분리해야 한다.
+- 범위: Agent answer SSE event 생성, timeout 의미, policy block 전송 순서.
+- 영향 파일: `apps/gateway/api/v1/endpoints/rag.py`, `apps/gateway/services/rag_agent_answer_service.py`, `apps/client/app/features/knowledge/api/knowledgeApi.ts`, `docs/api/knowledge-rag.md`, `docs/api/errors.md`
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [API errors](../api/errors.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
+- 후속 검토: Provider facade streaming interface가 공식화되면 token-level progressive generator, heartbeat, generation idle timeout을 추가한다. Policy engine이 warn/block 세분화를 제공하면 warning-only evidence를 `retrieval.completed`에 포함할지 별도로 정한다.
+- ADR 승격 여부: No. transport와 구현 범위를 공식 SSE 계약에 맞춘 결정이다.
+
+### MBA-89 실행 상태 마감, validation, retention 경계
+
+- 상태: Active
+- 맥락: Agent answer는 answer run을 만든 뒤 permission/model/credential preflight와 retrieval/generation을 수행한다. 이 구간에서 예상치 못한 내부 예외나 streaming generator 조기 종료가 발생하면 run이 `requested` 또는 `running`으로 남을 수 있다. 또한 일부 API reason code는 Pydantic 전역 validation의 기본 422와 다르게 400 계열 계약을 갖고, search-test `rag.retrieve` audit은 아직 policy enforcement를 수행하지 않는다. `rag_answer_runs.retention_expires_at`이 생기면 purge 실행 경로도 필요하다.
+- 선택지: 1) 예상치 못한 예외와 generator close를 기본 framework 동작에 맡긴다. 2) run 생성 이후 preflight는 try/except로 닫고, generator 종료 시 terminal status가 아니면 cancelled로 닫으며, 계약상 400 reason code는 service preflight에서 검증한다. Search-test audit은 policy 미평가를 명시하고, RAG answer purge는 domain service와 log-system task로 둔다. 3) 모든 preflight를 run 생성 전으로 옮기고 retention purge는 후속으로 낮춘다.
+- 결정: 2안을 따른다. Run 생성 이후 preflight에서 예상치 못한 예외가 나면 `status=failed`, `error_code=generation.failed`로 닫고 sanitized 500을 반환한다. Streaming generator가 terminal status 없이 닫히면 `status=cancelled`, `error_code=client.cancelled`, `rag.answer.cancelled` audit으로 마감한다. `top_k`와 `correlation_id`의 의미/보안 규칙은 answer run 생성 전 service preflight에서 각각 `400 validation.failed`, `400 invalid_correlation_id`로 닫는다. Search-test `rag.retrieve` audit은 성공 retrieval 사실과 `policy_evaluated=false`를 남긴다. `RAGAnswerRetentionService`와 `log.rag_answer_retention_purge` task가 만료 row 삭제와 aggregate audit을 담당하고, `dry_run=True`는 실제 삭제가 아니므로 `rag.answer.purge` audit을 남기지 않는다. Purge task의 `limit`은 내부 운영 입력 실수를 줄이기 위해 `1..5000` 범위로 검증하고, invalid request는 retry하지 않는다.
+- 근거: Permission denial은 문서상 `blocked` run을 남기므로 모든 preflight를 run 생성 전으로 옮기면 계약과 충돌한다. 반대로 내부 실패나 조기 종료를 열린 상태로 남기면 lifecycle/audit 정합성이 깨진다. Search-test의 성공 retrieval과 policy allow는 다른 의미다. Retention purge는 요청 경로가 아니라 RAG 도메인 service와 worker 책임으로 분리해야 한다.
+- 범위: Agent answer run status transition, validation reason code, search-test retrieval audit metadata, RAG answer retention purge.
+- 영향 파일: `apps/gateway/services/rag_agent_answer_service.py`, `apps/gateway/api/v1/endpoints/rag.py`, `apps/shared/schemas/rag.py`, `apps/shared/services/rag_answer_retention.py`, `apps/log_system/tasks.py`, 관련 테스트.
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [API errors](../api/errors.md), [physical data model](../data-model/physical-data-model.md), [audit action ADR](../decisions/ADR-202606290131-audit-action-naming-standard.md)
+- 후속 검토: Preflight failure를 `generation.failed`보다 더 좁은 reason code로 분리할 필요가 생기면 errors/API 문서를 먼저 갱신한다. 전역 validation handler를 endpoint별 reason code로 세분화하는 정책이 생기면 service preflight를 공통 validation layer로 옮긴다. Search-test/runtime 전체 policy enforcement가 구현되면 `policy_evaluated`, `policy_result`, `policy_decision_id` 등의 audit shape를 공식 문서에 맞춰 갱신한다. 운영 scheduler/beat 등록 주기와 수동 purge API는 별도 운영 설정 문서에서 확정한다.
+- ADR 승격 여부: No. 기존 API/data-model/audit 계약의 구현 마감 방식을 정한 결정이며, 새 제품 정책은 후속으로 분리했다.
+
+### MBA-89 RAG Agent answer service 내부 책임 분리
+
+- 상태: Active
+- 맥락: MBA-89 구현 과정에서 `RAGAgentAnswerService`가 orchestration, preflight, 상태 전이, audit/usage 기록, citation/summary 생성, context/output budget 계산, preview redaction을 모두 포함하게 되었다. Controller는 얇게 유지되었지만 service 내부 변경 이유가 많아져 후속 multi-KB routing, preset, provider streaming 확장 시 회귀 위험이 커질 수 있다.
+- 선택지: 1) 현재 단일 service 구조를 유지한다. 2) 기능 계약은 바꾸지 않고 순수 response/summary/budget 구성 책임과 audit/usage 기록 책임만 helper로 분리한다. 3) preflight, lifecycle, retrieval, generation까지 모두 별도 service로 대규모 분리한다.
+- 결정: 3안을 현재 MBA-89 내부 구조에 맞게 좁혀 적용한다. `RAGAgentAnswerPreflightResolver`는 run 생성 전 `resolve_visible_context()`와 run 생성 후 `enforce_post_create_preflight()`를 분리한다. Run 생성 전에는 `top_k`, `correlation_id`, KB/model/credential visibility, hierarchy availability처럼 400/404/422로 닫아야 하는 검증만 수행한다. `RAGAgentAnswerLifecycle`은 `rag_answer_runs` 생성, `rag.answer.requested` audit, running/completed/failed/blocked/cancelled 상태 전이만 담당하고 HTTP exception/envelope는 만들지 않는다. `RAGAgentAnswerGenerationRunner`는 provider invoke, timeout, usage 계산, `llm.call`, standalone `llm_usage_logs` 기록만 담당하고 run status를 변경하지 않는다. `RAGAgentAnswerBuilder`는 citation, retrieval summary, policy result, context/output budget, user-facing content preview redaction을 담당한다. `RAGAgentAnswerAuditRecorder`는 audit/usage row 기록을 담당한다. `RAGAgentAnswerService`는 retrieval orchestration과 최종 HTTP/SSE error mapping 조립만 소유한다.
+- 근거: 공식 API 계약은 "visibility 확인 -> run 생성 + `rag.answer.requested` -> permission preflight 실패 시 blocked" 순서를 요구한다. Preflight를 한 덩어리로 분리하면 run 생성 전 404 대상과 run 생성 후 blocked 대상이 섞일 수 있다. Lifecycle이 HTTP exception을 만들면 상태 전이 책임이 transport envelope에 결합되고, GenerationRunner가 status를 바꾸면 provider streaming, retry, multi-KB routing을 붙일 때 orchestrator가 terminal state를 제어하기 어렵다. 각 helper를 좁은 이유로만 변경되게 만들면 multi-KB/preset/provider streaming 확장에서 preflight resolver나 generation runner를 독립 확장하기 쉽다.
+- 범위: RAG Agent answer service 내부 구현 구조. API, DB schema, response schema, audit action 이름, status 전이는 변경하지 않는다.
+- 영향 파일: `apps/gateway/services/rag_agent_answer_service.py`, `apps/gateway/services/rag_agent_answer_preflight.py`, `apps/gateway/services/rag_agent_answer_lifecycle.py`, `apps/gateway/services/rag_agent_answer_generation.py`, `apps/gateway/services/rag_agent_answer_types.py`, `apps/gateway/services/rag_agent_answer_constants.py`, `apps/gateway/services/rag_agent_answer_builder.py`, `apps/gateway/services/rag_agent_answer_audit.py`, `apps/gateway/tests/services/test_rag_agent_answer_service.py`
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [physical data model](../data-model/physical-data-model.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
+- 후속 검토: Multi-KB routing이 들어오면 `RAGAnswerResolvedContext`를 단일 KB에서 KB 후보/선택 결과 집합으로 확장하되 run 생성 전 visibility 검증과 run 생성 후 permission preflight 순서는 유지한다. Preset/default credential이 들어오면 resolver에 preset 해석 단계를 추가하되 generation runner에는 이미 검증된 model/credential만 전달한다. Provider token streaming이 공식화되면 generation runner를 streaming generator로 확장하고 lifecycle terminal state는 service가 계속 조립한다.
+- ADR 승격 여부: No. 공식 계약을 바꾸지 않는 내부 구조 정리다.
 
 ## 2026-06-30
 

@@ -72,6 +72,78 @@ export interface AnalyzeResponse {
   is_cached: boolean;
 }
 
+export interface LLMModelOption {
+  id: string;
+  model_id_for_api_call: string;
+  name: string;
+  type: string;
+  provider_name: string;
+  context_window: number;
+  is_active: boolean;
+}
+
+export interface LLMCredentialOption {
+  id: string;
+  provider_id: string;
+  organization_id?: string | null;
+  credential_name: string;
+  config_preview?: string | null;
+  is_valid: boolean;
+}
+
+export interface LLMAgentAnswerOption {
+  model: LLMModelOption;
+  credential: LLMCredentialOption;
+  provider_name: string;
+  relation_priority: number;
+}
+
+export interface RAGAgentCitation {
+  citation_id: string;
+  document_id: string;
+  chunk_id?: string | null;
+  rank: number;
+  score?: number | null;
+  filename?: string | null;
+  heading?: string | null;
+  hierarchy_path?: string[] | null;
+  metadata_summary: Record<string, unknown>;
+  content_preview?: string | null;
+}
+
+export interface RAGAgentAnswerResponse {
+  answer_run_id: string;
+  correlation_id: string;
+  status: string;
+  answer: string;
+  citations: RAGAgentCitation[];
+  retrieval_summary: {
+    knowledge_base_id: string;
+    hierarchy_mode: 'auto' | 'flat' | 'parent_child';
+    retrieved_chunk_count: number;
+    document_ids: string[];
+    citation_ids: string[];
+    score_summary: Record<string, unknown>;
+    latency_ms: number;
+    raw_content_returned: boolean;
+  };
+  usage_summary: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    total_cost: number;
+    latency_ms: number;
+    model_name?: string | null;
+    provider?: string | null;
+  };
+  policy_result: Record<string, unknown>;
+}
+
+export interface RAGAgentStreamEvent {
+  event: string;
+  data: Record<string, unknown>;
+}
+
 // 외부(page.tsx, ..)에서 이 API 모듈을 통해 타입을 직접 import 할 수 있도록 내보냅니다.
 export type {
   IngestionResponse,
@@ -81,12 +153,29 @@ export type {
   KnowledgeBaseDetailResponse,
 };
 
-import { apiClient } from '@/lib/apiClient';
+import {
+  activeOrganizationHeaders,
+  getStoredActiveOrganizationId,
+} from '@/lib/activeOrganization';
+import { apiBaseUrl, apiClient } from '@/lib/apiClient';
 
-const API_BASE_URL = '/api/v1';
+const API_BASE_URL = apiBaseUrl;
 
 // 공통 API 클라이언트 사용
 const api = apiClient;
+
+const parseSseEvent = (rawEvent: string): RAGAgentStreamEvent | null => {
+  const lines = rawEvent.split(/\r?\n/);
+  const eventLine = lines.find((line) => line.startsWith('event: '));
+  const dataLines = lines.filter((line) => line.startsWith('data: '));
+  if (!eventLine || dataLines.length === 0) return null;
+  return {
+    event: eventLine.slice('event: '.length).trim(),
+    data: JSON.parse(
+      dataLines.map((line) => line.slice('data: '.length)).join(''),
+    ),
+  };
+};
 
 export const knowledgeApi = {
   // [NEW] S3 Presigned URL 요청
@@ -295,5 +384,106 @@ export const knowledgeApi = {
   }): Promise<any> => {
     const response = await api.post('/rag/proxy/preview', data);
     return response.data;
+  },
+
+  getAvailableModels: async (): Promise<LLMModelOption[]> => {
+    const response = await api.get('/llm/my-models');
+    return response.data;
+  },
+
+  getCredentials: async (): Promise<LLMCredentialOption[]> => {
+    const response = await api.get('/llm/credentials');
+    return response.data;
+  },
+
+  getAgentAnswerOptions: async (): Promise<LLMAgentAnswerOption[]> => {
+    const response = await api.get('/llm/agent-answer-options');
+    return response.data;
+  },
+
+  askAgentAnswer: async (data: {
+    knowledge_base_id: string;
+    query: string;
+    generation_model_id: string;
+    credential_id: string;
+    hierarchy_mode?: 'auto' | 'flat' | 'parent_child';
+    top_k?: number;
+  }): Promise<RAGAgentAnswerResponse> => {
+    const response = await api.post('/rag/agent/answer', data);
+    return response.data;
+  },
+
+  streamAgentAnswer: async (
+    data: {
+      knowledge_base_id: string;
+      query: string;
+      generation_model_id: string;
+      credential_id: string;
+      hierarchy_mode?: 'auto' | 'flat' | 'parent_child';
+      top_k?: number;
+    },
+    onEvent: (event: RAGAgentStreamEvent) => void,
+  ): Promise<void> => {
+    const response = await fetch(`${API_BASE_URL}/rag/agent/answer/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...activeOrganizationHeaders(getStoredActiveOrganizationId()),
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      let message = `요청 실패 (${response.status})`;
+      try {
+        const body = await response.json();
+        message = body?.error?.message || body?.detail || message;
+      } catch {
+        // Sanitized fallback message is enough for UI display.
+      }
+      throw new Error(message);
+    }
+
+    if (!response.body) {
+      throw new Error('스트리밍 응답을 읽을 수 없습니다.');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
+
+      for (const rawEvent of events) {
+        const parsed = parseSseEvent(rawEvent.trim());
+        if (parsed) {
+          onEvent(parsed);
+          if (parsed.event === 'error') {
+            const reason = String(parsed.data.reason_code || 'stream.error');
+            throw new Error(`RAG answer stream failed: ${reason}`);
+          }
+        }
+      }
+    }
+
+    buffer += decoder.decode();
+
+    if (buffer.trim()) {
+      const parsed = parseSseEvent(buffer.trim());
+      if (parsed) {
+        onEvent(parsed);
+        if (parsed.event === 'error') {
+          const reason = String(parsed.data.reason_code || 'stream.error');
+          throw new Error(`RAG answer stream failed: ${reason}`);
+        }
+      }
+    }
   },
 };

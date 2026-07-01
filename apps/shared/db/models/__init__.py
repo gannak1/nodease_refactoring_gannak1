@@ -10,7 +10,12 @@ Celery Worker에서 모델을 import할 때 순서 문제를 방지합니다.
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.connection import Connection
-from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    KnowledgeBase,
+    RAGAnswerRun,
+)
 from apps.shared.db.models.llm import (
     LLMCredential,
     LLMModel,
@@ -63,6 +68,7 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "KnowledgeBase",
+    "RAGAnswerRun",
     "LLMCredential",
     "LLMModel",
     "LLMProvider",

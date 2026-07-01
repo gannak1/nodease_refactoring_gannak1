@@ -116,8 +116,8 @@ RAG preset은 공식 data model/API field, 권한, 우선순위가 확정된 뒤
 4. 필수 `generation_model_id`는 existence와 active 상태를 확인하고, 필수 `credential_id`는 existence, active 상태, organization match, scope visibility를 확인한다.
 5. KB/credential/model 중 scope 밖, organization mismatch, 숨겨야 하는 not found는 answer run 생성 없이 `404 resource.not_found`로 닫는다.
 6. visible resource와 required credential/model visibility가 확인되면 `rag_answer_runs` row를 만들고 `rag.answer.requested`를 기록한다.
-7. KB `use` 권한, credential/model `use` 권한, verified credential-model relation을 preflight로 검증한다.
-8. 같은 scope 안 resource에 대한 use 권한 또는 verified relation preflight 실패는 HTTP `403`, `error.code="permission.denied"`, `status=blocked`, `permission.denied` audit으로 닫는다.
+7. KB `use` 권한, KB `embedding_model` readiness, generation credential/model `use` 권한, verified credential-model relation을 preflight로 검증한다. Request의 `credential_id`는 generation credential이며, retrieval query embedding은 KB의 `embedding_model`을 지원하는 same-organization valid credential과 verified relation 및 `use` 권한을 별도로 확인한다.
+8. 같은 scope 안 resource에 대한 use 권한, KB embedding credential use 권한, verified relation preflight 실패는 HTTP `403`, `error.code="permission.denied"`, `status=blocked`, `permission.denied` audit으로 닫는다.
 9. retrieval/generation 시작 전 `running`으로 전환한다.
 10. retrieval을 수행하고 final evidence classification policy를 검증한다.
 11. `pii` evidence가 있으면 LLM 호출 전 `policy.block` audit을 기록하고, HTTP `403`, `error.code="policy.blocked"`, `status=blocked`로 종료한다. 반환 예외에는 `audit_recorded=True` 또는 동등 marker를 설정해 Gateway 전역 401/403 handler의 `auth.permission_denied` 중복 기록을 막는다.
@@ -181,6 +181,7 @@ Backend unit/service:
 - missing `credential_id` 또는 `generation_model_id`는 schema validation 실패와 answer run 미생성
 - KB 없음, inactive, scope 밖, organization mismatch에서 404와 answer run 미생성
 - 같은 scope 안 KB `use` 부족은 HTTP 403, `error.code="permission.denied"`, `rag_answer_runs.status=blocked`, `permission.denied` audit을 함께 검증
+- KB embedding credential readiness는 retrieval 시작 전 검증하고, embedding credential `use` 부족은 HTTP 403, `error.code="permission.denied"`, `reason_code="embedding_credential_use_denied"`로 닫음
 - credential/model scope 밖, organization mismatch, 숨겨야 하는 not found는 404와 answer run 미생성
 - 같은 scope 안 credential/model `use` 또는 verified relation 부족은 HTTP 403, `error.code="permission.denied"`, `rag_answer_runs.status=blocked`, `permission.denied` audit을 함께 검증
 - `pii` evidence 포함 시 LLM 호출 전 HTTP 403, `error.code="policy.blocked"`, `policy.block` audit
@@ -188,6 +189,9 @@ Backend unit/service:
 - `policy.blocked` 응답은 Gateway 전역 401/403 handler에서 `auth.permission_denied` 또는 `permission.denied`로 중복/오분류 기록되지 않음
 - `confidential` evidence 포함 시 policy result 기록
 - `rag_answer_runs` status transition
+- SSE delivery 중 cancel이 발생해도 이미 `completed/failed/blocked`인 terminal status를 `cancelled`로 덮어쓰지 않음
+- non-stream/stream retrieval timeout mapping이 문서와 일치함
+- 작은 `context_window` model에서는 context budget 8000 상한과 provider `max_tokens` 1000 상한을 모두 model-aware 값으로 낮춤
 - nullable FK/ondelete 목표와 safe snapshot 저장
 - `query_hash`/`answer_hash`는 HMAC secret/pepper가 있을 때만 저장하고, 없으면 `null`로 유지
 - purge aggregate metadata allowlist

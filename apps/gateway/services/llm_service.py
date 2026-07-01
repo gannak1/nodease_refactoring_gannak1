@@ -19,6 +19,8 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
+    LLMCredentialModelOptionResponse,
+    LLMCredentialOptionResponse,
     LLMCredentialResponse,
     LLMModelResponse,
     LLMProviderResponse,
@@ -785,6 +787,51 @@ class LLMService:
         )
 
     @staticmethod
+    def get_client_for_model(
+        db: Session,
+        user_id: uuid.UUID,
+        model: LLMModel,
+        organization_id: Optional[uuid.UUID] = None,
+    ):
+        """
+        DB model row 기준으로 사용할 수 있는 credential을 찾고 client를 생성한다.
+
+        Agent answer처럼 preflight에서 이미 확인한 model row를 runtime에도 그대로
+        사용해야 하는 경로에서 model_id 문자열 재조회로 다른 row가 선택되는 일을 막는다.
+        """
+        if not model or not model.is_active:
+            raise ValueError("Unknown model")
+
+        cred = LLMService._get_valid_credential_for_user(
+            db,
+            user_id=user_id,
+            model_db_id=model.id,
+            organization_id=organization_id,
+        )
+        if not cred:
+            logger.error(
+                "[LLMService] No valid credential found for user_id=%s, model_id=%s.",
+                user_id,
+                model.id,
+            )
+            raise ValueError("유효한 API 키를 찾을 수 없습니다.")
+
+        try:
+            cfg = json.loads(cred.encrypted_config)
+            api_key = cfg.get("apiKey")
+            base_url = cfg.get("baseUrl")
+        except Exception as exc:
+            raise ValueError("Invalid credential config") from exc
+
+        db.refresh(cred)
+        provider_type = cred.provider.name
+        return get_llm_client(
+            provider=provider_type,
+            model_id=model.model_id_for_api_call,
+            credentials={"apiKey": api_key, "baseUrl": base_url},
+        )
+
+    @staticmethod
     def get_client_with_any_credential(db: Session, model_id: Optional[str] = None):
         """
         [DEPRECATED] 안전성 문제로 비활성화되었습니다.
@@ -917,6 +964,63 @@ class LLMService:
                 seen_model_ids.add(model.id)
 
         return [LLMModelResponse.model_validate(m) for m in models]
+
+    @staticmethod
+    def get_agent_answer_options(
+        db: Session, user_id: uuid.UUID, organization_id: uuid.UUID
+    ) -> List[LLMCredentialModelOptionResponse]:
+        """
+        RAG Agent answer UI에서 바로 제출 가능한 model/credential 조합을 반환합니다.
+
+        Agent answer는 request에서 model과 credential을 모두 필수로 받기 때문에,
+        프론트가 서로 검증되지 않은 조합을 만들지 않도록 verified relation과
+        credential use 권한을 같은 조회 결과에 묶습니다.
+        """
+        rows = (
+            db.query(LLMModel, LLMCredential, LLMRelCredentialModel.priority)
+            .join(
+                LLMRelCredentialModel,
+                LLMRelCredentialModel.model_id == LLMModel.id,
+            )
+            .join(
+                LLMCredential,
+                LLMRelCredentialModel.credential_id == LLMCredential.id,
+            )
+            .options(joinedload(LLMModel.provider), joinedload(LLMCredential.provider))
+            .filter(
+                LLMCredential.organization_id == organization_id,
+                LLMCredential.is_valid == True,
+                LLMRelCredentialModel.is_verified == True,
+                LLMModel.is_active == True,
+                LLMModel.type == "chat",
+            )
+            .order_by(
+                LLMRelCredentialModel.priority.asc(),
+                LLMModel.name.asc(),
+                LLMCredential.credential_name.asc(),
+            )
+            .all()
+        )
+
+        options: list[LLMCredentialModelOptionResponse] = []
+        for model, credential, priority in rows:
+            if not has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_id,
+            ):
+                continue
+            options.append(
+                LLMCredentialModelOptionResponse(
+                    model=LLMModelResponse.model_validate(model),
+                    credential=LLMCredentialOptionResponse.model_validate(credential),
+                    provider_name=model.provider_name,
+                    relation_priority=priority,
+                )
+            )
+        return options
 
     @staticmethod
     def _normalize_model_id(model_id: str) -> str:
