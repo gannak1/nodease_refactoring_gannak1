@@ -88,6 +88,7 @@ class LLMNode(Node[LLMNodeData]):
         temp_session = None
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
+        selected_model_id = self.data.model_id
 
         if not client_override:
             db_session, should_close_session = self._borrow_db_session()
@@ -124,6 +125,7 @@ class LLMNode(Node[LLMNodeData]):
                     )
                     client = runtime_selection.client
                     selected_credential_id = runtime_selection.credential_id
+                    selected_model_id = runtime_selection.model_id
                 except Exception as primary_client_error:
                     if (
                         isinstance(
@@ -155,8 +157,7 @@ class LLMNode(Node[LLMNodeData]):
                             )
                             client = runtime_selection.client
                             selected_credential_id = runtime_selection.credential_id
-                            # fallback 성공 시 model_id도 변경
-                            self.data.model_id = fallback_model_id
+                            selected_model_id = runtime_selection.model_id
                         except Exception as fallback_client_error:
                             logger.error(
                                 f"[LLMNode] Fallback model client also failed: {fallback_client_error}"
@@ -261,7 +262,7 @@ class LLMNode(Node[LLMNodeData]):
                 if not llm_params["stop"]:
                     del llm_params["stop"]
 
-            used_model_id = self.data.model_id
+            used_model_id = selected_model_id
             try:
                 # [GEVENT] invoke_sync 사용
                 response = client.invoke_sync(messages=messages, **llm_params)

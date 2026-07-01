@@ -231,6 +231,94 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
     ]
 
 
+def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
+    monkeypatch,
+):
+    """Client selection fallback logs the actual executed model and credential. MBA-43"""
+    fallback_client = SuccessClient()
+    organization_id = uuid.uuid4()
+    fallback_credential_id = uuid.uuid4()
+    service_calls = []
+    cost_calls = []
+    log_calls = []
+
+    def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
+        service_calls.append(
+            {"model_id": model_id, "organization_id": organization_id}
+        )
+        if model_id == "primary-model":
+            raise LLMCredentialNotAvailableError(
+                "credential_use_denied",
+                "primary denied",
+                model_id=model_id,
+                organization_id=organization_id,
+            )
+        if model_id == "fallback-model":
+            return SimpleNamespace(
+                client=fallback_client,
+                credential_id=fallback_credential_id,
+                model_id=model_id,
+                organization_id=organization_id,
+            )
+        raise AssertionError(f"unexpected model_id: {model_id}")
+
+    def fake_calculate_cost(db, model_id, prompt_tokens, completion_tokens):
+        cost_calls.append(
+            {
+                "model_id": model_id,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }
+        )
+        return 0.0
+
+    monkeypatch.setattr(
+        LLMService, "get_runtime_client_for_user", fake_get_runtime_client_for_user
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", fake_calculate_cost)
+    monkeypatch.setattr(
+        LLMService, "log_usage", lambda **kwargs: log_calls.append(kwargs)
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="primary-model",
+        fallback_model_id="fallback-model",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": object(),
+        },
+    )
+
+    result = node.execute({})
+
+    assert fallback_client.calls
+    assert result["text"] == "fallback ok"
+    assert result["model"] == "fallback-model"
+    assert data.model_id == "primary-model"
+    assert service_calls == [
+        {"model_id": "primary-model", "organization_id": organization_id},
+        {"model_id": "fallback-model", "organization_id": organization_id},
+    ]
+    assert cost_calls[0]["model_id"] == "fallback-model"
+    assert log_calls[0]["model_id"] == "fallback-model"
+    assert log_calls[0]["credential_id"] == fallback_credential_id
+
+
 def test_llm_node_logs_usage_with_selected_credential_id(monkeypatch):
     """Successful workflow LLM usage log keeps the executed credential id. MBA-43"""
     organization_id = uuid.uuid4()
