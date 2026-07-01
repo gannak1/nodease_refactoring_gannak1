@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -13,16 +12,16 @@ from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.rag_agent_answer_audit import RAGAgentAnswerAuditRecorder
+from apps.gateway.services.rag_agent_answer_builder import RAGAgentAnswerBuilder
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.utils.api_errors import error_detail, raise_api_error
 from apps.shared.audit.actions import AuditAction
-from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.knowledge import DocumentChunk, KnowledgeBase, RAGAnswerRun
 from apps.shared.db.models.llm import (
     LLMCredential,
     LLMModel,
     LLMRelCredentialModel,
-    LLMUsageLog,
 )
 from apps.shared.db.models.user import User
 from apps.shared.permissions import (
@@ -47,24 +46,14 @@ from apps.shared.services.permissions import (
     has_organization_scope_access,
 )
 from apps.shared.services.rag_filters import normalize_metadata_filter
-from apps.shared.services.tracing.policy import TracePolicyService
-from apps.shared.services.tracing.redaction import TraceRedactionService
 
 logger = logging.getLogger(__name__)
 
 RETENTION_DAYS = 90
-CONTENT_PREVIEW_LIMIT = 300
-CONTEXT_TOKEN_BUDGET = 8000
-MAX_OUTPUT_TOKENS = 1000
-PROMPT_OVERHEAD_TOKENS = 500
 PROVIDER_TIMEOUT_SECONDS = 60
 RETRIEVAL_TIMEOUT_SECONDS = 30
 MIN_TOP_K = 1
 MAX_TOP_K = 8
-
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_API_KEY_RE = re.compile(r"\b(?:sk|pk|rk|api)[-_][A-Za-z0-9_-]{8,}\b")
-_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE)
 
 
 @dataclass
@@ -93,6 +82,12 @@ class RAGAgentAnswerService:
         self.current_user = current_user
         self.request = request
         self.organization_id = organization_id
+        self.builder = RAGAgentAnswerBuilder()
+        self.audit = RAGAgentAnswerAuditRecorder(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        )
 
     async def answer(self, payload: RAGAgentAnswerRequest) -> RAGAgentAnswerResponse:
         execution = self.prepare_execution(payload)
@@ -927,59 +922,16 @@ class RAGAgentAnswerService:
         )
 
     def _context_for_chunks(self, chunks, model: LLMModel | None = None) -> str:
-        context_budget = self._context_budget_for_model(model)
-        parts: list[str] = []
-        total_tokens = 0
-        for chunk in chunks:
-            content = chunk.content or ""
-            token_count = chunk.token_count or max(1, len(content) // 4)
-            if total_tokens and total_tokens + token_count > context_budget:
-                break
-            if token_count > context_budget:
-                parts.append(content[: context_budget * 4])
-                break
-            parts.append(content)
-            total_tokens += token_count
-        return "\n\n".join(parts)
+        return self.builder.context_for_chunks(chunks, model)
 
     def _context_budget_for_model(self, model: LLMModel | None) -> int:
-        context_window = getattr(model, "context_window", None)
-        if not isinstance(context_window, int) or context_window <= 0:
-            return CONTEXT_TOKEN_BUDGET
-
-        reserved_output_tokens = self._output_token_budget_for_model(model)
-        prompt_overhead_tokens = self._prompt_overhead_for_context_window(
-            context_window
-        )
-        available_tokens = (
-            context_window - reserved_output_tokens - prompt_overhead_tokens
-        )
-        return max(1, min(CONTEXT_TOKEN_BUDGET, available_tokens))
+        return self.builder.context_budget_for_model(model)
 
     def _output_token_budget_for_model(self, model: LLMModel | None) -> int:
-        context_window = getattr(model, "context_window", None)
-        if not isinstance(context_window, int) or context_window <= 0:
-            return MAX_OUTPUT_TOKENS
-
-        prompt_overhead_tokens = self._prompt_overhead_for_context_window(
-            context_window
-        )
-        max_output_for_model = max(1, context_window - prompt_overhead_tokens - 1)
-        preferred_output_tokens = max(256, context_window // 4)
-        return max(
-            1,
-            min(
-                MAX_OUTPUT_TOKENS,
-                preferred_output_tokens,
-                max_output_for_model,
-            ),
-        )
+        return self.builder.output_token_budget_for_model(model)
 
     def _prompt_overhead_for_context_window(self, context_window: int) -> int:
-        return min(
-            PROMPT_OVERHEAD_TOKENS,
-            max(128, context_window // 8),
-        )
+        return self.builder.prompt_overhead_for_context_window(context_window)
 
     def _client_for(self, model: LLMModel, credential: LLMCredential):
         try:
@@ -996,29 +948,7 @@ class RAGAgentAnswerService:
         )
 
     def _build_citations(self, chunks) -> list[RAGCitation]:
-        citations: list[RAGCitation] = []
-        for index, chunk in enumerate(chunks, start=1):
-            citation_id = f"c{index}"
-            metadata_summary = dict(chunk.metadata_summary or {})
-            citations.append(
-                RAGCitation(
-                    citation_id=citation_id,
-                    document_id=chunk.document_id,
-                    chunk_id=chunk.chunk_id,
-                    rank=chunk.rank or index,
-                    score=(
-                        chunk.score
-                        if chunk.score is not None
-                        else chunk.similarity_score
-                    ),
-                    filename=chunk.filename,
-                    heading=metadata_summary.get("heading"),
-                    hierarchy_path=chunk.hierarchy_path,
-                    metadata_summary=metadata_summary,
-                    content_preview=self._content_preview(chunk.content),
-                )
-            )
-        return citations
+        return self.builder.build_citations(chunks)
 
     def _build_retrieval_summary(
         self,
@@ -1027,45 +957,18 @@ class RAGAgentAnswerService:
         citations: list[RAGCitation],
         latency_ms: int,
     ) -> RAGRetrievalSummary:
-        scores = [c.score for c in citations if c.score is not None]
-        score_summary = {}
-        if scores:
-            score_summary = {
-                "min": min(scores),
-                "max": max(scores),
-                "avg": sum(scores) / len(scores),
-            }
-        document_ids = list({c.document_id for c in citations})
-        return RAGRetrievalSummary(
-            knowledge_base_id=knowledge_base_id,
-            hierarchy_mode=hierarchy_mode,
-            retrieved_chunk_count=len(citations),
-            document_ids=document_ids,
-            citation_ids=[c.citation_id for c in citations],
-            score_summary=score_summary,
-            latency_ms=latency_ms,
-            raw_content_returned=False,
+        return self.builder.build_retrieval_summary(
+            knowledge_base_id,
+            hierarchy_mode,
+            citations,
+            latency_ms,
         )
 
     def _contains_pii_evidence(self, citations: list[RAGCitation]) -> bool:
-        for citation in citations:
-            classification = citation.metadata_summary.get("classification")
-            if str(classification).lower() == "pii":
-                return True
-        return False
+        return self.builder.contains_pii_evidence(citations)
 
     def _allowed_policy_result(self, citations: list[RAGCitation]) -> dict[str, Any]:
-        classifications = sorted(
-            {
-                str(citation.metadata_summary.get("classification")).lower()
-                for citation in citations
-                if citation.metadata_summary.get("classification")
-            }
-        )
-        result: dict[str, Any] = {"result": "allow"}
-        if classifications:
-            result["evidence_classifications"] = classifications
-        return result
+        return self.builder.allowed_policy_result(citations)
 
     def _block_policy(
         self,
@@ -1094,21 +997,7 @@ class RAGAgentAnswerService:
         self.db.add(run)
         self.db.commit()
         self.db.refresh(run)
-        record_audit(
-            action=AuditAction.POLICY_BLOCK,
-            category="action",
-            actor_id=self.current_user.id,
-            actor_type="user",
-            target_type="rag_answer_run",
-            target_id=run.id,
-            status="failure",
-            metadata={
-                "organization_id": str(self.organization_id),
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "policy_result": policy_result,
-            },
-        )
+        self.audit.record_policy_block(run, policy_result)
         exc = HTTPException(
             status_code=403,
             detail=error_detail(
@@ -1193,44 +1082,12 @@ class RAGAgentAnswerService:
     def _record_lifecycle(
         self, action: str, run: RAGAnswerRun, status: str = "success"
     ) -> None:
-        record_audit(
-            action=action,
-            category="action",
-            actor_id=self.current_user.id,
-            actor_type="user",
-            target_type="rag_answer_run",
-            target_id=run.id,
-            status=status,
-            metadata={
-                "organization_id": str(self.organization_id),
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "run_status": run.status,
-            },
-        )
+        self.audit.record_lifecycle(action, run, status=status)
 
     def _record_retrieval(
         self, run: RAGAnswerRun, metadata_filter, result_count: int, mode: str
     ) -> None:
-        record_audit(
-            action=AuditAction.RAG_RETRIEVE,
-            category="action",
-            actor_id=self.current_user.id,
-            actor_type="user",
-            target_type="knowledge_base",
-            target_id=run.knowledge_base_id,
-            status="success",
-            metadata={
-                "organization_id": str(self.organization_id),
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "retrieval_mode": mode,
-                "result_count": result_count,
-                "metadata_filter": metadata_filter.audit_summary()
-                if metadata_filter is not None
-                else {},
-            },
-        )
+        self.audit.record_retrieval(run, metadata_filter, result_count, mode)
 
     def _record_llm_call(
         self,
@@ -1241,22 +1098,12 @@ class RAGAgentAnswerService:
         status: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        record_audit(
-            action=AuditAction.LLM_CALL,
-            category="action",
-            actor_id=self.current_user.id,
-            actor_type="user",
-            target_type="llm_model",
-            target_id=model.id,
+        self.audit.record_llm_call(
+            run,
+            model,
+            credential,
             status=status,
-            metadata={
-                "organization_id": str(self.organization_id),
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "model_id": str(model.id),
-                "credential_id": str(credential.id),
-                **(metadata or {}),
-            },
+            metadata=metadata,
         )
 
     def _record_usage_log(
@@ -1269,21 +1116,14 @@ class RAGAgentAnswerService:
         total_cost: float | None,
         latency_ms: int,
     ) -> None:
-        usage_log = LLMUsageLog(
-            user_id=self.current_user.id,
-            organization_id=self.organization_id,
-            credential_id=credential.id,
-            model_id=model.id,
-            workflow_id=None,
-            workflow_run_id=None,
-            node_id=None,
+        self.audit.record_usage_log(
+            model,
+            credential,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_cost=total_cost,
             latency_ms=latency_ms,
-            status="success",
         )
-        self.db.add(usage_log)
 
     def _permission_metadata(
         self,
@@ -1348,21 +1188,7 @@ class RAGAgentAnswerService:
         return durable
 
     def _content_preview(self, content: str) -> str:
-        normalized = " ".join((content or "").split())
-        redaction = TraceRedactionService.redact_payload(
-            normalized,
-            TracePolicyService.bootstrap_redaction_policy(),
-            payload_kind="rag.citation_preview",
-        )
-        redacted = (
-            redaction.redacted_payload
-            if isinstance(redaction.redacted_payload, str)
-            else normalized
-        )
-        redacted = _EMAIL_RE.sub("[redacted-email]", redacted)
-        redacted = _API_KEY_RE.sub("[redacted-secret]", redacted)
-        redacted = _BEARER_RE.sub("Bearer [redacted-secret]", redacted)
-        return redacted[:CONTENT_PREVIEW_LIMIT]
+        return self.builder.content_preview(content)
 
     def _raise_not_found(self, message: str) -> None:
         raise_api_error(self.request, 404, "resource.not_found", message)

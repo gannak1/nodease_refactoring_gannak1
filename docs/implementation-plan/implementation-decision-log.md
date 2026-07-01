@@ -129,6 +129,19 @@ Related ADRs:
 - 후속 검토: Preflight failure를 `generation.failed`보다 더 좁은 reason code로 분리할 필요가 생기면 errors/API 문서를 먼저 갱신한다. 전역 validation handler를 endpoint별 reason code로 세분화하는 정책이 생기면 service preflight를 공통 validation layer로 옮긴다. Search-test/runtime 전체 policy enforcement가 구현되면 `policy_evaluated`, `policy_result`, `policy_decision_id` 등의 audit shape를 공식 문서에 맞춰 갱신한다. 운영 scheduler/beat 등록 주기와 수동 purge API는 별도 운영 설정 문서에서 확정한다.
 - ADR 승격 여부: No. 기존 API/data-model/audit 계약의 구현 마감 방식을 정한 결정이며, 새 제품 정책은 후속으로 분리했다.
 
+### MBA-89 RAG Agent answer service 내부 책임 분리
+
+- 상태: Active
+- 맥락: MBA-89 구현 과정에서 `RAGAgentAnswerService`가 orchestration, preflight, 상태 전이, audit/usage 기록, citation/summary 생성, context/output budget 계산, preview redaction을 모두 포함하게 되었다. Controller는 얇게 유지되었지만 service 내부 변경 이유가 많아져 후속 multi-KB routing, preset, provider streaming 확장 시 회귀 위험이 커질 수 있다.
+- 선택지: 1) 현재 단일 service 구조를 유지한다. 2) 기능 계약은 바꾸지 않고 순수 response/summary/budget 구성 책임과 audit/usage 기록 책임만 helper로 분리한다. 3) preflight, lifecycle, retrieval, generation까지 모두 별도 service로 대규모 분리한다.
+- 결정: 2안을 따른다. `RAGAgentAnswerBuilder`는 citation, retrieval summary, policy result, context/output budget, user-facing content preview redaction을 담당한다. `RAGAgentAnswerAuditRecorder`는 `rag.answer.*`, `rag.retrieve`, `llm.call`, `policy.block` audit과 standalone `llm_usage_logs` row 생성을 담당한다. `RAGAgentAnswerService`는 request preflight, state transition, retrieval/generation orchestration, error mapping을 계속 소유한다.
+- 근거: MBA-89 PR은 아직 기능 보강 PR이므로 대규모 service graph 변경은 리뷰 범위를 키운다. 순수 builder와 audit recorder는 API/DB 계약을 바꾸지 않으면서 응집도를 높이고, 기존 service private wrapper를 유지해 테스트와 호출부 변화도 제한할 수 있다.
+- 범위: RAG Agent answer service 내부 구현 구조. API, DB schema, response schema, audit action 이름, status 전이는 변경하지 않는다.
+- 영향 파일: `apps/gateway/services/rag_agent_answer_service.py`, `apps/gateway/services/rag_agent_answer_builder.py`, `apps/gateway/services/rag_agent_answer_audit.py`, `apps/gateway/tests/services/test_rag_agent_answer_service.py`
+- 관련 문서: [Knowledge/RAG API](../api/knowledge-rag.md), [physical data model](../data-model/physical-data-model.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
+- 후속 검토: Agent answer가 multi-KB routing, provider token streaming, preset/default credential까지 확장되면 preflight resolver, run lifecycle manager, generation runner를 별도 service로 추가 분리한다. 그 시점에는 `RAGAgentAnswerService` private wrapper를 줄이고 public contract 중심 테스트로 재정렬한다.
+- ADR 승격 여부: No. 공식 계약을 바꾸지 않는 내부 구조 정리다.
+
 ## 2026-06-30
 
 ### MBA-78 1차 구현 범위와 PR 분리

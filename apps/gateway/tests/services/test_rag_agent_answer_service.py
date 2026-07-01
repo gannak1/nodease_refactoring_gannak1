@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from apps.gateway.services import rag_agent_answer_audit as audit_module
 from apps.gateway.services import rag_agent_answer_service as service_module
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.utils.api_errors import raise_api_error
@@ -519,7 +520,7 @@ def test_policy_block_sets_audit_marker_and_never_persists_content_preview(monke
     run = _run()
     audit_calls = []
     monkeypatch.setattr(
-        service_module,
+        audit_module,
         "record_audit",
         lambda **event: audit_calls.append(event),
     )
@@ -758,7 +759,7 @@ def test_record_retrieval_does_not_prejudge_policy_result(monkeypatch):
     run = _run()
     audit_calls = []
     monkeypatch.setattr(
-        service_module,
+        audit_module,
         "record_audit",
         lambda **event: audit_calls.append(event),
     )
@@ -1433,7 +1434,7 @@ def test_stream_events_policy_block_stops_before_answer_usage_and_completion(
         lambda *args, **kwargs: pytest.fail("policy block must prevent LLM call"),
     )
     monkeypatch.setattr(
-        service_module,
+        audit_module,
         "record_audit",
         lambda **event: audit_calls.append(event),
     )
