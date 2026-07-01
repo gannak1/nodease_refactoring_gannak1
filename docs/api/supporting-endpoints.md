@@ -63,6 +63,6 @@ Wizard helper API는 MBA-43 기준에서 authenticated LLM runtime으로 취급�
 
 Wizard organization scope는 LLM credential 기본 organization 정책과 정렬한다. 요청에 `organization_id`가 있으면 그 값을 사용하고, 없으면 current user의 default organization fallback을 사용한다. default organization foundation이 없으면 기존 fallback 경로가 organization/team/membership row를 생성할 수 있다.
 
-여러 credential 후보가 같은 Wizard model을 실행할 수 있으면 `llm_rel_credential_models.priority ASC`, `llm_credentials.created_at ASC`, `llm_credentials.id ASC` 순서로 runtime credential을 선택한다.
+Wizard runtime은 provider별 효율 모델 map의 순서를 먼저 따른다. 선택된 provider/model 후보에서 여러 credential이 같은 Wizard model을 실행할 수 있으면 `llm_rel_credential_models.priority ASC`, `llm_credentials.created_at ASC`, `llm_credentials.id ASC` 순서로 runtime credential을 선택한다.
 
-현재 wizard helper는 provider별로 효율 모델을 고정 선택한다. 코드/템플릿 위저드는 endpoint 내부 map을 사용하고, 프롬프트 위저드는 `LLMService.EFFICIENT_MODELS`를 사용한다. 사용할 수 있는 runtime credential이 없으면 POST endpoint는 기존처럼 `400`과 `credentials_required=true` 성격의 detail을 반환하고, GET check-credentials는 `{ "has_credentials": false }`를 반환한다.
+현재 wizard helper는 provider별로 효율 모델을 고정 선택한다. 코드/템플릿 위저드는 endpoint 내부 map을 사용하고, 프롬프트 위저드는 `LLMService.EFFICIENT_MODELS`를 사용한다. 사용할 수 있는 runtime credential이 없으면 POST endpoint는 기존처럼 `400`과 `credentials_required=true` 성격의 detail을 반환하고 runtime block audit은 `permission.denied`로 기록한다. GET check-credentials는 audit을 기록하지 않고 `{ "has_credentials": false }`를 반환한다.

@@ -63,6 +63,8 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
+- MBA-43 runtime 차단 중 credential 후보 없음, credential `use` 권한 부족, verified credential-model relation 없음, inactive model, Workflow Engine runtime organization scope 누락/invalid는 `permission.denied`로 기록한다. 해당 차단은 `workflow.blocked`로 저장하지 않는다.
+- MBA-43은 application-level model restriction policy를 구현하지 않으므로 model restriction 차단에 `policy.block`을 기록하지 않는다. `policy.block`은 기존 canonical action으로 유지하며 document/model/trace policy enforcement가 실제로 연결되는 후속 구현에서 사용한다.
 - `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정한다. MBA-78 1차 구현은 해당 `AuditAction` 상수와 테스트를 먼저 추가하며, `rag.retrieve`는 RAG retrieval 성공 감사에 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement 연결은 후속 구현 범위다.
 - `rag.answer.*`는 standalone RAG Agent answer의 사용자-facing 실행 lifecycle 감사 action이다. Retrieval 성공 감사인 `rag.retrieve`, provider 호출 감사인 `llm.call`, answer 실행 상태 record인 `rag_answer_runs.status`를 대체하지 않고, answer 요청 단위의 검색/운영 이벤트로만 사용한다.
 - `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 만들지 못한 경우에만 사용한다. 별도 `rag.answer.blocked` action은 만들지 않는다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied`와 answer run status 조합으로 표현한다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다.

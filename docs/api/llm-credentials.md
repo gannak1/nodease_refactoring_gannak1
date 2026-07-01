@@ -36,6 +36,14 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 - pricing 관리 API의 `system admin` 판정은 trace access의 `TraceRbacService` provider에 위임한다. 현재 기본 provider는 deny-all이므로 별도 provider를 설정하지 않은 런타임에서는 `403 system_admin_required`로 차단된다.
 - 현재 `LLMCredential.encrypted_config`는 column 이름과 달리 `{"apiKey": "...", "baseUrl": "..."}` 형태의 JSON string을 그대로 저장한다. 실제 암호화 적용은 보안 목표 상태이며, 현재 응답에는 `config_preview`만 노출된다.
 
+Runtime credential 사용 기준:
+
+- LLM runtime은 credential `use` 권한, `llm_rel_credential_models.is_verified == true`, `llm_models.is_active == true`를 모두 만족해야 한다.
+- Workflow Engine LLM runtime은 명시적으로 전달된 valid `organization_id`를 요구한다. 사용자의 default organization id도 명시적으로 전달되면 유효한 runtime scope로 본다.
+- Workflow Engine LLM runtime은 `llm_credentials.organization_id IS NULL` legacy credential을 사용하지 않는다. legacy null credential은 organization backfill 또는 reassignment 이후 runtime 후보가 될 수 있다.
+- Gateway service-level LLM helper에서 `organization_id`가 없는 호출은 현재 legacy compatibility 경로로 남아 있다. 모든 LLM runtime path의 `X-Organization-Id` 필수화와 mutation 없는 fallback 전환은 후속 API/policy 변경이다.
+- Runtime에서 선택된 credential id는 성공한 workflow LLM node usage logging에 그대로 전달해야 하며, 실행 후 usage logging 단계에서 credential을 다시 선택하지 않는다.
+
 ## 스키마
 
 ### `LLMCredentialCreate`
@@ -94,3 +102,4 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 - 현재 코드에서 삭제와 sync는 `ensure_llm_credential_permission(..., "write")`를 호출한다. `write`의 최소 상태는 `manager`다.
 - workflow engine LLM node는 credential `use` 권한이 없으면 실행을 차단한다.
 - model 전용 permission table은 만들지 않는다. credential 권한과 `llm_rel_credential_models` 검증 상태로 사용 가능 모델을 제한한다.
+- Application-level model blacklist/allowlist 정책은 이 문서의 MBA-43 runtime 기준에 포함하지 않는다. 해당 정책을 도입하면 저장 위치와 `policy.block` 사용 기준을 별도 문서에서 먼저 확정한다.

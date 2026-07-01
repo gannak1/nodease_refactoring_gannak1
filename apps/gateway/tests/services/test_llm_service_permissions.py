@@ -50,11 +50,13 @@ class FakeWizardRuntimeQuery:
     def __init__(self, db, model):
         self.db = db
         self.model = model
+        self.filters = []
 
     def options(self, *args, **kwargs):
         return self
 
     def filter(self, *args, **kwargs):
+        self.filters.extend(args)
         return self
 
     def order_by(self, *args, **kwargs):
@@ -67,20 +69,60 @@ class FakeWizardRuntimeQuery:
 
     def first(self):
         if self.model is llm_service.LLMModel:
-            return self.db.model
+            return self.db.first_model(self.filters)
         if self.model is llm_service.LLMRelCredentialModel:
-            return self.db.relations.pop(0)
+            return self.db.first_relation(self.filters)
         return None
 
 
 class FakeWizardRuntimeDb:
-    def __init__(self, credentials, model, relations):
+    def __init__(self, credentials, model=None, relations=None, models=None):
         self.credentials = credentials
-        self.model = model
-        self.relations = list(relations)
+        self.models = list(models if models is not None else [model])
+        self.relations = list(relations or [])
 
     def query(self, *args, **kwargs):
         return FakeWizardRuntimeQuery(self, args[0])
+
+    def first_model(self, filters):
+        provider_id = _filter_value(filters, "provider_id")
+        model_id_for_api_call = _filter_value(filters, "model_id_for_api_call")
+        for model in self.models:
+            if (
+                model
+                and model.provider_id == provider_id
+                and model.model_id_for_api_call == model_id_for_api_call
+            ):
+                return model
+        return None
+
+    def first_relation(self, filters):
+        credential_id = _filter_value(filters, "credential_id")
+        model_id = _filter_value(filters, "model_id")
+        is_verified = _filter_value(filters, "is_verified")
+        candidates = [
+            relation
+            for relation in self.relations
+            if relation.credential_id == credential_id
+            and relation.model_id == model_id
+            and relation.is_verified == is_verified
+        ]
+        return sorted(candidates, key=lambda relation: relation.priority)[0] if candidates else None
+
+
+def _filter_value(filters, column_key):
+    for expression in filters:
+        left = getattr(expression, "left", None)
+        if getattr(left, "key", None) != column_key:
+            continue
+        right = getattr(expression, "right", None)
+        if hasattr(right, "value"):
+            return right.value
+        if str(right).lower() == "true":
+            return True
+        if str(right).lower() == "false":
+            return False
+    return None
 
 
 class FakeCredentialRegisterQuery:
@@ -651,8 +693,18 @@ def test_wizard_runtime_uses_relation_priority_before_credential_created_at(
         credentials=[older_credential, priority_credential],
         model=model,
         relations=[
-            SimpleNamespace(priority=10),
-            SimpleNamespace(priority=1),
+            SimpleNamespace(
+                credential_id=older_credential.id,
+                model_id=model.id,
+                is_verified=True,
+                priority=10,
+            ),
+            SimpleNamespace(
+                credential_id=priority_credential.id,
+                model_id=model.id,
+                is_verified=True,
+                priority=1,
+            ),
         ],
     )
     client_configs = []
@@ -680,6 +732,90 @@ def test_wizard_runtime_uses_relation_priority_before_credential_created_at(
     assert runtime.credential_id == priority_credential.id
     assert client_configs == [
         {"apiKey": "priority-key", "baseUrl": "https://priority.example"}
+    ]
+
+
+def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    openai_provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    anthropic_provider = SimpleNamespace(id=uuid.uuid4(), name="anthropic")
+    openai_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=openai_provider,
+        provider_id=openai_provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "openai-key", "baseUrl": "https://openai.example"}',
+    )
+    anthropic_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=anthropic_provider,
+        provider_id=anthropic_provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "anthropic-key", "baseUrl": "https://anthropic.example"}',
+    )
+    openai_model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=openai_provider.id,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    anthropic_model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=anthropic_provider.id,
+        model_id_for_api_call="claude-3-haiku-20240307",
+        is_active=True,
+    )
+    db = FakeWizardRuntimeDb(
+        credentials=[anthropic_credential, openai_credential],
+        models=[openai_model, anthropic_model],
+        relations=[
+            SimpleNamespace(
+                credential_id=openai_credential.id,
+                model_id=openai_model.id,
+                is_verified=True,
+                priority=10,
+            ),
+            SimpleNamespace(
+                credential_id=anthropic_credential.id,
+                model_id=anthropic_model.id,
+                is_verified=True,
+                priority=1,
+            ),
+        ],
+    )
+    client_configs = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **kwargs: client_configs.append(kwargs["credentials"])
+        or SimpleNamespace(),
+    )
+
+    runtime = LLMService.get_wizard_client_for_user(
+        db,
+        user_id,
+        {
+            "openai": "gpt-4o-mini",
+            "anthropic": "claude-3-haiku-20240307",
+        },
+        organization_id=organization_id,
+        audit_on_failure=False,
+    )
+
+    assert runtime.credential_id == openai_credential.id
+    assert client_configs == [
+        {"apiKey": "openai-key", "baseUrl": "https://openai.example"}
     ]
 
 

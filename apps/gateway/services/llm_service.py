@@ -971,129 +971,143 @@ class LLMService:
             )
 
         last_error: Optional[LLMCredentialNotAvailableError] = None
-        verified_candidates = []
-        for credential in credentials:
-            provider = credential.provider
-            provider_name = provider.name.lower() if provider else ""
-            model_id = provider_model_map.get(provider_name)
-            if not provider or not model_id:
+        for provider_name, model_id in provider_model_map.items():
+            provider_credentials = [
+                credential
+                for credential in credentials
+                if credential.provider
+                and credential.provider.name.lower() == provider_name.lower()
+            ]
+            if not provider_credentials:
                 continue
 
-            model = (
-                db.query(LLMModel)
-                .filter(
-                    LLMModel.provider_id == credential.provider_id,
-                    LLMModel.model_id_for_api_call == model_id,
+            verified_candidates = []
+            for credential in provider_credentials:
+                provider = credential.provider
+                model = (
+                    db.query(LLMModel)
+                    .filter(
+                        LLMModel.provider_id == credential.provider_id,
+                        LLMModel.model_id_for_api_call == model_id,
+                    )
+                    .first()
                 )
-                .first()
-            )
-            if not model:
-                last_error = LLMCredentialNotAvailableError(
-                    "model_relation_not_verified",
-                    "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
-                    credential_id=credential.id,
-                    model_id=model_id,
-                    organization_id=organization_uuid,
-                )
-                continue
-            if not model.is_active:
-                last_error = LLMCredentialNotAvailableError(
-                    "model_inactive",
-                    "비활성화된 LLM 모델입니다.",
-                    credential_id=credential.id,
-                    model_id=model_id,
-                    organization_id=organization_uuid,
-                )
-                continue
+                if not model:
+                    last_error = LLMCredentialNotAvailableError(
+                        "model_relation_not_verified",
+                        "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
+                        credential_id=credential.id,
+                        model_id=model_id,
+                        organization_id=organization_uuid,
+                    )
+                    continue
+                if not model.is_active:
+                    last_error = LLMCredentialNotAvailableError(
+                        "model_inactive",
+                        "비활성화된 LLM 모델입니다.",
+                        credential_id=credential.id,
+                        model_id=model_id,
+                        organization_id=organization_uuid,
+                    )
+                    continue
 
-            relation = (
-                db.query(LLMRelCredentialModel)
-                .filter(
-                    LLMRelCredentialModel.credential_id == credential.id,
-                    LLMRelCredentialModel.model_id == model.id,
-                    LLMRelCredentialModel.is_verified == True,
+                relation = (
+                    db.query(LLMRelCredentialModel)
+                    .filter(
+                        LLMRelCredentialModel.credential_id == credential.id,
+                        LLMRelCredentialModel.model_id == model.id,
+                        LLMRelCredentialModel.is_verified == True,
+                    )
+                    .order_by(LLMRelCredentialModel.priority.asc())
+                    .first()
                 )
-                .order_by(LLMRelCredentialModel.priority.asc())
-                .first()
-            )
-            if not relation:
-                last_error = LLMCredentialNotAvailableError(
-                    "model_relation_not_verified",
-                    "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
-                    credential_id=credential.id,
-                    model_id=model_id,
-                    organization_id=organization_uuid,
-                )
-                continue
+                if not relation:
+                    last_error = LLMCredentialNotAvailableError(
+                        "model_relation_not_verified",
+                        "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
+                        credential_id=credential.id,
+                        model_id=model_id,
+                        organization_id=organization_uuid,
+                    )
+                    continue
 
-            verified_candidates.append(
-                (
-                    relation.priority,
-                    credential.created_at,
+                verified_candidates.append(
+                    (
+                        relation.priority,
+                        credential.created_at,
+                        credential.id,
+                        credential,
+                        provider,
+                        model_id,
+                    )
+                )
+
+            verified_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+
+            for (
+                _priority,
+                _created_at,
+                _id,
+                credential,
+                provider,
+                model_id,
+            ) in verified_candidates:
+                if not has_llm_credential_permission(
+                    db,
+                    user_id,
                     credential.id,
-                    credential,
-                    provider,
-                    model_id,
-                )
-            )
+                    "use",
+                    organization_id=organization_uuid,
+                ):
+                    last_error = LLMCredentialNotAvailableError(
+                        "credential_use_denied",
+                        "LLM credential use 권한이 필요합니다.",
+                        credential_id=credential.id,
+                        model_id=model_id,
+                        organization_id=organization_uuid,
+                    )
+                    continue
 
-        verified_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+                try:
+                    cfg = json.loads(credential.encrypted_config)
+                    api_key = cfg.get("apiKey")
+                    base_url = cfg.get("baseUrl")
+                except Exception as exc:
+                    last_error = LLMCredentialNotAvailableError(
+                        "credential_not_available",
+                        "LLM credential 설정을 읽을 수 없습니다.",
+                        credential_id=credential.id,
+                        model_id=model_id,
+                        organization_id=organization_uuid,
+                    )
+                    logger.warning(
+                        "[LLMService] Invalid wizard credential config: %s", exc
+                    )
+                    continue
 
-        for _priority, _created_at, _id, credential, provider, model_id in verified_candidates:
-            if not has_llm_credential_permission(
-                db,
-                user_id,
-                credential.id,
-                "use",
-                organization_id=organization_uuid,
-            ):
-                last_error = LLMCredentialNotAvailableError(
-                    "credential_use_denied",
-                    "LLM credential use 권한이 필요합니다.",
+                try:
+                    client = get_llm_client(
+                        provider=provider.name,
+                        model_id=model_id,
+                        credentials={"apiKey": api_key, "baseUrl": base_url},
+                    )
+                except Exception as exc:
+                    last_error = LLMCredentialNotAvailableError(
+                        "credential_not_available",
+                        "LLM client를 생성할 수 없습니다.",
+                        credential_id=credential.id,
+                        model_id=model_id,
+                        organization_id=organization_uuid,
+                    )
+                    logger.warning("[LLMService] Wizard client creation failed: %s", exc)
+                    continue
+
+                return WizardLLMRuntime(
+                    client=client,
                     credential_id=credential.id,
                     model_id=model_id,
                     organization_id=organization_uuid,
                 )
-                continue
-
-            try:
-                cfg = json.loads(credential.encrypted_config)
-                api_key = cfg.get("apiKey")
-                base_url = cfg.get("baseUrl")
-            except Exception as exc:
-                last_error = LLMCredentialNotAvailableError(
-                    "credential_not_available",
-                    "LLM credential 설정을 읽을 수 없습니다.",
-                    credential_id=credential.id,
-                    model_id=model_id,
-                    organization_id=organization_uuid,
-                )
-                logger.warning("[LLMService] Invalid wizard credential config: %s", exc)
-                continue
-
-            try:
-                client = get_llm_client(
-                    provider=provider.name,
-                    model_id=model_id,
-                    credentials={"apiKey": api_key, "baseUrl": base_url},
-                )
-            except Exception as exc:
-                last_error = LLMCredentialNotAvailableError(
-                    "credential_not_available",
-                    "LLM client를 생성할 수 없습니다.",
-                    credential_id=credential.id,
-                    model_id=model_id,
-                    organization_id=organization_uuid,
-                )
-                logger.warning("[LLMService] Wizard client creation failed: %s", exc)
-                continue
-
-            return WizardLLMRuntime(
-                client=client,
-                credential_id=credential.id,
-                model_id=model_id,
-                organization_id=organization_uuid,
-            )
 
         if last_error:
             raise last_error
