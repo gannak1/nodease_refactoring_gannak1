@@ -102,7 +102,7 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `invalid_chunking_selection` | `400` | chunking mode와 selection option 조합이 지원되지 않음 |
 | `unsupported_chunking_mode_for_source` | `400` | 요청 source type에서 해당 chunking mode를 지원하지 않음 |
 | `invalid_correlation_id` | `400` | client가 제공한 correlation id가 길이/문자셋/보안 규칙을 만족하지 않음 |
-| `credential_selection_required` | `409` | 사용할 LLM credential/model을 deterministic하게 선택할 수 없음 |
+| `credential_selection_required` | `409` | 후속 default credential/preset 자동 선택에서 사용할 LLM credential/model을 deterministic하게 선택할 수 없음 |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
 
 ## 보안 규칙
@@ -111,4 +111,5 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 - 현재 일부 legacy/helper endpoint가 내부 예외 문자열을 `detail` 또는 응답 field에 포함하는 경우에는 각 API 문서에 current behavior로 명시한다. 운영 목표 계약은 sanitized error code와 request/correlation id만 반환하고 내부 예외 세부 내용은 server log/observability에만 남기는 것이다.
 - 401/403은 `audit_logs`에 기록할 수 있다.
 - 401/403 `HTTPException`은 해당 예외에 `audit_recorded`가 없으면 Gateway exception handler에서 permission denied audit를 기록한다.
+- Service/helper가 `permission.denied` 또는 `policy.block` audit을 직접 기록한 뒤 401/403을 반환할 때는 예외에 `audit_recorded=True` 또는 동등 marker를 설정해 전역 handler의 중복 `auth.permission_denied` 기록을 막아야 한다.
 - permission 실패 metadata에는 resource/action/effective permission 정도만 남기고 secret payload를 남기지 않는다.

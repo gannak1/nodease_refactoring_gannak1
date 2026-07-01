@@ -1592,9 +1592,9 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 | active organization 전달 계약 불명확 | client/server 계약 혼란 | organization membership 기준으로 active API/architecture 문서를 갱신하고 header/session/cookie 중 사용할 방식을 확정 |
 | MVP1 회귀 | 기존 demo 실패 | MVP1 workflow/LLM permission regression을 MVP2-0 완료 기준에 포함 |
 
-## 25. 결정 필요 사항
+## 25. 결정 필요/완료 이력
 
-아래 항목은 실제 구현 전에 사용자 또는 팀 결정이 필요하다. 단, MVP 2-0 문서는 MVP 1 변경을 최소화하는 기본값을 함께 제시하므로, 결정 전에도 구현 계획을 읽고 이슈를 나눌 수 있다.
+아래 항목은 아직 결정이 필요한 선택지와 구현 과정에서 canonical ADR로 확정된 항목을 함께 기록한다. MVP 2-0 문서는 MVP 1 변경을 최소화하는 기본값도 함께 제시하므로, 결정 전에도 구현 계획을 읽고 이슈를 나눌 수 있다.
 
 | 항목 | 기본값 | 결정이 필요한 순간 | 영향 |
 | --- | --- | --- | --- |

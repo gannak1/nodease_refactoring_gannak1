@@ -57,7 +57,7 @@ RAG 확장 3단계의 목표 request는 단일 `knowledge_base_id`만 지원한�
 - `hierarchy_mode`
 - `top_k`
 - `generation_model_id` required. 3단계에서는 generation model을 요청에서 명시해야 하며, 이름순/생성일순 같은 fallback으로 model을 고르지 않는다.
-- `credential_id` optional. 생략하면 active organization의 명시 default credential 정책과 요청한 `generation_model_id`의 verified relation이 정확히 하나일 때만 deterministic하게 선택한다.
+- `credential_id` required. 3단계 기본 계약은 credential 자동 선택을 하지 않는다. Default credential 또는 preset 기반 자동 선택은 별도 data model/API 계약으로 공식화한 뒤 후속 확장으로 다룬다.
 - `correlation_id` optional. 없으면 서버가 생성한다.
 
 Streaming 여부는 endpoint로 결정한다. `/api/v1/rag/agent/answer`는 일반 JSON response를 반환하고, `/api/v1/rag/agent/answer/stream`은 SSE stream을 반환한다. Request body의 `stream` flag는 목표 계약에 포함하지 않는다.
@@ -66,7 +66,7 @@ Streaming 여부는 endpoint로 결정한다. `/api/v1/rag/agent/answer`는 일�
 
 3단계 초기 목표 guardrail은 다음과 같다. `top_k`는 기본값 8, 최대 8로 제한한다. Client가 최대값보다 큰 `top_k`를 보내면 `400 validation.failed`로 거부한다. Context token budget 8000, max output tokens 1000, citation preview 300 characters, provider timeout 60 seconds, SSE idle timeout 30 seconds는 서버 내부 cap이며 3단계 public request field로 열지 않는다. 제품/UX 검증 후 cap을 바꿔야 하면 구현 전에 API 문서와 운영 설정 문서를 함께 갱신한다.
 
-Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field, deterministic credential/model을 선택할 수 없는 `409 credential_selection_required`처럼 answer 실행을 시작하기 전 판정 가능한 오류는 `rag_answer_runs` row를 만들지 않고 `rag.answer.*` lifecycle audit도 남기지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 answer run을 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, deterministic credential/model 선택 가능성 확인을 모두 통과한 뒤 answer run을 생성하고 `rag.answer.requested`를 기록한다.
+Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field처럼 answer 실행을 시작하기 전 판정 가능한 오류는 `rag_answer_runs` row를 만들지 않고 `rag.answer.*` lifecycle audit도 남기지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 answer run을 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, required credential/model visibility 확인을 모두 통과한 뒤 answer run을 생성하고 `rag.answer.requested`를 기록한다.
 
 목표 response 기준:
 
@@ -81,11 +81,12 @@ Request schema validation, invalid `correlation_id`, invalid organization header
 
 Model/credential resolution은 다음 순서를 따른다.
 
-- `generation_model_id`는 3단계 request에서 필수다. 해당 model이 존재하지 않거나 inactive이거나 숨겨야 하는 scope 밖 resource이면 answer run 생성 없이 `404 resource.not_found`로 닫는다.
-- 명시 `credential_id`가 있으면 credential 존재, active 상태, credential organization과 `X-Organization-Id` 일치를 answer run 생성 전에 확인한다.
-- `credential_id`가 없으면 active organization의 명시 default credential 정책이 있고, 그 credential과 요청한 `generation_model_id` 사이 verified relation이 정확히 하나일 때만 선택한다.
-- default credential 정책이 없거나, 같은 조건을 만족하는 credential/model relation이 없거나 여러 개라 deterministic하게 선택할 수 없으면 `409 credential_selection_required`로 거부하고 answer run을 만들지 않는다. 이름순/생성일순 같은 우발적 fallback으로 credential을 고르지 않는다.
-- Server-side RAG preset은 data model과 request field가 별도 공식화된 뒤 기본값 공급자로 추가할 수 있다. Preset이 credential/model을 지정하더라도 최종 model/credential에 동일한 scope, `use` 권한, verified relation 검증을 적용한다.
+- `generation_model_id`와 `credential_id`는 3단계 request에서 모두 필수다. 누락되면 schema validation 실패이며 answer run을 만들지 않는다.
+- `generation_model_id`가 가리키는 model이 존재하지 않거나 inactive이거나 숨겨야 하는 scope 밖 resource이면 answer run 생성 없이 `404 resource.not_found`로 닫는다.
+- `credential_id`가 가리키는 credential의 존재, active 상태, credential organization과 `X-Organization-Id` 일치를 answer run 생성 전에 확인한다.
+- 3단계 기본 계약은 credential 자동 선택을 하지 않는다. 이름순/생성일순 같은 우발적 fallback으로 credential을 고르지 않는다.
+- Server-side RAG preset 또는 default credential 정책은 data model과 request field가 별도 공식화된 뒤 추가할 수 있다. 해당 후속 확장에서 deterministic하게 credential/model을 선택할 수 없을 때만 `409 credential_selection_required`를 사용한다.
+- Preset이 credential/model을 지정하더라도 최종 model/credential에 동일한 scope, `use` 권한, verified relation 검증을 적용한다.
 - 다른 organization credential로 fallback하지 않는다.
 - 검증 실패는 같은 organization scope 안 action 권한 또는 verified relation 부족이면 answer run 생성 뒤 `403 permission.denied`와 `status="blocked"`, scope 밖 또는 mismatch resource이면 answer run 생성 없이 `404 resource.not_found` 정책을 따른다.
 
@@ -119,7 +120,7 @@ SSE event 계약은 다음 순서를 기본으로 한다. Stream 시작 전 검�
 
 SSE event 이름은 audit action이 아니다. 예를 들어 SSE `answer.completed` event와 audit action `rag.answer.completed`는 이름이 비슷하지만 서로 다른 저장 위치와 의미를 갖는다.
 
-RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 HTTP `error.code="policy.blocked"`와 `policy.block` audit으로 표현한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 HTTP `error.code="permission.denied"`와 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패, `409 credential_selection_required`에는 answer run과 `blocked` status를 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
+RAG Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. 성공 retrieval 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 실행 상태 `rag_answer_runs.status`와 의미를 섞지 않는다. `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 못한 경우에만 사용한다. PII/classification/metadata policy 차단처럼 정책 판단 때문에 차단된 경우에는 HTTP `error.code="policy.blocked"`와 `policy.block` audit으로 표현한다. 이때 `policy.block` audit을 먼저 기록하고, 반환하는 403 예외에는 `audit_recorded=True` 또는 동등 marker를 설정해 Gateway 전역 401/403 handler가 `auth.permission_denied`를 중복 기록하지 않게 해야 한다. KB `use` 또는 LLM credential/model permission preflight 실패처럼 권한 판단 때문에 차단된 경우에는 HTTP `error.code="permission.denied"`와 `permission.denied` audit으로 표현한다. Resource hiding 대상인 `resource.not_found`, scope 밖, organization mismatch에는 answer run과 `blocked` status를 만들지 않는다. Invalid organization header와 validation 실패처럼 실행 전 검증에서 닫히는 오류도 answer run과 lifecycle audit을 만들지 않는다. 별도 `rag.answer.blocked` action은 만들지 않는다.
 
 Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scope 안 permission 또는 policy preflight가 차단되면 HTTP status는 `403`이고 목표 error envelope의 `error.details`에 `answer_run_id`, `correlation_id`, `status="blocked"`, `reason_code`를 포함한다. Permission block은 `error.code="permission.denied"`와 `reason_code="kb_use_denied"` 또는 `credential_use_denied` 계열을 사용하고, policy block은 `error.code="policy.blocked"`와 `reason_code="pii_policy_blocked"` 또는 `classification_policy_blocked` 계열을 사용한다.
 
@@ -139,7 +140,7 @@ Non-streaming `/api/v1/rag/agent/answer`에서 answer run 생성 뒤 같은 scop
 }
 ```
 
-이 details metadata는 운영 추적과 UI 상태 표시용이며 권한 판정이나 resource lookup key로 사용하지 않는다. Stream 시작 후 차단되면 terminal `error` event에 같은 safe field를 포함한다. Answer run을 만들지 않는 `resource.not_found`, scope 밖, organization mismatch, invalid header/validation, `409 credential_selection_required` 응답에는 `answer_run_id`를 포함하지 않는다.
+이 details metadata는 운영 추적과 UI 상태 표시용이며 권한 판정이나 resource lookup key로 사용하지 않는다. Stream 시작 후 차단되면 terminal `error` event에 같은 safe field를 포함한다. Answer run을 만들지 않는 `resource.not_found`, scope 밖, organization mismatch, invalid header/validation 응답에는 `answer_run_id`를 포함하지 않는다.
 
 RAG 확장 3단계의 API 범위는 answer 생성과 streaming이다. `rag_answer_runs` list/detail/delete/purge API는 3단계 기본 범위에 포함하지 않으며, 필요하면 조회 권한, retention, 삭제 정책을 별도 API 계약으로 확정한다.
 
@@ -354,4 +355,4 @@ Trace/audit metadata에는 raw chunk content, raw prompt, credential 원문, API
 | `unsupported_chunking_mode_for_source` | `400` | upload form은 `chunkingMode=hierarchical`과 `sourceType=DB` 조합, process/preview는 `chunking_mode=hierarchical`과 저장된 `Document.source_type=DB` 조합 |
 | `hierarchy_unavailable` | `422` | `hierarchy_mode=parent_child` 요청에 사용할 유효 parent-child hierarchy data가 없음 |
 | `invalid_correlation_id` | `400` | client가 제공한 Agent answer `correlation_id`가 길이/문자셋/보안 규칙을 만족하지 않음 |
-| `credential_selection_required` | `409` | Agent answer generation credential/model을 deterministic하게 선택할 수 없음 |
+| `credential_selection_required` | `409` | 후속 default credential/preset 확장에서 Agent answer generation credential/model을 deterministic하게 선택할 수 없음 |
