@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
+Verified Against: feature/mba-89 working tree (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, 2026-07-01 KST)
 Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목적
@@ -133,7 +133,8 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | --- | --- | --- |
 | `user_knowledge_permissions` | MVP 2 | 특정 user에게 knowledge base 직접 추가 권한 부여 |
 | `user_audit_permissions` | MVP 3 | 특정 user에게 target organization audit visibility 직접 추가 권한 부여 |
-| `rag_answer_runs` | RAG 확장 3단계 | Workflow run이 없는 standalone RAG Agent answer 실행 anchor. Trace/usage table에는 RAG 전용 FK를 추가하지 않고 `correlation_id`로 느슨하게 연결 |
+
+`rag_answer_runs`는 RAG 확장 3단계/MBA-89에서 additive current table로 도입한다. Workflow run이 없는 standalone RAG Agent answer 실행 anchor이며, trace/usage table에는 RAG 전용 FK를 추가하지 않고 `correlation_id`로 느슨하게 연결한다.
 
 이전 문서에서 신규 table로 다루던 기능은 다음 기준 table로 정리한다.
 
@@ -1608,7 +1609,7 @@ RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API k
 
 ### RAG Agent Answer Runs
 
-`rag_answer_runs`는 RAG 확장 3단계에서 도입할 목표 table이다. 현재 코드 기준 table이 아니며, Standalone RAG Agent answer의 실행 anchor 역할을 한다. 이 table은 workflow trace table을 대체하지 않고, workflow가 없는 질문/답변 실행을 RAG 도메인 안에서 추적하기 위한 additive table이다.
+`rag_answer_runs`는 RAG 확장 3단계/MBA-89에서 도입한 additive table이다. Standalone RAG Agent answer의 실행 anchor 역할을 하며, workflow trace table을 대체하지 않고 workflow가 없는 질문/답변 실행을 RAG 도메인 안에서 추적한다.
 
 역할:
 
@@ -1682,7 +1683,7 @@ MVP 목표 상태 결정:
 - Raw user question, raw final answer, raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 기본 저장하지 않는다.
 - Answer history/replay가 필요하면 raw provider response가 아니라 별도 redacted answer snapshot, retention, access control을 공식 문서와 ADR로 먼저 확정한다.
 - `query_hash`, `answer_hash`, `hash_version`은 nullable이다. 값을 저장하려면 HMAC-SHA256, server-side secret/pepper, `hash_version`을 함께 사용해야 한다. HMAC secret/pepper가 설정되지 않았으면 값을 `null`로 두며, 일반 SHA-256 같은 unsalted hash fallback은 허용하지 않는다. Hash algorithm 또는 HMAC 정책을 바꿀 수 있도록 `hash_version` 또는 동등한 metadata convention을 함께 저장한다.
-- `retention_expires_at`은 answer run 생성 시점에 설정해야 하며 indefinite retention을 기본값으로 보지 않는다. 3단계 기본 보존 기간은 trace metadata 기본값과 맞춰 90일로 둔다. Purge는 RAG 도메인 service/scheduled worker가 소유하고, 실패 시 다음 scheduled run에서 idempotent하게 재시도한다. Purge 성공/실패 aggregate는 `audit_logs.action='rag.answer.purge'`로 남기되, 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록한다. `audit_metadata` allowlist는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status`로 제한하고 raw answer, raw query, raw chunk content는 포함하지 않는다. 3단계 기본 API에 list/detail/delete/purge를 포함하지 않으며, 수동 purge API를 별도로 만들 경우 권한, hard delete/soft delete 여부, 상세 응답 schema는 별도 API/ADR에서 확정한다.
+- `retention_expires_at`은 answer run 생성 시점에 설정해야 하며 indefinite retention을 기본값으로 보지 않는다. 3단계 기본 보존 기간은 trace metadata 기본값과 맞춰 90일로 둔다. Purge는 RAG 도메인 service와 `log.rag_answer_retention_purge` Celery task가 소유하고, 실패 시 다음 scheduled/task run에서 idempotent하게 재시도한다. Purge 성공/실패 aggregate는 `audit_logs.action='rag.answer.purge'`로 남기되, 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록한다. `audit_metadata` allowlist는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status`로 제한하고 raw answer, raw query, raw chunk content는 포함하지 않는다. 3단계 기본 API에 list/detail/delete/purge를 포함하지 않으며, 수동 purge API를 별도로 만들 경우 권한, hard delete/soft delete 여부, 상세 응답 schema는 별도 API/ADR에서 확정한다.
 - Usage 도메인의 정확한 answer-run correlation이 필요하면 `llm_usage_logs`에 RAG 전용 FK를 추가하지 않고 generic `correlation_id` 또는 metadata extension을 별도 ADR로 설계한다.
 - `rag_answer_runs` 조회 권한은 KB `use` 권한, answer 생성자, organization manager override, retention/access policy를 함께 고려해야 한다. KB `read`만으로 answer content 성격의 summary/snapshot을 노출할지는 후속 API 문서에서 별도 확정한다.
 

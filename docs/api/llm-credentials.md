@@ -3,7 +3,7 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1
+Verified Against: feature/mba-89 working tree (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, 2026-07-01 KST)
 Related ADRs: [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
 
 ## 범위
@@ -18,6 +18,7 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | Implemented | `GET` | `/api/v1/llm/my-models` | 없음 | `LLMModelResponse[]` | credential `use` + verified credential-model relation |
 | Implemented | `GET` | `/api/v1/llm/my-embedding-models` | 없음 | `LLMModelResponse[]` | credential `use` + verified credential-model relation |
 | Implemented | `GET` | `/api/v1/llm/credentials` | 없음 | `LLMCredentialResponse[]` | credential `read` |
+| Implemented | `GET` | `/api/v1/llm/agent-answer-options` | 없음 | `LLMCredentialModelOptionResponse[]` | `X-Organization-Id` 필수; credential `use` + verified credential-model relation |
 | Implemented | `POST` | `/api/v1/llm/credentials` | `LLMCredentialCreate` | `LLMCredentialResponse` | organization `manager` |
 | Implemented | `DELETE` | `/api/v1/llm/credentials/{credential_id}` | 없음 | message | credential `write` |
 | Implemented | `POST` | `/api/v1/llm/credentials/{credential_id}/sync-models` | 없음 | sync result | credential `write` |
@@ -29,6 +30,7 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 
 - `GET /api/v1/llm/credentials`는 전체 valid credential 후보 중 현재 user가 `read` 권한을 가진 credential만 반환한다.
 - `GET /api/v1/llm/my-models`와 `/my-embedding-models`는 `llm_rel_credential_models.is_verified == true`, `llm_models.is_active == true`, credential `use` 권한을 함께 만족하는 모델만 반환한다.
+- `GET /api/v1/llm/agent-answer-options`는 RAG Agent answer UI가 바로 제출할 수 있는 verified model/credential pair만 반환한다. 서버는 `X-Organization-Id`로 active organization scope를 확인하고, 같은 organization의 valid credential, `llm_rel_credential_models.is_verified == true`, active chat model, credential `use` 권한을 모두 만족하는 조합만 포함한다. 모델과 credential을 독립 목록으로 받아 클라이언트에서 임의 조합하는 것은 Agent answer 기본 UI 계약이 아니다. 응답에는 `encrypted_config`, raw API key, token, credential secret value를 포함하지 않는다.
 - `POST /api/v1/llm/credentials/{credential_id}/sync-models`는 `purge_unverified` query를 지원한다. 원격 모델 목록을 다시 가져온 뒤 기존 mapping을 fail-closed로 unverified 처리하고, 원격에 있는 모델만 verified로 복구한다.
 - `DELETE /api/v1/llm/credentials/{credential_id}`는 row를 물리 삭제하지 않고 `is_valid=false`로 비활성화한다.
 - pricing 관리 API의 `system admin` 판정은 trace access의 `TraceRbacService` provider에 위임한다. 현재 기본 provider는 deny-all이므로 별도 provider를 설정하지 않은 런타임에서는 `403 system_admin_required`로 차단된다.
@@ -63,6 +65,17 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | `quota_used` | integer | quota used |
 | `created_at` | datetime | 생성 시각 |
 | `updated_at` | datetime | 수정 시각 |
+
+### `LLMCredentialModelOptionResponse`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `model` | `LLMModelResponse` | verified relation을 가진 active chat model |
+| `credential` | `LLMCredentialResponse` | 같은 active organization 안에서 `use` 가능한 valid credential |
+| `provider_name` | string | model provider 이름 |
+| `relation_priority` | integer | `llm_rel_credential_models.priority` |
+
+이 응답은 Agent answer request에 사용할 `(generation_model_id, credential_id)` 선택지를 제공하기 위한 UI-facing allowlist다. 각 row는 verified relation과 credential `use` 권한을 통과한 조합이어야 하며, credential 원문 조회 권한을 부여하지 않는다. `credential` field는 표시/선택에 필요한 safe field만 포함하고 `encrypted_config`, API key 원문, token, provider secret은 절대 반환하지 않는다.
 
 ## MVP 1 변경 기준
 
