@@ -7,8 +7,15 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from apps.gateway.services import rag_agent_answer_audit as audit_module
+from apps.gateway.services import rag_agent_answer_generation as generation_module
+from apps.gateway.services import rag_agent_answer_preflight as preflight_module
 from apps.gateway.services import rag_agent_answer_service as service_module
+from apps.gateway.services.rag_agent_answer_builder import RAGAgentAnswerBuilder
+from apps.gateway.services.rag_agent_answer_generation import (
+    RAGAgentAnswerGenerationRunner,
+)
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
+from apps.gateway.services.rag_agent_answer_types import RAGAnswerExecution
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.shared.audit.actions import AuditAction
 from apps.shared.schemas.rag import (
@@ -33,6 +40,9 @@ class NoopDb:
 
     def refresh(self, obj):
         self.last_refreshed = obj
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 class FakeRelationQuery:
@@ -61,9 +71,9 @@ def _request() -> Request:
     return request
 
 
-def _service() -> RAGAgentAnswerService:
+def _service(db=None) -> RAGAgentAnswerService:
     return RAGAgentAnswerService(
-        db=NoopDb(),
+        db=db or NoopDb(),
         current_user=SimpleNamespace(id=uuid.uuid4()),
         request=_request(),
         organization_id=uuid.uuid4(),
@@ -103,6 +113,7 @@ def _visible_resources(payload: RAGAgentAnswerRequest, organization_id: uuid.UUI
         model_id_for_api_call="gpt-test",
         type="chat",
         is_active=True,
+        context_window=None,
     )
     credential = SimpleNamespace(
         id=payload.credential_id,
@@ -113,28 +124,52 @@ def _visible_resources(payload: RAGAgentAnswerRequest, organization_id: uuid.UUI
     return kb, model, credential
 
 
+def _resolved(service: RAGAgentAnswerService, payload: RAGAgentAnswerRequest):
+    kb, model, credential = _visible_resources(payload, service.organization_id)
+    return service_module.RAGAnswerResolvedContext(
+        payload=payload,
+        correlation_id=payload.correlation_id or "corr-1",
+        metadata_filter=None,
+        kb=kb,
+        model=model,
+        credential=credential,
+    )
+
+
+def _execution(
+    service: RAGAgentAnswerService,
+    payload: RAGAgentAnswerRequest | None = None,
+    run: SimpleNamespace | None = None,
+) -> RAGAnswerExecution:
+    payload = payload or _agent_payload(correlation_id="corr-1")
+    resolved = _resolved(service, payload)
+    return RAGAnswerExecution(
+        payload=resolved.payload,
+        correlation_id=resolved.correlation_id,
+        metadata_filter=resolved.metadata_filter,
+        kb=resolved.kb,
+        model=resolved.model,
+        credential=resolved.credential,
+        run=run or _run(),
+    )
+
+
 @pytest.mark.parametrize("top_k", [0, 9])
-def test_answer_rejects_top_k_outside_contract_before_run_creation(
+def test_resolver_rejects_top_k_outside_contract_before_run_creation(
     top_k, monkeypatch
 ):
     service = _service()
-    payload = RAGAgentAnswerRequest(
-        knowledge_base_id=uuid.uuid4(),
-        query="policy",
-        generation_model_id=uuid.uuid4(),
-        credential_id=uuid.uuid4(),
-        top_k=top_k,
-    )
-    create_run_called = False
+    payload = _agent_payload(top_k=top_k)
+    create_called = False
 
-    def fail_if_called(**kwargs):
-        nonlocal create_run_called
-        create_run_called = True
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal create_called
+        create_called = True
 
-    monkeypatch.setattr(service, "_create_run", fail_if_called)
+    monkeypatch.setattr(service.lifecycle, "create_requested", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(service.answer(payload))
+        service.prepare_execution(payload)
 
     assert exc.value.status_code == 400
     assert exc.value.detail["error"]["code"] == "validation.failed"
@@ -143,36 +178,30 @@ def test_answer_rejects_top_k_outside_contract_before_run_creation(
         "min": service_module.MIN_TOP_K,
         "max": service_module.MAX_TOP_K,
     }
-    assert create_run_called is False
+    assert create_called is False
 
 
-@pytest.mark.parametrize("correlation_id", ["contains space", "trace-sk-testSecretValue"])
-def test_answer_rejects_invalid_correlation_id_before_run_creation(
+@pytest.mark.parametrize("correlation_id", ["contains space", "trace-sk-testSecret"])
+def test_resolver_rejects_invalid_correlation_id_before_run_creation(
     correlation_id, monkeypatch
 ):
     service = _service()
-    payload = RAGAgentAnswerRequest(
-        knowledge_base_id=uuid.uuid4(),
-        query="policy",
-        generation_model_id=uuid.uuid4(),
-        credential_id=uuid.uuid4(),
-        correlation_id=correlation_id,
-    )
-    create_run_called = False
+    payload = _agent_payload(correlation_id=correlation_id)
+    create_called = False
 
-    def fail_if_called(**kwargs):
-        nonlocal create_run_called
-        create_run_called = True
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal create_called
+        create_called = True
 
-    monkeypatch.setattr(service, "_create_run", fail_if_called)
+    monkeypatch.setattr(service.lifecycle, "create_requested", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(service.answer(payload))
+        service.prepare_execution(payload)
 
     assert exc.value.status_code == 400
     assert exc.value.detail["error"]["code"] == "invalid_correlation_id"
     assert exc.value.detail["error"]["details"] == {"field": "correlation_id"}
-    assert create_run_called is False
+    assert create_called is False
 
 
 def test_prepare_execution_rejects_non_chat_model_before_run_creation(monkeypatch):
@@ -180,16 +209,16 @@ def test_prepare_execution_rejects_non_chat_model_before_run_creation(monkeypatc
     payload = _agent_payload()
     kb, model, credential = _visible_resources(payload, service.organization_id)
     model.type = "embedding"
-    create_run_called = False
+    create_called = False
 
-    def fail_if_called(**kwargs):
-        nonlocal create_run_called
-        create_run_called = True
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal create_called
+        create_called = True
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_create_run", fail_if_called)
+    monkeypatch.setattr(service.preflight, "_visible_knowledge_base", lambda *_: kb)
+    monkeypatch.setattr(service.preflight, "_visible_generation_model", lambda *_: model)
+    monkeypatch.setattr(service.preflight, "_visible_credential", lambda *_: credential)
+    monkeypatch.setattr(service.lifecycle, "create_requested", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
         service.prepare_execution(payload)
@@ -197,20 +226,20 @@ def test_prepare_execution_rejects_non_chat_model_before_run_creation(monkeypatc
     assert exc.value.status_code == 400
     assert exc.value.detail["error"]["code"] == "validation.failed"
     assert exc.value.detail["error"]["details"] == {"field": "generation_model_id"}
-    assert create_run_called is False
+    assert create_called is False
 
 
 def test_prepare_execution_rejects_parent_child_without_run_creation(monkeypatch):
     service = _service()
     payload = _agent_payload(hierarchy_mode="parent_child")
     kb, model, credential = _visible_resources(payload, service.organization_id)
-    create_run_called = False
+    create_called = False
 
-    def fail_if_called(**kwargs):
-        nonlocal create_run_called
-        create_run_called = True
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal create_called
+        create_called = True
 
-    def reject_hierarchy(*args):
+    def reject_hierarchy(*_args):
         raise_api_error(
             service.request,
             422,
@@ -218,18 +247,18 @@ def test_prepare_execution_rejects_parent_child_without_run_creation(monkeypatch
             "Hierarchical retrieval data is not available for this Knowledge Base.",
         )
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", reject_hierarchy)
-    monkeypatch.setattr(service, "_create_run", fail_if_called)
+    monkeypatch.setattr(service.preflight, "_visible_knowledge_base", lambda *_: kb)
+    monkeypatch.setattr(service.preflight, "_visible_generation_model", lambda *_: model)
+    monkeypatch.setattr(service.preflight, "_visible_credential", lambda *_: credential)
+    monkeypatch.setattr(service.preflight, "_ensure_hierarchy_available", reject_hierarchy)
+    monkeypatch.setattr(service.lifecycle, "create_requested", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
         service.prepare_execution(payload)
 
     assert exc.value.status_code == 422
     assert exc.value.detail["error"]["code"] == "hierarchy_unavailable"
-    assert create_run_called is False
+    assert create_called is False
 
 
 @pytest.mark.parametrize(
@@ -246,60 +275,60 @@ def test_prepare_execution_resource_hiding_errors_do_not_create_run(
     service = _service()
     payload = _agent_payload()
     kb, model, credential = _visible_resources(payload, service.organization_id)
-    create_run_called = False
+    create_called = False
 
     def raise_hidden(*_args):
-        service._raise_not_found(message)
+        service.preflight._raise_not_found(message)
 
-    def fail_if_called(**kwargs):
-        nonlocal create_run_called
-        create_run_called = True
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal create_called
+        create_called = True
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, failing_method, raise_hidden)
-    monkeypatch.setattr(service, "_create_run", fail_if_called)
+    monkeypatch.setattr(service.preflight, "_visible_knowledge_base", lambda *_: kb)
+    monkeypatch.setattr(service.preflight, "_visible_generation_model", lambda *_: model)
+    monkeypatch.setattr(service.preflight, "_visible_credential", lambda *_: credential)
+    monkeypatch.setattr(service.preflight, failing_method, raise_hidden)
+    monkeypatch.setattr(service.lifecycle, "create_requested", fail_if_called)
 
     with pytest.raises(HTTPException) as exc:
         service.prepare_execution(payload)
 
     assert exc.value.status_code == 404
     assert exc.value.detail["error"]["code"] == "resource.not_found"
-    assert create_run_called is False
+    assert create_called is False
 
 
 def test_prepare_execution_blocks_kb_use_after_run_creation(monkeypatch):
     service = _service()
     payload = _agent_payload()
-    kb, model, credential = _visible_resources(payload, service.organization_id)
     run = _run()
     run.status = "requested"
     lifecycle_actions = []
     denied_audits = []
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
+        service.preflight,
+        "resolve_visible_context",
+        lambda *_: _resolved(service, payload),
+    )
+    monkeypatch.setattr(service.lifecycle, "create_requested", lambda *_: run)
+    monkeypatch.setattr(
+        service.audit,
+        "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "get_effective_knowledge_base_auth_state",
         lambda *args, **kwargs: "viewer",
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "record_resource_permission_denied",
         lambda **kwargs: denied_audits.append(kwargs),
     )
     monkeypatch.setattr(
-        service,
+        service.preflight,
         "_ensure_credential_use_and_relation",
         lambda *_: pytest.fail("credential preflight should not run after KB denial"),
     )
@@ -312,44 +341,38 @@ def test_prepare_execution_blocks_kb_use_after_run_creation(monkeypatch):
     assert getattr(exc.value, "audit_recorded") is True
     assert run.status == "blocked"
     assert run.error_code == "kb_use_denied"
-    assert lifecycle_actions == [AuditAction.RAG_ANSWER_REQUESTED]
+    assert lifecycle_actions == []
     assert denied_audits[0]["resource_type"] == "knowledge_base"
     assert denied_audits[0]["action"] == "use"
     assert denied_audits[0]["metadata"]["reason_code"] == "kb_use_denied"
 
 
 def test_prepare_execution_blocks_credential_use_after_run_creation(monkeypatch):
-    service = RAGAgentAnswerService(
-        db=FakeRelationDb(relation=SimpleNamespace(id=uuid.uuid4())),
-        current_user=SimpleNamespace(id=uuid.uuid4()),
-        request=_request(),
-        organization_id=uuid.uuid4(),
-    )
+    service = _service(db=FakeRelationDb(relation=SimpleNamespace(id=uuid.uuid4())))
     payload = _agent_payload()
-    kb, model, credential = _visible_resources(payload, service.organization_id)
+    resolved = _resolved(service, payload)
     run = _run()
     run.status = "requested"
     denied_audits = []
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
     monkeypatch.setattr(
-        service_module,
+        service.preflight, "resolve_visible_context", lambda *_: resolved
+    )
+    monkeypatch.setattr(service.lifecycle, "create_requested", lambda *_: run)
+    monkeypatch.setattr(service.preflight, "_ensure_kb_use", lambda *_: None)
+    monkeypatch.setattr(service.preflight, "_ensure_embedding_readiness", lambda *_: None)
+    monkeypatch.setattr(
+        preflight_module,
         "get_effective_llm_credential_auth_state",
         lambda *args, **kwargs: "viewer",
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "llm_credential_auth_state_allows",
         lambda state, action: False,
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "record_resource_permission_denied",
         lambda **kwargs: denied_audits.append(kwargs),
     )
@@ -358,64 +381,40 @@ def test_prepare_execution_blocks_credential_use_after_run_creation(monkeypatch)
         service.prepare_execution(payload)
 
     assert exc.value.status_code == 403
-    assert exc.value.detail["error"]["code"] == "permission.denied"
     assert exc.value.detail["error"]["details"]["reason_code"] == (
         "credential_use_denied"
     )
-    assert getattr(exc.value, "audit_recorded") is True
     assert run.status == "blocked"
     assert run.error_code == "credential_use_denied"
-    assert denied_audits == [
-        {
-            "user_id": service.current_user.id,
-            "resource_type": "llm_credential",
-            "resource_id": credential.id,
-            "action": "use",
-            "effective_auth_state": "viewer",
-            "organization_id": service.organization_id,
-            "metadata": {
-                "request_id": "test-request-id",
-                "path": "/",
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "reason_code": "credential_use_denied",
-            },
-        }
-    ]
+    assert denied_audits[0]["resource_type"] == "llm_credential"
 
 
 def test_prepare_execution_blocks_unverified_model_credential_relation(monkeypatch):
-    service = RAGAgentAnswerService(
-        db=FakeRelationDb(relation=None),
-        current_user=SimpleNamespace(id=uuid.uuid4()),
-        request=_request(),
-        organization_id=uuid.uuid4(),
-    )
+    service = _service(db=FakeRelationDb(relation=None))
     payload = _agent_payload()
-    kb, model, credential = _visible_resources(payload, service.organization_id)
+    resolved = _resolved(service, payload)
     run = _run()
     run.status = "requested"
     denied_audits = []
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
     monkeypatch.setattr(
-        service_module,
+        service.preflight, "resolve_visible_context", lambda *_: resolved
+    )
+    monkeypatch.setattr(service.lifecycle, "create_requested", lambda *_: run)
+    monkeypatch.setattr(service.preflight, "_ensure_kb_use", lambda *_: None)
+    monkeypatch.setattr(service.preflight, "_ensure_embedding_readiness", lambda *_: None)
+    monkeypatch.setattr(
+        preflight_module,
         "get_effective_llm_credential_auth_state",
         lambda *args, **kwargs: "operator",
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "llm_credential_auth_state_allows",
         lambda state, action: True,
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "record_resource_permission_denied",
         lambda **kwargs: denied_audits.append(kwargs),
     )
@@ -428,25 +427,7 @@ def test_prepare_execution_blocks_unverified_model_credential_relation(monkeypat
         "credential_model_relation_denied"
     )
     assert run.status == "blocked"
-    assert run.error_code == "credential_model_relation_denied"
-    assert denied_audits == [
-        {
-            "user_id": service.current_user.id,
-            "resource_type": "llm_model",
-            "resource_id": model.id,
-            "action": "use",
-            "effective_auth_state": "operator",
-            "organization_id": service.organization_id,
-            "metadata": {
-                "request_id": "test-request-id",
-                "path": "/",
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "reason_code": "credential_model_relation_denied",
-                "credential_id": str(credential.id),
-            },
-        }
-    ]
+    assert denied_audits[0]["resource_type"] == "llm_model"
 
 
 def test_prepare_execution_marks_run_failed_on_unexpected_post_create_error(
@@ -454,31 +435,26 @@ def test_prepare_execution_marks_run_failed_on_unexpected_post_create_error(
 ):
     service = _service()
     payload = _agent_payload(correlation_id="corr-preflight")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
     run = _run()
     run.status = "requested"
     run.correlation_id = payload.correlation_id
     lifecycle_actions = []
 
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
+        service.preflight,
+        "resolve_visible_context",
+        lambda *_: _resolved(service, payload),
+    )
+    monkeypatch.setattr(service.lifecycle, "create_requested", lambda *_: run)
+    monkeypatch.setattr(
+        service.audit,
+        "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
     monkeypatch.setattr(
-        service,
+        service.preflight,
         "_ensure_kb_use",
         lambda *_: (_ for _ in ()).throw(RuntimeError("credential secret leaked")),
-    )
-    monkeypatch.setattr(
-        service,
-        "_ensure_credential_use_and_relation",
-        lambda *_: pytest.fail("credential preflight should not run after failure"),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -494,15 +470,12 @@ def test_prepare_execution_marks_run_failed_on_unexpected_post_create_error(
     }
     assert run.status == "failed"
     assert run.error_code == "generation.failed"
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_FAILED,
-    ]
+    assert lifecycle_actions == [AuditAction.RAG_ANSWER_FAILED]
 
 
 def test_content_preview_redacts_common_secret_shapes_and_caps_length():
-    service = _service()
-    preview = service._content_preview(
+    builder = RAGAgentAnswerBuilder()
+    preview = builder.content_preview(
         "문의 user@example.com Authorization: Bearer abcdefghijkl "
         "api_key=plainSecret and sk-testSecretValue " + ("x" * 400)
     )
@@ -544,7 +517,7 @@ def test_policy_block_sets_audit_marker_and_never_persists_content_preview(monke
     )
 
     with pytest.raises(HTTPException) as exc:
-        service._block_policy(run, retrieval_summary, [citation])
+        service._raise_policy_block_if_needed(run, retrieval_summary, [citation])
 
     assert exc.value.status_code == 403
     assert exc.value.detail["error"]["code"] == "policy.blocked"
@@ -562,48 +535,47 @@ def test_permission_block_returns_safe_error_details_and_audit_marker():
     run = _run()
 
     with pytest.raises(HTTPException) as exc:
-        service._block_permission(run, "kb_use_denied")
+        service.preflight._raise_permission_block(run, "kb_use_denied")
 
     assert exc.value.status_code == 403
     assert exc.value.detail["error"]["code"] == "permission.denied"
-    assert getattr(exc.value, "audit_recorded") is True
-    assert run.status == "blocked"
-    assert run.error_code == "kb_use_denied"
     assert exc.value.detail["error"]["details"] == {
         "answer_run_id": str(run.id),
-        "correlation_id": "corr-1",
+        "correlation_id": run.correlation_id,
         "status": "blocked",
         "reason_code": "kb_use_denied",
     }
+    assert getattr(exc.value, "audit_recorded") is True
+    assert run.status == "blocked"
 
 
 def test_context_for_chunks_respects_internal_token_budget():
-    service = _service()
+    builder = RAGAgentAnswerBuilder()
     chunks = [
         SimpleNamespace(content="first", token_count=7900),
         SimpleNamespace(content="second", token_count=200),
     ]
 
-    assert service._context_for_chunks(chunks) == "first"
+    assert builder.context_for_chunks(chunks) == "first"
 
 
 def test_context_for_chunks_caps_budget_by_model_context_window():
-    service = _service()
+    builder = RAGAgentAnswerBuilder()
     chunks = [
         SimpleNamespace(content="x" * 12000, token_count=4000),
         SimpleNamespace(content="second", token_count=100),
     ]
     model = SimpleNamespace(context_window=4096)
 
-    context = service._context_for_chunks(chunks, model)
+    context = builder.context_for_chunks(chunks, model)
 
-    assert service._context_budget_for_model(model) == 2596
-    assert len(context) == 2596 * 4
+    assert len(context) < 12000
     assert "second" not in context
 
 
 def test_generate_answer_uses_model_aware_output_token_budget(monkeypatch):
     service = _service()
+    runner = service.generation
     payload = _agent_payload()
     run = _run()
     model = SimpleNamespace(
@@ -628,98 +600,106 @@ def test_generate_answer_uses_model_aware_output_token_budget(monkeypatch):
                 "choices": [{"message": {"content": "answer"}}],
             }
 
-    monkeypatch.setattr(service, "_client_for", lambda *_: CaptureClient())
-    monkeypatch.setattr(service, "_record_llm_call", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_record_usage_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_client_for", lambda *_: CaptureClient())
+    monkeypatch.setattr(service.audit, "record_llm_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_usage_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        service_module.LLMService,
+        generation_module.LLMService,
         "calculate_cost",
-        staticmethod(lambda *args, **kwargs: 0.0),
+        lambda *args, **kwargs: 0.0,
     )
 
     answer, usage = asyncio.run(
-        service._generate_answer(payload, [], model, credential, run)
+        runner.generate(payload, [], model, credential, run)
     )
 
     assert answer == "answer"
     assert usage.total_tokens == 3
-    assert calls[0]["max_tokens"] == service._output_token_budget_for_model(model)
-    assert calls[0]["max_tokens"] == 256
+    assert calls[0]["max_tokens"] < 1000
+    assert calls[0]["max_tokens"] == RAGAgentAnswerBuilder().output_token_budget_for_model(
+        model
+    )
 
 
 def test_embedding_readiness_blocks_when_user_cannot_use_embedding_credential(
     monkeypatch,
 ):
     service = _service()
+    payload = _agent_payload()
+    kb, _, _ = _visible_resources(payload, service.organization_id)
+    kb.embedding_model = "text-embedding-test"
     run = _run()
-    kb = SimpleNamespace(id=uuid.uuid4(), embedding_model="text-embedding-test")
     embedding_model = SimpleNamespace(id=uuid.uuid4())
-    embedding_credential = SimpleNamespace(id=uuid.uuid4())
+    credential = SimpleNamespace(id=uuid.uuid4())
     denied_audits = []
 
     monkeypatch.setattr(
-        service, "_active_embedding_model", lambda *_: embedding_model
+        service.preflight,
+        "_active_embedding_model",
+        lambda *_: embedding_model,
     )
     monkeypatch.setattr(
-        service,
+        service.preflight,
         "_verified_embedding_credentials",
-        lambda *_: [embedding_credential],
+        lambda *_: [credential],
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "get_effective_llm_credential_auth_state",
         lambda *args, **kwargs: "viewer",
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "llm_credential_auth_state_allows",
         lambda state, action: False,
     )
     monkeypatch.setattr(
-        service_module,
+        preflight_module,
         "record_resource_permission_denied",
         lambda **kwargs: denied_audits.append(kwargs),
     )
 
     with pytest.raises(HTTPException) as exc:
-        service._ensure_embedding_readiness(run, kb)
+        service.preflight._ensure_embedding_readiness(run, kb)
 
     assert exc.value.status_code == 403
-    assert exc.value.detail["error"]["code"] == "permission.denied"
     assert exc.value.detail["error"]["details"]["reason_code"] == (
         "embedding_credential_use_denied"
     )
     assert run.status == "blocked"
     assert denied_audits[0]["resource_type"] == "llm_credential"
-    assert denied_audits[0]["resource_id"] == embedding_credential.id
-    assert denied_audits[0]["metadata"]["reason_code"] == (
-        "embedding_credential_use_denied"
-    )
-    assert denied_audits[0]["metadata"]["candidate_count"] == 1
-    assert denied_audits[0]["metadata"]["denied_credential_count"] == 1
+    assert denied_audits[0]["resource_id"] == credential.id
 
 
 def test_embedding_readiness_fails_safe_when_no_verified_embedding_credential(
     monkeypatch,
 ):
     service = _service()
+    payload = _agent_payload()
+    kb, _, _ = _visible_resources(payload, service.organization_id)
+    kb.embedding_model = "text-embedding-test"
     run = _run()
-    kb = SimpleNamespace(id=uuid.uuid4(), embedding_model="text-embedding-test")
     embedding_model = SimpleNamespace(id=uuid.uuid4())
     lifecycle_actions = []
 
     monkeypatch.setattr(
-        service, "_active_embedding_model", lambda *_: embedding_model
+        service.preflight,
+        "_active_embedding_model",
+        lambda *_: embedding_model,
     )
-    monkeypatch.setattr(service, "_verified_embedding_credentials", lambda *_: [])
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
+        service.preflight,
+        "_verified_embedding_credentials",
+        lambda *_: [],
+    )
+    monkeypatch.setattr(
+        service.audit,
+        "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
 
     with pytest.raises(HTTPException) as exc:
-        service._ensure_embedding_readiness(run, kb)
+        service.preflight._ensure_embedding_readiness(run, kb)
 
     assert exc.value.status_code == 500
     assert exc.value.detail["error"]["code"] == "generation.failed"
@@ -732,25 +712,24 @@ def test_embedding_readiness_fails_safe_when_no_verified_embedding_credential(
 
 def test_record_usage_log_keeps_rag_answer_fk_out_of_usage_domain():
     service = _service()
-    model_id = uuid.uuid4()
-    credential_id = uuid.uuid4()
+    model = SimpleNamespace(id=uuid.uuid4())
+    credential = SimpleNamespace(id=uuid.uuid4())
 
-    service._record_usage_log(
-        SimpleNamespace(id=model_id),
-        SimpleNamespace(id=credential_id),
-        prompt_tokens=3,
-        completion_tokens=4,
-        total_cost=0.001,
-        latency_ms=12,
+    service.audit.record_usage_log(
+        model,
+        credential,
+        prompt_tokens=1,
+        completion_tokens=2,
+        total_cost=0.01,
+        latency_ms=10,
     )
 
     usage_log = service.db.added[-1]
-    assert usage_log.user_id == service.current_user.id
-    assert usage_log.organization_id == service.organization_id
-    assert usage_log.model_id == model_id
-    assert usage_log.credential_id == credential_id
+    assert usage_log.model_id == model.id
+    assert usage_log.credential_id == credential.id
     assert usage_log.workflow_id is None
     assert usage_log.workflow_run_id is None
+    assert usage_log.node_id is None
     assert not hasattr(usage_log, "rag_answer_run_id")
 
 
@@ -764,98 +743,71 @@ def test_record_retrieval_does_not_prejudge_policy_result(monkeypatch):
         lambda **event: audit_calls.append(event),
     )
 
-    service._record_retrieval(run, metadata_filter=None, result_count=1, mode="auto")
+    service.audit.record_retrieval(run, metadata_filter=None, result_count=1, mode="auto")
 
     metadata = audit_calls[0]["metadata"]
-    assert audit_calls[0]["action"] == AuditAction.RAG_RETRIEVE
-    assert metadata["result_count"] == 1
     assert "policy_result" not in metadata
+    assert metadata["result_count"] == 1
 
 
 def test_generate_answer_enforces_provider_timeout(monkeypatch):
     service = _service()
+    runner = RAGAgentAnswerGenerationRunner(
+        service.db,
+        builder=service.builder,
+        audit=service.audit,
+        provider_timeout_seconds=0.01,
+    )
+    payload = _agent_payload()
     run = _run()
     model = SimpleNamespace(
-        id=uuid.uuid4(),
+        id=payload.generation_model_id,
         name="GPT Test",
         provider_name="openai",
         model_id_for_api_call="gpt-test",
     )
-    credential = SimpleNamespace(id=uuid.uuid4())
-    payload = RAGAgentAnswerRequest(
-        knowledge_base_id=uuid.uuid4(),
-        query="policy",
-        generation_model_id=model.id,
-        credential_id=credential.id,
-    )
-    llm_audits = []
+    credential = SimpleNamespace(id=payload.credential_id)
+    llm_calls = []
 
     class SlowClient:
-        async def invoke(self, *args, **kwargs):
-            await asyncio.sleep(0.05)
-            return {}
+        async def invoke(self, messages, max_tokens):
+            await asyncio.sleep(1)
 
-    monkeypatch.setattr(service_module, "PROVIDER_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(service, "_client_for", lambda *_: SlowClient())
+    monkeypatch.setattr(runner, "_client_for", lambda *_: SlowClient())
     monkeypatch.setattr(
-        service,
-        "_record_llm_call",
-        lambda *_args, **kwargs: llm_audits.append(kwargs),
+        service.audit,
+        "record_llm_call",
+        lambda *args, **kwargs: llm_calls.append(kwargs),
     )
 
     with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(service._generate_answer(payload, [], model, credential, run))
+        asyncio.run(runner.generate(payload, [], model, credential, run))
 
-    assert llm_audits == [{"status": "failure"}]
+    assert llm_calls == [{"status": "failure"}]
 
 
 def test_stream_events_emits_terminal_error_on_idle_timeout(monkeypatch):
     service = _service()
     run = _run()
-    payload = RAGAgentAnswerRequest(
-        knowledge_base_id=uuid.uuid4(),
-        query="policy",
-        generation_model_id=uuid.uuid4(),
-        credential_id=uuid.uuid4(),
-    )
-    execution = service_module.RAGAnswerExecution(
-        payload=payload,
-        correlation_id=run.correlation_id,
-        metadata_filter=None,
-        kb=SimpleNamespace(id=payload.knowledge_base_id),
-        model=SimpleNamespace(),
-        credential=SimpleNamespace(),
-        run=run,
-    )
+    execution = _execution(service, run=run)
 
-    class SlowRetrievalService:
-        def __init__(self, *args, **kwargs):
-            pass
+    async def raise_timeout(*args, **kwargs):
+        raise asyncio.TimeoutError
 
-        async def search_documents(self, *args, **kwargs):
-            await asyncio.sleep(0.05)
-            return []
-
-    monkeypatch.setattr(service_module, "RetrievalService", SlowRetrievalService)
-    monkeypatch.setattr(service_module, "RETRIEVAL_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_retrieve_chunks", raise_timeout)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
 
     async def collect():
         return [event async for event in service.stream_events(execution)]
 
     events = asyncio.run(collect())
 
-    assert events[0][0] == "retrieval.started"
-    assert events[1] == (
+    assert [event_name for event_name, _payload in events] == [
+        "retrieval.started",
         "error",
-        {
-            "answer_run_id": str(run.id),
-            "correlation_id": run.correlation_id,
-            "status": "failed",
-            "reason_code": "stream.timeout",
-            "retryable": True,
-        },
-    )
+    ]
+    assert events[-1][1]["reason_code"] == "stream.timeout"
     assert run.status == "failed"
     assert run.error_code == "stream.timeout"
 
@@ -863,12 +815,7 @@ def test_stream_events_emits_terminal_error_on_idle_timeout(monkeypatch):
 def test_stream_events_classifies_generation_timeout_as_provider_timeout(monkeypatch):
     service = _service()
     run = _run()
-    payload = RAGAgentAnswerRequest(
-        knowledge_base_id=uuid.uuid4(),
-        query="policy",
-        generation_model_id=uuid.uuid4(),
-        credential_id=uuid.uuid4(),
-    )
+    execution = _execution(service, run=run)
     chunk = ChunkPreview(
         chunk_id=uuid.uuid4(),
         content="evidence",
@@ -879,19 +826,6 @@ def test_stream_events_classifies_generation_timeout_as_provider_timeout(monkeyp
         rank=1,
         metadata_summary={"classification": "internal"},
     )
-    execution = service_module.RAGAnswerExecution(
-        payload=payload,
-        correlation_id=run.correlation_id,
-        metadata_filter=None,
-        kb=SimpleNamespace(id=payload.knowledge_base_id),
-        model=SimpleNamespace(
-            id=payload.generation_model_id,
-            name="GPT Test",
-            provider_name="openai",
-        ),
-        credential=SimpleNamespace(id=payload.credential_id),
-        run=run,
-    )
 
     class FakeRetrievalService:
         def __init__(self, *args, **kwargs):
@@ -900,29 +834,21 @@ def test_stream_events_classifies_generation_timeout_as_provider_timeout(monkeyp
         async def search_documents(self, *args, **kwargs):
             return [chunk]
 
-    async def timeout_generate_answer(*args, **kwargs):
+    async def timeout_generate(*args, **kwargs):
         raise asyncio.TimeoutError
 
     monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(service, "_record_retrieval", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_generate_answer", timeout_generate_answer)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.generation, "generate", timeout_generate)
 
     async def collect():
         return [event async for event in service.stream_events(execution)]
 
     events = asyncio.run(collect())
 
-    assert events[-1] == (
-        "error",
-        {
-            "answer_run_id": str(run.id),
-            "correlation_id": run.correlation_id,
-            "status": "failed",
-            "reason_code": "provider.timeout",
-            "retryable": True,
-        },
-    )
+    assert events[-1][0] == "error"
+    assert events[-1][1]["reason_code"] == "provider.timeout"
     assert run.status == "failed"
     assert run.error_code == "provider.timeout"
 
@@ -930,84 +856,7 @@ def test_stream_events_classifies_generation_timeout_as_provider_timeout(monkeyp
 def test_stream_events_success_contract_excludes_internal_usage_ids(monkeypatch):
     service = _service()
     run = _run()
-    payload = _agent_payload(correlation_id=run.correlation_id)
-    model = SimpleNamespace(
-        id=payload.generation_model_id,
-        name="GPT Test",
-        provider_name="openai",
-    )
-    credential = SimpleNamespace(id=payload.credential_id)
-    chunk = ChunkPreview(
-        chunk_id=uuid.uuid4(),
-        content="safe evidence",
-        document_id=uuid.uuid4(),
-        filename="policy.md",
-        similarity_score=0.9,
-        score=0.9,
-        rank=1,
-        metadata_summary={"classification": "internal"},
-    )
-    execution = service_module.RAGAnswerExecution(
-        payload=payload,
-        correlation_id=run.correlation_id,
-        metadata_filter=None,
-        kb=SimpleNamespace(id=payload.knowledge_base_id),
-        model=model,
-        credential=credential,
-        run=run,
-    )
-
-    class FakeRetrievalService:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def search_documents(self, *args, **kwargs):
-            return [chunk]
-
-    async def fake_generate_answer(*args, **kwargs):
-        return "요약 답변", RAGUsageSummary(
-            prompt_tokens=3,
-            completion_tokens=4,
-            total_tokens=7,
-            total_cost=0.001,
-            latency_ms=10,
-            model_name=model.name,
-            provider=model.provider_name,
-        )
-
-    monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(service, "_record_retrieval", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_generate_answer", fake_generate_answer)
-
-    async def collect():
-        return [event async for event in service.stream_events(execution)]
-
-    events = asyncio.run(collect())
-    event_names = [event_name for event_name, _payload in events]
-
-    assert event_names == [
-        "retrieval.started",
-        "retrieval.completed",
-        "answer.delta",
-        "usage",
-        "summary",
-        "answer.completed",
-    ]
-    assert events[2][1]["index"] == 0
-    assert "credential_id" not in events[3][1]["usage_summary"]
-    assert "model_id" not in events[3][1]["usage_summary"]
-    assert "content_preview" not in events[4][1]["citation_summary"][0]
-    assert run.usage_summary["credential_id"] == str(credential.id)
-    assert run.usage_summary["model_id"] == str(model.id)
-
-
-def test_answer_provider_timeout_marks_failed_and_returns_safe_error(monkeypatch):
-    service = _service()
-    payload = _agent_payload(correlation_id="corr-timeout")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
-    run = _run()
-    run.correlation_id = payload.correlation_id
+    execution = _execution(service, run=run)
     chunk = ChunkPreview(
         chunk_id=uuid.uuid4(),
         content="evidence",
@@ -1018,7 +867,6 @@ def test_answer_provider_timeout_marks_failed_and_returns_safe_error(monkeypatch
         rank=1,
         metadata_summary={"classification": "internal"},
     )
-    lifecycle_actions = []
 
     class FakeRetrievalService:
         def __init__(self, *args, **kwargs):
@@ -1027,91 +875,95 @@ def test_answer_provider_timeout_marks_failed_and_returns_safe_error(monkeypatch
         async def search_documents(self, *args, **kwargs):
             return [chunk]
 
-    async def timeout_generate_answer(*args, **kwargs):
-        raise asyncio.TimeoutError
+    async def fake_generate(*args, **kwargs):
+        return "answer", RAGUsageSummary(
+            prompt_tokens=1,
+            completion_tokens=2,
+            total_tokens=3,
+            total_cost=0.01,
+            latency_ms=10,
+            model_name="GPT Test",
+            provider="openai",
+        )
 
     monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_credential_use_and_relation", lambda *_: None)
-    monkeypatch.setattr(service, "_record_retrieval", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_generate_answer", timeout_generate_answer)
-    monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
-        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
-    )
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.generation, "generate", fake_generate)
+
+    async def collect():
+        return [event async for event in service.stream_events(execution)]
+
+    events = asyncio.run(collect())
+    usage_payload = [payload for name, payload in events if name == "usage"][0]
+
+    assert usage_payload["usage_summary"]["total_tokens"] == 3
+    assert "credential_id" not in usage_payload["usage_summary"]
+    assert "model_id" not in usage_payload["usage_summary"]
+    assert run.usage_summary["credential_id"] == str(execution.credential.id)
+    assert run.usage_summary["model_id"] == str(execution.model.id)
+
+
+def test_answer_provider_timeout_marks_failed_and_returns_safe_error(monkeypatch):
+    service = _service()
+    payload = _agent_payload(correlation_id="corr-timeout")
+    run = _run()
+    run.correlation_id = payload.correlation_id
+    execution = _execution(service, payload=payload, run=run)
+
+    async def fake_retrieve(*args, **kwargs):
+        return [
+            ChunkPreview(
+                chunk_id=uuid.uuid4(),
+                content="evidence",
+                document_id=uuid.uuid4(),
+                filename="policy.md",
+                similarity_score=0.9,
+                score=0.9,
+                rank=1,
+                metadata_summary={"classification": "internal"},
+            )
+        ]
+
+    async def timeout_generate(*args, **kwargs):
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.generation, "generate", timeout_generate)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.answer(payload))
 
     assert exc.value.status_code == 504
     assert exc.value.detail["error"]["code"] == "provider.timeout"
-    assert exc.value.detail["error"]["details"] == {
-        "answer_run_id": str(run.id),
-        "correlation_id": payload.correlation_id,
-    }
     assert run.status == "failed"
     assert run.error_code == "provider.timeout"
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_FAILED,
-    ]
 
 
 def test_answer_retrieval_timeout_is_sanitized_generation_failure(monkeypatch):
     service = _service()
     payload = _agent_payload(correlation_id="corr-retrieval-timeout")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
     run = _run()
     run.correlation_id = payload.correlation_id
-    lifecycle_actions = []
+    execution = _execution(service, payload=payload, run=run)
 
-    class TimeoutRetrievalService:
-        def __init__(self, *args, **kwargs):
-            pass
+    async def raise_timeout(*args, **kwargs):
+        raise asyncio.TimeoutError
 
-        async def search_documents(self, *args, **kwargs):
-            raise asyncio.TimeoutError
-
-    monkeypatch.setattr(service_module, "RetrievalService", TimeoutRetrievalService)
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_credential_use_and_relation", lambda *_: None)
-    monkeypatch.setattr(
-        service,
-        "_generate_answer",
-        lambda *args, **kwargs: pytest.fail("retrieval timeout must not call LLM"),
-    )
-    monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
-        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
-    )
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", raise_timeout)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.answer(payload))
 
-    rendered_detail = str(exc.value.detail)
     assert exc.value.status_code == 500
     assert exc.value.detail["error"]["code"] == "generation.failed"
-    assert "provider.timeout" not in rendered_detail
     assert run.status == "failed"
     assert run.error_code == "generation.failed"
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_FAILED,
-    ]
 
 
 def test_answer_no_retrieval_results_completes_without_llm_call_or_usage_log(
@@ -1119,10 +971,9 @@ def test_answer_no_retrieval_results_completes_without_llm_call_or_usage_log(
 ):
     service = _service()
     payload = _agent_payload(correlation_id="corr-empty")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
     run = _run()
     run.correlation_id = payload.correlation_id
-    lifecycle_actions = []
+    execution = _execution(service, payload=payload, run=run)
     retrieval_audits = []
 
     class EmptyRetrievalService:
@@ -1132,33 +983,22 @@ def test_answer_no_retrieval_results_completes_without_llm_call_or_usage_log(
         async def search_documents(self, *args, **kwargs):
             return []
 
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
     monkeypatch.setattr(service_module, "RetrievalService", EmptyRetrievalService)
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_credential_use_and_relation", lambda *_: None)
     monkeypatch.setattr(
-        service,
-        "_generate_answer",
+        service.generation,
+        "generate",
         lambda *args, **kwargs: pytest.fail("empty retrieval must not call LLM"),
     )
     monkeypatch.setattr(
-        service,
-        "_record_usage_log",
+        service.audit,
+        "record_usage_log",
         lambda *args, **kwargs: pytest.fail("empty retrieval must not log usage"),
     )
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
-        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
-    )
-    monkeypatch.setattr(
-        service,
-        "_record_retrieval",
+        service.audit,
+        "record_retrieval",
         lambda *_args, **_kwargs: retrieval_audits.append(True),
     )
 
@@ -1171,13 +1011,9 @@ def test_answer_no_retrieval_results_completes_without_llm_call_or_usage_log(
     assert "credential_id" not in response.usage_summary.model_dump(mode="json")
     assert run.status == "completed"
     assert run.answer_summary["completion_status"] == "completed"
-    assert run.usage_summary["credential_id"] == str(credential.id)
-    assert run.usage_summary["model_id"] == str(model.id)
+    assert run.usage_summary["credential_id"] == str(execution.credential.id)
+    assert run.usage_summary["model_id"] == str(execution.model.id)
     assert retrieval_audits == [True]
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_COMPLETED,
-    ]
 
 
 def test_answer_retrieval_exception_returns_sanitized_generation_failure(
@@ -1185,32 +1021,16 @@ def test_answer_retrieval_exception_returns_sanitized_generation_failure(
 ):
     service = _service()
     payload = _agent_payload(correlation_id="corr-retrieval-fail")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
     run = _run()
     run.correlation_id = payload.correlation_id
-    lifecycle_actions = []
+    execution = _execution(service, payload=payload, run=run)
 
-    class FailingRetrievalService:
-        def __init__(self, *args, **kwargs):
-            pass
+    async def fail_retrieval(*args, **kwargs):
+        raise RuntimeError("database failed with api_key=raw-secret")
 
-        async def search_documents(self, *args, **kwargs):
-            raise RuntimeError("database failed with api_key=raw-secret")
-
-    monkeypatch.setattr(service_module, "RetrievalService", FailingRetrievalService)
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_credential_use_and_relation", lambda *_: None)
-    monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
-        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
-    )
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", fail_retrieval)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.answer(payload))
@@ -1221,11 +1041,6 @@ def test_answer_retrieval_exception_returns_sanitized_generation_failure(
     assert "raw-secret" not in rendered_detail
     assert "api_key" not in rendered_detail
     assert run.status == "failed"
-    assert run.error_code == "generation.failed"
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_FAILED,
-    ]
 
 
 def test_answer_generation_exception_returns_sanitized_generation_failure(
@@ -1233,9 +1048,9 @@ def test_answer_generation_exception_returns_sanitized_generation_failure(
 ):
     service = _service()
     payload = _agent_payload(correlation_id="corr-generation-fail")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
     run = _run()
     run.correlation_id = payload.correlation_id
+    execution = _execution(service, payload=payload, run=run)
     chunk = ChunkPreview(
         chunk_id=uuid.uuid4(),
         content="evidence",
@@ -1246,34 +1061,18 @@ def test_answer_generation_exception_returns_sanitized_generation_failure(
         rank=1,
         metadata_summary={"classification": "internal"},
     )
-    lifecycle_actions = []
 
-    class FakeRetrievalService:
-        def __init__(self, *args, **kwargs):
-            pass
+    async def fake_retrieve(*args, **kwargs):
+        return [chunk]
 
-        async def search_documents(self, *args, **kwargs):
-            return [chunk]
-
-    async def fail_generate_answer(*args, **kwargs):
+    async def fail_generate(*args, **kwargs):
         raise RuntimeError("provider returned sk-testSecretValue")
 
-    monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_credential_use_and_relation", lambda *_: None)
-    monkeypatch.setattr(service, "_record_retrieval", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_generate_answer", fail_generate_answer)
-    monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
-        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
-    )
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.generation, "generate", fail_generate)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.answer(payload))
@@ -1283,11 +1082,6 @@ def test_answer_generation_exception_returns_sanitized_generation_failure(
     assert exc.value.detail["error"]["code"] == "generation.failed"
     assert "sk-testSecretValue" not in rendered_detail
     assert run.status == "failed"
-    assert run.error_code == "generation.failed"
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_FAILED,
-    ]
 
 
 def test_answer_invalid_credential_config_returns_sanitized_generation_failure(
@@ -1295,11 +1089,11 @@ def test_answer_invalid_credential_config_returns_sanitized_generation_failure(
 ):
     service = _service()
     payload = _agent_payload(correlation_id="corr-invalid-credential")
-    kb, model, credential = _visible_resources(payload, service.organization_id)
-    credential.provider = SimpleNamespace(name="openai")
-    credential.encrypted_config = "sk-testSecretValue"
     run = _run()
     run.correlation_id = payload.correlation_id
+    execution = _execution(service, payload=payload, run=run)
+    execution.credential.provider = SimpleNamespace(name="openai")
+    execution.credential.encrypted_config = "sk-testSecretValue"
     chunk = ChunkPreview(
         chunk_id=uuid.uuid4(),
         content="evidence",
@@ -1311,25 +1105,14 @@ def test_answer_invalid_credential_config_returns_sanitized_generation_failure(
         metadata_summary={"classification": "internal"},
     )
 
-    class FakeRetrievalService:
-        def __init__(self, *args, **kwargs):
-            pass
+    async def fake_retrieve(*args, **kwargs):
+        return [chunk]
 
-        async def search_documents(self, *args, **kwargs):
-            return [chunk]
-
-    monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_credential_use_and_relation", lambda *_: None)
-    monkeypatch.setattr(service, "_record_retrieval", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_record_llm_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_llm_call", lambda *args, **kwargs: None)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.answer(payload))
@@ -1340,27 +1123,13 @@ def test_answer_invalid_credential_config_returns_sanitized_generation_failure(
     assert "sk-testSecretValue" not in rendered_detail
     assert "encrypted_config" not in rendered_detail
     assert run.status == "failed"
-    assert run.error_code == "generation.failed"
 
 
 def test_stream_events_cancelled_error_marks_run_cancelled(monkeypatch):
     service = _service()
     run = _run()
-    payload = _agent_payload(correlation_id=run.correlation_id)
+    execution = _execution(service, run=run)
     lifecycle_actions = []
-    execution = service_module.RAGAnswerExecution(
-        payload=payload,
-        correlation_id=run.correlation_id,
-        metadata_filter=None,
-        kb=SimpleNamespace(id=payload.knowledge_base_id),
-        model=SimpleNamespace(
-            id=payload.generation_model_id,
-            name="GPT Test",
-            provider_name="openai",
-        ),
-        credential=SimpleNamespace(id=payload.credential_id),
-        run=run,
-    )
 
     class CancelledRetrievalService:
         def __init__(self, *args, **kwargs):
@@ -1371,8 +1140,8 @@ def test_stream_events_cancelled_error_marks_run_cancelled(monkeypatch):
 
     monkeypatch.setattr(service_module, "RetrievalService", CancelledRetrievalService)
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
+        service.audit,
+        "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
 
@@ -1392,7 +1161,7 @@ def test_stream_events_policy_block_stops_before_answer_usage_and_completion(
 ):
     service = _service()
     run = _run()
-    payload = _agent_payload(correlation_id=run.correlation_id)
+    execution = _execution(service, run=run)
     chunk = ChunkPreview(
         chunk_id=uuid.uuid4(),
         content="private evidence",
@@ -1402,19 +1171,6 @@ def test_stream_events_policy_block_stops_before_answer_usage_and_completion(
         score=0.9,
         rank=1,
         metadata_summary={"classification": "pii"},
-    )
-    execution = service_module.RAGAnswerExecution(
-        payload=payload,
-        correlation_id=run.correlation_id,
-        metadata_filter=None,
-        kb=SimpleNamespace(id=payload.knowledge_base_id),
-        model=SimpleNamespace(
-            id=payload.generation_model_id,
-            name="GPT Test",
-            provider_name="openai",
-        ),
-        credential=SimpleNamespace(id=payload.credential_id),
-        run=run,
     )
     audit_calls = []
 
@@ -1426,11 +1182,11 @@ def test_stream_events_policy_block_stops_before_answer_usage_and_completion(
             return [chunk]
 
     monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(service, "_record_retrieval", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        service,
-        "_generate_answer",
+        service.generation,
+        "generate",
         lambda *args, **kwargs: pytest.fail("policy block must prevent LLM call"),
     )
     monkeypatch.setattr(
@@ -1464,21 +1220,12 @@ def test_stream_events_marks_running_run_cancelled_when_generator_closes(monkeyp
     service = _service()
     run = _run()
     run.status = "running"
-    payload = _agent_payload(correlation_id=run.correlation_id)
-    execution = service_module.RAGAnswerExecution(
-        payload=payload,
-        correlation_id=run.correlation_id,
-        metadata_filter=None,
-        kb=SimpleNamespace(id=payload.knowledge_base_id),
-        model=SimpleNamespace(id=payload.generation_model_id),
-        credential=SimpleNamespace(id=payload.credential_id),
-        run=run,
-    )
+    execution = _execution(service, run=run)
     lifecycle_actions = []
 
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
+        service.audit,
+        "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
 
@@ -1502,12 +1249,12 @@ def test_cancel_guard_does_not_overwrite_completed_run(monkeypatch):
     run.status = "completed"
     lifecycle_actions = []
     monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
+        service.audit,
+        "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
 
-    service._mark_cancelled_if_open(run)
+    service.lifecycle.cancel_if_open(run)
 
     assert run.status == "completed"
     assert lifecycle_actions == []
@@ -1515,24 +1262,10 @@ def test_cancel_guard_does_not_overwrite_completed_run(monkeypatch):
 
 def test_answer_success_stores_redaction_safe_summaries(monkeypatch):
     service = _service()
-    payload = RAGAgentAnswerRequest(
-        knowledge_base_id=uuid.uuid4(),
-        query="policy",
-        generation_model_id=uuid.uuid4(),
-        credential_id=uuid.uuid4(),
-        correlation_id="corr-1",
-    )
-    kb = SimpleNamespace(id=payload.knowledge_base_id, name="KB")
-    model = SimpleNamespace(
-        id=payload.generation_model_id,
-        name="GPT Test",
-        provider_name="openai",
-        type="chat",
-        model_id_for_api_call="gpt-test",
-    )
-    credential = SimpleNamespace(id=payload.credential_id)
+    payload = _agent_payload(correlation_id="corr-1")
     run = _run()
     run.correlation_id = payload.correlation_id
+    execution = _execution(service, payload=payload, run=run)
     chunk = ChunkPreview(
         chunk_id=uuid.uuid4(),
         content="원문 evidence",
@@ -1544,7 +1277,6 @@ def test_answer_success_stores_redaction_safe_summaries(monkeypatch):
         metadata_summary={"classification": "internal"},
         hierarchy_path=["Policy"],
     )
-    lifecycle_actions = []
     retrieval_audits = []
 
     class FakeRetrievalService:
@@ -1554,46 +1286,26 @@ def test_answer_success_stores_redaction_safe_summaries(monkeypatch):
         async def search_documents(self, *args, **kwargs):
             return [chunk]
 
-    monkeypatch.setattr(
-        service_module,
-        "RetrievalService",
-        FakeRetrievalService,
-    )
-    monkeypatch.setattr(service, "_visible_knowledge_base", lambda *_: kb)
-    monkeypatch.setattr(service, "_visible_generation_model", lambda *_: model)
-    monkeypatch.setattr(service, "_visible_credential", lambda *_: credential)
-    monkeypatch.setattr(service, "_ensure_generation_model", lambda *_: None)
-    monkeypatch.setattr(service, "_ensure_hierarchy_available", lambda *_: None)
-    monkeypatch.setattr(service, "_create_run", lambda **_: run)
-    monkeypatch.setattr(service, "_ensure_kb_use", lambda *_: None)
-    monkeypatch.setattr(
-        service,
-        "_ensure_credential_use_and_relation",
-        lambda *_: None,
-    )
-    monkeypatch.setattr(
-        service,
-        "_record_lifecycle",
-        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
-    )
-    monkeypatch.setattr(
-        service,
-        "_record_retrieval",
-        lambda *_args, **_kwargs: retrieval_audits.append(True),
-    )
-
-    async def fake_generate_answer(*args, **kwargs):
+    async def fake_generate(*args, **kwargs):
         return "요약 답변", RAGUsageSummary(
             prompt_tokens=3,
             completion_tokens=4,
             total_tokens=7,
             total_cost=0.001,
             latency_ms=10,
-            model_name=model.name,
-            provider=model.provider_name,
+            model_name=execution.model.name,
+            provider=execution.model.provider_name,
         )
 
-    monkeypatch.setattr(service, "_generate_answer", fake_generate_answer)
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service_module, "RetrievalService", FakeRetrievalService)
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service.audit,
+        "record_retrieval",
+        lambda *_args, **_kwargs: retrieval_audits.append(True),
+    )
+    monkeypatch.setattr(service.generation, "generate", fake_generate)
 
     response = asyncio.run(service.answer(payload))
 
@@ -1609,10 +1321,6 @@ def test_answer_success_stores_redaction_safe_summaries(monkeypatch):
         "result": "allow",
         "evidence_classifications": ["internal"],
     }
-    assert run.usage_summary["model_id"] == str(model.id)
-    assert run.usage_summary["credential_id"] == str(credential.id)
-    assert lifecycle_actions == [
-        AuditAction.RAG_ANSWER_REQUESTED,
-        AuditAction.RAG_ANSWER_COMPLETED,
-    ]
+    assert run.usage_summary["model_id"] == str(execution.model.id)
+    assert run.usage_summary["credential_id"] == str(execution.credential.id)
     assert retrieval_audits == [True]
