@@ -56,8 +56,9 @@ RETENTION_DAYS = 90
 CONTENT_PREVIEW_LIMIT = 300
 CONTEXT_TOKEN_BUDGET = 8000
 MAX_OUTPUT_TOKENS = 1000
+PROMPT_OVERHEAD_TOKENS = 500
 PROVIDER_TIMEOUT_SECONDS = 60
-SSE_IDLE_TIMEOUT_SECONDS = 30
+RETRIEVAL_TIMEOUT_SECONDS = 30
 MIN_TOP_K = 1
 MAX_TOP_K = 8
 
@@ -75,6 +76,7 @@ class RAGAnswerExecution:
     model: LLMModel
     credential: LLMCredential
     run: RAGAnswerRun
+    embedding_model: LLMModel | None = None
 
 
 class RAGAgentAnswerService:
@@ -100,6 +102,7 @@ class RAGAgentAnswerService:
         credential = execution.credential
         run = execution.run
         metadata_filter = execution.metadata_filter
+        embedding_model = execution.embedding_model
         timeout_stage: str | None = None
 
         try:
@@ -110,12 +113,12 @@ class RAGAgentAnswerService:
                 organization_id=self.organization_id,
             )
             timeout_stage = "retrieval"
-            chunks = await retrieval_service.search_documents(
-                payload.query,
-                knowledge_base_id=str(kb.id),
-                top_k=payload.top_k,
-                metadata_filter=metadata_filter,
-                hierarchy_mode=payload.hierarchy_mode,
+            chunks = await self._retrieve_chunks(
+                retrieval_service,
+                payload,
+                kb,
+                metadata_filter,
+                embedding_model,
             )
             timeout_stage = None
             retrieval_latency_ms = int((time.perf_counter() - retrieval_start) * 1000)
@@ -188,7 +191,7 @@ class RAGAgentAnswerService:
                 policy_result=policy_result,
             )
         except asyncio.CancelledError:
-            self._mark_cancelled(run)
+            self._mark_cancelled_if_open(run)
             raise
         except asyncio.TimeoutError:
             if timeout_stage == "generation":
@@ -274,6 +277,7 @@ class RAGAgentAnswerService:
         try:
             self._record_lifecycle(AuditAction.RAG_ANSWER_REQUESTED, run)
             self._ensure_kb_use(run, kb)
+            embedding_model = self._ensure_embedding_readiness(run, kb)
             self._ensure_credential_use_and_relation(run, credential, model)
             self._mark_running(run)
         except HTTPException:
@@ -296,6 +300,7 @@ class RAGAgentAnswerService:
             model=model,
             credential=credential,
             run=run,
+            embedding_model=embedding_model,
         )
 
     async def stream_events(
@@ -307,6 +312,7 @@ class RAGAgentAnswerService:
         credential = execution.credential
         run = execution.run
         metadata_filter = execution.metadata_filter
+        embedding_model = execution.embedding_model
         timeout_stage: str | None = None
         try:
             yield (
@@ -327,15 +333,12 @@ class RAGAgentAnswerService:
                 organization_id=self.organization_id,
             )
             timeout_stage = "retrieval"
-            chunks = await asyncio.wait_for(
-                retrieval_service.search_documents(
-                    payload.query,
-                    knowledge_base_id=str(kb.id),
-                    top_k=payload.top_k,
-                    metadata_filter=metadata_filter,
-                    hierarchy_mode=payload.hierarchy_mode,
-                ),
-                timeout=SSE_IDLE_TIMEOUT_SECONDS,
+            chunks = await self._retrieve_chunks(
+                retrieval_service,
+                payload,
+                kb,
+                metadata_filter,
+                embedding_model,
             )
             timeout_stage = None
             retrieval_latency_ms = int((time.perf_counter() - retrieval_start) * 1000)
@@ -453,7 +456,7 @@ class RAGAgentAnswerService:
                 },
             )
         except asyncio.CancelledError:
-            self._mark_cancelled(run)
+            self._mark_cancelled_if_open(run)
             raise
         except asyncio.TimeoutError:
             error_code = (
@@ -479,8 +482,27 @@ class RAGAgentAnswerService:
             self._mark_failed(run, "generation.failed")
             yield self._error_event(run, "generation.failed", retryable=True)
         finally:
-            if getattr(run, "status", None) in {"requested", "running"}:
-                self._mark_cancelled(run)
+            self._mark_cancelled_if_open(run)
+
+    async def _retrieve_chunks(
+        self,
+        retrieval_service: RetrievalService,
+        payload: RAGAgentAnswerRequest,
+        kb: KnowledgeBase,
+        metadata_filter,
+        embedding_model: LLMModel | None,
+    ):
+        return await asyncio.wait_for(
+            retrieval_service.search_documents(
+                payload.query,
+                knowledge_base_id=str(kb.id),
+                top_k=payload.top_k,
+                metadata_filter=metadata_filter,
+                hierarchy_mode=payload.hierarchy_mode,
+                embedding_model=embedding_model,
+            ),
+            timeout=RETRIEVAL_TIMEOUT_SECONDS,
+        )
 
     def _visible_knowledge_base(self, knowledge_base_id: uuid.UUID) -> KnowledgeBase:
         kb = (
@@ -631,6 +653,111 @@ class RAGAgentAnswerService:
         )
         self._block_permission(run, "kb_use_denied")
 
+    def _ensure_embedding_readiness(
+        self, run: RAGAnswerRun, kb: KnowledgeBase
+    ) -> LLMModel | None:
+        if not hasattr(kb, "embedding_model"):
+            return None
+
+        embedding_model_id = getattr(kb, "embedding_model", None)
+        if not embedding_model_id:
+            self._fail_preflight_configuration(
+                run,
+                "kb_embedding_model_unavailable",
+                {"knowledge_base_id": str(kb.id)},
+            )
+
+        embedding_model = self._active_embedding_model(embedding_model_id)
+        if embedding_model is None:
+            self._fail_preflight_configuration(
+                run,
+                "kb_embedding_model_unavailable",
+                {
+                    "knowledge_base_id": str(kb.id),
+                    "embedding_model": str(embedding_model_id),
+                },
+            )
+
+        credentials = self._verified_embedding_credentials(embedding_model)
+        if not credentials:
+            self._fail_preflight_configuration(
+                run,
+                "embedding_credential_unavailable",
+                {
+                    "knowledge_base_id": str(kb.id),
+                    "embedding_model": str(embedding_model_id),
+                },
+            )
+
+        last_auth_state = "none"
+        for credential in credentials:
+            effective_auth_state = get_effective_llm_credential_auth_state(
+                self.db,
+                self.current_user.id,
+                credential.id,
+                organization_id=self.organization_id,
+            )
+            if llm_credential_auth_state_allows(effective_auth_state, "use"):
+                return embedding_model
+            last_auth_state = effective_auth_state
+
+        denied_resource_type = "llm_model"
+        denied_resource_id = embedding_model.id
+        if len(credentials) == 1:
+            denied_resource_type = "llm_credential"
+            denied_resource_id = credentials[0].id
+        record_resource_permission_denied(
+            user_id=self.current_user.id,
+            resource_type=denied_resource_type,
+            resource_id=denied_resource_id,
+            action="use",
+            effective_auth_state=last_auth_state,
+            organization_id=self.organization_id,
+            metadata=self._permission_metadata(
+                run,
+                reason_code="embedding_credential_use_denied",
+                extra={
+                    "knowledge_base_id": str(kb.id),
+                    "embedding_model": str(embedding_model_id),
+                    "candidate_count": len(credentials),
+                    "denied_credential_count": len(credentials),
+                },
+            ),
+        )
+        self._block_permission(run, "embedding_credential_use_denied")
+
+    def _active_embedding_model(self, embedding_model_id: str) -> LLMModel | None:
+        return (
+            self.db.query(LLMModel)
+            .filter(
+                LLMModel.model_id_for_api_call == embedding_model_id,
+                LLMModel.type == "embedding",
+                LLMModel.is_active.is_(True),
+            )
+            .first()
+        )
+
+    def _verified_embedding_credentials(self, embedding_model: LLMModel):
+        return (
+            self.db.query(LLMCredential)
+            .join(
+                LLMRelCredentialModel,
+                LLMRelCredentialModel.credential_id == LLMCredential.id,
+            )
+            .options(joinedload(LLMCredential.provider))
+            .filter(
+                LLMCredential.organization_id == self.organization_id,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.model_id == embedding_model.id,
+                LLMRelCredentialModel.is_verified.is_(True),
+            )
+            .order_by(
+                LLMRelCredentialModel.priority.asc(),
+                LLMCredential.credential_name.asc(),
+            )
+            .all()
+        )
+
     def _ensure_credential_use_and_relation(
         self, run: RAGAnswerRun, credential: LLMCredential, model: LLMModel
     ) -> None:
@@ -726,7 +853,7 @@ class RAGAgentAnswerService:
         run: RAGAnswerRun,
     ) -> tuple[str, RAGUsageSummary]:
         client = self._client_for(model, credential)
-        context_text = self._context_for_chunks(chunks)
+        context_text = self._context_for_chunks(chunks, model)
         system_prompt = (
             "You are a helpful assistant. Use the following context to answer the user's question.\n"
             "If the answer is not in the context, say you don't know.\n\n"
@@ -739,7 +866,10 @@ class RAGAgentAnswerService:
         llm_start = time.perf_counter()
         try:
             result = await asyncio.wait_for(
-                client.invoke(messages, max_tokens=MAX_OUTPUT_TOKENS),
+                client.invoke(
+                    messages,
+                    max_tokens=self._output_token_budget_for_model(model),
+                ),
                 timeout=PROVIDER_TIMEOUT_SECONDS,
             )
         except Exception:
@@ -796,20 +926,60 @@ class RAGAgentAnswerService:
             provider=model.provider_name,
         )
 
-    def _context_for_chunks(self, chunks) -> str:
+    def _context_for_chunks(self, chunks, model: LLMModel | None = None) -> str:
+        context_budget = self._context_budget_for_model(model)
         parts: list[str] = []
         total_tokens = 0
         for chunk in chunks:
             content = chunk.content or ""
             token_count = chunk.token_count or max(1, len(content) // 4)
-            if total_tokens and total_tokens + token_count > CONTEXT_TOKEN_BUDGET:
+            if total_tokens and total_tokens + token_count > context_budget:
                 break
-            if token_count > CONTEXT_TOKEN_BUDGET:
-                parts.append(content[: CONTEXT_TOKEN_BUDGET * 4])
+            if token_count > context_budget:
+                parts.append(content[: context_budget * 4])
                 break
             parts.append(content)
             total_tokens += token_count
         return "\n\n".join(parts)
+
+    def _context_budget_for_model(self, model: LLMModel | None) -> int:
+        context_window = getattr(model, "context_window", None)
+        if not isinstance(context_window, int) or context_window <= 0:
+            return CONTEXT_TOKEN_BUDGET
+
+        reserved_output_tokens = self._output_token_budget_for_model(model)
+        prompt_overhead_tokens = self._prompt_overhead_for_context_window(
+            context_window
+        )
+        available_tokens = (
+            context_window - reserved_output_tokens - prompt_overhead_tokens
+        )
+        return max(1, min(CONTEXT_TOKEN_BUDGET, available_tokens))
+
+    def _output_token_budget_for_model(self, model: LLMModel | None) -> int:
+        context_window = getattr(model, "context_window", None)
+        if not isinstance(context_window, int) or context_window <= 0:
+            return MAX_OUTPUT_TOKENS
+
+        prompt_overhead_tokens = self._prompt_overhead_for_context_window(
+            context_window
+        )
+        max_output_for_model = max(1, context_window - prompt_overhead_tokens - 1)
+        preferred_output_tokens = max(256, context_window // 4)
+        return max(
+            1,
+            min(
+                MAX_OUTPUT_TOKENS,
+                preferred_output_tokens,
+                max_output_for_model,
+            ),
+        )
+
+    def _prompt_overhead_for_context_window(self, context_window: int) -> int:
+        return min(
+            PROMPT_OVERHEAD_TOKENS,
+            max(128, context_window // 8),
+        )
 
     def _client_for(self, model: LLMModel, credential: LLMCredential):
         try:
@@ -989,6 +1159,27 @@ class RAGAgentAnswerService:
             self._mark_failed(run, "generation.failed")
         except Exception:  # noqa: BLE001 - 상태 마감 실패도 sanitized 응답은 유지한다
             logger.exception("RAG Agent answer preflight failure close failed")
+
+    def _fail_preflight_configuration(
+        self, run: RAGAnswerRun, reason_code: str, details: dict[str, Any] | None = None
+    ) -> None:
+        self._mark_failed(run, "generation.failed")
+        raise_api_error(
+            self.request,
+            500,
+            "generation.failed",
+            "RAG answer preflight failed.",
+            {
+                "answer_run_id": str(run.id),
+                "correlation_id": run.correlation_id,
+                "reason_code": reason_code,
+                **(details or {}),
+            },
+        )
+
+    def _mark_cancelled_if_open(self, run: RAGAnswerRun) -> None:
+        if getattr(run, "status", None) in {"requested", "running"}:
+            self._mark_cancelled(run)
 
     def _mark_cancelled(self, run: RAGAnswerRun) -> None:
         run.status = "cancelled"

@@ -20,6 +20,7 @@ from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
     LLMCredentialModelOptionResponse,
+    LLMCredentialOptionResponse,
     LLMCredentialResponse,
     LLMModelResponse,
     LLMProviderResponse,
@@ -786,6 +787,51 @@ class LLMService:
         )
 
     @staticmethod
+    def get_client_for_model(
+        db: Session,
+        user_id: uuid.UUID,
+        model: LLMModel,
+        organization_id: Optional[uuid.UUID] = None,
+    ):
+        """
+        DB model row 기준으로 사용할 수 있는 credential을 찾고 client를 생성한다.
+
+        Agent answer처럼 preflight에서 이미 확인한 model row를 runtime에도 그대로
+        사용해야 하는 경로에서 model_id 문자열 재조회로 다른 row가 선택되는 일을 막는다.
+        """
+        if not model or not model.is_active:
+            raise ValueError("Unknown model")
+
+        cred = LLMService._get_valid_credential_for_user(
+            db,
+            user_id=user_id,
+            model_db_id=model.id,
+            organization_id=organization_id,
+        )
+        if not cred:
+            logger.error(
+                "[LLMService] No valid credential found for user_id=%s, model_id=%s.",
+                user_id,
+                model.id,
+            )
+            raise ValueError("유효한 API 키를 찾을 수 없습니다.")
+
+        try:
+            cfg = json.loads(cred.encrypted_config)
+            api_key = cfg.get("apiKey")
+            base_url = cfg.get("baseUrl")
+        except Exception as exc:
+            raise ValueError("Invalid credential config") from exc
+
+        db.refresh(cred)
+        provider_type = cred.provider.name
+        return get_llm_client(
+            provider=provider_type,
+            model_id=model.model_id_for_api_call,
+            credentials={"apiKey": api_key, "baseUrl": base_url},
+        )
+
+    @staticmethod
     def get_client_with_any_credential(db: Session, model_id: Optional[str] = None):
         """
         [DEPRECATED] 안전성 문제로 비활성화되었습니다.
@@ -969,7 +1015,7 @@ class LLMService:
             options.append(
                 LLMCredentialModelOptionResponse(
                     model=LLMModelResponse.model_validate(model),
-                    credential=LLMCredentialResponse.model_validate(credential),
+                    credential=LLMCredentialOptionResponse.model_validate(credential),
                     provider_name=model.provider_name,
                     relation_priority=priority,
                 )

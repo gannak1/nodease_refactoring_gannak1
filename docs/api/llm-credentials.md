@@ -71,11 +71,22 @@ LLM provider, model, credential, model pricing, credential-model sync 계약을 
 | Field | Type | 설명 |
 | --- | --- | --- |
 | `model` | `LLMModelResponse` | verified relation을 가진 active chat model |
-| `credential` | `LLMCredentialResponse` | 같은 active organization 안에서 `use` 가능한 valid credential |
+| `credential` | `LLMCredentialOptionResponse` | 같은 active organization 안에서 `use` 가능한 valid credential의 선택용 safe field |
 | `provider_name` | string | model provider 이름 |
 | `relation_priority` | integer | `llm_rel_credential_models.priority` |
 
-이 응답은 Agent answer request에 사용할 `(generation_model_id, credential_id)` 선택지를 제공하기 위한 UI-facing allowlist다. 각 row는 verified relation과 credential `use` 권한을 통과한 조합이어야 하며, credential 원문 조회 권한을 부여하지 않는다. `credential` field는 표시/선택에 필요한 safe field만 포함하고 `encrypted_config`, API key 원문, token, provider secret은 절대 반환하지 않는다.
+### `LLMCredentialOptionResponse`
+
+| Field | Type | 설명 |
+| --- | --- | --- |
+| `id` | UUID | request `credential_id`로 제출할 credential id |
+| `provider_id` | UUID | provider id |
+| `organization_id` | UUID/null | credential이 속한 organization |
+| `credential_name` | string | 표시 이름 |
+| `config_preview` | string/null | masking된 key preview |
+| `is_valid` | boolean | 검증 상태 |
+
+이 응답은 Agent answer request에 사용할 `(generation_model_id, credential_id)` 선택지를 제공하기 위한 UI-facing allowlist다. 각 row는 verified relation과 credential `use` 권한을 통과한 조합이어야 하며, credential 원문 조회 권한을 부여하지 않는다. `credential` field는 표시/선택에 필요한 safe field만 포함하고 `user_id`, quota, timestamps, `encrypted_config`, API key 원문, token, provider secret은 반환하지 않는다.
 
 ## MVP 1 변경 기준
 

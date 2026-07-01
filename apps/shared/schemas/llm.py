@@ -72,6 +72,17 @@ class LLMCredentialResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LLMCredentialOptionResponse(BaseModel):
+    id: uuid.UUID
+    provider_id: uuid.UUID
+    organization_id: Optional[uuid.UUID] = None
+    credential_name: str
+    config_preview: Optional[str] = None
+    is_valid: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class LLMCredentialModelOptionResponse(BaseModel):
     """
     Agent answer처럼 model과 credential을 함께 선택해야 하는 UI용 옵션.
@@ -80,7 +91,7 @@ class LLMCredentialModelOptionResponse(BaseModel):
     """
 
     model: LLMModelResponse
-    credential: LLMCredentialResponse
+    credential: LLMCredentialOptionResponse
     provider_name: str
     relation_priority: int = 0
 

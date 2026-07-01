@@ -586,6 +586,149 @@ def test_context_for_chunks_respects_internal_token_budget():
     assert service._context_for_chunks(chunks) == "first"
 
 
+def test_context_for_chunks_caps_budget_by_model_context_window():
+    service = _service()
+    chunks = [
+        SimpleNamespace(content="x" * 12000, token_count=4000),
+        SimpleNamespace(content="second", token_count=100),
+    ]
+    model = SimpleNamespace(context_window=4096)
+
+    context = service._context_for_chunks(chunks, model)
+
+    assert service._context_budget_for_model(model) == 2596
+    assert len(context) == 2596 * 4
+    assert "second" not in context
+
+
+def test_generate_answer_uses_model_aware_output_token_budget(monkeypatch):
+    service = _service()
+    payload = _agent_payload()
+    run = _run()
+    model = SimpleNamespace(
+        id=payload.generation_model_id,
+        name="Small Context",
+        provider_name="openai",
+        model_id_for_api_call="small-context",
+        context_window=1024,
+    )
+    credential = SimpleNamespace(id=payload.credential_id)
+    calls = []
+
+    class CaptureClient:
+        async def invoke(self, messages, max_tokens):
+            calls.append({"messages": messages, "max_tokens": max_tokens})
+            return {
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                    "total_tokens": 3,
+                },
+                "choices": [{"message": {"content": "answer"}}],
+            }
+
+    monkeypatch.setattr(service, "_client_for", lambda *_: CaptureClient())
+    monkeypatch.setattr(service, "_record_llm_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_record_usage_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service_module.LLMService,
+        "calculate_cost",
+        staticmethod(lambda *args, **kwargs: 0.0),
+    )
+
+    answer, usage = asyncio.run(
+        service._generate_answer(payload, [], model, credential, run)
+    )
+
+    assert answer == "answer"
+    assert usage.total_tokens == 3
+    assert calls[0]["max_tokens"] == service._output_token_budget_for_model(model)
+    assert calls[0]["max_tokens"] == 256
+
+
+def test_embedding_readiness_blocks_when_user_cannot_use_embedding_credential(
+    monkeypatch,
+):
+    service = _service()
+    run = _run()
+    kb = SimpleNamespace(id=uuid.uuid4(), embedding_model="text-embedding-test")
+    embedding_model = SimpleNamespace(id=uuid.uuid4())
+    embedding_credential = SimpleNamespace(id=uuid.uuid4())
+    denied_audits = []
+
+    monkeypatch.setattr(
+        service, "_active_embedding_model", lambda *_: embedding_model
+    )
+    monkeypatch.setattr(
+        service,
+        "_verified_embedding_credentials",
+        lambda *_: [embedding_credential],
+    )
+    monkeypatch.setattr(
+        service_module,
+        "get_effective_llm_credential_auth_state",
+        lambda *args, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(
+        service_module,
+        "llm_credential_auth_state_allows",
+        lambda state, action: False,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "record_resource_permission_denied",
+        lambda **kwargs: denied_audits.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service._ensure_embedding_readiness(run, kb)
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["error"]["code"] == "permission.denied"
+    assert exc.value.detail["error"]["details"]["reason_code"] == (
+        "embedding_credential_use_denied"
+    )
+    assert run.status == "blocked"
+    assert denied_audits[0]["resource_type"] == "llm_credential"
+    assert denied_audits[0]["resource_id"] == embedding_credential.id
+    assert denied_audits[0]["metadata"]["reason_code"] == (
+        "embedding_credential_use_denied"
+    )
+    assert denied_audits[0]["metadata"]["candidate_count"] == 1
+    assert denied_audits[0]["metadata"]["denied_credential_count"] == 1
+
+
+def test_embedding_readiness_fails_safe_when_no_verified_embedding_credential(
+    monkeypatch,
+):
+    service = _service()
+    run = _run()
+    kb = SimpleNamespace(id=uuid.uuid4(), embedding_model="text-embedding-test")
+    embedding_model = SimpleNamespace(id=uuid.uuid4())
+    lifecycle_actions = []
+
+    monkeypatch.setattr(
+        service, "_active_embedding_model", lambda *_: embedding_model
+    )
+    monkeypatch.setattr(service, "_verified_embedding_credentials", lambda *_: [])
+    monkeypatch.setattr(
+        service,
+        "_record_lifecycle",
+        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service._ensure_embedding_readiness(run, kb)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail["error"]["code"] == "generation.failed"
+    assert exc.value.detail["error"]["details"]["reason_code"] == (
+        "embedding_credential_unavailable"
+    )
+    assert run.status == "failed"
+    assert lifecycle_actions == [AuditAction.RAG_ANSWER_FAILED]
+
+
 def test_record_usage_log_keeps_rag_answer_fk_out_of_usage_domain():
     service = _service()
     model_id = uuid.uuid4()
@@ -693,7 +836,7 @@ def test_stream_events_emits_terminal_error_on_idle_timeout(monkeypatch):
             return []
 
     monkeypatch.setattr(service_module, "RetrievalService", SlowRetrievalService)
-    monkeypatch.setattr(service_module, "SSE_IDLE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(service_module, "RETRIEVAL_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(service, "_record_lifecycle", lambda *args, **kwargs: None)
 
     async def collect():
@@ -1350,6 +1493,23 @@ def test_stream_events_marks_running_run_cancelled_when_generator_closes(monkeyp
     assert run.status == "cancelled"
     assert run.error_code == "client.cancelled"
     assert lifecycle_actions == [AuditAction.RAG_ANSWER_CANCELLED]
+
+
+def test_cancel_guard_does_not_overwrite_completed_run(monkeypatch):
+    service = _service()
+    run = _run()
+    run.status = "completed"
+    lifecycle_actions = []
+    monkeypatch.setattr(
+        service,
+        "_record_lifecycle",
+        lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
+    )
+
+    service._mark_cancelled_if_open(run)
+
+    assert run.status == "completed"
+    assert lifecycle_actions == []
 
 
 def test_answer_success_stores_redaction_safe_summaries(monkeypatch):

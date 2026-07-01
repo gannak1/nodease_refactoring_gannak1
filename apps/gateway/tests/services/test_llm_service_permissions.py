@@ -277,6 +277,64 @@ def test_get_user_credentials_filters_by_read_permission(monkeypatch):
     assert seen_actions == ["read", "read"]
 
 
+def test_get_client_for_model_uses_model_db_id(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        is_active=True,
+        model_id_for_api_call="gpt-test",
+    )
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        encrypted_config='{"apiKey":"redacted-test-key","baseUrl":"https://example.test"}',
+        provider=SimpleNamespace(name="openai"),
+    )
+    captured = {}
+
+    class FakeDb:
+        def refresh(self, obj):
+            captured["refreshed"] = obj
+
+    def fake_get_valid_credential(
+        db,
+        user_id,
+        provider_id=None,
+        model_db_id=None,
+        organization_id=None,
+    ):
+        captured["user_id"] = user_id
+        captured["model_db_id"] = model_db_id
+        captured["organization_id"] = organization_id
+        return credential
+
+    def fake_get_llm_client(provider, model_id, credentials):
+        captured["provider"] = provider
+        captured["model_id"] = model_id
+        captured["has_api_key"] = bool(credentials.get("apiKey"))
+        return SimpleNamespace(provider=provider, model_id=model_id)
+
+    monkeypatch.setattr(
+        LLMService,
+        "_get_valid_credential_for_user",
+        staticmethod(fake_get_valid_credential),
+    )
+    monkeypatch.setattr(llm_service, "get_llm_client", fake_get_llm_client)
+
+    client = LLMService.get_client_for_model(
+        FakeDb(),
+        user_id,
+        model,
+        organization_id=organization_id,
+    )
+
+    assert client.model_id == "gpt-test"
+    assert captured["model_db_id"] == model.id
+    assert captured["organization_id"] == organization_id
+    assert captured["refreshed"] is credential
+    assert captured["has_api_key"] is True
+
+
 def test_get_my_available_models_filters_by_credential_use_permission(monkeypatch):
     allowed_credential_id = uuid.uuid4()
     blocked_credential_id = uuid.uuid4()
@@ -337,7 +395,7 @@ def test_get_agent_answer_options_returns_only_verified_usable_pairs(monkeypatch
         staticmethod(lambda value: value),
     )
     monkeypatch.setattr(
-        llm_service.LLMCredentialResponse,
+        llm_service.LLMCredentialOptionResponse,
         "model_validate",
         staticmethod(lambda value: value),
     )
