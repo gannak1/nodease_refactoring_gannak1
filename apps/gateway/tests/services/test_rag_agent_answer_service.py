@@ -347,6 +347,59 @@ def test_prepare_execution_blocks_kb_use_after_run_creation(monkeypatch):
     assert denied_audits[0]["metadata"]["reason_code"] == "kb_use_denied"
 
 
+def test_prepare_execution_success_runs_preflight_in_documented_order(monkeypatch):
+    service = _service()
+    payload = _agent_payload(correlation_id="corr-order")
+    resolved = _resolved(service, payload)
+    run = _run()
+    run.status = "requested"
+    embedding_model = SimpleNamespace(id=uuid.uuid4())
+    calls = []
+
+    def resolve(payload_arg):
+        calls.append("resolve_visible_context")
+        assert payload_arg is payload
+        return resolved
+
+    def create_requested(resolved_arg):
+        calls.append("create_requested")
+        assert resolved_arg is resolved
+        return run
+
+    def enforce(run_arg, resolved_arg):
+        calls.append("enforce_post_create_preflight")
+        assert run_arg is run
+        assert resolved_arg is resolved
+        return embedding_model
+
+    def mark_running(run_arg):
+        calls.append("mark_running")
+        assert run_arg is run
+        run.status = "running"
+
+    monkeypatch.setattr(service.preflight, "resolve_visible_context", resolve)
+    monkeypatch.setattr(service.lifecycle, "create_requested", create_requested)
+    monkeypatch.setattr(
+        service.preflight, "enforce_post_create_preflight", enforce
+    )
+    monkeypatch.setattr(service.lifecycle, "mark_running", mark_running)
+
+    execution = service.prepare_execution(payload)
+
+    assert calls == [
+        "resolve_visible_context",
+        "create_requested",
+        "enforce_post_create_preflight",
+        "mark_running",
+    ]
+    assert execution.run is run
+    assert execution.embedding_model is embedding_model
+    assert execution.kb is resolved.kb
+    assert execution.model is resolved.model
+    assert execution.credential is resolved.credential
+    assert run.status == "running"
+
+
 def test_prepare_execution_blocks_credential_use_after_run_creation(monkeypatch):
     service = _service(db=FakeRelationDb(relation=SimpleNamespace(id=uuid.uuid4())))
     payload = _agent_payload()
@@ -663,12 +716,75 @@ def test_embedding_readiness_blocks_when_user_cannot_use_embedding_credential(
         service.preflight._ensure_embedding_readiness(run, kb)
 
     assert exc.value.status_code == 403
+    assert exc.value.detail["error"]["code"] == "permission.denied"
     assert exc.value.detail["error"]["details"]["reason_code"] == (
         "embedding_credential_use_denied"
     )
+    assert getattr(exc.value, "audit_recorded") is True
     assert run.status == "blocked"
+    assert run.error_code == "embedding_credential_use_denied"
     assert denied_audits[0]["resource_type"] == "llm_credential"
     assert denied_audits[0]["resource_id"] == credential.id
+    assert denied_audits[0]["metadata"]["reason_code"] == (
+        "embedding_credential_use_denied"
+    )
+    assert denied_audits[0]["metadata"]["candidate_count"] == 1
+    assert denied_audits[0]["metadata"]["denied_credential_count"] == 1
+
+
+def test_embedding_readiness_records_aggregate_denial_for_multiple_credentials(
+    monkeypatch,
+):
+    service = _service()
+    payload = _agent_payload()
+    kb, _, _ = _visible_resources(payload, service.organization_id)
+    kb.embedding_model = "text-embedding-test"
+    run = _run()
+    embedding_model = SimpleNamespace(id=uuid.uuid4())
+    credentials = [SimpleNamespace(id=uuid.uuid4()), SimpleNamespace(id=uuid.uuid4())]
+    denied_audits = []
+
+    monkeypatch.setattr(
+        service.preflight,
+        "_active_embedding_model",
+        lambda *_: embedding_model,
+    )
+    monkeypatch.setattr(
+        service.preflight,
+        "_verified_embedding_credentials",
+        lambda *_: credentials,
+    )
+    monkeypatch.setattr(
+        preflight_module,
+        "get_effective_llm_credential_auth_state",
+        lambda *args, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(
+        preflight_module,
+        "llm_credential_auth_state_allows",
+        lambda state, action: False,
+    )
+    monkeypatch.setattr(
+        preflight_module,
+        "record_resource_permission_denied",
+        lambda **kwargs: denied_audits.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.preflight._ensure_embedding_readiness(run, kb)
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["error"]["code"] == "permission.denied"
+    assert exc.value.detail["error"]["details"]["reason_code"] == (
+        "embedding_credential_use_denied"
+    )
+    assert getattr(exc.value, "audit_recorded") is True
+    assert run.status == "blocked"
+    assert run.error_code == "embedding_credential_use_denied"
+    assert denied_audits[0]["resource_type"] == "llm_model"
+    assert denied_audits[0]["resource_id"] == embedding_model.id
+    assert denied_audits[0]["metadata"]["candidate_count"] == 2
+    assert denied_audits[0]["metadata"]["denied_credential_count"] == 2
 
 
 def test_embedding_readiness_fails_safe_when_no_verified_embedding_credential(
@@ -1204,6 +1320,8 @@ def test_stream_events_policy_block_stops_before_answer_usage_and_completion(
         "retrieval.started",
         "error",
     ]
+    assert all(event_name != "retrieval.completed" for event_name, _payload in events)
+    assert "private evidence" not in str(events)
     assert events[-1][1] == {
         "answer_run_id": str(run.id),
         "correlation_id": run.correlation_id,

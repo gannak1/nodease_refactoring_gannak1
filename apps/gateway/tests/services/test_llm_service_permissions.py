@@ -423,6 +423,66 @@ def test_get_agent_answer_options_returns_only_verified_usable_pairs(monkeypatch
     ]
 
 
+def test_get_agent_answer_options_returns_safe_credential_option_schema(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        credential_name="agent",
+        config_preview="sk-****",
+        is_valid=True,
+        quota_type="monthly",
+        quota_limit=1000,
+        quota_used=100,
+        encrypted_config="synthetic-secret-placeholder",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        model_id_for_api_call="gpt-test",
+        name="GPT Test",
+        type="chat",
+        provider_name="openai",
+        context_window=8192,
+        input_price_1k=None,
+        output_price_1k=None,
+        is_active=True,
+        model_metadata=None,
+    )
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+
+    result = LLMService.get_agent_answer_options(
+        FakeDb([(model, credential, 0)]), user_id, organization_id
+    )
+
+    assert len(result) == 1
+    option = result[0].model_dump(mode="json")
+    assert option["credential"] == {
+        "id": str(credential.id),
+        "provider_id": str(credential.provider_id),
+        "organization_id": str(organization_id),
+        "credential_name": "agent",
+        "config_preview": "sk-****",
+        "is_valid": True,
+    }
+    assert "user_id" not in option["credential"]
+    assert "quota_type" not in option["credential"]
+    assert "quota_limit" not in option["credential"]
+    assert "quota_used" not in option["credential"]
+    assert "encrypted_config" not in option["credential"]
+    assert "created_at" not in option["credential"]
+    assert "updated_at" not in option["credential"]
+
+
 def test_agent_answer_options_endpoint_resolves_active_organization(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

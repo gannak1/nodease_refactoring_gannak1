@@ -165,13 +165,15 @@ const API_BASE_URL = apiBaseUrl;
 const api = apiClient;
 
 const parseSseEvent = (rawEvent: string): RAGAgentStreamEvent | null => {
-  const lines = rawEvent.split('\n');
+  const lines = rawEvent.split(/\r?\n/);
   const eventLine = lines.find((line) => line.startsWith('event: '));
-  const dataLine = lines.find((line) => line.startsWith('data: '));
-  if (!eventLine || !dataLine) return null;
+  const dataLines = lines.filter((line) => line.startsWith('data: '));
+  if (!eventLine || dataLines.length === 0) return null;
   return {
     event: eventLine.slice('event: '.length).trim(),
-    data: JSON.parse(dataLine.slice('data: '.length)),
+    data: JSON.parse(
+      dataLines.map((line) => line.slice('data: '.length)).join(''),
+    ),
   };
 };
 
@@ -456,7 +458,7 @@ export const knowledgeApi = {
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n');
+      const events = buffer.split(/\r?\n\r?\n/);
       buffer = events.pop() || '';
 
       for (const rawEvent of events) {

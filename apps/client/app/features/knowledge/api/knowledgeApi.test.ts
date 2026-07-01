@@ -172,6 +172,57 @@ describe('knowledgeApi.streamAgentAnswer', () => {
     ]);
   });
 
+  it('parses CRLF separated SSE events', async () => {
+    const events: RAGAgentStreamEvent[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        streamResponse([
+          'event: retrieval.started\r\n',
+          'data: {"answer_run_id":"run-1","correlation_id":"corr-1"}\r\n\r\n',
+          'event: answer.completed\r\n',
+          'data: {"answer_run_id":"run-1","status":"completed"}\r\n\r\n',
+        ]),
+      ),
+    );
+
+    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+
+    expect(events).toEqual([
+      {
+        event: 'retrieval.started',
+        data: { answer_run_id: 'run-1', correlation_id: 'corr-1' },
+      },
+      {
+        event: 'answer.completed',
+        data: { answer_run_id: 'run-1', status: 'completed' },
+      },
+    ]);
+  });
+
+  it('parses multi-line data SSE events', async () => {
+    const events: RAGAgentStreamEvent[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        streamResponse([
+          'event: summary\n',
+          'data: {"answer_run_id":"run-1",\n',
+          'data: "status":"completed"}\n\n',
+        ]),
+      ),
+    );
+
+    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+
+    expect(events).toEqual([
+      {
+        event: 'summary',
+        data: { answer_run_id: 'run-1', status: 'completed' },
+      },
+    ]);
+  });
+
   it('uses sanitized HTTP error messages from the API envelope', async () => {
     vi.stubGlobal(
       'fetch',
