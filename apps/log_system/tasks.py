@@ -672,6 +672,17 @@ def trace_retention_purge(self, data: Dict[str, Any]):
         session.close()
 
 
+def _parse_rag_answer_purge_limit(data: Dict[str, Any]) -> int:
+    from apps.shared.services.rag_answer_retention import (
+        DEFAULT_RAG_ANSWER_PURGE_LIMIT,
+        RAGAnswerRetentionService,
+    )
+
+    return RAGAnswerRetentionService.validate_limit(
+        data.get("limit", DEFAULT_RAG_ANSWER_PURGE_LIMIT)
+    )
+
+
 @celery_app.task(name="log.rag_answer_retention_purge", bind=True, max_retries=3)
 def rag_answer_retention_purge(self, data: Dict[str, Any]):
     """만료된 standalone RAG Agent answer run 정리 실행."""
@@ -680,13 +691,18 @@ def rag_answer_retention_purge(self, data: Dict[str, Any]):
     session = SessionLocal()
     try:
         organization_id = data.get("organization_id")
+        limit = _parse_rag_answer_purge_limit(data)
         result = RAGAnswerRetentionService.purge(
             session,
             organization_id=uuid.UUID(organization_id) if organization_id else None,
             dry_run=bool(data.get("dry_run", False)),
-            limit=int(data.get("limit") or 1000),
+            limit=limit,
         )
         return {"status": "success", "result": result}
+    except ValueError:
+        session.rollback()
+        logger.warning("[Log-System] rag_answer_retention_purge invalid request")
+        return {"status": "failed", "error": "invalid_rag_answer_purge_request"}
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] rag_answer_retention_purge 실패: {e}")

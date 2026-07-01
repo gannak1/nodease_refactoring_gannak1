@@ -8,9 +8,29 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.knowledge import RAGAnswerRun
 
+DEFAULT_RAG_ANSWER_PURGE_LIMIT = 1000
+MAX_RAG_ANSWER_PURGE_LIMIT = 5000
+
 
 class RAGAnswerRetentionService:
     """만료된 standalone RAG Agent answer run을 정리한다."""
+
+    @staticmethod
+    def validate_limit(limit: int) -> int:
+        if isinstance(limit, bool):
+            raise ValueError("rag_answer_retention_purge limit must be an integer.")
+        try:
+            normalized_limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "rag_answer_retention_purge limit must be an integer."
+            ) from exc
+        if normalized_limit < 1 or normalized_limit > MAX_RAG_ANSWER_PURGE_LIMIT:
+            raise ValueError(
+                "rag_answer_retention_purge limit must be between "
+                f"1 and {MAX_RAG_ANSWER_PURGE_LIMIT}."
+            )
+        return normalized_limit
 
     @staticmethod
     def purge(
@@ -18,9 +38,10 @@ class RAGAnswerRetentionService:
         *,
         now: datetime | None = None,
         organization_id: uuid.UUID | None = None,
-        limit: int = 1000,
+        limit: int = DEFAULT_RAG_ANSWER_PURGE_LIMIT,
         dry_run: bool = False,
     ) -> dict[str, Any]:
+        normalized_limit = RAGAnswerRetentionService.validate_limit(limit)
         cutoff = now or datetime.now(timezone.utc)
         query = db.query(RAGAnswerRun).filter(
             RAGAnswerRun.retention_expires_at <= cutoff
@@ -29,7 +50,7 @@ class RAGAnswerRetentionService:
             query = query.filter(RAGAnswerRun.organization_id == organization_id)
         rows = (
             query.order_by(RAGAnswerRun.retention_expires_at.asc())
-            .limit(limit)
+            .limit(normalized_limit)
             .all()
         )
         would_purge_count = len(rows)

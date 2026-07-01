@@ -2,6 +2,8 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from apps.shared.audit.actions import AuditAction
 from apps.shared.services import rag_answer_retention as retention_module
 from apps.shared.services.rag_answer_retention import RAGAnswerRetentionService
@@ -138,6 +140,20 @@ def test_rag_answer_retention_purge_respects_limit(monkeypatch):
     assert db.deleted == rows[:2]
     assert result["would_purge_count"] == 2
     assert result["purged_count"] == 2
+
+
+@pytest.mark.parametrize("limit", [0, -1, 5001, "not-a-number", True])
+def test_rag_answer_retention_purge_rejects_invalid_limit(limit):
+    db = FakeDb([])
+
+    with pytest.raises(ValueError):
+        RAGAnswerRetentionService.purge(
+            db,
+            now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            limit=limit,
+        )
+
+    assert not hasattr(db, "last_query")
 
 
 def test_rag_answer_retention_purge_records_organization_scoped_audit_metadata(
