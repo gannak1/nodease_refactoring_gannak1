@@ -849,3 +849,50 @@ def test_wizard_runtime_block_uses_unknown_target_without_credential(monkeypatch
     assert audit_calls[0]["metadata"]["credential_id"] is None
     assert audit_calls[0]["metadata"]["model_id"] == "gpt-4o-mini"
     assert audit_calls[0]["metadata"]["reason"] == "credential_not_available"
+
+
+def test_wizard_runtime_relation_missing_uses_unknown_target(monkeypatch):
+    """Wizard relation-missing runtime blocks keep the audit target unknown. MBA-43"""
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "key", "baseUrl": "https://example.com"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    db = FakeWizardRuntimeDb(credentials=[credential], model=model, relations=[])
+    audit_calls = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc:
+        LLMService.get_wizard_client_for_user(
+            db,
+            user_id,
+            {"openai": "gpt-4o-mini"},
+            organization_id=organization_id,
+            runtime_surface="prompt_wizard",
+        )
+
+    assert exc.value.reason == "model_relation_not_verified"
+    assert exc.value.credential_id is None
+    assert audit_calls[0]["resource_type"] == "llm_credential"
+    assert audit_calls[0]["resource_id"] == "unknown"
+    assert audit_calls[0]["organization_id"] == organization_id
+    assert audit_calls[0]["metadata"]["credential_id"] is None
+    assert audit_calls[0]["metadata"]["model_id"] == "gpt-4o-mini"
+    assert audit_calls[0]["metadata"]["reason"] == "model_relation_not_verified"

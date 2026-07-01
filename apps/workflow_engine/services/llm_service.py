@@ -967,7 +967,6 @@ class LLMService:
             raise LLMCredentialNotAvailableError(
                 "model_relation_not_verified",
                 f"'{target_model.model_id_for_api_call}' 모델에 verified credential relation이 없습니다.",
-                credential_id=first_credential.id,
                 model_id=target_model.model_id_for_api_call,
                 organization_id=organization_uuid,
             )

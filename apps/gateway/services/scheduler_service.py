@@ -181,6 +181,9 @@ class SchedulerService:
                 "workflow_id": str(app.workflow_id)
                 if app and app.workflow_id
                 else None,
+                "organization_id": (
+                    str(app.organization_id) if app and app.organization_id else None
+                ),
                 "app_id": str(deployment.app_id),
                 "trigger_mode": "schedule",
                 "deployment_id": str(deployment_id),

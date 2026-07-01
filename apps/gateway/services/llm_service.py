@@ -996,7 +996,6 @@ class LLMService:
                     last_error = LLMCredentialNotAvailableError(
                         "model_relation_not_verified",
                         "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
-                        credential_id=credential.id,
                         model_id=model_id,
                         organization_id=organization_uuid,
                     )
@@ -1025,7 +1024,6 @@ class LLMService:
                     last_error = LLMCredentialNotAvailableError(
                         "model_relation_not_verified",
                         "사용 가능한 LLM 모델 관계를 찾을 수 없습니다.",
-                        credential_id=credential.id,
                         model_id=model_id,
                         organization_id=organization_uuid,
                     )

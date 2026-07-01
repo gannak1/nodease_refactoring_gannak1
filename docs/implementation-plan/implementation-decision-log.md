@@ -150,7 +150,9 @@ Implementation detail added after follow-up hardening: Workflow Engine runtime
 credential selection also includes `apps/workflow_engine/services/llm_service.py`.
 Runtime credential selection orders verified credential-model relations by
 `llm_rel_credential_models.priority ASC`, then credential `created_at ASC`, then
-credential `id ASC` for Workflow Engine runtime and Wizard helper runtime.
+credential `id ASC` for Workflow Engine runtime. Wizard helper runtime follows the
+provider/model map order first, then applies the same relation priority and
+credential tie-breakers within the selected provider/model candidate.
 Successful workflow LLM node usage logging keeps the actual executed credential id
 instead of re-selecting one. `log_usage(credential_id=...)` treats the provided
 credential id as a caller contract from runtime selection and does not re-validate

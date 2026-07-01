@@ -106,7 +106,7 @@ class FakeRuntimePriorityQuery:
         if self.model is workflow_llm_service.LLMCredential:
             return self.db.credentials[0] if self.db.credentials else None
         if self.model is workflow_llm_service.LLMRelCredentialModel:
-            return self.db.relations.pop(0)
+            return self.db.relations.pop(0) if self.db.relations else None
         return None
 
 
@@ -377,7 +377,6 @@ def test_llm_node_records_one_audit_when_primary_and_fallback_selection_fail(
     """Primary plus fallback credential selection failure records one final block. MBA-43"""
     organization_id = uuid.uuid4()
     primary_credential_id = uuid.uuid4()
-    fallback_credential_id = uuid.uuid4()
     service_calls = []
     audit_calls = []
 
@@ -395,7 +394,6 @@ def test_llm_node_records_one_audit_when_primary_and_fallback_selection_fail(
             raise LLMCredentialNotAvailableError(
                 "model_relation_not_verified",
                 "fallback relation missing",
-                credential_id=fallback_credential_id,
                 model_id=model_id,
                 organization_id=organization_id,
             )
@@ -438,8 +436,9 @@ def test_llm_node_records_one_audit_when_primary_and_fallback_selection_fail(
 
     assert service_calls == ["primary-model", "fallback-model"]
     assert len(audit_calls) == 1
-    assert audit_calls[0]["resource_id"] == fallback_credential_id
+    assert audit_calls[0]["resource_id"] == "unknown"
     assert audit_calls[0]["organization_id"] == organization_id
+    assert audit_calls[0]["metadata"]["credential_id"] is None
     assert audit_calls[0]["metadata"]["model_id"] == "fallback-model"
     assert audit_calls[0]["metadata"]["reason"] == "model_relation_not_verified"
 
@@ -678,6 +677,45 @@ def test_workflow_llm_service_uses_relation_priority_before_credential_created_a
     assert client_configs == [
         {"apiKey": "priority-key", "baseUrl": "https://priority.example"}
     ]
+
+
+def test_workflow_llm_service_relation_missing_has_unknown_audit_target():
+    """Relation-missing runtime blocks do not expose a representative credential id. MBA-43"""
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "key", "baseUrl": "https://example.com"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        provider=provider,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    db = FakeRuntimePriorityDb(
+        credentials=[credential],
+        model=model,
+        relations=[],
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc:
+        LLMService.get_runtime_client_for_user(
+            db,
+            user_id=user_id,
+            model_id="gpt-4o-mini",
+            organization_id=organization_id,
+        )
+
+    assert exc.value.reason == "model_relation_not_verified"
+    assert exc.value.credential_id is None
+    assert exc.value.model_id == "gpt-4o-mini"
 
 
 @pytest.mark.parametrize("organization_id", [None, "not-a-uuid"])
