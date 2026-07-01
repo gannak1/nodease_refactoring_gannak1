@@ -3,9 +3,9 @@
 Status: Accepted
 Authority: Decision
 Source of Truth: Yes
-Verified Against: feature/mba-78 @ HEAD (base dev d0c858e)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Created At: 2026-06-29 01:31 KST
-Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md)
+Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 배경
 
@@ -35,6 +35,11 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
 | LLM 호출 | `llm.call` | MVP 1 현재 구현 |
 | RAG retrieval 성공 | `rag.retrieve` | MVP 2 목표 |
+| RAG Agent answer 요청 | `rag.answer.requested` | RAG 확장 3단계 목표 |
+| RAG Agent answer 완료 | `rag.answer.completed` | RAG 확장 3단계 목표 |
+| RAG Agent answer 실패 | `rag.answer.failed` | RAG 확장 3단계 목표 |
+| RAG Agent answer 취소 | `rag.answer.cancelled` | RAG 확장 3단계 목표 |
+| RAG Agent answer retention purge | `rag.answer.purge` | RAG 확장 3단계 목표. aggregate purge 결과만 기록 |
 | 인증 전 또는 resource helper 밖의 전역 401/403 | `auth.permission_denied` | MVP 1 |
 | deployment 생성 | `workflow.deploy` | MVP 1 |
 | deployment 일반 활성/비활성 toggle | `deployment.toggle` | MVP 1 |
@@ -59,6 +64,9 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
 - `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정한다. MBA-78 1차 구현은 해당 `AuditAction` 상수와 테스트를 먼저 추가하며, `rag.retrieve`는 RAG retrieval 성공 감사에 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement 연결은 후속 구현 범위다.
+- `rag.answer.*`는 standalone RAG Agent answer의 사용자-facing 실행 lifecycle 감사 action이다. Retrieval 성공 감사인 `rag.retrieve`, provider 호출 감사인 `llm.call`, answer 실행 상태 record인 `rag_answer_runs.status`를 대체하지 않고, answer 요청 단위의 검색/운영 이벤트로만 사용한다.
+- `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 만들지 못한 경우에만 사용한다. 별도 `rag.answer.blocked` action은 만들지 않는다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied`와 answer run status 조합으로 표현한다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다.
+- `rag.answer.purge`는 retention purge aggregate event다. 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록하고, `audit_metadata`는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status` 같은 운영 summary allowlist로 제한한다. Raw answer/query/chunk content는 metadata에 넣지 않는다.
 
 ## 영향
 
@@ -66,7 +74,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - MVP 1에서 permission grant/update/revoke audit을 현재 permission row별 data-change action으로 기록하는 것을 명시한다.
 - Organization membership API의 invite/accept/update/remove audit action을 canonical action table에 포함한다.
 - MVP 2 knowledge base permission API/enforcement를 구현할 때 grant/update/revoke도 같은 permission row별 data-change action 규칙을 고정한다.
-- MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`, `rag.retrieve`를 검색 대상으로 삼는다.
+- MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`, `rag.retrieve`를 검색 대상으로 삼는다. RAG Agent answer 운영 검색을 구현할 때는 `rag.answer.requested/completed/failed/cancelled`도 canonical action으로 포함한다.
 - Data model의 대표 action convention에 `permission.denied`와 `auth.permission_denied`를 포함한다.
 - Deployment API 문서는 기본 권한 enforcement 구현 상태와 MVP 3 운영 기능 강화 범위를 구분한다.
 
@@ -74,4 +82,5 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 
 - Policy enforcement 구현 시 `policy.block`과 `permission.denied`가 섞이지 않도록 service/helper 경계를 테스트한다.
 - RAG retrieval 구현 시 성공 감사 action인 `rag.retrieve`와 trace payload kind인 `rag.retrieval`이 섞이지 않도록 상수와 fixture를 분리한다.
+- RAG Agent answer 구현 시 `rag.answer.*` lifecycle action, `rag.retrieve`, `llm.call`, `policy.block`/`permission.denied`, `rag.answer.purge`, `rag_answer_runs.status`가 서로 다른 의미로 기록되는지 테스트한다.
 - Audit UI가 "workflow 차단" 같은 사용자 친화 라벨을 canonical action에서 파생해 표시하는지 확인한다.

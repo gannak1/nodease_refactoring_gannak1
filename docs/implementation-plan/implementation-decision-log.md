@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: No
-Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Related ADRs:
 
 ## 목적
@@ -62,6 +62,20 @@ Related ADRs:
 - 후속 검토:
 - ADR 승격 여부: Yes | No
 ```
+
+## 2026-07-01
+
+### RAG Agent answer 3단계 기본 구현 범위
+
+- 상태: Active
+- 맥락: RAG 확장 3단계는 사용자-facing Agent answer API/UI를 구현해야 하지만, local 계획에는 KB 직접 선택, RAG preset, 대화 저장, 비교/평가 dashboard, re-index UI 후보가 함께 있었다. 모든 후보를 한 PR에 넣으면 API/data-model/RBAC/trace 경계가 동시에 넓어져 리뷰와 회귀 검증이 어려워진다.
+- 선택지: 1) RAG preset과 Agent answer를 함께 구현한다. 2) 단일 `knowledge_base_id` 직접 선택 Agent answer를 기본 구현으로 먼저 만들고 preset은 공식 schema 후 후속으로 분리한다. 3) 기존 search-test chat UI를 제품 UI로 승격한다.
+- 결정: 2안을 따른다. 이번 구현은 단일 `knowledge_base_id` 직접 선택 기반 `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream`, `rag_answer_runs`, SSE, lifecycle audit, credential/model 권한, redaction-safe summary, 최소 UI에 집중한다. RAG preset request field/table, 범용 `agent_id`, multi-KB, 대화 저장, answer history/replay, evaluation dashboard, re-index UI는 후속으로 분리한다.
+- 근거: 공식 API 문서는 3단계 목표 request를 단일 `knowledge_base_id`로 고정했고, RAG preset은 data model과 request field가 별도 공식화된 뒤 기본값 공급자로 추가할 수 있다고 둔다. `search-test`는 테스트/검증 성격이고, 사용자-facing answer는 lifecycle, citation, streaming, retention, usage summary, audit 경계가 더 분명해야 한다.
+- 범위: RAG Agent answer 3단계 구현 계획과 PR 분리 기준.
+- 영향 파일: [rag-agent-answer-phase-3.md](rag-agent-answer-phase-3.md), [Knowledge/RAG API](../api/knowledge-rag.md), [Knowledge/RAG architecture](../architecture/knowledge-rag.md), [physical data model](../data-model/physical-data-model.md), [RAG answer trace/usage ADR](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
+- 후속 검토: RAG preset이 필요해지면 먼저 `docs/api/knowledge-rag.md`, `docs/data-model/physical-data-model.md`, 필요 시 ADR을 갱신하고 별도 migration/API field/권한 정책으로 분리한다.
+- ADR 승격 여부: No. 이미 ADR과 권위 문서에 반영된 계약을 구현/PR 단위로 좁히는 결정이다.
 
 ## 2026-06-30
 

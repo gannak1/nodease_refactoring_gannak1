@@ -3,8 +3,8 @@
 Status: Draft
 Authority: API
 Source of Truth: Yes
-Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
-Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
+Related ADRs: [ADR-202606291315-resource-access-403-404-policy](../decisions/ADR-202606291315-resource-access-403-404-policy.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 범위
 
@@ -92,6 +92,7 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `auth.required` | `401` | session/token 없음 |
 | `auth.invalid` | `401` | session/token invalid |
 | `permission.denied` | `403` | resource permission 부족 |
+| `policy.blocked` | `403` | 같은 scope 안 요청이 data/model/trace/RAG policy에 의해 차단됨 |
 | `organization.required` | `400` | active organization이 필요하지만 결정되지 않음 |
 | `resource.not_found` | `404` | 리소스 없음 |
 | `resource.conflict` | `409` | 중복 또는 상태 충돌 |
@@ -100,6 +101,8 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 | `invalid_chunking_mode` | `400` | upload form의 chunking mode 값이 허용 범위를 벗어남 |
 | `invalid_chunking_selection` | `400` | chunking mode와 selection option 조합이 지원되지 않음 |
 | `unsupported_chunking_mode_for_source` | `400` | 요청 source type에서 해당 chunking mode를 지원하지 않음 |
+| `invalid_correlation_id` | `400` | client가 제공한 correlation id가 길이/문자셋/보안 규칙을 만족하지 않음 |
+| `credential_selection_required` | `409` | 후속 default credential/preset 자동 선택에서 사용할 LLM credential/model을 deterministic하게 선택할 수 없음 |
 | `secret.not_returnable` | `500` 또는 `403` | secret 원문 반환 시도 차단 |
 
 ## 보안 규칙
@@ -108,4 +111,5 @@ App/Workflow 같은 organization-scoped resource는 아래 기준을 따른다.
 - 현재 일부 legacy/helper endpoint가 내부 예외 문자열을 `detail` 또는 응답 field에 포함하는 경우에는 각 API 문서에 current behavior로 명시한다. 운영 목표 계약은 sanitized error code와 request/correlation id만 반환하고 내부 예외 세부 내용은 server log/observability에만 남기는 것이다.
 - 401/403은 `audit_logs`에 기록할 수 있다.
 - 401/403 `HTTPException`은 해당 예외에 `audit_recorded`가 없으면 Gateway exception handler에서 permission denied audit를 기록한다.
+- Service/helper가 `permission.denied` 또는 `policy.block` audit을 직접 기록한 뒤 401/403을 반환할 때는 예외에 `audit_recorded=True` 또는 동등 marker를 설정해 전역 handler의 중복 `auth.permission_denied` 기록을 막아야 한다.
 - permission 실패 metadata에는 resource/action/effective permission 정도만 남기고 secret payload를 남기지 않는다.

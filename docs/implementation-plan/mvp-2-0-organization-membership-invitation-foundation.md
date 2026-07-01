@@ -3,7 +3,7 @@
 Status: Draft
 Authority: Implementation Plan
 Source of Truth: Yes
-Verified Against: feature/mba-68 @ da83ac36625a7a3b1fafe5da3ef0b91ff7d42fb4 (2026-06-30 16:53:02 KST)
+Verified Against: dev @ 860ece0dee7cab3925d27f30ea650baf0cb18b4e (PR #138 docs target, 2026-07-01 KST)
 Original Basis: origin/dev @ cde421f2cbd98d0ede4e00cac2150ece36e413bd
 
 편입 메모: 이 문서는 첨부 계획서를 `docs/implementation-plan/`의 active 구현 계획으로 편입한 것이다. 원본 계획서의 검증 기준은 `Original Basis`에 보존했다. MBA-66에서 `organization_memberships` DB/model/migration foundation이 구현됐고, MBA-67에서 permission helper/API 일부가 organization membership 기준으로 전환됐다. MBA-71에서는 active organization과 manager/member 화면 분기가 일부 반영됐다. Organization member/invitation BE API는 구현됐고, full membership 관리 UI는 아직 후속 범위다.
@@ -77,7 +77,7 @@ user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additiv
 
 ### 2.2 현재 코드 기준
 
-원 계획 작성 당시에는 active organization과 user direct permission의 전제 조건이 `team_memberships`에 과도하게 의존했다. 최신 dev 기준으로 일부 전환은 완료됐고, 남은 작업은 organization member/invitation 제품 흐름과 full membership 관리 UI다.
+원 계획 작성 당시에는 active organization과 user direct permission의 전제 조건이 `team_memberships`에 과도하게 의존했다. 최신 dev 기준으로 BE foundation과 organization member/invitation API 전환은 완료됐고, 남은 작업은 full membership 관리 UI, team/direct permission picker 필터 반영, legacy fallback 축소 정책이다.
 
 | 파일 | 최신 dev 상태 | 남은 방향 |
 | --- | --- | --- |
@@ -86,7 +86,7 @@ user: 예외적 추가 권한 subject. resource별 user_*_permissions로 additiv
 | `apps/shared/services/permissions.py` | organization scope/manager 판정은 `organization_memberships` 우선, team permission 계산은 `team_memberships` join 유지 | knowledge/audit user direct permission 추가 시 같은 전제 조건 적용 |
 | `apps/shared/db/models/team.py` | `TeamMembership`은 organization 안의 team 배정 역할로 유지 | organization 소속 자체를 대신하지 않도록 유지 |
 | `docs/data-model/physical-data-model.md` | `organization_memberships`를 현재 organization 소속 기준으로 반영 | 후속 schema extension 시 planned table 상태 갱신 |
-| `docs/api/organization-rbac.md` | user directory, team, permission API의 membership 전제 조건을 반영 | organization member/invite API 추가 |
+| `docs/api/organization-rbac.md` | user directory, team, permission API의 membership 전제 조건과 organization member/invitation BE API를 반영 | full membership UI와 permission picker 연동 시 API 사용 흐름 갱신 |
 
 ## 3. 목표
 
@@ -1362,7 +1362,7 @@ Acceptance Criteria:
 - membership row 자체가 없는 created_by/managed_by legacy fallback이 유지된다.
 - team permission 계산은 기존과 동일하게 동작한다.
 
-### Issue 0-3. `[BE][API] organization member/invitation API 추가`
+### Issue 0-3. `[BE][API] organization member/invitation API 추가` (BE 완료)
 
 작업:
 
@@ -1537,7 +1537,7 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 | `docs/data-model/rbac-permission-policy.md` | organization membership 전제 조건 추가 |
 | `docs/data-model/diagrams/rbac-relationships.md` | organization-user 직접 관계 추가 |
 | `docs/data-model/diagrams/data-model-overview.md` | organization memberships 관계 추가 |
-| `docs/api/organization-rbac.md` | organization member/invitation API 추가 |
+| `docs/api/organization-rbac.md` | organization member/invitation BE API 계약 반영 |
 | `docs/requirements/mvp-2-governance-rag-audit.md` | MVP2 선행 조건으로 organization membership 추가 |
 | `docs/architecture/auth-rbac.md` | active organization context source 변경 |
 | `docs/api/auth.md` | active organization 전달 계약이 바뀌는 경우 request/header/session 설명 갱신 |
@@ -1592,9 +1592,9 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 | active organization 전달 계약 불명확 | client/server 계약 혼란 | organization membership 기준으로 active API/architecture 문서를 갱신하고 header/session/cookie 중 사용할 방식을 확정 |
 | MVP1 회귀 | 기존 demo 실패 | MVP1 workflow/LLM permission regression을 MVP2-0 완료 기준에 포함 |
 
-## 25. 결정 필요 사항
+## 25. 결정 필요/완료 이력
 
-아래 항목은 실제 구현 전에 사용자 또는 팀 결정이 필요하다. 단, MVP 2-0 문서는 MVP 1 변경을 최소화하는 기본값을 함께 제시하므로, 결정 전에도 구현 계획을 읽고 이슈를 나눌 수 있다.
+아래 항목은 아직 결정이 필요한 선택지와 구현 과정에서 canonical ADR로 확정된 항목을 함께 기록한다. MVP 2-0 문서는 MVP 1 변경을 최소화하는 기본값도 함께 제시하므로, 결정 전에도 구현 계획을 읽고 이슈를 나눌 수 있다.
 
 | 항목 | 기본값 | 결정이 필요한 순간 | 영향 |
 | --- | --- | --- | --- |
@@ -1604,7 +1604,7 @@ MVP 2-0 구현 시 함께 수정해야 할 문서:
 | suspended member 권한 row 처리 | row 유지, helper에서 차단 | suspend를 "임시 차단"이 아니라 "권한 제거"로 쓰고 싶을 때 | reactivate 시 권한 복구 여부 |
 | removed member 권한 row 처리 | team/direct permission hard delete | 제거 후 재초대 시 과거 권한 복구를 원할 때 | 보안 기본값, audit/restore UX |
 | organization manager 초대 | manager invite 허용 | manager 권한 부여를 별도 approval로 제한하려는 순간 | admin UX, last-manager policy |
-| organization membership audit action | 명시 action 추가 | AuditAction enum/string policy를 확정하기 직전 | audit action vocabulary |
+| organization membership audit action | 결정 완료: `organization.invite`, `organization.member.accept/update/remove`, cleanup `permission.revoke` | canonical audit action ADR 변경 전 | audit action vocabulary |
 
 현재 권장 기본값은 모두 "MVP 1을 덜 건드리는 방향"이다.
 
