@@ -17,6 +17,7 @@ import {
   Slack,
   Repeat,
   BookOpen,
+  ShieldCheck,
 } from 'lucide-react';
 import React, { ReactNode } from 'react';
 
@@ -202,6 +203,36 @@ export const nodeRegistry: NodeDefinition[] = [
     defaultData: () => ({
       title: 'IF/ELSE',
       conditions: [],
+    }),
+  },
+  {
+    id: 'guardrail',
+    type: 'guardrailNode',
+    name: '가드레일',
+    category: 'logic',
+    color: '#0f766e',
+    icon: <ShieldCheck className="w-3.5 h-3.5 text-white" />,
+    implemented: true,
+    description: '텍스트 위반 여부를 검사하거나 민감한 내용을 정제합니다.',
+    defaultData: () => ({
+      title: '가드레일',
+      operation: 'check_text',
+      text_to_check: '',
+      input_selector: [],
+      system_message:
+        '입력 텍스트가 선택한 가드레일 조건을 위반하는지 검사하고 구조화된 결과를 반환합니다.',
+      guardrails: ['Keywords'],
+      custom_keywords: '',
+      custom_prompt: '',
+      custom_regex: '',
+      branching_enabled: true,
+      branch_condition: 'keyword_match',
+      match_keywords: [],
+      pass_label: '통과',
+      fail_label: '실패',
+      pass_handle_id: 'pass',
+      fail_handle_id: 'fail',
+      referenced_variables: [],
     }),
   },
 

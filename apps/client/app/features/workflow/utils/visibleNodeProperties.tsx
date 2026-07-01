@@ -129,6 +129,34 @@ export const VISIBLE_NODE_PROPERTIES: Partial<
       getValue: (node) => asList(node.data.cases, 'case_name'),
     },
   ],
+  guardrailNode: [
+    {
+      key: 'operation',
+      label: '모드',
+      getValue: (node) =>
+        asText(node.data.operation) === 'sanitize_text'
+          ? '텍스트 정제'
+          : '위반 검사',
+    },
+    {
+      key: 'guardrails',
+      label: '가드레일',
+      multiline: true,
+      getValue: (node) =>
+        Array.isArray(node.data.guardrails)
+          ? node.data.guardrails.map(asText).filter(Boolean).join(', ')
+          : '',
+    },
+    {
+      key: 'match_keywords',
+      label: '분기 키워드',
+      multiline: true,
+      getValue: (node) =>
+        Array.isArray(node.data.match_keywords)
+          ? node.data.match_keywords.map(asText).filter(Boolean).join(', ')
+          : '',
+    },
+  ],
   llmNode: [
     {
       key: 'model_id',

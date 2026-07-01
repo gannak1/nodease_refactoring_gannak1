@@ -4,6 +4,7 @@ import { HttpRequestNode } from './http/components/HttpRequestNode';
 import { SlackPostNode } from './slack/components/SlackPostNode';
 import { CodeNode } from './code/components/CodeNode';
 import { ConditionNode } from './condition/components/ConditionNode';
+import { GuardrailNode } from './guardrail/components/GuardrailNode';
 import { LLMNode } from './llm/components/LLMNode';
 import { TemplateNode } from './template/components/TemplateNode';
 import { WorkflowNode } from './workflow/components/WorkflowNode';
@@ -24,6 +25,7 @@ export const nodeTypes = {
   slackPostNode: SlackPostNode,
   codeNode: CodeNode,
   conditionNode: ConditionNode,
+  guardrailNode: GuardrailNode,
   llmNode: LLMNode,
   templateNode: TemplateNode,
   workflowNode: WorkflowNode,

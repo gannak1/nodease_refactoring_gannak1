@@ -69,6 +69,10 @@ services:
       AWS_REGION: ${AWS_REGION:-}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
 
+      # Workflow Builder Agent
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+
       # Proxy
       HTTP_PROXY: http://proxy:3128
       HTTPS_PROXY: http://proxy:3128

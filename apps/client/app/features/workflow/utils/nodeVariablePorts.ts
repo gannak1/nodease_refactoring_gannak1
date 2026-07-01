@@ -237,6 +237,48 @@ const outputInfoByType: Partial<
       description: '다음 실행 경로로 선택된 핸들 ID입니다.',
     },
   },
+  guardrailNode: {
+    passed: {
+      label: '통과 여부',
+      dataType: 'boolean',
+      description: '가드레일이 항목을 통과 분기로 보냈는지 여부입니다.',
+    },
+    selected_handle: {
+      label: '선택된 핸들',
+      dataType: 'string',
+      description: 'pass 또는 fail 같은 선택된 출력 핸들입니다.',
+    },
+    matched_keywords: {
+      label: '매칭된 키워드',
+      dataType: 'array',
+      description: '임시 키워드 가드레일에 매칭된 키워드입니다.',
+    },
+    is_violation: {
+      label: '위반 여부',
+      dataType: 'boolean',
+      description: '검사한 텍스트가 선택한 가드레일에 매칭됐는지 여부입니다.',
+    },
+    violations: {
+      label: '위반 항목',
+      dataType: 'array',
+      description: '매칭된 가드레일 분류와 상세 정보입니다.',
+    },
+    checked_text: {
+      label: '검사한 텍스트',
+      dataType: 'string',
+      description: '가드레일 노드가 검사한 텍스트입니다.',
+    },
+    sanitized_text: {
+      label: '정제된 텍스트',
+      dataType: 'string',
+      description: '선택한 정제 규칙을 적용한 뒤의 텍스트입니다.',
+    },
+    redactions: {
+      label: '정제 내역',
+      dataType: 'array',
+      description: '가려진 민감값 또는 URL 매칭 목록입니다.',
+    },
+  },
 };
 
 const getOutputInfo = (node: AppNode, key: string) => {
@@ -392,6 +434,25 @@ export const getNodeOutputVariables = (node?: AppNode | null) => {
           ),
         );
       }
+    }
+  }
+
+  if (node.type === 'guardrailNode') {
+    const operation = String(data.operation || 'check_text');
+    const outputKeys =
+      operation === 'sanitize_text'
+        ? ['sanitized_text', 'redactions']
+        : [
+            'passed',
+            'selected_handle',
+            'matched_keywords',
+            'is_violation',
+            'violations',
+            'checked_text',
+          ];
+
+    for (const key of outputKeys) {
+      outputs.push(toNodeOutput(node, key));
     }
   }
 
@@ -586,6 +647,7 @@ export const getDroppedOutputTokenNameForNode = (
     case 'githubNode':
     case 'mailNode':
     case 'fileExtractionNode':
+    case 'guardrailNode':
       return getDroppedOutputReferenceName(
         data.referenced_variables,
         output,
@@ -645,6 +707,7 @@ const ACCEPT_DROPPED_OUTPUT_NODE_TYPES = new Set<NonNullable<AppNode['type']>>([
   'answerNode',
   'variableExtractionNode',
   'conditionNode',
+  'guardrailNode',
 ]);
 
 export const canAcceptDroppedOutput = (node: AppNode) =>
@@ -735,6 +798,7 @@ export const applyDroppedOutputToNodeData = (
     case 'githubNode':
     case 'mailNode':
     case 'fileExtractionNode':
+    case 'guardrailNode':
       return {
         referenced_variables: upsertNamedSelector(
           data.referenced_variables,

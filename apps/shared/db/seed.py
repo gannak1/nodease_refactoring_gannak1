@@ -5,6 +5,7 @@ Database seed helpers for startup.
 - Seeds system LLM providers (idempotent)
 """
 
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,14 @@ from typing import Iterable
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.app import App
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    KnowledgeBase,
+    SourceType,
+)
 from apps.shared.db.models.llm import LLMProvider
+from apps.shared.db.models.team import Team, TeamKnowledgePermission, TeamMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
@@ -27,6 +35,13 @@ from apps.shared.db.models.workflow_run import (
 )
 
 PLACEHOLDER_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
+DEMO_FAMILY_CARE_NAMESPACE_ID = uuid.UUID("30000000-0000-0000-0000-000000000100")
+DEMO_FAMILY_CARE_KB_ID = uuid.UUID("30000000-0000-0000-0000-000000000101")
+DEMO_FAMILY_CARE_DOC_ID = uuid.UUID("30000000-0000-0000-0000-000000000102")
+DEMO_FAMILY_CARE_CHUNK_IDS = [
+    uuid.UUID("30000000-0000-0000-0000-000000000103"),
+    uuid.UUID("30000000-0000-0000-0000-000000000104"),
+]
 DEV_WORKFLOW_APP_IDS = {
     "template": uuid.UUID("20000000-0000-0000-0000-000000000001"),
     "llm": uuid.UUID("20000000-0000-0000-0000-000000000002"),
@@ -217,6 +232,371 @@ def seed_default_llm_models(db: Session) -> None:
         logger.info("✅ LLM models sync complete!")
     else:
         logger.warning("ℹ️ LLM models up to date.")
+
+
+def _demo_embedding(seed: int) -> list[float]:
+    """Return a stable non-zero vector for demo KB chunks."""
+    value = 0.001 + (seed * 0.0001)
+    return [value] * 1536
+
+
+def _agent_demo_id(user_id: uuid.UUID, organization_id: uuid.UUID, label: str) -> uuid.UUID:
+    if user_id == PLACEHOLDER_USER_ID:
+        fixed_ids = {
+            "kb": DEMO_FAMILY_CARE_KB_ID,
+            "doc": DEMO_FAMILY_CARE_DOC_ID,
+            "chunk-0": DEMO_FAMILY_CARE_CHUNK_IDS[0],
+            "chunk-1": DEMO_FAMILY_CARE_CHUNK_IDS[1],
+        }
+        if label in fixed_ids:
+            return fixed_ids[label]
+    return uuid.uuid5(
+        DEMO_FAMILY_CARE_NAMESPACE_ID,
+        f"{organization_id}:{user_id}:{label}",
+    )
+
+
+def _family_care_demo_chunks() -> list[tuple[str, str]]:
+    return [
+        (
+            "가족돌봄휴가 사용 및 연차 연속 사용",
+            (
+                "데모용 사내 정책 예시: 가족돌봄휴가는 가족의 질병, 사고, 노령 "
+                "또는 자녀 양육 등 가족 돌봄 사유가 있을 때 신청할 수 있다. "
+                "가족돌봄휴가와 연차휴가는 서로 다른 휴가 유형이므로 같은 날짜에 "
+                "중복 사용할 수는 없지만, 승인 절차를 각각 완료하면 가족돌봄휴가 "
+                "전후로 연차휴가를 이어서 사용할 수 있다. 예를 들어 월요일과 "
+                "화요일은 가족돌봄휴가, 수요일은 연차휴가로 이어서 신청할 수 있다."
+            ),
+        ),
+        (
+            "가족돌봄휴가 신청 위치와 증빙자료",
+            (
+                "가족돌봄휴가는 사내 HR 포털의 근태/휴가 메뉴에서 휴가 신청을 "
+                "선택한 뒤 휴가 유형을 가족돌봄휴가로 지정해 신청한다. 이어서 "
+                "사용할 연차가 있으면 별도의 연차휴가 신청으로 등록한다. 회사는 "
+                "필요 시 병원 예약 확인서, 진료 일정표, 가족관계 확인 자료처럼 "
+                "돌봄 사유와 가족 관계를 확인할 수 있는 증빙자료를 요청할 수 있다. "
+                "증빙자료는 신청 화면에 첨부하거나 HR 담당자에게 제출한다."
+            ),
+        ),
+    ]
+
+
+def _ensure_demo_team_memberships(
+    db: Session,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+) -> list[TeamMembership]:
+    memberships = (
+        db.query(TeamMembership)
+        .join(Team, Team.id == TeamMembership.team_id)
+        .filter(
+            TeamMembership.user_id == user_id,
+            TeamMembership.grantee_organization_id == organization_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .all()
+    )
+    if memberships:
+        return memberships
+
+    team = (
+        db.query(Team)
+        .filter(Team.organization_id == organization_id, Team.name == "Default")
+        .first()
+    )
+    if team is None:
+        team = Team(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            name="Default",
+            created_by=user_id,
+            managed_by=user_id,
+            is_auto_add=True,
+        )
+        db.add(team)
+        db.flush()
+
+    membership = TeamMembership(
+        grantee_organization_id=organization_id,
+        user_id=user_id,
+        team_id=team.id,
+        assigned_by=user_id,
+    )
+    db.add(membership)
+    db.flush()
+    return [membership]
+
+
+def _grant_demo_knowledge_base_use(
+    db: Session,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    knowledge_base_id: uuid.UUID,
+) -> None:
+    for membership in _ensure_demo_team_memberships(db, user_id, organization_id):
+        permission = (
+            db.query(TeamKnowledgePermission)
+            .filter(
+                TeamKnowledgePermission.grantee_organization_id == organization_id,
+                TeamKnowledgePermission.knowledge_base_id == knowledge_base_id,
+                TeamKnowledgePermission.team_id == membership.team_id,
+            )
+            .first()
+        )
+        if permission is None:
+            permission = TeamKnowledgePermission(
+                grantee_organization_id=organization_id,
+                knowledge_base_id=knowledge_base_id,
+                team_id=membership.team_id,
+                assigned_by=user_id,
+            )
+            db.add(permission)
+        permission.auth_state = "operator"
+
+
+def ensure_agent_family_care_knowledge_base(
+    db: Session,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID | None = None,
+) -> KnowledgeBase:
+    """Ensure a family-care-leave demo KB for the active agent user/org."""
+
+    from apps.gateway.services.organization_context import (
+        ensure_user_default_organization,
+    )
+
+    user_id = uuid.UUID(str(user_id))
+    organization_id = (
+        uuid.UUID(str(organization_id))
+        if organization_id
+        else ensure_user_default_organization(db, user_id)
+    )
+    kb_id = _agent_demo_id(user_id, organization_id, "kb")
+    doc_id = _agent_demo_id(user_id, organization_id, "doc")
+    chunk_ids = [
+        _agent_demo_id(user_id, organization_id, "chunk-0"),
+        _agent_demo_id(user_id, organization_id, "chunk-1"),
+    ]
+    now = datetime.now(timezone.utc)
+    chunks = _family_care_demo_chunks()
+    full_content = "\n\n".join(content for _, content in chunks)
+    content_hash = hashlib.sha256(full_content.encode("utf-8")).hexdigest()
+
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    if kb is None:
+        kb = KnowledgeBase(id=kb_id)
+        db.add(kb)
+
+    kb.name = "가족돌봄휴가 안내"
+    kb.description = (
+        "Workflow Builder Agent 시연용 가족돌봄휴가 정책 예시 문서입니다."
+    )
+    kb.embedding_model = "text-embedding-3-small"
+    kb.top_k = 5
+    kb.similarity_threshold = 0.15
+    kb.user_id = user_id
+    kb.organization_id = organization_id
+    kb.updated_at = now
+
+    document = db.query(Document).filter(Document.id == doc_id).first()
+    if document is None:
+        document = Document(
+            id=doc_id,
+            knowledge_base_id=kb_id,
+            filename="demo-family-care-leave-policy.md",
+        )
+        db.add(document)
+
+    document.knowledge_base_id = kb_id
+    document.filename = "demo-family-care-leave-policy.md"
+    document.file_path = None
+    document.source_type = SourceType.FILE
+    document.content_hash = content_hash
+    document.status = "completed"
+    document.error_message = None
+    document.chunk_size = 1000
+    document.chunk_overlap = 120
+    document.embedding_model = kb.embedding_model
+    document.meta_info = {
+        "demo": True,
+        "agent_created": True,
+        "domain": "hr",
+        "topics": ["family_care_leave", "annual_leave", "evidence"],
+        "source": "workflow_builder_agent",
+    }
+    document.updated_at = now
+
+    db.flush()
+    (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id == doc_id)
+        .delete(synchronize_session=False)
+    )
+    for index, (heading, content) in enumerate(chunks):
+        db.add(
+            DocumentChunk(
+                id=chunk_ids[index],
+                document_id=doc_id,
+                knowledge_base_id=kb_id,
+                content=content,
+                embedding=_demo_embedding(index),
+                chunk_index=index,
+                chunk_level="section",
+                section_path=["가족돌봄휴가 안내", heading],
+                heading=heading,
+                token_count=max(1, len(content) // 3),
+                metadata_={
+                    "demo": True,
+                    "agent_created": True,
+                    "domain": "hr",
+                    "heading": heading,
+                    "keywords": [
+                        "가족돌봄휴가",
+                        "연차",
+                        "신청",
+                        "증빙자료",
+                        "HR 포털",
+                    ],
+                },
+            )
+        )
+
+    _grant_demo_knowledge_base_use(db, user_id, organization_id, kb_id)
+    db.commit()
+    db.refresh(kb)
+    return kb
+
+
+def seed_demo_family_care_knowledge_base(db: Session) -> None:
+    """Seed the family-care-leave demo KB used by the workflow builder agent."""
+
+    from apps.gateway.services.organization_context import (
+        ensure_user_default_organization,
+    )
+
+    organization_id = ensure_user_default_organization(db, PLACEHOLDER_USER_ID)
+    now = datetime.now(timezone.utc)
+    chunks = [
+        (
+            DEMO_FAMILY_CARE_CHUNK_IDS[0],
+            "가족돌봄휴가 사용 및 연차 연속 사용",
+            (
+                "데모용 사내 정책 예시: 가족돌봄휴가는 가족의 질병, 사고, 노령 "
+                "또는 자녀 양육 등 가족 돌봄 사유가 있을 때 신청할 수 있다. "
+                "가족돌봄휴가와 연차휴가는 서로 다른 휴가 유형이므로 같은 날짜에 "
+                "중복 사용할 수는 없지만, 승인 절차를 각각 완료하면 가족돌봄휴가 "
+                "전후로 연차휴가를 이어서 사용할 수 있다. 예를 들어 월요일과 "
+                "화요일은 가족돌봄휴가, 수요일은 연차휴가로 이어서 신청할 수 있다."
+            ),
+        ),
+        (
+            DEMO_FAMILY_CARE_CHUNK_IDS[1],
+            "가족돌봄휴가 신청 위치와 증빙자료",
+            (
+                "가족돌봄휴가는 사내 HR 포털의 근태/휴가 메뉴에서 휴가 신청을 "
+                "선택한 뒤 휴가 유형을 가족돌봄휴가로 지정해 신청한다. 이어서 "
+                "사용할 연차가 있으면 별도의 연차휴가 신청으로 등록한다. 회사는 "
+                "필요 시 병원 예약 확인서, 진료 일정표, 가족관계 확인 자료처럼 "
+                "돌봄 사유와 가족 관계를 확인할 수 있는 증빙자료를 요청할 수 있다. "
+                "증빙자료는 신청 화면에 첨부하거나 HR 담당자에게 제출한다."
+            ),
+        ),
+    ]
+    full_content = "\n\n".join(content for _, _, content in chunks)
+    content_hash = hashlib.sha256(full_content.encode("utf-8")).hexdigest()
+
+    kb = (
+        db.query(KnowledgeBase)
+        .filter(KnowledgeBase.id == DEMO_FAMILY_CARE_KB_ID)
+        .first()
+    )
+    if kb is None:
+        kb = KnowledgeBase(
+            id=DEMO_FAMILY_CARE_KB_ID,
+            user_id=PLACEHOLDER_USER_ID,
+            organization_id=organization_id,
+        )
+        db.add(kb)
+
+    kb.name = "가족돌봄휴가 안내"
+    kb.description = (
+        "Workflow Builder Agent 시연용 가족돌봄휴가 정책 예시 문서입니다."
+    )
+    kb.embedding_model = "text-embedding-3-small"
+    kb.top_k = 5
+    kb.similarity_threshold = 0.15
+    kb.user_id = PLACEHOLDER_USER_ID
+    kb.organization_id = organization_id
+    kb.updated_at = now
+
+    document = (
+        db.query(Document).filter(Document.id == DEMO_FAMILY_CARE_DOC_ID).first()
+    )
+    if document is None:
+        document = Document(
+            id=DEMO_FAMILY_CARE_DOC_ID,
+            knowledge_base_id=DEMO_FAMILY_CARE_KB_ID,
+            filename="demo-family-care-leave-policy.md",
+        )
+        db.add(document)
+
+    document.knowledge_base_id = DEMO_FAMILY_CARE_KB_ID
+    document.filename = "demo-family-care-leave-policy.md"
+    document.file_path = None
+    document.source_type = SourceType.FILE
+    document.content_hash = content_hash
+    document.status = "completed"
+    document.error_message = None
+    document.chunk_size = 1000
+    document.chunk_overlap = 120
+    document.embedding_model = kb.embedding_model
+    document.meta_info = {
+        "demo": True,
+        "domain": "hr",
+        "topics": ["family_care_leave", "annual_leave", "evidence"],
+        "source": "seed",
+    }
+    document.updated_at = now
+
+    db.flush()
+    (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id == DEMO_FAMILY_CARE_DOC_ID)
+        .delete(synchronize_session=False)
+    )
+    for index, (chunk_id, heading, content) in enumerate(chunks):
+        db.add(
+            DocumentChunk(
+                id=chunk_id,
+                document_id=DEMO_FAMILY_CARE_DOC_ID,
+                knowledge_base_id=DEMO_FAMILY_CARE_KB_ID,
+                content=content,
+                embedding=_demo_embedding(index),
+                chunk_index=index,
+                chunk_level="section",
+                section_path=["가족돌봄휴가 안내", heading],
+                heading=heading,
+                token_count=max(1, len(content) // 3),
+                metadata_={
+                    "demo": True,
+                    "domain": "hr",
+                    "heading": heading,
+                    "keywords": [
+                        "가족돌봄휴가",
+                        "연차",
+                        "신청",
+                        "증빙자료",
+                        "HR 포털",
+                    ],
+                },
+            )
+        )
+
+    db.commit()
+    logger.info("Family care leave demo knowledge base seeded.")
 
 
 def _node(
@@ -851,6 +1231,7 @@ def seed_dev_workflow_examples(db: Session) -> None:
     seed_placeholder_user(db)
     seed_default_llm_providers(db)
     seed_default_llm_models(db)
+    seed_demo_family_care_knowledge_base(db)
 
     template_workflow = _upsert_dev_app_workflow(
         db,
