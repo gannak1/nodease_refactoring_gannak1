@@ -148,3 +148,5 @@ tests/evaluation/reports/
 
 # 개인 폴더
 .ignore/
+
+apps/gateway/.tmp_pytest_cache/
