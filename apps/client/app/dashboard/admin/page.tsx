@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { useEffect, useMemo, useState } from 'react';
 import { isAxiosError } from 'axios';
 import {
@@ -73,6 +75,12 @@ type TeamMemberResponse = {
   assigned_at: string;
 };
 
+type AppResponse = {
+  id: string;
+  name: string;
+  workflow_id?: string | null;
+};
+
 type LLMProviderResponse = {
   id: string;
   name: string;
@@ -87,6 +95,27 @@ type LLMCredentialResponse = {
   config_preview?: string;
   is_valid: boolean;
   created_at: string;
+};
+
+type ResourceType = 'workflow' | 'llm_credential';
+type GranteeType = 'team' | 'user';
+type ResourceAuthState = 'viewer' | 'operator' | 'builder' | 'manager';
+
+type ResourcePermissionEntry = {
+  id: string;
+  grantee_type: GranteeType;
+  grantee_id: string;
+  grantee_name: string;
+  auth_state: ResourceAuthState;
+  assigned_at: string;
+};
+
+type ResourcePermissionListResponse = {
+  resource_type: ResourceType;
+  resource_id: string;
+  organization_id: string;
+  team_permissions: ResourcePermissionEntry[];
+  user_permissions: ResourcePermissionEntry[];
 };
 
 type AuditItem = {
@@ -123,6 +152,12 @@ const tabs: Array<{ key: AdminTab; label: string }> = [
 
 const PAGE_SIZE = 20;
 const AUTH_STATES: OrganizationAuthState[] = ['member', 'manager'];
+const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
+  'viewer',
+  'operator',
+  'builder',
+  'manager',
+];
 
 const stateOrder: Record<MembershipState, number> = {
   active: 0,
@@ -166,11 +201,16 @@ export default function AdminConsolePage() {
   const [teamMemberLoadErrors, setTeamMemberLoadErrors] = useState<
     Record<string, boolean>
   >({});
+  const [apps, setApps] = useState<AppResponse[]>([]);
   const [providers, setProviders] = useState<LLMProviderResponse[]>([]);
   const [credentials, setCredentials] = useState<LLMCredentialResponse[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
     [],
   );
+  const [workflowPermissions, setWorkflowPermissions] =
+    useState<ResourcePermissionListResponse | null>(null);
+  const [credentialPermissions, setCredentialPermissions] =
+    useState<ResourcePermissionListResponse | null>(null);
   const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -207,6 +247,23 @@ export default function AdminConsolePage() {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [teamMemberUserId, setTeamMemberUserId] = useState('');
 
+  const [permissionResourceType, setPermissionResourceType] =
+    useState<ResourceType>('workflow');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+  const [selectedCredentialId, setSelectedCredentialId] = useState('');
+  const [permissionGranteeType, setPermissionGranteeType] =
+    useState<GranteeType>('team');
+  const [permissionGranteeId, setPermissionGranteeId] = useState('');
+  const [permissionAuthState, setPermissionAuthState] =
+    useState<ResourceAuthState>('viewer');
+
+  const [credentialPanelOpen, setCredentialPanelOpen] = useState(false);
+  const [credentialForm, setCredentialForm] = useState({
+    providerId: '',
+    credentialName: '',
+    apiKey: '',
+  });
+
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [actionPending, setActionPending] = useState(false);
 
@@ -231,6 +288,21 @@ export default function AdminConsolePage() {
     () => teams.filter((team) => team.is_active),
     [teams],
   );
+
+  const workflowOptions = useMemo(
+    () => apps.filter((app) => Boolean(app.workflow_id)),
+    [apps],
+  );
+
+  const selectedPermissionList =
+    permissionResourceType === 'workflow'
+      ? workflowPermissions
+      : credentialPermissions;
+
+  const permissionResourceId =
+    permissionResourceType === 'workflow'
+      ? selectedWorkflowId
+      : selectedCredentialId;
 
   const activeManagerCount = useMemo(
     () =>
@@ -351,6 +423,43 @@ export default function AdminConsolePage() {
     );
   };
 
+  const loadPermissions = async (
+    resourceType = permissionResourceType,
+    workflowId = selectedWorkflowId,
+    credentialId = selectedCredentialId,
+  ) => {
+    try {
+      if (resourceType === 'workflow' && workflowId) {
+        const response = await apiClient.get<ResourcePermissionListResponse>(
+          `/permissions/workflows/${workflowId}`,
+        );
+        setWorkflowPermissions(response.data);
+        return;
+      }
+      if (resourceType === 'llm_credential' && credentialId) {
+        const response = await apiClient.get<ResourcePermissionListResponse>(
+          `/permissions/llm-credentials/${credentialId}`,
+        );
+        setCredentialPermissions(response.data);
+        return;
+      }
+      if (resourceType === 'workflow') setWorkflowPermissions(null);
+      if (resourceType === 'llm_credential') setCredentialPermissions(null);
+    } catch (err) {
+      toast.error(getErrorMessage(err, '권한 목록을 불러오지 못했습니다.'));
+      if (resourceType === 'workflow') setWorkflowPermissions(null);
+      if (resourceType === 'llm_credential') setCredentialPermissions(null);
+    }
+  };
+
+  const refreshCredentials = async () => {
+    const response = await apiClient.get<LLMCredentialResponse[]>(
+      '/llm/credentials',
+    );
+    setCredentials(response.data);
+    return response.data;
+  };
+
   const loadData = async () => {
     setLoading(true);
     setError(null);
@@ -367,8 +476,11 @@ export default function AdminConsolePage() {
         setTeams([]);
         setTeamMembers({});
         setTeamMemberLoadErrors({});
+        setApps([]);
         setProviders([]);
         setCredentials([]);
+        setWorkflowPermissions(null);
+        setCredentialPermissions(null);
         setKnowledgeBases([]);
         setAuditItems([]);
         return;
@@ -387,7 +499,7 @@ export default function AdminConsolePage() {
       setMembers(uniqueMembers([...defaultMembers, ...removedMembers]));
       setTeams(teamData);
 
-      const [providerData, credentialData, knowledgeData, auditData] =
+      const [providerData, credentialData, appData, knowledgeData, auditData] =
         await Promise.all([
           apiClient
             .get<LLMProviderResponse[]>('/llm/providers')
@@ -395,6 +507,10 @@ export default function AdminConsolePage() {
             .catch(() => []),
           apiClient
             .get<LLMCredentialResponse[]>('/llm/credentials')
+            .then((response) => response.data)
+            .catch(() => []),
+          apiClient
+            .get<AppResponse[]>('/apps')
             .then((response) => response.data)
             .catch(() => []),
           knowledgeApi.getKnowledgeBases().catch(() => []),
@@ -408,8 +524,20 @@ export default function AdminConsolePage() {
 
       setProviders(providerData);
       setCredentials(credentialData);
+      setApps(appData);
       setKnowledgeBases(knowledgeData);
       setAuditItems(auditData);
+      const firstWorkflowId =
+        selectedWorkflowId ||
+        appData.find((app) => app.workflow_id)?.workflow_id ||
+        '';
+      const firstCredentialId = selectedCredentialId || credentialData[0]?.id || '';
+      setSelectedWorkflowId(firstWorkflowId);
+      setSelectedCredentialId(firstCredentialId);
+      await Promise.all([
+        loadPermissions('workflow', firstWorkflowId, firstCredentialId),
+        loadPermissions('llm_credential', firstWorkflowId, firstCredentialId),
+      ]);
       await loadTeamMembers(teamData);
     } catch (err) {
       setError(getErrorMessage(err, '관리 콘솔 데이터를 불러오지 못했습니다.'));
@@ -441,6 +569,44 @@ export default function AdminConsolePage() {
     );
     setTeamMemberUserId(nextCandidate?.user_id || '');
   }, [activeMembers, selectedTeamId, selectedTeamMemberUserIds]);
+
+  useEffect(() => {
+    if (!selectedWorkflowId && workflowOptions.length > 0) {
+      setSelectedWorkflowId(workflowOptions[0].workflow_id || '');
+    }
+  }, [selectedWorkflowId, workflowOptions]);
+
+  useEffect(() => {
+    if (!selectedCredentialId && credentials.length > 0) {
+      setSelectedCredentialId(credentials[0].id);
+    }
+  }, [credentials, selectedCredentialId]);
+
+  useEffect(() => {
+    if (!credentialForm.providerId && providers.length > 0) {
+      setCredentialForm((prev) => ({ ...prev, providerId: providers[0].id }));
+    }
+  }, [credentialForm.providerId, providers]);
+
+  useEffect(() => {
+    if (permissionGranteeType === 'team') {
+      const currentTeam = activeTeams.some(
+        (team) => team.id === permissionGranteeId,
+      );
+      if (!currentTeam) setPermissionGranteeId(activeTeams[0]?.id || '');
+      return;
+    }
+    const currentMember = activeMembers.some(
+      (member) => member.user_id === permissionGranteeId,
+    );
+    if (!currentMember) setPermissionGranteeId(activeMembers[0]?.user_id || '');
+  }, [activeMembers, activeTeams, permissionGranteeId, permissionGranteeType]);
+
+  useEffect(() => {
+    if (!organization?.is_manager) return;
+    loadPermissions(permissionResourceType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization?.is_manager, permissionResourceType, selectedWorkflowId, selectedCredentialId]);
 
   const refreshMembers = async () => {
     if (!organization) return;
@@ -588,6 +754,94 @@ export default function AdminConsolePage() {
     await apiClient.delete(`/teams/${teamId}/members/${member.user_id}`);
     toast.success('팀 멤버를 제거했습니다.');
     await refreshTeamMember(teamId);
+  };
+
+  const permissionPath = (
+    resourceType: ResourceType,
+    granteeType: GranteeType,
+    granteeId: string,
+  ) => {
+    const resourceId =
+      resourceType === 'workflow' ? selectedWorkflowId : selectedCredentialId;
+    const resourcePath =
+      resourceType === 'workflow'
+        ? `/permissions/workflows/${resourceId}`
+        : `/permissions/llm-credentials/${resourceId}`;
+    return `${resourcePath}/${granteeType}s/${granteeId}`;
+  };
+
+  const grantPermission = async () => {
+    if (!permissionResourceId || !permissionGranteeId) return;
+    await runAction(async () => {
+      await apiClient.put(
+        permissionPath(
+          permissionResourceType,
+          permissionGranteeType,
+          permissionGranteeId,
+        ),
+        { auth_state: permissionAuthState },
+      );
+      toast.success('권한을 저장했습니다.');
+      await loadPermissions(permissionResourceType);
+    });
+  };
+
+  const revokePermission = async (
+    resourceType: ResourceType,
+    granteeType: GranteeType,
+    granteeId: string,
+  ) => {
+    await apiClient.delete(permissionPath(resourceType, granteeType, granteeId));
+    toast.success('권한을 회수했습니다.');
+    await loadPermissions(resourceType);
+  };
+
+  const submitCredential = async () => {
+    if (
+      !organization ||
+      !credentialForm.providerId ||
+      !credentialForm.credentialName.trim() ||
+      !credentialForm.apiKey.trim()
+    ) {
+      return;
+    }
+    await runAction(async () => {
+      await apiClient.post('/llm/credentials', {
+        provider_id: credentialForm.providerId,
+        organization_id: organization.id,
+        credential_name: credentialForm.credentialName.trim(),
+        api_key: credentialForm.apiKey.trim(),
+      });
+      toast.success('Credential을 등록했습니다.');
+      setCredentialPanelOpen(false);
+      setCredentialForm({
+        providerId: providers[0]?.id || '',
+        credentialName: '',
+        apiKey: '',
+      });
+      const nextCredentials = await refreshCredentials();
+      const nextCredentialId = nextCredentials[0]?.id || '';
+      setSelectedCredentialId(nextCredentialId);
+      await loadPermissions('llm_credential', selectedWorkflowId, nextCredentialId);
+    });
+  };
+
+  const deleteCredential = async (credential: LLMCredentialResponse) => {
+    await apiClient.delete(`/llm/credentials/${credential.id}`);
+    toast.success('Credential을 삭제했습니다.');
+    const nextCredentials = await refreshCredentials();
+    const nextCredentialId =
+      selectedCredentialId === credential.id
+        ? nextCredentials[0]?.id || ''
+        : selectedCredentialId;
+    setSelectedCredentialId(nextCredentialId);
+    await loadPermissions('llm_credential', selectedWorkflowId, nextCredentialId);
+  };
+
+  const syncCredentialModels = async (credential: LLMCredentialResponse) => {
+    await apiClient.post(`/llm/credentials/${credential.id}/sync-models`);
+    toast.success('모델 목록을 동기화했습니다.');
+    await refreshCredentials();
   };
 
   if (!loading && organization && !organization.is_manager) {
@@ -772,11 +1026,65 @@ export default function AdminConsolePage() {
               onOpenTeam={setSelectedTeamId}
             />
           )}
-          {activeTab === 'permissions' && <PermissionsTab />}
+          {activeTab === 'permissions' && (
+            <PermissionsTab
+              resourceType={permissionResourceType}
+              onResourceTypeChange={setPermissionResourceType}
+              workflowOptions={workflowOptions}
+              selectedWorkflowId={selectedWorkflowId}
+              onSelectedWorkflowIdChange={setSelectedWorkflowId}
+              credentials={credentials}
+              selectedCredentialId={selectedCredentialId}
+              onSelectedCredentialIdChange={setSelectedCredentialId}
+              activeTeams={activeTeams}
+              activeMembers={activeMembers}
+              granteeType={permissionGranteeType}
+              onGranteeTypeChange={setPermissionGranteeType}
+              granteeId={permissionGranteeId}
+              onGranteeIdChange={setPermissionGranteeId}
+              authState={permissionAuthState}
+              onAuthStateChange={setPermissionAuthState}
+              permissionList={selectedPermissionList}
+              actionPending={actionPending}
+              onGrant={grantPermission}
+              onRevoke={(resourceType, granteeType, granteeId, label) =>
+                openConfirm({
+                  title: '권한을 회수할까요?',
+                  description: '선택한 대상의 resource 권한이 제거됩니다.',
+                  confirmLabel: '회수',
+                  tone: 'danger',
+                  details: [label],
+                  onConfirm: () =>
+                    revokePermission(resourceType, granteeType, granteeId),
+                })
+              }
+            />
+          )}
           {activeTab === 'credentials' && (
             <CredentialsTab
               providers={providers}
               credentials={credentials}
+              actionPending={actionPending}
+              onOpenCreate={() => setCredentialPanelOpen(true)}
+              onManagePermission={(credentialId) => {
+                setSelectedCredentialId(credentialId);
+                setPermissionResourceType('llm_credential');
+                setActiveTab('permissions');
+              }}
+              onSync={(credential) =>
+                runAction(() => syncCredentialModels(credential))
+              }
+              onDelete={(credential) =>
+                openConfirm({
+                  title: 'Credential을 삭제할까요?',
+                  description:
+                    '삭제 후 이 credential을 사용하는 workflow 실행이 실패할 수 있습니다.',
+                  confirmLabel: '삭제',
+                  tone: 'danger',
+                  details: [credential.credential_name],
+                  onConfirm: () => deleteCredential(credential),
+                })
+              }
             />
           )}
           {activeTab === 'knowledge' && (
@@ -991,6 +1299,76 @@ export default function AdminConsolePage() {
                 </div>
               )}
             </div>
+          </div>
+        </SidePanel>
+      )}
+
+      {credentialPanelOpen && (
+        <SidePanel
+          title="Credential 등록"
+          onClose={() => setCredentialPanelOpen(false)}
+        >
+          <div className="space-y-4">
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+              API key 원문은 저장 후 다시 표시하지 않습니다. 조직에서 사용할
+              provider와 식별 가능한 이름을 함께 입력하세요.
+            </div>
+            <LabelledField label="Provider">
+              <select
+                value={credentialForm.providerId}
+                onChange={(event) =>
+                  setCredentialForm((prev) => ({
+                    ...prev,
+                    providerId: event.target.value,
+                  }))
+                }
+                className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
+              >
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.name}
+                  </option>
+                ))}
+              </select>
+            </LabelledField>
+            <LabelledField label="Credential 이름">
+              <input
+                value={credentialForm.credentialName}
+                onChange={(event) =>
+                  setCredentialForm((prev) => ({
+                    ...prev,
+                    credentialName: event.target.value,
+                  }))
+                }
+                className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
+                placeholder="예: OpenAI 운영 키"
+              />
+            </LabelledField>
+            <LabelledField label="API Key">
+              <input
+                value={credentialForm.apiKey}
+                onChange={(event) =>
+                  setCredentialForm((prev) => ({
+                    ...prev,
+                    apiKey: event.target.value,
+                  }))
+                }
+                className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
+                placeholder="sk-..."
+                type="password"
+              />
+            </LabelledField>
+            <PanelActions
+              onCancel={() => setCredentialPanelOpen(false)}
+              onSubmit={submitCredential}
+              submitLabel="등록"
+              disabled={
+                actionPending ||
+                !credentialForm.providerId ||
+                !credentialForm.credentialName.trim() ||
+                !credentialForm.apiKey.trim()
+              }
+            />
           </div>
         </SidePanel>
       )}
@@ -1536,13 +1914,200 @@ function TeamsTab({
   );
 }
 
-function PermissionsTab() {
+function PermissionsTab({
+  resourceType,
+  onResourceTypeChange,
+  workflowOptions,
+  selectedWorkflowId,
+  onSelectedWorkflowIdChange,
+  credentials,
+  selectedCredentialId,
+  onSelectedCredentialIdChange,
+  activeTeams,
+  activeMembers,
+  granteeType,
+  onGranteeTypeChange,
+  granteeId,
+  onGranteeIdChange,
+  authState,
+  onAuthStateChange,
+  permissionList,
+  actionPending,
+  onGrant,
+  onRevoke,
+}: {
+  resourceType: ResourceType;
+  onResourceTypeChange: (value: ResourceType) => void;
+  workflowOptions: AppResponse[];
+  selectedWorkflowId: string;
+  onSelectedWorkflowIdChange: (value: string) => void;
+  credentials: LLMCredentialResponse[];
+  selectedCredentialId: string;
+  onSelectedCredentialIdChange: (value: string) => void;
+  activeTeams: TeamResponse[];
+  activeMembers: OrganizationMember[];
+  granteeType: GranteeType;
+  onGranteeTypeChange: (value: GranteeType) => void;
+  granteeId: string;
+  onGranteeIdChange: (value: string) => void;
+  authState: ResourceAuthState;
+  onAuthStateChange: (value: ResourceAuthState) => void;
+  permissionList: ResourcePermissionListResponse | null;
+  actionPending: boolean;
+  onGrant: () => void;
+  onRevoke: (
+    resourceType: ResourceType,
+    granteeType: GranteeType,
+    granteeId: string,
+    label: string,
+  ) => void;
+}) {
+  const resourceMissing =
+    resourceType === 'workflow' ? !selectedWorkflowId : !selectedCredentialId;
+  const granteeOptionsMissing =
+    granteeType === 'team' ? activeTeams.length === 0 : activeMembers.length === 0;
+  const resourceLabel =
+    resourceType === 'workflow' ? 'Workflow 권한' : 'Credential 권한';
+
   return (
-    <DashboardPanel title="권한" icon={SlidersHorizontal}>
-      <Placeholder
-        title="권한 관리 UI 이동 예정"
-        description="멤버/팀 운영 action 이후 workflow/team/user direct permission 관리 UI를 연결합니다."
-      />
+    <DashboardPanel
+      title="권한"
+      icon={SlidersHorizontal}
+      aside={
+        <span className="text-xs font-medium text-slate-500">
+          {resourceLabel}
+        </span>
+      }
+    >
+      <div className="grid gap-4 border-b border-slate-100 px-5 py-4 xl:grid-cols-[220px_minmax(0,1fr)_180px_minmax(0,1fr)_160px_auto]">
+        <select
+          value={resourceType}
+          onChange={(event) =>
+            onResourceTypeChange(event.target.value as ResourceType)
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="workflow">Workflow</option>
+          <option value="llm_credential">LLM Credential</option>
+        </select>
+        {resourceType === 'workflow' ? (
+          <select
+            value={selectedWorkflowId}
+            onChange={(event) => onSelectedWorkflowIdChange(event.target.value)}
+            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+          >
+            {workflowOptions.length === 0 ? (
+              <option value="">선택 가능한 workflow 없음</option>
+            ) : (
+              workflowOptions.map((app) => (
+                <option key={app.id} value={app.workflow_id || ''}>
+                  {app.name}
+                </option>
+              ))
+            )}
+          </select>
+        ) : (
+          <select
+            value={selectedCredentialId}
+            onChange={(event) => onSelectedCredentialIdChange(event.target.value)}
+            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+          >
+            {credentials.length === 0 ? (
+              <option value="">선택 가능한 credential 없음</option>
+            ) : (
+              credentials.map((credential) => (
+                <option key={credential.id} value={credential.id}>
+                  {credential.credential_name}
+                </option>
+              ))
+            )}
+          </select>
+        )}
+        <select
+          value={granteeType}
+          onChange={(event) =>
+            onGranteeTypeChange(event.target.value as GranteeType)
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="team">Team</option>
+          <option value="user">User direct</option>
+        </select>
+        {granteeType === 'team' ? (
+          <select
+            value={granteeId}
+            onChange={(event) => onGranteeIdChange(event.target.value)}
+            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+          >
+            {activeTeams.length === 0 ? (
+              <option value="">활성 팀 없음</option>
+            ) : (
+              activeTeams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))
+            )}
+          </select>
+        ) : (
+          <ActiveOrganizationMemberPicker
+            members={activeMembers}
+            value={granteeId}
+            onChange={onGranteeIdChange}
+            placeholder="권한 대상 멤버"
+            emptyLabel="활성 멤버 없음"
+          />
+        )}
+        <select
+          value={authState}
+          onChange={(event) =>
+            onAuthStateChange(event.target.value as ResourceAuthState)
+          }
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          {RESOURCE_AUTH_STATES.map((state) => (
+            <option key={state} value={state}>
+              {resourcePermissionLabel(resourceType, state)}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={onGrant}
+          disabled={
+            actionPending ||
+            resourceMissing ||
+            granteeOptionsMissing ||
+            !granteeId
+          }
+          className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          저장
+        </button>
+      </div>
+
+      {resourceMissing ? (
+        <Placeholder
+          title="선택 가능한 resource가 없습니다"
+          description="Workflow 또는 LLM Credential이 생성되면 권한을 부여할 수 있습니다."
+        />
+      ) : (
+        <div className="grid gap-4 px-5 py-5 lg:grid-cols-2">
+          <PermissionList
+            title="Team permissions"
+            rows={permissionList?.team_permissions || []}
+            resourceType={resourceType}
+            granteeType="team"
+            onRevoke={onRevoke}
+          />
+          <PermissionList
+            title="User direct permissions"
+            rows={permissionList?.user_permissions || []}
+            resourceType={resourceType}
+            granteeType="user"
+            onRevoke={onRevoke}
+          />
+        </div>
+      )}
     </DashboardPanel>
   );
 }
@@ -1550,9 +2115,19 @@ function PermissionsTab() {
 function CredentialsTab({
   providers,
   credentials,
+  actionPending,
+  onOpenCreate,
+  onManagePermission,
+  onSync,
+  onDelete,
 }: {
   providers: LLMProviderResponse[];
   credentials: LLMCredentialResponse[];
+  actionPending: boolean;
+  onOpenCreate: () => void;
+  onManagePermission: (credentialId: string) => void;
+  onSync: (credential: LLMCredentialResponse) => void;
+  onDelete: (credential: LLMCredentialResponse) => void;
 }) {
   return (
     <DashboardPanel
@@ -1564,8 +2139,9 @@ function CredentialsTab({
             active organization 기준
           </span>
           <button
-            disabled
-            className="h-9 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white opacity-40"
+            onClick={onOpenCreate}
+            disabled={providers.length === 0 || actionPending}
+            className="h-9 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Credential 등록
           </button>
@@ -1623,6 +2199,28 @@ function CredentialsTab({
                         >
                           {credential.is_valid ? 'valid' : 'invalid'}
                         </span>
+                        <div className="flex shrink-0 gap-1">
+                          <button
+                            onClick={() => onManagePermission(credential.id)}
+                            className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                          >
+                            권한
+                          </button>
+                          <button
+                            onClick={() => onSync(credential)}
+                            disabled={actionPending}
+                            className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Sync
+                          </button>
+                          <button
+                            onClick={() => onDelete(credential)}
+                            disabled={actionPending}
+                            className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            삭제
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}
@@ -1633,6 +2231,95 @@ function CredentialsTab({
         )}
       </div>
     </DashboardPanel>
+  );
+}
+
+function resourcePermissionLabel(
+  resourceType: ResourceType,
+  state: ResourceAuthState,
+) {
+  if (resourceType === 'llm_credential') {
+    const labels: Record<ResourceAuthState, string> = {
+      viewer: 'Credential 조회 가능',
+      operator: 'Credential 사용 가능',
+      builder: 'Credential 수정 가능',
+      manager: 'Credential 관리 가능',
+    };
+    return labels[state];
+  }
+  const labels: Record<ResourceAuthState, string> = {
+    viewer: 'Workflow 조회 가능',
+    operator: 'Workflow 실행 가능',
+    builder: 'Workflow 수정 가능',
+    manager: 'Workflow 관리 가능',
+  };
+  return labels[state];
+}
+
+function PermissionList({
+  title,
+  rows,
+  resourceType,
+  granteeType,
+  onRevoke,
+}: {
+  title: string;
+  rows: ResourcePermissionEntry[];
+  resourceType: ResourceType;
+  granteeType: GranteeType;
+  onRevoke: (
+    resourceType: ResourceType,
+    granteeType: GranteeType,
+    granteeId: string,
+    label: string,
+  ) => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold uppercase text-slate-500">
+        {title}
+      </div>
+      {rows.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-slate-500">
+          부여된 권한이 없습니다.
+        </div>
+      ) : (
+        <div className="divide-y divide-slate-100">
+          {rows.map((row) => (
+            <div
+              key={row.id}
+              className="flex items-center justify-between gap-3 px-4 py-3"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-950">
+                  {row.grantee_name}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {resourcePermissionLabel(resourceType, row.auth_state)} ·{' '}
+                  {formatDateTime(row.assigned_at)}
+                </p>
+              </div>
+              <button
+                onClick={() =>
+                  onRevoke(
+                    resourceType,
+                    granteeType,
+                    row.grantee_id,
+                    `${row.grantee_name} · ${resourcePermissionLabel(
+                      resourceType,
+                      row.auth_state,
+                    )}`,
+                  )
+                }
+                className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+              >
+                회수
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

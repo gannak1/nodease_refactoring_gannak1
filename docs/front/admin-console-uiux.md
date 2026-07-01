@@ -405,21 +405,21 @@ Workflow manager는 특정 workflow의 권한 관리 권한을 가질 수 있지
 | `apps/client/app/dashboard/settings/page.tsx` | Settings의 조직 운영 탭 제거, credential/activity read-only 중심 정리 |
 | `apps/client/app/dashboard/page.tsx` | manager의 조직 접근 CTA를 Admin Console로 연결 |
 
-현재 Admin Console은 멤버/팀 운영 action을 우선 연결한 상태다. 연결 가능한 API 중 멤버/팀 MVP scope는 실제 mutation을 수행하고, 권한/credential/knowledge/audit처럼 후속 범위인 action은 disabled 또는 placeholder로 둔다.
+현재 Admin Console은 멤버/팀 운영 action과 resource permission, LLM credential manager action을 실제 API에 연결한 상태다. Knowledge와 audit은 현재 확정 API 성격에 맞춰 read-only 또는 후속 범위로 둔다.
 
 | 탭 | 현재 데이터 연결 |
 | --- | --- |
 | 멤버 | `GET /organizations/{id}/members` 기본 응답과 `state=removed` 조회 연결. 검색/필터/client pagination, user id 기반 초대, 정지/재활성화, manager 승격/member 강등, 제거와 cleanup summary 연결 |
 | 팀 | `GET /teams`, `GET /teams/{id}/members` 실제 연결. 검색/필터/client pagination, 생성/수정, 비활성화, team detail drawer의 active member 추가/제거 연결 |
-| 권한 | legacy Settings permission UI 이동 예정 placeholder |
-| LLM Credentials | provider/credential 목록 실제 연결. 등록 CTA는 disabled, 삭제/sync/권한 관리는 후속 action으로 미노출 또는 disabled 기준 |
+| 권한 | `/permissions/workflows/{workflow_id}`와 `/permissions/llm-credentials/{credential_id}` 목록/부여/회수 연결. Team permission과 user direct permission을 분리 표시 |
+| LLM Credentials | provider/credential 목록, credential 등록, 삭제, model sync, credential 권한 관리 진입 연결 |
 | 지식 기반 | 기존 knowledge base read list 실제 연결. Admin Console용 조직 관리 목록/권한 관리는 후속 API 확인 전까지 disabled |
 | 감사 로그 | 현재는 `/users/me/audit-logs` 기반 read-only. 조직 전체 audit API 확정 후 전환 |
 | 조직 설정 | 조직명 표시. 수정 action은 정책/API 확정 후 연결 |
 
 ## 현재 구현 스냅샷
 
-현재 구현은 MBA-84 공통 organization member 기반 위에 멤버/팀 운영 action까지 연결한 상태다.
+현재 구현은 MBA-84 공통 organization member 기반 위에 멤버/팀 운영 action, workflow/credential 권한 관리, LLM credential manager action까지 연결한 상태다.
 
 완료된 것:
 
@@ -430,7 +430,9 @@ Workflow manager는 특정 workflow의 권한 관리 권한을 가질 수 있지
 - `멤버` 탭은 user id 기반 초대, 정지/재활성화, manager 승격/member 강등, 제거를 실제 API에 연결한다.
 - `팀` 탭은 team list와 team member를 표시하고, 검색/상태 필터/member count 필터/client pagination을 제공한다. 현재 team list는 API `limit=100` 기준이며, 100개 이상일 가능성이 있으면 화면에 제한 안내를 표시한다.
 - `팀` 탭은 team 생성/수정/비활성화와 detail drawer의 active member 추가/제거를 실제 API에 연결한다.
-- `LLM Credentials`, `지식 기반`, `감사 로그`는 기존 read API가 있는 범위만 연결하고 manager mutation action은 disabled로 둔다.
+- `권한` 탭은 workflow와 LLM credential resource를 선택해 team/user direct 권한 목록을 조회하고, `PUT` upsert와 `DELETE` 회수를 수행한다.
+- `LLM Credentials` 탭은 provider/credential 목록을 표시하고, credential 등록/삭제/model sync와 credential 권한 관리 진입을 제공한다.
+- `지식 기반`, `감사 로그`는 기존 read API가 있는 범위만 연결한다.
 - Settings는 `조직 접근` 탭을 노출하지 않고, `LLM Credentials`와 `Activity` 중심으로 남긴다.
 - Settings의 LLM Credentials는 manager/member 모두 read-only이며 등록, 삭제, model sync, permission grant/revoke action을 제공하지 않는다.
 - active organization 변경 시 sidebar와 Admin Console이 같은 event를 기준으로 다시 조회된다.
@@ -439,8 +441,6 @@ Workflow manager는 특정 workflow의 권한 관리 권한을 가질 수 있지
 아직 구현하지 않은 것:
 
 - email 또는 user directory 검색 기반 organization member 초대. 현재 초대 UI는 가입 user id 입력 방식으로만 연결한다.
-- workflow permission grant/update/revoke UI 이동
-- LLM credential 등록/삭제/sync/권한 관리 action 연결
 - knowledge base organization-level 관리 action 연결
 - organization 전체 audit API 전환
 - team 목록의 서버 pagination. 현재는 API limit 100개 기준 client pagination이다.
@@ -450,7 +450,7 @@ Workflow manager는 특정 workflow의 권한 관리 권한을 가질 수 있지
 - `GET /organizations/{id}/members` query가 없으면 removed member는 응답에 포함되지 않는다. 제거된 member까지 보여주는 화면은 `state=removed` query 또는 별도 필터 동작이 필요하다.
 - 현재 Admin Console의 제거 member count는 기본 member 응답과 `state=removed` 조회를 합친 클라이언트 로드 범위 기준이다. 서버 전체 total summary API가 아니므로 대규모 조직의 정확한 집계 API가 필요하면 별도 endpoint를 검토한다.
 - Settings 내부에는 이전 `조직 접근` UI에 쓰이던 legacy branch/handler가 일부 남아 있을 수 있다. 현재 navigation에서는 접근되지 않지만, Admin Console mutation 전환이 완료되면 제거 범위를 다시 정리한다.
-- Admin Console의 disabled action은 API가 없다는 뜻이 아니라, 현재 MVP action scope 밖이라는 뜻일 수 있다. 멤버/팀 action은 연결됐고, 권한/credential/knowledge/audit action은 후속 이슈에서 연결한다.
+- Admin Console의 disabled action은 API가 없다는 뜻이 아니라, 현재 MVP action scope 밖이라는 뜻일 수 있다. 멤버/팀/action과 workflow/credential 권한, LLM credential manager action은 연결됐고, knowledge organization-level 관리와 organization audit은 후속 이슈에서 연결한다.
 
 ## 구현 순서 제안
 
@@ -484,13 +484,10 @@ MBA-84 이후 바로 이어지는 manager 화면 구현은 범위를 좁힌다. 
 
 후속 구현:
 
-- workflow 권한 grant/update/revoke
-- LLM credential 등록/삭제/sync
-- LLM credential 권한 관리
 - 지식 기반 권한 관리
 - 조직 전체 audit log 전환
 
-이 범위는 QA 비용을 줄이기 위한 것이다. MBA-84에서 shell/read-only 기반은 이미 마련했으므로, 다음 단계는 멤버와 팀 운영 action을 먼저 완성한다.
+이 범위는 QA 비용을 줄이기 위한 것이다. MBA-84에서 shell/read-only 기반을 만든 뒤, 현재는 연결 가능한 resource permission과 LLM credential action까지 Admin Console로 이동했다.
 
 ## QA 체크리스트
 
@@ -510,8 +507,9 @@ MBA-84 이후 바로 이어지는 manager 화면 구현은 범위를 좁힌다. 
 - [ ] `팀` 생성/수정/비활성화가 동작한다.
 - [ ] team detail drawer에서 active member 추가/제거가 동작한다.
 - [ ] 특정 team member 조회 실패가 tab 전체를 깨지 않고 해당 row/drawer에만 표시된다.
-- [ ] `권한` 탭은 legacy Settings permission UI 이동 전까지 placeholder로 표시된다.
-- [ ] LLM credential 등록/삭제/sync는 Admin Console에서 disabled manager action으로만 보인다.
+- [ ] `권한` 탭에서 workflow 권한 목록 조회, team/user direct 권한 저장과 회수가 동작한다.
+- [ ] `권한` 탭에서 LLM credential 권한 목록 조회, team/user direct 권한 저장과 회수가 동작한다.
+- [ ] LLM credential 등록/삭제/sync가 Admin Console에서 동작한다.
 - [ ] tab 하나의 API 실패가 전체 Admin Console을 깨지 않는다.
 
 ## 남은 결정

@@ -201,9 +201,9 @@ credential이 없는 경우에도 Settings에서는 등록 CTA를 보여주지 �
 | team 비활성화 | 가능 | 숨김 |
 | team member 추가/제거 | 가능 | 숨김 |
 | workflow permission grant/revoke | 가능 | 숨김 |
-| LLM credential permission grant/revoke | Admin Console 후속 action | 숨김 |
-| LLM credential 등록 | Admin Console 후속 action | 숨김 |
-| LLM credential 삭제/동기화 | Admin Console 후속 action | 숨김 |
+| LLM credential permission grant/revoke | Admin Console에서 가능 | 숨김 |
+| LLM credential 등록 | Admin Console에서 가능 | 숨김 |
+| LLM credential 삭제/동기화 | Admin Console에서 가능 | 숨김 |
 | app/workflow 목록 | 접근 권한 기준 표시 | 접근 권한 기준 표시 |
 | workflow 권한 badge | 표시 | 표시 |
 
@@ -247,10 +247,10 @@ MBA-71 이후 조직 운영 기능은 Settings에서 Admin Console로 이동한�
 ## QA 체크리스트
 
 - [ ] manager 로그인 시 sidebar `관리`와 `/dashboard/admin`이 보인다.
-- [ ] Admin Console 멤버 탭에서 기본 member 목록과 상태 badge가 read-only로 보인다.
-- [ ] Admin Console 팀 탭에서 team 목록과 기존 member가 read-only로 보인다.
-- [ ] Admin Console 권한 탭은 실제 grant/revoke 연결 전까지 placeholder로 보인다.
-- [ ] Admin Console LLM Credentials 탭은 목록을 표시하고 등록/삭제/sync action은 disabled로 보인다.
+- [ ] Admin Console 멤버 탭에서 member 목록과 상태 badge가 보이고 초대/정지/재활성화/승격/강등/제거가 동작한다.
+- [ ] Admin Console 팀 탭에서 team 목록과 기존 member가 보이고 생성/수정/비활성화/member 추가/member 제거가 동작한다.
+- [ ] Admin Console 권한 탭에서 workflow와 LLM credential의 team/user direct 권한 조회/저장/회수가 동작한다.
+- [ ] Admin Console LLM Credentials 탭은 목록을 표시하고 등록/삭제/sync/권한 관리 진입이 동작한다.
 - [ ] inactive team은 active team과 구분된다.
 - [ ] member 로그인 시 sidebar `관리`와 Settings 조직 운영 탭이 보이지 않는다.
 - [ ] member 로그인 시 LLM credential 등록 form과 등록 버튼이 보이지 않는다.
