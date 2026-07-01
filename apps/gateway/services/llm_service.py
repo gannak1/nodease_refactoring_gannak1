@@ -19,6 +19,7 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
+    LLMCredentialModelOptionResponse,
     LLMCredentialResponse,
     LLMModelResponse,
     LLMProviderResponse,
@@ -917,6 +918,63 @@ class LLMService:
                 seen_model_ids.add(model.id)
 
         return [LLMModelResponse.model_validate(m) for m in models]
+
+    @staticmethod
+    def get_agent_answer_options(
+        db: Session, user_id: uuid.UUID, organization_id: uuid.UUID
+    ) -> List[LLMCredentialModelOptionResponse]:
+        """
+        RAG Agent answer UI에서 바로 제출 가능한 model/credential 조합을 반환합니다.
+
+        Agent answer는 request에서 model과 credential을 모두 필수로 받기 때문에,
+        프론트가 서로 검증되지 않은 조합을 만들지 않도록 verified relation과
+        credential use 권한을 같은 조회 결과에 묶습니다.
+        """
+        rows = (
+            db.query(LLMModel, LLMCredential, LLMRelCredentialModel.priority)
+            .join(
+                LLMRelCredentialModel,
+                LLMRelCredentialModel.model_id == LLMModel.id,
+            )
+            .join(
+                LLMCredential,
+                LLMRelCredentialModel.credential_id == LLMCredential.id,
+            )
+            .options(joinedload(LLMModel.provider), joinedload(LLMCredential.provider))
+            .filter(
+                LLMCredential.organization_id == organization_id,
+                LLMCredential.is_valid == True,
+                LLMRelCredentialModel.is_verified == True,
+                LLMModel.is_active == True,
+                LLMModel.type == "chat",
+            )
+            .order_by(
+                LLMRelCredentialModel.priority.asc(),
+                LLMModel.name.asc(),
+                LLMCredential.credential_name.asc(),
+            )
+            .all()
+        )
+
+        options: list[LLMCredentialModelOptionResponse] = []
+        for model, credential, priority in rows:
+            if not has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_id,
+            ):
+                continue
+            options.append(
+                LLMCredentialModelOptionResponse(
+                    model=LLMModelResponse.model_validate(model),
+                    credential=LLMCredentialResponse.model_validate(credential),
+                    provider_name=model.provider_name,
+                    relation_priority=priority,
+                )
+            )
+        return options
 
     @staticmethod
     def _normalize_model_id(model_id: str) -> str:

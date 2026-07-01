@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -8,7 +9,15 @@ from starlette.requests import Request
 
 from apps.gateway.api.v1.endpoints import rag
 from apps.shared.db.models.knowledge import KnowledgeBase
-from apps.shared.schemas.rag import RAGResponse, SearchQuery
+from apps.shared.schemas.rag import (
+    RAGAgentAnswerRequest,
+    RAGAgentAnswerResponse,
+    RAGCitation,
+    RAGResponse,
+    RAGRetrievalSummary,
+    RAGUsageSummary,
+    SearchQuery,
+)
 
 
 class FakeQuery:
@@ -117,6 +126,32 @@ def test_authorize_rag_use_requires_use_permission(monkeypatch):
     ]
 
 
+def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
+    user_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    audit_calls = []
+    monkeypatch.setattr(
+        rag,
+        "record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    rag._record_rag_retrieve_audit(
+        _request(),
+        SimpleNamespace(id=user_id),
+        knowledge_base_id,
+        metadata_filter=None,
+        result_count=3,
+        mode="auto",
+    )
+
+    assert audit_calls[0]["action"] == rag.AuditAction.RAG_RETRIEVE
+    metadata = audit_calls[0]["metadata"]
+    assert metadata["result_count"] == 3
+    assert metadata["policy_evaluated"] is False
+    assert "policy_result" not in metadata
+
+
 def test_search_test_chat_passes_top_k_and_organization_id(monkeypatch):
     captured = {}
     organization_id = uuid.uuid4()
@@ -154,3 +189,226 @@ def test_search_test_chat_passes_top_k_and_organization_id(monkeypatch):
 
     assert captured["top_k"] == 7
     assert captured["init"]["organization_id"] == organization_id
+
+
+def _agent_answer_payload() -> RAGAgentAnswerRequest:
+    return RAGAgentAnswerRequest(
+        knowledge_base_id=uuid.uuid4(),
+        query="policy",
+        generation_model_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+    )
+
+
+def _agent_answer_response() -> RAGAgentAnswerResponse:
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    return RAGAgentAnswerResponse(
+        answer_run_id=uuid.uuid4(),
+        correlation_id="corr-1",
+        status="completed",
+        answer="answer",
+        citations=[
+            RAGCitation(
+                citation_id="c1",
+                document_id=document_id,
+                chunk_id=chunk_id,
+                rank=1,
+                score=0.9,
+                filename="policy.md",
+                metadata_summary={"classification": "internal"},
+                content_preview="safe preview",
+            )
+        ],
+        retrieval_summary=RAGRetrievalSummary(
+            knowledge_base_id=knowledge_base_id,
+            hierarchy_mode="auto",
+            retrieved_chunk_count=1,
+            document_ids=[document_id],
+            citation_ids=["c1"],
+            raw_content_returned=False,
+        ),
+        usage_summary=RAGUsageSummary(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            total_cost=0.001,
+            latency_ms=123,
+            model_name="GPT Test",
+            provider="openai",
+        ),
+        policy_result={"result": "allow"},
+    )
+
+
+def test_rag_agent_answer_passes_active_organization_to_service(monkeypatch):
+    captured = {}
+    organization_id = uuid.uuid4()
+    expected_response = _agent_answer_response()
+
+    class FakeRAGAgentAnswerService:
+        def __init__(self, db, current_user, request, organization_id):
+            captured["init"] = {
+                "db": db,
+                "current_user": current_user,
+                "request": request,
+                "organization_id": organization_id,
+            }
+
+        async def answer(self, payload):
+            captured["payload"] = payload
+            return expected_response
+
+    monkeypatch.setattr(rag, "RAGAgentAnswerService", FakeRAGAgentAnswerService)
+    payload = _agent_answer_payload()
+    user = SimpleNamespace(id=uuid.uuid4())
+    db = object()
+
+    response = asyncio.run(
+        rag.rag_agent_answer(
+            payload,
+            _request(),
+            str(organization_id),
+            db=db,
+            current_user=user,
+        )
+    )
+
+    assert response is expected_response
+    assert captured["payload"] is payload
+    assert captured["init"] == {
+        "db": db,
+        "current_user": user,
+        "request": captured["init"]["request"],
+        "organization_id": organization_id,
+    }
+
+
+def test_rag_agent_answer_stream_returns_generator_without_completing_answer(monkeypatch):
+    organization_id = uuid.uuid4()
+    captured = {}
+
+    class FakeRAGAgentAnswerService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def prepare_execution(self, payload):
+            captured["prepared"] = payload
+            return SimpleNamespace(id="execution")
+
+        async def stream_events(self, execution):
+            captured["streamed"] = execution
+            yield "retrieval.started", {
+                "answer_run_id": str(uuid.uuid4()),
+                "correlation_id": "corr-1",
+                "status": "running",
+                "knowledge_base_id": str(uuid.uuid4()),
+                "hierarchy_mode": "auto",
+            }
+
+    monkeypatch.setattr(rag, "RAGAgentAnswerService", FakeRAGAgentAnswerService)
+
+    response = asyncio.run(
+        rag.rag_agent_answer_stream(
+            _agent_answer_payload(),
+            _request(),
+            str(organization_id),
+            db=object(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+    )
+
+    assert response.media_type == "text/event-stream"
+    assert "prepared" in captured
+    assert "streamed" not in captured
+
+
+def test_rag_agent_answer_sse_events_do_not_put_preview_in_summary():
+    response = _agent_answer_response()
+
+    async def source_events():
+        yield "retrieval.started", {
+            "answer_run_id": str(response.answer_run_id),
+            "correlation_id": response.correlation_id,
+            "status": "running",
+            "knowledge_base_id": str(response.retrieval_summary.knowledge_base_id),
+            "hierarchy_mode": response.retrieval_summary.hierarchy_mode,
+        }
+        yield "retrieval.completed", {
+            "answer_run_id": str(response.answer_run_id),
+            "correlation_id": response.correlation_id,
+            "retrieval_summary": response.retrieval_summary.model_dump(mode="json"),
+            "citations": [c.model_dump(mode="json") for c in response.citations],
+        }
+        yield "answer.delta", {
+            "answer_run_id": str(response.answer_run_id),
+            "correlation_id": response.correlation_id,
+            "delta": response.answer,
+            "index": 0,
+        }
+        yield "usage", {
+            "answer_run_id": str(response.answer_run_id),
+            "correlation_id": response.correlation_id,
+            "usage_summary": response.usage_summary.model_dump(mode="json"),
+        }
+        yield "summary", {
+            "answer_run_id": str(response.answer_run_id),
+            "correlation_id": response.correlation_id,
+            "status": response.status,
+            "retrieval_summary": response.retrieval_summary.model_dump(mode="json"),
+            "citation_summary": [
+                c.model_dump(mode="json", exclude={"content_preview"})
+                for c in response.citations
+            ],
+            "answer_summary": {
+                "answer_length": len(response.answer),
+                "cited_document_count": 1,
+                "citation_ids": ["c1"],
+                "policy_result": {"result": "allow"},
+                "completion_status": "completed",
+            },
+            "policy_result": response.policy_result,
+        }
+        yield "answer.completed", {
+            "answer_run_id": str(response.answer_run_id),
+            "correlation_id": response.correlation_id,
+            "status": response.status,
+        }
+
+    async def collect():
+        return [event async for event in rag._rag_agent_sse_events(source_events())]
+
+    events = asyncio.run(collect())
+
+    assert [event.split("\n", 1)[0] for event in events] == [
+        "event: retrieval.started",
+        "event: retrieval.completed",
+        "event: answer.delta",
+        "event: usage",
+        "event: summary",
+        "event: answer.completed",
+    ]
+    retrieval_completed = "\n".join(events)
+    assert "safe preview" in retrieval_completed
+
+    started_data = json.loads(events[0].split("data: ", 1)[1])
+    assert started_data["status"] == "running"
+    assert started_data["knowledge_base_id"] == str(
+        response.retrieval_summary.knowledge_base_id
+    )
+    assert started_data["hierarchy_mode"] == response.retrieval_summary.hierarchy_mode
+
+    delta_data = json.loads(events[2].split("data: ", 1)[1])
+    assert delta_data["index"] == 0
+
+    summary_event = events[4]
+    assert "content_preview" not in summary_event
+    summary_data = json.loads(summary_event.split("data: ", 1)[1])
+    assert summary_data["answer_summary"] == {
+        "answer_length": len(response.answer),
+        "cited_document_count": 1,
+        "citation_ids": ["c1"],
+        "policy_result": {"result": "allow"},
+        "completion_status": "completed",
+    }

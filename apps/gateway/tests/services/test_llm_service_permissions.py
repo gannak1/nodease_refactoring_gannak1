@@ -132,6 +132,7 @@ def _dependency_calls(route):
 def test_llm_catalog_and_pricing_routes_require_current_user():
     protected_routes = [
         ("/providers", "GET"),
+        ("/agent-answer-options", "GET"),
         ("/models/sync-pricing", "POST"),
         ("/models/{model_id}/pricing", "PUT"),
     ]
@@ -303,3 +304,158 @@ def test_get_my_available_models_filters_by_credential_use_permission(monkeypatc
 
     assert result == [shared_model]
     assert seen_actions == ["use", "use", "use"]
+
+
+def test_get_agent_answer_options_returns_only_verified_usable_pairs(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    allowed_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        credential_name="agent",
+        organization_id=organization_id,
+    )
+    blocked_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        credential_name="blocked",
+        organization_id=organization_id,
+    )
+    model = SimpleNamespace(id=uuid.uuid4(), name="GPT Test", provider_name="openai")
+    rows = [
+        (model, blocked_credential, 0),
+        (model, allowed_credential, 1),
+    ]
+    seen = []
+
+    def can_use(db, checked_user_id, credential_id, action, organization_id=None):
+        seen.append((checked_user_id, credential_id, action, organization_id))
+        return credential_id == allowed_credential.id and action == "use"
+
+    monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_use)
+    monkeypatch.setattr(
+        llm_service.LLMModelResponse,
+        "model_validate",
+        staticmethod(lambda value: value),
+    )
+    monkeypatch.setattr(
+        llm_service.LLMCredentialResponse,
+        "model_validate",
+        staticmethod(lambda value: value),
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "LLMCredentialModelOptionResponse",
+        lambda **kwargs: kwargs,
+    )
+
+    result = LLMService.get_agent_answer_options(
+        FakeDb(rows), user_id, organization_id
+    )
+
+    assert result == [
+        {
+            "model": model,
+            "credential": allowed_credential,
+            "provider_name": "openai",
+            "relation_priority": 1,
+        }
+    ]
+    assert seen == [
+        (user_id, blocked_credential.id, "use", organization_id),
+        (user_id, allowed_credential.id, "use", organization_id),
+    ]
+
+
+def test_agent_answer_options_endpoint_resolves_active_organization(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    request = SimpleNamespace()
+    db = object()
+    captured = {}
+    expected = [{"model": "model", "credential": "credential"}]
+
+    def resolve_org(db_arg, request_arg, header, checked_user_id):
+        captured["resolve_args"] = (db_arg, request_arg, header, checked_user_id)
+        return organization_id
+
+    def get_options(db_arg, checked_user_id, checked_org_id):
+        captured["args"] = (db_arg, checked_user_id, checked_org_id)
+        return expected
+
+    monkeypatch.setattr(llm_endpoint, "resolve_active_organization_id", resolve_org)
+    monkeypatch.setattr(LLMService, "get_agent_answer_options", get_options)
+
+    result = llm_endpoint.get_agent_answer_options(
+        request,
+        x_organization_id=str(organization_id),
+        db=db,
+        current_user=SimpleNamespace(id=user_id),
+    )
+
+    assert result == expected
+    assert captured["resolve_args"] == (
+        db,
+        request,
+        str(organization_id),
+        user_id,
+    )
+    assert captured["args"] == (db, user_id, organization_id)
+
+
+def test_agent_answer_options_endpoint_does_not_mask_scope_errors(monkeypatch):
+    user_id = uuid.uuid4()
+    db = object()
+
+    def reject_scope(*args, **kwargs):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "resource.not_found"}},
+        )
+
+    monkeypatch.setattr(llm_endpoint, "resolve_active_organization_id", reject_scope)
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: pytest.fail("service should not run after org error"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.get_agent_answer_options(
+            SimpleNamespace(),
+            x_organization_id=str(uuid.uuid4()),
+            db=db,
+            current_user=SimpleNamespace(id=user_id),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["code"] == "resource.not_found"
+
+
+def test_agent_answer_options_endpoint_sanitizes_unexpected_errors(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = object()
+
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *args, **kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("credential secret leaked")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.get_agent_answer_options(
+            SimpleNamespace(),
+            x_organization_id=str(organization_id),
+            db=db,
+            current_user=SimpleNamespace(id=user_id),
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Agent answer options lookup failed."
+    assert "secret" not in exc_info.value.detail
