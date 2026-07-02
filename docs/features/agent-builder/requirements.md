@@ -5,21 +5,29 @@ Related Features: workflow, knowledge, llm-credentials, deployment
 
 ## Purpose
 
-TBD
+자연어 프롬프트로부터 실행 가능한 workflow 초안을 자동 생성해, 비개발자와 빌더의 자동화 진입 장벽을 낮춘다. [PRD](../../PRD.md)의 FR-001~FR-003을 담당한다.
+
+현재 코드에는 node 단위 wizard(prompt improve, code generate, template improve)만 있으며, 프롬프트에서 workflow 전체 그래프를 생성하는 기능은 신규 목표다.
 
 ## User Stories
 
-- TBD
+- 빌더로서, "고객 문의 이메일을 분류하고 답변해줘" 같은 프롬프트를 입력하면 실행 가능한 workflow 초안을 받고 싶다.
+- 빌더로서, 생성된 초안을 캔버스에서 수정하고 테스트 실행한 뒤 배포하고 싶다.
+- 빌더로서, 생성된 workflow에 필요한 credential이나 권한이 없으면 실행 전에 미리 알고 싶다.
 
 ## Functional Requirements
 
-- TBD
+- FR-001: 자연어 프롬프트를 입력받아 노드 그래프(예: `Webhook → LLM 분류 → Condition → LLM 답변 → 이메일`)를 생성하고 캔버스에 표시한다.
+- FR-002: 생성된 workflow는 기존 캔버스 편집기와 테스트 실행 경로를 그대로 사용한다. 별도 편집/실행 경로를 만들지 않는다.
+- FR-003: 생성 결과에 필요한 credential/모델/권한이 없으면 어떤 것이 부족한지 사전에 안내한다. 기존 wizard의 check-credentials 흐름을 참고한다.
 
 ## Policies And Edge Cases
 
-- TBD
+- 생성된 workflow도 일반 workflow와 동일한 RBAC, audit, organization scope 규칙을 적용한다. 생성 경로라고 해서 권한 판정을 우회하지 않는다.
+- 프롬프트와 생성 결과에 secret 원문이 포함되지 않도록 한다.
+- 생성 실패 또는 해석 불가능한 프롬프트는 빈 캔버스가 아니라 명시적 실패 안내로 처리한다.
 
 ## Open Questions
 
-- TBD
-
+- 생성 가능한 노드 타입 범위: 전체 허용 vs 안전한 부분집합(allowlist) — PRD Open Question과 연결.
+- 생성 시 LLM 호출의 credential은 누구 것을 사용하는지(요청 빌더의 credential vs 플랫폼 공용).
