@@ -23,6 +23,7 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     LLMUsageLog,
 )
+from apps.shared.db.models.llm_node_version import LLMNodeVersion
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
@@ -74,6 +75,7 @@ __all__ = [
     "LLMProvider",
     "LLMRelCredentialModel",
     "LLMUsageLog",
+    "LLMNodeVersion",
     "Schedule",
     "Organization",
     "OrganizationMembership",

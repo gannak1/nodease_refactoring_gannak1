@@ -41,6 +41,7 @@ from apps.shared.db.models import (  # noqa: F401
     LLMProvider,
     LLMRelCredentialModel,
     LLMUsageLog,
+    LLMNodeVersion,
     OrganizationMembership,
     Schedule,
     TracePayload,
