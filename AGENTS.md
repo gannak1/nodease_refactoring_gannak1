@@ -2,9 +2,9 @@
 
 ## 프로젝트 개요
 
-mbased는 기존 Moduly의 workflow builder/runtime을 기반으로 Nodease 방향의 LLMOps 운영 플랫폼으로 확장하는 프로젝트다.
+mbased는 기존 Moduly 코드를 리팩토링해 Nodease라는 기업 내부 AI workflow/LLMOps 운영 서비스를 만드는 프로젝트다.
 
-현재 코드와 배포 리소스의 런타임 명칭은 `Moduly`를 사용한다. FastAPI title, Docker/Helm 리소스명, container name, README 실행 명령 등 코드/인프라 식별자는 Moduly 기준을 우선한다. `Nodease`는 목표 제품명 또는 리브랜딩 명칭으로 취급한다.
+현재 코드와 배포 리소스에는 아직 `Moduly` 명칭이 남아 있다. FastAPI title, Docker/Helm 리소스명, container name, README 실행 명령 등 기존 코드/인프라 식별자는 Moduly 기준으로 읽되, 새로 정리하는 제품/문서/기능 방향은 Nodease 기준으로 작성한다.
 
 제품 방향은 기존 AI workflow 생성/실행/배포/RAG/LLM credential 기반 위에 다음 운영 능력을 단계적으로 추가하는 것이다.
 

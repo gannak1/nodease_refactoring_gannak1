@@ -2,11 +2,11 @@
 
 Status: Draft
 
-> 명칭: 코드와 배포 리소스의 런타임 명칭은 `Moduly`, `Nodease`는 목표 제품명이다. 이 문서는 제품 관점이므로 Nodease를 사용한다.
+> 명칭: Nodease는 기존 Moduly 코드를 리팩토링해 만드는 신규 서비스명이다. 코드와 배포 리소스에는 아직 `Moduly` 명칭이 남아 있으므로, 이 문서는 제품 관점에서는 Nodease를 사용하고 기존 코드/인프라 식별자는 Moduly 기준으로 읽는다.
 
 ## 1. 제품 개요
 
-Nodease는 기업 내부 AI 플랫폼이다. 한 회사의 플랫폼 조직이 운영하고, 사내 여러 팀이 AI workflow를 만들고 실행하고 배포하는 데 사용한다. 기존 Moduly의 workflow builder/runtime 위에 조직 단위 권한(RBAC), 감사/추적(audit/tracing), LLM 사용량/비용 관측을 내장해 "만들 수 있는 플랫폼"을 "운영할 수 있는 플랫폼"으로 확장한다.
+Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI 플랫폼이다. 한 회사의 플랫폼 조직이 운영하고, 사내 여러 팀이 AI workflow를 만들고 실행하고 배포하는 데 사용한다. 기존 Moduly의 workflow builder/runtime 위에 조직 단위 권한(RBAC), 감사/추적(audit/tracing), LLM 사용량/비용 관측을 내장해 "만들 수 있는 플랫폼"을 "운영할 수 있는 플랫폼"으로 확장한다.
 
 ### 해결하는 문제
 
