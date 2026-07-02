@@ -1,7 +1,5 @@
 'use client';
 
-/* eslint-disable react-hooks/set-state-in-effect */
-
 import { useEffect, useMemo, useState } from 'react';
 import { isAxiosError } from 'axios';
 import {
