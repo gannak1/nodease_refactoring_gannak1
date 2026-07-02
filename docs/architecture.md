@@ -1,8 +1,7 @@
 # Architecture
 
 Status: Draft
-Owner: TBD
-Last Updated: 2026-07-02
+Verified Against: TBD
 
 ## Overview
 

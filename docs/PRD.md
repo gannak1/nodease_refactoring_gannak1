@@ -1,8 +1,6 @@
 # Product Requirements Document
 
 Status: Draft
-Owner: TBD
-Last Updated: 2026-07-02
 
 ## Overview
 
