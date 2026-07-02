@@ -144,6 +144,35 @@ Related ADRs:
 
 ## 2026-06-30
 
+### MBA-43 LLM runtime scope and Wizard hardening
+
+Implementation detail added after follow-up hardening: Workflow Engine runtime
+credential selection also includes `apps/workflow_engine/services/llm_service.py`.
+Runtime credential selection orders verified credential-model relations by
+`llm_rel_credential_models.priority ASC`, then credential `created_at ASC`, then
+credential `id ASC` for Workflow Engine runtime. Wizard helper runtime follows the
+provider/model map order first, then applies the same relation priority and
+credential tie-breakers within the selected provider/model candidate.
+Successful workflow LLM node usage logging keeps the actual executed credential id
+instead of re-selecting one. `log_usage(credential_id=...)` treats the provided
+credential id as a caller contract from runtime selection and does not re-validate
+that relationship in this pass. Workflow Engine runtime does not use
+`llm_credentials.organization_id IS NULL`; legacy null credentials need backfill or
+reassignment before runtime use. Workflow Engine RetrievalService is affected by
+shared LLMService hardening and should be called with explicit organization scope;
+its user-owned rewrite model candidate lookup and nullable constructor remain
+follow-up gaps, not MBA-43 RAG permission features.
+
+- 상태: Active
+- 맥락: MBA-43은 organization-level LLM credential routing과 runtime `use` 권한 적용을 검증/보강하는 이슈다. Workflow LLM node는 핵심 runtime 경로이고, prompt/code/template Wizard helper도 인증된 LLM runtime이지만 기존 문서는 current user credential scope로 설명했다. RAG/ingestion, model blacklist, cost dashboard까지 한 번에 포함하면 MBA-43 범위를 넘어선다.
+- 결정: MBA-43은 workflow LLM node credential selection, Wizard helper runtime hardening, credential `use` permission, verified `llm_rel_credential_models.is_verified`, active `llm_models.is_active`, workflow/Wizard POST runtime block audit, workflow LLM node successful usage logging만 포함한다. Wizard는 optional `organization_id`를 받되, 없으면 LLM credential 생성 API의 기존 default organization fallback과 정렬한다. Runtime block audit reason은 `credential_not_available`, `credential_use_denied`, `model_relation_not_verified`, `model_inactive`, `organization_scope_missing`처럼 가능한 범위에서 세분화한다. Credential id가 특정되지 않은 runtime block은 `target_type='llm_credential'`, `target_id='unknown'`으로 기록하고, model/organization 정보는 metadata에 남긴다. `X-Organization-Id` 필수화와 mutation 없는 fallback 전환은 후속 정책/API 변경으로 남긴다. Gateway service-level LLM helper에서 `organization_id`가 없는 호출은 이번 범위에서 legacy 호환 경로로 유지한다. 반면 Workflow Engine LLM runtime service path는 명시적으로 전달된 valid `organization_id`를 요구하고, 없거나 invalid하면 `organization_scope_missing`으로 fail-closed 처리한다. Gateway ingestion embedding credential routing은 Knowledge/RAG 쪽 organization scope와 함께 후속으로 다룬다. Application-level model restriction은 구현하지 않으며 `policy.block`은 기록하지 않는다.
+- 근거: 공식 MVP 1 계획의 MBA-43 핵심은 LLM credential `use`와 credential-model relation fail-closed 검증이다. Wizard helper는 supporting endpoint 문서에서 organization-level routing 정렬이 필요한 경로로 남아 있어 같은 runtime hardening에 포함할 수 있다. 반면 RAG/ingestion usage logging, LlamaParse credential policy, cost dashboard scope는 Knowledge/RAG 또는 운영 통계 후속 범위다.
+- 범위: Gateway prompt/code/template Wizard endpoint, Gateway LLM service credential selection helper, Workflow Engine LLM service runtime credential selection, Workflow Engine LLM node runtime block audit와 usage logging.
+- 영향 파일: `apps/gateway/services/llm_service.py`, `apps/gateway/api/v1/endpoints/prompt_wizard.py`, `apps/gateway/api/v1/endpoints/code_wizard.py`, `apps/gateway/api/v1/endpoints/template_wizard.py`, `apps/workflow_engine/services/llm_service.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py`, `docs/api/supporting-endpoints.md`.
+- 관련 문서: [LLM credentials API](../api/llm-credentials.md), [Supporting Endpoint API](../api/supporting-endpoints.md), [MVP 1 development issue plan](mvp-1-development-issue-plan.md), [MVP 1 foundation LLMOps](../requirements/mvp-1-foundation-llmops.md), [audit action ADR](../decisions/ADR-202606290131-audit-action-naming-standard.md)
+- 후속 검토: `X-Organization-Id` 필수화, default organization fallback 제거 또는 read-only lookup 전환, Gateway service-level `organization_id=None` LLM 호출 fail-closed 전환, Gateway ingestion embedding credential routing, Wizard/RAG/ingestion usage logging, RAG/ingestion block audit, LlamaParse/parser credential policy, model blacklist/allowlist policy, `/stats/top-models` organization/workflow scope 변경을 별도 이슈에서 확정한다.
+- ADR 승격 여부: No. 기존 MBA-43 권위 문서의 구현 범위를 API/helper별로 구체화한 결정이며, model restriction이나 새 audit action 같은 제품 정책은 추가하지 않는다.
+
 ### MBA-78 1차 구현 범위와 PR 분리
 
 - 상태: Active

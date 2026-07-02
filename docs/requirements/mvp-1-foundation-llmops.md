@@ -294,9 +294,11 @@ llm_trace
 
 기존 `llm_usage_logs`를 최대한 재사용한다. 현재 코드 기준 물리 column과 SQLAlchemy 속성명은 모두 `latency_ms`다. 과거 `atency_ms` column은 `f8a9b0c1d2e3_rename_llm_usage_latency_ms.py` migration에서 `latency_ms`로 정리한다.
 
+MVP 1의 successful LLM usage logging 범위는 workflow LLM node 성공 호출이다. Provider response에 token usage가 없어도 schema가 허용하는 최소 usage row를 남기고, 실제 runtime에서 선택된 credential id를 사용한다. Wizard, RAG/retrieval/ingestion, embedding, LlamaParse/parser usage logging은 후속 범위다.
+
 ## Data Governance / Policy Skeleton
 
-MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 만든다. 실제 데이터 소스 차단은 MVP 2에서 강화하고, MVP 1의 enforcement는 workflow 권한과 LLM credential `use` 권한 및 credential-model relation 중심이다.
+MVP 1에서는 policy decision이 audit/tracing에 남을 수 있는 구조를 만든다. 실제 데이터 소스 차단은 MVP 2에서 강화하고, MVP 1의 enforcement는 workflow 권한과 LLM credential `use` 권한 및 credential-model relation 중심이다. MBA-43은 application-level model blacklist/allowlist를 구현하지 않으며, model restriction 차단에 `policy.block`을 기록하지 않는다.
 
 초기 classification:
 

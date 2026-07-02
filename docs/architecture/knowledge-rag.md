@@ -103,6 +103,23 @@ Document별 permission table은 만들지 않는다. Document access/policy는 K
 
 MVP 2 목표 계약의 Knowledge/RAG permission gate는 KB의 `organization_id`와 요청의 active organization context를 비교해야 한다. 목표 계약은 Knowledge/RAG org-scoped API도 `X-Organization-Id` header를 사용하는 것이다. Org-scoped RAG에서 KB `organization_id`는 필수이며, legacy `organization_id=null` KB는 요청 header organization으로 보정하지 않고 backfill/reassignment 전까지 scope 밖 resource로 닫는다. 현재 Knowledge/RAG API의 primary organization fallback은 과도기 구현이며, MBA-78 1차 구현은 [knowledge-rag API 문서](../api/knowledge-rag.md)의 header 기반 400/404 계약으로 수렴하는 첫 범위다.
 
+## LLM Credential Routing Boundary
+
+MBA-43은 LLM credential routing과 runtime `use` 권한 이슈이며, Knowledge Base permission enforcement 이슈가 아니다. RAG/retrieval/ingestion 경로가 LLM provider 호출을 수행할 때는 가능한 경우 KB `organization_id`를 LLM credential routing scope로 전달할 수 있지만, 이것은 KB `read`/`use`/`write`/`manage` permission enforcement를 대체하지 않는다.
+
+MBA-43 범위에서 제외되는 항목:
+
+- RAG/retrieval/ingestion runtime block audit
+- RAG/retrieval/ingestion successful usage logging in `llm_usage_logs`
+- Gateway ingestion embedding credential routing through `apps/gateway/services/ingestion/service.py`
+- LlamaParse/parser credential selection policy
+- Connector credential policy
+- Shared embedding service direct credential lookup refactor
+- Workflow Engine RetrievalService rewrite model candidate selection refactor
+- Workflow Engine RetrievalService constructor hardening for `organization_id=None`
+
+Workflow Engine RetrievalService는 Workflow Engine LLMService를 공유하므로, LLM-backed retrieval 호출에는 explicit organization scope가 필요하다. 이는 shared LLM runtime hardening의 부수 효과이며, 새로운 RAG permission feature가 아니다.
+
 ## Document Metadata Policy
 
 | classification | 기본 동작 |

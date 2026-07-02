@@ -52,13 +52,17 @@ Connector response는 DB/SSH password, private key 같은 secret 원문을 반�
 
 | Status | Method | Path | Request | Response | Permission |
 | --- | --- | --- | --- | --- | --- |
-| Implemented | `GET` | `/api/v1/prompt-wizard/check-credentials` | 없음 | `{ "has_credentials": boolean }` | authenticated; current user credential scope |
-| Implemented | `POST` | `/api/v1/prompt-wizard/improve` | `PromptImproveRequest` | `PromptImproveResponse` | authenticated; current user credential scope |
-| Implemented | `GET` | `/api/v1/code-wizard/check-credentials` | 없음 | `{ "has_credentials": boolean }` | authenticated; current user credential scope |
-| Implemented | `POST` | `/api/v1/code-wizard/generate` | `CodeGenerateRequest` | `CodeGenerateResponse` | authenticated; current user credential scope |
-| Implemented | `GET` | `/api/v1/template-wizard/check-credentials` | 없음 | `{ "has_credentials": boolean }` | authenticated; current user credential scope |
-| Implemented | `POST` | `/api/v1/template-wizard/improve` | `TemplateImproveRequest` | `TemplateImproveResponse` | authenticated; current user credential scope |
+| Implemented | `GET` | `/api/v1/prompt-wizard/check-credentials` | optional query `organization_id` | `{ "has_credentials": boolean }` | authenticated; LLM credential `use` + verified credential-model relation |
+| Implemented | `POST` | `/api/v1/prompt-wizard/improve` | `PromptImproveRequest` with optional `organization_id` | `PromptImproveResponse` | authenticated; LLM credential `use` + verified credential-model relation |
+| Implemented | `GET` | `/api/v1/code-wizard/check-credentials` | optional query `organization_id` | `{ "has_credentials": boolean }` | authenticated; LLM credential `use` + verified credential-model relation |
+| Implemented | `POST` | `/api/v1/code-wizard/generate` | `CodeGenerateRequest` with optional `organization_id` | `CodeGenerateResponse` | authenticated; LLM credential `use` + verified credential-model relation |
+| Implemented | `GET` | `/api/v1/template-wizard/check-credentials` | optional query `organization_id` | `{ "has_credentials": boolean }` | authenticated; LLM credential `use` + verified credential-model relation |
+| Implemented | `POST` | `/api/v1/template-wizard/improve` | `TemplateImproveRequest` with optional `organization_id` | `TemplateImproveResponse` | authenticated; LLM credential `use` + verified credential-model relation |
 
-Wizard helper API는 현재 코드에서 current user의 유효한 LLM credential을 직접 조회한다. MVP 1 LLM credential permission helper와 완전히 같은 organization-level routing 계약으로 정렬하는 것은 후속 보강 대상이다.
+Wizard helper API는 MBA-43 기준에서 authenticated LLM runtime으로 취급한다. Runtime credential은 valid credential, resolved organization scope, current user의 credential `use` 권한, active model, verified credential-model relation을 모두 만족해야 한다.
 
-현재 wizard helper는 provider별로 효율 모델을 고정 선택한다. 코드/템플릿 위저드는 endpoint 내부 map을 사용하고, 프롬프트 위저드는 `LLMService.EFFICIENT_MODELS`를 사용한다. credential이 없으면 `400`과 `credentials_required=true` 성격의 detail을 반환한다.
+Wizard organization scope는 LLM credential 기본 organization 정책과 정렬한다. 요청에 `organization_id`가 있으면 그 값을 사용하고, 없으면 current user의 default organization fallback을 사용한다. default organization foundation이 없으면 기존 fallback 경로가 organization/team/membership row를 생성할 수 있다.
+
+Wizard runtime은 provider별 효율 모델 map의 순서를 먼저 따른다. 선택된 provider/model 후보에서 여러 credential이 같은 Wizard model을 실행할 수 있으면 `llm_rel_credential_models.priority ASC`, `llm_credentials.created_at ASC`, `llm_credentials.id ASC` 순서로 runtime credential을 선택한다.
+
+현재 wizard helper는 provider별로 효율 모델을 고정 선택한다. 코드/템플릿 위저드는 endpoint 내부 map을 사용하고, 프롬프트 위저드는 `LLMService.EFFICIENT_MODELS`를 사용한다. 사용할 수 있는 runtime credential이 없으면 POST endpoint는 기존처럼 `400`과 `credentials_required=true` 성격의 detail을 반환하고 runtime block audit은 `permission.denied`로 기록한다. GET check-credentials는 audit을 기록하지 않고 `{ "has_credentials": false }`를 반환한다.

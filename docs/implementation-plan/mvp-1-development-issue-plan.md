@@ -366,6 +366,8 @@ Out of Scope:
 | Runtime use | workflow engine LLM node가 credential `use` 권한을 확인하는지 검증한다. |
 | Model relation | model 사용 가능 여부는 `llm_rel_credential_models.is_verified`와 credential permission을 함께 평가한다. |
 | Usage log | `llm_usage_logs.organization_id`, `workflow_id`, `workflow_run_id`, `node_id`를 가능한 범위에서 채운다. |
+| Wizard hardening | prompt/code/template Wizard helper를 authenticated LLM runtime으로 보고 credential `use`, verified relation, active model을 적용한다. |
+| Runtime block audit | workflow LLM node와 Wizard POST runtime 차단을 `permission.denied`로 기록한다. |
 | Cost query | 현재 `top-models`는 user-scoped다. organization/workflow scope 통계가 필요하면 별도 보강한다. |
 
 구현 방법:
@@ -384,9 +386,13 @@ Out of Scope:
 6. 없으면 fail-closed
 ```
 
-5. workflow engine으로 전달되는 execution context에 user_id, organization_id, workflow_id, workflow_run_id를 전달한다.
-6. LLM node 실행 시 gateway와 workflow_engine 양쪽 서비스가 같은 permission 판단을 재사용하도록 shared helper를 둔다.
-7. model 전용 permission table은 만들지 않는다.
+5. Workflow Engine LLM runtime service는 명시적으로 전달된 valid organization_id를 요구한다. organization_id가 없거나 invalid하면 `organization_scope_missing`으로 fail-closed 처리하고, fallback model을 시도하지 않는다.
+6. Workflow Engine runtime은 `llm_credentials.organization_id IS NULL` legacy credential을 사용하지 않는다. legacy null credential은 organization backfill 또는 reassignment 이후 runtime 후보가 될 수 있다.
+7. workflow engine으로 전달되는 execution context에 user_id, organization_id, workflow_id, workflow_run_id를 전달한다.
+8. LLM node 실행 시 gateway와 workflow_engine 양쪽 서비스가 같은 permission 판단을 재사용하도록 shared helper를 둔다.
+9. model 전용 permission table은 만들지 않는다.
+10. Wizard helper는 provider/model map 순서를 먼저 따르고, 같은 Wizard model 후보 안에서 `llm_rel_credential_models.priority`, credential 생성일, credential id 순으로 runtime credential을 선택한다.
+11. Successful workflow LLM node usage logging은 실제 실행 credential id를 사용하고, usage logging 단계에서 credential을 다시 선택하지 않는다.
 
 Acceptance Criteria:
 
@@ -396,13 +402,23 @@ Acceptance Criteria:
 - credential `manager`는 기존 credential 삭제/동기화/권한 관리를 할 수 있다.
 - verified relation이 없는 model은 credential 권한이 있어도 사용할 수 없다.
 - credential `use` 권한이 없거나 verified credential-model relation이 없는 조합으로 workflow를 실행하면 LLM node 실행 전 또는 실행 중 명확히 차단된다.
-- 차단 이벤트가 audit에 남는다.
-- 성공한 LLM call은 `llm_usage_logs`에 organization/run/node/model/credential/token/cost/latency를 남긴다.
+- Workflow Engine runtime organization scope가 없거나 invalid하면 `organization_scope_missing`으로 차단되고 fallback model을 시도하지 않는다.
+- workflow LLM node 또는 Wizard POST runtime 차단 이벤트는 `permission.denied` audit에 남는다.
+- 성공한 workflow LLM node call은 provider usage가 없더라도 schema가 허용하는 최소 `llm_usage_logs` row를 남기고 organization/run/node/model/credential/token/cost/latency를 가능한 범위에서 채운다.
 
 Out of Scope:
 
 - API key별 cost limit
 - model 전용 permission table
+- application-level model blacklist/allowlist policy
+- `policy.block` recording for model restrictions
+- `X-Organization-Id` mandatory migration and default organization fallback removal
+- Wizard usage logging
+- RAG/retrieval/ingestion usage logging and runtime block audit
+- Gateway ingestion embedding credential routing through permission-aware LLM credential selection
+- LlamaParse/parser credential policy
+- Workflow engine credential management method refactor
+- Workflow Engine model listing helper refactor
 - 외부 provider별 고급 routing 정책
 - retry/fallback/cache
 

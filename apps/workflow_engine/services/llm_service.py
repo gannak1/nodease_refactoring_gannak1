@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -24,6 +25,35 @@ from apps.shared.services.llm_usage_context import resolve_llm_usage_context
 from apps.shared.services.permissions import has_llm_credential_permission
 
 logger = logging.getLogger(__name__)
+
+
+class LLMCredentialNotAvailableError(ValueError):
+    """LLM runtime credential 선택 실패 원인을 보존합니다. MBA-43"""
+
+    def __init__(
+        self,
+        reason: str,
+        message: str,
+        *,
+        credential_id: Optional[uuid.UUID] = None,
+        model_id: Optional[str] = None,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.credential_id = credential_id
+        self.model_id = model_id
+        self.organization_id = organization_id
+
+
+@dataclass(frozen=True)
+class LLMRuntimeSelection:
+    """Workflow runtime client selection result with executed credential metadata. MBA-43"""
+
+    client: Any
+    credential_id: uuid.UUID
+    model_id: str
+    organization_id: uuid.UUID
 
 
 class LLMService:
@@ -692,6 +722,21 @@ class LLMService:
         model_id: str,
         organization_id: Optional[uuid.UUID] = None,
     ):
+        """Return only the LLM client for legacy callers of runtime selection. MBA-43"""
+        return LLMService.get_runtime_client_for_user(
+            db=db,
+            user_id=user_id,
+            model_id=model_id,
+            organization_id=organization_id,
+        ).client
+
+    @staticmethod
+    def get_runtime_client_for_user(
+        db: Session,
+        user_id: uuid.UUID,
+        model_id: str,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> LLMRuntimeSelection:
         """
         주어진 model_id를 지원하는 유효한 크리덴셜을 찾습니다.
         우선순위:
@@ -701,6 +746,10 @@ class LLMService:
         # 참고: model_id 문자열은 'gpt-4o'처럼 흔한 값일 수 있음.
         # 동일한 모델명을 제공하는 프로바이더가 여러 개일 수 있으므로(드물지만), 추가 정보가 필요할 수 있음.
         # 현재는 모델명이 충분히 유니크하거나 시스템 기본 프로바이더를 우선한다고 가정.
+
+        organization_uuid = LLMService._require_runtime_organization_id(
+            organization_id, model_id=model_id
+        )
 
         target_model = (
             db.query(LLMModel)
@@ -712,15 +761,27 @@ class LLMService:
         if not target_model:
             # 시스템에 없는 모델명일 경우 처리 (커스텀 모델명 호환성)
             # 일단 에러 발생시키지 않고 진행하거나, Known 에러로 처리
-            raise ValueError(f"Unknown model_id: {model_id}")
+            raise LLMCredentialNotAvailableError(
+                "model_relation_not_verified",
+                f"Unknown model_id: {model_id}",
+                model_id=model_id,
+                organization_id=organization_uuid,
+            )
+        if not target_model.is_active:
+            raise LLMCredentialNotAvailableError(
+                "model_inactive",
+                f"Inactive model_id: {model_id}",
+                model_id=model_id,
+                organization_id=organization_uuid,
+            )
 
         # verified credential-model relation과 credential use 권한을 함께 평가한다.
         # relation이 없으면 fail-closed로 처리한다.
-        cred = LLMService._get_valid_credential_for_user(
+        cred = LLMService._get_runtime_credential_for_user(
             db,
             user_id=user_id,
-            model_db_id=target_model.id,
-            organization_id=organization_id,
+            target_model=target_model,
+            organization_id=organization_uuid,
         )
 
         if not cred:
@@ -730,8 +791,11 @@ class LLMService:
                 f"ProviderID: {target_model.provider_id if target_model else 'None'}"
             )
 
-            raise ValueError(
-                f"유효한 API 키를 찾을 수 없습니다. [설정 > 모델 키 관리]에서 '{model_id}' 모델을 지원하는 API Key를 등록해주세요."
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                f"유효한 API 키를 찾을 수 없습니다. [설정 > 모델 키 관리]에서 '{model_id}' 모델을 지원하는 API Key를 등록해주세요.",
+                model_id=model_id,
+                organization_id=organization_uuid,
             )
 
         # 설정 로드
@@ -745,10 +809,17 @@ class LLMService:
         db.refresh(cred)
         provider_type = cred.provider.name
 
-        return get_llm_client(
+        client = get_llm_client(
             provider=provider_type,
             model_id=model_id,
             credentials={"apiKey": api_key, "baseUrl": base_url},
+        )
+
+        return LLMRuntimeSelection(
+            client=client,
+            credential_id=cred.id,
+            model_id=model_id,
+            organization_id=organization_uuid,
         )
 
     @staticmethod
@@ -806,6 +877,122 @@ class LLMService:
             ):
                 return credential
         return None
+
+    @staticmethod
+    def _normalize_runtime_organization_id(
+        organization_id: Optional[uuid.UUID],
+    ) -> Optional[uuid.UUID]:
+        """runtime audit metadata에 넣을 organization id를 안전하게 정규화합니다. MBA-43"""
+        if not organization_id:
+            return None
+        try:
+            return uuid.UUID(str(organization_id))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _require_runtime_organization_id(
+        organization_id: Optional[uuid.UUID],
+        *,
+        model_id: Optional[str] = None,
+    ) -> uuid.UUID:
+        """Workflow Engine runtime credential 조회에 필요한 organization id를 검증합니다. MBA-43"""
+        organization_uuid = LLMService._normalize_runtime_organization_id(
+            organization_id
+        )
+        if organization_uuid is None:
+            raise LLMCredentialNotAvailableError(
+                "organization_scope_missing",
+                "Workflow LLM runtime requires a valid organization_id.",
+                model_id=model_id,
+            )
+        return organization_uuid
+
+    @staticmethod
+    def _get_runtime_credential_for_user(
+        db: Session,
+        user_id: uuid.UUID,
+        target_model: LLMModel,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> Optional[LLMCredential]:
+        """workflow runtime의 credential 선택 실패 원인을 세분화합니다. MBA-43"""
+        organization_uuid = LLMService._require_runtime_organization_id(
+            organization_id,
+            model_id=target_model.model_id_for_api_call,
+        )
+
+        query = db.query(LLMCredential).filter(
+            LLMCredential.is_valid == True,
+            LLMCredential.provider_id == target_model.provider_id,
+            LLMCredential.organization_id == organization_uuid,
+        )
+
+        first_credential = (
+            query.order_by(LLMCredential.created_at.asc(), LLMCredential.id.asc())
+            .limit(1)
+            .first()
+        )
+        if not first_credential:
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                f"'{target_model.model_id_for_api_call}' 모델을 지원하는 유효한 API 키를 찾을 수 없습니다.",
+                model_id=target_model.model_id_for_api_call,
+                organization_id=organization_uuid,
+            )
+
+        verified_candidates = []
+        for credential in query.all():
+            relation = (
+                db.query(LLMRelCredentialModel)
+                .filter(
+                    LLMRelCredentialModel.credential_id == credential.id,
+                    LLMRelCredentialModel.model_id == target_model.id,
+                    LLMRelCredentialModel.is_verified == True,
+                )
+                .order_by(LLMRelCredentialModel.priority.asc())
+                .first()
+            )
+            if relation:
+                verified_candidates.append(
+                    (
+                        relation.priority,
+                        credential.created_at,
+                        credential.id,
+                        credential,
+                    )
+                )
+
+        verified_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        if not verified_candidates:
+            raise LLMCredentialNotAvailableError(
+                "model_relation_not_verified",
+                f"'{target_model.model_id_for_api_call}' 모델에 verified credential relation이 없습니다.",
+                model_id=target_model.model_id_for_api_call,
+                organization_id=organization_uuid,
+            )
+
+        first_denied_credential: Optional[LLMCredential] = None
+        for _priority, _created_at, _id, credential in verified_candidates:
+            if has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            ):
+                return credential
+            if first_denied_credential is None:
+                first_denied_credential = credential
+
+        raise LLMCredentialNotAvailableError(
+            "credential_use_denied",
+            f"'{target_model.model_id_for_api_call}' 모델을 실행할 LLM credential use 권한이 없습니다.",
+            credential_id=(
+                first_denied_credential.id if first_denied_credential else None
+            ),
+            model_id=target_model.model_id_for_api_call,
+            organization_id=organization_uuid,
+        )
 
     @staticmethod
     def get_my_available_models(
@@ -952,6 +1139,7 @@ class LLMService:
         workflow_id: Optional[uuid.UUID] = None,
         workflow_run_id: Optional[uuid.UUID] = None,
         node_id: Optional[str] = None,
+        credential_id: Optional[uuid.UUID] = None,
     ) -> Optional[LLMUsageLog]:
         """
         LLM 사용 로그를 DB에 저장합니다.
@@ -991,22 +1179,34 @@ class LLMService:
         workflow_uuid = usage_context.workflow_id
         workflow_run_uuid = usage_context.workflow_run_id
 
-        credential = LLMService._get_valid_credential_for_user(
-            db,
-            user_id,
-            model_db_id=model.id,
-            organization_id=organization_uuid,
-        )
-        if not credential:
-            logger.error(
-                f"[LLMService] Usage log skipped: no credential for user {user_id}."
+        credential_uuid = None
+        if credential_id:
+            try:
+                credential_uuid = uuid.UUID(str(credential_id))
+            except (TypeError, ValueError):
+                logger.error(
+                    f"[LLMService] Usage log skipped: invalid credential_id {credential_id}."
+                )
+                return None
+
+        if credential_uuid is None:
+            credential = LLMService._get_valid_credential_for_user(
+                db,
+                user_id,
+                model_db_id=model.id,
+                organization_id=organization_uuid,
             )
-            return None
+            if not credential:
+                logger.error(
+                    f"[LLMService] Usage log skipped: no credential for user {user_id}."
+                )
+                return None
+            credential_uuid = credential.id
 
         log = LLMUsageLog(
             user_id=user_id,
             organization_id=organization_uuid,
-            credential_id=credential.id,
+            credential_id=credential_uuid,
             model_id=model.id,
             workflow_id=workflow_uuid,
             workflow_run_id=workflow_run_uuid,

@@ -19,8 +19,11 @@ export const useWorkflowAppSync = () => {
   } = useWorkflowStore();
 
   useEffect(() => {
+    let active = true;
+
     const loadWorkflowAppId = async () => {
       if (isMockWorkflowId(workflowId)) {
+        if (!active) return;
         setCurrentAppId('mock-app');
         setProjectInfo(
           'Mock 워크플로우',
@@ -43,11 +46,14 @@ export const useWorkflowAppSync = () => {
 
       try {
         const data = await workflowApi.getWorkflow(workflowId);
+        if (!active) return;
         try {
           const access = await workflowApi.getWorkflowPermission(workflowId);
+          if (!active) return;
           setWorkflowAccess(access);
           setActiveOrganizationId(access.organization_id);
         } catch (permissionError) {
+          if (!active) return;
           console.error('Failed to load workflow permissions:', permissionError);
           setWorkflowAccess(null);
         }
@@ -57,13 +63,16 @@ export const useWorkflowAppSync = () => {
           // 앱 정보 가져오기 (이름, 아이콘)
           try {
             const app = await appApi.getApp(data.app_id);
+            if (!active) return;
             setProjectInfo(app.name, app.icon, app.description);
             setProjectApp(app);
           } catch (appError) {
+            if (!active) return;
             console.error('Failed to load app details:', appError);
           }
         }
       } catch (error) {
+        if (!active) return;
         console.error('Failed to load workflow app_id:', error);
       }
     };
@@ -71,8 +80,13 @@ export const useWorkflowAppSync = () => {
     // URL의 workflowId가 변경되면 현재 활성 워크플로우 ID도 업데이트
     // 단, 여기서 직접 loadWorkflowsByApp을 호출하진 않음 (아래 effect에서 처리)
     if (workflowId) {
-      loadWorkflowAppId();
+      setWorkflowAccess(null);
+      void loadWorkflowAppId();
     }
+
+    return () => {
+      active = false;
+    };
   }, [
     workflowId,
     setProjectInfo,

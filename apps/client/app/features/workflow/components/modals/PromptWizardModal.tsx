@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { X, Sparkles, Copy, Check, Loader2, ArrowRight, Info } from 'lucide-react';
+import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 
 interface PromptWizardModalProps {
   isOpen: boolean;
@@ -9,6 +10,7 @@ interface PromptWizardModalProps {
   promptType: 'system' | 'user' | 'assistant';
   originalPrompt: string;
   onApply: (improvedPrompt: string) => void;
+  organizationId?: string | null;
 }
 
 const PROMPT_TYPE_LABELS = {
@@ -23,6 +25,7 @@ export function PromptWizardModal({
   promptType,
   originalPrompt,
   onApply,
+  organizationId,
 }: PromptWizardModalProps) {
 
   const [currentPrompt, setCurrentPrompt] = useState(originalPrompt);
@@ -31,21 +34,26 @@ export function PromptWizardModal({
   const [error, setError] = useState<string | null>(null);
   const [hasCredentials, setHasCredentials] = useState<boolean | null>(null);
   const [copied, setCopied] = useState(false);
+  const isOrganizationScopePending = organizationId === null;
 
-  // 모달 열릴 때 credential 확인 및 상태 초기화
-  useEffect(() => {
-    if (isOpen) {
-      setCurrentPrompt(originalPrompt);
-      setImprovedPrompt('');
-      setError(null);
-      setCopied(false);
-      checkCredentials();
-    }
-  }, [isOpen, originalPrompt]);
+  const getWizardOrganizationId = useCallback(
+    () =>
+      organizationId !== undefined
+        ? organizationId
+        : getStoredActiveOrganizationId(),
+    [organizationId],
+  );
 
-  const checkCredentials = async () => {
+  const checkCredentials = useCallback(async () => {
+    setHasCredentials(null);
+    if (isOrganizationScopePending) return;
+
     try {
-      const res = await fetch('/api/v1/prompt-wizard/check-credentials', {
+      const resolvedOrganizationId = getWizardOrganizationId();
+      const query = resolvedOrganizationId
+        ? `?organization_id=${encodeURIComponent(resolvedOrganizationId)}`
+        : '';
+      const res = await fetch(`/api/v1/prompt-wizard/check-credentials${query}`, {
         method: 'GET',
         credentials: 'include',
       });
@@ -56,11 +64,27 @@ export function PromptWizardModal({
     } catch {
       setHasCredentials(false);
     }
-  };
+  }, [getWizardOrganizationId, isOrganizationScopePending]);
+
+  // 모달 열릴 때 credential 확인 및 상태 초기화
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentPrompt(originalPrompt);
+      setImprovedPrompt('');
+      setError(null);
+      setCopied(false);
+      void checkCredentials();
+    }
+  }, [isOpen, originalPrompt, checkCredentials]);
 
   const handleImprove = async () => {
     if (!currentPrompt.trim()) {
       setError('개선할 프롬프트를 입력해주세요.');
+      return;
+    }
+
+    if (isOrganizationScopePending) {
+      setError('워크플로우 조직 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
       return;
     }
 
@@ -69,6 +93,7 @@ export function PromptWizardModal({
     setImprovedPrompt('');
 
     try {
+      const resolvedOrganizationId = getWizardOrganizationId();
       const res = await fetch('/api/v1/prompt-wizard/improve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -76,6 +101,7 @@ export function PromptWizardModal({
         body: JSON.stringify({
           prompt_type: promptType,
           original_prompt: currentPrompt,
+          organization_id: resolvedOrganizationId ?? undefined,
         }),
       });
 
@@ -87,8 +113,12 @@ export function PromptWizardModal({
 
       const data = await res.json();
       setImprovedPrompt(data.improved_prompt);
-    } catch (err: any) {
-      setError(err.message || '알 수 없는 오류가 발생했습니다.');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : '알 수 없는 오류가 발생했습니다.',
+      );
     } finally {
       setIsLoading(false);
     }
@@ -184,7 +214,8 @@ export function PromptWizardModal({
               ) : (
                 <button
                   onClick={handleImprove}
-                  disabled={isLoading || !currentPrompt.trim()}
+                  data-testid="prompt-wizard-submit"
+                  disabled={isLoading || isOrganizationScopePending || !currentPrompt.trim()}
                   className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
                 >
                   {isLoading ? (
