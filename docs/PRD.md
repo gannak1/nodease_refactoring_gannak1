@@ -84,9 +84,10 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 ### 시나리오 3: 통합 RAG 질의와 추적 (현업 사용자 + 감사자)
 
-1. 빌더가 사내 문서를 Knowledge Base에 업로드하고 팀에 사용 권한을 부여한다.
-2. 현업 사용자가 질문하면 권한과 metadata 필터가 적용된 검색으로 답변과 citation을 받는다.
-3. 감사자가 해당 답변의 retrieval 기록(chunk/document id, score)을 추적한다. raw 본문은 trace에 저장되지 않는다 ([ADR-0012](decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md)).
+1. 빌더가 사내 문서를 Knowledge Base에 업로드한다 (KB `write` 권한).
+2. 플랫폼 관리자(또는 해당 KB의 manager 권한 보유자)가 그 KB의 사용(`use`) 권한을 팀에 부여한다.
+3. 현업 사용자가 질문하면 권한과 metadata 필터가 적용된 검색으로 답변과 citation을 받는다.
+4. 감사자가 해당 답변의 retrieval 기록(chunk/document id, score)을 추적한다. raw 본문은 trace에 저장되지 않는다 ([ADR-0012](decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md)).
 
 ### 시나리오 4: 감사/비용 관측 (플랫폼 관리자)
 

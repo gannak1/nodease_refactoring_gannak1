@@ -22,12 +22,13 @@ Verified Against: TBD
 
 ## E2E Tests
 
-- **시나리오 3 완주**: 문서 업로드 → 팀에 사용 권한 부여 → 현업 사용자 질의 → 권한/metadata 필터 적용된 답변 + citation 수신 → 감사자가 retrieval 기록 추적.
+- **시나리오 3 완주**: 빌더가 문서 업로드 → 관리자(또는 KB manager)가 팀에 `use` 권한 부여 → 현업 사용자 질의 → 권한/metadata 필터 적용된 답변 + citation 수신 → 감사자가 retrieval 기록 추적.
 - **권한 제외 시연**: 권한 없는 KB의 문서가 검색 결과에 포함되지 않음을 같은 질의로 시연한다 (성공 지표 항목).
 
 ## Permission Tests
 
 - KB `use` 권한이 없는 사용자의 검색에서 해당 KB가 제외되고, KB 존재 여부가 노출되지 않는다.
+- `manage` 권한이 없는 builder의 KB 권한 부여 시도 → `403 permission.denied` (권한 부여는 organization owner/manager 또는 해당 KB의 effective manager만 가능).
 - organization membership만으로는 KB `read`/`use`가 허용되지 않는다 — team/user permission 또는 manager override가 필요하다 (metadata는 permission source가 아니다).
 - 다른 organization의 KB id로 접근 → `404 resource.not_found`.
 - `pii` classification 문서가 external LLM prompt 경로에 포함될 때 `policy.block` + audit 기록, internal search preview에서는 `policy.warn`.
