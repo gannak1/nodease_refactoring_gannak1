@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential, LLMProvider
 from apps.shared.schemas.rag import ChunkPreview
 from apps.gateway.services.llm_service import LLMService
@@ -171,6 +172,82 @@ def test_rewrite_model_selection_filters_credentials_by_active_organization():
 
     assert service._get_efficient_rewrite_model() == LLMService.EFFICIENT_MODELS["openai"]
     assert _criterion_compares_column(criteria, "organization_id", organization_id)
+
+
+def test_search_documents_uses_resolved_embedding_model_client(monkeypatch):
+    kb_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    embedding_model = SimpleNamespace(
+        id=uuid.uuid4(),
+        model_id_for_api_call="text-embedding-test",
+        type="embedding",
+        is_active=True,
+    )
+    captured = {}
+
+    class FakeClient:
+        async def embed(self, query):
+            captured["embedded_query"] = query
+            return [0.1, 0.2]
+
+    class FakeKbQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(id=kb_id, embedding_model="text-embedding-test")
+
+    class FakeDb:
+        def query(self, model):
+            if model is KnowledgeBase:
+                return FakeKbQuery()
+            raise AssertionError(f"unexpected model lookup: {model}")
+
+    def fake_get_client_for_model(db, checked_user_id, checked_model, organization_id=None):
+        captured["user_id"] = checked_user_id
+        captured["model"] = checked_model
+        captured["organization_id"] = organization_id
+        return FakeClient()
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_model",
+        fake_get_client_for_model,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("model string helper must not be used")
+        ),
+    )
+
+    service = RetrievalService(
+        db=FakeDb(),
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+    monkeypatch.setattr(service, "_has_valid_hierarchy", lambda *_: False)
+    monkeypatch.setattr(service, "_vector_search", lambda *args, **kwargs: [])
+
+    result = asyncio.run(
+        service.search_documents(
+            "policy",
+            knowledge_base_id=str(kb_id),
+            hybrid_search=False,
+            use_rerank=False,
+            embedding_model=embedding_model,
+        )
+    )
+
+    assert result == []
+    assert captured == {
+        "embedded_query": "policy",
+        "user_id": user_id,
+        "model": embedding_model,
+        "organization_id": organization_id,
+    }
 
 
 def test_generate_answer_for_test_preserves_references_when_generation_model_missing(monkeypatch):

@@ -464,6 +464,7 @@ class RetrievalService:
         use_multi_query: bool = False,
         metadata_filter: NormalizedMetadataFilter | None = None,
         hierarchy_mode: str = "auto",
+        embedding_model: LLMModel | None = None,
     ) -> list[ChunkPreview]:
         """
         [Public API] Hybrid Search (Vector + Keyword) with optional Multi-Query and Reranking (비동기)
@@ -490,13 +491,18 @@ class RetrievalService:
             )
             if not kb or not kb.embedding_model:
                 return []
+            if (
+                embedding_model is not None
+                and embedding_model.model_id_for_api_call != kb.embedding_model
+            ):
+                return []
 
-            model_info = (
+            model_info = embedding_model or (
                 self.db.query(LLMModel)
                 .filter(LLMModel.model_id_for_api_call == kb.embedding_model)
                 .first()
             )
-            if model_info and model_info.type != "embedding":
+            if model_info and (model_info.type != "embedding" or not model_info.is_active):
                 return []
 
             has_hierarchy = self._has_valid_hierarchy(knowledge_base_id)
@@ -507,12 +513,20 @@ class RetrievalService:
                 and has_hierarchy
             )
 
-            embed_client = LLMService.get_client_for_user(
-                self.db,
-                self.user_id,
-                kb.embedding_model,
-                organization_id=self.organization_id,
-            )
+            if embedding_model is not None:
+                embed_client = LLMService.get_client_for_model(
+                    self.db,
+                    self.user_id,
+                    embedding_model,
+                    organization_id=self.organization_id,
+                )
+            else:
+                embed_client = LLMService.get_client_for_user(
+                    self.db,
+                    self.user_id,
+                    kb.embedding_model,
+                    organization_id=self.organization_id,
+                )
 
             for i, q in enumerate(queries):
                 query_vector = await embed_client.embed(q)

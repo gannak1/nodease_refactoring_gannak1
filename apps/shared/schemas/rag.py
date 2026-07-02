@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
@@ -9,6 +10,11 @@ SOURCE_TYPE_VALUES = {"FILE", "API", "DB"}
 TAG_FILTER_MODES = {"contains_any", "contains_all"}
 HierarchyMode = Literal["auto", "flat", "parent_child"]
 ChunkingMode = Literal["flat", "hierarchical"]
+CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+CORRELATION_ID_SECRET_PATTERNS = (
+    re.compile(r"(?:^|[-_:])(?:sk|pk|rk|api)[-_][A-Za-z0-9_-]{8,}", re.IGNORECASE),
+    re.compile(r"bearer", re.IGNORECASE),
+)
 
 
 def _normalize_str_list(values: list[Any] | None) -> list[str] | None:
@@ -197,6 +203,126 @@ class ChunkPreview(BaseModel):
 class RAGResponse(BaseModel):
     answer: str
     references: List[ChunkPreview]  # Metadata for UI source linking
+
+
+class RAGCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    citation_id: str
+    document_id: UUID
+    chunk_id: Optional[UUID] = None
+    rank: int
+    score: Optional[float] = None
+    filename: Optional[str] = None
+    heading: Optional[str] = None
+    hierarchy_path: Optional[List[str]] = None
+    metadata_summary: Dict[str, Any] = Field(default_factory=dict)
+    content_preview: Optional[str] = Field(default=None, max_length=300)
+
+
+class RAGRetrievalSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge_base_id: UUID
+    hierarchy_mode: HierarchyMode
+    retrieved_chunk_count: int = 0
+    document_ids: List[UUID] = Field(default_factory=list)
+    citation_ids: List[str] = Field(default_factory=list)
+    score_summary: Dict[str, Any] = Field(default_factory=dict)
+    latency_ms: int = 0
+    raw_content_returned: bool = False
+
+
+class RAGUsageSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    latency_ms: int = 0
+    model_name: Optional[str] = None
+    provider: Optional[str] = None
+
+
+class RAGAnswerSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer_length: int = 0
+    cited_document_count: int = 0
+    citation_ids: List[str] = Field(default_factory=list)
+    policy_result: Dict[str, Any] = Field(default_factory=dict)
+    completion_status: str
+
+
+class RAGAgentAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge_base_id: UUID
+    query: str = Field(min_length=1)
+    metadata_filter: Optional[MetadataFilter] = None
+    classification_filter: Optional[List[str]] = None
+    tags: Optional[TagFilter] = None
+    source_type: Optional[List[str]] = None
+    effective_at: Optional[datetime] = None
+    hierarchy_mode: HierarchyMode = "auto"
+    top_k: int = 8
+    generation_model_id: UUID
+    credential_id: UUID
+    correlation_id: Optional[str] = None
+
+    @field_validator("classification_filter")
+    @classmethod
+    def validate_classification_filter(
+        cls, values: list[str] | None
+    ) -> list[str] | None:
+        return _normalize_classification_values(values)
+
+    @field_validator("source_type")
+    @classmethod
+    def validate_source_type_filter(cls, values: list[str] | None) -> list[str] | None:
+        return _normalize_source_type_values(values)
+
+    @model_validator(mode="after")
+    def reject_duplicate_metadata_shortcuts(self) -> "RAGAgentAnswerRequest":
+        if self.metadata_filter is None:
+            return self
+
+        duplicates = []
+        shortcut_pairs = {
+            "classification": self.classification_filter,
+            "tags": self.tags,
+            "source_type": self.source_type,
+            "effective_at": self.effective_at,
+        }
+        for key, shortcut_value in shortcut_pairs.items():
+            metadata_value = getattr(self.metadata_filter, key)
+            if shortcut_value is not None and metadata_value is not None:
+                duplicates.append(key)
+        if duplicates:
+            keys = ", ".join(sorted(duplicates))
+            raise ValueError(f"duplicate metadata filter shortcut: {keys}")
+        return self
+
+
+class RAGAgentAnswerResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer_run_id: UUID
+    correlation_id: str
+    status: str
+    answer: str
+    citations: List[RAGCitation] = Field(default_factory=list)
+    retrieval_summary: RAGRetrievalSummary
+    usage_summary: RAGUsageSummary
+    policy_result: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RAGAgentSSEEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event: str
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class DocumentPreviewRequest(BaseModel):

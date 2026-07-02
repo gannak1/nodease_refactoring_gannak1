@@ -21,6 +21,7 @@ import {
   sanitizeSelectedKnowledgeBases,
   isSameKnowledgeSelection,
 } from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
+import { resolveWorkflowWizardOrganizationId } from '@/app/features/workflow/utils/resolveWorkflowWizardOrganizationId';
 import {
   DraggedOutputVariable,
   getDroppedOutputReferenceName,
@@ -255,7 +256,12 @@ export function LLMNodePanel({
   const openSettingsTab = useCallback(() => {
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
   }, []);
-  const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const { updateNodeData, nodes, edges, activeWorkflowId, workflowAccess } =
+    useWorkflowStore();
+  const wizardOrganizationId = resolveWorkflowWizardOrganizationId(
+    workflowAccess,
+    activeWorkflowId,
+  );
   const pendingPromptReferencesRef = useRef<
     LLMNodeData['referenced_variables']
   >([]);
@@ -974,6 +980,7 @@ export function LLMNodePanel({
         isOpen={wizardOpen}
         onClose={() => setWizardOpen(false)}
         promptType={wizardField}
+        organizationId={wizardOrganizationId}
         originalPrompt={
           wizardField === 'system'
             ? data.system_prompt || ''

@@ -3,8 +3,8 @@
 Status: Draft
 Authority: Data Model
 Source of Truth: Yes
-Verified Against: feature/mba-85 plan @ 4926805 (base dev 4926805)
-Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md)
+Verified Against: feature/mba-89 @ 3a1d6799118f5a6bb50414914b40865e6375e35f (base dev @ 5e67adba265346009fbbc691ee16e287cd89548e, PR #142 follow-up, 2026-07-01 KST)
+Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-202606271559-audit-log-rag-trace-storage.md), [ADR-202606271559-data-model-document-structure](../decisions/ADR-202606271559-data-model-document-structure.md), [ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission](../decisions/ADR-202606290116-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-202606290124-mvp2-classification-metadata-storage](../decisions/ADR-202606290124-mvp2-classification-metadata-storage.md), [ADR-202606290131-audit-action-naming-standard](../decisions/ADR-202606290131-audit-action-naming-standard.md), [ADR-202606301045-metadata-aware-hierarchical-rag-boundary](../decisions/ADR-202606301045-metadata-aware-hierarchical-rag-boundary.md), [ADR-202607010220-rag-answer-trace-usage-correlation-boundary](../decisions/ADR-202607010220-rag-answer-trace-usage-correlation-boundary.md)
 
 ## 목적
 
@@ -17,7 +17,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | 항목 | 기준 |
 | --- | --- |
 | 기준 브랜치 | `dev` |
-| 확인 commit | `ec576b4f24155697aed8843acc6e5a3fc835f7e1` |
+| 확인 commit | `860ece0dee7cab3925d27f30ea650baf0cb18b4e` |
 | 기준 모델 경로 | `apps/shared/db/models/*` |
 | 기준 migration 경로 | `apps/shared/alembic/versions/*` |
 | 기존 목표 초안 | 삭제된 로컬 폐기 초안. 구현 기준이 아니다. |
@@ -32,7 +32,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | User direct grant | 현재 코드는 `user_workflow_permissions`, `user_llm_permissions`를 구현한다. 이후 개별 user 예외 권한은 resource별 `user_*_permissions` table로만 추가한다. direct grant는 additive allow 전용이다. |
 | Organization owner/manager | active `organization_memberships.organization_auth_state == "manager"`를 우선 기준으로 판정한다. Membership row 자체가 없는 legacy data에서만 `organization.created_by` 또는 `organization.managed_by` user를 manager fallback으로 인정한다. Invited/suspended/removed row가 있으면 fallback 없이 fail-closed 처리한다. |
 | Audit 기준 | `audit_events`를 새로 만들지 않는다. 현재 코드의 `audit_logs`를 canonical audit table로 사용한다. |
-| Trace 기준 | `rag_retrieval_traces`를 새로 만들지 않는다. 현재 코드의 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies`, `trace_payload_access_events`를 trace 기준으로 사용한다. |
+| Trace 기준 | `rag_retrieval_traces`를 새로 만들지 않는다. 현재 코드의 `workflow_runs`, `workflow_node_runs`, `trace_payloads`, `trace_*_policies`, `trace_payload_access_events`를 workflow trace 기준으로 사용한다. Standalone RAG Agent answer는 trace table에 RAG 전용 FK를 추가하지 않고 RAG-owned answer run과 `correlation_id`로 연결한다. |
 | Tenant 기준 | `tenant_id`를 새로 설계하지 않는다. 현재 코드의 `organization_id`를 조직 범위 기준으로 사용한다. |
 | Project boundary | 제품상의 project boundary는 `apps`로 본다. 단, 상위 조직 범위는 `organization`이다. |
 | Dashboard | 별도 aggregate table, materialized view, dashboard 전용 table을 만들지 않고 raw query로 시작한다. |
@@ -61,6 +61,7 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | `resource_permissions` 신규 생성 | 생성하지 않는다. team 권한은 `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`를 사용한다. user 직접 권한은 resource별 `user_*_permissions`를 사용한다. |
 | `audit_events` 신규 생성 | 생성하지 않는다. `audit_logs`를 사용한다. |
 | `rag_retrieval_traces` 신규 생성 | 생성하지 않는다. trace 계열 테이블과 JSONB payload convention으로 처리한다. |
+| RAG answer를 trace/usage table FK로 연결 | `trace_payloads.rag_answer_run_id`, `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다. Standalone answer는 `rag_answer_runs`와 opaque `correlation_id`로 연결한다. |
 | `deployment_check_runs`, `deployment_check_items` 필수 생성 | 현재 물리 데이터 모델 보존 조건에서는 생성하지 않는다. check 결과가 필요하면 `audit_logs`에 action/result metadata로 남긴다. |
 | `recommendation_events` 필수 생성 | 현재 물리 데이터 모델 보존 조건에서는 생성하지 않는다. recommendation lifecycle은 `audit_logs` action과 metadata로 남긴다. |
 | `tenant_id` 유지 | 유지하지 않는다. 현재 코드의 `organization_id`를 따른다. |
@@ -124,14 +125,16 @@ Related ADRs: [ADR-202606271559-audit-log-rag-trace-storage](../decisions/ADR-20
 | `user_workflow_permissions` | MVP 1 | 특정 user에게 workflow 직접 추가 권한 부여 |
 | `user_llm_permissions` | MVP 1 | 특정 user에게 LLM credential 직접 추가 권한 부여 |
 
-### Planned Additive Table
+### Planned Target Tables
 
-아래 table은 최신 코드에는 아직 없고, 해당 MVP에서 추가할 목표 schema다.
+아래 table은 최신 코드에는 아직 없고, 해당 MVP에서 추가할 목표 schema다. Permission additive table과 RAG domain table을 함께 나열하되, 각 table의 소유 도메인은 목표 역할에 명시한다.
 
 | Table | 도입 MVP | 목표 역할 |
 | --- | --- | --- |
 | `user_knowledge_permissions` | MVP 2 | 특정 user에게 knowledge base 직접 추가 권한 부여 |
 | `user_audit_permissions` | MVP 3 | 특정 user에게 target organization audit visibility 직접 추가 권한 부여 |
+
+`rag_answer_runs`는 RAG 확장 3단계/MBA-89에서 additive current table로 도입한다. Workflow run이 없는 standalone RAG Agent answer 실행 anchor이며, trace/usage table에는 RAG 전용 FK를 추가하지 않고 `correlation_id`로 느슨하게 연결한다.
 
 이전 문서에서 신규 table로 다루던 기능은 다음 기준 table로 정리한다.
 
@@ -1140,6 +1143,11 @@ MVP 목표 상태 결정:
 | workflow 실행 | `workflow.execute` |
 | LLM 호출 | `llm.call` |
 | 현재 MBA-78 1차: RAG retrieval 성공 | `rag.retrieve` |
+| 목표: RAG Agent answer 요청 | `rag.answer.requested` |
+| 목표: RAG Agent answer 완료 | `rag.answer.completed` |
+| 목표: RAG Agent answer 실패 | `rag.answer.failed` |
+| 목표: RAG Agent answer 취소 | `rag.answer.cancelled` |
+| 목표: RAG Agent answer retention purge | `rag.answer.purge` |
 | 배포 생성 | `workflow.deploy` |
 | 배포 일반 toggle | `deployment.toggle` |
 | 이전 배포 활성화 | `deployment.activate_previous` |
@@ -1504,6 +1512,7 @@ MVP 목표 상태 결정:
 - 과거 `atency_ms` column은 `f8a9b0c1d2e3_rename_llm_usage_latency_ms.py` migration에서 `latency_ms`로 rename하거나, 누락된 경우 `latency_ms` column을 생성한다.
 - 비용/사용량 dashboard는 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `llm_models` raw query로 계산한다.
 - 현재 코드 model에는 `credential_id`, `model_id`가 `ondelete='SET NULL'`이지만 nullable은 `False`인 정합성 이슈가 있다. 이 문서는 해당 schema를 수정하지 않고, 별도 migration 판단 대상으로만 남긴다.
+- Standalone RAG Agent answer와 usage를 연결해야 할 때 `llm_usage_logs.rag_answer_run_id` 같은 RAG 전용 FK를 추가하지 않는다. Usage 도메인이 generic `correlation_id` 또는 usage metadata extension을 제공하는 별도 설계가 있기 전까지 answer run과 usage log의 강한 FK join을 계약으로 보지 않는다.
 
 ## 기능별 데이터 사용 방식
 
@@ -1569,6 +1578,8 @@ RAG retrieval 전용 table은 만들지 않는다.
 - payload 접근 감사: `trace_payload_access_events`
 - 문서/청크 원천: `documents`, `document_chunks`
 
+위 저장 기준은 workflow runtime RAG에 대한 것이다. Standalone RAG Agent answer는 workflow run이 없을 수 있으므로 `trace_payloads`를 실행 anchor로 사용하지 않는다.
+
 `trace_payloads.redacted_payload` 또는 `trace_payloads.redaction_metadata`에는 per-chunk evidence로 다음 정보를 application-level convention으로 저장할 수 있다.
 
 - `payload_kind = "rag.retrieval"`
@@ -1595,6 +1606,86 @@ RAG retrieval 전용 table은 만들지 않는다.
 Run/node trace metadata allowlist는 `knowledge_base_id`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, score summary, hierarchy fallback flag, `raw_content_returned` 같은 요약 field로 제한한다. `retrieved_chunks` 배열과 raw chunk content는 run/node metadata에 복사하지 않는다. 현재 tracing metadata sanitizer는 RAG summary field와 payload id reference만 허용하며, legacy `retrieval_results` 입력은 저장하지 않고 summary로 변환한다.
 
 RAG trace metadata에는 raw chunk content, raw prompt, credential 원문, API key, token, encrypted_config, secret value, provider raw response를 기본 저장하지 않는다. `credential_id` 같은 식별자는 권한 보호된 trace 응답 whitelist 안에서만 허용할 수 있다. Search-test response는 KB `use` 권한 통과 user에게 chunk content preview를 반환할 수 있지만, workflow trace/run detail 기본 응답은 redaction-safe citation metadata를 반환한다.
+
+### RAG Agent Answer Runs
+
+`rag_answer_runs`는 RAG 확장 3단계/MBA-89에서 도입한 additive table이다. Standalone RAG Agent answer의 실행 anchor 역할을 하며, workflow trace table을 대체하지 않고 workflow가 없는 질문/답변 실행을 RAG 도메인 안에서 추적한다.
+
+역할:
+
+- 사용자 질문에서 retrieval, generation, final answer까지 이어지는 RAG answer 실행 단위
+- redaction-safe retrieval summary와 citation summary 저장
+- redaction-safe answer summary와 nullable top-level answer hash 저장. Raw final answer 또는 provider raw completion은 기본 저장하지 않는다.
+- policy result, answer status, latency/token/cost snapshot 저장
+- trace/usage/audit와 느슨하게 연결하기 위한 `correlation_id` 보관
+
+목표 주요 column:
+
+- `id`
+- `organization_id`
+- `user_id`
+- `actor_user_ref`
+- `knowledge_base_id`
+- `knowledge_base_ref`
+- `correlation_id`
+- `status`
+- `query_hash`
+- `retrieval_summary`
+- `citation_summary`
+- `answer_summary`
+- `answer_hash`
+- `hash_version`
+- `policy_result`
+- `generation_model_id`
+- `generation_model_snapshot`
+- `generation_credential_id`
+- `generation_credential_ref`
+- `usage_summary`
+- `error_code`
+- `retention_expires_at`
+- `created_at`
+- `started_at`
+- `completed_at`
+
+목표 관계:
+
+- `rag_answer_runs.organization_id -> organization.id`
+- `rag_answer_runs.user_id -> users.id`
+- `rag_answer_runs.knowledge_base_id -> knowledge_bases.id`
+- `rag_answer_runs.generation_model_id -> llm_models.id`
+- `rag_answer_runs.generation_credential_id -> llm_credentials.id`
+
+MVP 목표 상태 결정:
+
+- `rag_answer_runs.organization_id`는 tenant scope 기준이므로 non-null로 유지한다. Organization hard delete가 필요하면 implicit FK cascade로 숨은 삭제를 만들지 말고, tenant data purge 절차에서 answer run과 관련 audit/summary 보존 범위를 명시적으로 처리한다.
+- `rag_answer_runs.user_id`는 nullable FK로 두고 user hard delete 시 `SET NULL`을 목표로 한다. 사용자 삭제 뒤에도 retention 기간 동안 운영 추적이 필요하면 `actor_user_ref` 같은 non-secret actor reference만 남기며, raw email/profile snapshot을 기본 저장하지 않는다.
+- `rag_answer_runs.knowledge_base_id`는 nullable FK로 두고 KB hard delete 시 `SET NULL`을 목표로 한다. Citation과 retrieval summary는 raw chunk content 없이 `knowledge_base_ref`, document/chunk id, score summary 같은 안전한 snapshot만 남긴다. KB 삭제가 모든 파생 answer summary 삭제를 요구하는 정책으로 바뀌면 별도 retention/purge ADR로 다룬다.
+- `rag_answer_runs.generation_model_id`와 `rag_answer_runs.generation_credential_id`는 nullable FK로 두고 model/credential hard delete 시 `SET NULL`을 목표로 한다. 삭제 이후 운영 분석에 필요한 값은 `generation_model_snapshot`, `generation_credential_ref`, `usage_summary`의 provider/model/credential 식별자 allowlist로 보존하되 credential 원문, API key, token, encrypted_config는 저장하지 않는다.
+- 위 FK 정책은 기존 `llm_usage_logs.credential_id/model_id`의 `SET NULL` + `nullable=False` 정합성 문제를 반복하지 않기 위한 목표 계약이다. 최종 migration은 nullable과 `ondelete`를 함께 맞춰야 한다.
+- `correlation_id`는 application-level convention이다. DB FK가 아니며, 강한 참조 무결성을 보장하지 않는다.
+- `correlation_id`는 resource key가 아니므로 전역 unique로 강제하지 않는다. Server-generated 값은 answer run 단위로 충분히 고유하게 생성하고, client supplied 값은 여러 실행이 같은 값을 공유할 수 있는 grouping key로만 취급한다.
+- 목표 index는 `(organization_id, correlation_id, created_at)`이다. Correlation 조회는 organization/time 범위와 함께 사용해야 하며, `correlation_id` 단독 조회를 tenant scope 판정에 사용하지 않는다.
+- `status` 목표 값은 `requested`, `running`, `completed`, `failed`, `cancelled`, `blocked`이다. `blocked`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 생성하지 않은 상태를 표현한다.
+- 상태 전이 기준은 `requested -> blocked`, `requested -> running -> completed|failed|cancelled|blocked` 두 경로다. Request schema validation, invalid `correlation_id`, invalid organization header, missing required header/body field처럼 answer 실행 시작 전 확인되는 오류는 row를 만들지 않는다. KB 없음, inactive KB, scope 밖 KB, organization mismatch처럼 `404 resource.not_found`로 숨겨야 하는 경우도 resource hiding을 유지하기 위해 row를 만들지 않는다. Schema validation, organization header validation, active organization scope 확인, KB scope visibility 확인, required credential/model visibility 확인을 모두 통과한 뒤 row를 생성하고 `requested`로 시작한다. KB/credential/model `use` 권한 또는 verified relation preflight 차단은 retrieval/generation 전 `requested -> blocked`로 닫는다. Retrieval/generation을 시작하기 전에 `running`으로 전환한다. 정상 종료는 `completed`, provider 또는 내부 오류는 `failed`, terminal status 전 client disconnect 또는 명시 취소는 `cancelled`, retrieval 이후 PII/classification policy 차단은 `running -> blocked`로 닫는다. 이미 `completed`, `failed`, `blocked`로 마감된 뒤 response delivery 중 연결이 끊기면 기존 terminal status와 lifecycle audit을 유지한다.
+- Lifecycle audit은 상태 전이를 그대로 대체하지 않는다. Answer run row 생성 시 `rag.answer.requested`, 정상 종료 시 `rag.answer.completed`, provider/internal 오류 시 `rag.answer.failed`, terminal status 전 client disconnect/명시 취소 시 `rag.answer.cancelled`를 남긴다. Validation 400/422, invalid organization header, `resource.not_found`, scope 밖, organization mismatch처럼 row를 만들지 않는 오류는 `rag.answer.*` lifecycle audit 대상이 아니다. `blocked` 상태는 PII/classification/metadata policy 차단이면 `policy.block`, KB/credential/model permission preflight 차단이면 `permission.denied` audit과 함께 표현한다. 별도 `rag.answer.blocked` action은 만들지 않는다.
+- `trace_payloads.rag_answer_run_id`, `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다.
+- Workflow runtime RAG evidence는 계속 `trace_payloads.payload_kind='rag.retrieval'`에 저장한다.
+- Standalone answer의 retrieval evidence는 `rag_answer_runs.retrieval_summary`와 `citation_summary`에 redaction-safe summary로 저장한다.
+- `retrieval_summary` field allowlist는 `knowledge_base_id`, `hierarchy_mode`, `retrieved_chunk_count`, `document_ids`, `citation_ids`, `score_summary`, `latency_ms`, `raw_content_returned`로 제한한다. `raw_content_returned`의 durable 저장값은 기본 `false`여야 한다.
+- `citation_summary` field allowlist는 citation별 `citation_id`, `document_id`, `chunk_id`, `rank`, `score`, `filename`, `heading`, `hierarchy_path`, `metadata_summary`로 제한한다. `metadata_summary`는 classification, tags, source_type, effective range 같은 safe metadata만 포함하고 chunk content를 포함하지 않는다.
+- `answer_hash`는 nullable이며, `rag_answer_runs.answer_hash` top-level column을 canonical 위치로 둔다. `answer_summary.answer_hash` mirror를 별도로 만들지 않는다.
+- `answer_summary` field allowlist는 `answer_length`, `cited_document_count`, `citation_ids`, `policy_result`, `completion_status`, 선택적 `redacted_summary`로 제한한다. `redacted_summary`를 저장할 때도 raw final answer 재구성이 가능할 정도의 긴 본문은 저장하지 않는다.
+- `usage_summary`는 answer 실행 시점에 캡처한 denormalized snapshot이다. Canonical LLM token/cost/latency 원천은 `llm_usage_logs`이며, usage 도메인에 generic `correlation_id` 또는 metadata extension이 추가되기 전까지 `usage_summary`와 `llm_usage_logs` 사이의 강한 FK 정합성을 보장하지 않는다.
+- Durable/internal `usage_summary` field allowlist는 `prompt_tokens`, `completion_tokens`, `total_tokens`, `total_cost`, `latency_ms`, `model_id`, `model_name`, `provider`, `credential_id` 같은 집계/식별자 값으로 제한한다. Credential 원문, API key, token, encrypted_config, raw prompt/completion, provider raw response는 저장하지 않는다.
+- User-facing response의 `usage_summary`는 API별 whitelist를 따르며 일반 사용자 응답에는 `credential_id`와 internal `model_id`를 기본 노출하지 않는다.
+- `generation_credential_id`와 durable/internal `usage_summary.credential_id`는 secret이 아니라 credential 식별자다. Credential 원문 조회 권한을 의미하지 않으며, 응답 노출 여부는 API별 권한/whitelist에서 별도로 결정한다.
+- Agent answer lifecycle audit은 `rag.answer.requested`, `rag.answer.completed`, `rag.answer.failed`, `rag.answer.cancelled`를 사용한다. Retrieval 성공 감사 `rag.retrieve`, provider 호출 감사 `llm.call`, answer 상태 `rag_answer_runs.status`와 의미를 섞지 않는다.
+- Raw user question, raw final answer, raw retrieved chunk content, raw prompt/completion, credential 원문, API key, token, encrypted_config, provider raw response는 기본 저장하지 않는다.
+- Answer history/replay가 필요하면 raw provider response가 아니라 별도 redacted answer snapshot, retention, access control을 공식 문서와 ADR로 먼저 확정한다.
+- `query_hash`, `answer_hash`, `hash_version`은 nullable이다. 값을 저장하려면 HMAC-SHA256, server-side secret/pepper, `hash_version`을 함께 사용해야 한다. HMAC secret/pepper가 설정되지 않았으면 값을 `null`로 두며, 일반 SHA-256 같은 unsalted hash fallback은 허용하지 않는다. Hash algorithm 또는 HMAC 정책을 바꿀 수 있도록 `hash_version` 또는 동등한 metadata convention을 함께 저장한다.
+- `retention_expires_at`은 answer run 생성 시점에 설정해야 하며 indefinite retention을 기본값으로 보지 않는다. 3단계 기본 보존 기간은 trace metadata 기본값과 맞춰 90일로 둔다. Purge는 RAG 도메인 service와 `log.rag_answer_retention_purge` Celery task가 소유하고, 실패 시 다음 scheduled/task run에서 idempotent하게 재시도한다. Purge 성공/실패 aggregate는 `audit_logs.action='rag.answer.purge'`로 남기되, 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록한다. `audit_metadata` allowlist는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status`로 제한하고 raw answer, raw query, raw chunk content는 포함하지 않는다. 3단계 기본 API에 list/detail/delete/purge를 포함하지 않으며, 수동 purge API를 별도로 만들 경우 권한, hard delete/soft delete 여부, 상세 응답 schema는 별도 API/ADR에서 확정한다.
+- Usage 도메인의 정확한 answer-run correlation이 필요하면 `llm_usage_logs`에 RAG 전용 FK를 추가하지 않고 generic `correlation_id` 또는 metadata extension을 별도 ADR로 설계한다.
+- `rag_answer_runs` 조회 권한은 KB `use` 권한, answer 생성자, organization manager override, retention/access policy를 함께 고려해야 한다. KB `read`만으로 answer content 성격의 summary/snapshot을 노출할지는 후속 API 문서에서 별도 확정한다.
 
 ### Deployment Checklist
 
@@ -1698,16 +1789,18 @@ DB 변경:
 - `knowledge_bases.classification`, `documents.classification`을 추가하지 않는다.
 - MBA-78 1차 구현에서 `document_chunks.parent_chunk_id`, `document_chunks.chunk_level`, `document_chunks.section_path`, `document_chunks.heading` nullable column을 추가한다.
 - `user_knowledge_permissions`를 생성한다. 현재 코드에는 아직 없다.
+- RAG Agent answer 실행 anchor가 필요하면 `rag_answer_runs` additive table로 분리한다. `trace_payloads`와 `llm_usage_logs`에는 answer 전용 FK를 추가하지 않는다.
 
 구현:
 
-1. RAG retrieval 결과를 `workflow_runs`, `workflow_node_runs`, `trace_payloads`로 연결해 저장한다.
+1. Workflow runtime RAG retrieval 결과를 `workflow_runs`, `workflow_node_runs`, `trace_payloads`로 연결해 저장한다.
 2. retrieval payload의 민감 정보는 trace redaction policy를 적용한다.
 3. trace raw/redacted payload 접근은 `trace_payload_access_events`에 기록한다.
 4. RAG data source 접근은 우선 `team_knowledge_permissions`로 제한하고, `user_knowledge_permissions` 추가 후 user direct grant를 합산한다.
 5. document re-index 필요 상태는 `documents.meta_info` metadata로 관리한다.
 6. 감사 검색 API는 `audit_logs`와 `trace_payload_access_events`를 구분해서 조회한다.
 7. Hierarchical retrieval은 parent chunk를 coarse retrieval에 사용하고 child chunk를 final evidence로 반환한다.
+8. Standalone RAG Agent answer는 `rag_answer_runs`와 `correlation_id`로 trace/usage/audit을 느슨하게 연결한다.
 
 작동하는 MVP 산출물:
 
@@ -1746,6 +1839,7 @@ DB 변경:
 | 역할 catalog를 DB에서 1급으로 관리 | `roles`, `user_roles` |
 | 임의 resource polymorphic permission | `resource_permissions` |
 | RAG retrieval FK 무결성 보장 | `rag_retrieval_traces` |
+| RAG answer와 trace/usage 사이의 강한 FK lineage | trace/usage 도메인의 generic subject 또는 generic `correlation_id` extension. RAG 전용 FK column은 추가하지 않는다. |
 | deployment checklist 독립 검색/통계 | `deployment_check_runs`, `deployment_check_items` |
 | recommendation 장기 상태 관리 | `recommendation_events` |
 | connection을 workflow/knowledge base와 독립적으로 team/user에게 공유 | `team_connection_permissions`, `user_connection_permissions` |

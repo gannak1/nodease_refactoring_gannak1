@@ -7,7 +7,10 @@ from fastapi import HTTPException
 
 from apps.gateway.api.v1.endpoints import llm as llm_endpoint
 from apps.gateway.services import llm_service
-from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.llm_service import (
+    LLMCredentialNotAvailableError,
+    LLMService,
+)
 from apps.shared.db.models.user import User
 from apps.shared.schemas.llm import LLMCredentialCreate, LLMModelPricingUpdate
 
@@ -41,6 +44,85 @@ class FakeDb:
 
     def query(self, *args, **kwargs):
         return FakeQuery(self.value)
+
+
+class FakeWizardRuntimeQuery:
+    def __init__(self, db, model):
+        self.db = db
+        self.model = model
+        self.filters = []
+
+    def options(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        self.filters.extend(args)
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        if self.model is llm_service.LLMCredential:
+            return self.db.credentials
+        return []
+
+    def first(self):
+        if self.model is llm_service.LLMModel:
+            return self.db.first_model(self.filters)
+        if self.model is llm_service.LLMRelCredentialModel:
+            return self.db.first_relation(self.filters)
+        return None
+
+
+class FakeWizardRuntimeDb:
+    def __init__(self, credentials, model=None, relations=None, models=None):
+        self.credentials = credentials
+        self.models = list(models if models is not None else [model])
+        self.relations = list(relations or [])
+
+    def query(self, *args, **kwargs):
+        return FakeWizardRuntimeQuery(self, args[0])
+
+    def first_model(self, filters):
+        provider_id = _filter_value(filters, "provider_id")
+        model_id_for_api_call = _filter_value(filters, "model_id_for_api_call")
+        for model in self.models:
+            if (
+                model
+                and model.provider_id == provider_id
+                and model.model_id_for_api_call == model_id_for_api_call
+            ):
+                return model
+        return None
+
+    def first_relation(self, filters):
+        credential_id = _filter_value(filters, "credential_id")
+        model_id = _filter_value(filters, "model_id")
+        is_verified = _filter_value(filters, "is_verified")
+        candidates = [
+            relation
+            for relation in self.relations
+            if relation.credential_id == credential_id
+            and relation.model_id == model_id
+            and relation.is_verified == is_verified
+        ]
+        return sorted(candidates, key=lambda relation: relation.priority)[0] if candidates else None
+
+
+def _filter_value(filters, column_key):
+    for expression in filters:
+        left = getattr(expression, "left", None)
+        if getattr(left, "key", None) != column_key:
+            continue
+        right = getattr(expression, "right", None)
+        if hasattr(right, "value"):
+            return right.value
+        if str(right).lower() == "true":
+            return True
+        if str(right).lower() == "false":
+            return False
+    return None
 
 
 class FakeCredentialRegisterQuery:
@@ -132,6 +214,7 @@ def _dependency_calls(route):
 def test_llm_catalog_and_pricing_routes_require_current_user():
     protected_routes = [
         ("/providers", "GET"),
+        ("/agent-answer-options", "GET"),
         ("/models/sync-pricing", "POST"),
         ("/models/{model_id}/pricing", "PUT"),
     ]
@@ -276,6 +359,64 @@ def test_get_user_credentials_filters_by_read_permission(monkeypatch):
     assert seen_actions == ["read", "read"]
 
 
+def test_get_client_for_model_uses_model_db_id(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        is_active=True,
+        model_id_for_api_call="gpt-test",
+    )
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        encrypted_config='{"apiKey":"redacted-test-key","baseUrl":"https://example.test"}',
+        provider=SimpleNamespace(name="openai"),
+    )
+    captured = {}
+
+    class FakeDb:
+        def refresh(self, obj):
+            captured["refreshed"] = obj
+
+    def fake_get_valid_credential(
+        db,
+        user_id,
+        provider_id=None,
+        model_db_id=None,
+        organization_id=None,
+    ):
+        captured["user_id"] = user_id
+        captured["model_db_id"] = model_db_id
+        captured["organization_id"] = organization_id
+        return credential
+
+    def fake_get_llm_client(provider, model_id, credentials):
+        captured["provider"] = provider
+        captured["model_id"] = model_id
+        captured["has_api_key"] = bool(credentials.get("apiKey"))
+        return SimpleNamespace(provider=provider, model_id=model_id)
+
+    monkeypatch.setattr(
+        LLMService,
+        "_get_valid_credential_for_user",
+        staticmethod(fake_get_valid_credential),
+    )
+    monkeypatch.setattr(llm_service, "get_llm_client", fake_get_llm_client)
+
+    client = LLMService.get_client_for_model(
+        FakeDb(),
+        user_id,
+        model,
+        organization_id=organization_id,
+    )
+
+    assert client.model_id == "gpt-test"
+    assert captured["model_db_id"] == model.id
+    assert captured["organization_id"] == organization_id
+    assert captured["refreshed"] is credential
+    assert captured["has_api_key"] is True
+
+
 def test_get_my_available_models_filters_by_credential_use_permission(monkeypatch):
     allowed_credential_id = uuid.uuid4()
     blocked_credential_id = uuid.uuid4()
@@ -303,3 +444,455 @@ def test_get_my_available_models_filters_by_credential_use_permission(monkeypatc
 
     assert result == [shared_model]
     assert seen_actions == ["use", "use", "use"]
+
+
+def test_get_agent_answer_options_returns_only_verified_usable_pairs(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    allowed_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        credential_name="agent",
+        organization_id=organization_id,
+    )
+    blocked_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        credential_name="blocked",
+        organization_id=organization_id,
+    )
+    model = SimpleNamespace(id=uuid.uuid4(), name="GPT Test", provider_name="openai")
+    rows = [
+        (model, blocked_credential, 0),
+        (model, allowed_credential, 1),
+    ]
+    seen = []
+
+    def can_use(db, checked_user_id, credential_id, action, organization_id=None):
+        seen.append((checked_user_id, credential_id, action, organization_id))
+        return credential_id == allowed_credential.id and action == "use"
+
+    monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_use)
+    monkeypatch.setattr(
+        llm_service.LLMModelResponse,
+        "model_validate",
+        staticmethod(lambda value: value),
+    )
+    monkeypatch.setattr(
+        llm_service.LLMCredentialOptionResponse,
+        "model_validate",
+        staticmethod(lambda value: value),
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "LLMCredentialModelOptionResponse",
+        lambda **kwargs: kwargs,
+    )
+
+    result = LLMService.get_agent_answer_options(
+        FakeDb(rows), user_id, organization_id
+    )
+
+    assert result == [
+        {
+            "model": model,
+            "credential": allowed_credential,
+            "provider_name": "openai",
+            "relation_priority": 1,
+        }
+    ]
+    assert seen == [
+        (user_id, blocked_credential.id, "use", organization_id),
+        (user_id, allowed_credential.id, "use", organization_id),
+    ]
+
+
+def test_get_agent_answer_options_returns_safe_credential_option_schema(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        credential_name="agent",
+        config_preview="sk-****",
+        is_valid=True,
+        quota_type="monthly",
+        quota_limit=1000,
+        quota_used=100,
+        encrypted_config="synthetic-secret-placeholder",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        model_id_for_api_call="gpt-test",
+        name="GPT Test",
+        type="chat",
+        provider_name="openai",
+        context_window=8192,
+        input_price_1k=None,
+        output_price_1k=None,
+        is_active=True,
+        model_metadata=None,
+    )
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+
+    result = LLMService.get_agent_answer_options(
+        FakeDb([(model, credential, 0)]), user_id, organization_id
+    )
+
+    assert len(result) == 1
+    option = result[0].model_dump(mode="json")
+    assert option["credential"] == {
+        "id": str(credential.id),
+        "provider_id": str(credential.provider_id),
+        "organization_id": str(organization_id),
+        "credential_name": "agent",
+        "config_preview": "sk-****",
+        "is_valid": True,
+    }
+    assert "user_id" not in option["credential"]
+    assert "quota_type" not in option["credential"]
+    assert "quota_limit" not in option["credential"]
+    assert "quota_used" not in option["credential"]
+    assert "encrypted_config" not in option["credential"]
+    assert "created_at" not in option["credential"]
+    assert "updated_at" not in option["credential"]
+
+
+def test_agent_answer_options_endpoint_resolves_active_organization(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    request = SimpleNamespace()
+    db = object()
+    captured = {}
+    expected = [{"model": "model", "credential": "credential"}]
+
+    def resolve_org(db_arg, request_arg, header, checked_user_id):
+        captured["resolve_args"] = (db_arg, request_arg, header, checked_user_id)
+        return organization_id
+
+    def get_options(db_arg, checked_user_id, checked_org_id):
+        captured["args"] = (db_arg, checked_user_id, checked_org_id)
+        return expected
+
+    monkeypatch.setattr(llm_endpoint, "resolve_active_organization_id", resolve_org)
+    monkeypatch.setattr(LLMService, "get_agent_answer_options", get_options)
+
+    result = llm_endpoint.get_agent_answer_options(
+        request,
+        x_organization_id=str(organization_id),
+        db=db,
+        current_user=SimpleNamespace(id=user_id),
+    )
+
+    assert result == expected
+    assert captured["resolve_args"] == (
+        db,
+        request,
+        str(organization_id),
+        user_id,
+    )
+    assert captured["args"] == (db, user_id, organization_id)
+
+
+def test_agent_answer_options_endpoint_does_not_mask_scope_errors(monkeypatch):
+    user_id = uuid.uuid4()
+    db = object()
+
+    def reject_scope(*args, **kwargs):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "resource.not_found"}},
+        )
+
+    monkeypatch.setattr(llm_endpoint, "resolve_active_organization_id", reject_scope)
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: pytest.fail("service should not run after org error"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.get_agent_answer_options(
+            SimpleNamespace(),
+            x_organization_id=str(uuid.uuid4()),
+            db=db,
+            current_user=SimpleNamespace(id=user_id),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["code"] == "resource.not_found"
+
+
+def test_agent_answer_options_endpoint_sanitizes_unexpected_errors(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = object()
+
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *args, **kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("credential secret leaked")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.get_agent_answer_options(
+            SimpleNamespace(),
+            x_organization_id=str(organization_id),
+            db=db,
+            current_user=SimpleNamespace(id=user_id),
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Agent answer options lookup failed."
+    assert "secret" not in exc_info.value.detail
+
+
+def test_wizard_runtime_uses_relation_priority_before_credential_created_at(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    older_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "older-key", "baseUrl": "https://older.example"}',
+    )
+    priority_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "priority-key", "baseUrl": "https://priority.example"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    db = FakeWizardRuntimeDb(
+        credentials=[older_credential, priority_credential],
+        model=model,
+        relations=[
+            SimpleNamespace(
+                credential_id=older_credential.id,
+                model_id=model.id,
+                is_verified=True,
+                priority=10,
+            ),
+            SimpleNamespace(
+                credential_id=priority_credential.id,
+                model_id=model.id,
+                is_verified=True,
+                priority=1,
+            ),
+        ],
+    )
+    client_configs = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **kwargs: client_configs.append(kwargs["credentials"])
+        or SimpleNamespace(),
+    )
+
+    runtime = LLMService.get_wizard_client_for_user(
+        db,
+        user_id,
+        {"openai": "gpt-4o-mini"},
+        organization_id=organization_id,
+        audit_on_failure=False,
+    )
+
+    assert runtime.credential_id == priority_credential.id
+    assert client_configs == [
+        {"apiKey": "priority-key", "baseUrl": "https://priority.example"}
+    ]
+
+
+def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    openai_provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    anthropic_provider = SimpleNamespace(id=uuid.uuid4(), name="anthropic")
+    openai_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=openai_provider,
+        provider_id=openai_provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "openai-key", "baseUrl": "https://openai.example"}',
+    )
+    anthropic_credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=anthropic_provider,
+        provider_id=anthropic_provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "anthropic-key", "baseUrl": "https://anthropic.example"}',
+    )
+    openai_model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=openai_provider.id,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    anthropic_model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=anthropic_provider.id,
+        model_id_for_api_call="claude-3-haiku-20240307",
+        is_active=True,
+    )
+    db = FakeWizardRuntimeDb(
+        credentials=[anthropic_credential, openai_credential],
+        models=[openai_model, anthropic_model],
+        relations=[
+            SimpleNamespace(
+                credential_id=openai_credential.id,
+                model_id=openai_model.id,
+                is_verified=True,
+                priority=10,
+            ),
+            SimpleNamespace(
+                credential_id=anthropic_credential.id,
+                model_id=anthropic_model.id,
+                is_verified=True,
+                priority=1,
+            ),
+        ],
+    )
+    client_configs = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **kwargs: client_configs.append(kwargs["credentials"])
+        or SimpleNamespace(),
+    )
+
+    runtime = LLMService.get_wizard_client_for_user(
+        db,
+        user_id,
+        {
+            "openai": "gpt-4o-mini",
+            "anthropic": "claude-3-haiku-20240307",
+        },
+        organization_id=organization_id,
+        audit_on_failure=False,
+    )
+
+    assert runtime.credential_id == openai_credential.id
+    assert client_configs == [
+        {"apiKey": "openai-key", "baseUrl": "https://openai.example"}
+    ]
+
+
+def test_wizard_runtime_block_uses_unknown_target_without_credential(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    audit_calls = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    error = LLMCredentialNotAvailableError(
+        "credential_not_available",
+        "missing",
+        model_id="gpt-4o-mini",
+        organization_id=organization_id,
+    )
+
+    LLMService._record_wizard_runtime_block(  # noqa: SLF001 - MBA-43 audit helper
+        user_id,
+        error,
+        "prompt_wizard",
+    )
+
+    assert audit_calls[0]["resource_type"] == "llm_credential"
+    assert audit_calls[0]["resource_id"] == "unknown"
+    assert audit_calls[0]["organization_id"] == organization_id
+    assert audit_calls[0]["metadata"]["credential_id"] is None
+    assert audit_calls[0]["metadata"]["model_id"] == "gpt-4o-mini"
+    assert audit_calls[0]["metadata"]["reason"] == "credential_not_available"
+
+
+def test_wizard_runtime_relation_missing_uses_unknown_target(monkeypatch):
+    """Wizard relation-missing runtime blocks keep the audit target unknown. MBA-43"""
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        encrypted_config='{"apiKey": "key", "baseUrl": "https://example.com"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-4o-mini",
+        is_active=True,
+    )
+    db = FakeWizardRuntimeDb(credentials=[credential], model=model, relations=[])
+    audit_calls = []
+
+    monkeypatch.setattr(
+        llm_service,
+        "record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc:
+        LLMService.get_wizard_client_for_user(
+            db,
+            user_id,
+            {"openai": "gpt-4o-mini"},
+            organization_id=organization_id,
+            runtime_surface="prompt_wizard",
+        )
+
+    assert exc.value.reason == "model_relation_not_verified"
+    assert exc.value.credential_id is None
+    assert audit_calls[0]["resource_type"] == "llm_credential"
+    assert audit_calls[0]["resource_id"] == "unknown"
+    assert audit_calls[0]["organization_id"] == organization_id
+    assert audit_calls[0]["metadata"]["credential_id"] is None
+    assert audit_calls[0]["metadata"]["model_id"] == "gpt-4o-mini"
+    assert audit_calls[0]["metadata"]["reason"] == "model_relation_not_verified"

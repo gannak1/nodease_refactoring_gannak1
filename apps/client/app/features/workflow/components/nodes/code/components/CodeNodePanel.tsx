@@ -8,6 +8,7 @@ import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import { ReferencedVariablesControl } from '../../ui/ReferencedVariablesControl';
 import { CodeWizardModal } from '../../../modals/CodeWizardModal';
 import { IncompleteVariablesAlert } from '../../../ui/IncompleteVariablesAlert';
+import { resolveWorkflowWizardOrganizationId } from '@/app/features/workflow/utils/resolveWorkflowWizardOrganizationId';
 
 interface CodeNodePanelProps {
   nodeId: string;
@@ -33,7 +34,12 @@ const DEFAULT_CODE = `def main(inputs):
 `;
 
 export function CodeNodePanel({ nodeId, data }: CodeNodePanelProps) {
-  const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const { updateNodeData, nodes, edges, activeWorkflowId, workflowAccess } =
+    useWorkflowStore();
+  const wizardOrganizationId = resolveWorkflowWizardOrganizationId(
+    workflowAccess,
+    activeWorkflowId,
+  );
   const [isExpanded, setIsExpanded] = useState(false);
   const [isCodeWizardOpen, setIsCodeWizardOpen] = useState(false);
 
@@ -313,6 +319,7 @@ export function CodeNodePanel({ nodeId, data }: CodeNodePanelProps) {
         isOpen={isCodeWizardOpen}
         onClose={() => setIsCodeWizardOpen(false)}
         inputVariables={inputVariableNames}
+        organizationId={wizardOrganizationId}
         onApply={handleApplyCode}
       />
     </div>

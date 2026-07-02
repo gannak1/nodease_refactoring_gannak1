@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import List, Optional
+from typing import AsyncIterator, List, Optional
 from uuid import UUID
 
 from fastapi import (
@@ -14,6 +15,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
@@ -26,6 +28,7 @@ from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
 from apps.gateway.services.organization_context import get_user_primary_organization_id
+from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
 from apps.gateway.utils.api_errors import (
@@ -43,6 +46,9 @@ from apps.shared.schemas.rag import (
     ChunkPreview,
     DocumentAnalyzeResponse,
     IngestionResponse,
+    RAGAgentAnswerRequest,
+    RAGAgentAnswerResponse,
+    RAGAgentSSEEvent,
     RAGResponse,
     SearchQuery,
 )
@@ -155,7 +161,7 @@ def _record_rag_retrieve_audit(
         "metadata_filter": metadata_filter.audit_summary()
         if metadata_filter is not None
         else {},
-        "policy_result": "allow",
+        "policy_evaluated": False,
     }
     record_audit(
         action=AuditAction.RAG_RETRIEVE,
@@ -166,6 +172,61 @@ def _record_rag_retrieve_audit(
         target_id=knowledge_base_id,
         status="success",
         metadata=metadata,
+    )
+
+
+def _rag_agent_sse_event(event: str, data: dict) -> str:
+    payload = RAGAgentSSEEvent(event=event, data=data).model_dump(mode="json")
+    return (
+        f"event: {payload['event']}\n"
+        f"data: {json.dumps(payload['data'], ensure_ascii=False, default=str)}\n\n"
+    )
+
+
+async def _rag_agent_sse_events(
+    events: AsyncIterator[tuple[str, dict]],
+) -> AsyncIterator[str]:
+    async for event, data in events:
+        yield _rag_agent_sse_event(event, data)
+
+
+@router.post("/agent/answer", response_model=RAGAgentAnswerResponse)
+async def rag_agent_answer(
+    payload: RAGAgentAnswerRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = parse_organization_id(request, x_organization_id)
+    service = RAGAgentAnswerService(
+        db=db,
+        current_user=current_user,
+        request=request,
+        organization_id=organization_id,
+    )
+    return await service.answer(payload)
+
+
+@router.post("/agent/answer/stream")
+async def rag_agent_answer_stream(
+    payload: RAGAgentAnswerRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = parse_organization_id(request, x_organization_id)
+    service = RAGAgentAnswerService(
+        db=db,
+        current_user=current_user,
+        request=request,
+        organization_id=organization_id,
+    )
+    execution = service.prepare_execution(payload)
+    return StreamingResponse(
+        _rag_agent_sse_events(service.stream_events(execution)),
+        media_type="text/event-stream",
     )
 
 

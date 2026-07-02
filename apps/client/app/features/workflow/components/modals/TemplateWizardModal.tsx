@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { X, Sparkles, Copy, Check, Loader2, ArrowRight, Info, ChevronDown, Code } from 'lucide-react';
+import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 
 
 // 템플릿 타입 정의
@@ -13,6 +14,7 @@ interface TemplateWizardModalProps {
   originalTemplate: string;
   registeredVariables: string[];  // Template Node의 등록된 변수명
   onApply: (improvedTemplate: string) => void;
+  organizationId?: string | null;
 }
 
 const TEMPLATE_TYPE_OPTIONS: { value: TemplateType; label: string; description: string }[] = [
@@ -28,8 +30,8 @@ export function TemplateWizardModal({
   originalTemplate,
   registeredVariables,
   onApply,
+  organizationId,
 }: TemplateWizardModalProps) {
-
   
   // 상태 관리
   const [currentTemplate, setCurrentTemplate] = useState(originalTemplate);
@@ -41,24 +43,27 @@ export function TemplateWizardModal({
   const [hasCredentials, setHasCredentials] = useState<boolean | null>(null);
   const [copied, setCopied] = useState(false);
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
+  const isOrganizationScopePending = organizationId === null;
 
-  // 모달 열릴 때 상태 초기화
-  useEffect(() => {
-    if (isOpen) {
-      setCurrentTemplate(originalTemplate);
-      setImprovedTemplate('');
-      setError(null);
-      setCopied(false);
-      setTemplateType('email');
-      setCustomInstructions('');
-      checkCredentials();
-    }
-  }, [isOpen, originalTemplate]);
+  const getWizardOrganizationId = useCallback(
+    () =>
+      organizationId !== undefined
+        ? organizationId
+        : getStoredActiveOrganizationId(),
+    [organizationId],
+  );
 
   // Credential 확인
-  const checkCredentials = async () => {
+  const checkCredentials = useCallback(async () => {
+    setHasCredentials(null);
+    if (isOrganizationScopePending) return;
+
     try {
-      const res = await fetch('/api/v1/template-wizard/check-credentials', {
+      const resolvedOrganizationId = getWizardOrganizationId();
+      const query = resolvedOrganizationId
+        ? `?organization_id=${encodeURIComponent(resolvedOrganizationId)}`
+        : '';
+      const res = await fetch(`/api/v1/template-wizard/check-credentials${query}`, {
         method: 'GET',
         credentials: 'include',
       });
@@ -69,7 +74,20 @@ export function TemplateWizardModal({
     } catch {
       setHasCredentials(false);
     }
-  };
+  }, [getWizardOrganizationId, isOrganizationScopePending]);
+
+  // 모달 열릴 때 상태 초기화
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentTemplate(originalTemplate);
+      setImprovedTemplate('');
+      setError(null);
+      setCopied(false);
+      setTemplateType('email');
+      setCustomInstructions('');
+      void checkCredentials();
+    }
+  }, [isOpen, originalTemplate, checkCredentials, setCurrentTemplate]);
 
   // 템플릿 개선 요청
   const handleImprove = async () => {
@@ -78,11 +96,17 @@ export function TemplateWizardModal({
       return;
     }
 
+    if (isOrganizationScopePending) {
+      setError('워크플로우 조직 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setImprovedTemplate('');
 
     try {
+      const resolvedOrganizationId = getWizardOrganizationId();
       const res = await fetch('/api/v1/template-wizard/improve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -92,6 +116,7 @@ export function TemplateWizardModal({
           original_template: currentTemplate,
           registered_variables: registeredVariables,
           custom_instructions: templateType === 'custom' ? customInstructions : null,
+          organization_id: resolvedOrganizationId ?? undefined,
         }),
       });
 
@@ -103,8 +128,12 @@ export function TemplateWizardModal({
 
       const data = await res.json();
       setImprovedTemplate(data.improved_template);
-    } catch (err: any) {
-      setError(err.message || '알 수 없는 오류가 발생했습니다.');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : '알 수 없는 오류가 발생했습니다.',
+      );
     } finally {
       setIsLoading(false);
     }
@@ -278,7 +307,8 @@ export function TemplateWizardModal({
               ) : (
                 <button
                   onClick={handleImprove}
-                  disabled={isLoading || !currentTemplate.trim()}
+                  data-testid="template-wizard-submit"
+                  disabled={isLoading || isOrganizationScopePending || !currentTemplate.trim()}
                   className="w-full py-3 px-4 bg-pink-600 hover:bg-pink-700 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
                 >
                   {isLoading ? (

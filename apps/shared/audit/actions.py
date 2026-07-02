@@ -57,6 +57,11 @@ class AuditAction:
     DOCUMENT_PROCESS = "document.process"
     DOCUMENT_DELETE = "document.delete"
     RAG_RETRIEVE = "rag.retrieve"
+    RAG_ANSWER_REQUESTED = "rag.answer.requested"
+    RAG_ANSWER_COMPLETED = "rag.answer.completed"
+    RAG_ANSWER_FAILED = "rag.answer.failed"
+    RAG_ANSWER_CANCELLED = "rag.answer.cancelled"
+    RAG_ANSWER_PURGE = "rag.answer.purge"
 
     POLICY_WARN = "policy.warn"
     POLICY_BLOCK = "policy.block"
