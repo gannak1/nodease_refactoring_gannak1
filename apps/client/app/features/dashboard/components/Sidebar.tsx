@@ -15,9 +15,11 @@ import {
   Menu,
   Building2,
   LayoutDashboard,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
+  ACTIVE_ORGANIZATION_CHANGED_EVENT,
   getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
 import { apiClient } from '@/lib/apiClient';
@@ -49,6 +51,12 @@ const navigationItems = [
     icon: BookOpen,
   },
   {
+    name: '관리',
+    href: '/dashboard/admin',
+    icon: ShieldCheck,
+    managerOnly: true,
+  },
+  {
     name: '설정',
     href: '/dashboard/settings',
     icon: Settings,
@@ -63,6 +71,7 @@ export default function Sidebar() {
   const [userName, setUserName] = useState('사용자');
   const [userEmail, setUserEmail] = useState('');
   const [organizationName, setOrganizationName] = useState('');
+  const [isOrganizationManager, setIsOrganizationManager] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Fetch user info
@@ -89,6 +98,8 @@ export default function Sidebar() {
       try {
         const organizationId = getStoredActiveOrganizationId();
         if (!organizationId) {
+          setOrganizationName('');
+          setIsOrganizationManager(false);
           return;
         }
 
@@ -96,12 +107,20 @@ export default function Sidebar() {
         if (response.data?.name) {
           setOrganizationName(response.data.name);
         }
+        setIsOrganizationManager(response.data?.is_manager === true);
       } catch {
-        // Silent error handling
+        setOrganizationName('');
+        setIsOrganizationManager(false);
       }
     };
 
     fetchOrganization();
+    window.addEventListener(ACTIVE_ORGANIZATION_CHANGED_EVENT, fetchOrganization);
+    return () =>
+      window.removeEventListener(
+        ACTIVE_ORGANIZATION_CHANGED_EVENT,
+        fetchOrganization,
+      );
   }, []);
 
   // Close dropdown when clicking outside
@@ -178,8 +197,12 @@ export default function Sidebar() {
 
       {/* Main Navigation */}
       <nav className="flex-1 space-y-1">
-        {navigationItems.map((item) => {
-          const isActive = pathname === item.href;
+        {navigationItems
+          .filter((item) => !item.managerOnly || isOrganizationManager)
+          .map((item) => {
+          const isActive =
+            pathname === item.href ||
+            (item.href !== '/dashboard' && pathname.startsWith(`${item.href}/`));
           const Icon = item.icon;
 
           return (
