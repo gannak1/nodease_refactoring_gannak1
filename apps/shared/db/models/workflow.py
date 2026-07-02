@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from apps.shared.db.base import Base
 
@@ -53,10 +53,4 @@ class Workflow(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    llm_node_versions: Mapped[list["LLMNodeVersion"]] = relationship(
-        "LLMNodeVersion",
-        back_populates="workflow",
-        cascade="all, delete-orphan",
     )

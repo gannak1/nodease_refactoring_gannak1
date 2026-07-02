@@ -23,10 +23,11 @@ def upgrade() -> None:
     op.create_table(
         "llm_node_versions",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("workflow_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("app_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("node_id", sa.Text(), nullable=False),
         sa.Column("version_number", sa.Integer(), nullable=False),
         sa.Column("parent_version_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("source_workflow_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("provider", sa.Text(), nullable=False),
         sa.Column("model_id", sa.Text(), nullable=False),
         sa.Column("fallback_model_id", sa.Text(), nullable=True),
@@ -87,18 +88,39 @@ def upgrade() -> None:
             "version_number > 0",
             name="ck_llm_node_versions_version_number_positive",
         ),
+        sa.ForeignKeyConstraint(["app_id"], ["apps.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["created_by"], ["users.id"]),
         sa.ForeignKeyConstraint(
-            ["parent_version_id"], ["llm_node_versions.id"], ondelete="SET NULL"
+            ["app_id", "node_id", "parent_version_id"],
+            [
+                "llm_node_versions.app_id",
+                "llm_node_versions.node_id",
+                "llm_node_versions.id",
+            ],
+            name="fk_llm_node_versions_parent_same_node",
         ),
-        sa.ForeignKeyConstraint(["workflow_id"], ["workflows.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["source_workflow_id"], ["workflows.id"], ondelete="SET NULL"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
-            "workflow_id",
+            "app_id",
+            "node_id",
+            "id",
+            name="uq_llm_node_versions_app_node_id",
+        ),
+        sa.UniqueConstraint(
+            "app_id",
             "node_id",
             "version_number",
-            name="uq_llm_node_versions_node_version",
+            name="uq_llm_node_versions_app_node_version",
         ),
+    )
+    op.create_index(
+        "ix_llm_node_versions_app_id",
+        "llm_node_versions",
+        ["app_id"],
+        unique=False,
     )
     op.create_index(
         "ix_llm_node_versions_created_by",
@@ -113,17 +135,20 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_index(
-        "ix_llm_node_versions_workflow_id",
+        "ix_llm_node_versions_source_workflow_id",
         "llm_node_versions",
-        ["workflow_id"],
+        ["source_workflow_id"],
         unique=False,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_llm_node_versions_workflow_id", table_name="llm_node_versions")
+    op.drop_index(
+        "ix_llm_node_versions_source_workflow_id", table_name="llm_node_versions"
+    )
     op.drop_index(
         "ix_llm_node_versions_parent_version_id", table_name="llm_node_versions"
     )
     op.drop_index("ix_llm_node_versions_created_by", table_name="llm_node_versions")
+    op.drop_index("ix_llm_node_versions_app_id", table_name="llm_node_versions")
     op.drop_table("llm_node_versions")

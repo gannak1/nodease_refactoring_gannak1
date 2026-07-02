@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     Text,
     UniqueConstraint,
@@ -29,9 +30,9 @@ class LLMNodeVersion(Base):
         nullable=False,
     )
 
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    app_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("workflows.id", ondelete="CASCADE"),
+        ForeignKey("apps.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -42,7 +43,13 @@ class LLMNodeVersion(Base):
 
     parent_version_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("llm_node_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    source_workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -93,27 +100,43 @@ class LLMNodeVersion(Base):
         default=lambda: datetime.now(timezone.utc),
     )
 
-    workflow: Mapped["Workflow"] = relationship(
-        "Workflow", back_populates="llm_node_versions"
-    )
+    app: Mapped["App"] = relationship("App", back_populates="llm_node_versions")
+    source_workflow: Mapped[Optional["Workflow"]] = relationship("Workflow")
     parent_version: Mapped[Optional["LLMNodeVersion"]] = relationship(
         "LLMNodeVersion",
-        remote_side=[id],
-        foreign_keys=[parent_version_id],
+        remote_side=[app_id, node_id, id],
+        foreign_keys=[app_id, node_id, parent_version_id],
         back_populates="child_versions",
+        overlaps="app,llm_node_versions",
     )
     child_versions: Mapped[list["LLMNodeVersion"]] = relationship(
         "LLMNodeVersion",
-        foreign_keys=[parent_version_id],
+        foreign_keys=[app_id, node_id, parent_version_id],
         back_populates="parent_version",
+        overlaps="app,llm_node_versions",
     )
 
     __table_args__ = (
         UniqueConstraint(
-            "workflow_id",
+            "app_id",
             "node_id",
             "version_number",
-            name="uq_llm_node_versions_node_version",
+            name="uq_llm_node_versions_app_node_version",
+        ),
+        UniqueConstraint(
+            "app_id",
+            "node_id",
+            "id",
+            name="uq_llm_node_versions_app_node_id",
+        ),
+        ForeignKeyConstraint(
+            ["app_id", "node_id", "parent_version_id"],
+            [
+                "llm_node_versions.app_id",
+                "llm_node_versions.node_id",
+                "llm_node_versions.id",
+            ],
+            name="fk_llm_node_versions_parent_same_node",
         ),
         CheckConstraint(
             "version_number > 0",
