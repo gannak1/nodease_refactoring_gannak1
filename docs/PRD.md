@@ -53,6 +53,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 - Workflow 생성/편집/실행/배포 (schedule/webhook/API 트리거 포함)
 - Organization/Team 관리, 초대, RBAC 권한 부여와 차단
 - LLM credential 관리와 모델 연결
+- 외부 DB 연결(connectors)과 workflow DB 노드 사용 경로
 - Audit/tracing 기록 (canonical action 기준: [ADR-0008](decisions/ADR-0008-audit-action-naming-standard.md))
 
 ### 3.3 제외 (이번 범위 아님)
