@@ -51,10 +51,10 @@ Access control과 retrieval hierarchy를 분리하면 KB `use` 권한 실패, do
 
 ## Consequences
 
-- `docs/architecture/knowledge-rag.md`가 Knowledge/RAG architecture source of truth가 된다.
-- `docs/api/knowledge-rag.md`는 metadata filter, hierarchy mode, trace/citation contract를 current/proposed 상태로 분리해야 한다.
-- `docs/data-model/physical-data-model.md`는 MBA-78 1차에서 추가한 nullable hierarchical chunk column을 current schema로 기록하고, full parent-child ingestion/ranking은 후속 구현 범위로 분리해야 한다.
-- `docs/data-model/rbac-permission-policy.md`는 KB `use` runtime enforcement와 metadata-not-permission-source 경계를 명시한다.
+- `docs/architecture.md`가 Knowledge/RAG service boundary와 runtime flow의 active architecture 기준이다.
+- `docs/features/knowledge/api_spec.md`는 metadata filter, hierarchy mode, trace/citation contract를 current/proposed 상태로 분리해야 한다.
+- `docs/data_model.md`는 MBA-78 1차에서 추가한 nullable hierarchical chunk column을 current schema로 기록하고, full parent-child ingestion/ranking은 후속 구현 범위로 분리해야 한다.
+- `docs/features/knowledge/requirements.md`와 `docs/data_model.md`는 KB `use` runtime enforcement와 metadata-not-permission-source 경계를 명시한다.
 - 구현 시 Gateway search-test와 Workflow Engine runtime retrieval은 같은 filter/policy helper를 공유해야 한다.
 
 ## Follow-up Review

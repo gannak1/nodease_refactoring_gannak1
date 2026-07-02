@@ -134,7 +134,8 @@ Kubernetes 클러스터에 프로덕션 수준의 배포를 원한다면 Helm �
 | `POSTGRES_USER` | DB 사용자명 | `moduly` |
 
 ## Architecture
-![Architecture](./docs/images/architecture.png)
+
+현재 아키텍처 구성도와 요청 흐름은 [docs/architecture.md](./docs/architecture.md)를 기준으로 관리합니다.
 
 ## Tech Stack
 
@@ -159,7 +160,8 @@ Moduly는 최신 기술 스택을 활용하여 안정성과 확장성을 보장�
 *   **CI/CD**: GitHub Actions
 
 ## Project Structure
-![Project-Structure](./docs/images/project_structure.png)
+
+현재 저장소 구조와 서비스 경계는 [docs/architecture.md](./docs/architecture.md)와 [AGENTS.md](./AGENTS.md)를 기준으로 관리합니다.
 
 ## How to use
 

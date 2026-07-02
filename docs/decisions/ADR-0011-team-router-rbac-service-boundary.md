@@ -54,7 +54,7 @@ Team 비활성화는 MVP 1 요구사항이며, organization owner/manager의 tea
 - `apps/gateway/services/team_service.py`
 - `apps/gateway/tests/api/test_teams_api.py`
 - `apps/gateway/tests/services/test_team_service_permissions.py`
-- `docs/api/organization-rbac.md`
+- `docs/features/organization/api_spec.md`
 - `docs/decisions/README.md`
 - `docs/decisions/ADR-202606291451-team-router-rbac-service-boundary.md`
 
