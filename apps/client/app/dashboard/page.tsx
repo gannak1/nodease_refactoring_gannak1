@@ -317,7 +317,7 @@ export default function DashboardHomePage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => router.push('/dashboard/settings')}
+                    onClick={() => router.push('/dashboard/admin')}
                     className="mt-5 inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800"
                   >
                     조직 접근 관리

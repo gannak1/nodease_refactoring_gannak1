@@ -1,6 +1,8 @@
 import { AxiosHeaders, type AxiosInstance } from 'axios';
 
 const ACTIVE_ORGANIZATION_ID_STORAGE_KEY = 'moduly_active_organization_id';
+export const ACTIVE_ORGANIZATION_CHANGED_EVENT =
+  'nodease-active-organization-changed';
 
 type OrganizationLike = {
   id: string;
@@ -15,12 +17,14 @@ export const setActiveOrganizationId = (organizationId?: string | null) => {
   if (typeof window === 'undefined') return;
   if (!organizationId) {
     window.localStorage.removeItem(ACTIVE_ORGANIZATION_ID_STORAGE_KEY);
+    window.dispatchEvent(new Event(ACTIVE_ORGANIZATION_CHANGED_EVENT));
     return;
   }
   window.localStorage.setItem(
     ACTIVE_ORGANIZATION_ID_STORAGE_KEY,
     organizationId,
   );
+  window.dispatchEvent(new Event(ACTIVE_ORGANIZATION_CHANGED_EVENT));
 };
 
 export const resolveActiveOrganizationId = <T extends OrganizationLike>(
@@ -51,10 +55,11 @@ export const activeOrganizationHeaders = (
 export const attachActiveOrganizationHeader = (api: AxiosInstance) => {
   api.interceptors.request.use((config) => {
     const organizationId = getStoredActiveOrganizationId();
-    if (organizationId) {
-      config.headers = AxiosHeaders.from(config.headers);
-      config.headers.set('X-Organization-Id', organizationId);
+    const headers = AxiosHeaders.from(config.headers);
+    if (organizationId && !headers.has('X-Organization-Id')) {
+      headers.set('X-Organization-Id', organizationId);
     }
+    config.headers = headers;
     return config;
   });
 };

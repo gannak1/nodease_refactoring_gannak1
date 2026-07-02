@@ -19,23 +19,18 @@ import {
   resolveActiveOrganizationId,
   setActiveOrganizationId,
 } from '@/lib/activeOrganization';
+import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
+import { OrganizationAuthBadge } from '@/app/features/organization/components/OrganizationAuthBadge';
+import type {
+  OrganizationMember,
+  OrganizationResponse,
+} from '@/app/features/organization/types/Organization';
+import { filterActiveOrganizationMembers } from '@/app/features/organization/utils/memberFilters';
 
 type SettingsTab = 'access' | 'credentials' | 'activity';
 type ResourceType = 'workflow' | 'llm_credential';
 type GranteeType = 'team' | 'user';
 type AuthState = 'viewer' | 'operator' | 'builder' | 'manager';
-
-type OrganizationResponse = {
-  id: string;
-  name: string;
-  is_manager: boolean;
-};
-
-type UserResponse = {
-  id: string;
-  email: string;
-  name: string;
-};
 
 type TeamResponse = {
   id: string;
@@ -133,11 +128,13 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('access');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('credentials');
   const [organization, setOrganization] = useState<OrganizationResponse | null>(
     null,
   );
-  const [users, setUsers] = useState<UserResponse[]>([]);
+  const [organizationMembers, setOrganizationMembers] = useState<
+    OrganizationMember[]
+  >([]);
   const [teams, setTeams] = useState<TeamResponse[]>([]);
   const [teamMembers, setTeamMembers] = useState<
     Record<string, TeamMemberResponse[]>
@@ -166,12 +163,6 @@ export default function SettingsPage() {
     granteeId: '',
     authState: 'viewer',
   });
-  const [credentialForm, setCredentialForm] = useState({
-    providerId: '',
-    alias: '',
-    apiKey: '',
-  });
-  const [syncResults, setSyncResults] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -186,38 +177,37 @@ export default function SettingsPage() {
     [teams],
   );
   const visibleTabs = useMemo<[SettingsTab, string][]>(
-    () =>
-      isManager
-        ? [
-            ['access', '조직 접근'],
-            ['credentials', 'LLM Credentials'],
-            ['activity', 'Activity'],
-          ]
-        : [
-            ['credentials', 'LLM Credentials'],
-            ['activity', 'Activity'],
-          ],
-    [isManager],
+    () => [
+      ['credentials', 'LLM Credentials'],
+      ['activity', 'Activity'],
+    ],
+    [],
   );
-  const effectiveTab =
-    !isManager && activeTab === 'access' ? 'credentials' : activeTab;
+  const effectiveTab = activeTab;
 
   const activePermissions =
     permissionForm.resourceType === 'workflow'
       ? workflowPermissions
       : credentialPermissions;
-
-  const loadTeamMembers = async (items: TeamResponse[]) => {
-    const entries = await Promise.all(
-      items.map(async (team) => {
-        const members = await apiRequest<TeamMemberResponse[]>(
-          `/teams/${team.id}/members`,
-        ).catch(() => []);
-        return [team.id, members] as const;
-      }),
-    );
-    setTeamMembers(Object.fromEntries(entries));
-  };
+  const selectedTeamMemberUserIds = useMemo(
+    () =>
+      memberForm.teamId
+        ? (teamMembers[memberForm.teamId] || []).map((member) => member.user_id)
+        : [],
+    [memberForm.teamId, teamMembers],
+  );
+  const availableTeamMemberCandidates = useMemo(
+    () =>
+      filterActiveOrganizationMembers(
+        organizationMembers,
+        selectedTeamMemberUserIds,
+      ),
+    [organizationMembers, selectedTeamMemberUserIds],
+  );
+  const availableDirectPermissionCandidates = useMemo(
+    () => filterActiveOrganizationMembers(organizationMembers),
+    [organizationMembers],
+  );
 
   const loadPermissions = async (
     resourceType = permissionForm.resourceType,
@@ -280,54 +270,13 @@ export default function SettingsPage() {
       setSelectedWorkflowId(firstWorkflowId);
       setSelectedCredentialId(firstCredentialId);
 
-      if (!org.is_manager) {
-        setActiveTab((prev) => (prev === 'access' ? 'credentials' : prev));
-        setUsers([]);
-        setTeams([]);
-        setTeamMembers({});
-        setWorkflowPermissions(null);
-        setCredentialPermissions(null);
-        setMemberForm({ teamId: '', userId: '' });
-        setPermissionForm((prev) => ({ ...prev, granteeId: '' }));
-        return;
-      }
-
-      const [userData, teamData] = await Promise.all([
-        apiRequest<UserResponse[]>(`/users?organization_id=${org.id}`),
-        apiRequest<TeamResponse[]>(`/teams?organization_id=${org.id}`),
-      ]);
-      const activeTeamData = teamData.filter((team) => team.is_active);
-
-      setUsers(userData);
-      setTeams(teamData);
-      await loadTeamMembers(teamData);
-
-      setMemberForm((prev) => ({
-        teamId: prev.teamId || activeTeamData[0]?.id || '',
-        userId: prev.userId || userData[0]?.id || '',
-      }));
-      setPermissionForm((prev) => ({
-        ...prev,
-        granteeId:
-          prev.granteeId ||
-          (prev.granteeType === 'team'
-            ? activeTeamData[0]?.id
-            : userData[0]?.id) ||
-          '',
-      }));
-
-      if (firstWorkflowId) {
-        const data = await apiRequest<ResourcePermissionListResponse>(
-          `/permissions/workflows/${firstWorkflowId}`,
-        ).catch(() => null);
-        setWorkflowPermissions(data);
-      }
-      if (firstCredentialId) {
-        const data = await apiRequest<ResourcePermissionListResponse>(
-          `/permissions/llm-credentials/${firstCredentialId}`,
-        ).catch(() => null);
-        setCredentialPermissions(data);
-      }
+      setOrganizationMembers([]);
+      setTeams([]);
+      setTeamMembers({});
+      setWorkflowPermissions(null);
+      setCredentialPermissions(null);
+      setMemberForm({ teamId: '', userId: '' });
+      setPermissionForm((prev) => ({ ...prev, granteeId: '' }));
     } catch (err) {
       setError(err instanceof Error ? err.message : '설정 데이터를 불러오지 못했습니다.');
     } finally {
@@ -341,10 +290,56 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    if (organization && !organization.is_manager && activeTab === 'access') {
-      setActiveTab('credentials');
+    if (!isManager) return;
+    if (
+      memberForm.userId &&
+      availableTeamMemberCandidates.some(
+        (member) => member.user_id === memberForm.userId,
+      )
+    ) {
+      return;
     }
-  }, [activeTab, organization]);
+    setMemberForm((prev) => ({
+      ...prev,
+      userId: availableTeamMemberCandidates[0]?.user_id || '',
+    }));
+  }, [availableTeamMemberCandidates, isManager, memberForm.userId]);
+
+  useEffect(() => {
+    if (!isManager) return;
+    if (permissionForm.granteeType === 'team') {
+      if (
+        permissionForm.granteeId &&
+        activeTeams.some((team) => team.id === permissionForm.granteeId)
+      ) {
+        return;
+      }
+      setPermissionForm((prev) => ({
+        ...prev,
+        granteeId: activeTeams[0]?.id || '',
+      }));
+      return;
+    }
+
+    if (
+      permissionForm.granteeId &&
+      availableDirectPermissionCandidates.some(
+        (member) => member.user_id === permissionForm.granteeId,
+      )
+    ) {
+      return;
+    }
+    setPermissionForm((prev) => ({
+      ...prev,
+      granteeId: availableDirectPermissionCandidates[0]?.user_id || '',
+    }));
+  }, [
+    activeTeams,
+    availableDirectPermissionCandidates,
+    isManager,
+    permissionForm.granteeId,
+    permissionForm.granteeType,
+  ]);
 
   const handleCreateTeam = async () => {
     if (!organization?.is_manager || !newTeam.name.trim()) return;
@@ -448,62 +443,6 @@ export default function SettingsPage() {
     await loadPermissions(resourceType);
   };
 
-  const handleRegisterCredential = async () => {
-    if (
-      !isManager ||
-      !organization ||
-      !credentialForm.providerId ||
-      !credentialForm.alias
-    ) {
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await apiRequest('/llm/credentials', {
-        method: 'POST',
-        body: JSON.stringify({
-          provider_id: credentialForm.providerId,
-          organization_id: organization.id,
-          credential_name: credentialForm.alias,
-          api_key: credentialForm.apiKey,
-        }),
-      });
-      setCredentialForm({ providerId: '', alias: '', apiKey: '' });
-      await loadData();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Credential 등록 실패');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleSyncCredential = async (credentialId: string) => {
-    if (!isManager) return;
-    setSyncResults((prev) => ({ ...prev, [credentialId]: '동기화 중' }));
-    try {
-      const result = await apiRequest<{
-        remote_models: number;
-        verified_models: number;
-      }>(`/llm/credentials/${credentialId}/sync-models`, { method: 'POST' });
-      setSyncResults((prev) => ({
-        ...prev,
-        [credentialId]: `${result.verified_models}/${result.remote_models} models`,
-      }));
-    } catch (err) {
-      setSyncResults((prev) => ({
-        ...prev,
-        [credentialId]: err instanceof Error ? err.message : '실패',
-      }));
-    }
-  };
-
-  const handleDeleteCredential = async (credentialId: string) => {
-    if (!isManager) return;
-    if (!confirm('이 credential을 삭제할까요?')) return;
-    await apiRequest(`/llm/credentials/${credentialId}`, { method: 'DELETE' });
-    await loadData();
-  };
-
   const renderPermissionRows = (rows: ResourcePermissionEntry[]) =>
     rows.length === 0 ? (
       <div className="px-3 py-3 text-sm text-gray-500">부여된 권한 없음</div>
@@ -543,9 +482,15 @@ export default function SettingsPage() {
           <h1 className="text-2xl font-bold text-gray-900">설정</h1>
           <p className="mt-1 text-sm text-gray-600">
             {organization
-              ? `${organization.name} · ${organization.is_manager ? 'manager' : 'member'}`
+              ? organization.name
               : 'Organization 확인 중'}
           </p>
+          {organization && (
+            <OrganizationAuthBadge
+              state={organization.is_manager ? 'manager' : 'member'}
+              className="mt-2"
+            />
+          )}
         </div>
         <button
           onClick={loadData}
@@ -693,25 +638,23 @@ export default function SettingsPage() {
                     </option>
                   ))}
                 </select>
-                <select
+                <ActiveOrganizationMemberPicker
+                  members={organizationMembers}
                   value={memberForm.userId}
-                  onChange={(event) =>
+                  onChange={(userId) =>
                     setMemberForm((prev) => ({
                       ...prev,
-                      userId: event.target.value,
+                      userId,
                     }))
                   }
-                  className="h-10 rounded-md border border-gray-300 px-3 text-sm"
-                >
-                  {users.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {user.name} ({user.email})
-                    </option>
-                  ))}
-                </select>
+                  excludedUserIds={selectedTeamMemberUserIds}
+                  placeholder="추가할 멤버 선택"
+                  emptyLabel="추가 가능한 활성 멤버 없음"
+                />
                 <button
                   onClick={handleAddMember}
-                  className="h-10 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700"
+                  disabled={!memberForm.teamId || !memberForm.userId}
+                  className="h-10 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   추가
                 </button>
@@ -788,7 +731,8 @@ export default function SettingsPage() {
                       granteeId:
                         granteeType === 'team'
                           ? activeTeams[0]?.id || ''
-                          : users[0]?.id || '',
+                          : availableDirectPermissionCandidates[0]?.user_id ||
+                            '',
                     }));
                   }}
                   className="h-10 rounded-md border border-gray-300 px-3 text-sm"
@@ -796,26 +740,37 @@ export default function SettingsPage() {
                   <option value="team">Team</option>
                   <option value="user">User direct</option>
                 </select>
-                <select
-                  value={permissionForm.granteeId}
-                  onChange={(event) =>
-                    setPermissionForm((prev) => ({
-                      ...prev,
-                      granteeId: event.target.value,
-                    }))
-                  }
-                  className="h-10 rounded-md border border-gray-300 px-3 text-sm"
-                >
-                  {(permissionForm.granteeType === 'team' ? activeTeams : users).map(
-                    (item) => (
-                      <option key={item.id} value={item.id}>
-                        {'email' in item
-                          ? `${item.name} (${item.email})`
-                          : item.name}
+                {permissionForm.granteeType === 'team' ? (
+                  <select
+                    value={permissionForm.granteeId}
+                    onChange={(event) =>
+                      setPermissionForm((prev) => ({
+                        ...prev,
+                        granteeId: event.target.value,
+                      }))
+                    }
+                    className="h-10 rounded-md border border-gray-300 px-3 text-sm"
+                  >
+                    {activeTeams.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name}
                       </option>
-                    ),
-                  )}
-                </select>
+                    ))}
+                  </select>
+                ) : (
+                  <ActiveOrganizationMemberPicker
+                    members={organizationMembers}
+                    value={permissionForm.granteeId}
+                    onChange={(userId) =>
+                      setPermissionForm((prev) => ({
+                        ...prev,
+                        granteeId: userId,
+                      }))
+                    }
+                    placeholder="권한을 부여하거나 수정할 멤버 선택"
+                    emptyLabel="권한을 부여할 활성 멤버 없음"
+                  />
+                )}
               </div>
 
               <div className="grid grid-cols-[1fr_auto] gap-3">
@@ -837,7 +792,8 @@ export default function SettingsPage() {
                 </select>
                 <button
                   onClick={handleGrantPermission}
-                  className="h-10 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700"
+                  disabled={!permissionForm.granteeId}
+                  className="h-10 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   부여
                 </button>
@@ -932,31 +888,9 @@ export default function SettingsPage() {
                               </p>
                             </div>
                           </div>
-                          {isManager ? (
-                            <div className="flex items-center gap-1">
-                              <span className="mr-2 text-xs text-gray-500">
-                                {syncResults[credential.id]}
-                              </span>
-                              <button
-                                onClick={() => handleSyncCredential(credential.id)}
-                                className="rounded-md p-2 text-gray-500 hover:bg-gray-100"
-                                title="모델 동기화"
-                              >
-                                <RefreshCw className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteCredential(credential.id)}
-                                className="rounded-md p-2 text-gray-500 hover:bg-red-50 hover:text-red-600"
-                                title="Credential 삭제"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
-                              읽기 전용
-                            </span>
-                          )}
+                          <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
+                            읽기 전용
+                          </span>
                         </div>
                       ))
                     )}
@@ -966,74 +900,16 @@ export default function SettingsPage() {
             })}
           </section>
 
-          {isManager ? (
-            <section className="h-fit rounded-lg border border-gray-200 p-5">
-              <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-900">
-                <Key className="h-4 w-4 text-blue-600" />
-                Credential 등록
-              </h2>
-              <div className="space-y-3">
-                <select
-                  value={credentialForm.providerId}
-                  onChange={(event) =>
-                    setCredentialForm((prev) => ({
-                      ...prev,
-                      providerId: event.target.value,
-                    }))
-                  }
-                  className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm"
-                >
-                  <option value="">Provider 선택</option>
-                  {providers.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={credentialForm.alias}
-                  onChange={(event) =>
-                    setCredentialForm((prev) => ({
-                      ...prev,
-                      alias: event.target.value,
-                    }))
-                  }
-                  className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm"
-                  placeholder="별칭"
-                />
-                <input
-                  value={credentialForm.apiKey}
-                  onChange={(event) =>
-                    setCredentialForm((prev) => ({
-                      ...prev,
-                      apiKey: event.target.value,
-                    }))
-                  }
-                  type="password"
-                  className="h-10 w-full rounded-md border border-gray-300 px-3 font-mono text-sm"
-                  placeholder="API key"
-                />
-                <button
-                  onClick={handleRegisterCredential}
-                  disabled={submitting}
-                  className="h-10 w-full rounded-md bg-blue-600 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  등록 및 모델 동기화
-                </button>
-              </div>
-            </section>
-          ) : (
-            <section className="h-fit rounded-lg border border-gray-200 bg-gray-50 p-5">
-              <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-900">
-                <Key className="h-4 w-4 text-blue-600" />
-                Credential 접근 상태
-              </h2>
-              <p className="text-sm leading-6 text-gray-600">
-                이 화면에서는 접근 가능한 credential만 확인할 수 있습니다.
-                등록, 삭제, 모델 동기화는 관리자에게 요청하세요.
-              </p>
-            </section>
-          )}
+          <section className="h-fit rounded-lg border border-gray-200 bg-gray-50 p-5">
+            <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-900">
+              <Key className="h-4 w-4 text-blue-600" />
+              Credential 접근 상태
+            </h2>
+            <p className="text-sm leading-6 text-gray-600">
+              이 화면에서는 접근 가능한 credential만 확인할 수 있습니다.
+              등록, 삭제, 모델 동기화는 관리 화면에서 다룹니다.
+            </p>
+          </section>
         </div>
       ) : (
         <section className="rounded-lg border border-gray-200">
