@@ -63,6 +63,70 @@ beforeEach(() => {
 });
 
 describe('LogDetail', () => {
+  it('응답 노드 결과를 상단 최종 응답으로 먼저 보여주고 응답 노드를 기본 선택한다', async () => {
+    vi.mocked(workflowApi.getWorkflowRunLlmTraces).mockResolvedValue({
+      total: 0,
+      limit: 500,
+      offset: 0,
+      items: [],
+    });
+
+    render(
+      <LogDetail
+        run={{
+          ...createRun('run-demo'),
+          node_runs: [
+            {
+              id: 'trigger-run',
+              node_id: 'webhook-trigger',
+              node_type: 'webhookTriggerNode',
+              status: 'success',
+              started_at: '2026-06-27T00:00:00Z',
+              finished_at: '2026-06-27T00:00:01Z',
+              outputs: { message: '가족돌봄휴가 질문' },
+            },
+            {
+              id: 'llm-run',
+              node_id: 'llm',
+              node_type: 'llmNode',
+              status: 'success',
+              started_at: '2026-06-27T00:00:01Z',
+              finished_at: '2026-06-27T00:00:04Z',
+              outputs: { text: 'LLM 중간 답변' },
+            },
+            {
+              id: 'answer-run',
+              node_id: 'answer',
+              node_type: 'answerNode',
+              status: 'success',
+              started_at: '2026-06-27T00:00:04Z',
+              finished_at: '2026-06-27T00:00:05Z',
+              inputs: {
+                webhook: {
+                  message: '가족돌봄휴가 질문',
+                },
+              },
+              outputs: {
+                answer_text: '가족돌봄휴가는 연차와 이어 사용할 수 있습니다.',
+              },
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('최종 응답')).toBeInTheDocument();
+    expect(
+      screen.getByText('가족돌봄휴가는 연차와 이어 사용할 수 있습니다.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('가족돌봄휴가 질문')).not.toBeInTheDocument();
+
+    const selectedAnswerButtons = screen
+      .getAllByRole('button', { name: /응답/ })
+      .filter((button) => button.className.includes('bg-blue-50'));
+    expect(selectedAnswerButtons.length).toBeGreaterThan(0);
+  });
+
   it('run 전환 시 이전 LLM trace state를 즉시 초기화한다', async () => {
     let resolveSecondTrace: (
       value: Awaited<ReturnType<typeof workflowApi.getWorkflowRunLlmTraces>>,

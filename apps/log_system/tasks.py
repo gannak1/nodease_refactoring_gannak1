@@ -534,11 +534,64 @@ def update_node_log_finish(self, data: Dict[str, Any]):
 
     except IntegrityError:
         session.rollback()
-        # 중복 키 오류는 이미 처리됨을 의미 (Idempotency)
-        logger.info(
-            f"[Log-System] update_node_finish 중복 처리 무시: log_id={data.get('log_id')}"
-        )
-        return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+        try:
+            log_id = _deserialize_uuid(data.get("log_id"))
+            finished_at = _deserialize_datetime(data["finished_at"])
+            existing_node = (
+                session.query(WorkflowNodeRun)
+                .filter(WorkflowNodeRun.id == log_id)
+                .first()
+            )
+            if not existing_node:
+                raise
+
+            outputs = data["outputs"]
+            if not isinstance(outputs, dict):
+                outputs = {"result": outputs}
+
+            # create_node와 finish upsert가 동시에 insert를 시도한 경우에도
+            # 최종 완료 이벤트가 RUNNING 상태에 묻히지 않도록 다시 적용한다.
+            existing_node.status = NodeRunStatus.SUCCESS
+            existing_node.outputs = outputs
+            existing_node.finished_at = finished_at
+            existing_node.duration = data.get("duration") or (
+                (finished_at - existing_node.started_at).total_seconds()
+                if existing_node.started_at and finished_at
+                else existing_node.duration
+            )
+            sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+                data.get("node_type") or existing_node.node_type,
+                data.get("trace_metadata") or {},
+            )
+            existing_node.trace_metadata = (
+                sanitized_metadata or existing_node.trace_metadata
+            )
+            existing_node.redaction_applied = existing_node.redaction_applied or bool(
+                data.get("redaction_applied")
+            )
+            existing_node.pii_detected = existing_node.pii_detected or bool(
+                data.get("pii_detected")
+            )
+            existing_node.sequence = existing_node.sequence or data.get("sequence")
+            existing_node.retry_count = (
+                data.get("retry_count") or existing_node.retry_count
+            )
+            _insert_trace_payloads(
+                session,
+                _deserialize_uuid(data["workflow_run_id"]),
+                data.get("trace_payloads") or [],
+            )
+            session.commit()
+            return {"status": "success", "node_id": data["node_id"], "reconciled": True}
+        except Exception as reconcile_error:
+            session.rollback()
+            logger.error(
+                "[Log-System] update_node_finish 중복 충돌 보정 실패: "
+                f"log_id={data.get('log_id')}"
+            )
+            raise self.retry(
+                exc=reconcile_error, countdown=min(2**self.request.retries, 30)
+            )
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] update_node_log_finish 실패: {e}")
@@ -635,11 +688,49 @@ def update_node_log_error(self, data: Dict[str, Any]):
 
     except IntegrityError:
         session.rollback()
-        # 중복 키 오류는 이미 처리됨을 의미 (Idempotency)
-        logger.info(
-            f"[Log-System] update_node_error 중복 처리 무시: log_id={data.get('log_id')}"
-        )
-        return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+        try:
+            log_id = _deserialize_uuid(data.get("log_id"))
+            finished_at = _deserialize_datetime(data["finished_at"])
+            existing_node = (
+                session.query(WorkflowNodeRun)
+                .filter(WorkflowNodeRun.id == log_id)
+                .first()
+            )
+            if not existing_node:
+                raise
+
+            # create_node와 error upsert가 동시에 insert를 시도한 경우에도
+            # 최종 실패 이벤트가 RUNNING 상태에 묻히지 않도록 다시 적용한다.
+            existing_node.status = NodeRunStatus.FAILED
+            existing_node.error_message = data["error_message"]
+            existing_node.finished_at = finished_at
+            existing_node.duration = data.get("duration") or (
+                (finished_at - existing_node.started_at).total_seconds()
+                if existing_node.started_at and finished_at
+                else existing_node.duration
+            )
+            sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+                data.get("node_type") or existing_node.node_type,
+                data.get("trace_metadata") or {},
+            )
+            existing_node.trace_metadata = (
+                sanitized_metadata or existing_node.trace_metadata
+            )
+            existing_node.sequence = existing_node.sequence or data.get("sequence")
+            existing_node.retry_count = (
+                data.get("retry_count") or existing_node.retry_count
+            )
+            session.commit()
+            return {"status": "success", "node_id": data["node_id"], "reconciled": True}
+        except Exception as reconcile_error:
+            session.rollback()
+            logger.error(
+                "[Log-System] update_node_error 중복 충돌 보정 실패: "
+                f"log_id={data.get('log_id')}"
+            )
+            raise self.retry(
+                exc=reconcile_error, countdown=min(2**self.request.retries, 30)
+            )
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] update_node_log_error 실패: {e}")

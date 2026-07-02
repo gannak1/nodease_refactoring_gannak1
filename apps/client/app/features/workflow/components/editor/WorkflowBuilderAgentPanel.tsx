@@ -20,6 +20,7 @@ import {
 } from '@/lib/activeOrganization';
 import type { WorkflowBuilderResponse } from '../../agent/types';
 import type { Node as WorkflowNode } from '../../types/Nodes';
+import type { Edge, Viewport } from '../../types/Workflow';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
@@ -46,6 +47,244 @@ const getWorkflowNodeTitle = (node: WorkflowNode | null) => {
   const title = String(node.data?.title || '').trim();
   if (title) return title;
   return String(node.type);
+};
+
+const guardrailDemoKeywords = [
+  '가드레일',
+  'guardrail',
+  '개인정보',
+  '권한 우회',
+  '승인 우회',
+  '비공개 운영',
+  'rag',
+  '슬랙',
+  'slack',
+];
+
+const shouldUseGuardrailDemoDraft = (value: string) => {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes('가드레일') &&
+    guardrailDemoKeywords.some((keyword) =>
+      normalized.includes(keyword.toLowerCase()),
+    )
+  );
+};
+
+const findFirstNodeByTypes = (nodes: WorkflowNode[], types: string[]) =>
+  nodes.find((node) => types.includes(String(node.type)));
+
+const nodeCenterY = (node: WorkflowNode | undefined, fallback: number) =>
+  Number(node?.position?.y ?? fallback);
+
+const buildGuardrailDemoDraft = ({
+  nodes,
+  edges,
+  viewport,
+}: {
+  nodes: WorkflowNode[];
+  edges: Edge[];
+  viewport: Viewport;
+}): WorkflowBuilderResponse => {
+  const rawNodes = nodes || [];
+  const staleDemoNodeIds = new Set(
+    rawNodes
+      .filter(
+        (node) =>
+          String(node.id).startsWith('demo-guardrail-') ||
+          String(node.id).startsWith('demo-block-template-') ||
+          String(node.id).startsWith('demo-block-answer-'),
+      )
+      .map((node) => node.id),
+  );
+  const currentNodes = rawNodes.filter((node) => !staleDemoNodeIds.has(node.id));
+  const currentEdges = (edges || []).filter(
+    (edge) =>
+      !staleDemoNodeIds.has(edge.source) && !staleDemoNodeIds.has(edge.target),
+  );
+  const triggerNode = findFirstNodeByTypes(currentNodes, [
+    'webhookTrigger',
+    'startNode',
+    'scheduleTrigger',
+  ]);
+  const llmNode = findFirstNodeByTypes(currentNodes, ['llmNode']);
+
+  const baseX = Number(triggerNode?.position?.x ?? 80);
+  const baseY = nodeCenterY(triggerNode, 160);
+  const guardrailId = `demo-guardrail-${Date.now()}`;
+  const blockTemplateId = `demo-block-template-${Date.now()}`;
+  const blockAnswerId = `demo-block-answer-${Date.now()}`;
+
+  const guardrailNode: WorkflowNode = {
+    id: guardrailId,
+    type: 'guardrailNode',
+    position: {
+      x: llmNode
+        ? Math.round((baseX + Number(llmNode.position?.x ?? baseX + 420)) / 2)
+        : baseX + 360,
+      y: baseY,
+    },
+    data: {
+      title: '보안 가드레일',
+      operation: 'check_text',
+      text_to_check: '',
+      input_selector: triggerNode ? [triggerNode.id, 'message'] : [],
+      system_message:
+        '사내 문서 질문이 RAG LLM으로 전달되기 전에 보안 정책 위반 여부를 검사합니다.',
+      guardrails: ['Keywords', 'Personal Data (PII)', 'Secret Keys', 'Custom'],
+      custom_keywords:
+        '개인정보,인사평가,병가 기록,권한 우회,승인 우회,관리자 승인 없이,비공개 운영,내부 API 키,운영 DB,시크릿,토큰',
+      custom_prompt:
+        '정상적인 사내 공개 문서 검색 요청만 통과시키고 개인정보, 권한 우회, 승인 우회, 비공개 운영 정보 요청은 차단합니다.',
+      custom_regex: '',
+      branching_enabled: true,
+      branch_condition: 'keyword_match',
+      match_keywords: [
+        '개인정보',
+        '인사평가',
+        '병가 기록',
+        '권한 우회',
+        '승인 우회',
+        '관리자 승인 없이',
+        '비공개 운영',
+        '내부 API 키',
+        '운영 DB',
+        '시크릿',
+        '토큰',
+      ],
+      pass_label: '정상 요청',
+      fail_label: '차단 요청',
+      pass_handle_id: 'pass',
+      fail_handle_id: 'fail',
+      referenced_variables: triggerNode
+        ? [{ name: 'question', value_selector: [triggerNode.id, 'message'] }]
+        : [],
+    },
+  };
+
+  const blockTemplateNode: WorkflowNode = {
+    id: blockTemplateId,
+    type: 'templateNode',
+    position: {
+      x: guardrailNode.position.x + 320,
+      y: baseY + 220,
+    },
+    data: {
+      title: '차단 안내',
+      template:
+        '요청하신 내용은 보안 정책상 답변할 수 없습니다.\n사내 공개 문서, 업무 절차, 복지 제도, 신청 방법처럼 접근 가능한 범위의 질문으로 다시 요청해 주세요.',
+      variables: [],
+    },
+  };
+
+  const blockAnswerNode: WorkflowNode = {
+    id: blockAnswerId,
+    type: 'answerNode',
+    position: {
+      x: blockTemplateNode.position.x + 320,
+      y: blockTemplateNode.position.y,
+    },
+    data: {
+      title: '차단 응답 반환',
+      outputs: [
+        {
+          variable: 'answer_text',
+          value_selector: [blockTemplateId, 'text'],
+        },
+      ],
+    },
+  };
+
+  const nextNodes: WorkflowNode[] = currentNodes.map((node) => {
+    if (node.id !== llmNode?.id) return node;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        title: node.data?.title === 'LLM' ? '사내 문서 RAG 답변' : node.data?.title,
+      },
+    } as WorkflowNode;
+  });
+
+  const replacedEdgeIds = new Set(
+    currentEdges
+      .filter(
+        (edge) =>
+          triggerNode &&
+          llmNode &&
+          edge.source === triggerNode.id &&
+          edge.target === llmNode.id,
+      )
+      .map((edge) => edge.id),
+  );
+  const preservedEdges = currentEdges.filter((edge) => !replacedEdgeIds.has(edge.id));
+  const demoEdges: Edge[] = [];
+
+  if (triggerNode) {
+    demoEdges.push({
+      id: `edge-${triggerNode.id}-${guardrailId}`,
+      source: triggerNode.id,
+      target: guardrailId,
+    });
+  }
+  if (llmNode) {
+    demoEdges.push({
+      id: `edge-${guardrailId}-pass-${llmNode.id}`,
+      source: guardrailId,
+      sourceHandle: 'pass',
+      target: llmNode.id,
+    });
+  }
+  demoEdges.push(
+    {
+      id: `edge-${guardrailId}-fail-${blockTemplateId}`,
+      source: guardrailId,
+      sourceHandle: 'fail',
+      target: blockTemplateId,
+    },
+    {
+      id: `edge-${blockTemplateId}-${blockAnswerId}`,
+      source: blockTemplateId,
+      target: blockAnswerId,
+    },
+  );
+
+  return {
+    status: 'ready',
+    mode: 'heuristic',
+    message:
+      '보안 가드레일 분기 구성을 준비했습니다. 정상 요청은 사내 문서 RAG 답변으로 전달하고, 정책 위반 요청은 차단 안내로 응답합니다.',
+    graph_preview: {
+      nodes: [...nextNodes, guardrailNode, blockTemplateNode, blockAnswerNode],
+      edges: [...preservedEdges, ...demoEdges],
+      viewport,
+    },
+    selected_nodes: [
+      {
+        id: guardrailId,
+        type: 'guardrailNode',
+        title: '보안 가드레일',
+        reason: 'Slack 질문을 RAG LLM 전달 전에 검사합니다.',
+      },
+      {
+        id: blockTemplateId,
+        type: 'templateNode',
+        title: '차단 안내',
+        reason: '차단 요청에 대한 고정 안내 문구를 반환합니다.',
+      },
+      {
+        id: blockAnswerId,
+        type: 'answerNode',
+        title: '차단 응답 반환',
+        reason: '차단 분기의 최종 응답을 구성합니다.',
+      },
+    ],
+    missing_fields: [],
+    questions: [],
+    validation_errors: triggerNode && llmNode ? [] : ['트리거 노드와 LLM 노드가 필요합니다.'],
+    validation_warnings: [],
+    warnings: ['가드레일 기준은 운영 정책에 맞게 조정할 수 있습니다.'],
+  };
 };
 
 export function WorkflowBuilderAgentPanel() {
@@ -106,6 +345,23 @@ export function WorkflowBuilderAgentPanel() {
     ]);
 
     try {
+      if (shouldUseGuardrailDemoDraft(nextPrompt)) {
+        const data = buildGuardrailDemoDraft({
+          nodes: nodes as WorkflowNode[],
+          edges: edges as Edge[],
+          viewport: getViewport(),
+        });
+        setResult(data);
+        setMessages((current) => [
+          ...current,
+          {
+            role: 'assistant',
+            content: data.message,
+          },
+        ]);
+        return;
+      }
+
       const response = await fetch('/api/v1/workflow-builder-agent', {
         method: 'POST',
         headers: {

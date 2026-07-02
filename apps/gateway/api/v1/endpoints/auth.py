@@ -76,6 +76,10 @@ def _get_cookie_config(request: Request) -> tuple[bool, str | None]:
     # 쿠키 도메인 (환경변수 우선, 없으면 호스트에서 자동 추출)
     cookie_domain = os.getenv("COOKIE_DOMAIN")
     if not cookie_domain and is_production:
+        # Cloudflare quick tunnel은 공유 도메인이라 .trycloudflare.com 쿠키가
+        # 브라우저에서 거부될 수 있다. 이 경우 host-only cookie로 둔다.
+        if host.endswith(".trycloudflare.com"):
+            return is_production, None
         # api.moviepick.shop → .moviepick.shop
         parts = host.split(".")
         if len(parts) >= 2:

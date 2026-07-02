@@ -4,6 +4,7 @@ import { ko } from 'date-fns/locale';
 import {
   LLMTrace,
   WorkflowRun,
+  WorkflowNodeRun,
 } from '@/app/features/workflow/types/Api';
 import {
   CheckCircle2,
@@ -14,8 +15,10 @@ import {
   AlertCircle,
   Upload,
   Download,
+  Copy,
+  Check,
 } from 'lucide-react';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { LogExecutionPath } from './detail-components/LogExecutionPath';
 import { LogTokenAnalysis } from './detail-components/LogTokenAnalysis';
 import { getNodeDisplayInfo } from './shared/nodeDisplayInfo';
@@ -29,6 +32,155 @@ interface LogDetailProps {
   onCompareClick?: () => void;
   compactMode?: boolean;
 }
+
+const FINAL_OUTPUT_NODE_TYPES = [
+  'answerNode',
+  'slackPostNode',
+  'templateNode',
+  'llmNode',
+];
+
+const INPUT_FIRST_FINAL_NODE_TYPES = ['slackPostNode'];
+
+const PREFERRED_TEXT_KEYS = [
+  'answer_text',
+  'answer',
+  'text',
+  'message',
+  'content',
+  'response',
+  'result',
+  'output',
+  'sanitized_text',
+];
+
+const getNodeSortTime = (node: WorkflowNodeRun) =>
+  new Date(node.finished_at || node.started_at).getTime();
+
+const extractTextValue = (
+  value: any,
+  depth = 0,
+  allowDirectString = true,
+): string | null => {
+  if (value === null || value === undefined || depth > 5) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return allowDirectString && trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value !== 'object') return null;
+
+  for (const key of PREFERRED_TEXT_KEYS) {
+    const child = value[key];
+    const text = extractTextValue(child, depth + 1, true);
+    if (text) return text;
+  }
+
+  const values = Array.isArray(value) ? value : Object.values(value);
+  for (const child of values) {
+    if (child === null || typeof child !== 'object') continue;
+    const text = extractTextValue(child, depth + 1, false);
+    if (text) return text;
+  }
+
+  return null;
+};
+
+const findPreferredResultNode = (nodeRuns: WorkflowNodeRun[] = []) => {
+  const sortedNodes = [...nodeRuns].sort(
+    (a, b) => getNodeSortTime(a) - getNodeSortTime(b),
+  );
+  const successfulNodes = sortedNodes.filter(
+    (node) => node.status === 'success',
+  );
+
+  return (
+    [...successfulNodes]
+      .reverse()
+      .find((node) => FINAL_OUTPUT_NODE_TYPES.includes(node.node_type)) ||
+    successfulNodes.at(-1) ||
+    sortedNodes.at(-1) ||
+    null
+  );
+};
+
+const findFinalOutputSummary = (run: WorkflowRun) => {
+  const preferredNode = findPreferredResultNode(run.node_runs || []);
+  const nodeOutputText = preferredNode
+    ? INPUT_FIRST_FINAL_NODE_TYPES.includes(preferredNode.node_type)
+      ? extractTextValue(preferredNode.inputs) ||
+        extractTextValue(preferredNode.outputs)
+      : extractTextValue(preferredNode.outputs) ||
+        extractTextValue(preferredNode.inputs)
+    : null;
+  const runOutputText = extractTextValue(run.outputs);
+  const text = nodeOutputText || runOutputText;
+
+  if (!text) return null;
+
+  return {
+    text,
+    node: preferredNode,
+  };
+};
+
+const FinalOutputSummary = ({
+  text,
+  node,
+  onNodeSelect,
+}: {
+  text: string;
+  node: WorkflowNodeRun | null;
+  onNodeSelect: (nodeId: string) => void;
+}) => {
+  const [copied, setCopied] = useState(false);
+  const displayInfo = node ? getNodeDisplayInfo(node.node_type) : null;
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <section className="mb-6 rounded-xl border border-blue-200 bg-blue-50/60 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-blue-950">최종 응답</h3>
+          <p className="mt-1 text-xs text-blue-700">
+            시연 결과를 바로 확인할 수 있도록 마지막 응답 값을 먼저 보여줍니다.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {node && displayInfo && (
+            <button
+              type="button"
+              onClick={() => onNodeSelect(node.node_id)}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${displayInfo.color} border border-blue-100 hover:border-blue-300`}
+            >
+              {displayInfo.icon}
+              {displayInfo.label} 상세
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+            {copied ? '복사됨' : '복사'}
+          </button>
+        </div>
+      </div>
+      <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-blue-100 bg-white p-4 text-sm leading-6 text-gray-900 shadow-sm">
+        {text}
+      </div>
+    </section>
+  );
+};
 
 // 노드 설정 섹션 (NodeOptionsDisplay를 CollapsibleSection으로 감싸지 않고, 내부에서 직접 처리)
 const NodeOptionsSection = ({
@@ -84,7 +236,6 @@ const OutputDataSection = ({ data }: { data: any }) => {
   );
 };
 
-
 export const LogDetail = ({
   run,
   onCompareClick,
@@ -95,9 +246,15 @@ export const LogDetail = ({
   const [llmTraceLoading, setLlmTraceLoading] = useState(false);
   const [llmTraceError, setLlmTraceError] = useState(false);
   const nodeRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const preferredResultNode = useMemo(
+    () => findPreferredResultNode(run.node_runs || []),
+    [run.node_runs],
+  );
+  const finalOutputSummary = useMemo(() => findFinalOutputSummary(run), [run]);
 
   const selectedNode =
     run.node_runs?.find((n) => n.node_id === selectedNodeId) ||
+    preferredResultNode ||
     run.node_runs?.[0];
 
   // 선택된 노드가 변경될 때 해당 버튼으로 스크롤
@@ -230,6 +387,14 @@ export const LogDetail = ({
         </div>
       </div>
 
+      {finalOutputSummary && (
+        <FinalOutputSummary
+          text={finalOutputSummary.text}
+          node={finalOutputSummary.node}
+          onNodeSelect={setSelectedNodeId}
+        />
+      )}
+
       {/* 2. Token Analysis Sections */}
       <LogTokenAnalysis
         run={run}
@@ -276,22 +441,32 @@ export const LogDetail = ({
                     }`}
                   >
                     <div className="flex justify-between items-center">
-                      <span className={`font-semibold flex items-center gap-1.5 ${displayInfo.color}`}>
+                      <span
+                        className={`font-semibold flex items-center gap-1.5 ${displayInfo.color}`}
+                      >
                         {displayInfo.icon}
                         {displayInfo.label}
                       </span>
-                      <span className={`text-[9px] px-1 py-0.5 rounded ${
-                        node.status === 'success'
-                          ? 'bg-green-100 text-green-700'
+                      <span
+                        className={`text-[9px] px-1 py-0.5 rounded ${
+                          node.status === 'success'
+                            ? 'bg-green-100 text-green-700'
+                            : node.status === 'running'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-red-100 text-red-700'
+                        }`}
+                      >
+                        {node.status === 'success'
+                          ? '✓'
                           : node.status === 'running'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-red-100 text-red-700'
-                      }`}>
-                        {node.status === 'success' ? '✓' : node.status === 'running' ? '...' : '✗'}
+                            ? '...'
+                            : '✗'}
                       </span>
                     </div>
                     {duration && (
-                      <div className="text-[10px] text-gray-400 mt-0.5">{duration}초</div>
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        {duration}초
+                      </div>
                     )}
                   </button>
                 );
@@ -316,7 +491,9 @@ export const LogDetail = ({
                     <h4 className="font-bold text-red-700 flex items-center gap-2 mb-1 text-sm">
                       <AlertCircle className="w-4 h-4" /> 에러
                     </h4>
-                    <p className="text-xs text-red-600">{selectedNode.error_message}</p>
+                    <p className="text-xs text-red-600">
+                      {selectedNode.error_message}
+                    </p>
                   </div>
                 )}
               </div>
@@ -368,11 +545,15 @@ export const LogDetail = ({
                           node.status === 'success'
                             ? 'bg-green-100 text-green-700'
                             : node.status === 'running'
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'bg-red-100 text-red-700'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-red-100 text-red-700'
                         }`}
                       >
-                        {node.status === 'success' ? '성공' : node.status === 'running' ? '진행중' : '실패'}
+                        {node.status === 'success'
+                          ? '성공'
+                          : node.status === 'running'
+                            ? '진행중'
+                            : '실패'}
                       </span>
                     </div>
                     {duration && (

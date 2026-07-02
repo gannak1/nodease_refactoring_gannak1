@@ -7,6 +7,7 @@ from apps.workflow_engine.workflow.nodes.code import CodeNode, CodeNodeData
 from apps.workflow_engine.workflow.nodes.condition import ConditionNode, ConditionNodeData
 from apps.workflow_engine.workflow.nodes.file_extraction import FileExtractionNode, FileExtractionNodeData
 from apps.workflow_engine.workflow.nodes.github import GithubNode, GithubNodeData
+from apps.workflow_engine.workflow.nodes.guardrail import GuardrailNode, GuardrailNodeData
 from apps.workflow_engine.workflow.nodes.http import HttpRequestNode, HttpRequestNodeData
 from apps.workflow_engine.workflow.nodes.llm import LLMNode, LLMNodeData
 from apps.workflow_engine.workflow.nodes.loop import LoopNode, LoopNodeData
@@ -42,6 +43,7 @@ class NodeFactory:
         "answerNode": (AnswerNode, AnswerNodeData),
         "codeNode": (CodeNode, CodeNodeData),
         "conditionNode": (ConditionNode, ConditionNodeData),
+        "guardrailNode": (GuardrailNode, GuardrailNodeData),
         "llmNode": (LLMNode, LLMNodeData),
         "httpRequestNode": (HttpRequestNode, HttpRequestNodeData),
         "slackPostNode": (HttpRequestNode, HttpRequestNodeData),

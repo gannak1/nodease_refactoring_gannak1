@@ -31,6 +31,20 @@ SECRET_KEYWORDS = {
     "x-auth-token",
     "x-webhook-secret",
 }
+OBSERVABILITY_METRIC_KEYS = {
+    "accepted_prediction_tokens",
+    "audio_tokens",
+    "cached_tokens",
+    "completion_tokens",
+    "completion_tokens_details",
+    "input_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "prompt_tokens_details",
+    "reasoning_tokens",
+    "rejected_prediction_tokens",
+    "total_tokens",
+}
 DEFAULT_SENSITIVE_HEADERS = {
     "authorization",
     "cookie",
@@ -158,6 +172,8 @@ class TraceRedactionService:
         raw_key = key.lower()
         policy_headers = {str(h).lower() for h in policy.sensitive_headers or ()}
         policy_keywords = {str(k).lower() for k in policy.sensitive_keywords or ()}
+        if normalized in OBSERVABILITY_METRIC_KEYS:
+            return False
         if raw_key in DEFAULT_SENSITIVE_HEADERS or raw_key in policy_headers:
             return True
         return any(keyword in normalized for keyword in SECRET_KEYWORDS | policy_keywords)

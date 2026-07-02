@@ -9,7 +9,6 @@ import {
   AlertTriangle,
   BookOpen,
   Building2,
-  Database,
   Key,
   Lock,
   Pencil,
@@ -54,6 +53,7 @@ type AdminTab =
   | 'permissions'
   | 'credentials'
   | 'knowledge'
+  | 'runReview'
   | 'audit'
   | 'organization';
 
@@ -125,6 +125,35 @@ type AuditItem = {
   target_type: string;
   target_id?: string;
   status: string;
+  actor?: string;
+  workflow?: string;
+  input?: string;
+  policy?: string;
+  decision?: string;
+  trace_id?: string;
+  change?: string;
+  source?: string;
+};
+
+type WorkflowRunSummary = {
+  id: string;
+  workflow_id: string;
+  app_id?: string | null;
+  user_id: string;
+  status: string;
+  trigger_mode: string;
+  inputs?: Record<string, unknown> | null;
+  outputs?: Record<string, unknown> | null;
+  error_message?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  duration?: number | null;
+  total_tokens?: number | null;
+  total_cost?: number | string | null;
+};
+
+type AdminReviewRun = WorkflowRunSummary & {
+  app_name: string;
 };
 
 type ConfirmState = {
@@ -137,8 +166,7 @@ type ConfirmState = {
 };
 
 type TeamEditorState =
-  | { mode: 'create'; team?: undefined }
-  | { mode: 'edit'; team: TeamResponse };
+  { mode: 'create'; team?: undefined } | { mode: 'edit'; team: TeamResponse };
 
 const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'members', label: '멤버' },
@@ -146,11 +174,13 @@ const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'permissions', label: '권한' },
   { key: 'credentials', label: 'LLM Credentials' },
   { key: 'knowledge', label: '지식 기반' },
+  { key: 'runReview', label: '실행 검토' },
   { key: 'audit', label: '감사 로그' },
   { key: 'organization', label: '조직 설정' },
 ];
 
 const PAGE_SIZE = 20;
+const RUN_REVIEW_PAGE_SIZE = 10;
 const AUTH_STATES: OrganizationAuthState[] = ['member', 'manager'];
 const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
   'viewer',
@@ -174,7 +204,9 @@ const getErrorMessage = (error: unknown, fallback: string) => {
     const data = error.response?.data as
       | { detail?: string; message?: string; error?: { message?: string } }
       | undefined;
-    return data?.detail || data?.message || data?.error?.message || error.message;
+    return (
+      data?.detail || data?.message || data?.error?.message || error.message
+    );
   }
   return error instanceof Error ? error.message : fallback;
 };
@@ -186,6 +218,579 @@ const normalizeText = (value?: string | null) => (value || '').toLowerCase();
 
 const paginate = <T,>(items: T[], page: number) =>
   items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+const reviewPayloadOf = (run: AdminReviewRun) =>
+  (run.outputs?.demo_review || {}) as Record<string, unknown>;
+
+const reviewValue = (
+  review: Record<string, unknown>,
+  key: string,
+  fallback = '',
+) => String(review[key] || fallback);
+
+const reviewArrayOf = <T,>(
+  review: Record<string, unknown>,
+  key: string,
+): T[] => (Array.isArray(review[key]) ? (review[key] as T[]) : []);
+
+const reviewStatusOf = (run: AdminReviewRun) =>
+  reviewValue(reviewPayloadOf(run), 'status', run.status);
+
+const reviewCostOf = (run: AdminReviewRun) => {
+  const review = reviewPayloadOf(run);
+  const estimatedCost = review.estimated_cost;
+  if (typeof estimatedCost === 'string') {
+    const parsed = Number(estimatedCost.replace('$', ''));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Number(run.total_cost || 0);
+};
+
+const reviewDurationOf = (run: AdminReviewRun) => {
+  const review = reviewPayloadOf(run);
+  const latency = review.latency;
+  if (typeof latency === 'string') {
+    const parsed = Number(latency.replace('s', ''));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Number(run.duration || 0);
+};
+
+const traceLabelKo = (label?: string) => {
+  const labels: Record<string, string> = {
+    'Slack/Webhook Trigger': 'Slack/Webhook 트리거',
+    'Schedule/Webhook Trigger': '스케줄/Webhook 트리거',
+    'Schedule Trigger': '스케줄 트리거',
+    'Credential Usage Check': 'Credential 사용량 확인',
+    Guardrail: '가드레일',
+    'Guardrail: DENY': '가드레일: 차단',
+    'Guardrail: ALLOW': '가드레일: 허용',
+    'Permission Check': '권한 확인',
+    'Permission Check: DENY': '권한 확인: 거절',
+    'RAG Search': 'RAG 검색',
+    'Answer Generation LLM': '답변 생성 LLM',
+    'Answer/Slack Response': '답변/Slack 응답',
+    'Safety Response': '안전 거절 응답',
+    'Access Denied Response': '권한 없음 응답',
+    'LLM/Credential Call: FAILED': 'LLM/Credential 호출: 실패',
+    'LLM Credential Call: FAILED': 'LLM Credential 호출: 실패',
+    'Admin Alert': '관리자 알림',
+  };
+  return label ? labels[label] || label : '-';
+};
+
+const stateLabelKo = (state?: string) => {
+  const labels: Record<string, string> = {
+    passed: '통과',
+    denied: '차단',
+    completed: '완료',
+    failed: '실패',
+    pending: '대기',
+    skipped: '건너뜀',
+  };
+  return state ? labels[state] || state : '-';
+};
+
+const statusLabelKo = (status?: string) => {
+  const labels: Record<string, string> = {
+    Completed: '완료',
+    Blocked: '차단',
+    Denied: '거절',
+    Error: '오류',
+    completed: '완료',
+    blocked: '차단',
+    denied: '거절',
+    success: '성공',
+    failure: '실패',
+    failed: '실패',
+  };
+  return status ? labels[status] || status : '-';
+};
+
+const decisionLabelKo = (value: unknown) => {
+  const raw = String(value || '-');
+  const labels: Record<string, string> = {
+    ALLOW: '허용',
+    DENY: '거절',
+    ERROR: '오류',
+    NOT_EVALUATED: '평가 안 함',
+    Passed: '통과',
+    Denied: '거절',
+    Skipped: '건너뜀',
+    Allowed: '허용',
+    'Not evaluated': '평가 안 함',
+    true: '예',
+    false: '아니오',
+    skipped: '건너뜀',
+    executed: '실행됨',
+  };
+  return labels[raw] || raw;
+};
+
+const actionLabelKo = (value: unknown) => {
+  const raw = String(value || '-');
+  const labels: Record<string, string> = {
+    'Block response and return safe message': '안전 거절 응답 반환',
+    'Return access denied response': '권한 없음 응답 반환',
+    'Raise admin alert': '관리자 알림 발생',
+    'Return grounded answer': '근거 기반 답변 반환',
+  };
+  return labels[raw] || raw;
+};
+
+const buildMockAdminReviewRuns = (appData: AppResponse[]): AdminReviewRun[] => {
+  const workflowApp = appData.find((app) => Boolean(app.workflow_id));
+  const appId = workflowApp?.id || 'mock-app-internal-search';
+  const workflowId =
+    workflowApp?.workflow_id || 'mock-workflow-internal-search';
+  const appName = workflowApp?.name || '사내 문서 통합 검색 어시스턴트';
+  const baseTime = new Date('2026-07-01T03:20:00.000Z').getTime();
+  const traceByStatus = (status: string) => {
+    if (status === 'Blocked') {
+      return [
+        { label: 'Slack/Webhook Trigger', state: 'passed' },
+        { label: 'Guardrail: DENY', state: 'denied' },
+        { label: 'Safety Response', state: 'completed' },
+      ];
+    }
+    if (status === 'Denied') {
+      return [
+        { label: 'Slack/Webhook Trigger', state: 'passed' },
+        { label: 'Guardrail: ALLOW', state: 'passed' },
+        { label: 'Permission Check: DENY', state: 'denied' },
+        { label: 'Access Denied Response', state: 'completed' },
+      ];
+    }
+    if (status === 'Error') {
+      return [
+        { label: 'Schedule/Webhook Trigger', state: 'passed' },
+        { label: 'Permission Check', state: 'passed' },
+        { label: 'LLM/Credential Call: FAILED', state: 'failed' },
+        { label: 'Admin Alert', state: 'completed' },
+      ];
+    }
+    return [
+      { label: 'Slack/Webhook Trigger', state: 'passed' },
+      { label: 'Guardrail', state: 'passed' },
+      { label: 'Permission Check', state: 'passed' },
+      { label: 'RAG Search', state: 'completed' },
+      { label: 'Answer Generation LLM', state: 'completed' },
+      { label: 'Answer/Slack Response', state: 'completed' },
+    ];
+  };
+  const chunksFor = (docs: string[]) =>
+    docs.map((doc, index) => ({
+      document: doc,
+      section:
+        index === 0
+          ? '4. 연차와의 병행 사용'
+          : index === 1
+            ? '1. HR 포털 접속'
+            : '2. 신청 승인 절차',
+      evidence:
+        index === 0
+          ? '가족돌봄휴가는 연차휴가와 이어서 사용할 수 있다.'
+          : index === 1
+            ? 'HR 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청한다.'
+            : '부서 승인 후 근태 시스템에 기록된다.',
+      score: Number((0.91 - index * 0.04).toFixed(2)),
+    }));
+  const rows = [
+    {
+      suffix: '001',
+      status: 'Completed',
+      title: '정상 요청',
+      input: '가족돌봄휴가와 연차를 이어서 쓸 수 있는지 질문',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Completed',
+      docs: ['가족돌봄휴가 운영 가이드', '휴가 사용 정책', '근태 신청 매뉴얼'],
+      response:
+        '가족돌봄휴가는 회사 휴가 사용 정책에 따라 연차와 이어서 신청할 수 있습니다. 다만 부서 승인과 근태 시스템 신청 순서를 함께 확인해야 합니다.',
+      cost: 0.0042,
+      duration: 3.2,
+      tokens: 1240,
+    },
+    {
+      suffix: '002',
+      status: 'Blocked',
+      title: '가드레일 차단 요청',
+      input: '퇴사자 계정으로 GitHub에 우회 접속하는 방법 알려줘.',
+      guardrail: 'Denied',
+      rbac: 'Not evaluated',
+      llm: 'Skipped',
+      docs: [],
+      response:
+        '계정 우회 접속 방법은 안내할 수 없습니다. 접근 권한이 필요한 경우 IT 보안 담당자에게 권한 복구 또는 신규 권한 발급을 요청해 주세요.',
+      reason: 'credential_or_access_bypass',
+      cost: 0.0003,
+      duration: 0.8,
+      tokens: 90,
+    },
+    {
+      suffix: '003',
+      status: 'Denied',
+      title: 'RBAC 차단 요청',
+      input: 'Project Aurora 출시 전 장애 대응 Runbook을 요약해줘.',
+      guardrail: 'Passed',
+      rbac: 'Denied',
+      llm: 'Skipped',
+      docs: [],
+      response:
+        '요청한 문서는 현재 계정의 팀 권한으로 열람할 수 없습니다. Project Aurora 팀 권한이 필요한 문서입니다.',
+      requestedResource: 'Project Aurora Runbook',
+      requiredTeam: 'Project Aurora',
+      userTeam: 'General Employee',
+      cost: 0.0005,
+      duration: 1.1,
+      tokens: 140,
+    },
+    {
+      suffix: '004',
+      status: 'Error',
+      title: 'Credential 오류 요청',
+      input: '이번 달 보안 교육 신청 마감일 알려줘.',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Failed',
+      docs: ['보안 교육 운영 안내'],
+      response:
+        'LLM credential 호출 실패로 답변 생성이 완료되지 않았습니다. Credential 상태와 사용량 제한을 확인해야 합니다.',
+      reason: 'llm_credential_rate_limited',
+      cost: 0.0011,
+      duration: 5.4,
+      tokens: 420,
+    },
+    {
+      suffix: '005',
+      status: 'Completed',
+      title: '정상 요청',
+      input: '육아기 단축근무 신청 절차를 알려줘.',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Completed',
+      docs: ['육아기 근로시간 단축 안내', '인사 신청 매뉴얼'],
+      response:
+        '육아기 단축근무는 인사 시스템에서 신청서를 작성한 뒤 팀장 승인과 HR 검토를 거쳐 확정됩니다.',
+      cost: 0.0036,
+      duration: 2.7,
+      tokens: 980,
+    },
+    {
+      suffix: '006',
+      status: 'Completed',
+      title: '정상 요청',
+      input: '재택근무 신청은 언제까지 해야 해?',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Completed',
+      docs: ['재택근무 운영 정책'],
+      response:
+        '재택근무는 원칙적으로 근무 전일까지 신청해야 하며, 긴급한 경우 팀장 승인 후 예외 처리할 수 있습니다.',
+      cost: 0.0029,
+      duration: 2.1,
+      tokens: 760,
+    },
+    {
+      suffix: '007',
+      status: 'Blocked',
+      title: '가드레일 차단 요청',
+      input: '관리자 API key를 로그에서 찾아내는 방법 알려줘.',
+      guardrail: 'Denied',
+      rbac: 'Not evaluated',
+      llm: 'Skipped',
+      docs: [],
+      response:
+        '민감한 인증 정보를 찾거나 노출하는 방법은 안내할 수 없습니다. 필요한 권한은 관리자 승인 절차를 통해 요청해 주세요.',
+      reason: 'secret_exfiltration',
+      cost: 0.0004,
+      duration: 0.9,
+      tokens: 120,
+    },
+    {
+      suffix: '008',
+      status: 'Denied',
+      title: 'RBAC 차단 요청',
+      input: '임원 보상 정책 문서를 요약해줘.',
+      guardrail: 'Passed',
+      rbac: 'Denied',
+      llm: 'Skipped',
+      docs: [],
+      response:
+        '요청한 문서는 현재 계정이 소속된 팀 권한으로 접근할 수 없습니다.',
+      requestedResource: 'Executive Compensation Policy',
+      requiredTeam: 'HR Leadership',
+      userTeam: 'General Employee',
+      cost: 0.0005,
+      duration: 1.0,
+      tokens: 130,
+    },
+    {
+      suffix: '009',
+      status: 'Completed',
+      title: '정상 요청',
+      input: '출장비 정산에 필요한 증빙 문서를 알려줘.',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Completed',
+      docs: ['출장비 정산 가이드', '회계 증빙 처리 기준'],
+      response:
+        '출장비 정산에는 영수증, 출장 신청 승인 내역, 교통비 사용 내역이 필요합니다.',
+      cost: 0.0031,
+      duration: 2.4,
+      tokens: 840,
+    },
+    {
+      suffix: '010',
+      status: 'Completed',
+      title: '정상 요청',
+      input: '입사자 온보딩 체크리스트 보여줘.',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Completed',
+      docs: ['신규 입사자 온보딩 체크리스트'],
+      response:
+        '입사 첫 주에는 계정 발급, 보안 교육, 장비 수령, 팀 온보딩 미팅을 순서대로 진행합니다.',
+      cost: 0.0027,
+      duration: 2.0,
+      tokens: 720,
+    },
+    {
+      suffix: '011',
+      status: 'Completed',
+      title: '정상 요청',
+      input: '법정 의무 교육 대상과 주기를 알려줘.',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Completed',
+      docs: ['법정 의무 교육 운영 안내'],
+      response:
+        '법정 의무 교육은 전 임직원이 대상이며, 과정별로 연 1회 또는 반기 1회 수강해야 합니다.',
+      cost: 0.0033,
+      duration: 2.8,
+      tokens: 910,
+    },
+    {
+      suffix: '012',
+      status: 'Error',
+      title: '검색 지연 요청',
+      input: '지난 분기 전체 인사 규정 변경 사항을 정리해줘.',
+      guardrail: 'Passed',
+      rbac: 'Allowed',
+      llm: 'Skipped',
+      docs: ['인사 규정 개정 이력'],
+      response:
+        '지식 기반 검색 응답 시간이 초과되어 답변을 생성하지 못했습니다.',
+      reason: 'knowledge_search_timeout',
+      cost: 0.0008,
+      duration: 6.2,
+      tokens: 260,
+    },
+  ];
+
+  return rows.map((row, index) => ({
+    id: `mock_run_internal_search_${row.suffix}`,
+    workflow_id: workflowId,
+    app_id: appId,
+    app_name: appName,
+    user_id: index % 3 === 0 ? 'employee_002' : 'employee_001',
+    status: row.status === 'Error' ? 'failed' : 'completed',
+    trigger_mode: 'webhook',
+    inputs: { message: row.input },
+    outputs: {
+      answer: row.response,
+      demo_review: {
+        scenario: 'admin_internal_search_review',
+        is_mock_adapter: true,
+        run_label: `run_internal_search_${row.suffix}`,
+        title: row.title,
+        status: row.status,
+        user: index % 3 === 0 ? 'employee_002' : 'employee_001',
+        input: row.input,
+        guardrail: row.guardrail,
+        rbac: row.rbac,
+        llm_generation: row.llm,
+        rag_search: row.docs.length > 0 ? 'Completed' : 'Skipped',
+        retrieved_docs: row.docs,
+        final_response: row.response,
+        reason: row.reason,
+        requested_resource: row.requestedResource,
+        required_team: row.requiredTeam,
+        user_team: row.userTeam,
+        trace_id: `trace_internal_search_${row.suffix}`,
+        trace_steps: traceByStatus(row.status),
+        retrieved_chunks: chunksFor(row.docs),
+        policy_decision:
+          row.guardrail === 'Denied'
+            ? 'DENY'
+            : row.rbac === 'Denied'
+              ? 'ALLOW'
+              : row.status === 'Error'
+                ? 'ERROR'
+                : 'ALLOW',
+        permission_decision:
+          row.rbac === 'Denied'
+            ? 'DENY'
+            : row.rbac === 'Not evaluated'
+              ? 'NOT_EVALUATED'
+              : 'ALLOW',
+        action:
+          row.status === 'Blocked'
+            ? 'Block response and return safe message'
+            : row.status === 'Denied'
+              ? 'Return access denied response'
+              : row.status === 'Error'
+                ? 'Raise admin alert'
+                : 'Return grounded answer',
+        model:
+          row.status === 'Blocked' || row.status === 'Denied'
+            ? '-'
+            : 'gpt-4o-mini',
+        input_tokens:
+          row.status === 'Blocked' || row.status === 'Denied'
+            ? Math.round(row.tokens * 0.65)
+            : Math.round(row.tokens * 0.78),
+        output_tokens:
+          row.status === 'Blocked' || row.status === 'Denied'
+            ? Math.round(row.tokens * 0.35)
+            : Math.round(row.tokens * 0.22),
+        guardrail_blocked: row.guardrail === 'Denied',
+        answer_llm_skipped:
+          row.llm === 'Skipped' ||
+          row.status === 'Blocked' ||
+          row.status === 'Denied',
+        estimated_cost: `$${row.cost.toFixed(4)}`,
+        latency: `${row.duration}s`,
+      },
+    },
+    error_message: row.status === 'Error' ? row.reason || row.response : null,
+    started_at: new Date(baseTime + index * 3 * 60 * 1000).toISOString(),
+    finished_at: new Date(
+      baseTime + index * 3 * 60 * 1000 + row.duration * 1000,
+    ).toISOString(),
+    duration: row.duration,
+    total_tokens: row.tokens,
+    total_cost: row.cost,
+  }));
+};
+
+const buildMockKnowledgeBases = (
+  organizationId: string,
+): KnowledgeBaseResponse[] => [
+  {
+    id: 'mock-kb-hr-policy',
+    organization_id: organizationId,
+    name: 'HR Policy RAG',
+    description: '휴가, 근태, 온보딩, 출장비 정산 정책 문서',
+    document_count: 18,
+    created_at: '2026-06-20T02:00:00.000Z',
+    updated_at: '2026-07-01T02:30:00.000Z',
+    source_types: ['FILE'],
+    embedding_model: 'text-embedding-3-small',
+  },
+  {
+    id: 'mock-kb-security-guide',
+    organization_id: organizationId,
+    name: 'Security Guide',
+    description: '계정, 접근 권한, 보안 교육, credential 취급 기준',
+    document_count: 9,
+    created_at: '2026-06-22T04:10:00.000Z',
+    updated_at: '2026-07-01T01:10:00.000Z',
+    source_types: ['FILE'],
+    embedding_model: 'text-embedding-3-small',
+  },
+  {
+    id: 'mock-kb-project-restricted',
+    organization_id: organizationId,
+    name: 'Project Restricted Docs',
+    description: '팀 권한이 필요한 프로젝트 운영 문서',
+    document_count: 7,
+    created_at: '2026-06-25T07:40:00.000Z',
+    updated_at: '2026-06-30T08:30:00.000Z',
+    source_types: ['FILE'],
+    embedding_model: 'text-embedding-3-small',
+  },
+];
+
+const buildMockAuditItems = (): AuditItem[] => {
+  const baseTime = new Date('2026-07-01T03:10:00.000Z').getTime();
+  const rows: Omit<AuditItem, 'id' | 'occurred_at'>[] = [
+    {
+      actor: 'employee_001',
+      workflow: '사내 문서 통합 검색 어시스턴트',
+      action: 'workflow.run',
+      target_type: 'workflow_run',
+      status: 'completed',
+      policy: '-',
+      decision: 'allow',
+      trace_id: 'trace_internal_search_001',
+      input: '가족돌봄휴가와 연차를 이어서 쓸 수 있는지 질문',
+    },
+    {
+      actor: 'employee_001',
+      workflow: '사내 문서 통합 검색 어시스턴트',
+      action: 'workflow.run',
+      target_type: 'workflow_run',
+      status: 'blocked',
+      policy: 'credential_or_access_bypass',
+      decision: 'deny',
+      trace_id: 'trace_internal_search_002',
+      input: '퇴사자 계정으로 GitHub에 우회 접속하는 방법 알려줘.',
+    },
+    {
+      actor: 'employee_001',
+      workflow: '사내 문서 통합 검색 어시스턴트',
+      action: 'workflow.run',
+      target_type: 'workflow_run',
+      status: 'denied',
+      policy: 'rbac_required_team_project_aurora',
+      decision: 'deny',
+      trace_id: 'trace_internal_search_003',
+      input: 'Project Aurora 출시 전 장애 대응 Runbook을 요약해줘.',
+    },
+    {
+      actor: 'admin_001',
+      workflow: '사내 문서 통합 검색 어시스턴트',
+      action: 'workflow.update',
+      target_type: 'workflow',
+      status: 'success',
+      policy: '-',
+      decision: 'accepted',
+      trace_id: 'trace_builder_change_001',
+      change: 'Guardrail node inserted between Webhook Trigger and RAG LLM',
+      source: 'AI Builder draft accepted',
+    },
+    {
+      actor: 'system',
+      workflow: 'Credential Usage Anomaly Alert',
+      action: 'llm_credential.rate_limited',
+      target_type: 'llm_credential',
+      status: 'failure',
+      policy: 'usage_spike_threshold',
+      decision: 'alert',
+      trace_id: 'trace_internal_search_004',
+      input: 'OpenAI credential hourly usage check',
+    },
+    {
+      actor: 'admin_001',
+      workflow: 'Project Aurora Runbook Search',
+      action: 'workflow.permission.granted',
+      target_type: 'workflow_permission',
+      status: 'success',
+      policy: 'team_workflow_permission',
+      decision: 'grant',
+      trace_id: 'trace_permission_change_001',
+      change: 'Project Aurora TF granted manager permission',
+    },
+  ];
+
+  return rows.map((row, index) => ({
+    ...row,
+    id: `mock-audit-${String(index + 1).padStart(2, '0')}`,
+    occurred_at: new Date(baseTime + index * 4 * 60 * 1000).toISOString(),
+    target_id: `mock-target-${String(index + 1).padStart(2, '0')}`,
+  }));
+};
 
 export default function AdminConsolePage() {
   const [activeTab, setActiveTab] = useState<AdminTab>('members');
@@ -207,6 +812,7 @@ export default function AdminConsolePage() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
     [],
   );
+  const [reviewRuns, setReviewRuns] = useState<AdminReviewRun[]>([]);
   const [workflowPermissions, setWorkflowPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
   const [credentialPermissions, setCredentialPermissions] =
@@ -314,14 +920,42 @@ export default function AdminConsolePage() {
     [members],
   );
 
-  const totalTeamAssignments = useMemo(
-    () =>
-      Object.values(teamMembers).reduce(
-        (total, current) => total + current.length,
-        0,
-      ),
-    [teamMembers],
-  );
+  const adminRunSummary = useMemo(() => {
+    const counts = reviewRuns.reduce(
+      (acc, run) => {
+        const status = reviewStatusOf(run);
+        const review = reviewPayloadOf(run);
+        if (status === 'Completed') acc.completed += 1;
+        if (status === 'Blocked') acc.blocked += 1;
+        if (status === 'Denied') acc.denied += 1;
+        if (status === 'Error' || run.status === 'failed') acc.error += 1;
+        if (review.guardrail === 'Denied') acc.guardrailDenied += 1;
+        if (review.rbac === 'Denied') acc.rbacDenied += 1;
+        acc.totalCost += reviewCostOf(run);
+        acc.totalDuration += reviewDurationOf(run);
+        acc.totalTokens += Number(run.total_tokens || 0);
+        return acc;
+      },
+      {
+        completed: 0,
+        blocked: 0,
+        denied: 0,
+        error: 0,
+        guardrailDenied: 0,
+        rbacDenied: 0,
+        totalCost: 0,
+        totalDuration: 0,
+        totalTokens: 0,
+      },
+    );
+
+    return {
+      ...counts,
+      total: reviewRuns.length,
+      averageDuration:
+        reviewRuns.length > 0 ? counts.totalDuration / reviewRuns.length : 0,
+    };
+  }, [reviewRuns]);
 
   const filteredMembers = useMemo(() => {
     const query = normalizeText(memberQuery);
@@ -347,7 +981,8 @@ export default function AdminConsolePage() {
       })
       .sort((left, right) => {
         const stateDiff =
-          stateOrder[left.membership_state] - stateOrder[right.membership_state];
+          stateOrder[left.membership_state] -
+          stateOrder[right.membership_state];
         if (stateDiff !== 0) return stateDiff;
         return left.user_name.localeCompare(right.user_name);
       });
@@ -389,9 +1024,10 @@ export default function AdminConsolePage() {
   );
 
   const selectedTeamMemberUserIds = useMemo(
-    () => (selectedTeamId ? teamMembers[selectedTeamId] || [] : []).map(
-      (member) => member.user_id,
-    ),
+    () =>
+      (selectedTeamId ? teamMembers[selectedTeamId] || [] : []).map(
+        (member) => member.user_id,
+      ),
     [selectedTeamId, teamMembers],
   );
 
@@ -453,11 +1089,49 @@ export default function AdminConsolePage() {
   };
 
   const refreshCredentials = async () => {
-    const response = await apiClient.get<LLMCredentialResponse[]>(
-      '/llm/credentials',
-    );
+    const response =
+      await apiClient.get<LLMCredentialResponse[]>('/llm/credentials');
     setCredentials(response.data);
     return response.data;
+  };
+
+  const loadAdminReviewRuns = async (
+    appData: AppResponse[],
+  ): Promise<AdminReviewRun[]> => {
+    const workflowApps = appData.filter((app) => Boolean(app.workflow_id));
+    const batches = await Promise.all(
+      workflowApps.map(async (app) => {
+        try {
+          const response = await apiClient.get<{ items: WorkflowRunSummary[] }>(
+            `/workflows/${app.workflow_id}/runs`,
+            { params: { page: 1, limit: 10 } },
+          );
+          return response.data.items.map((run) => ({
+            ...run,
+            app_name: app.name,
+          }));
+        } catch {
+          return [];
+        }
+      }),
+    );
+
+    const reviewRuns = batches
+      .flat()
+      .filter((run) => {
+        const review = run.outputs?.demo_review as
+          Record<string, unknown> | undefined;
+        return review?.scenario === 'admin_internal_search_review';
+      })
+      .sort(
+        (left, right) =>
+          new Date(left.started_at).getTime() -
+          new Date(right.started_at).getTime(),
+      );
+
+    return reviewRuns.length > 0
+      ? reviewRuns
+      : buildMockAdminReviewRuns(appData);
   };
 
   const loadData = async () => {
@@ -482,6 +1156,7 @@ export default function AdminConsolePage() {
         setWorkflowPermissions(null);
         setCredentialPermissions(null);
         setKnowledgeBases([]);
+        setReviewRuns([]);
         setAuditItems([]);
         return;
       }
@@ -525,13 +1200,23 @@ export default function AdminConsolePage() {
       setProviders(providerData);
       setCredentials(credentialData);
       setApps(appData);
-      setKnowledgeBases(knowledgeData);
-      setAuditItems(auditData);
+      setKnowledgeBases(
+        knowledgeData.length > 0
+          ? knowledgeData
+          : buildMockKnowledgeBases(org.id),
+      );
+      setAuditItems(
+        auditData.length > 0
+          ? [...buildMockAuditItems(), ...auditData]
+          : buildMockAuditItems(),
+      );
+      setReviewRuns(await loadAdminReviewRuns(appData));
       const firstWorkflowId =
         selectedWorkflowId ||
         appData.find((app) => app.workflow_id)?.workflow_id ||
         '';
-      const firstCredentialId = selectedCredentialId || credentialData[0]?.id || '';
+      const firstCredentialId =
+        selectedCredentialId || credentialData[0]?.id || '';
       setSelectedWorkflowId(firstWorkflowId);
       setSelectedCredentialId(firstCredentialId);
       await Promise.all([
@@ -606,7 +1291,12 @@ export default function AdminConsolePage() {
     if (!organization?.is_manager) return;
     loadPermissions(permissionResourceType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization?.is_manager, permissionResourceType, selectedWorkflowId, selectedCredentialId]);
+  }, [
+    organization?.is_manager,
+    permissionResourceType,
+    selectedWorkflowId,
+    selectedCredentialId,
+  ]);
 
   const refreshMembers = async () => {
     if (!organization) return;
@@ -670,7 +1360,11 @@ export default function AdminConsolePage() {
     successMessage: string,
   ) => {
     if (!organization) return;
-    await organizationApi.updateMember(organization.id, member.user_id, payload);
+    await organizationApi.updateMember(
+      organization.id,
+      member.user_id,
+      payload,
+    );
     toast.success(successMessage);
     await refreshMembers();
   };
@@ -750,7 +1444,10 @@ export default function AdminConsolePage() {
     });
   };
 
-  const removeTeamMember = async (teamId: string, member: TeamMemberResponse) => {
+  const removeTeamMember = async (
+    teamId: string,
+    member: TeamMemberResponse,
+  ) => {
     await apiClient.delete(`/teams/${teamId}/members/${member.user_id}`);
     toast.success('팀 멤버를 제거했습니다.');
     await refreshTeamMember(teamId);
@@ -791,7 +1488,9 @@ export default function AdminConsolePage() {
     granteeType: GranteeType,
     granteeId: string,
   ) => {
-    await apiClient.delete(permissionPath(resourceType, granteeType, granteeId));
+    await apiClient.delete(
+      permissionPath(resourceType, granteeType, granteeId),
+    );
     toast.success('권한을 회수했습니다.');
     await loadPermissions(resourceType);
   };
@@ -822,7 +1521,11 @@ export default function AdminConsolePage() {
       const nextCredentials = await refreshCredentials();
       const nextCredentialId = nextCredentials[0]?.id || '';
       setSelectedCredentialId(nextCredentialId);
-      await loadPermissions('llm_credential', selectedWorkflowId, nextCredentialId);
+      await loadPermissions(
+        'llm_credential',
+        selectedWorkflowId,
+        nextCredentialId,
+      );
     });
   };
 
@@ -835,7 +1538,11 @@ export default function AdminConsolePage() {
         ? nextCredentials[0]?.id || ''
         : selectedCredentialId;
     setSelectedCredentialId(nextCredentialId);
-    await loadPermissions('llm_credential', selectedWorkflowId, nextCredentialId);
+    await loadPermissions(
+      'llm_credential',
+      selectedWorkflowId,
+      nextCredentialId,
+    );
   };
 
   const syncCredentialModels = async (credential: LLMCredentialResponse) => {
@@ -899,28 +1606,32 @@ export default function AdminConsolePage() {
         <>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <DashboardSummaryCard
-              label="활성 멤버"
-              value={memberCounts.active}
-              icon={Users}
-              description={`초대 ${memberCounts.invited} · 정지 ${memberCounts.suspended} · 제거 ${memberCounts.removed}`}
+              label="실행 검토"
+              value={adminRunSummary.total}
+              icon={Activity}
+              description={`완료 ${adminRunSummary.completed} · 차단 ${adminRunSummary.blocked} · 거절 ${adminRunSummary.denied}`}
             />
             <DashboardSummaryCard
-              label="활성 팀"
-              value={activeTeams.length}
-              icon={Building2}
-              description={`팀 배정 ${totalTeamAssignments}건`}
+              label="차단/오류"
+              value={
+                adminRunSummary.blocked +
+                adminRunSummary.denied +
+                adminRunSummary.error
+              }
+              icon={AlertTriangle}
+              description={`가드레일 ${adminRunSummary.guardrailDenied} · RBAC ${adminRunSummary.rbacDenied} · 오류 ${adminRunSummary.error}`}
             />
             <DashboardSummaryCard
-              label="LLM Credentials"
-              value={credentials.length}
+              label="비용/응답"
+              value={`$${adminRunSummary.totalCost.toFixed(4)}`}
               icon={Key}
-              description={`${providers.length}개 provider 기준`}
+              description={`평균 ${adminRunSummary.averageDuration.toFixed(1)}s · 토큰 ${adminRunSummary.totalTokens.toLocaleString()}`}
             />
             <DashboardSummaryCard
-              label="지식 기반"
-              value={knowledgeBases.length}
-              icon={Database}
-              description="권한 관리는 후속 API 확인 필요"
+              label="조직 구성"
+              value={`${memberCounts.active}/${activeTeams.length}`}
+              icon={Users}
+              description={`활성 멤버/팀 · Credential ${credentials.length} · 지식 ${knowledgeBases.length}`}
             />
           </div>
 
@@ -1090,6 +1801,9 @@ export default function AdminConsolePage() {
           {activeTab === 'knowledge' && (
             <KnowledgeTab knowledgeBases={knowledgeBases} />
           )}
+          {activeTab === 'runReview' && (
+            <RunReviewTab reviewRuns={reviewRuns} />
+          )}
           {activeTab === 'audit' && <AuditTab auditItems={auditItems} />}
           {activeTab === 'organization' && (
             <OrganizationTab organization={organization} />
@@ -1199,7 +1913,10 @@ export default function AdminConsolePage() {
       )}
 
       {selectedTeam && (
-        <SidePanel title={selectedTeam.name} onClose={() => setSelectedTeamId(null)}>
+        <SidePanel
+          title={selectedTeam.name}
+          onClose={() => setSelectedTeamId(null)}
+        >
           <div className="space-y-5">
             <div>
               <div className="flex items-center gap-2">
@@ -1510,7 +2227,9 @@ function MembersTab({
         <select
           value={authFilter}
           onChange={(event) =>
-            onAuthFilterChange(event.target.value as OrganizationAuthState | 'all')
+            onAuthFilterChange(
+              event.target.value as OrganizationAuthState | 'all',
+            )
           }
           className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
         >
@@ -1535,7 +2254,10 @@ function MembersTab({
           <tbody className="divide-y divide-slate-100">
             {pageItems.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-slate-500">
+                <td
+                  colSpan={6}
+                  className="px-5 py-10 text-center text-slate-500"
+                >
                   조건에 맞는 멤버가 없습니다.
                 </td>
               </tr>
@@ -1763,8 +2485,7 @@ function TeamsTab({
           onClick={onCreateTeam}
           className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800"
         >
-          <Plus className="h-4 w-4" />
-          팀 생성
+          <Plus className="h-4 w-4" />팀 생성
         </button>
       }
     >
@@ -1777,7 +2498,9 @@ function TeamsTab({
         <select
           value={stateFilter}
           onChange={(event) =>
-            onStateFilterChange(event.target.value as 'all' | 'active' | 'inactive')
+            onStateFilterChange(
+              event.target.value as 'all' | 'active' | 'inactive',
+            )
           }
           className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
         >
@@ -1819,7 +2542,10 @@ function TeamsTab({
           <tbody className="divide-y divide-slate-100">
             {pageItems.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
+                <td
+                  colSpan={4}
+                  className="px-5 py-10 text-center text-slate-500"
+                >
                   조건에 맞는 팀이 없습니다.
                 </td>
               </tr>
@@ -1830,7 +2556,9 @@ function TeamsTab({
                   <tr key={team.id} className="bg-white">
                     <td className="px-5 py-4">
                       <div className="min-w-0">
-                        <p className="font-semibold text-slate-950">{team.name}</p>
+                        <p className="font-semibold text-slate-950">
+                          {team.name}
+                        </p>
                         <p className="mt-1 text-xs text-slate-500">
                           {team.description || '설명 없음'}
                         </p>
@@ -1853,7 +2581,9 @@ function TeamsTab({
                           멤버를 불러오지 못함
                         </span>
                       ) : members.length === 0 ? (
-                        <span className="text-xs text-slate-400">멤버 없음</span>
+                        <span className="text-xs text-slate-400">
+                          멤버 없음
+                        </span>
                       ) : (
                         <div className="flex flex-wrap gap-1.5">
                           {members.slice(0, 3).map((member) => (
@@ -1965,7 +2695,9 @@ function PermissionsTab({
   const resourceMissing =
     resourceType === 'workflow' ? !selectedWorkflowId : !selectedCredentialId;
   const granteeOptionsMissing =
-    granteeType === 'team' ? activeTeams.length === 0 : activeMembers.length === 0;
+    granteeType === 'team'
+      ? activeTeams.length === 0
+      : activeMembers.length === 0;
   const resourceLabel =
     resourceType === 'workflow' ? 'Workflow 권한' : 'Credential 권한';
 
@@ -2009,7 +2741,9 @@ function PermissionsTab({
         ) : (
           <select
             value={selectedCredentialId}
-            onChange={(event) => onSelectedCredentialIdChange(event.target.value)}
+            onChange={(event) =>
+              onSelectedCredentialIdChange(event.target.value)
+            }
             className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
           >
             {credentials.length === 0 ? (
@@ -2376,6 +3110,48 @@ function KnowledgeTab({
 }
 
 function AuditTab({ auditItems }: { auditItems: AuditItem[] }) {
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [page, setPage] = useState(1);
+
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = normalizeText(query);
+    return auditItems.filter((item) => {
+      if (statusFilter !== 'all' && item.status !== statusFilter) return false;
+      if (!normalizedQuery) return true;
+      return normalizeText(
+        [
+          item.actor,
+          item.workflow,
+          item.action,
+          item.target_type,
+          item.target_id,
+          item.status,
+          item.input,
+          item.policy,
+          item.decision,
+          item.trace_id,
+          item.change,
+          item.source,
+          formatDateTime(item.occurred_at),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      ).includes(normalizedQuery);
+    });
+  }, [auditItems, query, statusFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
+  const pageItems = paginate(filteredItems, page);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, statusFilter]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
   return (
     <DashboardPanel
       title="감사 로그"
@@ -2386,38 +3162,739 @@ function AuditTab({ auditItems }: { auditItems: AuditItem[] }) {
         </span>
       }
     >
+      <ListToolbar
+        query={query}
+        onQueryChange={setQuery}
+        placeholder="action, target, status 검색"
+        resultText={`결과 ${filteredItems.length}개`}
+      >
+        <select
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value)}
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 상태</option>
+          <option value="completed">완료</option>
+          <option value="blocked">차단</option>
+          <option value="denied">거절</option>
+          <option value="success">성공</option>
+          <option value="failure">실패</option>
+        </select>
+      </ListToolbar>
       <div className="divide-y divide-slate-100">
         {auditItems.length === 0 ? (
           <Placeholder
             title="표시할 활동이 없습니다"
             description="조직 전체 audit API가 확정되면 이 탭을 조직 감사 로그 기준으로 전환합니다."
           />
+        ) : pageItems.length === 0 ? (
+          <Placeholder
+            title="조건에 맞는 감사 로그가 없습니다"
+            description="검색어 또는 상태 필터를 조정해 주세요."
+          />
         ) : (
-          auditItems.map((item) => (
+          pageItems.map((item) => (
             <div
               key={item.id}
-              className="grid gap-2 px-5 py-3 text-sm md:grid-cols-[180px_minmax(0,1fr)_120px]"
+              className="grid gap-3 px-5 py-4 text-sm xl:grid-cols-[180px_minmax(0,1fr)_220px]"
             >
-              <span className="text-xs text-slate-500">
-                {formatDateTime(item.occurred_at)}
-              </span>
-              <span className="font-medium text-slate-900">
-                {item.action} · {item.target_type}
-              </span>
-              <span
-                className={`w-fit rounded-md px-2 py-0.5 text-xs font-semibold ${
-                  item.status === 'failure'
-                    ? 'bg-red-50 text-red-700'
-                    : 'bg-slate-100 text-slate-700'
-                }`}
-              >
-                {item.status}
-              </span>
+              <div className="space-y-1">
+                <span className="text-xs text-slate-500">
+                  {formatDateTime(item.occurred_at)}
+                </span>
+                <p className="text-xs font-medium text-slate-600">
+                  Actor: {item.actor || '-'}
+                </p>
+                <p className="font-mono text-xs text-slate-500">
+                  {item.trace_id || item.target_id || '-'}
+                </p>
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-slate-900">
+                    {item.action} · {item.target_type}
+                  </span>
+                  <span
+                    className={`w-fit rounded-md px-2 py-0.5 text-xs font-semibold ${
+                      item.status === 'failure' ||
+                      item.status === 'blocked' ||
+                      item.status === 'denied'
+                        ? 'bg-red-50 text-red-700'
+                        : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {statusLabelKo(item.status)}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-600">
+                  {item.workflow || '-'}
+                </p>
+                {(item.input || item.change) && (
+                  <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-sm leading-5 text-slate-700">
+                    {item.input || item.change}
+                  </p>
+                )}
+                {item.source && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Source: {item.source}
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 xl:grid-cols-1">
+                <ReviewMetric label="정책" value={item.policy || '-'} />
+                <ReviewMetric
+                  label="판단"
+                  value={decisionLabelKo(item.decision || '-')}
+                />
+              </div>
             </div>
           ))
         )}
       </div>
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        totalItems={filteredItems.length}
+        onPageChange={setPage}
+      />
     </DashboardPanel>
+  );
+}
+
+function RunReviewTab({ reviewRuns }: { reviewRuns: AdminReviewRun[] }) {
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [guardrailFilter, setGuardrailFilter] = useState('all');
+  const [rbacFilter, setRbacFilter] = useState('all');
+  const [page, setPage] = useState(1);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+
+  const filteredRuns = useMemo(() => {
+    const normalizedQuery = normalizeText(query);
+    return reviewRuns.filter((run) => {
+      const review = reviewPayloadOf(run);
+      const status = reviewStatusOf(run);
+      const guardrail = reviewValue(review, 'guardrail');
+      const rbac = reviewValue(review, 'rbac');
+      const retrievedDocs = Array.isArray(review.retrieved_docs)
+        ? review.retrieved_docs.map((doc) => String(doc)).join(' ')
+        : '';
+
+      if (statusFilter !== 'all' && status !== statusFilter) return false;
+      if (guardrailFilter !== 'all' && guardrail !== guardrailFilter) {
+        return false;
+      }
+      if (rbacFilter !== 'all' && rbac !== rbacFilter) return false;
+      if (!normalizedQuery) return true;
+
+      return normalizeText(
+        [
+          run.app_name,
+          run.id,
+          run.user_id,
+          review.run_label,
+          review.title,
+          review.input,
+          review.final_response,
+          review.reason,
+          review.requested_resource,
+          retrievedDocs,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      ).includes(normalizedQuery);
+    });
+  }, [guardrailFilter, query, rbacFilter, reviewRuns, statusFilter]);
+
+  const summary = useMemo(
+    () =>
+      filteredRuns.reduce(
+        (acc, run) => {
+          const review = reviewPayloadOf(run);
+          const status = reviewStatusOf(run);
+          if (status === 'Completed') acc.completed += 1;
+          if (status === 'Blocked') acc.blocked += 1;
+          if (status === 'Denied') acc.denied += 1;
+          if (status === 'Error' || run.status === 'failed') acc.error += 1;
+          if (review.guardrail === 'Denied') acc.guardrailDenied += 1;
+          if (review.rbac === 'Denied') acc.rbacDenied += 1;
+          acc.totalCost += reviewCostOf(run);
+          acc.totalDuration += reviewDurationOf(run);
+          return acc;
+        },
+        {
+          completed: 0,
+          blocked: 0,
+          denied: 0,
+          error: 0,
+          guardrailDenied: 0,
+          rbacDenied: 0,
+          totalCost: 0,
+          totalDuration: 0,
+        },
+      ),
+    [filteredRuns],
+  );
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredRuns.length / RUN_REVIEW_PAGE_SIZE),
+  );
+  const pageItems = filteredRuns.slice(
+    (page - 1) * RUN_REVIEW_PAGE_SIZE,
+    page * RUN_REVIEW_PAGE_SIZE,
+  );
+  const averageDuration =
+    filteredRuns.length > 0 ? summary.totalDuration / filteredRuns.length : 0;
+  const hasMockRuns = filteredRuns.some(
+    (run) => reviewPayloadOf(run).is_mock_adapter === true,
+  );
+  const hasOperationalAlert =
+    summary.blocked > 0 ||
+    summary.denied > 0 ||
+    summary.error > 0 ||
+    summary.totalCost >= 0.01 ||
+    averageDuration >= 3;
+
+  useEffect(() => {
+    setPage(1);
+    setExpandedRunId(null);
+  }, [guardrailFilter, query, rbacFilter, statusFilter]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  return (
+    <DashboardPanel
+      title="실행 검토"
+      icon={Activity}
+      aside={
+        <span className="text-xs font-medium text-slate-500">
+          정상 · 가드레일 차단 · RBAC 차단 비교
+        </span>
+      }
+    >
+      <div className="grid gap-3 border-b border-slate-100 px-5 py-4 md:grid-cols-4">
+        <ReviewSummaryCard
+          label="정상"
+          value={summary.completed}
+          tone="green"
+          description="정상 완료된 실행"
+        />
+        <ReviewSummaryCard
+          label="가드레일 차단"
+          value={summary.guardrailDenied || summary.blocked}
+          tone="amber"
+          description="LLM/RAG 전 단계 차단"
+        />
+        <ReviewSummaryCard
+          label="RBAC 차단"
+          value={summary.rbacDenied || summary.denied}
+          tone="red"
+          description="권한 없는 문서 접근 제한"
+        />
+        <ReviewSummaryCard
+          label="비용/응답"
+          value={`$${summary.totalCost.toFixed(4)}`}
+          tone={
+            summary.totalCost >= 0.01 || averageDuration >= 3
+              ? 'amber'
+              : 'slate'
+          }
+          description={`평균 ${averageDuration.toFixed(1)}s`}
+        />
+      </div>
+
+      {hasOperationalAlert && (
+        <div className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-sm text-amber-900">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="space-y-1">
+              <p className="font-semibold">확인할 운영 신호가 있습니다.</p>
+              <p className="text-xs leading-5">
+                차단 {summary.blocked}건 · 거절 {summary.denied}건 · 오류{' '}
+                {summary.error}건 · 비용 ${summary.totalCost.toFixed(4)} · 평균
+                응답 {averageDuration.toFixed(1)}s
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hasMockRuns && (
+        <div className="border-b border-blue-100 bg-blue-50 px-5 py-3 text-xs leading-5 text-blue-800">
+          실제 workflow run에서 관리자 실행 검토용 demo_review 로그를 찾지 못해
+          프론트 mock adapter 데이터로 표시 중입니다. 실제 로그가 생성되면 이
+          데이터는 자동으로 대체됩니다.
+        </div>
+      )}
+
+      <ListToolbar
+        query={query}
+        onQueryChange={setQuery}
+        placeholder="실행 ID, 입력, 문서, 사유, 요청 리소스 검색"
+        resultText={`결과 ${filteredRuns.length}개`}
+      >
+        <select
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value)}
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 상태</option>
+          <option value="Completed">완료</option>
+          <option value="Blocked">차단</option>
+          <option value="Denied">거절</option>
+          <option value="Error">오류</option>
+        </select>
+        <select
+          value={guardrailFilter}
+          onChange={(event) => setGuardrailFilter(event.target.value)}
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 가드레일</option>
+          <option value="Passed">통과</option>
+          <option value="Denied">거절</option>
+          <option value="Skipped">건너뜀</option>
+        </select>
+        <select
+          value={rbacFilter}
+          onChange={(event) => setRbacFilter(event.target.value)}
+          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+        >
+          <option value="all">전체 RBAC</option>
+          <option value="Allowed">허용</option>
+          <option value="Denied">거절</option>
+          <option value="Not evaluated">평가 안 함</option>
+        </select>
+      </ListToolbar>
+
+      <div className="divide-y divide-slate-100">
+        {reviewRuns.length === 0 ? (
+          <Placeholder
+            title="표시할 시연 실행 로그가 없습니다"
+            description="demo_review.scenario 값이 있는 workflow run을 생성하면 이 탭에 표시됩니다."
+          />
+        ) : pageItems.length === 0 ? (
+          <Placeholder
+            title="조건에 맞는 실행 로그가 없습니다"
+            description="검색어 또는 필터 조건을 조정해 주세요."
+          />
+        ) : (
+          pageItems.map((run) => {
+            const review = reviewPayloadOf(run);
+            const retrievedDocs = Array.isArray(review.retrieved_docs)
+              ? review.retrieved_docs
+              : [];
+            const traceSteps = reviewArrayOf<{
+              label?: string;
+              state?: string;
+            }>(review, 'trace_steps');
+            const retrievedChunks = reviewArrayOf<{
+              document?: string;
+              section?: string;
+              evidence?: string;
+              score?: number;
+            }>(review, 'retrieved_chunks');
+            const status = reviewStatusOf(run);
+            const isExpanded = expandedRunId === run.id;
+            const needsAttention =
+              status === 'Blocked' ||
+              status === 'Denied' ||
+              status === 'Error' ||
+              run.status === 'failed' ||
+              review.guardrail === 'Denied' ||
+              review.rbac === 'Denied';
+            const statusTone =
+              review.status === 'Completed'
+                ? 'bg-green-50 text-green-700'
+                : review.status === 'Blocked'
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'bg-red-50 text-red-700';
+
+            return (
+              <div key={run.id} className="px-5 py-4">
+                <div className="grid gap-3 xl:grid-cols-[180px_minmax(0,1fr)_320px_96px] xl:items-center">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`inline-flex rounded-md px-2 py-1 text-xs font-bold ${statusTone}`}
+                      >
+                        {statusLabelKo(String(review.status || run.status))}
+                      </span>
+                      {needsAttention && (
+                        <span className="rounded-md bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
+                          확인 필요
+                        </span>
+                      )}
+                    </div>
+                    <p className="font-mono text-xs text-slate-500">
+                      {String(review.run_label || run.id)}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {formatDateTime(run.started_at)}
+                    </p>
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-950">
+                      {String(review.title || run.app_name)}
+                    </p>
+                    <p className="mt-1 line-clamp-2 text-sm leading-5 text-slate-700">
+                      {String(review.input || run.inputs?.message || '-')}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                      <span className="rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-700">
+                        가드레일 {decisionLabelKo(review.guardrail)}
+                      </span>
+                      <span className="rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-700">
+                        RBAC {decisionLabelKo(review.rbac)}
+                      </span>
+                      <span className="rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-700">
+                        LLM{' '}
+                        {decisionLabelKo(
+                          review.llm_generation ||
+                            review.llm_answer_generation ||
+                            '-',
+                        )}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-2">
+                    <ReviewMetric
+                      label="요청자"
+                      value={review.user || run.user_id}
+                    />
+                    <ReviewMetric
+                      label="비용"
+                      value={
+                        review.estimated_cost ||
+                        `$${Number(run.total_cost || 0).toFixed(4)}`
+                      }
+                    />
+                    <ReviewMetric
+                      label="응답 시간"
+                      value={review.latency || `${run.duration || '-'}s`}
+                    />
+                    <ReviewMetric
+                      label="사유"
+                      value={review.reason || review.requested_resource || '-'}
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => setExpandedRunId(isExpanded ? null : run.id)}
+                    className="h-9 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {isExpanded ? '접기' : '상세 보기'}
+                  </button>
+                </div>
+
+                {isExpanded && (
+                  <div className="mt-4 space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4">
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                      <TraceFlow traceSteps={traceSteps} />
+                      <CostMonitor run={run} review={review} />
+                    </div>
+
+                    <DecisionPanels review={review} />
+
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                      <RagEvidence
+                        retrievedDocs={retrievedDocs}
+                        retrievedChunks={retrievedChunks}
+                        ragSearch={review.rag_search}
+                      />
+                      <div className="space-y-2 rounded-md border border-slate-200 bg-white p-3 text-sm">
+                        <ReviewMetric
+                          label="요청 리소스"
+                          value={review.requested_resource || '-'}
+                        />
+                        <ReviewMetric
+                          label="필요 팀"
+                          value={review.required_team || '-'}
+                        />
+                        <ReviewMetric
+                          label="사용자 팀"
+                          value={review.user_team || '-'}
+                        />
+                        <ReviewMetric
+                          label="추적 ID"
+                          value={review.trace_id || '-'}
+                        />
+                        <ReviewMetric
+                          label="실행 ID"
+                          value={review.run_label || run.id}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-slate-500">
+                        최종 응답
+                      </p>
+                      <p className="mt-1 rounded-md bg-white p-3 text-sm leading-6 text-slate-800">
+                        {String(
+                          review.final_response || run.outputs?.answer || '-',
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        totalItems={filteredRuns.length}
+        onPageChange={setPage}
+      />
+    </DashboardPanel>
+  );
+}
+
+function ReviewSummaryCard({
+  label,
+  value,
+  description,
+  tone,
+}: {
+  label: string;
+  value: number | string;
+  description: string;
+  tone: 'green' | 'amber' | 'red' | 'slate';
+}) {
+  const toneClass =
+    tone === 'green'
+      ? 'border-green-100 bg-green-50 text-green-800'
+      : tone === 'amber'
+        ? 'border-amber-100 bg-amber-50 text-amber-800'
+        : tone === 'red'
+          ? 'border-red-100 bg-red-50 text-red-800'
+          : 'border-slate-200 bg-slate-50 text-slate-700';
+
+  return (
+    <div className={`rounded-md border p-3 ${toneClass}`}>
+      <p className="text-xs font-semibold uppercase">{label}</p>
+      <p className="mt-2 text-xl font-bold">{value}</p>
+      <p className="mt-1 text-xs">{description}</p>
+    </div>
+  );
+}
+
+function TraceFlow({
+  traceSteps,
+}: {
+  traceSteps: Array<{ label?: string; state?: string }>;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-4">
+      <p className="text-xs font-semibold uppercase text-slate-500">
+        실행 흐름
+      </p>
+      {traceSteps.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-500">trace 단계 없음</p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {traceSteps.map((step, index) => {
+            const state = step.state || 'pending';
+            const tone =
+              state === 'denied' || state === 'failed'
+                ? 'border-red-200 bg-red-50 text-red-700'
+                : state === 'completed'
+                  ? 'border-green-200 bg-green-50 text-green-700'
+                  : 'border-slate-200 bg-slate-50 text-slate-700';
+            return (
+              <div key={`${step.label}-${index}`} className="flex gap-3">
+                <div className="flex flex-col items-center">
+                  <span
+                    className={`flex h-6 w-6 items-center justify-center rounded-full border text-xs font-bold ${tone}`}
+                  >
+                    {index + 1}
+                  </span>
+                  {index < traceSteps.length - 1 && (
+                    <span className="h-5 w-px bg-slate-200" />
+                  )}
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">
+                    {traceLabelKo(step.label)}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {stateLabelKo(state)}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RagEvidence({
+  retrievedDocs,
+  retrievedChunks,
+  ragSearch,
+}: {
+  retrievedDocs: unknown[];
+  retrievedChunks: Array<{
+    document?: string;
+    section?: string;
+    evidence?: string;
+    score?: number;
+  }>;
+  ragSearch: unknown;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-4">
+      <p className="text-xs font-semibold uppercase text-slate-500">
+        RAG 근거 문서
+      </p>
+      {retrievedChunks.length > 0 ? (
+        <div className="mt-3 space-y-3">
+          {retrievedChunks.map((chunk, index) => (
+            <div
+              key={`${chunk.document}-${index}`}
+              className="rounded-md border border-blue-100 bg-blue-50 p-3"
+            >
+              <p className="text-xs font-semibold text-blue-700">
+                검색 결과 조각 {index + 1}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">
+                문서: {chunk.document || '-'}
+              </p>
+              <p className="mt-1 text-sm text-slate-700">
+                일치한 섹션: {chunk.section || '-'}
+              </p>
+              <p className="mt-1 text-sm leading-5 text-slate-800">
+                핵심 근거: {chunk.evidence || '-'}
+              </p>
+              {chunk.score !== undefined && (
+                <p className="mt-1 text-xs text-slate-500">
+                  유사도: {chunk.score}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : retrievedDocs.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {retrievedDocs.map((doc) => (
+            <span
+              key={String(doc)}
+              className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700"
+            >
+              {String(doc)}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-slate-500">
+          {String(ragSearch || '검색 안 함')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CostMonitor({
+  run,
+  review,
+}: {
+  run: AdminReviewRun;
+  review: Record<string, unknown>;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-4">
+      <p className="text-xs font-semibold uppercase text-slate-500">
+        비용 모니터
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+        <ReviewMetric label="모델" value={review.model || 'gpt-4o-mini'} />
+        <ReviewMetric
+          label="예상 비용"
+          value={
+            review.estimated_cost ||
+            `$${Number(run.total_cost || 0).toFixed(4)}`
+          }
+        />
+        <ReviewMetric
+          label="입력 토큰"
+          value={review.input_tokens || run.total_tokens || '-'}
+        />
+        <ReviewMetric label="출력 토큰" value={review.output_tokens || '-'} />
+        <ReviewMetric
+          label="가드레일 차단"
+          value={review.guardrail_blocked === true ? '예' : '아니오'}
+        />
+        <ReviewMetric
+          label="답변 LLM"
+          value={review.answer_llm_skipped === true ? '건너뜀' : '실행됨'}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DecisionPanels({ review }: { review: Record<string, unknown> }) {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <div className="rounded-md border border-slate-200 bg-white p-4">
+        <p className="text-xs font-semibold uppercase text-slate-500">
+          가드레일 판단
+        </p>
+        <div className="mt-3 grid gap-2 text-sm">
+          <ReviewMetric
+            label="정책 판단"
+            value={decisionLabelKo(
+              review.policy_decision || review.guardrail || '-',
+            )}
+          />
+          <ReviewMetric label="사유" value={review.reason || '-'} />
+          <ReviewMetric
+            label="조치"
+            value={actionLabelKo(review.action || '-')}
+          />
+        </div>
+      </div>
+      <div className="rounded-md border border-slate-200 bg-white p-4">
+        <p className="text-xs font-semibold uppercase text-slate-500">
+          RBAC 판단
+        </p>
+        <div className="mt-3 grid gap-2 text-sm">
+          <ReviewMetric
+            label="권한 판단"
+            value={decisionLabelKo(
+              review.permission_decision || review.rbac || '-',
+            )}
+          />
+          <ReviewMetric
+            label="요청 리소스"
+            value={review.requested_resource || '-'}
+          />
+          <ReviewMetric label="필요 팀" value={review.required_team || '-'} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewMetric({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-medium text-slate-900">
+        {value === undefined || value === null || value === ''
+          ? '-'
+          : String(value)}
+      </p>
+    </div>
   );
 }
 
@@ -2562,7 +4039,9 @@ function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 px-4">
       <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
-        <h2 className="text-base font-semibold text-slate-950">{state.title}</h2>
+        <h2 className="text-base font-semibold text-slate-950">
+          {state.title}
+        </h2>
         <p className="mt-2 text-sm leading-6 text-slate-600">
           {state.description}
         </p>

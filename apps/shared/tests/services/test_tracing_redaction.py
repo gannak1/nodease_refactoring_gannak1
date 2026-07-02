@@ -48,3 +48,31 @@ def test_sensitive_json_path_redaction_records_metadata_without_values():
     assert result.redacted_payload["input"]["account"]["number"] == "[REDACTED]"
     assert "payload.input.account.number" in metadata["fields"]
     assert "1234567890" not in str(metadata)
+
+
+def test_redaction_keeps_llm_usage_token_metrics():
+    result = TraceRedactionService.redact_payload(
+        {
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 80,
+                "total_tokens": 200,
+                "prompt_tokens_details": {"cached_tokens": 10},
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            },
+            "oauth_token": "should-not-survive",
+        },
+        ResolvedRedactionPolicy(),
+    )
+
+    assert result.secret_detected is True
+    assert result.redacted_payload["usage"]["prompt_tokens"] == 120
+    assert result.redacted_payload["usage"]["completion_tokens"] == 80
+    assert result.redacted_payload["usage"]["total_tokens"] == 200
+    assert result.redacted_payload["usage"]["prompt_tokens_details"] == {
+        "cached_tokens": 10
+    }
+    assert result.redacted_payload["usage"]["completion_tokens_details"] == {
+        "reasoning_tokens": 0
+    }
+    assert result.redacted_payload["oauth_token"] == "[REDACTED]"
