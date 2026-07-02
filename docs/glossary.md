@@ -39,7 +39,7 @@ Status: Draft
 | Workflow Run | Workflow 실행 1회를 나타내는 실행 기록. DB에서는 `workflow_runs` table을 사용한다. |
 | Workflow Node Run | Workflow Run 안에서 개별 node가 실행된 기록. DB에서는 `workflow_node_runs` table을 사용한다. |
 | Deployment | Workflow를 외부 실행 가능한 형태로 공개/활성화한 결과. DB에서는 `workflow_deployments` table을 사용한다. |
-| Schedule | Deployment 또는 Workflow 실행을 정해진 시간/주기로 트리거하는 설정. |
+| Schedule | Deployment 실행을 정해진 시간/주기로 트리거하는 설정. DB에서는 `schedules` table을 사용하며 deployment와 1:1 관계다. |
 | Webhook | 외부 시스템이 HTTP 요청으로 Workflow를 실행하게 하는 인바운드 트리거. |
 | Public Run API | 배포된 workflow를 app secret 기반 Bearer 인증으로 실행하는 public endpoint 계열. 일반 사용자 세션 인증과 구분한다. |
 
@@ -72,7 +72,7 @@ Status: Draft
 | --- | --- |
 | LLM Provider | OpenAI, Anthropic, Google 같은 외부 LLM 제공자. 호출은 `apps/shared/services/llm_client`의 자체 client 계층을 통해 수행한다. |
 | LLM Model | Provider가 제공하는 구체 모델. DB에서는 `llm_models` table을 사용한다. |
-| LLM Credential | Provider API 호출에 필요한 organization-scoped 자격 정보. DB에서는 `llm_credentials` table을 사용한다. secret 원문은 응답, 로그, trace에 노출하지 않는다. |
+| LLM Credential | Provider API 호출에 필요한 자격 정보. 사용자가 소유하고(`user_id`) organization scope에 속할 수 있다(`organization_id` nullable). DB에서는 `llm_credentials` table을 사용한다. secret 원문은 응답, 로그, trace에 노출하지 않는다. |
 | Credential-Model Relation | 특정 credential로 어떤 model을 사용할 수 있는지 나타내는 연결. DB에서는 `llm_rel_credential_models` table을 사용한다. |
 | LLM Usage Log | LLM 호출의 token, latency, cost 등 사용량 기록. DB에서는 `llm_usage_logs` table을 사용한다. |
 | Cost Optimizer | Workflow의 현재 모델과 후보 모델을 비교 실행해 비용 절감률과 품질 차이를 제시하는 기능이다. |
