@@ -36,7 +36,7 @@ mbased는 기존 Moduly의 workflow builder/runtime을 기반으로 Nodease 방�
 - Backend Gateway: Python 3.11, FastAPI, SQLAlchemy.
 - Workflow Runtime: Celery, Redis.
 - Database: PostgreSQL, pgvector.
-- LLM/RAG: LiteLLM, RAG ingestion/retrieval 관련 shared service.
+- LLM/RAG: `apps/shared/services/llm_client`의 자체 OpenAI/Anthropic/Google client 계층, RAG ingestion/retrieval 관련 shared service.
 - Sandbox: NSJail.
 - Infra: Docker Compose, Kubernetes, Helm.
 - Test: pytest, Vitest, Next build/lint.
