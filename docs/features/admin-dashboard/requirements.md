@@ -17,7 +17,7 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 ## Functional Requirements
 
 - FR-011: audit log를 행위자, action, 대상, 기간으로 검색/필터링한다. action은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)의 canonical action을 기준으로 한다.
-- FR-012: workflow별 LLM 사용량/비용을 집계해 표시한다. 원천은 `llm_usage_logs`다.
+- FR-012: workflow별 LLM 사용량/비용을 집계해 표시한다. 원천은 `llm_usage_logs`다. 비용 집계 표시까지가 이 feature의 범위이며, 모델 비교/최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/requirements.md) 범위다 — 대시보드는 해당 workflow로 이동하는 진입만 제공한다.
 - FR-013: `permission.denied` 등 차단 이벤트를 비정상 접근 시도로 표시한다.
 - FR-014: 관리자가 유저를 비활성화할 수 있다. 기존 `deactivated_at` column을 사용하고, 비활성 유저는 권한 평가에서 거부된다.
 
