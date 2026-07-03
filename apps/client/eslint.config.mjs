@@ -31,6 +31,11 @@ export default tseslint.config(
     rules: {
       // React Hooks: 필수 (배열 의존성 등 체크)
       ...reactHooks.configs.recommended.rules,
+      // 현재 코드베이스는 React Compiler 권장 제약을 전면 적용한 구조가 아니다.
+      // Hooks 사용 오류는 유지하되, 기존 effect/data-loading 패턴을 전역 error로 막는 규칙은 끈다.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/immutability': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
 
       // React: 최신 방식에서는 import React가 불필요하므로 끔
       'react/react-in-jsx-scope': 'off',
