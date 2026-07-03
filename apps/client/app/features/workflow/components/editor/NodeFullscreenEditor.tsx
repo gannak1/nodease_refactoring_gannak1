@@ -20,6 +20,16 @@ import {
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { buildOutputLabelPatch } from '../../utils/nodeOutputLabels';
 import { NodeOutputVariable } from '../../utils/nodeVariablePorts';
+import {
+  fitPanelWidths,
+  getDefaultPanelWidthsForLayout,
+  getNodeEditorMaxLayoutWidth,
+  HorizontalResizeHandle,
+  NODE_EDITOR_PANEL_WIDTHS,
+  NodeEditorPanelWidths,
+  resizePanelWidths,
+  sumPanelWidths,
+} from '../../utils/nodeEditorPanelLayout';
 import { LLMNodeData } from '../../types/Nodes';
 import { LLMParameterSidePanel } from '../nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '../nodes/llm/components/LLMReferenceSidePanel';
@@ -35,32 +45,10 @@ type RightPanelTab = {
   label: string;
 };
 
-type NodeEditorPanelWidths = {
-  left: number;
-  center: number;
-  right: number;
-};
-
-type HorizontalResizeHandle = 'left-center' | 'center-right';
-
 const RIGHT_PANEL_TAB_LABELS: Record<RightPanelTabId, string> = {
   advanced: '고급 설정',
   knowledge: '지식 베이스',
 };
-
-const NODE_EDITOR_PANEL_WIDTHS = {
-  default: { left: 340, center: 720, right: 340 },
-  min: { left: 280, center: 420, right: 280 },
-  max: { left: 560, center: 900, right: 520 },
-  resizeHandleWidth: 8,
-  keyboardStep: 24,
-} as const;
-
-const PANEL_GROW_ORDER: Array<keyof NodeEditorPanelWidths> = [
-  'center',
-  'left',
-  'right',
-];
 
 // 입력 변수 칩의 소스 노드별 색상 (BaseNode의 호버 패널과 동일한 팔레트)
 const INPUT_CHIP_COLORS = [
@@ -81,93 +69,6 @@ const getInputChipColor = (sourceNodeId: string) => {
       (hash * 31 + sourceNodeId.charCodeAt(index)) % INPUT_CHIP_COLORS.length;
   }
   return INPUT_CHIP_COLORS[hash];
-};
-
-const sumPanelWidths = (widths: NodeEditorPanelWidths) =>
-  widths.left + widths.center + widths.right;
-
-const clampPanelWidth = (panel: keyof NodeEditorPanelWidths, width: number) =>
-  Math.min(
-    NODE_EDITOR_PANEL_WIDTHS.max[panel],
-    Math.max(NODE_EDITOR_PANEL_WIDTHS.min[panel], width),
-  );
-
-const getAvailablePanelWidth = (layoutWidth: number) =>
-  Math.max(
-    layoutWidth - NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2,
-    sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.min),
-  );
-
-const fitPanelWidths = (
-  widths: NodeEditorPanelWidths,
-  layoutWidth: number,
-): NodeEditorPanelWidths => {
-  const availableWidth = getAvailablePanelWidth(layoutWidth);
-  const next = {
-    left: clampPanelWidth('left', widths.left),
-    center: clampPanelWidth('center', widths.center),
-    right: clampPanelWidth('right', widths.right),
-  };
-
-  let overflow = sumPanelWidths(next) - availableWidth;
-  if (overflow > 0) {
-    for (const panel of ['center', 'right', 'left'] as const) {
-      const reducible = next[panel] - NODE_EDITOR_PANEL_WIDTHS.min[panel];
-      const reduction = Math.min(reducible, overflow);
-      next[panel] -= reduction;
-      overflow -= reduction;
-      if (overflow <= 0) break;
-    }
-  }
-
-  let underflow = availableWidth - sumPanelWidths(next);
-  if (underflow > 0) {
-    for (const panel of PANEL_GROW_ORDER) {
-      const growable = NODE_EDITOR_PANEL_WIDTHS.max[panel] - next[panel];
-      const growth = Math.min(growable, underflow);
-      next[panel] += growth;
-      underflow -= growth;
-      if (underflow <= 0) break;
-    }
-  }
-
-  return next;
-};
-
-const resizePanelWidths = (
-  handle: HorizontalResizeHandle,
-  startWidths: NodeEditorPanelWidths,
-  deltaX: number,
-  layoutWidth: number,
-): NodeEditorPanelWidths => {
-  const start = fitPanelWidths(startWidths, layoutWidth);
-
-  if (handle === 'left-center') {
-    const nextLeft = clampPanelWidth('left', start.left + deltaX);
-    const appliedDelta = nextLeft - start.left;
-    return fitPanelWidths(
-      {
-        left: nextLeft,
-        center: start.center - appliedDelta / 2,
-        right: start.right - appliedDelta / 2,
-      },
-      layoutWidth,
-    );
-  }
-
-  const boundedDelta = Math.max(
-    NODE_EDITOR_PANEL_WIDTHS.min.center - start.center,
-    Math.min(start.right - NODE_EDITOR_PANEL_WIDTHS.min.right, deltaX),
-  );
-
-  return fitPanelWidths(
-    {
-      left: start.left,
-      center: start.center + boundedDelta,
-      right: start.right - boundedDelta,
-    },
-    layoutWidth,
-  );
 };
 
 const PanelResizeHandle = ({
@@ -435,7 +336,9 @@ export function NodeFullscreenEditor() {
   const titleInputRef = useRef<HTMLInputElement>(null);
   const outputLabelInputRef = useRef<HTMLInputElement>(null);
   const leftPanelRef = useRef<HTMLDivElement>(null);
+  const layoutShellRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
+  const hasCustomPanelWidthsRef = useRef(false);
 
   // 풀스크린을 닫을 때는 항상 이 함수를 통해, 편집 상태도 함께 리셋한다.
   const handleClose = () => {
@@ -466,16 +369,22 @@ export function NodeFullscreenEditor() {
   }, [editingOutputKey]);
 
   useEffect(() => {
-    const layout = layoutRef.current;
-    if (!layout) return;
+    const layoutShell = layoutShellRef.current;
+    if (!layoutShell) return;
 
     const updateLayoutWidth = () => {
-      setLayoutWidth(layout.getBoundingClientRect().width);
+      const nextLayoutWidth = getNodeEditorMaxLayoutWidth(
+        layoutShell.getBoundingClientRect().width,
+      );
+      setLayoutWidth(nextLayoutWidth);
+      if (!hasCustomPanelWidthsRef.current) {
+        setPanelWidths(getDefaultPanelWidthsForLayout(nextLayoutWidth));
+      }
     };
 
     updateLayoutWidth();
     const resizeObserver = new ResizeObserver(updateLayoutWidth);
-    resizeObserver.observe(layout);
+    resizeObserver.observe(layoutShell);
 
     return () => resizeObserver.disconnect();
   }, []);
@@ -501,9 +410,13 @@ export function NodeFullscreenEditor() {
     ? rightPanelState.activeTabId
     : null;
   const fittedPanelWidths = fitPanelWidths(panelWidths, layoutWidth);
+  const fittedLayoutWidth =
+    sumPanelWidths(fittedPanelWidths) +
+    NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2;
 
   const updateHorizontalPanelWidths = useCallback(
     (handle: HorizontalResizeHandle, deltaX: number) => {
+      hasCustomPanelWidthsRef.current = true;
       setPanelWidths((current) =>
         resizePanelWidths(handle, current, deltaX, layoutWidth),
       );
@@ -628,6 +541,7 @@ export function NodeFullscreenEditor() {
 
       const handlePointerMove = (moveEvent: PointerEvent) => {
         const deltaX = moveEvent.clientX - startX;
+        hasCustomPanelWidthsRef.current = true;
         setPanelWidths(
           resizePanelWidths(handle, startWidths, deltaX, layoutWidth),
         );
@@ -897,105 +811,111 @@ export function NodeFullscreenEditor() {
       <VariableInsertionProvider>
         <div className="flex flex-1 justify-center overflow-hidden bg-slate-100">
           <div
-            ref={layoutRef}
-            className="grid min-h-0 w-full max-w-[90vw] overflow-hidden bg-white"
-            style={{
-              gridTemplateColumns: `${fittedPanelWidths.left}px 8px ${fittedPanelWidths.center}px 8px ${fittedPanelWidths.right}px`,
-            }}
+            ref={layoutShellRef}
+            className="flex min-h-0 w-full justify-center overflow-hidden"
           >
-            {/* 좌측: 입력 / 출력 */}
             <div
-              ref={leftPanelRef}
-              className="flex min-w-0 flex-col overflow-hidden bg-slate-50"
+              ref={layoutRef}
+              className="grid min-h-0 max-w-[90vw] overflow-hidden bg-white"
+              style={{
+                width: `${fittedLayoutWidth}px`,
+                gridTemplateColumns: `${fittedPanelWidths.left}px 8px ${fittedPanelWidths.center}px 8px ${fittedPanelWidths.right}px`,
+              }}
             >
+              {/* 좌측: 입력 / 출력 */}
               <div
-                className="flex min-h-0 flex-col p-4"
-                style={{ flexBasis: `${inputPanelRatio * 100}%` }}
+                ref={leftPanelRef}
+                className="flex min-w-0 flex-col overflow-hidden bg-slate-50"
               >
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                  입력
-                </div>
-                <VariableInsertionStatus />
-                {inputVariableGroups.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-gray-200 bg-white p-3 text-xs text-gray-400">
-                    연결된 입력 노드가 없습니다.
+                <div
+                  className="flex min-h-0 flex-col p-4"
+                  style={{ flexBasis: `${inputPanelRatio * 100}%` }}
+                >
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                    입력
                   </div>
-                ) : (
-                  <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                    <div className="flex flex-col gap-3">
-                      {inputVariableGroups.map((group) => {
-                        const chipColor = getInputChipColor(group.sourceNodeId);
-                        const isCollapsed =
-                          inputVariableGroups.length > 1 &&
-                          !expandedInputSourceIds.has(group.sourceNodeId);
-                        const sourceDisplayNumber = sourceDisplayNumberMap.get(
-                          group.sourceNodeId,
-                        );
-                        return (
-                          <div key={group.sourceNodeId} className="min-w-0">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpandedInputSources((current) => {
-                                  const currentSourceIds =
-                                    current.nodeId === fullscreenNodeId
-                                      ? current.sourceIds
-                                      : new Set<string>();
-                                  const next = new Set(currentSourceIds);
-                                  if (next.has(group.sourceNodeId)) {
-                                    next.delete(group.sourceNodeId);
-                                  } else {
-                                    next.add(group.sourceNodeId);
-                                  }
-                                  return {
-                                    nodeId: fullscreenNodeId,
-                                    sourceIds: next,
-                                  };
-                                })
-                              }
-                              className="mb-1 flex w-full items-center justify-between gap-2 rounded-md px-0.5 py-1 text-left text-xs font-semibold text-gray-700 hover:bg-white"
-                              aria-expanded={!isCollapsed}
-                            >
-                              <span className="flex min-w-0 items-center gap-1.5">
-                                <span className="min-w-0 truncate">
-                                  {group.sourceTitle}
-                                </span>
-                                {typeof sourceDisplayNumber === 'number' && (
-                                  <span
-                                    className="inline-flex h-5 shrink-0 items-center rounded-full border border-slate-200 bg-white px-1.5 text-[10px] font-bold text-slate-500"
-                                    title={`노드 번호 ${sourceDisplayNumber}`}
-                                  >
-                                    #{sourceDisplayNumber}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="flex shrink-0 items-center gap-1 text-[10px] text-gray-400">
-                                {group.outputs.length}
-                                {isCollapsed ? (
-                                  <ChevronRight className="h-3.5 w-3.5" />
-                                ) : (
-                                  <ChevronDown className="h-3.5 w-3.5" />
-                                )}
-                              </span>
-                            </button>
-                            {!isCollapsed && (
-                              <div className="flex flex-wrap content-start gap-1">
-                                {group.outputs.map((input) => (
-                                  <InputVariableChip
-                                    key={`${input.sourceNodeId}-${input.key}`}
-                                    input={input}
-                                    chipColor={chipColor}
-                                  />
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                  <VariableInsertionStatus />
+                  {inputVariableGroups.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-gray-200 bg-white p-3 text-xs text-gray-400">
+                      연결된 입력 노드가 없습니다.
                     </div>
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                      <div className="flex flex-col gap-3">
+                        {inputVariableGroups.map((group) => {
+                          const chipColor = getInputChipColor(
+                            group.sourceNodeId,
+                          );
+                          const isCollapsed =
+                            inputVariableGroups.length > 1 &&
+                            !expandedInputSourceIds.has(group.sourceNodeId);
+                          const sourceDisplayNumber =
+                            sourceDisplayNumberMap.get(group.sourceNodeId);
+                          return (
+                            <div key={group.sourceNodeId} className="min-w-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedInputSources((current) => {
+                                    const currentSourceIds =
+                                      current.nodeId === fullscreenNodeId
+                                        ? current.sourceIds
+                                        : new Set<string>();
+                                    const next = new Set(currentSourceIds);
+                                    if (next.has(group.sourceNodeId)) {
+                                      next.delete(group.sourceNodeId);
+                                    } else {
+                                      next.add(group.sourceNodeId);
+                                    }
+                                    return {
+                                      nodeId: fullscreenNodeId,
+                                      sourceIds: next,
+                                    };
+                                  })
+                                }
+                                className="mb-1 flex w-full items-center justify-between gap-2 rounded-md px-0.5 py-1 text-left text-xs font-semibold text-gray-700 hover:bg-white"
+                                aria-expanded={!isCollapsed}
+                              >
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span className="min-w-0 truncate">
+                                    {group.sourceTitle}
+                                  </span>
+                                  {typeof sourceDisplayNumber === 'number' && (
+                                    <span
+                                      className="inline-flex h-5 shrink-0 items-center rounded-full border border-slate-200 bg-white px-1.5 text-[10px] font-bold text-slate-500"
+                                      title={`노드 번호 ${sourceDisplayNumber}`}
+                                    >
+                                      #{sourceDisplayNumber}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="flex shrink-0 items-center gap-1 text-[10px] text-gray-400">
+                                  {group.outputs.length}
+                                  {isCollapsed ? (
+                                    <ChevronRight className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                  )}
+                                </span>
+                              </button>
+                              {!isCollapsed && (
+                                <div className="flex flex-wrap content-start gap-1">
+                                  {group.outputs.map((input) => (
+                                    <InputVariableChip
+                                      key={`${input.sourceNodeId}-${input.key}`}
+                                      input={input}
+                                      chipColor={chipColor}
+                                    />
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
               <div
                 role="separator"
@@ -1159,6 +1079,7 @@ export function NodeFullscreenEditor() {
                     </p>
                   </div>
                 )}
+              </div>
               </div>
             </div>
           </div>
