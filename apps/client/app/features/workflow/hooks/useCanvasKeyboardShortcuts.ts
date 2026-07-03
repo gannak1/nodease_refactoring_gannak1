@@ -35,6 +35,7 @@ interface CanvasKeyboardShortcutOptions {
   closeMenus: () => boolean;
   closePanels: () => boolean;
   toggleNodeLibrary: () => void;
+  optimizeLayout?: () => void;
 }
 
 export function useCanvasKeyboardShortcuts({
@@ -43,6 +44,7 @@ export function useCanvasKeyboardShortcuts({
   closeMenus,
   closePanels,
   toggleNodeLibrary,
+  optimizeLayout,
 }: CanvasKeyboardShortcutOptions) {
   const copySelectedNodes = useWorkflowStore(
     (state) => state.copySelectedNodes,
@@ -137,6 +139,12 @@ export function useCanvasKeyboardShortcuts({
       if (key === 'b' && !event.shiftKey) {
         event.preventDefault();
         toggleNodeLibrary();
+        return;
+      }
+
+      if (key === 'l' && event.shiftKey && optimizeLayout) {
+        event.preventDefault();
+        optimizeLayout();
       }
     };
 
@@ -148,6 +156,7 @@ export function useCanvasKeyboardShortcuts({
     closeMenus,
     closePanels,
     toggleNodeLibrary,
+    optimizeLayout,
     copySelectedNodes,
     pasteCopiedNodes,
     duplicateSelectedNodes,
