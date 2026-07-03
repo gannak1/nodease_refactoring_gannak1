@@ -194,7 +194,7 @@ Demo 주요 workflow:
 ```json
 {
   "customerTier": "enterprise",
-  "message": "정산 파일을 다시 생성하는 방법과 다운로드 위치를 안내해 주세요."
+  "message": "결제 API 장애로 인해 고객사 정산 파일 생성이 실패했습니다. 영향 범위와 보상 가능 여부를 확인해 주세요."
 }
 ```
 

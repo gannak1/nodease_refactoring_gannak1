@@ -562,11 +562,8 @@ def _ticket_ops_graph() -> dict[str, Any]:
                     "provider": "openai",
                     "model_id": "gpt-4.1",
                     "system_prompt": (
-                        "고객지원 티켓을 처리하는 AI로서 승인 필요 여부를 JSON으로 분류합니다. "
-                        "`긴급도`는 boolean 값으로 반환합니다. SLA 위반, 크레딧/환불/보상, 법무/보안, "
-                        "대규모 장애 영향, 고객사 손실 가능성이 명시된 경우에만 true로 둡니다. "
-                        "단순 사용법 안내, 상태 확인, 일반 문의는 false로 둡니다. "
-                        "반드시 다음 키만 포함한 JSON을 반환하세요: 긴급도, 답변 초안."
+                        "고객지원 티켓을 처리하는 AI로서, 각 티켓의 긴급도를 true/false로 판별하고 "
+                        "정책에 기반하여 다음 정보를 JSON 형식으로 분류합니다: 긴급도, 답변 초안."
                     ),
                     "user_prompt": "고객 등급: {{ customerTier }}\n문의: {{ message }}",
                     "referenced_variables": [
