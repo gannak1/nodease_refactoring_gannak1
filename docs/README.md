@@ -16,6 +16,7 @@ This directory is the active documentation root for Nodease. When active docs co
 | Shared terminology | [glossary.md](glossary.md) |
 | Design decisions | [decisions/](decisions/) |
 | Feature requirements, API, components, tests | [features/](features/) |
+| Local demo/test DB seed guide | [demo/](demo/) |
 
 ## Authority Order
 
