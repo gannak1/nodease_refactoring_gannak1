@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -69,7 +70,12 @@ from apps.shared.db.models.workflow_run import (
 
 DEMO_SEED_VERSION = "final-demo-2026-07"
 DEMO_PASSWORD = "123123"
-DEMO_UPLOAD_DIR = Path("/app/uploads/demo_seed")
+# Docker gateway 컨테이너 경로를 우선하고, 로컬 venv 실행에서는 repo 루트의
+# gitignore된 uploads/ 아래로 폴백한다 (docs/demo/local-demo-db.md 실행 방식 참고).
+DEMO_UPLOAD_DIRS = (
+    Path("/app/uploads/demo_seed"),
+    Path(__file__).resolve().parents[3] / "uploads" / "demo_seed",
+)
 
 
 def _uuid(suffix: int) -> uuid.UUID:
@@ -271,7 +277,7 @@ TEST_PERMISSION_IDS = {
 TEST_USER_SPECS = [
     DemoUserSpec(
         "admin",
-        "test.admin@nodease.local",
+        "test.admin@test.nodease.demo",
         "테스트 관리자",
         ORGANIZATION_MEMBERSHIP_ACTIVE,
         ORGANIZATION_AUTH_MANAGER,
@@ -279,7 +285,7 @@ TEST_USER_SPECS = [
     ),
     DemoUserSpec(
         "builder",
-        "test.builder@nodease.local",
+        "test.builder@test.nodease.demo",
         "테스트 빌더",
         ORGANIZATION_MEMBERSHIP_ACTIVE,
         ORGANIZATION_AUTH_MEMBER,
@@ -287,7 +293,7 @@ TEST_USER_SPECS = [
     ),
     DemoUserSpec(
         "member",
-        "test.member@nodease.local",
+        "test.member@test.nodease.demo",
         "테스트 멤버",
         ORGANIZATION_MEMBERSHIP_ACTIVE,
         ORGANIZATION_AUTH_MEMBER,
@@ -295,7 +301,7 @@ TEST_USER_SPECS = [
     ),
     DemoUserSpec(
         "invited",
-        "test.invited@nodease.local",
+        "test.invited@test.nodease.demo",
         "테스트 초대대기",
         ORGANIZATION_MEMBERSHIP_INVITED,
         ORGANIZATION_AUTH_MEMBER,
@@ -303,7 +309,7 @@ TEST_USER_SPECS = [
     ),
     DemoUserSpec(
         "suspended",
-        "test.suspended@nodease.local",
+        "test.suspended@test.nodease.demo",
         "테스트 정지회원",
         ORGANIZATION_MEMBERSHIP_SUSPENDED,
         ORGANIZATION_AUTH_MEMBER,
@@ -365,10 +371,18 @@ def _demo_options(key: str) -> dict[str, Any]:
 
 
 def _write_demo_document(filename: str, content: str) -> str:
-    DEMO_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    path = DEMO_UPLOAD_DIR / filename
-    path.write_text(content, encoding="utf-8")
-    return path.as_posix()
+    last_error: OSError | None = None
+    for base_dir in DEMO_UPLOAD_DIRS:
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            path = base_dir / filename
+            path.write_text(content, encoding="utf-8")
+            return path.as_posix()
+        except OSError as error:
+            last_error = error
+    raise RuntimeError(
+        f"demo 문서를 저장할 수 있는 upload 경로가 없습니다: {DEMO_UPLOAD_DIRS}"
+    ) from last_error
 
 
 def _now() -> datetime:
@@ -376,6 +390,12 @@ def _now() -> datetime:
 
 
 def _upsert_by_id(db: Session, model: type, row_id: uuid.UUID, values: dict[str, Any]):
+    # setattr는 모델에 없는 key도 조용히 받아들이므로 seed 오타를 여기서 즉시 실패시킨다.
+    unknown_keys = sorted(set(values) - set(sa_inspect(model).attrs.keys()))
+    if unknown_keys:
+        raise ValueError(
+            f"{model.__name__} seed values contain unmapped attributes: {unknown_keys}"
+        )
     row = db.get(model, row_id)
     if row is None:
         row = model(id=row_id)
@@ -1051,7 +1071,7 @@ def _upsert_app_workflow(
             "name": name,
             "description": description,
             "icon": _icon("🧭" if key == "ticket_ops" else "📘"),
-            "url_slug": f"demo-{key}",
+            "url_slug": f"demo-{key.replace('_', '-')}",
             "auth_secret": f"sk-demo-{key}",
             "is_api_enabled": True,
             "api_req_per_minute": 60,
@@ -1345,7 +1365,7 @@ def _seed_run(
     db.flush()
 
     node_specs = [
-        ("webhook-ticket", "webhookTriggerNode", 0.02, {"message": run.inputs["message"]}),
+        ("webhook-ticket", "webhookTrigger", 0.02, {"message": run.inputs["message"]}),
         (
             "llm-triage",
             "llmNode",
@@ -1599,9 +1619,16 @@ def seed_test_data(db: Session) -> None:
             {
                 "organization_id": TEST_ORG_ID,
                 "user_id": TEST_USER_IDS[spec.key],
-                "state": spec.membership_state,
-                "auth_state": spec.organization_auth_state,
+                "membership_state": spec.membership_state,
+                "organization_auth_state": spec.organization_auth_state,
                 "invited_by": TEST_USER_IDS["admin"],
+                "invited_at": _now() - timedelta(days=7),
+                "accepted_at": _now()
+                if spec.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE
+                else None,
+                "removed_at": _now()
+                if spec.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
+                else None,
                 "options": _demo_options(f"test-org-membership-{spec.key}"),
                 "flags": 0,
             },

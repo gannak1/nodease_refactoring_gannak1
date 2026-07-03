@@ -222,11 +222,11 @@ Demo 주요 workflow:
 
 | 이메일 | 표시명 | 용도 |
 | --- | --- | --- |
-| `test.admin@nodease.local` | 테스트 관리자 | 테스트 조직 manager |
-| `test.builder@nodease.local` | 테스트 빌더 | 테스트 workflow manager |
-| `test.member@nodease.local` | 테스트 멤버 | 테스트 workflow viewer |
-| `test.invited@nodease.local` | 테스트 초대대기 | invited 상태 확인 |
-| `test.suspended@nodease.local` | 테스트 정지회원 | suspended 상태 확인 |
+| `test.admin@test.nodease.demo` | 테스트 관리자 | 테스트 조직 manager |
+| `test.builder@test.nodease.demo` | 테스트 빌더 | 테스트 workflow manager |
+| `test.member@test.nodease.demo` | 테스트 멤버 | 테스트 workflow viewer |
+| `test.invited@test.nodease.demo` | 테스트 초대대기 | invited 상태 확인 |
+| `test.suspended@test.nodease.demo` | 테스트 정지회원 | suspended 상태 확인 |
 
 Test 조직:
 
