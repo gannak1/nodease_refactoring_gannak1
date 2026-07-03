@@ -27,6 +27,7 @@ import { DEFAULT_NODES } from '../constants';
 import { workflowApi } from '../api/workflowApi';
 import {
   assignMissingNodeDisplayNumbers,
+  assignNewNodeDisplayNumbers,
   createNumberedNode,
   NODE_NUMBER_FEATURE_KEY,
 } from '../utils/nodeNumbering';
@@ -267,9 +268,12 @@ const syncActiveWorkflow = (
   activeWorkflowId: string,
   nodes: Node[],
   edges: Edge[],
+  features?: Features,
 ) =>
   workflows.map((workflow) =>
-    workflow.id === activeWorkflowId ? { ...workflow, nodes, edges } : workflow,
+    workflow.id === activeWorkflowId
+      ? { ...workflow, nodes, edges, ...(features ? { features } : {}) }
+      : workflow,
   );
 
 const shouldRecordEdgeChanges = (changes: EdgeChange[]) =>
@@ -808,17 +812,23 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
 
   pasteCopiedNodes: () => {
-    const { copiedNodes, copiedEdges, nodes, edges, activeWorkflowId } = get();
+    const { copiedNodes, copiedEdges, nodes, edges, activeWorkflowId, features } =
+      get();
     if (copiedNodes.length === 0) return;
 
     const { duplicatedNodes, duplicatedEdges } = buildDuplicatedGraphElements(
       copiedNodes,
       copiedEdges,
     );
+    const numbered = assignNewNodeDisplayNumbers(
+      duplicatedNodes,
+      nodes,
+      features,
+    );
 
     const nextNodes = [
       ...nodes.map((node) => ({ ...node, selected: false }) as Node),
-      ...duplicatedNodes,
+      ...numbered.nodes,
     ];
     const nextEdges = [
       ...edges.map((edge) => ({ ...edge, selected: false })),
@@ -828,11 +838,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       nodes: nextNodes,
       edges: nextEdges,
+      features: numbered.features,
       workflows: syncActiveWorkflow(
         state.workflows,
         activeWorkflowId,
         nextNodes,
         nextEdges,
+        numbered.features,
       ),
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
@@ -843,7 +855,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
 
   duplicateSelectedNodes: () => {
-    const { nodes, edges, activeWorkflowId } = get();
+    const { nodes, edges, activeWorkflowId, features } = get();
     const selectedNodes = nodes.filter((node) => node.selected);
     if (selectedNodes.length === 0) return;
 
@@ -853,10 +865,15 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       selectedNodes,
       selectedEdges,
     );
+    const numbered = assignNewNodeDisplayNumbers(
+      duplicatedNodes,
+      nodes,
+      features,
+    );
 
     const nextNodes = [
       ...nodes.map((node) => ({ ...node, selected: false }) as Node),
-      ...duplicatedNodes,
+      ...numbered.nodes,
     ];
     const nextEdges = [
       ...edges.map((edge) => ({ ...edge, selected: false })),
@@ -866,11 +883,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       nodes: nextNodes,
       edges: nextEdges,
+      features: numbered.features,
       workflows: syncActiveWorkflow(
         state.workflows,
         activeWorkflowId,
         nextNodes,
         nextEdges,
+        numbered.features,
       ),
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
