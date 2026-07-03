@@ -95,5 +95,10 @@ class App(Base):
     )
 
     # === 관계 (Relationships) ===
+    llm_node_versions: Mapped[list["LLMNodeVersion"]] = relationship(
+        "LLMNodeVersion",
+        back_populates="app",
+        cascade="all, delete-orphan",
+    )
     # workflow = relationship("Workflow", back_populates="apps")
     # 주의: Workflow 모델에도 apps = relationship("App", back_populates="workflow") 추가 필요
