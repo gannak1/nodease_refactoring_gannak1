@@ -779,7 +779,6 @@ export default function NodeCanvas() {
     closeMenus: closeCanvasMenus,
     closePanels: closeCanvasPanels,
     toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
-    optimizeLayout: handleAutoLayout,
   });
 
   const currentAppId = useMemo(() => {

@@ -107,9 +107,7 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 ### 3. 워크플로우 조작 편의성
 
 - 키보드 삭제는 캔버스가 shortcut scope일 때만 동작한다. 입력창, textarea, select, contenteditable 내부에서는 Backspace/Delete가 노드 삭제로 해석되면 안 된다.
-- 레이아웃 최적화는 캔버스가 shortcut scope일 때 `Ctrl + Shift + L`로 실행할 수 있어야 한다.
-- `Ctrl + Shift + L`은 브라우저 주소창 포커스 단축키인 `Ctrl + L`과 충돌하지 않도록 Shift 조합을 필수로 한다.
-- 레이아웃 최적화 shortcut은 입력창, textarea, select, contenteditable 내부에서는 동작하지 않아야 한다.
+- 레이아웃 최적화는 하단 툴바의 레이아웃 최적화 버튼으로 실행할 수 있어야 한다.
 - 시작 트리거 노드처럼 삭제가 제한된 노드가 있다면 기존 삭제 가능 정책을 우선한다.
 - 자동 재연결은 사용자 편의를 위한 graph edit 동작이며 API를 호출하지 않는다. 저장은 기존 workflow draft sync 경로를 따른다.
 

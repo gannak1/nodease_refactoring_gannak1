@@ -198,38 +198,6 @@ describe('workflow test cases: 워크플로우 조작 편의성', () => {
     expect(deletePreventDefault).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+Shift+L은 캔버스 레이아웃 최적화를 호출한다', () => {
-    const optimizeLayout = vi.fn();
-    renderHook(() =>
-      useCanvasKeyboardShortcuts(shortcutOptions({ optimizeLayout })),
-    );
-
-    const preventDefault = dispatchKeyDown('L', window, {
-      ctrlKey: true,
-      shiftKey: true,
-    });
-
-    expect(optimizeLayout).toHaveBeenCalledTimes(1);
-    expect(preventDefault).toHaveBeenCalledTimes(1);
-  });
-
-  it('입력 필드에 focus가 있을 때 Ctrl+Shift+L은 레이아웃 최적화로 동작하지 않는다', () => {
-    const optimizeLayout = vi.fn();
-    const input = document.createElement('input');
-    document.body.appendChild(input);
-    renderHook(() =>
-      useCanvasKeyboardShortcuts(shortcutOptions({ optimizeLayout })),
-    );
-
-    const preventDefault = dispatchKeyDown('L', input, {
-      ctrlKey: true,
-      shiftKey: true,
-    });
-
-    expect(optimizeLayout).not.toHaveBeenCalled();
-    expect(preventDefault).not.toHaveBeenCalled();
-  });
-
   it('A -> B -> C 구조에서 B 삭제 후 undo를 실행하면 B와 기존 edge가 복구된다', () => {
     useWorkflowStore
       .getState()

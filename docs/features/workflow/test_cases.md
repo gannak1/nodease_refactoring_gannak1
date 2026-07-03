@@ -52,7 +52,6 @@ Verified Against: TBD
 | 1 | 워크플로우 조작 편의성 | A -> B -> C 구조에서 B 삭제 시 A -> C 자동 재연결 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 입력 필드 focus 중 Backspace/Delete가 노드 삭제로 동작하지 않음 | 통과 | shortcut hook test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 삭제 후 undo 복구 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
-| 1 | 워크플로우 조작 편의성 | `Ctrl + Shift + L`로 레이아웃 최적화 실행 | 미구현 테스트 | shortcut hook과 layout optimize action 연결 테스트가 필요하다 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 동시성 처리 | 자동 저장 응답이 늦게 도착해도 최신 화면 상태를 이전 상태로 되돌리지 않음 | 통과 | active workflow가 아닌 data 적용 시 현재 화면 nodes/edges를 덮지 않는 store test 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 1 | 동시성 처리 | 테스트 실행 중 graph를 수정해도 실행 결과가 현재 편집 중인 설정값을 덮어쓰지 않음 | 통과 | 실행 결과 observability merge가 기존 node 설정값을 유지하는 store test 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 2 | 실행 편의성 | 권한 없는 테스트 실행의 403 처리 | 미구현 테스트 | Gateway/API contract test infra가 필요하다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
@@ -113,8 +112,6 @@ Verified Against: TBD
 | Todo | 미완료 단계 | 이유 | 대응 파일 |
 | --- | --- | --- | --- |
 | read-only 사용자는 Backspace/Delete로 노드 삭제 또는 자동 재연결을 수행할 수 없다 | UI permission test | `NodeCanvas`의 `isReadOnly` 조건과 shortcut hook 연결을 render test로 검증해야 한다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
-| `Ctrl + Shift + L`은 캔버스 shortcut scope에서 레이아웃 최적화를 실행한다 | Unit/UI test | layout optimize action과 shortcut hook 연결 구현 후 검증해야 한다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
-| 입력 필드 focus 중 `Ctrl + Shift + L`은 레이아웃 최적화로 해석되지 않는다 | Unit/UI test | focus context guard를 shortcut hook test로 검증해야 한다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 삭제 대상 노드에 incoming edge만 있거나 outgoing edge만 있으면 재연결 없이 해당 노드와 연결 edge만 제거한다 | Unit test | 구현은 이 동작을 포함하지만 별도 명시 테스트가 아직 없다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 삭제 대상이 시작 트리거 노드 또는 삭제 제한 노드라면 기존 삭제 제한 정책을 따른다 | Policy/implementation | 현재 legacy `deletable:false` 제거 정책과 삭제 제한 정책이 충돌한다. 제품 정책 확정 후 테스트가 필요하다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 여러 노드를 동시에 삭제할 때 삭제되는 노드끼리의 edge는 재연결 후보에서 제외한다 | Unit test | 구현은 삭제 후 남는 노드 기준으로 계산하지만 다중 삭제 fixture 테스트가 아직 없다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
@@ -191,8 +188,6 @@ Verified Against: TBD
 - 자동 재연결은 기존 연결 검증 규칙을 통과하는 경우에만 edge를 생성한다.
 - 여러 incoming/outgoing edge가 있는 노드를 삭제하면 가능한 유효 조합만 생성하고 중복 edge는 만들지 않는다.
 - 입력 필드에 focus가 있을 때 Backspace/Delete를 눌러도 노드 삭제 함수가 호출되지 않는다.
-- 캔버스 shortcut scope에서 `Ctrl + Shift + L`을 누르면 레이아웃 최적화 함수가 호출된다.
-- 입력 필드에 focus가 있을 때 `Ctrl + Shift + L`을 눌러도 레이아웃 최적화 함수가 호출되지 않는다.
 
 ### 4. 노드 실행 기록 패널 추가
 

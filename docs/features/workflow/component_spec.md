@@ -162,10 +162,8 @@ Verified Against: TBD
 ### 3. 워크플로우 조작 편의성
 
 - 키보드 삭제 shortcut은 focus context를 구분해야 하며, 입력 필드 사용자의 기본 Backspace/Delete 조작을 방해하지 않아야 한다.
-- 레이아웃 최적화 shortcut은 `Ctrl + Shift + L`로 정의한다.
-- 캔버스 shortcut scope에서 `Ctrl + Shift + L`을 누르면 현재 workflow graph의 레이아웃 최적화 액션을 실행한다.
-- 입력창, textarea, select, contenteditable 내부 focus 상태에서는 `Ctrl + Shift + L`을 가로채지 않는다.
-- 레이아웃 최적화 버튼이나 tooltip이 shortcut을 노출하는 경우 `레이아웃 최적화 (Ctrl+Shift+L)` 표기를 사용한다.
+- 레이아웃 최적화는 하단 툴바의 버튼 액션으로 제공한다.
+- 레이아웃 최적화 버튼이나 tooltip에는 아직 shortcut 표기를 노출하지 않는다.
 - 노드 삭제 전 별도 확인 모달을 띄우지 않는다면, undo 경로가 명확해야 한다.
 
 ### 4. 노드 실행 기록 패널 추가
