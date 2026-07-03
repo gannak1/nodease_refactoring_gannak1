@@ -1924,7 +1924,10 @@ def reset_demo_data(db: Session) -> None:
         ).delete(synchronize_session=False)
 
     db.query(WorkflowDeployment).filter(
-        WorkflowDeployment.id.in_(list(DEPLOYMENT_IDS.values()))
+        or_(
+            WorkflowDeployment.id.in_(list(DEPLOYMENT_IDS.values())),
+            WorkflowDeployment.app_id.in_(app_ids),
+        )
     ).delete(synchronize_session=False)
     db.query(Workflow).filter(Workflow.id.in_(workflow_ids)).delete(
         synchronize_session=False
