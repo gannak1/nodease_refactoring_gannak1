@@ -190,10 +190,7 @@ type WorkflowState = {
 
   // === 시작노드 검증 핼퍼 ===
   getStartNodeType: () =>
-    | 'startNode'
-    | 'webhookTrigger'
-    | 'scheduleTrigger'
-    | null;
+    'startNode' | 'webhookTrigger' | 'scheduleTrigger' | null;
   getStartNodeCount: () => number;
   canPublish: () => boolean;
 
@@ -369,6 +366,74 @@ const preparePastedNodeData = (
 
 const getInternalEdges = (edges: Edge[], nodeIds: Set<string>) =>
   edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+
+const getEdgeKey = (edge: Pick<Edge, 'source' | 'target'> & Partial<Edge>) =>
+  [
+    edge.source,
+    edge.sourceHandle || '',
+    edge.target,
+    edge.targetHandle || '',
+  ].join('__');
+
+const buildReconnectEdgesAfterDelete = (
+  nodes: Node[],
+  edges: Edge[],
+  deletedNodeIds: Set<string>,
+) => {
+  const nextNodes = nodes.filter((node) => !deletedNodeIds.has(node.id));
+  const nextNodeIds = new Set(nextNodes.map((node) => node.id));
+  const nextEdges = edges.filter(
+    (edge) =>
+      !deletedNodeIds.has(edge.source) && !deletedNodeIds.has(edge.target),
+  );
+  const existingKeys = new Set(nextEdges.map(getEdgeKey));
+  const reconnectEdges: Edge[] = [];
+
+  for (const deletedNodeId of deletedNodeIds) {
+    const incomingEdges = edges.filter(
+      (edge) => edge.target === deletedNodeId && nextNodeIds.has(edge.source),
+    );
+    const outgoingEdges = edges.filter(
+      (edge) => edge.source === deletedNodeId && nextNodeIds.has(edge.target),
+    );
+
+    for (const incomingEdge of incomingEdges) {
+      for (const outgoingEdge of outgoingEdges) {
+        if (incomingEdge.source === outgoingEdge.target) continue;
+
+        const reconnectEdge: Edge = {
+          id: `reconnect-${incomingEdge.source}-${outgoingEdge.target}-${Date.now()}-${reconnectEdges.length}`,
+          source: incomingEdge.source,
+          sourceHandle: incomingEdge.sourceHandle,
+          target: outgoingEdge.target,
+          targetHandle: outgoingEdge.targetHandle,
+        };
+        const edgeKey = getEdgeKey(reconnectEdge);
+        if (existingKeys.has(edgeKey)) continue;
+
+        const validation = validateConnection(
+          nextNodes as AppNode[],
+          [...nextEdges, ...reconnectEdges],
+          {
+            source: reconnectEdge.source,
+            sourceHandle: reconnectEdge.sourceHandle ?? null,
+            target: reconnectEdge.target,
+            targetHandle: reconnectEdge.targetHandle ?? null,
+          },
+        );
+        if (!validation.ok) continue;
+
+        existingKeys.add(edgeKey);
+        reconnectEdges.push(reconnectEdge);
+      }
+    }
+  }
+
+  return {
+    nodes: nextNodes,
+    edges: [...nextEdges, ...reconnectEdges],
+  };
+};
 
 const buildDuplicatedGraphElements = (
   sourceNodes: Node[],
@@ -821,13 +886,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
     if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
 
-    const nextNodes = nodes.filter((node) => !selectedNodeIds.has(node.id));
-    const nextEdges = edges.filter(
-      (edge) =>
-        !selectedEdgeIds.has(edge.id) &&
-        !selectedNodeIds.has(edge.source) &&
-        !selectedNodeIds.has(edge.target),
-    );
+    const retainedEdges = edges.filter((edge) => !selectedEdgeIds.has(edge.id));
+    const { nodes: nextNodes, edges: nextEdges } =
+      buildReconnectEdgesAfterDelete(nodes, retainedEdges, selectedNodeIds);
 
     set((state) => ({
       nodes: nextNodes,

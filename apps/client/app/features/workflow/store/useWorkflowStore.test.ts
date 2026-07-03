@@ -104,10 +104,16 @@ const createMockNode = (
   } as Node;
 };
 
-const createMockEdge = (id: string, source: string, target: string): Edge => ({
+const createMockEdge = (
+  id: string,
+  source: string,
+  target: string,
+  handles: Pick<Edge, 'sourceHandle' | 'targetHandle'> = {},
+): Edge => ({
   id,
   source,
   target,
+  ...handles,
 });
 
 // ============================================================================
@@ -159,6 +165,111 @@ describe('노드 추가/삭제 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.nodes).toHaveLength(1);
     expect(state.nodes[0].id).toBe('node-2');
+  });
+
+  it('선택한 중간 노드를 삭제하면 앞뒤 노드를 자동 재연결한다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'startNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'answerNode'),
+      ]);
+    useWorkflowStore.getState().setEdges([
+      createMockEdge('edge-a-b', 'node-a', 'node-b', {
+        sourceHandle: 'result',
+      }),
+      createMockEdge('edge-b-c', 'node-b', 'node-c', {
+        targetHandle: 'input',
+      }),
+    ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual(['node-a', 'node-c']);
+    expect(state.edges).toHaveLength(1);
+    expect(state.edges[0]).toMatchObject({
+      source: 'node-a',
+      sourceHandle: 'result',
+      target: 'node-c',
+      targetHandle: 'input',
+    });
+  });
+
+  it('자동 재연결은 이미 같은 연결이 있으면 중복 edge를 만들지 않는다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'startNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'answerNode'),
+      ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-a-b', 'node-a', 'node-b'),
+        createMockEdge('edge-b-c', 'node-b', 'node-c'),
+        createMockEdge('edge-a-c', 'node-a', 'node-c'),
+      ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.edges).toHaveLength(1);
+    expect(state.edges[0].id).toBe('edge-a-c');
+  });
+
+  it('자동 재연결이 그래프 검증을 통과하지 못하면 삭제만 수행한다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'codeNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'startNode'),
+      ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-a-b', 'node-a', 'node-b'),
+        createMockEdge('edge-b-c', 'node-b', 'node-c'),
+      ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual(['node-a', 'node-c']);
+    expect(state.edges).toEqual([]);
+  });
+
+  it('선택 노드 삭제와 자동 재연결은 undo 한 번으로 복구된다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'startNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'answerNode'),
+      ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-a-b', 'node-a', 'node-b'),
+        createMockEdge('edge-b-c', 'node-b', 'node-c'),
+      ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+    useWorkflowStore.getState().undo();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual([
+      'node-a',
+      'node-b',
+      'node-c',
+    ]);
+    expect(state.edges.map((edge) => edge.id)).toEqual([
+      'edge-a-b',
+      'edge-b-c',
+    ]);
   });
 
   it('onNodesChange로 노드 위치를 변경할 수 있다', () => {
@@ -254,10 +365,12 @@ describe('노드 추가/삭제 테스트', () => {
   });
 
   it('여러 노드 이동 시 그룹 origin의 snap delta로 상대 위치를 유지한다', () => {
-    useWorkflowStore.getState().setNodes([
-      createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
-      createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
+        createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
+      ]);
 
     useWorkflowStore.getState().onNodesChange([
       {
@@ -278,11 +391,13 @@ describe('노드 추가/삭제 테스트', () => {
   });
 
   it('positionChanges 순서가 노드 순서와 달라도 그룹 상대 위치를 유지한다', () => {
-    useWorkflowStore.getState().setNodes([
-      createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
-      createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
-      createMockNode('node-3', 'codeNode', { x: 41, y: 11 }),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
+        createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
+        createMockNode('node-3', 'codeNode', { x: 41, y: 11 }),
+      ]);
 
     useWorkflowStore.getState().onNodesChange([
       {
@@ -335,9 +450,9 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
 
   it('선택 변경은 undo 스택에 기록하지 않는다', () => {
     useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
-    useWorkflowStore.getState().onNodesChange([
-      { type: 'select', id: 'node-1', selected: true },
-    ]);
+    useWorkflowStore
+      .getState()
+      .onNodesChange([{ type: 'select', id: 'node-1', selected: true }]);
 
     useWorkflowStore.getState().undo();
     expect(useWorkflowStore.getState().nodes).toHaveLength(
@@ -474,9 +589,9 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
   });
 
   it('선택 노드를 즉시 복제하고 클립보드 상태는 덮어쓰지 않는다', () => {
-    useWorkflowStore.getState().setNodes([
-      { ...createMockNode('clipboard-node'), selected: true },
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([{ ...createMockNode('clipboard-node'), selected: true }]);
     useWorkflowStore.getState().copySelectedNodes();
 
     useWorkflowStore.getState().setNodes([
@@ -642,10 +757,12 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
   });
 
   it('선택 노드를 삭제할 때 연결된 엣지도 함께 제거한다', () => {
-    useWorkflowStore.getState().setNodes([
-      { ...createMockNode('node-1'), selected: true },
-      createMockNode('node-2'),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        { ...createMockNode('node-1'), selected: true },
+        createMockNode('node-2'),
+      ]);
     useWorkflowStore
       .getState()
       .setEdges([createMockEdge('edge-1', 'node-1', 'node-2')]);
@@ -683,10 +800,12 @@ describe('Edge 생성/삭제 테스트', () => {
   });
 
   it('onConnect로 새 엣지를 생성할 수 있다', () => {
-    useWorkflowStore.getState().setNodes([
-      createMockNode('node-1', 'startNode'),
-      createMockNode('node-2', 'answerNode'),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-1', 'startNode'),
+        createMockNode('node-2', 'answerNode'),
+      ]);
     // 초기 엣지 없음
     useWorkflowStore.getState().setEdges([]);
 

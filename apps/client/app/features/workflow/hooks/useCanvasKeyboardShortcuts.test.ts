@@ -124,7 +124,11 @@ describe('useCanvasKeyboardShortcuts', () => {
     document.body.appendChild(dialog);
     renderHook(() => useCanvasKeyboardShortcuts(createOptions()));
 
-    const duplicateEvent = dispatchKeyDown('d', { ctrlKey: true }, document.body);
+    const duplicateEvent = dispatchKeyDown(
+      'd',
+      { ctrlKey: true },
+      document.body,
+    );
     const deleteEvent = dispatchKeyDown('Delete', {}, document.body);
     const pasteEvent = dispatchKeyDown('v', { ctrlKey: true }, document.body);
 
@@ -207,56 +211,39 @@ describe('useCanvasKeyboardShortcuts', () => {
     document.body.appendChild(target);
     renderHook(() => useCanvasKeyboardShortcuts(createOptions()));
 
-    const { preventDefault } = dispatchKeyDown(
-      'd',
-      { ctrlKey: true },
-      target,
-    );
+    const { preventDefault } = dispatchKeyDown('d', { ctrlKey: true }, target);
 
     expect(actions.duplicateSelectedNodes).not.toHaveBeenCalled();
     expect(preventDefault).not.toHaveBeenCalled();
   });
 
-  it(
-    'Delete는 선택 요소가 없으면 preventDefault/delete/closePanels를 하지 않는다',
-    () => {
-      const actions = installActionSpies(false);
-      const options = createOptions();
-      renderHook(() => useCanvasKeyboardShortcuts(options));
-
-      const { preventDefault } = dispatchKeyDown('Delete');
-
-      expect(actions.hasSelectedElements).toHaveBeenCalled();
-      expect(preventDefault).not.toHaveBeenCalled();
-      expect(actions.deleteSelectedElements).not.toHaveBeenCalled();
-      expect(options.closePanels).not.toHaveBeenCalled();
-    },
-  );
-
-  it('Delete는 선택 요소가 있을 때만 삭제하고 패널을 닫는다', () => {
-    const actions = installActionSpies(true);
+  it('Delete는 선택 요소가 없으면 preventDefault/delete/closePanels를 하지 않는다', () => {
+    const actions = installActionSpies(false);
     const options = createOptions();
     renderHook(() => useCanvasKeyboardShortcuts(options));
 
     const { preventDefault } = dispatchKeyDown('Delete');
 
-    expect(preventDefault).toHaveBeenCalled();
-    expect(actions.deleteSelectedElements).toHaveBeenCalled();
-    expect(options.closePanels).toHaveBeenCalled();
-  });
-
-  it('Backspace는 편집 화면에서 선택 요소를 삭제하지 않는다', () => {
-    const actions = installActionSpies(true);
-    const options = createOptions();
-    renderHook(() => useCanvasKeyboardShortcuts(options));
-
-    const { preventDefault } = dispatchKeyDown('Backspace');
-
+    expect(actions.hasSelectedElements).toHaveBeenCalled();
     expect(preventDefault).not.toHaveBeenCalled();
-    expect(actions.hasSelectedElements).not.toHaveBeenCalled();
     expect(actions.deleteSelectedElements).not.toHaveBeenCalled();
     expect(options.closePanels).not.toHaveBeenCalled();
   });
+
+  it.each(['Delete', 'Backspace'])(
+    '%s는 선택 요소가 있을 때만 삭제하고 패널을 닫는다',
+    (key) => {
+      const actions = installActionSpies(true);
+      const options = createOptions();
+      renderHook(() => useCanvasKeyboardShortcuts(options));
+
+      const { preventDefault } = dispatchKeyDown(key);
+
+      expect(preventDefault).toHaveBeenCalled();
+      expect(actions.deleteSelectedElements).toHaveBeenCalled();
+      expect(options.closePanels).toHaveBeenCalled();
+    },
+  );
 
   it.each(['Delete', 'Backspace'])(
     '%s는 캔버스 단축키 차단 스코프가 있으면 선택 요소를 삭제하지 않는다',
