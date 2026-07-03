@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from apps.gateway.services.auth_service import AuthService
@@ -53,6 +53,7 @@ from apps.shared.db.models.team import (
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserLLMPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -1840,6 +1841,12 @@ def reset_demo_data(db: Session) -> None:
     workflow_ids = list(WORKFLOW_IDS.values())
     team_ids = list(TEAM_IDS.values())
     kb_ids = list(KB_IDS.values())
+    credential_ids = [
+        row[0]
+        for row in db.query(LLMCredential.id)
+        .filter(LLMCredential.organization_id == ORG_ID)
+        .all()
+    ]
     existing_demo_user_ids = [
         row[0]
         for row in db.query(User.id)
@@ -1857,6 +1864,7 @@ def reset_demo_data(db: Session) -> None:
     db.query(LLMUsageLog).filter(
         (LLMUsageLog.workflow_id.in_(workflow_ids))
         | (LLMUsageLog.user_id.in_(user_ids))
+        | (LLMUsageLog.credential_id.in_(credential_ids))
     ).delete(synchronize_session=False)
     db.query(WorkflowNodeRun).filter(
         WorkflowNodeRun.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
@@ -1881,6 +1889,7 @@ def reset_demo_data(db: Session) -> None:
         TeamKnowledgePermission,
         TeamLLMPermission,
         TeamAuditPermission,
+        UserLLMPermission,
     ):
         db.query(model).filter(
             or_(
@@ -1889,8 +1898,36 @@ def reset_demo_data(db: Session) -> None:
             )
         ).delete(synchronize_session=False)
 
+    if credential_ids:
+        db.query(TeamLLMPermission).filter(
+            TeamLLMPermission.llm_credential_id.in_(credential_ids)
+        ).delete(synchronize_session=False)
+        db.query(UserLLMPermission).filter(
+            UserLLMPermission.llm_credential_id.in_(credential_ids)
+        ).delete(synchronize_session=False)
+        if sa_inspect(db.bind).has_table("rag_answer_runs"):
+            for credential_id in credential_ids:
+                db.execute(
+                    text(
+                        "UPDATE rag_answer_runs "
+                        "SET generation_credential_id = NULL, "
+                        "generation_credential_ref = NULL "
+                        "WHERE generation_credential_id = :credential_id"
+                    ),
+                    {"credential_id": credential_id},
+                )
+        db.query(LLMRelCredentialModel).filter(
+            LLMRelCredentialModel.credential_id.in_(credential_ids)
+        ).delete(synchronize_session=False)
+        db.query(LLMCredential).filter(
+            LLMCredential.id.in_(credential_ids)
+        ).delete(synchronize_session=False)
+
     db.query(WorkflowDeployment).filter(
-        WorkflowDeployment.id.in_(list(DEPLOYMENT_IDS.values()))
+        or_(
+            WorkflowDeployment.id.in_(list(DEPLOYMENT_IDS.values())),
+            WorkflowDeployment.app_id.in_(app_ids),
+        )
     ).delete(synchronize_session=False)
     db.query(Workflow).filter(Workflow.id.in_(workflow_ids)).delete(
         synchronize_session=False
