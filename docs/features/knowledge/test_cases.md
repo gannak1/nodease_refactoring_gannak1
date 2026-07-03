@@ -1,7 +1,7 @@
 # Knowledge Test Cases
 
 Status: Draft
-Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014
+Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. 목표 모델 테스트는 해당 동작에 필요한 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md) execution gate가 닫힌 뒤 구현 blocker가 된다.
 
@@ -15,6 +15,10 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014
 - Raw source content를 저장하더라도 protected raw artifact store 또는 encrypted object storage metadata table에만 저장하고 `document_chunks.content`에는 저장하지 않는다.
 - Raw artifact storage path는 organization/source opt-in, raw/compliance gate, encryption, retention, legal hold, purge, audit policy가 명시적으로 활성화되지 않으면 비활성 상태다.
 - Privacy/Redaction baseline은 admin policy가 비활성화할 수 없고, organization/collection/source/KB policy는 더 엄격하게 조정하거나 승인된 display mode만 선택할 수 있다.
+- Knowledge Skill body/resource는 raw source content, raw source title/path/url, raw principal, raw ACL fact, restricted document list, hidden KB id, raw prompt/completion/provider response를 포함하지 않는다.
+- Skill metadata sanitizer는 skill name/description/tag/source tier/owner/freshness도 민감 metadata로 보고 display-policy-approved safe field만 허용한다.
+- Stale/review-required/deprecated skill은 운영 workflow 생성 자동 후보나 실행 시점 RAG procedure에서 fail-closed 또는 remediation surface로 제한된다.
+- Golden question/eval fixture는 raw restricted content를 포함하지 않고 safe reference와 expected behavior만 사용한다.
 - Source public ACL은 기본적으로 organization-wide KB read/use로 materialize되지 않는다.
 - Source ACL provenance storage는 raw source permission, source permission action/provenance, source authorization state, KB permission `auth_state`를 섞어 저장하지 않는다.
 - Source-managed KB의 KB `use` provisioning model이 확정되기 전에는 source ACL authorization만으로 KB `use`가 충족됐다고 판정하지 않는다.
@@ -28,6 +32,8 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014
 - Explicit KB mode는 collection route permission을 생략할 수 있지만 KB helper allow, source ACL gate, final evidence policy는 계속 요구한다.
 - 현재 retrieval/search-test content access에는 KB `use`가 필요하며 read/listing permission만으로는 content retrieval이 되지 않는다.
 - Source-managed KB는 mbased KB `use`와 fresh requester source ACL authorization을 모두 요구한다.
+- 빌더 단계 skill visibility만으로 실행 시점 collection route, KB `use`, source ACL gate가 충족되지 않는다.
+- Skill이 특정 KB/collection을 routing hint로 제안하더라도 실행 시점 permission helper가 거부한 KB는 workflow 실행 후보에서 제외된다.
 - Manual KB grant는 stale/unmapped/ambiguous/unverified source ACL freshness gate를 우회하지 못한다.
 - Source ACL revocation은 이후 retrieval을 막고 freshness epoch/cache invalidation signal을 갱신한다.
 - Organization manager는 operations policy에 따라 remediation을 수행할 수 있지만 기본적으로 source ACL retrieval filtering을 우회하지 못한다.
@@ -69,15 +75,23 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014
 - Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다.
 - Router는 authorized safe candidate와 safe metadata만 받는다.
 - Router는 raw source ACL fact, hidden KB id, raw source title/path/url, exact hidden count, raw content를 받지 않는다.
-- Workflow runtime RAG는 명시적으로 resolve된 execution subject 기준으로 KB permission/source ACL을 평가하고, subject가 없거나 모호하면 workflow owner fallback 없이 preflight 실패한다.
-- Production `general RAG`도 KB permission/source ACL/final evidence gate를 통과한다. Test fixture에서 권한 없는 문서는 `general`, `permission_scoped`, `task_aware` 모든 mode의 prompt/citation/trace에 들어가지 않는다.
+- Workflow Builder는 safe skill metadata만 받으며 raw skill body, hidden source reference, restricted document list를 받지 않는다.
+- Skill Context Loader는 선택된 skill의 redaction-safe checklist/body만 빌더 단계에 필요한 시점에 로드하고, 실제 문서 내용은 workflow 테스트 또는 실행 시점 authorized retrieval로 가져온다.
+- Skill source-of-truth tier는 LLM node의 RAG 옵션 구성과 routing/procedure hint로만 사용되고, citation/evidence는 KB/document version/chunk/decision record를 가리킨다.
+- Workflow 실행 시점 RAG는 명시적으로 resolve된 execution subject 기준으로 KB permission/source ACL을 평가하고, subject가 없거나 모호하면 workflow owner fallback 없이 preflight 실패한다.
+- 운영 `general RAG`도 KB permission/source ACL/final evidence gate를 통과한다. Test fixture에서 권한 없는 문서는 `general`, `permission_scoped`, `task_aware` 모든 mode의 prompt/citation/trace에 들어가지 않는다.
 - `general RAG`는 authorized resource 안의 broad retrieval로 동작하고, `task_aware` 또는 `permission_scoped` mode는 같은 authorized resource 안에서 더 작은 evidence set을 선택한다.
+- Query rewrite가 켜져도 user query와 safe skill/template만 입력으로 사용하며, 권한 없는 KB/문서를 candidate로 만들지 못한다.
+- Query rewrite 결과 원문은 durable audit/trace/usage metadata, cache key, log에 저장되지 않고 `query_rewrite_applied`, `query_rewrite_strategy` 같은 safe summary만 남는다.
+- Source-of-Truth Tier는 authorized evidence 안에서 ranking/tie-break에만 영향을 주며 KB permission/source ACL/final evidence gate를 대체하지 않는다.
 - 여러 collection에 같은 KB가 포함되면 `knowledge_base_id` 기준으로 dedupe하고 safe attribution rule을 유지한다.
 - Retrieval은 active ready document version만 검색한다.
 - Permission/source ACL/final evidence failure는 fail-closed evidence exclusion이며 partial operational success로 처리하지 않는다.
 - 일부 authorized KB의 operational failure는 `partial_result=true`, bucketed reason summary, failed-candidate bucket, retryability를 포함한 safe partial result를 반환할 수 있다.
 - 모든 KB retrieval failure는 승인된 API matrix에 따라 safe no-result 또는 terminal operational error 중 하나로 반환한다.
 - Authorized source에서 evidence가 없는 경우는 성공한 empty evidence response이며 hidden resource를 암시하지 않는다.
+- Evidence sufficiency policy가 `minimum_evidence` 또는 `strict_citation`일 때 evidence가 없거나 score/citation coverage가 부족하면 `evidence_sufficient=false`와 safe `insufficiency_reason`을 반환하고 추측 답변을 생성하지 않는다.
+- `insufficiency_reason`은 권한 없는 문서명, hidden KB id, exact denied count를 포함하지 않는다.
 - Explicit KB id not found, outside org, archived/deleted, source ACL denied/stale/unmapped/ambiguous, permission-unverified는 matrix가 요구하는 동일한 safe resource-hidden shape를 따른다.
 - PII/final evidence policy block은 answer delta나 citation content preview가 emit되기 전에 발생한다.
 - 현재 standalone single-KB Agent answer lifecycle과 same-scope blocked 처리 테스트는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 기준으로 유지하고, ADR-0014 matrix 테스트는 target cutover/source-managed/auto/multi-KB mode에 추가한다.
@@ -87,7 +101,9 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014
 - Successful retrieval audit은 redaction-safe KB/document version/chunk id, score summary, correlation id, policy-safe metadata만 저장한다.
 - Hidden/denied/resource-hidden path audit/trace metadata에는 raw title/path/url, exact hidden count, denied KB id, raw source ACL, raw exception을 포함하지 않는다.
 - Partial result audit/trace는 safe partial marker, bucketed reason/retryability summary, request/correlation id만 저장한다.
-- RAG strategy summary는 `retrieval_strategy`, `rag_mode`, selected collection/KB count, retrieved chunk count, citation count, context token estimate, retrieval latency, permission filter flag, policy result, partial result, safe exclusion summary만 포함한다.
+- RAG strategy summary는 `retrieval_strategy`, `rag_mode`, selected collection/KB count, retrieved chunk count, citation count, context token estimate, retrieval latency, permission filter flag, policy result, partial result, safe exclusion summary, query rewrite 적용 여부, evidence sufficiency 결과만 포함한다.
+- Skill usage summary는 workflow draft, LLM node의 RAG 옵션, workflow test run, RAG strategy comparison에서 skill id, skill version, freshness state, eval status, safe source tier, safe provenance refs만 포함한다.
+- Skill provenance summary는 raw skill body, raw source title/path/url, hidden source refs, exact hidden/denied count를 포함하지 않는다.
 - Trace side panel은 raw chunk content, raw source title/path/url, hidden document name/id, exact denied count, raw prompt/completion, provider raw response를 표시하지 않는다.
 - Source ACL mapping audit은 safe principal reference만 저장한다.
 - Raw content access는 별도 raw/compliance permission을 요구하고 audit을 남긴다.
@@ -109,13 +125,17 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014
 - Citation은 ID vocabulary/protected source identity gate가 닫힌 뒤 target identity field(`citation_id`, `knowledge_base_id`, `document_version_id`, `chunk_id`, optional `collection_id`, optional `safe_source_ref`)를 사용한다.
 - User-facing content preview는 redacted/capped 상태이며 durable audit/trace/usage summary에 복사하지 않는다.
 - A/B 비교 UI는 권한 없는 문서명/ID를 표시하지 않고 authorized evidence 기준의 context token, retrieved chunk count, citation count, cost, latency, quality score만 비교한다.
-- Demo fixture는 상담원 허용 문서와 제한 문서를 분리하고, 제한 문서가 모든 production RAG mode의 prompt/citation/trace에 포함되지 않는지 검증한다.
+- 향후 Skill management, Workflow Playground, Agent Builder skill-binding UI가 추가되면 safe skill metadata, freshness, eval status, publication/review 상태만 표시하고 hidden source title/path/url이나 raw skill resource를 표시하지 않는다.
+- Workflow Playground에서 draft/unpublished skill 실험을 허용하는 정책을 채택하더라도, 운영 실행 시점 자동 후보에는 포함되지 않고 actor의 KB permission/source ACL/redaction gate를 우회하지 않는다.
+- Demo fixture는 상담원 허용 문서와 제한 문서를 분리하고, 제한 문서가 모든 운영 RAG mode의 prompt/citation/trace에 포함되지 않는지 검증한다.
 
 ## 성능과 부하 테스트
 
 - Bulk permission helper는 per-KB database query 없이 user-candidate lookup과 KB-centric lookup을 처리한다.
 - Candidate cap은 stable ordering으로 큰 candidate set을 deterministic하게 잘라낸다.
 - Candidate cache key는 permission/freshness epoch를 포함하고 ACL revocation 시 invalidation된다.
+- Skill candidate cache key는 skill version, freshness state, eval state, source version reference를 포함하고 stale skill/source-tier 변경 시 invalidation된다.
 - 단일 filtered vector/keyword query를 우선한다. Bounded fanout을 사용하면 concurrency와 timeout cap을 강제한다.
-- Load test는 max candidate KB, max retrieval KB, max chunks per KB, max total chunks, fanout timeout, partial operational failure behavior를 포함한다.
+- Query rewrite cache key는 rewrite mode, safe template id, skill version, permission/freshness epoch를 포함하고 raw rewritten query를 durable key로 사용하지 않는다.
+- Load test는 max candidate KB, max retrieval KB, max chunks per KB, max total chunks, fanout timeout, partial operational failure behavior, query rewrite 추가 latency/cost budget을 포함한다.
 - Concurrent ingestion, concurrent DB-source sync, concurrent retention purge, cleanup outbox retry의 race 테스트를 포함한다.

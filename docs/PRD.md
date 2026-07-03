@@ -24,7 +24,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 - **비용을 아는 운영**: workflow별 비용이 보이고, 모델 교체 시 절감/품질 트레이드오프를 제시한다.
 - **자연어로 시작하는 자동화**: 프롬프트 한 줄로 workflow 초안이 생성된다 (Agent Builder).
-- **모든 사내 데이터가 모이는 통합 RAG**: 흩어진 사내 데이터를 하나의 지식 베이스로 통합하고, 질문한 사용자의 권한에 맞는 자료만 찾아 답변한다.
+- **모든 사내 데이터가 모이는 통합 RAG**: 흩어진 사내 데이터를 통합 지식 저장소로 관리하고, 생성된 workflow의 실행 주체 권한에 맞는 자료만 RAG 옵션이 켜진 LLM node가 검색해 답변에 사용한다.
 - **권한과 감사가 내장된 운영 (기반)**: 모든 리소스 접근은 organization/team/user 권한으로 판정되고, 주요 행위는 audit log로 남는다.
 
 ## 2. 사용자
@@ -225,6 +225,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-033: retrieval 기록 추적 (redaction-safe metadata 기준)
 - FR-034: AI Builder가 생성한 workflow에서 준비된 Knowledge Base를 연결해 사내 문서 질의를 실행
 - FR-035: 목표 구조에서는 사내 문서/source item 자동 수집, document-level KB 색인, collection 묶음 관리, source ACL two-gate를 도입한다. 이 항목은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate가 닫힌 뒤 구현한다.
+- FR-036: 목표 구조에서는 Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 source tier 선택, collection/KB routing hint, query template, validation checklist를 재사용하기 위해 provider-neutral Knowledge Skill을 도입할 수 있다. Skill은 권한 source나 최종 근거가 아니며 [ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)의 authorization/redaction/freshness/eval gate를 따른다.
 
 ### 권한 신청 — [features/organization/](features/organization/requirements.md)
 

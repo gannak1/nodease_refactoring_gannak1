@@ -17,7 +17,7 @@ Verified Against: current implementation baseline plus Knowledge target model AD
 
 ## E2E 테스트
 
-- Knowledge Agent answer explicit KB mode와 auto collection mode는 preset/default credential ADR이 승인되기 전까지 모두 명시 generation model/credential selection을 요구한다.
+- Standalone RAG answer explicit KB mode와 auto collection mode는 preset/default credential ADR이 승인되기 전까지 모두 명시 generation model/credential selection을 요구한다.
 
 ## 권한 테스트
 

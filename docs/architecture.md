@@ -1,7 +1,7 @@
 # Architecture
 
 Status: Draft
-Verified Against: current implementation baseline plus docs target model ADR-0014
+Verified Against: current implementation baseline plus docs target model ADR-0014 and ADR-0015
 
 시스템 구조, 인증 방식, 배포 구조, 외부 연동을 정의한다. 권한/감사 결정의 근거는 [decisions/](decisions/README.md)의 ADR을 따르고, 테이블 상세는 [data_model.md](data_model.md)를 따른다.
 
@@ -20,7 +20,7 @@ Verified Against: current implementation baseline plus docs target model ADR-001
 | PostgreSQL | 컨테이너/chart | pgvector 포함 영속 저장소 |
 | Redis | 컨테이너/chart | Celery broker/result, Pub/Sub |
 
-Knowledge 통합 목표 구조에서는 Gateway/Shared 경계에 다음 domain service를 둔다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+Knowledge 통합 목표 구조에서는 Gateway/Shared 경계에 다음 domain service를 둔다. 아래 항목은 현재 구현 컴포넌트 전체가 아니라 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)와 [ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)의 target component다.
 
 | 구성요소 | 책임 |
 | --- | --- |
@@ -31,6 +31,9 @@ Knowledge 통합 목표 구조에서는 Gateway/Shared 경계에 다음 domain s
 | Knowledge Normalizer / Ingestion Pipeline | source item을 redacted canonical text와 document version artifact로 변환하고, indexing 성공 후 active version finalization을 수행한다. |
 | Knowledge Permission Helper | collection route 권한, KB `use`, source ACL freshness/requester authorization을 bulk 평가한다. Router와 Agent는 permission row를 직접 조합하지 않는다. |
 | Collection Router / Retrieval Orchestrator | 권한 helper가 허용한 safe candidate set에서 collection/KB를 선택하고, metadata-aware/hierarchical retrieval 결과를 merge/rerank한다. |
+| Knowledge Skill Registry | Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 사용할 provider-neutral Skill, version, visibility, freshness/eval 상태를 관리하는 target component다. Skill은 권한 source나 source of truth가 아니다. |
+| Skill Context Loader | 빌더 단계에서 safe skill metadata와 필요한 checklist/body만 점진적으로 로드한다. Raw skill body, hidden source reference, raw source title/path/url은 Builder input으로 제공하지 않는다. |
+| Source-of-Truth Catalog | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 source tier와 safe reference를 관리하는 target component다. Retrieval에서는 authorized evidence 안의 ranking/tie-break/conflict hint로만 사용한다. |
 
 ### 구성도
 
@@ -121,7 +124,7 @@ graph LR
 
 | 연동 | 방식 | 비고 |
 | --- | --- | --- |
-| LLM Provider (OpenAI, Anthropic, Google) | `apps/shared/services/llm_client`의 자체 client 계층. 일반 LLM 호출은 `LLMService`가 credential/권한/허용된 fallback 정책을 판정한 뒤 client를 선택한다. Knowledge Agent answer의 explicit KB/auto collection flow는 별도 ADR 전까지 명시 `generation_model_id`와 `credential_id`를 요구하며, 일반 fallback을 자동 선택으로 해석하지 않는다 | Gateway(테스트 실행, RAG answer)와 Workflow Engine(LLM node) 모두 이 경로를 사용 |
+| LLM Provider (OpenAI, Anthropic, Google) | `apps/shared/services/llm_client`의 자체 client 계층. 일반 LLM 호출은 `LLMService`가 credential/권한/허용된 fallback 정책을 판정한 뒤 client를 선택한다. Standalone RAG answer API의 explicit KB/auto collection flow는 별도 ADR 전까지 명시 `generation_model_id`와 `credential_id`를 요구하며, 일반 fallback을 자동 선택으로 해석하지 않는다 | Gateway(테스트 실행, RAG answer)와 Workflow Engine(LLM node) 모두 이 경로를 사용 |
 | Google OAuth | 로그인 연동 (`GOOGLE_CLIENT_ID/SECRET`) | |
 | 문서 저장소 | local 또는 S3 (`STORAGE_TYPE`, `AWS_*`) | Knowledge 문서 원본 저장 |
 | 문서 파싱 | LlamaCloud (`LLAMA_CLOUD_API_KEY`) | RAG ingestion 파싱 |

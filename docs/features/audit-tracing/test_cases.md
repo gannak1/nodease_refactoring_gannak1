@@ -8,7 +8,8 @@ Verified Against: TBD
 ## 단위 테스트
 
 - Audit metadata sanitizer는 raw source id/url/path/title, raw source principal, raw source ACL row, raw chunk content, raw prompt/completion, credential value, `encrypted_config`, raw exception을 제거한다.
-- Authorized retrieval summary allowlist는 KB id, document version id, chunk id, citation id, optional collection id, rank/score, safe metadata summary, policy result, latency/cost/token aggregate, retryability, opaque correlation/request id만 허용한다.
+- Authorized retrieval summary allowlist는 KB id, document version id, chunk id, citation id, optional collection id, rank/score, safe metadata summary, policy result, latency/cost/token aggregate, retryability, opaque correlation/request id, `query_rewrite_applied`, `query_rewrite_strategy`, `evidence_sufficient`, `insufficiency_reason`, `source_tier_used`만 허용한다.
+- Audit/trace metadata sanitizer는 raw rewritten query를 raw prompt와 같은 민감 입력으로 보고 durable metadata와 log에서 제거한다.
 - Hidden/denied/resource-hidden summary allowlist는 sanitized reason class, actor/org scope, request/correlation id, coarse retryability만 허용하고 exact hidden/denied count나 hidden KB id를 거부한다.
 - Partial result summary는 `partial_result=true`, bucketed reason summary, retryability, request/correlation id만 허용한다.
 
@@ -17,6 +18,7 @@ Verified Against: TBD
 - Raw/compliance access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Policy block, permission denied, source ACL stale/denied/unmapped/ambiguous, connector/egress failure는 raw exception 없이 sanitized reason code로 기록된다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.
+- RAG strategy/A-B summary API는 query rewrite 적용 여부, evidence sufficiency 결과, source tier summary를 safe field로 반환할 수 있지만 raw rewritten query와 hidden source reference를 반환하지 않는다.
 
 ## E2E 테스트
 

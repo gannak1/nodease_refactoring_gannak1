@@ -34,6 +34,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0012](ADR-0012-metadata-aware-hierarchical-rag-boundary.md) | Accepted | Metadata-aware 및 Hierarchical RAG 경계 | Metadata filter는 allowlist schema, metadata는 permission source가 아니며, RAG trace는 raw chunk content 없이 citation metadata를 저장 |
 | [ADR-0013](ADR-0013-rag-answer-trace-usage-correlation-boundary.md) | Accepted | RAG Agent answer와 trace/usage correlation 경계 | Standalone Agent answer는 RAG-owned `rag_answer_runs`와 opaque `correlation_id`로 연결하고, trace/usage table에 RAG 전용 FK를 추가하지 않음 |
 | [ADR-0014](ADR-0014-knowledge-base-document-atom-and-collection-boundary.md) | Accepted | Knowledge Base document atom과 Collection 경계 | 목표 KB 통합 모델에서 Knowledge Base는 document/source item 단위 permission/retrieval/sync/lifecycle atom이고, Knowledge Collection은 grouping/routing/ops 단위. RAG/embedding은 redacted canonical text만 사용하고 raw content는 opt-in protected artifact로만 별도 저장 가능. destructive cutover와 source ACL/API/privacy gate는 별도 승인 필요 |
+| [ADR-0015](ADR-0015-knowledge-skill-context-routing-boundary.md) | Accepted | Knowledge Skill과 LLM node RAG 옵션 구성 경계 | Knowledge Skill은 Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 참고하는 provider-neutral 절차/context/routing artifact다. 권한 source나 source of truth가 아니며 실행 시점 RAG 권한을 부여하지 않는다 |
 
 ## 참고 보고서
 

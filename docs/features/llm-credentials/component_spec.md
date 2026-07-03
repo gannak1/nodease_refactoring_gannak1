@@ -12,7 +12,7 @@ Verified Against: current implementation baseline plus Knowledge target model AD
 
 - `CredentialPermissionService`: credential visibility와 `use` permission을 평가한다.
 - `CredentialModelRelationResolver`: credential-model pair가 active이고 verified 상태인지 확인한다.
-- `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 Knowledge Agent answer flow용 safe option schema를 만든다.
+- `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 standalone RAG answer flow용 safe option schema를 만든다.
 
 ## 상태
 
@@ -21,7 +21,7 @@ Verified Against: current implementation baseline plus Knowledge target model AD
 
 ## 상호작용
 
-- Knowledge Agent answer는 answer-run 생성 전에 credential/model preflight를 호출한다.
+- Standalone RAG answer는 answer-run 생성 전에 credential/model preflight를 호출한다.
 - Auto collection mode는 explicit KB mode와 같은 generation credential/model preflight를 사용한다.
 - Embedding credential readiness는 generation credential selection과 별개이며 `credential_id`에서 추론하면 안 된다.
 
