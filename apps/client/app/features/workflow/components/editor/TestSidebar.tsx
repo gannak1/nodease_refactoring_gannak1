@@ -10,6 +10,8 @@ import {
   Loader2,
   CheckCircle,
   AlertCircle,
+  Clock,
+  Coins,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
@@ -53,6 +55,46 @@ const getHttpStatus = (error: unknown) => {
   return undefined;
 };
 
+const readTokenUsage = (output: unknown) => {
+  if (!output || typeof output !== 'object') return undefined;
+  const usage = (output as { usage?: Record<string, unknown> }).usage || {};
+  const totalTokens = usage.total_tokens;
+  if (typeof totalTokens === 'number') return totalTokens;
+
+  const promptTokens =
+    typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : 0;
+  const completionTokens =
+    typeof usage.completion_tokens === 'number'
+      ? usage.completion_tokens
+      : 0;
+  const summedTokens = promptTokens + completionTokens;
+  return summedTokens > 0 ? summedTokens : undefined;
+};
+
+const readCost = (output: unknown) => {
+  if (!output || typeof output !== 'object') return undefined;
+  const directCost = (output as { cost?: unknown }).cost;
+  if (typeof directCost === 'number') return directCost;
+  const usage = (output as { usage?: Record<string, unknown> }).usage || {};
+  return typeof usage.total_cost === 'number' ? usage.total_cost : undefined;
+};
+
+const formatLatency = (latencyMs?: number | null) => {
+  if (latencyMs === undefined || latencyMs === null) return '-';
+  if (latencyMs < 1000) return `${latencyMs}ms`;
+  return `${(latencyMs / 1000).toFixed(1)}s`;
+};
+
+const formatTokens = (totalTokens?: number | null) => {
+  if (totalTokens === undefined || totalTokens === null) return '-';
+  return totalTokens.toLocaleString();
+};
+
+const formatCost = (cost?: number | null) => {
+  if (cost === undefined || cost === null) return '-';
+  return `$${cost.toFixed(6)}`;
+};
+
 export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const {
     isTestPanelOpen,
@@ -67,9 +109,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     envVariables,
     runtimeVariables,
     testExecutionStatus,
+    testExecutionStartedAt,
+    testExecutionFinishedAt,
     testExecutionResult,
     testNodeResults,
     testExecutionError,
+    currentExecutingNodeId,
     isTestUploading,
     beginTestExecution,
     setTestUploading,
@@ -182,57 +227,69 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
   // 패널이 열릴 때 입력값 초기화 (실행 결과는 유지)
   useEffect(() => {
-    if (isTestPanelOpen) {
-      const initial: Record<string, any> = {};
-      variables.forEach((v) => {
-        if (v.type === 'number') {
-          initial[v.name] = 0;
-        } else if (v.type === 'checkbox') {
-          initial[v.name] = false;
-        } else if (v.type === 'select') {
-          initial[v.name] = v.options?.[0]?.value || '';
-        } else if (v.type === 'file') {
-          initial[v.name] = null;
-        } else {
-          initial[v.name] = '';
-        }
-      });
+    if (!isTestPanelOpen) return;
 
-      // 웹훅의 경우 캡처된 데이터가 있으면 자동 채우기
-      if (startNode?.type === 'webhookTrigger') {
-        const data = startNode.data as any;
-        if (data.captured_payload) {
-          initial['__json_payload__'] = JSON.stringify(
-            data.captured_payload,
-            null,
-            2,
-          );
+    const timeout = window.setTimeout(() => {
+      if (isTestPanelOpen) {
+        const initial: Record<string, any> = {};
+        variables.forEach((v) => {
+          if (v.type === 'number') {
+            initial[v.name] = 0;
+          } else if (v.type === 'checkbox') {
+            initial[v.name] = false;
+          } else if (v.type === 'select') {
+            initial[v.name] = v.options?.[0]?.value || '';
+          } else if (v.type === 'file') {
+            initial[v.name] = null;
+          } else {
+            initial[v.name] = '';
+          }
+        });
+
+        // 웹훅의 경우 캡처된 데이터가 있으면 자동 채우기
+        if (startNode?.type === 'webhookTrigger') {
+          const data = startNode.data as any;
+          if (data.captured_payload) {
+            initial['__json_payload__'] = JSON.stringify(
+              data.captured_payload,
+              null,
+              2,
+            );
+          }
         }
+
+        setInputs(initial);
+        setFiles({});
       }
+    }, 0);
 
-      setInputs(initial);
-      setFiles({});
-    }
+    return () => window.clearTimeout(timeout);
   }, [isTestPanelOpen]);
 
   useEffect(() => {
     if (!compareNodeId && llmNodes[0]) {
-      setCompareNodeId(llmNodes[0].id);
+      const timeout = window.setTimeout(() => {
+        setCompareNodeId(llmNodes[0].id);
+      }, 0);
+      return () => window.clearTimeout(timeout);
     }
   }, [compareNodeId, llmNodes]);
 
   useEffect(() => {
     const selected = llmNodes.find((node) => node.id === compareNodeId);
     if (!selected) return;
-    const data = selected.data as any;
-    if (compareType === 'model') {
-      setLeftValue(data.model_id || '');
-      setRightValue(data.fallback_model_id || data.model_id || '');
-    } else {
-      setLeftValue(data.user_prompt || '');
-      setRightValue(data.user_prompt || '');
-    }
-    setCompareResult(null);
+    const timeout = window.setTimeout(() => {
+      const data = selected.data as any;
+      if (compareType === 'model') {
+        setLeftValue(data.model_id || '');
+        setRightValue(data.fallback_model_id || data.model_id || '');
+      } else {
+        setLeftValue(data.user_prompt || '');
+        setRightValue(data.user_prompt || '');
+      }
+      setCompareResult(null);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [compareNodeId, compareType, llmNodes]);
 
   if (!isTestPanelOpen) return null;
@@ -246,17 +303,182 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     status: 'success' | 'failure' | 'running',
     latencyMs?: number,
   ) => {
-    const usage = output?.usage || {};
     return {
       status,
       model: output?.model,
-      total_tokens:
-        usage.total_tokens ||
-        (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
-      total_cost: output?.cost || usage.total_cost || 0,
+      total_tokens: readTokenUsage(output),
+      total_cost: readCost(output),
       latency_ms: latencyMs,
     };
   };
+
+  const resultOutputByNodeId = new Map<string, unknown>();
+  for (const result of nodeResults) {
+    resultOutputByNodeId.set(result.nodeId, result.output);
+  }
+  if (
+    executionResult &&
+    typeof executionResult === 'object' &&
+    !Array.isArray(executionResult)
+  ) {
+    for (const [nodeId, output] of Object.entries(
+      executionResult as Record<string, unknown>,
+    )) {
+      resultOutputByNodeId.set(nodeId, output);
+    }
+  }
+
+  const nodeExecutionSummaries = nodes
+    .map((node) => {
+      const data = node.data as {
+        title?: string;
+        name?: string;
+        status?: string;
+        observability?: {
+          status?: 'success' | 'failure' | 'running';
+          total_tokens?: number;
+          total_cost?: number;
+          latency_ms?: number;
+        };
+      };
+      const output = resultOutputByNodeId.get(node.id);
+      const status =
+        currentExecutingNodeId === node.id
+          ? 'running'
+          : data.observability?.status || data.status || 'idle';
+
+      return {
+        nodeId: node.id,
+        nodeType: node.type || 'node',
+        title: data.title || data.name || getNodeDisplayName(node.id),
+        status,
+        output,
+        latencyMs: data.observability?.latency_ms,
+        totalTokens: readTokenUsage(output) ?? data.observability?.total_tokens,
+        totalCost: readCost(output) ?? data.observability?.total_cost,
+      };
+    })
+    .filter((summary) =>
+      ['running', 'success', 'failure'].includes(summary.status),
+    );
+
+  const totalExecutionMs =
+    testExecutionStartedAt && testExecutionFinishedAt
+      ? testExecutionFinishedAt - testExecutionStartedAt
+      : null;
+  const totalTokens = nodeExecutionSummaries.reduce((sum, item) => {
+    return sum + (item.totalTokens ?? 0);
+  }, 0);
+  const totalCost = nodeExecutionSummaries.reduce((sum, item) => {
+    return sum + (item.totalCost ?? 0);
+  }, 0);
+  const hasTokenSummary = nodeExecutionSummaries.some(
+    (item) => item.totalTokens !== undefined,
+  );
+  const hasCostSummary = nodeExecutionSummaries.some(
+    (item) => item.totalCost !== undefined,
+  );
+
+  const renderNodeExecutionSummary = (
+    summary: (typeof nodeExecutionSummaries)[number],
+  ) => {
+    const isRunning = summary.status === 'running';
+    const isFailure = summary.status === 'failure';
+    const statusLabel = isRunning ? '실행 중' : isFailure ? '실패' : '성공';
+    const statusClassName = isRunning
+      ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300'
+      : isFailure
+        ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
+        : 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300';
+    const StatusIcon = isRunning ? Loader2 : isFailure ? AlertCircle : CheckCircle;
+
+    return (
+      <div
+        key={summary.nodeId}
+        className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {summary.title}
+            </div>
+            <div className="mt-1 text-xs text-gray-500">
+              {summary.nodeType}
+            </div>
+          </div>
+          <span
+            className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${statusClassName}`}
+          >
+            <StatusIcon
+              className={`h-3.5 w-3.5 ${isRunning ? 'animate-spin' : ''}`}
+            />
+            {statusLabel}
+          </span>
+        </div>
+        <dl className="grid grid-cols-3 gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900">
+          <div>
+            <dt className="flex items-center gap-1 text-gray-500">
+              <Clock className="h-3.5 w-3.5" />
+              시간
+            </dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatLatency(summary.latencyMs)}
+            </dd>
+          </div>
+          <div>
+            <dt className="flex items-center gap-1 text-gray-500">
+              <Coins className="h-3.5 w-3.5" />
+              비용
+            </dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatCost(summary.totalCost)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">토큰</dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatTokens(summary.totalTokens)}
+            </dd>
+          </div>
+        </dl>
+        {summary.output !== undefined && (
+          <div className="max-h-40 overflow-x-auto border-t border-gray-100 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
+            <pre className="text-xs font-mono text-gray-600 dark:text-gray-300">
+              {stringifyOutputForDisplay(summary.nodeId, summary.output)}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderExecutionTotalSummary = () => (
+    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
+      <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+        최종 실행 요약
+      </h3>
+      <dl className="mt-3 grid grid-cols-3 gap-3 text-xs">
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">전체 시간</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {formatLatency(totalExecutionMs)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">전체 비용</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {hasCostSummary ? formatCost(totalCost) : '-'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">전체 토큰</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {hasTokenSummary ? formatTokens(totalTokens) : '-'}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
 
   const handleExecute = async () => {
     if (!activeWorkflowId) return;
@@ -601,31 +823,23 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {isExecuting && nodeResults.length > 0 ? (
+        {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-blue-600 mb-4">
               <Loader2 className="w-5 h-5 animate-spin" />
               <h3 className="text-sm font-medium">실행 중...</h3>
             </div>
-            {nodeResults.map((result, index) => (
-              <div
-                key={`${result.nodeId}-${index}`}
-                className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700 animate-in fade-in slide-in-from-bottom-2 duration-300"
-              >
-                <div className="px-4 py-2 bg-green-50 border-b border-green-200 flex items-center gap-2 dark:bg-green-900/20 dark:border-green-800">
-                  <CheckCircle className="w-4 h-4 text-green-600" />
-                  <span className="text-xs font-medium text-green-800 dark:text-green-400">
-                    [{result.nodeType}] 완료
-                  </span>
-                </div>
-                <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900 max-h-40">
-                  <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                    {stringifyOutputForDisplay(result.nodeId, result.output)}
-                  </pre>
+            {nodeExecutionSummaries.length > 0 ? (
+              nodeExecutionSummaries.map(renderNodeExecutionSummary)
+            ) : (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                <div className="flex items-center gap-2 font-medium">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  첫 노드 실행 결과를 기다리는 중입니다.
                 </div>
               </div>
-            ))}
+            )}
           </div>
         ) : !hasExecutionResult && !error ? (
           /* Input Form */
@@ -982,27 +1196,18 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             )}
 
             {hasExecutionResult && (
-              <div>
+              <div className="space-y-4">
+                {renderExecutionTotalSummary()}
                 <h3 className="text-sm font-medium text-gray-900 mb-3 dark:text-gray-200">
                   노드별 실행 결과
                 </h3>
                 <div className="space-y-3">
-                  {Object.entries(executionResult as Record<string, any>).map(
-                    ([nodeId, output]: [string, any]) => (
-                      <div
-                        key={nodeId}
-                        className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700"
-                      >
-                        <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 dark:bg-gray-800 dark:border-gray-700">
-                          {getNodeDisplayName(nodeId)}
-                        </div>
-                        <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900">
-                          <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                            {stringifyOutputForDisplay(nodeId, output)}
-                          </pre>
-                        </div>
-                      </div>
-                    ),
+                  {nodeExecutionSummaries.length > 0 ? (
+                    nodeExecutionSummaries.map(renderNodeExecutionSummary)
+                  ) : (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800">
+                      노드별 실행 결과가 없습니다.
+                    </div>
                   )}
                 </div>
               </div>
