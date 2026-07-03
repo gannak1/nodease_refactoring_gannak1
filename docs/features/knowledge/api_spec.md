@@ -5,7 +5,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. 목표 API는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate가 닫힌 뒤 구현한다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
-## 현재 Baseline Endpoints
+## Current Baseline Endpoints
 
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
@@ -18,7 +18,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 그 외 `/api/v1/knowledge/*` KB/list/detail/document/process/sync surface, `/api/v1/rag/upload/presigned-url`, `/api/v1/rag/document/*`, `/api/v1/rag/proxy/preview` 계열은 현재 동작 경로로 읽는다. 특정 endpoint가 helper 기반 KB permission enforcement를 명시하지 않는 한, 현재 `/api/v1/knowledge/*` endpoint는 owner/current-behavior filtered surface다. Document content/download/preview surface는 현재 raw 또는 source-derived content를 노출할 수 있으므로, KB 통합 cutover 전 target raw/compliance access 또는 redacted-preview policy로 재분류해야 한다. URL/proxy preview surface는 목표 `OutboundEgressGuard` 정렬 대상이며, 구현이 갱신되기 전에는 target egress 계약을 만족한다고 보지 않는다.
 
-## 목표 Endpoint Groups
+## Target Endpoint Groups
 
 | 그룹 | 목표 path | 목적 |
 | --- | --- | --- |
@@ -33,9 +33,9 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 이 path는 목표 후보이며 아직 승인된 API 계약이 아니다. 최종 path 이름은 API gate review에서 확정한다. 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
 
-## 요청 모델
+## Request Model
 
-### 명시 KB Answer
+### Explicit KB Answer
 
 Explicit KB mode는 알려진 `knowledge_base_id`를 입력받는다. 이 직접 모드에서는 collection route permission을 요구하지 않을 수 있지만, KB helper, source ACL/requester authorization, metadata filter, hierarchy mode, final evidence policy는 항상 적용한다.
 
@@ -52,7 +52,7 @@ Explicit KB mode는 알려진 `knowledge_base_id`를 입력받는다. 이 직접
 | `evidence_sufficiency_policy` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 기본값과 threshold는 gate에서 확정한다 |
 | `source_tier_policy` | 선택 목표 옵션. Source-of-Truth Tier를 authorized evidence 안에서 ranking/tie-break/conflict hint로만 사용한다 |
 
-### 자동 Collection Answer
+### Auto Collection Answer
 
 Auto mode는 arbitrary KB id를 permission bypass로 받지 않는다. 먼저 safe candidate set을 구성한다.
 
@@ -74,7 +74,7 @@ Router candidate metadata는 safe identifier와 coarse summary로 제한한다. 
 
 Skill candidate metadata도 같은 boundary를 따른다. Workflow Builder가 받을 수 있는 skill field는 safe skill id, skill version, safe display label, source-of-truth tier, freshness state, eval status, validation checklist id, redaction-safe routing hint 정도로 제한한다. Raw skill body, hidden source reference, raw source title/path/url, restricted document list, raw content, prompt/completion, provider raw response는 Builder input이 아니다.
 
-### Workflow 실행 시점 RAG 실행 주체
+### Workflow Runtime RAG Execution Subject
 
 Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 `execution_subject`를 명시해야 한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다.
 
@@ -103,9 +103,9 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 
 `llm_assisted` query rewrite는 LLM 호출이므로 구현 전 gate에서 execution subject, generation model/credential, credential `use` 권한, usage/cost 기록, timeout, token/cost budget, 실패 시 fallback을 확정해야 한다. Workflow runtime에서 실행되면 rewrite LLM call도 workflow 실행 주체 기준의 권한과 비용 기록을 따라야 한다.
 
-## 응답 모델
+## Response Model
 
-### Citation 식별자
+### Citation Identity
 
 목표 citation field:
 
@@ -136,7 +136,7 @@ Skill을 사용한 workflow draft, LLM node의 RAG 옵션, workflow test run은 
 
 Skill provenance는 source of truth를 대체하지 않는다. 실행 시점 citation은 계속 KB/document version/chunk/decision record 같은 근거 resource를 가리켜야 한다.
 
-### 부분 결과
+### Partial Result
 
 Operational partial failure는 반환되는 모든 evidence가 KB permission, source ACL, final policy gate를 통과한 경우에만 safe partial result로 반환할 수 있다.
 
@@ -154,7 +154,7 @@ Operational partial failure는 반환되는 모든 evidence가 KB permission, so
 - unavailable document를 추론하게 하는 source distribution
 - raw exception message
 
-### RAG 전략 Summary
+### RAG Strategy Summary
 
 A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summary만 사용할 수 있다.
 
@@ -181,7 +181,7 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 
 이 summary에는 raw chunk content, raw source title/path/url, raw ACL row, 권한 없는 KB/document id, exact denied count, raw rewritten query, raw prompt/completion/provider response를 포함하지 않는다.
 
-## 권한과 오류 계약
+## Permission And Error Contract
 
 | Mode | 필수 gate |
 | --- | --- |
@@ -214,7 +214,7 @@ Matrix는 JSON/SSE shape, HTTP status 또는 terminal event 의미, answer-run �
 
 현재 구현된 standalone single-KB `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream` lifecycle, same-scope permission preflight blocked status, trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 따른다. ADR-0014의 resource hiding matrix는 target KB cutover, source-managed KB, auto collection, multi-KB mode에 필요한 추가 gate이며, ADR-0013의 현재 단일 KB 계약을 재정의하지 않는다.
 
-## Trace와 Audit
+## Trace And Audit
 
 - Multi-KB 또는 collection-routed answer는 `trace_payloads.rag_answer_run_id`나 `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다.
 - Standalone Agent answer lifecycle은 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)에 따라 `rag.answer.*`와 `rag_answer_runs`를 사용한다.

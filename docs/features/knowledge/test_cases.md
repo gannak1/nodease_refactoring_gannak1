@@ -5,7 +5,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. 목표 모델 테스트는 해당 동작에 필요한 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md) execution gate가 닫힌 뒤 구현 blocker가 된다.
 
-## 단위 테스트
+## Unit Tests
 
 - Metadata filter는 allowlist된 key/operator만 허용하고 free-form dict, JSONPath, raw SQL fragment, secret/header/prompt/completion/raw response field를 거부한다.
 - Classification metadata가 없으면 [ADR-0007](../../decisions/ADR-0007-mvp2-classification-metadata-storage.md)에 따라 `internal`로 처리한다.
@@ -25,7 +25,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - Ingestion lock release는 owner token을 비교한다. TTL 만료 뒤 다른 worker가 lock을 획득한 경우 stale worker는 새 worker의 lock을 삭제하지 못한다.
 - Fencing token 또는 동등한 guard가 없는 stale worker는 active version, `content_hash`, chunking fingerprint, external index namespace를 finalize하지 못한다.
 
-## 권한과 RBAC 테스트
+## Permission And RBAC Tests
 
 - Collection `read`, `route`, `manage`, `sync`만으로는 하위 KB content retrieval 권한이 생기지 않는다.
 - Auto collection mode는 collection route permission이 없는 KB를 제외한다.
@@ -40,7 +40,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - 다른 organization KB id의 response shape, audit behavior, answer-run 생성 여부는 resource-hiding API matrix gate가 닫힌 뒤 정의한다.
 - Visible resource 확인 이후 same-scope KB use denial은 승인된 resource-hiding/API matrix를 따른다. Matrix가 resource visible 상태를 유지한다고 결정한 경우에만 `403 permission.denied`를 허용한다.
 
-## Connector와 Egress 테스트
+## Connector And Egress Tests
 
 - Connector preview/test/fetch는 승인된 outbound guard factory 밖의 raw socket, ad hoc HTTP client, custom dialer를 사용할 수 없다.
 - `/api/v1/rag/proxy/preview`, URL upload/preview(`s3FileUrl`, `apiUrl`), crawler, sitemap, future web/API connector, DB/SSH/SaaS/object-storage probe는 모두 central guard를 통과한다.
@@ -51,7 +51,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - Object storage adapter는 policy가 bounded listing을 명시적으로 허용하지 않는 한 과도한 bucket/listing operation을 거부한다.
 - Egress/adapter error는 sanitized reason code를 반환하고 credential이나 raw connection string을 포함하지 않는다.
 
-## Sync와 Ingestion 테스트
+## Sync And Ingestion Tests
 
 - Sync lease는 두 worker가 같은 source item을 동시에 finalize하지 못하게 한다.
 - 같은 document-level KB에 대한 concurrent ingestion은 하나의 finalization만 성공한다.
@@ -69,7 +69,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - DB source sync 또는 shared vector save path가 같은 KB/document chunks를 동시에 교체하려 할 때 advisory lock 또는 versioned chunk set이 lost update를 막는다.
 - Document/KB delete는 DB commit 전에 object storage 또는 raw artifact를 먼저 삭제하지 않는다. Physical cleanup은 outbox/reconciler가 idempotent하게 수행한다.
 
-## Retrieval과 Agent 테스트
+## Retrieval And Agent Tests
 
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.
 - Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다.
@@ -96,7 +96,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - PII/final evidence policy block은 answer delta나 citation content preview가 emit되기 전에 발생한다.
 - 현재 standalone single-KB Agent answer lifecycle과 same-scope blocked 처리 테스트는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 기준으로 유지하고, ADR-0014 matrix 테스트는 target cutover/source-managed/auto/multi-KB mode에 추가한다.
 
-## Audit, Trace, Privacy 테스트
+## Audit, Trace, And Privacy Tests
 
 - Successful retrieval audit은 redaction-safe KB/document version/chunk id, score summary, correlation id, policy-safe metadata만 저장한다.
 - Hidden/denied/resource-hidden path audit/trace metadata에는 raw title/path/url, exact hidden count, denied KB id, raw source ACL, raw exception을 포함하지 않는다.
@@ -116,7 +116,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - 동시 retention purge worker는 같은 answer run을 중복 삭제하거나 중복 purge audit count로 기록하지 않는다.
 - Retention purge dry-run은 실제 `purged_count`가 아니라 `would_purge_count` 같은 safe preview 의미로만 표시한다.
 
-## API와 UI 테스트
+## API And UI Tests
 
 - Collection list는 safe redacted name/description과 non-color text label이 있는 state badge를 표시한다.
 - Source metadata에서 유래한 system-managed collection display name/description은 storage/display 전에 redaction, cap, display-policy approval을 거친다.
@@ -129,7 +129,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 - Workflow Playground에서 draft/unpublished skill 실험을 허용하는 정책을 채택하더라도, 운영 실행 시점 자동 후보에는 포함되지 않고 actor의 KB permission/source ACL/redaction gate를 우회하지 않는다.
 - Demo fixture는 상담원 허용 문서와 제한 문서를 분리하고, 제한 문서가 모든 운영 RAG mode의 prompt/citation/trace에 포함되지 않는지 검증한다.
 
-## 성능과 부하 테스트
+## Performance And Load Tests
 
 - Bulk permission helper는 per-KB database query 없이 user-candidate lookup과 KB-centric lookup을 처리한다.
 - Candidate cap은 stable ordering으로 큰 candidate set을 deterministic하게 잘라낸다.

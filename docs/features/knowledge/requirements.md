@@ -11,7 +11,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 
 현재 구현은 manual Knowledge Base 생성, 문서 업로드/색인, metadata-aware retrieval, hierarchical RAG, standalone RAG Agent answer 기반을 제공한다. 목표 KB 통합 모델은 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)에 따라 Knowledge Base를 document/source item 단위 permission/retrieval/sync/lifecycle atom으로 재정의하고, Knowledge Collection을 grouping/routing/UX/ops 단위로 둔다. Knowledge Skill 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
-## 현재 Baseline
+## Current Baseline
 
 - `knowledge_bases`는 현재 코드에서 여러 `documents`를 포함할 수 있는 RAG data source 상위 단위다.
 - Metadata-aware/hierarchical RAG 경계는 [ADR-0012](../../decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md)를 따른다.
@@ -20,7 +20,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - 현재 `documents.meta_info`는 current metadata convention의 source of truth다.
 - 목표 cutover 전까지 공식 문서는 현재 동작과 목표 모델을 분리해 읽어야 한다.
 
-## 목표 모델
+## Target Model
 
 - `KnowledgeBase`: 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom.
 - `KnowledgeCollection`: 여러 document-level KB를 묶는 grouping, routing, UX, operations 단위.

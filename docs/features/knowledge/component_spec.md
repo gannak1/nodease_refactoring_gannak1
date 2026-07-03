@@ -3,7 +3,7 @@
 Status: Draft
 Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
-## 도메인 컴포넌트
+## Domain Components
 
 | Component | 책임 | 경계 |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 | Audit/Trace Summarizer | Redaction-safe audit/trace/answer summary를 만든다 | Raw content/title/path/url은 제외하고, raw/compliance audit은 safe reference, decision, reason만 저장한다 |
 | RAG Answer Retention Worker | Terminal answer run의 retention purge를 수행하고 aggregate audit을 남긴다 | requested/running row를 삭제하지 않고 동시 purge를 row lock/marker로 방지한다 |
 
-## UI 화면
+## UI Surfaces
 
 | Surface | 목적 |
 | --- | --- |
@@ -43,7 +43,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 | Audit/Citation Detail | Redaction-safe citation과 retrieval summary를 표시한다. Raw content는 별도 raw/compliance surface에서만 사용한다 |
 | RAG A/B Compare | LLM node 단위 RAG strategy, token, cost, citation summary를 비교한다 |
 
-## 상태 모델
+## State Model
 
 | Object | States |
 | --- | --- |
@@ -58,7 +58,7 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw artifact purge, source tombstone cleanup은 구현 전에 별도 retention policy, audit action/reason code, recovery contract가 필요하다.
 
-## 상호작용 흐름
+## Interaction Flows
 
 ### 빌더 단계 LLM node RAG 옵션 구성
 
@@ -70,7 +70,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 6. Builder output에는 raw source id/url/path/title, raw principal, raw ACL fact, exact hidden/denied count, raw content, raw skill body를 넣지 않는다.
 7. 생성된 workflow의 LLM node의 RAG 옵션은 실행 시점에 execution subject 기준으로 collection route, KB permission, source ACL/requester authorization, final evidence policy를 다시 통과해야 한다.
 
-### 실행 시점 Collection Retrieval
+### Runtime Collection Retrieval
 
 1. Workflow runtime이 execution subject와 active organization을 검증한다.
 2. Listing surface에는 collection `read`, routing scope에는 collection `route`를 bulk 평가한다.
@@ -82,7 +82,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 8. 근거가 부족하면 추측 답변을 만들지 않고 safe no-result 또는 insufficient-evidence response로 닫는다.
 9. Answer/citation/audit/trace summary는 redaction-safe allowlist만 사용한다.
 
-### 명시 KB Retrieval
+### Explicit KB Retrieval
 
 1. 요청과 active organization을 검증한다.
 2. Explicit KB를 resource-hiding matrix에 따라 resolve한다.
@@ -90,7 +90,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 4. KB use helper, source ACL/requester authorization, final evidence policy는 항상 적용한다.
 5. Retrieval과 citation은 auto mode와 같은 redaction-safe 규칙을 따른다.
 
-### Workflow 실행 시점 RAG
+### Workflow Runtime RAG
 
 1. Workflow runtime이 run context에서 execution subject를 명시적으로 resolve한다.
 2. Execution subject가 없거나 모호하면 RAG preflight를 실패시킨다. Workflow owner를 silent fallback으로 사용하지 않는다.
@@ -101,7 +101,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 7. Evidence sufficiency policy가 insufficient로 판정하면 workflow node는 근거 부족 응답이나 안전한 분기 결과를 반환해야 하며 문서에 없는 정책 해석을 생성하지 않는다.
 8. Trace/A-B summary는 safe citation metadata, token/cost/latency, strategy, query rewrite 적용 여부, evidence sufficiency 결과, skill id/version/freshness/eval status만 노출한다.
 
-### Source Sync와 Version Activation
+### Source Sync And Version Activation
 
 1. Scheduler가 connector sync lease를 획득한다.
 2. Connector worker가 guard/adapter를 통해 source item과 source ACL을 가져온다.
@@ -119,7 +119,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 4. Content 반환 전에 raw access audit을 기록한다.
 5. Raw content는 dedicated raw/compliance surface에서만 반환한다. Agent answer, retrieval context, prompt construction, SSE stream은 redacted canonical text만 사용한다.
 
-## 성능과 확장성
+## Performance And Scalability
 
 - Permission helper는 candidate resolution에서 per-KB query를 피하고 bulk evaluation을 지원해야 한다.
 - Candidate lookup에는 KB 중심 index와 user-candidate index가 모두 필요하다.
@@ -131,7 +131,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 - `llm_assisted` query rewrite는 추가 latency와 LLM cost를 만든다. 운영 배포 전 rewrite timeout, token/cost budget, fallback, load shedding, usage logging 기준을 load test에 포함한다.
 - DB source sync나 shared vector save path도 같은 document-level KB에 대한 chunk replacement를 직렬화하거나 versioned chunk set + active pointer 방식으로 처리해야 한다.
 
-## 보안과 개인정보
+## Security And Privacy
 
 - Raw source id/url/title/path, raw source ACL, raw content, prompt/completion, provider raw response, credential value, secret은 audit/trace/log에서 제외한다. Raw/compliance access log는 safe reference와 decision만 저장한다.
 - Source-derived display metadata는 user-facing 저장 전에 redaction, 길이 제한, display-policy approval을 거쳐야 한다.
@@ -145,7 +145,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 - Code-bearing skill은 별도 sandbox/approval/egress/resource-cap gate가 닫히기 전까지 Knowledge 실행 시점 경로에서 실행하지 않는다.
 - Retention purge와 cleanup worker는 terminal state와 legal hold를 확인하고, concurrent worker가 같은 row를 중복 처리하지 못하도록 row lock, marker, idempotency key 중 하나를 사용해야 한다.
 
-## 접근성
+## Accessibility
 
 - Collection과 KB state badge에는 색상만이 아니라 text label이 있어야 한다.
 - Error/remediation state는 hidden name/path를 누출하지 않으면서 permission denied, source ACL stale, sync failed, hidden resource를 구분해야 한다.

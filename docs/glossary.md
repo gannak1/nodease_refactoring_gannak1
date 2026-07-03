@@ -4,14 +4,14 @@ Status: Draft
 
 이 문서는 Nodease/Moduly 문서 전반에서 반복해서 쓰는 제품, 아키텍처, 데이터 모델 용어의 기준 정의다. 기능별 문서에서는 아래 용어를 재정의하지 않고 이 문서를 참조한다.
 
-## 제품 명칭
+## Product Naming
 
 | 용어 | 정의 |
 | --- | --- |
 | Nodease | 기존 Moduly 코드를 리팩토링해 만드는 신규 서비스명. 기업 내부 AI workflow/LLMOps 운영 플랫폼을 가리키는 제품 관점 명칭이다. |
 | Moduly | 리팩토링의 출발점이 되는 기존 코드베이스와 현재 코드/배포 리소스에 남아 있는 명칭. 기존 코드, 컨테이너, Helm chart, README 실행 명령 등 인프라 식별자는 Moduly 기준으로 읽는다. |
 
-## 조직과 권한
+## Organization And Permissions
 
 | 용어 | 정의 |
 | --- | --- |
@@ -28,7 +28,7 @@ Status: Draft
 | Resource | 권한 판정 대상이 되는 업무 객체. 대표적으로 Workflow, Knowledge Base, LLM Credential, Audit 대상 organization이 있다. |
 | Explicit Deny | 명시적 거부 권한. 현재 권한 모델에는 도입하지 않는다. 권한 판정은 허용 권한 중 가장 강한 값을 선택하는 방식이다. |
 
-## Workflow와 실행
+## Workflow And Execution
 
 | 용어 | 정의 |
 | --- | --- |
@@ -43,7 +43,7 @@ Status: Draft
 | Webhook | 외부 시스템이 HTTP 요청으로 Workflow를 실행하게 하는 인바운드 트리거. |
 | Public Run API | 배포된 workflow를 app secret 기반 Bearer 인증으로 실행하는 public endpoint 계열. 일반 사용자 세션 인증과 구분한다. |
 
-## Agent와 자동 생성
+## Agent And Generation
 
 | 용어 | 정의 |
 | --- | --- |
@@ -52,7 +52,7 @@ Status: Draft
 | Agent Skill | 특정 provider 기능이 아니라 Nodease 내부에서 재사용할 수 있는 일반적인 절차/context/routing artifact 개념. Workflow 생성, LLM node의 RAG 옵션 구성, 검증 checklist를 안내할 수 있지만 권한을 부여하거나 source of truth가 되지는 않는다. 현재 Knowledge 설계의 구체 구현 단위는 `Knowledge Skill`이며, Agent Skill은 전역 Q&A 에이전트나 독립 실행 권한을 뜻하지 않는다. |
 | Wizard | Prompt/code/template 같은 특정 node 설정을 개선하거나 생성하는 보조 기능. 현재 코드에는 node 단위 wizard가 존재한다. |
 
-## Knowledge와 RAG
+## Knowledge And RAG
 
 | 용어 | 정의 |
 | --- | --- |
@@ -114,7 +114,7 @@ Status: Draft
 | Dead Letter | 재시도 한도를 넘었거나 자동 복구가 위험한 sync/outbox 작업을 운영자 remediation 대상으로 격리한 상태. |
 | RAG Answer Run | standalone RAG Agent answer 실행 기록. DB에서는 `rag_answer_runs` table을 사용한다. trace/usage table과는 FK가 아니라 `correlation_id`로 느슨하게 연결한다. |
 
-## LLM과 비용
+## LLM And Cost
 
 | 용어 | 정의 |
 | --- | --- |
@@ -126,7 +126,7 @@ Status: Draft
 | Cost Optimizer | Workflow의 현재 모델과 후보 모델을 비교 실행해 비용 절감률과 품질 차이를 제시하는 기능이다. |
 | Model Compare | 기존 compare API를 사용해 같은 workflow를 다른 model 조건으로 실행하고 결과와 비용을 비교하는 흐름이다. |
 
-## Audit와 Trace
+## Audit And Trace
 
 | 용어 | 정의 |
 | --- | --- |
@@ -141,7 +141,7 @@ Status: Draft
 | Policy Result | 정책 평가 결과. `pass`, `warn`, `block` 같은 값을 `audit_logs.audit_metadata.policy_result`에 저장한다. |
 | Correlation ID | FK가 아닌 application-level 연결 식별자. standalone RAG answer와 trace/usage/audit을 느슨하게 연결하는 데 사용하며 권한 판정 기준으로 쓰지 않는다. |
 
-## 운영과 외부 연동
+## Operations And Integrations
 
 | 용어 | 정의 |
 | --- | --- |
