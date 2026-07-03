@@ -42,6 +42,8 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 실행 오류가 노드에 연결된 경우 해당 노드는 실패 상태와 소요 시간을 표시한다.
 - 노드별 실행 요약은 테스트 실행 사이드바 안에서 확인할 수 있어야 한다.
 - 노드별 실행 요약은 노드명, 실행 상태, 소요 시간, 비용, 토큰 사용량을 포함해야 한다.
+- 백엔드 스트리밍 `node_finish` 이벤트는 노드별 `latency_ms`, `total_tokens`, `total_cost` 표준 필드를 제공해야 한다.
+- 프론트는 노드별 소요 시간, 비용, 토큰 사용량을 표시할 때 `node_finish`의 표준 필드를 우선 사용해야 한다.
 - 워크플로우 테스트가 완료되면 테스트 실행 사이드바의 마지막 영역에 서버 실행 시간, 화면 완료 시간, 전체 비용, 전체 토큰 사용량을 최종 요약으로 표시해야 한다.
 - 서버 실행 시간은 백엔드/엔진이 기록한 workflow run의 실행 시간이다. 가능한 경우 `workflow_runs.duration` 또는 stream 완료 이벤트가 제공하는 workflow-level duration을 사용한다.
 - 화면 완료 시간은 프론트가 테스트 실행 시작 상태로 전환된 시각부터 성공/실패 완료 상태로 전환된 시각까지 계산한 시간이다. 이 값에는 네트워크, stream 처리, UI 상태 갱신, 시각적 지연이 포함될 수 있다.
@@ -85,11 +87,12 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 
 ### 1. 실행 편의성
 
-- 토큰 사용량은 노드 output의 `usage.total_tokens` 또는 `prompt_tokens + completion_tokens` 값이 있을 때만 표시한다. 값이 없으면 `-`로 표시한다.
-- 비용은 노드 output의 `cost`, `usage.total_cost`, 또는 백엔드가 제공하는 node-level cost 값이 있을 때만 표시한다. 값이 없으면 `-`로 표시한다.
-- 노드별 소요 시간은 프론트가 `node_start`와 `node_finish` 이벤트 수신 시각 기준으로 계산한다. 백엔드의 영구 실행 로그와 완전히 같은 값이라고 보장하지 않는다.
+- 노드별 토큰 사용량은 `node_finish.total_tokens` 표준 필드를 우선 사용한다. 값이 없으면 `-`로 표시한다.
+- 노드별 비용은 `node_finish.total_cost` 표준 필드를 우선 사용한다. 값이 없으면 `-`로 표시한다.
+- 노드별 소요 시간은 `node_finish.latency_ms` 표준 필드를 우선 사용한다. 값이 없으면 프론트가 `node_start`와 `node_finish` 이벤트 수신 시각 기준으로 계산한 값을 fallback으로 사용할 수 있다.
+- 프론트의 fallback 소요 시간은 백엔드의 영구 실행 로그와 완전히 같은 값이라고 보장하지 않는다.
 - 서버 실행 시간과 화면 완료 시간은 서로 다른 지표다. 화면 완료 시간에서 서버 실행 시간을 뺀 값을 순수 UI 처리 시간으로 표현하지 않는다.
-- 서버 실행 시간이 응답에 없으면 화면 완료 시간만 표시하고, 서버 실행 시간은 `-` 또는 `기록 없음`으로 표시한다.
+- workflow-level 서버 실행 시간이 응답에 없으면 노드별 `latency_ms` 합산값을 서버 실행 시간 fallback으로 표시한다. 노드 latency도 없을 때만 서버 실행 시간은 `-` 또는 `기록 없음`으로 표시한다.
 - 실행 권한이 없는 사용자는 테스트 버튼을 실행할 수 없어야 하며, 테스트 실행 사이드바는 이전 결과를 조작 가능한 상태로 보여주지 않는다.
 - secret, credential 원문, raw prompt 전체를 테스트 실행 요약에 노출하지 않는다.
 
@@ -104,6 +107,9 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 ### 3. 워크플로우 조작 편의성
 
 - 키보드 삭제는 캔버스가 shortcut scope일 때만 동작한다. 입력창, textarea, select, contenteditable 내부에서는 Backspace/Delete가 노드 삭제로 해석되면 안 된다.
+- 레이아웃 최적화는 캔버스가 shortcut scope일 때 `Ctrl + Shift + L`로 실행할 수 있어야 한다.
+- `Ctrl + Shift + L`은 브라우저 주소창 포커스 단축키인 `Ctrl + L`과 충돌하지 않도록 Shift 조합을 필수로 한다.
+- 레이아웃 최적화 shortcut은 입력창, textarea, select, contenteditable 내부에서는 동작하지 않아야 한다.
 - 시작 트리거 노드처럼 삭제가 제한된 노드가 있다면 기존 삭제 가능 정책을 우선한다.
 - 자동 재연결은 사용자 편의를 위한 graph edit 동작이며 API를 호출하지 않는다. 저장은 기존 workflow draft sync 경로를 따른다.
 
@@ -125,8 +131,7 @@ Open Question 중요도는 다음 3단계로 나눈다.
 
 | Priority | 영역 | Question | 왜 중요한가 | 결정 전 임시 처리 |
 | --- | --- | --- | --- | --- |
-| 1 | 실행 편의성 | 백엔드 스트리밍 완료 이벤트에 workflow-level `run_id`, `duration`, `total_tokens`, `total_cost`를 표준 필드로 포함할지 여부 | 서버 실행 시간과 비용/토큰을 테스트 실행 사이드바에서 정확히 표시하려면 완료 이벤트 또는 후속 조회 기준이 필요하다. | 완료 이벤트에 값이 없으면 서버 실행 시간은 `-` 또는 `기록 없음`으로 표시하고, 비용/토큰은 노드별 합산으로 fallback한다. |
-| 1 | 실행 편의성 | 백엔드 스트리밍 이벤트에 node-level token/cost/latency를 표준 필드로 포함할지 여부 | 노드별 병목/비용 비교가 핵심 UX다. 현재 output shape가 노드마다 다르면 표시 품질이 불안정하다. | 프론트는 `output.usage`, `output.cost`를 best-effort로 읽고 값이 없으면 `-`로 표시한다. |
+| 1 | 실행 편의성 | 백엔드 스트리밍 완료 이벤트에 workflow-level `run_id`, `duration`, `total_tokens`, `total_cost`를 표준 필드로 포함할지 여부 | 서버 실행 시간과 비용/토큰을 테스트 실행 사이드바에서 정확히 표시하려면 완료 이벤트 또는 후속 조회 기준이 필요하다. | 완료 이벤트에 값이 없으면 서버 실행 시간은 노드별 `latency_ms` 합산으로 fallback하고, 비용/토큰도 노드별 합산으로 fallback한다. |
 | 1 | 워크플로우 조작 편의성 | branching/condition/loop 같은 특수 노드 삭제 시 자동 재연결을 어디까지 허용할지 여부 | 잘못 재연결하면 workflow 의미가 바뀔 수 있다. 삭제 shortcut의 안전성에 직접 영향이 있다. | 기존 연결 검증을 통과하는 단순 upstream/downstream 조합만 재연결하고, 애매한 특수 노드는 삭제만 수행한다. |
 | 2 | 노드 실행 기록 패널 추가 | input/output full payload 표시 범위와 redaction 기준을 어디까지 프론트에서 보완할지 여부 | 실행 기록 패널은 trace payload와 LLM usage를 보여줄 수 있어 secret/raw prompt 노출 위험이 있다. | Gateway/API 응답 정책을 우선하고, 프론트는 allowlist 기반 preview/detail 렌더링만 허용한다. |
 | 2 | 노드 실행 기록 패널 추가 | node_id 기반 실행 기록 API의 cursor 기준을 `started_at + run_id`로 둘지, 별도 node_run id 기준으로 둘지 여부 | 실행 로그가 많아질 때 중복/누락 없는 pagination과 최신 기록 선택에 영향을 준다. | 초기 구현은 제한된 최신 page와 명확한 정렬 기준을 사용하고, 대량 조회는 후속 API에서 cursor를 확정한다. |

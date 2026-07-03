@@ -38,12 +38,13 @@ Verified Against: TBD
 | Priority | 영역 | 테스트/요구 항목 | 현재 상태 | 미구현/미통과 사유 | 대응 파일 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 실행 편의성 | 노드 output token/cost 읽기와 `-` fallback 표시 | 통과 | 구현 및 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 1 | 실행 편의성 | 노드별 실행 상태, 시간, 비용, 토큰 표시 | 부분 구현 | UI 구현은 있으나 stream event를 모킹한 render test는 아직 없다. 데모 전 수동 QA 필요 | `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
-| 1 | 실행 편의성 | 최종 서버 실행 시간, 화면 완료 시간, 비용, 토큰 요약 표시 | 부분 구현 | 화면 완료 시간 계산은 구현되어 있으나 서버 실행 시간은 stream 완료 summary 또는 run 조회 계약 반영이 필요하다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 1 | 실행 편의성 | 서버 실행 시간과 화면 완료 시간을 서로 다른 라벨로 표시 | 미구현 테스트 | 두 시간 값을 동시에 표시하는 render test가 아직 없다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 1 | 실행 편의성 | 테스트 실행 중복 클릭 방지 또는 기존 stream 정리 | 미구현 | in-flight guard, stream cleanup 정책과 UI test가 아직 없다 | TBD |
-| 1 | 실행 편의성 | stream 실패 시 사용자에게 실패 상태 표시 | 부분 구현 | 실패 상태 store/UI는 있으나 실패 stream event render test가 없다 | `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
-| 1 | 노드 조작 편의성 | 3패널 기본 표시 | 부분 구현 | UI 구현은 있으나 `NodeFullscreenEditor` render test가 없다 | `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
+| 1 | 실행 편의성 | 노드별 실행 상태, 시간, 비용, 토큰 표시 | 통과 | node summary parser와 `TestSidebar` 표시 경로 구현 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | `node_finish` 표준 필드 `latency_ms`, `total_tokens`, `total_cost` 우선 표시 | 통과 | 프론트 summary parser unit test 완료. Gateway/engine API contract test는 별도 API test infra에서 다룬다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
+| 1 | 실행 편의성 | 최종 서버 실행 시간, 화면 완료 시간, 비용, 토큰 요약 표시 | 통과 | workflow-level summary 우선 사용과 node 합산 fallback unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
+| 1 | 실행 편의성 | 서버 실행 시간과 화면 완료 시간을 서로 다른 라벨로 표시 | 통과 | `TestSidebar`가 `서버 실행`/`화면 완료` 라벨을 분리하고 summary unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 테스트 실행 중복 클릭 방지 또는 기존 stream 정리 | 통과 | 실행 중/업로드/저장 중/권한 없음 disabled 조건 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
+| 1 | 실행 편의성 | stream 실패 시 사용자에게 실패 상태 표시 | 통과 | 실패 상태 store transition unit test와 `TestSidebar` 실패 UI 구현 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 노드 조작 편의성 | 3패널 기본 표시 | 통과 | 기본 3패널 폭 산출 unit test와 `NodeFullscreenEditor` grid 구현 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 resize 계산의 min/max clamp | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 1 | 노드 조작 편의성 | viewport width 90% 안에서 편집 화면 표시 | 통과 | layout 계산 unit test 완료. 실제 DOM 폭은 수동 QA 필요 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 1 | 노드 조작 편의성 | 기본 패널 폭을 부모 영역 기준 28/52/20 비율로 계산 | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
@@ -51,8 +52,9 @@ Verified Against: TBD
 | 1 | 워크플로우 조작 편의성 | A -> B -> C 구조에서 B 삭제 시 A -> C 자동 재연결 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 입력 필드 focus 중 Backspace/Delete가 노드 삭제로 동작하지 않음 | 통과 | shortcut hook test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 삭제 후 undo 복구 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
-| 1 | 동시성 처리 | 자동 저장 응답이 늦게 도착해도 최신 화면 상태를 이전 상태로 되돌리지 않음 | 미구현 | auto-sync stale response guard 정책과 test가 아직 없다 | TBD |
-| 1 | 동시성 처리 | 테스트 실행 중 graph를 수정해도 실행 결과가 현재 편집 중인 설정값을 덮어쓰지 않음 | 부분 구현 | 실행 결과와 node data는 분리되어 있으나 snapshot/stream race test가 없다 | TBD |
+| 1 | 워크플로우 조작 편의성 | `Ctrl + Shift + L`로 레이아웃 최적화 실행 | 미구현 테스트 | shortcut hook과 layout optimize action 연결 테스트가 필요하다 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
+| 1 | 동시성 처리 | 자동 저장 응답이 늦게 도착해도 최신 화면 상태를 이전 상태로 되돌리지 않음 | 통과 | active workflow가 아닌 data 적용 시 현재 화면 nodes/edges를 덮지 않는 store test 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
+| 1 | 동시성 처리 | 테스트 실행 중 graph를 수정해도 실행 결과가 현재 편집 중인 설정값을 덮어쓰지 않음 | 통과 | 실행 결과 observability merge가 기존 node 설정값을 유지하는 store test 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 2 | 실행 편의성 | 권한 없는 테스트 실행의 403 처리 | 미구현 테스트 | Gateway/API contract test infra가 필요하다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 2 | 실행 편의성 | scope 밖 workflow 테스트 실행의 404 처리 | 미구현 테스트 | Gateway/API contract test infra가 필요하다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 2 | 실행 편의성 | 캔버스에 별도 테스트 실행 요약 패널이 표시되지 않는지 UI test로 고정 | 미구현 테스트 | BottomPanel/Canvas render test가 아직 없다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
@@ -90,21 +92,16 @@ Verified Against: TBD
 | Todo | 미완료 단계 | 이유 | 대응 파일 |
 | --- | --- | --- | --- |
 | 테스트 실행 스트리밍 API가 `node_start`, `node_finish`, `workflow_finish` 이벤트를 반환한다 | API test infra | 현재 client Vitest에서 Gateway streaming contract를 직접 검증하지 않는다. API integration/e2e 테스트 경계가 필요하다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| `workflow_finish` 이벤트가 서버 실행 시간, 전체 토큰, 전체 비용 summary를 제공하면 프론트가 이를 우선 사용한다 | API/UI contract | 현재 stream 완료 이벤트의 workflow-level summary 표준 필드가 확정되지 않았거나 UI 연결 테스트가 없다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 서버 실행 시간이 없으면 화면 완료 시간만 표시하고 서버 실행 시간은 fallback 라벨을 표시한다 | UI test | summary render test가 아직 없다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
+| `node_finish` 이벤트는 `latency_ms`, `total_tokens`, `total_cost`를 표준 필드로 반환한다 | API test infra | Gateway/engine streaming contract test가 필요하다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 권한 없는 사용자의 테스트 실행 요청은 403으로 거부된다 | API test infra | Gateway 권한 응답 검증이 client unit test 범위 밖이다. API test 또는 MSW 기반 contract test가 필요하다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | scope 밖 workflow 테스트 실행 요청은 404로 처리된다 | API test infra | active organization scope 검증은 Gateway/API 통합 테스트가 필요하다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 빌더가 테스트 실행하면 사이드바에 노드별 상태가 표시된다 | UI test | `TestSidebar`의 stream 실행 흐름을 모킹한 render test가 아직 없다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 캔버스에는 별도 테스트 실행 요약 패널이 표시되지 않는다 | UI test | 캔버스/BottomPanel render test가 아직 없다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| `can_execute=false` 사용자는 테스트 버튼을 실행할 수 없다 | UI/API test | 권한 상태를 주입한 `TestSidebar` render test와 API 직접 호출 차단 검증이 아직 분리되지 않았다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 프론트 버튼 disabled여도 API 직접 호출 권한 검증은 Gateway에서 유지된다 | API test infra | Gateway authorization contract test가 필요하다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 스트리밍 실패 시 전체 실패 상태와 식별 가능한 노드 실패 상태를 함께 표시한다 | UI test | 실패 stream event를 모킹한 render test가 아직 없다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 
 ### 노드 조작 편의성
 
 | Todo | 미완료 단계 | 이유 | 대응 파일 |
 | --- | --- | --- | --- |
-| 노드 상세 편집 화면을 열면 3패널이 기본 비율로 표시된다 | UI test | 현재는 layout 계산 유틸만 검증한다. `NodeFullscreenEditor` render test가 필요하다. | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 패널을 최대/최소 폭까지 드래그해도 UI가 겹치거나 화면 밖으로 밀려나지 않는다 | UI test | pointer drag 기반 DOM interaction test가 아직 없다. | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 노드 상세 편집 화면을 닫았다가 같은 세션에서 다시 열었을 때 세션 내 비율 유지 정책이 의도대로 동작한다 | UI behavior | 현재 구현은 컴포넌트 생명주기 안의 state 유지 기준이다. 닫기/재열기 정책을 UI test로 고정해야 한다. | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | read-only 사용자는 패널 리사이즈는 할 수 있지만 node data 수정/저장은 할 수 없다 | UI/permission test | read-only 상태에서 리사이즈와 수정 차단을 함께 검증하는 render test가 없다. | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
@@ -116,6 +113,8 @@ Verified Against: TBD
 | Todo | 미완료 단계 | 이유 | 대응 파일 |
 | --- | --- | --- | --- |
 | read-only 사용자는 Backspace/Delete로 노드 삭제 또는 자동 재연결을 수행할 수 없다 | UI permission test | `NodeCanvas`의 `isReadOnly` 조건과 shortcut hook 연결을 render test로 검증해야 한다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
+| `Ctrl + Shift + L`은 캔버스 shortcut scope에서 레이아웃 최적화를 실행한다 | Unit/UI test | layout optimize action과 shortcut hook 연결 구현 후 검증해야 한다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
+| 입력 필드 focus 중 `Ctrl + Shift + L`은 레이아웃 최적화로 해석되지 않는다 | Unit/UI test | focus context guard를 shortcut hook test로 검증해야 한다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 삭제 대상 노드에 incoming edge만 있거나 outgoing edge만 있으면 재연결 없이 해당 노드와 연결 edge만 제거한다 | Unit test | 구현은 이 동작을 포함하지만 별도 명시 테스트가 아직 없다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 삭제 대상이 시작 트리거 노드 또는 삭제 제한 노드라면 기존 삭제 제한 정책을 따른다 | Policy/implementation | 현재 legacy `deletable:false` 제거 정책과 삭제 제한 정책이 충돌한다. 제품 정책 확정 후 테스트가 필요하다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 여러 노드를 동시에 삭제할 때 삭제되는 노드끼리의 edge는 재연결 후보에서 제외한다 | Unit test | 구현은 삭제 후 남는 노드 기준으로 계산하지만 다중 삭제 fixture 테스트가 아직 없다. | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
@@ -167,9 +166,9 @@ Verified Against: TBD
 
 ### 1. 실행 편의성
 
-- 노드 output에 `usage.total_tokens`가 있으면 테스트 실행 사이드바에 해당 토큰 수를 표시한다.
-- `usage.total_tokens`가 없고 `prompt_tokens`/`completion_tokens`가 있으면 합산 값을 표시한다.
-- 노드 output에 `cost` 또는 `usage.total_cost`가 있으면 테스트 실행 사이드바에 해당 비용을 표시한다.
+- `node_finish.total_tokens`가 있으면 테스트 실행 사이드바에 해당 토큰 수를 표시한다.
+- `node_finish.total_cost`가 있으면 테스트 실행 사이드바에 해당 비용을 표시한다.
+- `node_finish.latency_ms`가 있으면 노드 소요 시간은 해당 값을 우선 표시한다.
 - 토큰 정보가 없으면 `-`를 표시한다.
 - 비용 정보가 없으면 `-`를 표시한다.
 - `node_start` 후 `node_finish`를 받으면 소요 시간이 ms 단위로 표시 가능한 값으로 계산된다.
@@ -192,6 +191,8 @@ Verified Against: TBD
 - 자동 재연결은 기존 연결 검증 규칙을 통과하는 경우에만 edge를 생성한다.
 - 여러 incoming/outgoing edge가 있는 노드를 삭제하면 가능한 유효 조합만 생성하고 중복 edge는 만들지 않는다.
 - 입력 필드에 focus가 있을 때 Backspace/Delete를 눌러도 노드 삭제 함수가 호출되지 않는다.
+- 캔버스 shortcut scope에서 `Ctrl + Shift + L`을 누르면 레이아웃 최적화 함수가 호출된다.
+- 입력 필드에 focus가 있을 때 `Ctrl + Shift + L`을 눌러도 레이아웃 최적화 함수가 호출되지 않는다.
 
 ### 4. 노드 실행 기록 패널 추가
 
@@ -218,6 +219,7 @@ Verified Against: TBD
 ### 1. 실행 편의성
 
 - 기존 테스트 실행 스트리밍 API가 `node_start`, `node_finish`, `workflow_finish` 이벤트를 반환한다.
+- `node_finish` 이벤트는 node-level summary 표준 필드 `latency_ms`, `total_tokens`, `total_cost`를 포함한다.
 - `workflow_finish` 이벤트가 workflow run summary를 제공하는 경우 `run_id`, `duration`, `total_tokens`, `total_cost`를 포함한다.
 - `workflow_finish.duration`은 `workflow_runs.duration`과 같은 서버 실행 시간 기준이다.
 - 권한 없는 사용자의 테스트 실행 요청은 403으로 거부된다.
@@ -247,8 +249,7 @@ Verified Against: TBD
 
 - 빌더가 워크플로우 테스트를 실행하면 테스트 실행 사이드바에 노드별 상태가 표시된다.
 - 실행 중인 노드는 `실행 중`, 완료된 노드는 `성공`, 실패한 노드는 `실패`로 표시된다.
-- LLM 노드 output에 토큰 usage가 있으면 테스트 실행 사이드바에 토큰 수가 표시된다.
-- LLM 노드 output에 비용 정보가 있으면 테스트 실행 사이드바에 비용이 표시된다.
+- `node_finish` 이벤트에 토큰/비용 표준 필드가 있으면 테스트 실행 사이드바에 토큰 수와 비용이 표시된다.
 - 테스트 완료 후 테스트 실행 사이드바 마지막 영역에 서버 실행 시간, 화면 완료 시간, 전체 비용, 전체 토큰 사용량이 표시된다.
 - 서버 실행 시간과 화면 완료 시간은 `서버 실행`, `화면 완료`처럼 서로 다른 라벨로 구분된다.
 - 캔버스에는 별도 테스트 실행 요약 패널이 표시되지 않는다.

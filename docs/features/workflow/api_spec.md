@@ -18,12 +18,16 @@ Verified Against: TBD
 - 이번 UI 변경은 신규 API를 추가하지 않는다.
 - 프론트는 기존 스트리밍 이벤트를 사용한다.
   - `node_start`: `{ node_id }`
-  - `node_finish`: `{ node_id, node_type, output }`
+  - `node_finish`: `{ node_id, node_type, output, latency_ms, total_tokens, total_cost }`
   - `workflow_finish`: 최종 workflow output
   - `error`: `{ message, node_id? }`
-- 노드별 토큰 사용량은 `node_finish.output.usage.total_tokens` 또는 `prompt_tokens + completion_tokens`에서 계산한다.
-- 노드별 비용은 `node_finish.output.cost`, `node_finish.output.usage.total_cost`, 또는 백엔드가 제공하는 node-level cost 값에서 계산한다.
-- 노드별 소요 시간은 프론트가 `node_start` 수신 시각과 `node_finish`/`error` 수신 시각의 차이로 계산한다.
+- `node_finish` 이벤트의 node-level summary 표준 필드:
+  - `latency_ms`: 노드 실행 소요 시간. 서버/엔진 기준 millisecond 단위 값.
+  - `total_tokens`: 노드 실행에서 사용한 전체 토큰 수. 토큰 사용이 없는 노드는 null 또는 0을 반환할 수 있다.
+  - `total_cost`: 노드 실행에서 발생한 비용. 비용 집계가 없는 노드는 null 또는 0을 반환할 수 있다.
+- 프론트는 노드별 토큰/비용/소요 시간을 `node_finish` 표준 필드에서 우선 읽는다.
+- `node_finish.latency_ms`가 없으면 프론트는 `node_start` 수신 시각과 `node_finish`/`error` 수신 시각의 차이를 fallback으로 계산할 수 있다.
+- `node_finish.total_tokens` 또는 `node_finish.total_cost`가 없으면 해당 값은 `-`로 표시한다. `output.usage`나 `output.cost`를 표준 경로로 간주하지 않는다.
 - 화면 완료 시간은 프론트가 테스트 실행 시작 상태로 전환된 시각과 `workflow_finish` 또는 최종 오류 처리 시각의 차이로 계산한다. 이 값은 API response 필드가 아니며 DB에 저장하지 않는다.
 - 서버 실행 시간은 백엔드/엔진이 기록한 workflow-level duration을 사용한다. 현재 저장 기준은 `workflow_runs.duration`이며, 단위는 초다.
 - `workflow_finish` 이벤트가 workflow-level summary를 제공하는 경우 프론트는 다음 필드를 우선 사용한다.
@@ -31,7 +35,7 @@ Verified Against: TBD
   - `duration`: 서버 실행 시간. `workflow_runs.duration`과 같은 초 단위 값.
   - `total_tokens`: 서버가 집계한 전체 토큰 사용량.
   - `total_cost`: 서버가 집계한 전체 비용.
-- `workflow_finish` 이벤트에 workflow-level summary가 없으면 프론트는 서버 실행 시간을 `-` 또는 `기록 없음`으로 표시한다. 화면 완료 시간은 계속 프론트에서 계산한다.
+- `workflow_finish` 이벤트에 workflow-level summary가 없으면 프론트는 `node_finish.latency_ms` 합산값을 서버 실행 시간 fallback으로 표시한다. 노드 latency도 없을 때만 `-` 또는 `기록 없음`으로 표시한다. 화면 완료 시간은 계속 프론트에서 계산한다.
 - 전체 비용과 전체 토큰은 `workflow_finish`가 제공하는 workflow-level summary 값을 우선 사용하고, 없으면 노드별 값의 합산으로 fallback한다.
 
 Example `workflow_finish` event data with server summary:
@@ -57,6 +61,21 @@ Client-only screen completion summary example:
 ```
 
 `screen_completion_duration_ms`는 API response가 아니라 프론트 UI 상태에서 계산되는 값이다.
+
+Example `node_finish` event data with node-level summary:
+
+```json
+{
+  "node_id": "llm-triage",
+  "node_type": "llmNode",
+  "output": {
+    "text": "{\"approvalRequired\": true}"
+  },
+  "latency_ms": 3571,
+  "total_tokens": 361,
+  "total_cost": 0.001964
+}
+```
 
 ### 2. 노드 조작 편의성
 

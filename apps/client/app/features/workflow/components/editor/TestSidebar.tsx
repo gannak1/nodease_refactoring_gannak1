@@ -15,7 +15,6 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
-import { WorkflowCompareResponse } from '../../types/Api';
 import { getNodeOutputVariables } from '../../utils/nodeVariablePorts';
 import type { WorkflowDraftRequest } from '../../types/Workflow';
 import {
@@ -28,6 +27,8 @@ import {
   formatCost,
   formatLatency,
   formatTokens,
+  isTestExecutionActionDisabled,
+  readNodeFinishExecutionSummary,
   readCost,
   readTokenUsage,
   summarizeWorkflowExecution,
@@ -101,13 +102,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
-  const [compareResult, setCompareResult] =
-    useState<WorkflowCompareResponse | null>(null);
-  const [isComparing, setIsComparing] = useState(false);
-  const [compareNodeId, setCompareNodeId] = useState('');
-  const [compareType, setCompareType] = useState<'model' | 'prompt'>('model');
-  const [leftValue, setLeftValue] = useState('');
-  const [rightValue, setRightValue] = useState('');
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const isExecuting = testExecutionStatus === 'running';
   const isPreparing =
@@ -118,6 +112,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const nodeResults = testNodeResults;
   const error = testExecutionError;
   const canExecute = workflowAccess?.can_execute !== false;
+  const isExecuteActionDisabled = isTestExecutionActionDisabled({
+    isExecuting,
+    isUploading: isTestUploading,
+    isPreparing,
+    canExecute,
+  });
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -188,11 +188,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     ];
   }
 
-  const llmNodes = useMemo(
-    () => nodes.filter((node) => node.type === 'llmNode'),
-    [nodes],
-  );
-
   // 패널이 열릴 때 입력값 초기화 (실행 결과는 유지)
   useEffect(() => {
     if (!isTestPanelOpen) return;
@@ -234,32 +229,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     return () => window.clearTimeout(timeout);
   }, [isTestPanelOpen]);
 
-  useEffect(() => {
-    if (!compareNodeId && llmNodes[0]) {
-      const timeout = window.setTimeout(() => {
-        setCompareNodeId(llmNodes[0].id);
-      }, 0);
-      return () => window.clearTimeout(timeout);
-    }
-  }, [compareNodeId, llmNodes]);
-
-  useEffect(() => {
-    const selected = llmNodes.find((node) => node.id === compareNodeId);
-    if (!selected) return;
-    const timeout = window.setTimeout(() => {
-      const data = selected.data as any;
-      if (compareType === 'model') {
-        setLeftValue(data.model_id || '');
-        setRightValue(data.fallback_model_id || data.model_id || '');
-      } else {
-        setLeftValue(data.user_prompt || '');
-        setRightValue(data.user_prompt || '');
-      }
-      setCompareResult(null);
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [compareNodeId, compareType, llmNodes]);
-
   if (!isTestPanelOpen) return null;
 
   const handleChange = (name: string, value: any) => {
@@ -270,12 +239,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     output: any,
     status: 'success' | 'failure' | 'running',
     latencyMs?: number,
+    totalTokens?: number,
+    totalCost?: number,
   ) => {
     return {
       status,
       model: output?.model,
-      total_tokens: readTokenUsage(output),
-      total_cost: readCost(output),
+      total_tokens: totalTokens ?? readTokenUsage(output),
+      total_cost: totalCost ?? readCost(output),
       latency_ms: latencyMs,
     };
   };
@@ -322,8 +293,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         status,
         output,
         latencyMs: data.observability?.latency_ms,
-        totalTokens: readTokenUsage(output) ?? data.observability?.total_tokens,
-        totalCost: readCost(output) ?? data.observability?.total_cost,
+        totalTokens: data.observability?.total_tokens ?? readTokenUsage(output),
+        totalCost: data.observability?.total_cost ?? readCost(output),
       };
     })
     .filter((summary) =>
@@ -340,6 +311,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     })),
     testExecutionStartedAt,
     testExecutionFinishedAt,
+    executionResult as
+      | {
+          duration?: unknown;
+          total_tokens?: unknown;
+          total_cost?: unknown;
+        }
+      | null
+      | undefined,
   );
 
   const renderNodeExecutionSummary = (
@@ -422,11 +401,17 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
         최종 실행 요약
       </h3>
-      <dl className="mt-3 grid grid-cols-3 gap-3 text-xs">
+      <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
         <div>
-          <dt className="text-blue-700 dark:text-blue-300">전체 시간</dt>
+          <dt className="text-blue-700 dark:text-blue-300">서버 실행</dt>
           <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
-            {formatLatency(workflowExecutionSummary.totalLatencyMs)}
+            {formatLatency(workflowExecutionSummary.serverDurationMs)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">화면 완료</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {formatLatency(workflowExecutionSummary.screenCompletionDurationMs)}
           </dd>
         </div>
         <div>
@@ -603,15 +588,21 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               }
             } else if (type === 'node_finish') {
               const startedAt = nodeStartedAtRef.current[data.node_id];
-              const latencyMs = startedAt
+              const fallbackLatencyMs = startedAt
                 ? Math.round(performance.now() - startedAt)
                 : undefined;
+              const metrics = readNodeFinishExecutionSummary(
+                data,
+                fallbackLatencyMs,
+              );
               updateNodeData(data.node_id, {
                 status: 'success',
                 observability: buildObservability(
                   data.output,
                   'success',
-                  latencyMs,
+                  metrics.latencyMs,
+                  metrics.totalTokens,
+                  metrics.totalCost,
                 ),
               });
 
@@ -672,99 +663,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const handleReset = () => {
     setValidationErrors([]);
     setPreflightStatus('idle');
-    setCompareResult(null);
     resetTestExecution();
-  };
-
-  const handleCompare = async () => {
-    if (!activeWorkflowId || !compareNodeId || !leftValue || !rightValue) {
-      return;
-    }
-    if (!canExecute) {
-      toast.error('현재 권한으로는 비교 실행을 할 수 없습니다.');
-      return;
-    }
-
-    setValidationErrors([]);
-    setCompareResult(null);
-    setIsComparing(true);
-    setPreflightStatus('validating');
-
-    try {
-      let compareInputs: Record<string, any> = { ...inputs };
-
-      if (startNode?.type === 'webhookTrigger') {
-        try {
-          const rawJson = inputs['__json_payload__'];
-          compareInputs = JSON.parse(rawJson);
-        } catch {
-          toast.error('유효하지 않은 JSON 형식입니다.');
-          return;
-        }
-      }
-
-      const graphSnapshot = cloneDraft({
-        nodes,
-        edges,
-        viewport: getViewport(),
-        features,
-        envVariables,
-        runtimeVariables,
-      });
-      const validation = validateWorkflowGraph(graphSnapshot);
-
-      if (!validation.ok) {
-        setValidationErrors(validation.errors);
-        toast.error('실행 전 그래프 검증 실패');
-        return;
-      }
-
-      setPreflightStatus('saving');
-      await workflowApi.syncDraftWorkflow(
-        activeWorkflowId,
-        buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
-      );
-
-      const hasFiles = Object.values(files).some((file) => file !== null);
-      if (hasFiles) {
-        setTestUploading(true);
-        try {
-          for (const [key, file] of Object.entries(files)) {
-            if (!file) continue;
-            const presignedData = await knowledgeApi.getPresignedUploadUrl(
-              file.name,
-              file.type || 'application/octet-stream',
-            );
-            await knowledgeApi.uploadToS3(
-              presignedData.upload_url,
-              file,
-              file.type || 'application/octet-stream',
-            );
-            compareInputs[key] = presignedData.upload_url.split('?')[0];
-          }
-        } finally {
-          setTestUploading(false);
-        }
-      }
-
-      const inputsWithMemory = appendMemoryFlag
-        ? appendMemoryFlag(compareInputs)
-        : compareInputs;
-      const result = await workflowApi.compareWorkflow(activeWorkflowId, {
-        node_id: compareNodeId,
-        compare_type: compareType,
-        inputs: inputsWithMemory as Record<string, unknown>,
-        left: leftValue,
-        right: rightValue,
-      });
-      setCompareResult(result);
-    } catch (err: any) {
-      toast.error(err.message || '비교 실행 실패');
-    } finally {
-      setTestUploading(false);
-      setPreflightStatus('idle');
-      setIsComparing(false);
-    }
   };
 
   const getVariableDisplayName = (variable: WorkflowVariable) =>
@@ -976,153 +875,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
               )}
             </div>
-
-            {llmNodes.length > 0 && (
-              <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                <div className="border-b border-gray-200 bg-gray-50 px-4 py-3 dark:bg-gray-800 dark:border-gray-700">
-                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-200">
-                    Model / Prompt 비교
-                  </h3>
-                </div>
-                <div className="space-y-3 p-4">
-                  <div className="grid grid-cols-2 gap-2">
-                    <select
-                      value={compareNodeId}
-                      onChange={(event) => setCompareNodeId(event.target.value)}
-                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                    >
-                      {llmNodes.map((node) => (
-                        <option key={node.id} value={node.id}>
-                          {(node.data as any).title || node.id}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-gray-300 dark:border-gray-700">
-                      {(['model', 'prompt'] as const).map((type) => (
-                        <button
-                          key={type}
-                          type="button"
-                          onClick={() => setCompareType(type)}
-                          className={`py-2 text-sm font-medium ${
-                            compareType === type
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200'
-                          }`}
-                        >
-                          {type}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {compareType === 'model' ? (
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        value={leftValue}
-                        onChange={(event) => setLeftValue(event.target.value)}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Model A"
-                      />
-                      <input
-                        value={rightValue}
-                        onChange={(event) => setRightValue(event.target.value)}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Model B"
-                      />
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      <textarea
-                        value={leftValue}
-                        onChange={(event) => setLeftValue(event.target.value)}
-                        className="min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Prompt A"
-                      />
-                      <textarea
-                        value={rightValue}
-                        onChange={(event) => setRightValue(event.target.value)}
-                        className="min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Prompt B"
-                      />
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleCompare}
-                    disabled={
-                      isComparing ||
-                      isTestUploading ||
-                      isPreparing ||
-                      !canExecute ||
-                      !leftValue ||
-                      !rightValue
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
-                  >
-                    {isComparing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        비교 실행 중...
-                      </>
-                    ) : (
-                      '비교 실행'
-                    )}
-                  </button>
-
-                  {compareResult && (
-                    <div className="grid grid-cols-2 gap-2">
-                      {compareResult.variants.map((variant) => (
-                        <div
-                          key={variant.label}
-                          className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                              {variant.label}
-                            </span>
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                variant.status === 'success'
-                                  ? 'bg-green-50 text-green-700'
-                                  : 'bg-red-50 text-red-700'
-                              }`}
-                            >
-                              {variant.status}
-                            </span>
-                          </div>
-                          <dl className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
-                            <div className="flex justify-between gap-2">
-                              <dt>tokens</dt>
-                              <dd>{variant.total_tokens || 0}</dd>
-                            </div>
-                            <div className="flex justify-between gap-2">
-                              <dt>cost</dt>
-                              <dd>
-                                ${Number(variant.total_cost || 0).toFixed(6)}
-                              </dd>
-                            </div>
-                            <div className="flex justify-between gap-2">
-                              <dt>latency</dt>
-                              <dd>{variant.latency_ms || 0}ms</dd>
-                            </div>
-                          </dl>
-                          {variant.error ? (
-                            <p className="mt-2 line-clamp-3 text-xs text-red-600">
-                              {variant.error}
-                            </p>
-                          ) : (
-                            <pre className="mt-2 max-h-32 overflow-auto rounded bg-gray-50 p-2 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                              {JSON.stringify(variant.node_output, null, 2)}
-                            </pre>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         ) : (
           /* Execution Result */
@@ -1186,9 +938,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {!hasExecutionResult && !error ? (
           <button
             onClick={handleExecute}
-            disabled={
-              isExecuting || isTestUploading || isPreparing || !canExecute
-            }
+            disabled={isExecuteActionDisabled}
             className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
           >
             {isExecuting || isTestUploading || isPreparing ? (
