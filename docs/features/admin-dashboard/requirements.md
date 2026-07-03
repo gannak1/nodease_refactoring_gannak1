@@ -24,7 +24,7 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 - FR-013 (후순위): 차단 이벤트를 비정상 접근 시도로 표시한다. 현재 데모 시나리오에서 사용하지 않으며, 구현이 완료되면 PRD 시나리오 2와 함께 복원한다. 복원 시 두 단계로 구현한다.
   - 1단계: `permission.denied`, `auth.permission_denied` 등 차단 이벤트를 판정 로직 없이 목록으로 나열한다. 조직 scope 밖 접근은 404로 숨기고 audit을 기록하지 않으므로 목록에 포함되지 않는다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
   - 2단계: 관리자 페이지 기능(FR-011, FR-012, FR-014, FR-015) 구현이 완료된 뒤 횟수 임계값/패턴 기반 판정으로 고도화한다.
-- FR-014: workflow 생성/배포 권한 신청 목록을 조회하고 승인/거절한다. 목록에는 요청자, 요청 권한, 신청 사유를 표시한다. 승인 시 요청된 권한이 부여되고, 신청 제출/승인/거절은 canonical action `permission_request.created`/`permission_request.approved`/`permission_request.rejected`로 audit에 기록한다 (PRD FR-042, [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
+- FR-014: workflow 생성/배포 권한 신청 목록을 조회하고 승인/거절한다. 목록에는 요청자, 요청 권한, 신청 사유를 표시한다. 요청 권한의 실체는 조직 수준 App 생성 능력(`app.create`)이며, 원천은 `permission_requests` 테이블이다 ([ADR-0014](../../decisions/ADR-0014-permission-request-and-app-creation-permission.md)). 승인 시 요청된 권한이 부여되고, 신청 제출/승인/거절은 canonical action `permission_request.created`/`permission_request.approved`/`permission_request.rejected`로 audit에 기록한다 (PRD FR-042, [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - FR-015: 조직의 이번 달 LLM 비용 합계와 예산 위험 workflow 비율을 요약해 표시한다. 예산 사용률(당월 비용 / 예산)이 90% 이상이면 위험, 100%를 초과하면 초과로 판정한다. 부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이다 (FR-013과 함께 복원).
 
 ## Policies And Edge Cases
@@ -33,7 +33,7 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 - 비용/예산 요약(FR-012, FR-015)과 권한 신청 목록/승인/거절(FR-014)은 organization owner/manager 전용이다. `auditor`/`raw_auditor`는 audit 조회(FR-011)만 접근할 수 있다.
 - 조회 범위는 `X-Organization-Id` 요청 organization scope 안으로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md), NFR-002).
 - audit metadata의 raw payload, secret 계열 값은 대시보드 응답에 노출하지 않는다 (NFR-004).
-- 권한 신청 승인이 실제로 부여하는 권한의 메커니즘은 미정이다. workflow 생성 권한은 특정 리소스를 전제하는 permission row로 표현할 수 없고 현재 생성 엔드포인트에는 권한 검사 자체가 없으므로, 부여 방식(membership 수준 auth_state 확장, Builder team 배정 등)은 organization feature(FR-041) 설계에서 확정한다. 이 문서는 "승인 시 요청된 권한이 부여되고 이후 생성/배포가 가능해진다"는 결과만 요구한다. 부여가 데이터 변경을 동반하면 해당 data-change audit도 함께 기록한다.
+- 권한 신청 승인은 신청자에게 `user_app_creation_permissions` row를 생성해 조직 수준 App 생성 능력을 부여한다 ([ADR-0014](../../decisions/ADR-0014-permission-request-and-app-creation-permission.md)). 승인 audit은 `permission_request.approved`(신청 처리)와 `user_app_creation_permission.created`(권한 부여)를 각각 기록한다. 배포 권한은 생성자에게 자동 부여되는 workflow manager permission으로 따라오므로 별도 부여가 없다.
 - 이미 처리된(승인/거절) 권한 신청에 대한 중복 처리 요청은 거부한다.
 - 예산이 설정되지 않은 workflow는 예산 위험/초과 판정 대상에서 제외한다.
 - 시간대 규칙: 저장은 UTC(timestamptz) 그대로 두고, "이번 달" 경계와 예산 위험/초과 판정 같은 집계 경계는 KST(Asia/Seoul) 고정으로 계산한다. FR-011/FR-012의 기간 필터 입력도 KST 기준으로 해석한다. 개별 timestamp의 화면 표시만 사용자 로컬 시간대로 렌더링한다.
@@ -46,7 +46,5 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 
 ## Open Questions
 
-- FR-014 승인이 부여하는 권한의 실체와 부여 메커니즘 (membership 수준 auth_state 확장 vs Builder team 배정 등) — workflow 생성 권한은 현재 RBAC의 리소스별 permission row로 표현할 수 없다. organization feature(FR-041) 설계에서 확정하고, 권한 판정 모델 변경이므로 ADR 후보다.
-- 권한 신청의 저장 모델(테이블) — 현재 코드와 [data_model.md](../../data_model.md) 계획 테이블 어디에도 없다. organization feature(FR-041) 문서와 data_model 갱신에서 정의하며, 이 feature(FR-014)는 그 모델의 소비자다.
 - FR-013 2단계 고도화의 판정 기준(차단 횟수 임계값, 패턴 정의, 조회 시점 집계 vs 백그라운드 탐지) — 고도화 착수 시 결정. PRD Open Question과 연결.
 - FR-015 예산 위험 workflow 비율의 분모 (조직 전체 workflow vs 예산이 설정된 workflow). 예산 데이터 원천은 예산 관리 feature 문서(FR-051, TBD) 확정 시 함께 정한다.

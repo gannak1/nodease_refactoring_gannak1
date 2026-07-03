@@ -33,6 +33,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0011](ADR-0011-team-router-rbac-service-boundary.md) | Accepted | Team API RBAC service boundary | Team 관리 권한 판정과 team/team member 조회는 `TeamService`가 소유하고, 등록 router는 기존 `team.py` 기준 유지 |
 | [ADR-0012](ADR-0012-metadata-aware-hierarchical-rag-boundary.md) | Accepted | Metadata-aware 및 Hierarchical RAG 경계 | Metadata filter는 allowlist schema, metadata는 permission source가 아니며, RAG trace는 raw chunk content 없이 citation metadata를 저장 |
 | [ADR-0013](ADR-0013-rag-answer-trace-usage-correlation-boundary.md) | Accepted | RAG Agent answer와 trace/usage correlation 경계 | Standalone Agent answer는 RAG-owned `rag_answer_runs`와 opaque `correlation_id`로 연결하고, trace/usage table에 RAG 전용 FK를 추가하지 않음 |
+| [ADR-0014](ADR-0014-permission-request-and-app-creation-permission.md) | Accepted | 권한 신청과 App 생성 권한 모델 | 미구현. App 생성(`POST /apps`)은 현재 권한 검사 없음. `permission_requests`, `user_app_creation_permissions` 테이블과 생성 권한 검사, 신청/승인 흐름은 구현 예정 |
 
 ## 참고 보고서
 

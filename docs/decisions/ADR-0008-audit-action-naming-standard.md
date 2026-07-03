@@ -32,6 +32,7 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | 권한 신청 제출 | `permission_request.created` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
 | 권한 신청 승인 | `permission_request.approved` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
 | 권한 신청 거절 | `permission_request.rejected` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
+| user App 생성 권한 row 생성/회수 | `user_app_creation_permission.created`, `user_app_creation_permission.deleted` | 권한 신청 기능([ADR-0014](ADR-0014-permission-request-and-app-creation-permission.md)) 구현 시 고정 |
 | data/model/trace policy 차단 | `policy.block` | MVP 2 |
 | data/model/trace policy 경고 | `policy.warn` | MVP 2 |
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
@@ -81,7 +82,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`, `rag.retrieve`를 검색 대상으로 삼는다. RAG Agent answer 운영 검색을 구현할 때는 `rag.answer.requested/completed/failed/cancelled`도 canonical action으로 포함한다.
 - Data model의 대표 action convention에 `permission.denied`와 `auth.permission_denied`를 포함한다.
 - Deployment API 문서는 기본 권한 enforcement 구현 상태와 MVP 3 운영 기능 강화 범위를 구분한다.
-- 권한 신청 기능(PRD FR-041/FR-042) 구현 시 제출/승인/거절을 `permission_request.created/approved/rejected`로 기록한다. `permission_request.approved`는 신청 처리 사건만 기록하며, 승인에 따른 실제 권한 부여는 기존 permission row별 data-change action(`user_workflow_permission.created` 등)을 별도로 기록한다.
+- 권한 신청 기능(PRD FR-041/FR-042) 구현 시 제출/승인/거절을 `permission_request.created/approved/rejected`로 기록한다. `permission_request.approved`는 신청 처리 사건만 기록하며, 승인에 따른 실제 권한 부여는 `user_app_creation_permission.created`를 별도로 기록한다 ([ADR-0014](ADR-0014-permission-request-and-app-creation-permission.md)).
 
 ## 후속 검토
 

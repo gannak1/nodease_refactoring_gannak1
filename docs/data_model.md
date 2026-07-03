@@ -673,12 +673,14 @@ LLM token/cost/latency 원천.
 
 ## 계획 테이블
 
-아직 코드에 없고 [ADR-0006](decisions/ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md) 승인 범위에 포함된 목표 테이블이다. 도입 시점은 필요해지는 feature 작업에서 결정한다.
+아직 코드에 없고 Accepted ADR 승인 범위에 포함된 목표 테이블이다. 별도 표기가 없으면 [ADR-0006](decisions/ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md) 범위다. 도입 시점은 필요해지는 feature 작업에서 결정한다.
 
 | 테이블 | 목표 역할 |
 | --- | --- |
 | `user_knowledge_permissions` | 특정 user에게 knowledge base 직접 추가 권한 부여 |
 | `user_audit_permissions` | 특정 user에게 audit visibility 직접 추가 권한 부여 |
+| `permission_requests` | 권한 신청 제출/처리 상태 저장, pending은 조직·사용자·요청 권한당 1건 ([ADR-0014](decisions/ADR-0014-permission-request-and-app-creation-permission.md)) |
+| `user_app_creation_permissions` | 조직 수준 App 생성 능력의 user 부여, row 존재 = 허용 ([ADR-0014](decisions/ADR-0014-permission-request-and-app-creation-permission.md)) |
 
 ## 만들지 않는 테이블
 
