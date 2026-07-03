@@ -481,7 +481,12 @@ def _hr_bot_graph() -> dict[str, Any]:
                             "value_selector": ["start-question", "question"],
                         }
                     ],
-                    "knowledgeBases": [str(KB_IDS["hr"])],
+                    "knowledgeBases": [
+                        {
+                            "id": str(KB_IDS["hr"]),
+                            "name": "사내 인사·복지 지식베이스",
+                        }
+                    ],
                     "parameters": {"temperature": 0.2, "max_tokens": 800},
                 },
             ),
@@ -548,7 +553,12 @@ def _ticket_ops_graph() -> dict[str, Any]:
                             "value_selector": ["webhook-ticket", "message"],
                         },
                     ],
-                    "knowledgeBases": [str(KB_IDS["hr"])],
+                    "knowledgeBases": [
+                        {
+                            "id": str(KB_IDS["hr"]),
+                            "name": "사내 인사·복지 지식베이스",
+                        }
+                    ],
                     "parameters": {"temperature": 0.2, "max_tokens": 2000},
                 },
             ),
