@@ -29,6 +29,9 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | organization member 초대 수락 | `organization.member.accept` | MVP 2.0 organization membership 현재 구현 |
 | organization member 상태 또는 organization auth_state 변경 | `organization.member.update` | MVP 2.0 organization membership 현재 구현 |
 | organization member 제거 | `organization.member.remove` | MVP 2.0 organization membership 현재 구현 |
+| 권한 신청 제출 | `permission_request.created` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
+| 권한 신청 승인 | `permission_request.approved` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
+| 권한 신청 거절 | `permission_request.rejected` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
 | data/model/trace policy 차단 | `policy.block` | MVP 2 |
 | data/model/trace policy 경고 | `policy.warn` | MVP 2 |
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
@@ -78,6 +81,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - MVP 2 audit search는 `workflow.blocked`가 아니라 `permission.denied`, `policy.warn`, `policy.block`, `rag.retrieve`를 검색 대상으로 삼는다. RAG Agent answer 운영 검색을 구현할 때는 `rag.answer.requested/completed/failed/cancelled`도 canonical action으로 포함한다.
 - Data model의 대표 action convention에 `permission.denied`와 `auth.permission_denied`를 포함한다.
 - Deployment API 문서는 기본 권한 enforcement 구현 상태와 MVP 3 운영 기능 강화 범위를 구분한다.
+- 권한 신청 기능(PRD FR-041/FR-042) 구현 시 제출/승인/거절을 `permission_request.created/approved/rejected`로 기록한다. `permission_request.approved`는 신청 처리 사건만 기록하며, 승인에 따른 실제 권한 부여는 기존 permission row별 data-change action(`user_workflow_permission.created` 등)을 별도로 기록한다.
 
 ## 후속 검토
 
@@ -85,3 +89,4 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - RAG retrieval 구현 시 성공 감사 action인 `rag.retrieve`와 trace payload kind인 `rag.retrieval`이 섞이지 않도록 상수와 fixture를 분리한다.
 - RAG Agent answer 구현 시 `rag.answer.*` lifecycle action, `rag.retrieve`, `llm.call`, `policy.block`/`permission.denied`, `rag.answer.purge`, `rag_answer_runs.status`가 서로 다른 의미로 기록되는지 테스트한다.
 - Audit UI가 "workflow 차단" 같은 사용자 친화 라벨을 canonical action에서 파생해 표시하는지 확인한다.
+- 권한 신청 구현 시 `permission_request.approved`와 권한 부여 row data-change action이 하나의 승인 흐름에서 각각 기록되는지 테스트한다.
