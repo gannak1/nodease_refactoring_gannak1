@@ -56,13 +56,26 @@ Status: Draft
 | 용어 | 정의 |
 | --- | --- |
 | Knowledge | 사내 문서와 데이터 소스를 저장, 색인, 검색, 추적하는 제품 영역을 가리키는 상위 용어다. |
-| Knowledge Base | RAG 검색의 단위가 되는 지식 베이스. DB에서는 `knowledge_bases` table을 사용한다. |
-| Document | Knowledge Base에 업로드되거나 연결된 원본 문서 메타데이터. DB에서는 `documents` table을 사용한다. |
-| Document Chunk | 검색과 citation을 위해 Document를 나눈 텍스트 조각. DB에서는 `document_chunks` table을 사용한다. |
+| Knowledge Base | 목표 KB 통합 모델에서 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom. DB에서는 `knowledge_bases` table을 사용한다. 현재 구현에는 여러 문서를 포함하는 legacy 의미가 남아 있으며, target cutover는 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate를 따른다. |
+| Knowledge Collection | 여러 document-level Knowledge Base를 묶는 grouping, routing, UX, operations 단위. Collection 권한은 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
+| Collection Route Permission | Collection을 Agent/router 후보 scope로 사용할 수 있는 권한. Collection을 볼 수 있는 `collection.read`와 다르며, 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
+| Document Version | document-level KB의 특정 색인/version artifact. 목표 모델에서는 active version만 기본 retrieval 대상이다. |
+| Document | 현재 구현의 Knowledge Base에 업로드되거나 연결된 원본 문서 메타데이터. 목표 모델에서는 `document_versions`로 전환된다. |
+| Document Chunk | 검색과 citation을 위해 Document 또는 Document Version을 나눈 텍스트 조각. 목표 모델에서 chunk text, embedding input, retrieval-visible artifact는 redacted canonical text에서 생성된다. |
 | RAG | Retrieval-Augmented Generation. 질문에 답하기 전에 Knowledge Base에서 관련 문서 조각을 검색해 LLM 응답에 활용하는 방식이다. |
 | Retrieval | 질문 또는 query에 맞는 Document Chunk를 찾는 검색 과정이다. |
 | Citation | 답변이 근거로 삼은 문서/청크 출처 정보. 사용자와 감사자가 답변 근거를 확인하는 데 사용한다. |
-| Metadata Filter | 문서 metadata의 allowlist된 필드로 검색 범위를 좁히는 필터. 권한의 source가 아니며 RBAC 판정을 대체하지 않는다. |
+| Source ACL | 외부 source system의 문서/source item 접근 제어 정보. source-managed KB에서는 mbased KB `use`와 별개의 필수 gate이며, stale/unmapped/ambiguous/unverified 상태는 fail-closed다. |
+| Source ACL Provenance | Source ACL fact를 permission helper가 소비할 수 있게 materialize한 안전한 증거/상태. KB `use` permission 자체가 아니며 raw source permission 값을 직접 노출하지 않는다. |
+| Source-Managed KB | 외부 connector/source sync가 생성·관리하는 document-level KB. 수동 grant만으로 source ACL freshness/requester authorization을 우회하지 않는다. |
+| Safe Source Reference | raw source id/url/path/title 대신 citation, audit, UI에 제한적으로 사용할 수 있는 opaque/HMAC 기반 source reference. 구체 format은 protected source identity gate에서 확정한다. |
+| Resource-Hidden Response | scope 밖, hidden, source ACL denied/stale 등 존재 추론 위험이 있는 경우의 안전한 응답 shape. HTTP/SSE shape와 audit 여부는 resource hiding API matrix gate에서 확정한다. |
+| Redacted Canonical Text | source item에서 추출한 뒤 redaction/sanitization을 거친 canonical text. 목표 모델에서 chunk content, embedding input, retrieval-visible text의 기본 원천이다. |
+| Privacy Redaction Policy | PII/secret detector, masking/hash/drop/block rule, output-target별 redaction을 정의하는 공통 정책. Platform hard baseline은 관리자가 약화할 수 없고, organization/collection/source/KB 정책은 더 엄격한 방향으로만 조정한다. |
+| Raw Knowledge Artifact | RAG/embedding/prompt에는 사용하지 않는 protected raw source content 저장 단위. Organization/source opt-in, 암호화, retention/legal hold/purge, raw/compliance permission, fresh source ACL, access audit이 필요하다. |
+| Raw/Compliance Access | Raw Knowledge Artifact를 조회하는 별도 권한/flow. Agent answer, SSE stream, retrieval context와 분리되며 raw access audit이 선행돼야 한다. |
+| Capped Preview | 사용자에게 출처 이해를 돕기 위해 제공하는 redacted and length-limited 미리보기 텍스트. Durable audit/trace/usage summary나 embedding input으로 복사하지 않는다. |
+| Metadata Filter | 문서 metadata의 allowlist된 필드로 검색 범위를 좁히는 필터. 권한의 source가 아니며 RBAC/source ACL 판정을 대체하지 않는다. |
 | Classification | 문서 민감도 분류 metadata convention. 전용 column이 아니라 `documents.meta_info.classification`을 사용한다. |
 | RAG Answer Run | standalone RAG Agent answer 실행 기록. DB에서는 `rag_answer_runs` table을 사용한다. trace/usage table과는 FK가 아니라 `correlation_id`로 느슨하게 연결한다. |
 
@@ -104,4 +117,5 @@ Status: Draft
 | Sandbox | `apps/sandbox/` NSJail 기반 격리 코드 실행 서비스. |
 | Shared | `apps/shared/` 공통 패키지. DB model, schema, permission service, llm_client, tracing/audit utility를 포함한다. |
 | Connection | 외부 DB나 외부 데이터 소스 연결 정보. DB에서는 `connections` table을 사용한다. 저장된 secret은 server-side에서만 사용하고 노출하지 않는다. |
+| Outbound Egress Guard | Knowledge/RAG source-collection server-side outbound network dial 전 host/IP/port/proxy/timeout/size 정책을 검증하는 중앙 경계. HTTP URL fetch뿐 아니라 DB, SSH, SaaS, object storage connector도 대상이지만, workflow runtime outbound 전체는 별도 ADR 전에는 이 보호가 보장됐다고 해석하지 않는다. |
 | Secret | API key, token, credential 원문, `encrypted_config`, `encrypted_password` 등 민감 값. 응답, 로그, trace, 문서, 테스트 fixture에 노출하지 않는다. |

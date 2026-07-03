@@ -1,13 +1,13 @@
 # Data Model
 
 Status: Draft
-Verified Against: feature/mba-96 @ 0f4827f
+Verified Against: current SQLAlchemy model snapshot plus docs target model ADR-0014
 
-전역 데이터 모델의 도메인 구성, 테이블별 상세, 엔티티 관계, 공통 규칙을 정의한다. 아래 테이블 상세는 SQLAlchemy 모델(`apps/shared/db/models/*`)에서 직접 추출한 것이다. nullable/index/ondelete가 코드와 다르면 코드가 기준이며, 이 문서를 갱신한다. 저장 방식 결정의 근거는 [decisions/](decisions/README.md)의 ADR을 따른다.
+전역 데이터 모델의 도메인 구성, 테이블별 상세, 엔티티 관계, 공통 규칙을 정의한다. 현재 구현 테이블 상세는 SQLAlchemy 모델(`apps/shared/db/models/*`)에서 직접 추출한 것이다. nullable/index/ondelete가 코드와 다르면 코드가 기준이며, 이 문서를 갱신한다. `Target`, `목표`, `계획`으로 표시된 subsection은 아직 코드에 모두 구현됐다는 뜻이 아니며, 해당 ADR/gate가 닫힌 뒤 migration으로 반영한다. 저장 방식 결정의 근거는 [decisions/](decisions/README.md)의 ADR을 따른다.
 
 ## 설계 원칙
 
-- 기존 table/column을 삭제·rename·대체하지 않는다. 확장은 additive table/column만 허용한다.
+- 기존 table/column을 삭제·rename·대체하지 않는다. 확장은 additive table/column만 허용한다. 단, [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 data-preservation/cutover gate가 운영 데이터 없음, backup/export, reset/reindex, rollback 한계, 기존 reference 보존을 명시 승인한 경우에만 해당 gate 범위 안에서 destructive cutover 예외를 둘 수 있다.
 - Tenant 경계는 별도 `tenant_id` 없이 `organization_id`로 판정한다. Project boundary는 `apps`다.
 - RBAC은 `roles`/`user_roles`/polymorphic `resource_permissions` 없이 organization membership + team permission + user direct permission으로 구성한다 ([ADR-0006](decisions/ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md)).
 - 감사는 `audit_logs` 단일 테이블을 canonical로 사용한다. RAG trace 전용 테이블은 만들지 않는다 ([ADR-0004](decisions/ADR-0004-audit-log-rag-trace-storage.md)).
@@ -415,6 +415,7 @@ trace 정책 3종. 공통으로 `scope_type` VARCHAR(32) NOT NULL + `scope_id` U
 | `trace_visibility_policies` | owner_trace/redacted/raw/prompt_completion access_enabled, admin_raw/prompt_completion access_enabled, deny_owner_trace_access, default_view_level |
 
 - 물리 schema는 `organization` scope도 담을 수 있으나 현재 management API는 `global`/`app`만 지원한다.
+- Trace redaction policy는 현재 trace payload 저장/조회 경계의 구현이다. Target KB integration에서는 detector/masking engine을 shared privacy/redaction boundary로 분리하고, trace-specific storage/visibility/retention은 Audit/Tracing 도메인에 남긴다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
 
 #### `audit_logs`
 
@@ -440,7 +441,7 @@ canonical 감사 로그. action 값은 [ADR-0008](decisions/ADR-0008-audit-actio
 
 #### `knowledge_bases`
 
-RAG data source 상위 단위.
+현재 구현 기준 RAG data source 상위 단위. 목표 KB 통합 모델에서는 `knowledge_bases`가 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom으로 재정의된다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -456,7 +457,7 @@ RAG data source 상위 단위.
 
 #### `documents`
 
-RAG 문서 단위.
+현재 구현 기준 RAG 문서 단위. 목표 모델에서는 canonical content/version artifact가 `document_versions`로 전환된다. `documents.meta_info`는 [ADR-0012](decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md)의 current metadata source이며, target cutover 후 canonical metadata source는 별도 gate에서 확정한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -476,12 +477,15 @@ RAG 문서 단위.
 
 #### `document_chunks`
 
-retrieval 최소 단위. pgvector 임베딩과 hierarchical chunk 구조를 가진다.
+retrieval 최소 단위. pgvector 임베딩과 hierarchical chunk 구조를 가진다. 목표 모델에서 `content`, embedding input, retrieval-visible text artifact는 redacted canonical text에서 생성된다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+
+현재 구현의 `document_chunks.content`, embedding input, vector index, 원본 문서 저장소는 redacted canonical text 보장을 전제로 작성된 것이 아니다. Target cutover는 reindex/sanitize/purge 계획과 raw artifact retention gate를 닫은 뒤 진행한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
 | id | UUID | PK |
 | document_id | UUID | NOT NULL, FK→documents.id |
+| document_version_id | UUID | Target NULL/FK→document_versions.id — target cutover 후 canonical version FK |
 | knowledge_base_id | UUID | NOT NULL, FK→knowledge_bases.id (denormalized) |
 | content | TEXT | NOT NULL |
 | embedding | VECTOR | NOT NULL — pgvector |
@@ -522,6 +526,37 @@ standalone RAG Agent answer의 실행 anchor. raw query/answer/chunk content는 
 | started_at / completed_at | DATETIME | NULL |
 
 - 조회 인덱스 `(organization_id, correlation_id, created_at)`, retention 인덱스 별도.
+
+#### Target KB integration model
+
+아래 테이블은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 목표 구조다. 이 subsection은 현재 코드에 모두 구현됐다는 뜻이 아니다. Migration 작성 전에는 data-preservation gate, ID vocabulary, active-version finalization, source ACL materialization, resource hiding API matrix를 닫아야 한다.
+
+```text
+knowledge_collections
+  -> knowledge_collection_items
+      -> knowledge_bases
+          -> document_versions
+              -> document_chunks
+```
+
+| 목표 테이블 | 역할 | 핵심 제약 |
+| --- | --- | --- |
+| `knowledge_collections` | collection/grouping/routing/UX/ops 단위 | `organization_id`, safe display name/description, source connector ref, system-managed flag, sync status. Source-derived display fields는 redacted/capped/display-policy-approved 값만 저장한다. |
+| `knowledge_collection_items` | collection과 document-level KB의 link | collection membership은 child KB content retrieval 권한을 부여하지 않는다. Linking에는 collection manage와 KB manage가 모두 필요하다. |
+| Collection permission storage (TBD) | collection `read`/`route`/`manage`/`sync` 권한 저장 | resource-specific team/user table로 둘지 별도 subject table로 둘지는 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 collection permission storage gate에서 결정한다. 구현 전까지는 helper contract만 공식화한다. |
+| `knowledge_bases` | document/source item 단위 permission/retrieval/sync/lifecycle atom | target 의미는 `granularity=document`로 고정한다. Source-managed KB는 protected source identity와 sync state를 갖고, KB `use`와 source ACL gate를 모두 통과해야 retrieval 대상이 된다. Target column 후보에는 `active_document_version_id`, `source_identity_id`, lifecycle/sync state가 포함된다. |
+| `document_versions` | document-level KB의 canonical content/index version | `staging/indexing/ready/failed/superseded` 상태. Active version pointer swap은 indexing 성공 후 transaction/outbox 계약에 따라 수행한다. `content_hash`, chunking fingerprint, embedding model reference는 실제 artifact finalization과 같은 boundary에서 확정해야 한다. |
+| `knowledge_source_identities` | source item identity의 protected 저장소 | 사용자-facing resource가 아니며 source-managed KB와 1:1 관계를 목표로 한다. Raw source id/url은 HMAC/hash ref 또는 protected encrypted field로만 다룬다. Key version, rotation/backfill, tombstone matching, safe external reference format은 gate에서 확정한다. |
+| `raw_knowledge_artifacts` | opt-in protected raw source content 저장소 또는 encrypted object storage metadata | RAG/embedding/prompt에는 사용하지 않는다. `organization_id`, `knowledge_base_id`, `document_version_id`, `source_identity_id`, storage ref, encryption key version, content hash, retention/legal hold/purge state가 필요하다. Raw value/object key는 audit/trace/log/router/citation summary에 노출하지 않는다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)). |
+| `source_acl_principals` / `source_acl_facts` | source 사용자/그룹/ACL 원천 사실 | Raw principal email/path/title/url은 기본 노출 금지. Safe ref, HMAC, key version, rotation/backfill 정책이 필요하다. |
+| `source_knowledge_permission_grants` | source ACL provenance를 permission helper가 소비할 수 있게 materialize한 table | 저장 필드는 gate에서 확정한다. Source permission action/provenance, source authorization state, freshness epoch, requester subject ref를 KB permission `auth_state`와 구분해야 한다. Raw source permission 값은 source ACL facts 또는 safe metadata에 둔다. 이 table은 mbased KB `use` gate를 자동 대체하지 않는다. Source-owned KB `use` grant를 별도로 만들 경우 storage table, freshness gate, revocation, audit-safe provenance, manual grant와의 결합 방식을 Auth/RBAC와 Knowledge의 source ACL materialization gate에서 확정해야 한다. |
+| `knowledge_ingestion_outbox` | indexing/finalization/cleanup side effect 조정 | active version finalization, orphan cleanup, object storage/vector index cleanup, retry/dead-letter, recovery scanner의 기준 record다. Idempotency key, owner/fencing token, target artifact reference, retryability, safe reason code가 필요하다. |
+
+Target permission helper는 mbased KB permission gate와 source ACL/requester authorization gate를 분리해 평가한다. Manual team/user KB grant와 organization manager override는 mbased KB gate를 만족시킬 수 있지만 source-managed KB의 source ACL freshness/requester authorization gate를 우회하지 않는다. Source ACL provenance는 source ACL gate의 입력이며, KB `use` permission 자체를 자동 부여하는 행으로 해석하지 않는다. 자동 수집된 document-level KB에 대해 KB `use`를 어떤 경로로 materialize할지는 source ACL materialization gate에서 닫는다. Helper는 allow/deny뿐 아니라 sanitized reason code, source ACL freshness state, freshness epoch, audit-safe metadata를 반환해야 하며 router/retrieval이 grant row를 직접 조합하지 않는다. `source_knowledge_permission_grants`의 최종 column 이름은 source permission action, source authorization state, provenance, KB permission `auth_state`가 섞이지 않도록 source ACL materialization gate에서 확정한다.
+
+Target retrieval에서 `document_chunks.content`, embedding input, retrieval-visible text artifact는 redacted canonical text에서 생성된다. Raw source content는 organization/source policy가 opt-in한 경우에만 `raw_knowledge_artifacts` 또는 encrypted object storage + metadata table에 분리 저장할 수 있다. Raw content는 RAG, embedding, prompt 구성, Agent answer stream, durable citation summary에 사용하지 않는다. Raw 조회는 별도 raw/compliance permission, fresh source ACL, audit, retention, purge policy를 통과해야 한다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+
+Target ingestion은 processed identity와 retrieval artifact visibility를 분리하지 않는다. `content_hash`나 fingerprint가 새 값이면 그 값에 대응하는 redacted canonical text, chunks, embeddings, index namespace, active version이 모두 committed 상태여야 한다. 현재 구현의 조기 `content_hash` commit이나 delete-then-insert chunk replacement pattern은 목표 모델의 finalization gate를 통과하기 전까지 target-safe한 것으로 보지 않는다.
 
 ### LLM
 
@@ -595,8 +630,8 @@ LLM token/cost/latency 원천.
 | id | UUID | PK |
 | user_id | UUID | NOT NULL, FK→users.id |
 | organization_id | UUID | NULL, FK→organization.id |
-| credential_id | UUID | NOT NULL, FK→llm_credentials.id (SET NULL) |
-| model_id | UUID | NOT NULL, FK→llm_models.id (SET NULL) |
+| credential_id | UUID | NOT NULL, FK→llm_credentials.id (SET NULL) — current model has a NOT NULL/SET NULL mismatch; future usage-log schema changes must resolve this by making the FK nullable or changing delete behavior |
+| model_id | UUID | NOT NULL, FK→llm_models.id (SET NULL) — current model has a NOT NULL/SET NULL mismatch; future usage-log schema changes must resolve this by making the FK nullable or changing delete behavior |
 | workflow_id | UUID | NULL, FK→workflows.id |
 | workflow_run_id | UUID | NULL, FK→workflow_runs.id (SET NULL) |
 | node_id | TEXT | NULL — graph 내 string 참조 |
@@ -614,6 +649,8 @@ LLM token/cost/latency 원천.
 #### `connections`
 
 외부 DB data source. 현재 user 소유이며 `organization_id`와 `created_at/updated_at`이 없다.
+
+현재 `connections`는 organization-scoped resource가 아니므로, target Knowledge source connector나 KB sync가 connection을 사용할 때 workflow/KB 권한만으로 connection 사용 권한이 자동 충족된다고 해석하지 않는다. Organization/owner scope, secret manage/use 경계, egress guard 이관은 connector gate에서 정리해야 한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -653,8 +690,8 @@ LLM token/cost/latency 원천.
 
 1. 인증 후 `X-Organization-Id`로 active organization을 결정한다.
 2. `organization_memberships` row로 scope를 판정한다. invited/suspended/removed는 fail-closed, membership row가 없는 legacy owner/manager만 fallback으로 manager 인정.
-3. 대상 resource가 요청 organization 밖이면 거부한다(404로 숨김).
-4. organization owner/manager는 scope 안에서 `manager`로 판정한다.
+3. 대상 resource가 요청 organization 밖이면 거부한다(404로 숨김). Knowledge target의 source ACL/hidden/deleted/archived/resource-unverified 상태는 이 전역 요약만으로 구현하지 않고 ADR-0014 resource hiding API matrix gate에서 닫는다.
+4. organization owner/manager는 scope 안에서 mbased resource permission `manager`로 판정한다. Source-managed KB retrieval에서는 이 override가 source ACL/requester authorization gate를 우회하지 않는다.
 5. team permission과 user direct permission 중 **가장 강한 허용**을 적용한다. user direct는 additive allow 전용이며 team 권한을 낮추지 못한다. explicit deny는 없다.
 6. permission row 없음 또는 `auth_state='none'`이면 거부한다.
 7. trace raw payload처럼 별도 visibility policy가 있으면 추가 평가하고, 거부/민감 action은 audit에 기록한다.

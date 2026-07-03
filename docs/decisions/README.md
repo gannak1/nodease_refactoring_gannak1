@@ -33,6 +33,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0011](ADR-0011-team-router-rbac-service-boundary.md) | Accepted | Team API RBAC service boundary | Team 관리 권한 판정과 team/team member 조회는 `TeamService`가 소유하고, 등록 router는 기존 `team.py` 기준 유지 |
 | [ADR-0012](ADR-0012-metadata-aware-hierarchical-rag-boundary.md) | Accepted | Metadata-aware 및 Hierarchical RAG 경계 | Metadata filter는 allowlist schema, metadata는 permission source가 아니며, RAG trace는 raw chunk content 없이 citation metadata를 저장 |
 | [ADR-0013](ADR-0013-rag-answer-trace-usage-correlation-boundary.md) | Accepted | RAG Agent answer와 trace/usage correlation 경계 | Standalone Agent answer는 RAG-owned `rag_answer_runs`와 opaque `correlation_id`로 연결하고, trace/usage table에 RAG 전용 FK를 추가하지 않음 |
+| [ADR-0014](ADR-0014-knowledge-base-document-atom-and-collection-boundary.md) | Accepted | Knowledge Base document atom과 Collection 경계 | 목표 KB 통합 모델에서 Knowledge Base는 document/source item 단위 permission/retrieval/sync/lifecycle atom이고, Knowledge Collection은 grouping/routing/ops 단위. RAG/embedding은 redacted canonical text만 사용하고 raw content는 opt-in protected artifact로만 별도 저장 가능. destructive cutover와 source ACL/API/privacy gate는 별도 승인 필요 |
 
 ## 참고 보고서
 
