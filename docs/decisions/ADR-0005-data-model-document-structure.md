@@ -1,6 +1,6 @@
 # ADR-0005: 데이터 모델 문서 구조
 
-Status: Accepted
+Status: Superseded
 Date: 2026-06-27 15:59 KST
 Original: ADR-202606271559-data-model-document-structure
 Verified Against: dev @ ec576b4f24155697aed8843acc6e5a3fc835f7e1

@@ -8,7 +8,9 @@
 - DB schema, RBAC, audit, data retention, organization boundary, 보안 경계는 ADR 후보로 본다.
 - ADR은 결정의 이유와 선택지를 기록한다. 현재 구현 기준은 관련 문서(`docs/`, `features/`)에도 반드시 반영한다.
 - 파일명은 `ADR-NNNN-topic-slug.md` 형식을 사용한다. `NNNN`은 4자리 순번이다.
-- ADR 본문은 작성 시점의 기록으로 보존하고 소급 수정하지 않는다. 결정이 바뀌면 새 ADR을 추가하고 이전 ADR을 참조한다.
+- ADR 본문은 작성 시점의 기록으로 보존하고 소급 수정하지 않는다. 결정이 바뀌면 새 ADR을 추가하고 이전 ADR을 참조한다. 단 머리말 `Status`는 기록이 아니라 상태이므로 `Superseded` 등으로 전이할 수 있다.
+- 새 ADR의 메타 블록은 `Status`만 필수로 하고, 관련 결정이 있으면 `Related ADRs`를 선택적으로 추가한다. `Date`는 git history가 답하므로 넣지 않고, 구현 반영 여부는 이 README의 `현재 코드 기준` 열이 담당하므로 `Verified Against`도 넣지 않는다.
+- 이관 ADR의 `Date`, `Original`, `Verified Against` 필드는 이관 당시 기록으로 보존하며, 새 ADR 기준으로 소급 정리하지 않는다.
 
 기존 `docs_old/decisions/`의 `ADR-YYYYMMDDHHmm-*` 파일은 2026-07-02 문서 체계 개편 때 이 디렉토리로 이관했다. 각 ADR 머리말의 `Original:` 항목이 원본 파일명을 가리키며, 이관 시 본문은 보존하고 링크와 번호만 새 구조에 맞게 갱신했다.
 
@@ -22,7 +24,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0002](ADR-0002-auth-state-standard.md) | Proposed | auth_state 표준화 | [ADR-0006](ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md)에 따라 `none/viewer/operator/builder/manager`와 legacy mapping 구현 |
 | [ADR-0003](ADR-0003-user-direct-permission.md) | Proposed | User direct permission 도입 | [ADR-0006](ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md)에 따라 `user_workflow_permissions`, `user_llm_permissions` 구현 |
 | [ADR-0004](ADR-0004-audit-log-rag-trace-storage.md) | Accepted | audit_logs와 RAG trace 저장 기준 | `audit_logs`, trace payload 계열 table 재사용 |
-| [ADR-0005](ADR-0005-data-model-document-structure.md) | Accepted | 데이터 모델 문서 구조 | 2026-07-02 문서 체계 개편으로 대체됨. 데이터 모델 문서는 [docs/data_model.md](../data_model.md) 단일 문서 기준 |
+| [ADR-0005](ADR-0005-data-model-document-structure.md) | Superseded | 데이터 모델 문서 구조 | 2026-07-02 문서 체계 개편으로 대체됨. 데이터 모델 문서는 [docs/data_model.md](../data_model.md) 단일 문서 기준 |
 | [ADR-0006](ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md) | Accepted | RBAC auth_state 및 User Direct Permission 승인 | 현재 코드의 workflow/LLM credential RBAC 기준. `user_knowledge_permissions`, `user_audit_permissions`는 아직 구현되지 않음 |
 | [ADR-0007](ADR-0007-mvp2-classification-metadata-storage.md) | Accepted | MVP 2 classification metadata 저장 방식 | `documents.meta_info` 사용 가능. `knowledge_bases.classification`, `documents.classification` column 없음 |
 | [ADR-0008](ADR-0008-audit-action-naming-standard.md) | Accepted | Audit action naming 표준 | MVP 1 주요 `AuditAction`과 organization membership invite/accept/update/remove action 구현. permission row 변경은 `*_permission.created/updated/deleted` data-change audit도 기록. `policy.warn`, `policy.block`, `rag.retrieve`는 MVP 2 목표 action이며, RAG Agent answer lifecycle/purge 목표 action은 `rag.answer.*`로 구분 |
@@ -36,7 +38,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 
 | 문서 | 성격 | 기준 |
 | --- | --- | --- |
-| [docs-code-discrepancy-report-20260629](../../docs_old/decisions/docs-code-discrepancy-report-20260629.md) | docs와 code 불일치 조사 보고서. 현재 active source of truth가 아니라 정리 근거 기록이다. `docs_old/` 아카이브에 보존한다. | `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` |
+| `docs_old/decisions/docs-code-discrepancy-report-20260629.md` | docs와 code 불일치 조사 보고서. 현재 active source of truth가 아니라 정리 근거 기록이다. `docs_old/` 삭제 후에는 아카이브 커밋(eedd820)의 git history에서 확인한다. | `dev @ c990b54e931b4de8023822f6dff14f43fc1d415f` |
 
 ## 상태 의미
 
