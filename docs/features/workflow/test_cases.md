@@ -358,12 +358,14 @@ Verified Against: feature/mba-102 @ 968c8df
 - LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject`와 sanitized `subject_resolution_reason`을 전달한다.
 - Execution subject가 없거나 inactive/suspended/removed membership이면 RAG preflight가 실패한다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 Knowledge retrieval을 실행하지 않는다.
+- 배포 preflight는 LLM node RAG 옵션의 KB/collection 후보가 intended execution subject/audience에게 사용 가능한지 검증하고, unavailable/unknown 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
 
 ## E2E Tests
 
 - 배포된 workflow의 LLM node의 RAG 옵션은 execution subject 기준으로 KB permission/source ACL gate를 다시 평가하고, Builder actor 권한으로 fallback하지 않는다.
 - Evidence sufficiency가 insufficient인 경우 workflow는 추측 답변을 생성하지 않고 safe no-result 응답 또는 명시된 분기 결과를 반환한다.
-- Query rewrite가 켜진 LLM node의 RAG 옵션도 권한 없는 KB/source ACL denied 문서를 prompt, citation, trace에 포함하지 않는다.
+- Query rewrite가 켜진 LLM node의 RAG 옵션도 권한 없는 KB 또는 requester source authorization denied 문서를 prompt, citation, trace에 포함하지 않는다.
+- 배포 시점에 available이던 KB가 실행 시점 source ACL stale/revoked 상태가 되면 workflow는 설정된 failure policy에 따라 safe no-result, fallback branch, 또는 node/workflow failure로 닫고 세부 source ACL reason을 사용자에게 노출하지 않는다.
 
 ## Permission Tests
 
@@ -373,7 +375,7 @@ Verified Against: feature/mba-102 @ 968c8df
 
 ## Edge Cases
 
-- `llm_assisted` query rewrite가 실패하면 G14에서 정한 fallback 정책에 따라 원 query 사용 또는 terminal error로 처리하고, raw rewritten query를 durable metadata에 저장하지 않는다.
+- `llm_assisted` query rewrite는 별도 승인 전까지 실행 가능한 variant가 아니다. 승인 후 실패하면 승인된 fallback 정책에 따라 원 query 사용 또는 terminal error로 처리하고, raw rewritten query를 durable metadata에 저장하지 않는다.
 - 일부 authorized KB retrieval만 operational failure가 발생하면 Knowledge partial-result 정책에 맞춘 safe summary만 반환한다.
 - Workflow runtime outbound egress guard는 Knowledge source collection egress boundary와 별도 gate이므로, Knowledge source connector guard가 workflow HTTP node 전체를 보호한다고 가정하지 않는다.
 

@@ -1,7 +1,7 @@
 # Knowledge Component Spec
 
 Status: Draft
-Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
+MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다.
 
 ## Domain Components
 
@@ -12,12 +12,13 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 | Protocol Adapter | Read-only probe, SQL/command deny, listing cap 같은 protocol-specific safe behavior를 수행한다 | 승인된 guard/client/dialer를 사용해야 한다 |
 | Sync Scheduler / Worker | Lease, cursor, retry/backoff, dead-letter, tombstone, sync run state를 관리한다 | Raw source metadata를 노출하지 않고 safe state/reason summary만 낸다 |
 | Source Identity Store | Protected/HMAC source identity reference와 tombstone matching을 관리한다 | User-facing document resource가 아니다 |
+| Source Authorization Provenance Store | Source ACL fact를 requester authorization provenance와 freshness evidence로 materialize한다 | KB `use` grant 자체가 아니며 retrieval permission은 Knowledge Permission Helper가 two-gate로 평가한다 |
 | Privacy/Redaction Service | PII/secret hard baseline과 output-target redaction을 위한 shared detector/masking engine을 제공한다 | Trace storage나 Knowledge lifecycle을 소유하지 않는다 |
 | Canonical Normalizer | Source content를 추출, redaction, normalization해 canonical text/metadata를 만든다 | Chunk/embedding 생성 전에 Privacy/Redaction Service를 사용한다 |
 | Raw Artifact Store | Compliance view용 optional protected raw source content store | RAG, embedding, prompt, router input, Agent answer stream에서 사용하지 않는다 |
 | Ingestion Concurrency Guard | Same source item/document-level KB 처리의 owner-token lock, fencing token, advisory lock을 제공한다 | Lock TTL 만료 뒤 stale worker가 새 artifact를 finalize하거나 lock을 해제하지 못하게 한다 |
 | Ingestion Pipeline | Document version, chunk, embedding artifact, external index entry를 생성한다 | 성공 전 active version을 바꾸지 않는다 |
-| Active Version Finalizer | Transactional active version pointer swap, content_hash/fingerprint commit, outbox cleanup을 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하지 않는다 |
+| Active Version Finalizer | Transactional active version pointer swap, previous version `superseded` 표시, content_hash/fingerprint commit, outbox insert를 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하거나 pointer swap 후 outbox insert 전에 crash window를 만들지 않는다 |
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞춘다 | DB commit 전 physical delete를 수행하지 않고 retry 가능한 cleanup만 실행한다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
 | Knowledge Skill Registry | Provider-neutral Knowledge Skill, version, owner/review state, freshness/eval status를 관리한다 | Skill은 빌더 단계 LLM node의 RAG 옵션 후보이며 권한 source나 source of truth가 아니다 |
@@ -55,6 +56,8 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 | Skill freshness | `fresh`, `stale`, `review_required`, `deprecated` |
 
 `source_deleted`는 KB sync/source state이며 document version status가 아니다. Version이 과거 source 삭제 시점의 snapshot임을 표현해야 하면 `source_deleted_snapshot` 같은 historical stale reason을 사용한다.
+
+Permission Helper가 source-managed가 아닌 KB를 평가할 때는 source ACL freshness enum 대신 `not_source_managed` 같은 safe sentinel을 반환할 수 있다. 이 값은 fresh source ACL을 의미하지 않고, source ACL gate가 적용되지 않는 KB임을 나타낸다.
 
 Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw artifact purge, source tombstone cleanup은 구현 전에 별도 retention policy, audit action/reason code, recovery contract가 필요하다.
 
@@ -104,7 +107,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 ### Source Sync And Version Activation
 
 1. Scheduler가 connector sync lease를 획득한다.
-2. Connector worker가 guard/adapter를 통해 source item과 source ACL을 가져온다.
+2. Connector worker가 guard/adapter를 통해 source item과 source ACL을 가져온다. Slack 계열 초기 baseline은 channel을 collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑한다. DM/raw audio/raw transcript는 기본 수집하지 않는다.
 3. Normalizer가 shared privacy/redaction policy를 호출해 redacted canonical text와 safe metadata를 만든다.
 4. Ingestion concurrency guard가 source item 또는 document-level KB 단위 owner-token/fencing lock을 확보한다.
 5. Ingestion이 새 document version, chunk, embedding, external index artifact를 staging 상태로 생성한다.
@@ -123,13 +126,21 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 - Permission helper는 candidate resolution에서 per-KB query를 피하고 bulk evaluation을 지원해야 한다.
 - Candidate lookup에는 KB 중심 index와 user-candidate index가 모두 필요하다.
-- Candidate cap, fanout concurrency, timeout, partial failure behavior는 operations policy로 조정 가능해야 하며 운영 배포 전에 load test를 거쳐야 한다.
+- 초기 candidate cap은 `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`이다. 이 값은 운영 baseline이며 제품의 고정 계약이 아니다.
+- Candidate cap, fanout concurrency, timeout, partial failure behavior는 [implementation_baseline.md](implementation_baseline.md)의 baseline을 시작점으로 삼고, operations policy로 조정 가능해야 하며 운영 배포 전에 load test를 거쳐야 한다.
 - 가능한 경우 KB/version filter를 포함한 단일 vector/keyword query를 우선한다. Backend가 지원하지 못하면 concurrency와 timeout cap이 있는 bounded per-KB fanout을 사용한다.
 - Candidate cache key에는 permission/freshness epoch를 포함해 ACL revocation이 stale candidate를 무효화해야 한다.
 - Skill candidate cache key에는 skill version, freshness state, eval state, source version reference를 포함해 stale skill이나 source tier 변경이 즉시 무효화되어야 한다.
 - Query rewrite cache를 둘 경우 key에는 rewrite mode, safe template id, skill version, permission/freshness epoch를 포함해야 하며 raw rewritten query를 durable cache key나 trace key로 사용하지 않는다.
 - `llm_assisted` query rewrite는 추가 latency와 LLM cost를 만든다. 운영 배포 전 rewrite timeout, token/cost budget, fallback, load shedding, usage logging 기준을 load test에 포함한다.
 - DB source sync나 shared vector save path도 같은 document-level KB에 대한 chunk replacement를 직렬화하거나 versioned chunk set + active pointer 방식으로 처리해야 한다.
+
+## Implementation Phases
+
+- Phase 1: egress negative paths, protected source identity, basic sync, redaction, active version swap, transactional outbox insert, fencing token, recovery scanner smoke.
+- Phase 2: source ACL freshness, content cursor와 ACL/permission watermark 분리, Knowledge Permission Helper, KB `use` + source ACL two-gate, source-policy grant inactive lifecycle.
+- Phase 3: multi-KB caps, final evidence recheck, resource hiding matrix, retry/dead-letter transition, partial result behavior.
+- Later: golden questions, source tier tuning, LLM-assisted rewrite, advanced rerank.
 
 ## Security And Privacy
 
@@ -148,4 +159,4 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 ## Accessibility
 
 - Collection과 KB state badge에는 색상만이 아니라 text label이 있어야 한다.
-- Error/remediation state는 hidden name/path를 누출하지 않으면서 permission denied, source ACL stale, sync failed, hidden resource를 구분해야 한다.
+- Error/remediation state는 admin/preflight 또는 이미 visible로 판정된 resource context에서만 permission denied, source ACL stale, sync failed, hidden resource를 구분한다. 일반 사용자/작성자 context에서는 hidden name/path를 누출하지 않는 safe reason class로 낮춘다.

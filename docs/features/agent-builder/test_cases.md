@@ -1,8 +1,6 @@
 # Agent Builder Test Cases
 
 Status: Draft
-Verified Against: TBD
-
 [PRD](../../PRD.md) 시나리오 1(1~3, 5단계)과 FR-001~FR-003을 검증한다. 비용 최적화(4단계)는 [cost-optimizer/test_cases.md](../cost-optimizer/test_cases.md)에서 다룬다.
 
 ## Unit Tests
@@ -19,6 +17,8 @@ Verified Against: TBD
 - 유효하지 않은 `X-Organization-Id` header → 실행 전 검증 오류로 거부.
 - 해석 불가능한 프롬프트(예: 빈 문자열, 자동화와 무관한 요청) → 빈 workflow를 만들지 않고 명시적 실패 응답.
 - 사내 지식 검색 workflow 생성 요청에서 Builder는 safe skill metadata와 safe collection/KB display metadata만 사용하고 raw skill body, hidden source reference, raw source title/path/url을 prompt나 응답에 포함하지 않는다.
+- LLM node RAG 옵션 후보 resolver는 intended execution subject/audience 기준 `available`, `warning`, `unavailable`, `unknown` runtime availability를 반환하고, hidden KB id/name, exact denied count, hidden source distribution을 반환하지 않는다.
+- 후보가 source ACL stale/unmapped/ambiguous/unverified/revoked 또는 scope 밖 resource 때문에 제외된 경우 Builder 응답은 safe reason class와 required action만 표시하고 세부 source ACL state나 raw source path/title/url을 노출하지 않는다.
 
 ## E2E Tests
 
@@ -33,11 +33,12 @@ Verified Against: TBD
 - 생성 경로가 credential `use` 권한 판정을 우회하지 않는다: 권한 없는 credential은 생성 결과에 배정되지 않는다.
 - Skill이 제안한 collection/KB reference와 LLM node의 RAG 옵션은 workflow 실행 시점에 `execution_subject` 기준으로 다시 검증된다. Builder actor 권한이나 skill visibility만으로 runtime KB `use`/source ACL gate가 충족되지 않는다.
 - Query rewrite와 evidence sufficiency 옵션이 포함된 workflow도 Knowledge permission/source ACL/final evidence gate를 우회하지 않는다.
+- Builder가 볼 수 있지만 intended execution subject가 사용할 수 없는 KB/collection은 배포 전 preflight에서 `unavailable` 또는 `warning`으로 표시되며, 명시 승인된 fallback/failure policy 없이는 배포 가능한 runtime option으로 확정되지 않는다.
 
 ## Edge Cases
 
 - 프롬프트에 secret처럼 보이는 값(API key 형식 문자열)이 포함돼도 로그/trace/audit metadata에 원문이 남지 않는다.
-- Builder가 `llm_assisted` query rewrite 후보를 제안하더라도 Knowledge G14 gate가 닫히기 전에는 실행 가능한 node 설정으로 확정하지 않거나 review-required 상태로 표시한다.
+- Builder는 별도 승인 전까지 `llm_assisted` query rewrite 후보를 실행 가능한 node 설정으로 확정하지 않거나 review-required 상태로 표시한다.
 - Builder prompt, 생성 결과, trace, audit에는 raw rewritten query, hidden source reference, 권한 없는 문서명/ID가 남지 않는다.
 - 생성 중 LLM 호출 실패 → 부분 생성물 없이 실패 안내, workflow row가 생성되지 않는다.
 - 허용 목록 밖 노드 타입을 유도하는 프롬프트 → 해당 노드 없이 생성되거나 명시적으로 거절된다 (허용 범위는 PRD Open Question 확정 후 고정).

@@ -5,7 +5,7 @@ Related Features: auth, organization, workflow, llm-credentials, deployment, kno
 
 ## Purpose
 
-Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 차단, 운영 작업을 추적한다. Canonical action naming은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)을 따르고, RAG trace 저장 경계는 [ADR-0012](../../decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md), standalone RAG answer correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)를 따른다.
+Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 차단, 운영 작업을 추적한다. Canonical action naming은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)을 따르고, RAG trace 저장 경계는 [ADR-0012](../../decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md), standalone RAG answer correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md), Knowledge 통합 임시 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다.
 
 ## User Stories
 
@@ -19,6 +19,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - RAG retrieval 성공은 `rag.retrieve`, standalone answer lifecycle은 `rag.answer.*`로 구분한다.
 - Standalone answer는 `rag_answer_runs`와 `correlation_id`로 trace/usage/audit을 느슨하게 연결하고, trace/usage table에 RAG 전용 FK를 만들지 않는다.
 - Knowledge source sync, source ACL mapping, partial result, egress guard failure는 sanitized reason code와 retryability 중심으로 기록한다.
+- Auto-ingested KB use provisioning audit은 source ACL fact를 KB `use`로 오해하지 않게 구분한다. Source authorization provenance update, explicit KB `use` grant provisioning, requester source ACL evaluation은 서로 다른 safe action/reason/metadata로 구분해야 한다.
 - Trace redaction storage policy는 Audit/Tracing이 소유하되, PII/secret detector와 masking engine은 shared privacy/redaction boundary로 분리해 Knowledge ingestion도 재사용한다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
 - Raw Knowledge artifact access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Skill usage summary는 redaction-safe allowlist만 사용한다. 허용값은 workflow draft/LLM node의 RAG 옵션/test run에서 사용한 skill id, skill version, freshness state, eval status, safe source-of-truth tier, safe provenance ref, request/correlation id다.

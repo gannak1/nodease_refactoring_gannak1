@@ -52,6 +52,21 @@ Verified Against: TBD
 | FR-010 | Gateway API | `apps/gateway/tests/api/test_cost_optimizer_api.py` | builder 권한 강제, scope 밖 404 | 작성 전 | `cd apps/gateway && PYTHONPATH=$(git rev-parse --show-toplevel) .venv/bin/python -m pytest tests/api/test_cost_optimizer_api.py` | 미실행 |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
+## Knowledge/RAG Compare Tests
+
+이 섹션은 기존 LLM 노드 단위 Cost Optimizer 테스트를 대체하지 않고, RAG 포함 workflow 비교가 추가될 때 검증해야 할 Knowledge/RAG 경계를 정의한다.
+
+| ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
+| --- | --- | --- | --- |
+| COST-KNOW-TC-001 | compare 실행은 workflow 실행 권한과 대상 credential `use` 권한을 요구해야 한다. | viewer 권한 사용자가 compare를 실행한다. | `403 permission.denied`. |
+| COST-KNOW-TC-002 | 후보 모델은 verified credential-model relation이 있는 모델로 제한되어야 한다. | verified relation이 없는 모델을 후보로 지정한다. | 후보 거부 또는 제외. |
+| COST-KNOW-TC-003 | organization scope 밖 workflow 비교는 존재 추론 없이 숨겨야 한다. | 다른 조직 workflow id로 compare를 요청한다. | `404 resource.not_found`. |
+| COST-KNOW-TC-004 | RAG 포함 workflow compare는 workflow runtime의 `execution_subject` 기준으로 KB permission, source ACL, final evidence gate를 적용해야 한다. | 실행 주체가 볼 수 없는 KB가 candidate에 포함된다. | prompt, citation, trace, 비교 UI 어디에도 포함되지 않음. |
+| COST-KNOW-TC-005 | Query rewrite와 evidence sufficiency 옵션이 켜진 variant도 권한 없는 KB 또는 requester source authorization denied 문서를 후보로 만들지 못해야 한다. | rewrite 결과가 권한 없는 KB를 검색 후보로 확장한다. | 후보 제외 또는 safe no-result. |
+| COST-KNOW-TC-006 | RAG 포함 비교 리포트는 safe summary만 표시해야 한다. | raw rewritten query, raw prompt/completion, raw chunk content, hidden KB id/name, raw source metadata가 표시된다. | 테스트 실패. |
+| COST-KNOW-TC-007 | 별도 승인 전 `llm_assisted` query rewrite는 비교 변수로 사용하지 않아야 한다. | 승인 없이 `llm_assisted` variant가 생성된다. | 후보 생성 거부 또는 명시 제외. |
+
+## FR-001 LLM 노드 단위 A/B 테스트 진입
 
 ### Component Tests
 

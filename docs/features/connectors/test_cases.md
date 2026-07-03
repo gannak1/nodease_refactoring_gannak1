@@ -89,3 +89,17 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | --- | --- | --- | --- |
 | CONN-TC-X001 | Current gap: `connectorApi`는 connector create/test 실패 시 raw Axios error 객체를 `console.error`에 전달한다. | Axios error의 request config/data에 DB password, SSH password, private key가 포함된다. | 현재 구현은 client console log secret 비노출을 보장하지 않으므로 production 전 sanitize 필요. |
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
+
+## Knowledge Source Connector Target Tests
+
+이 섹션은 현재 workflow DB connector 테스트를 대체하지 않고, 목표 Knowledge source connector가 따라야 할 보안 경계를 추가로 검증한다. Knowledge source connector target case는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 egress/adapter baseline을 따른다.
+
+| ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
+| --- | --- | --- | --- |
+| CONN-KNOW-TC-001 | Knowledge source collection의 SSH tunnel, proxy, approved private network segment는 별도 connector/egress ADR 승인 전 기본 거부되어야 한다. | 승인 정책 없이 SSH tunnel 또는 private target을 사용한다. | safe reason code로 거부. |
+| CONN-KNOW-TC-002 | DNS rebinding과 redirect chain은 최종 target 기준으로 검증되어야 한다. | 최초 host는 안전하지만 최종 target이 private/link-local/metadata IP이다. | safe reason code로 거부. |
+| CONN-KNOW-TC-003 | Source connector의 public ACL은 organization-wide read/use로 자동 materialize되지 않아야 한다. | public ACL 하나만으로 KB `use` grant가 생성된다. | 테스트 실패. |
+| CONN-KNOW-TC-004 | Slack/meeting connector는 channel을 collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑해야 한다. | huddle recap 또는 canvas가 channel-level KB 하나에 섞인다. | 테스트 실패. |
+| CONN-KNOW-TC-005 | Slack/meeting artifact-level ACL이 있으면 artifact ACL과 containing channel/workspace ACL의 교집합만 source authorization provenance를 얻어야 한다. | channel membership만으로 artifact ACL 없는 requester가 통과한다. | fail-closed 또는 remediation. |
+| CONN-KNOW-TC-006 | Slack/meeting DM, raw audio, raw transcript는 별도 opt-in policy 없이 수집되지 않아야 한다. | opt-in 없이 raw transcript가 ingestion 대상에 포함된다. | 테스트 실패. |
+| CONN-KNOW-TC-007 | Slack/meeting ACL sync 실패나 partial ACL response는 raw channel/source title/path/url, raw principal, raw exception을 UI, audit, trace, log에 남기지 않아야 한다. | 실패 응답 또는 로그에 raw source metadata가 포함된다. | safe reason code만 남김. |

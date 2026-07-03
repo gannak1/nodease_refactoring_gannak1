@@ -21,6 +21,7 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Agent answer generation은 explicit KB mode와 auto collection mode 모두에서 명시된 `generation_model_id`와 `credential_id`의 visibility, use permission, verified relation을 서버에서 다시 검증한다.
 - Knowledge retrieval embedding은 KB embedding model readiness와 usable embedding credential을 preflight로 확인한다. 이 credential은 generation credential과 같다고 가정하지 않는다.
 - Credential option API는 실행 가능한 safe option schema만 반환하고, credential value, encrypted config, user quota, raw timestamps처럼 실행 선택에 불필요한 metadata를 기본 노출하지 않는다.
+- LLM node RAG option의 `llm_assisted` query rewrite는 별도 승인 전까지 비활성이다. 승인 시 rewrite LLM call도 execution subject, model/credential visibility, credential `use`, verified relation, timeout, token/cost budget, usage logging을 통과해야 한다.
 
 ## Policies And Edge Cases
 
@@ -30,7 +31,7 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Default credential/preset 자동 선택은 별도 ADR/API 계약 전에는 허용하지 않는다.
 - Credential 권한 부족은 KB permission/source ACL 실패와 독립적으로 기록한다. Credential이 있다고 해서 KB content permission이나 source ACL authorization을 대체하지 않는다.
 - Usage summary는 model/provider/credential 식별자와 token/cost/latency 집계만 포함한다.
-- 목표 auto collection answer 구현 전에는 generation model/credential visibility, credential `use`, verified credential-model relation의 API error shape, answer-run 생성 여부, audit behavior를 Knowledge API gate와 LLM credential feature 문서에 함께 고정한다.
+- Auto collection answer와 LLM node RAG option runtime은 generation model/credential visibility, credential `use`, verified credential-model relation 실패를 Knowledge permission/source ACL 실패와 구분해 반환하고 기록한다. Raw credential value 또는 provider raw response는 audit/trace/usage에 저장하지 않는다.
 
 ## Open Questions
 

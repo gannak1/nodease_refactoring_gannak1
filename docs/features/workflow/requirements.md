@@ -46,10 +46,11 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-001: Workflow run context는 organization, workflow, workflow version, run id, node id, trigger mode, actor 또는 service account 정보를 전달한다.
 - FR-002: Interactive 실행은 요청 사용자를 execution subject로 사용할 수 있다.
 - FR-003: Schedule, webhook, API trigger처럼 요청 사용자가 명확하지 않은 실행은 배포 시 승인된 service account, assigned operator, 또는 별도 정책으로 확정된 execution subject를 사용한다.
-- FR-004: Agent/LLM node 또는 RAG 옵션이 켜진 LLM node가 Knowledge retrieval을 호출할 때 workflow runtime은 명시적으로 resolve한 `execution_subject`와 sanitized `subject_resolution_reason`을 Knowledge service에 전달한다.
+- FR-004: RAG 옵션이 켜진 LLM node가 Knowledge retrieval을 호출할 때 workflow runtime은 명시적으로 resolve한 `execution_subject`와 sanitized `subject_resolution_reason`을 Knowledge service에 전달한다.
 - FR-005: `execution_subject`가 없거나 모호하면 Knowledge retrieval preflight를 fail-closed로 처리한다. Workflow owner 권한으로 조용히 fallback하지 않는다.
 - FR-006: Workflow owner, deployment owner, execution subject는 audit/trace에서 구분할 수 있어야 한다. Owner는 소유권과 관리 표시에는 사용할 수 있지만, 명시 정책 없이 실행 시점 data access 권한으로 사용하지 않는다.
-- FR-007: 후속 gate에서 Workflow runtime의 Knowledge Skill 사용을 허용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
+- FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
+- FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포는 intended execution subject/audience 기준 runtime availability preflight를 수행한다. 권한이 맞지 않으면 배포를 막거나 explicit failure policy를 요구한다.
 
 
 ### 1. 실행 편의성
@@ -142,6 +143,7 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
 - Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 동일한 execution subject와 Knowledge permission/source ACL gate를 사용한다.
+- 별도 RAG node를 만들지 않는다. Knowledge retrieval은 LLM node의 RAG option/runtime path로 연결한다 ([ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)).
 - Skill이 workflow generation이나 실행 시점 RAG procedure를 안내하더라도, skill은 data access 권한을 부여하지 않는다. 실제 evidence retrieval은 Knowledge permission helper 결과로만 수행한다.
 - Code-bearing skill은 별도 sandbox/approval/egress/resource-cap gate 전까지 workflow runtime에서 실행하지 않는다.
 - Workflow Playground가 별도 실험 공간인지 canvas와 통합되는지, draft/unpublished skill을 테스트 실행에 사용할 수 있는지는 아직 확정하지 않는다.
