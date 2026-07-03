@@ -24,6 +24,14 @@ import {
   validateWorkflowGraph,
 } from '../../utils/validateWorkflowGraph';
 import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
+import {
+  formatCost,
+  formatLatency,
+  formatTokens,
+  readCost,
+  readTokenUsage,
+  summarizeWorkflowExecution,
+} from '../../utils/testExecutionSummary';
 
 type TestSidebarProps = {
   appendMemoryFlag?: (
@@ -53,46 +61,6 @@ const getHttpStatus = (error: unknown) => {
     return (error as { response: { status: number } }).response.status;
   }
   return undefined;
-};
-
-const readTokenUsage = (output: unknown) => {
-  if (!output || typeof output !== 'object') return undefined;
-  const usage = (output as { usage?: Record<string, unknown> }).usage || {};
-  const totalTokens = usage.total_tokens;
-  if (typeof totalTokens === 'number') return totalTokens;
-
-  const promptTokens =
-    typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : 0;
-  const completionTokens =
-    typeof usage.completion_tokens === 'number'
-      ? usage.completion_tokens
-      : 0;
-  const summedTokens = promptTokens + completionTokens;
-  return summedTokens > 0 ? summedTokens : undefined;
-};
-
-const readCost = (output: unknown) => {
-  if (!output || typeof output !== 'object') return undefined;
-  const directCost = (output as { cost?: unknown }).cost;
-  if (typeof directCost === 'number') return directCost;
-  const usage = (output as { usage?: Record<string, unknown> }).usage || {};
-  return typeof usage.total_cost === 'number' ? usage.total_cost : undefined;
-};
-
-const formatLatency = (latencyMs?: number | null) => {
-  if (latencyMs === undefined || latencyMs === null) return '-';
-  if (latencyMs < 1000) return `${latencyMs}ms`;
-  return `${(latencyMs / 1000).toFixed(1)}s`;
-};
-
-const formatTokens = (totalTokens?: number | null) => {
-  if (totalTokens === undefined || totalTokens === null) return '-';
-  return totalTokens.toLocaleString();
-};
-
-const formatCost = (cost?: number | null) => {
-  if (cost === undefined || cost === null) return '-';
-  return `$${cost.toFixed(6)}`;
 };
 
 export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
@@ -362,21 +330,16 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       ['running', 'success', 'failure'].includes(summary.status),
     );
 
-  const totalExecutionMs =
-    testExecutionStartedAt && testExecutionFinishedAt
-      ? testExecutionFinishedAt - testExecutionStartedAt
-      : null;
-  const totalTokens = nodeExecutionSummaries.reduce((sum, item) => {
-    return sum + (item.totalTokens ?? 0);
-  }, 0);
-  const totalCost = nodeExecutionSummaries.reduce((sum, item) => {
-    return sum + (item.totalCost ?? 0);
-  }, 0);
-  const hasTokenSummary = nodeExecutionSummaries.some(
-    (item) => item.totalTokens !== undefined,
-  );
-  const hasCostSummary = nodeExecutionSummaries.some(
-    (item) => item.totalCost !== undefined,
+  const workflowExecutionSummary = summarizeWorkflowExecution(
+    nodeExecutionSummaries.map((summary) => ({
+      nodeId: summary.nodeId,
+      status: summary.status as 'running' | 'success' | 'failure',
+      latencyMs: summary.latencyMs,
+      totalTokens: summary.totalTokens,
+      cost: summary.totalCost,
+    })),
+    testExecutionStartedAt,
+    testExecutionFinishedAt,
   );
 
   const renderNodeExecutionSummary = (
@@ -390,7 +353,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       : isFailure
         ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
         : 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300';
-    const StatusIcon = isRunning ? Loader2 : isFailure ? AlertCircle : CheckCircle;
+    const StatusIcon = isRunning
+      ? Loader2
+      : isFailure
+        ? AlertCircle
+        : CheckCircle;
 
     return (
       <div
@@ -402,9 +369,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
               {summary.title}
             </div>
-            <div className="mt-1 text-xs text-gray-500">
-              {summary.nodeType}
-            </div>
+            <div className="mt-1 text-xs text-gray-500">{summary.nodeType}</div>
           </div>
           <span
             className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${statusClassName}`}
@@ -461,19 +426,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         <div>
           <dt className="text-blue-700 dark:text-blue-300">전체 시간</dt>
           <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
-            {formatLatency(totalExecutionMs)}
+            {formatLatency(workflowExecutionSummary.totalLatencyMs)}
           </dd>
         </div>
         <div>
           <dt className="text-blue-700 dark:text-blue-300">전체 비용</dt>
           <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
-            {hasCostSummary ? formatCost(totalCost) : '-'}
+            {formatCost(workflowExecutionSummary.totalCost)}
           </dd>
         </div>
         <div>
           <dt className="text-blue-700 dark:text-blue-300">전체 토큰</dt>
           <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
-            {hasTokenSummary ? formatTokens(totalTokens) : '-'}
+            {formatTokens(workflowExecutionSummary.totalTokens)}
           </dd>
         </div>
       </dl>
@@ -835,8 +800,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             ) : (
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
                 <div className="flex items-center gap-2 font-medium">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  첫 노드 실행 결과를 기다리는 중입니다.
+                  <Loader2 className="h-4 w-4 animate-spin" />첫 노드 실행
+                  결과를 기다리는 중입니다.
                 </div>
               </div>
             )}
@@ -1221,7 +1186,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {!hasExecutionResult && !error ? (
           <button
             onClick={handleExecute}
-            disabled={isExecuting || isTestUploading || isPreparing || !canExecute}
+            disabled={
+              isExecuting || isTestUploading || isPreparing || !canExecute
+            }
             className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
           >
             {isExecuting || isTestUploading || isPreparing ? (
