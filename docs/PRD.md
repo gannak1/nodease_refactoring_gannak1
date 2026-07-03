@@ -33,10 +33,9 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 | 사용자 | 역할 | 주요 행동 |
 | --- | --- | --- |
-| 플랫폼 관리자 | organization owner/manager | 조직/팀/멤버 관리, 권한 부여, 운영 대시보드 확인 |
+| 플랫폼 관리자 | organization owner/manager, auditor/raw_auditor 겸임 | 조직/팀/멤버 관리, 권한 부여/신청 승인, 운영 대시보드 확인, audit log 검색과 접근 이력 확인 |
 | 빌더 | builder | workflow 생성/편집/배포, Agent Builder 사용, 운영 중 비용 최적화 실행 |
 | 현업 사용자 | operator/viewer | 배포된 workflow 실행, RAG 질의 |
-| 감사자 | auditor/raw_auditor | audit log 검색, 접근 이력 확인 |
 
 ## 3. 범위 정의
 
@@ -45,8 +44,8 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 | 축 | 현재 상태 | 이번에 만드는 것 |
 | --- | --- | --- |
 | **Agent Builder** | node 단위 wizard만 존재 (prompt/code/template 개선·생성) | 프롬프트 입력 → workflow 자동 생성. 예: "사내 복지, 휴가, 인사 정책 문서를 검색해 직원 질문에 답변해줘" → `[입력] → [Knowledge Base 연결 LLM] → [응답]` |
-| **Admin 대시보드** | `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터는 이미 쌓임 | 조회 UI: 권한 신청/승인 이력, 누가 언제 뭘 했는지(audit), workflow별 비용(usage), 예산 위험, 비정상 접근 시도 표시 |
-| **비용 최적화** | `POST /api/v1/workflows/{id}/compare` 모델 비교 API 구현됨 | "비용 최적화" UI: LLM 노드의 현재 설정과 후보 설정을 같은 입력으로 비교하고, `modelRouting`, `promptRouting`, permission-based RAG, `responseFormat`, `maxOutputTokens` 조정에 따른 비용·품질 차이를 표시 |
+| **Admin 대시보드** | `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터는 이미 쌓임 | 조회 UI: 권한 신청/승인 이력, 누가 언제 뭘 했는지(audit), workflow별 비용(usage), 예산 위험 표시 |
+| **비용 최적화** | `POST /api/v1/workflows/{id}/compare` 모델 비교 API 구현됨 | "비용 최적화" UI: LLM 노드의 현재 설정과 후보 설정을 같은 입력으로 비교하고, `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정에 따른 비용·품질 차이를 표시 |
 | **통합 RAG** | KB 구축/검색, metadata-aware·hierarchical retrieval 구현됨 | 사내 데이터 통합 저장소로서의 보강과 검색 품질/성능 개선, citation 추적 UX |
 
 ### 3.2 기반 기능 (구현됨, 유지 대상)
@@ -54,7 +53,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 이번 범위의 전제가 되는 기존 기능이다. 깨뜨리지 않는 것이 요구사항이다.
 
 - Workflow 생성/편집/실행/배포 (schedule/webhook/API 트리거 포함)
-- Organization/Team 관리, 초대, RBAC 권한 부여와 차단, 권한 신청/승인
+- Organization/Team 관리, 초대, RBAC 권한 부여와 차단
 - LLM credential 관리와 모델 연결
 - 외부 DB 연결(connectors)과 workflow DB 노드 사용 경로
 - Audit/tracing 기록 (canonical action 기준: [ADR-0008](decisions/ADR-0008-audit-action-naming-standard.md))
@@ -92,12 +91,12 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 1. 플랫폼 관리자는 admin 계정으로 로그인한다.
 2. 관리자는 관리자 화면에서 audit 목록 탭으로 이동한다.
 3. 관리자는 권한 신청, 권한 승인, workflow 생성, workflow 배포, workflow 실행 기록을 확인한다.
-4. 관리자 화면 상단에는 조직 운영 상태를 요약하는 긴급 알림 패널이 표시된다.
-5. 관리자는 이번 달 조직에서 사용한 LLM 비용을 숫자로 확인한다.
-6. 관리자는 예산을 초과했거나 예산 위험 구간에 들어간 workflow 비율을 도넛 그래프로 확인한다.
-7. 관리자는 부적절한 접근 또는 행동 탐지 건수를 확인한다.
-8. 관리자는 필요하면 특정 audit log를 열어본다. 
-9. 구체적으로 구현되었다면: 열어서 actor, action, target, status, timestamp를 확인한다.
+4. 관리자는 이번 달 조직에서 사용한 LLM 비용을 숫자로 확인한다.
+5. 관리자는 예산을 초과했거나 예산 위험 구간에 들어간 workflow 비율을 확인한다.
+6. 관리자는 필요하면 특정 audit log를 열어본다. 
+7. 구체적으로 구현되었다면: 열어서 actor, action, target, status, timestamp를 확인한다.
+
+후순위: 조직 운영 상태를 요약하는 상단 긴급 알림 패널과 부적절한 접근/행동 탐지 건수 확인은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
 
 이 시나리오는 Nodease가 workflow 생성 도구에 그치지 않고, 기업 내부 AI workflow 운영에 필요한 감사 가능성과 비용/위험 관측 표면을 제공한다는 점을 보여준다.
 
@@ -105,20 +104,22 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 1. 또 다른 author 페르소나가 Nodease에 로그인한다.
 2. author는 `내 워크플로우` 화면에서 본인이 운영 중인 workflow 목록을 확인한다.
-3. 상단 알림 첫 번째 패널에는 예산 초과로 정지된 workflow 개수가 표시된다.
-4. 상단 알림 두 번째 패널에는 예산 90%에 육박한 workflow 3개 리스트가 표시된다.
-5. author는 리스트의 첫 번째 workflow를 선택한다.
-6. 선택한 workflow는 예산 90%에 근접했지만 실행 기록은 10회 미만이다.
-7. author는 사용 횟수에 비해 비용이 높다고 판단하고 해당 workflow의 tracing 화면으로 이동한다.
-8. 실행 상세 화면에서 노드별 trace를 확인한다.
-9. LLM 노드의 prompt tokens, completion tokens, total cost, latency를 확인하고, 비용 대부분이 LLM 노드에서 발생하는 것을 확인한다.
-10. author는 workflow 전체가 아니라 가장 비용이 큰 LLM 노드 하나만 대상으로 A/B 테스트를 실행한다.
-11. A안은 기존 설정을 사용한다. 예: high model, general RAG, 프롬프트 상 JSON output 요구, maxOutputTokens 2000.
-12. B안은 최적화 설정을 사용한다. 예: modelRouting auto, promptRouting ticket_triage_workflow, selectedModel mid, permission-based RAG, responseFormat json, maxOutputTokens 800.
-13. 시스템은 같은 입력과 같은 이전 노드 결과를 기준으로 A/B 실행 결과를 비교한다.
-14. author는 A/B 결과에서 비용 절감률, 토큰 사용량, 모델, 응답 품질, 후속 노드 사용성을 비교한다.
-15. B안은 고급 모델을 무조건 쓰는 대신 작업 유형에 맞는 중간 모델을 사용하고, 권한 기반 RAG로 context token을 줄이며, 최소 JSON 출력으로 output token을 줄인다.
-16. author는 품질이 유지되면서 비용이 절감되는 것을 확인하고 최적화된 설정을 채택한다.
+3. author는 workflow 목록에서 예산 사용률이 높은 workflow를 확인하고, 예산 90%에 근접한 workflow를 선택한다.
+4. 선택한 workflow는 예산 90%에 근접했지만 실행 기록은 10회 미만이다.
+5. author는 사용 횟수에 비해 비용이 높다고 판단하고 해당 workflow의 tracing 화면으로 이동한다.
+6. 실행 상세 화면에서 노드별 trace를 확인한다.
+7. LLM 노드의 prompt tokens, completion tokens, total cost, latency를 확인하고, 비용 대부분이 LLM 노드에서 발생하는 것을 확인한다.
+8. author는 workflow 전체가 아니라 가장 비용이 큰 LLM 노드 하나만 대상으로 A/B 테스트를 실행한다.
+9. A안은 기존 설정을 사용한다. 예: high model, 권한 범위 내 general RAG(broad retrieval), 프롬프트 상 JSON output 요구, maxOutputTokens 2000.
+10. B안은 최적화 설정을 사용한다. 예: modelRouting auto, promptRouting ticket_triage_workflow, selectedModel mid, task-aware RAG(권한 범위 안에서 업무 유형에 필요한 근거만 정밀 선택), responseFormat json, maxOutputTokens 800.
+11. 시스템은 같은 입력과 같은 이전 노드 결과를 기준으로 A/B 실행 결과를 비교한다.
+12. author는 A/B 결과에서 비용 절감률, 토큰 사용량, 모델, 응답 품질, 후속 노드 사용성을 비교한다.
+13. B안은 고급 모델을 무조건 쓰는 대신 작업 유형에 맞는 중간 모델을 사용하고, 권한 범위 안에서 업무 유형에 필요한 근거만 정밀하게 선택하는 task-aware RAG로 context token을 줄이며, 최소 JSON 출력으로 output token을 줄인다.
+14. author는 품질이 유지되면서 비용이 절감되는 것을 확인하고 최적화된 설정을 채택한다.
+
+RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후보, prompt, citation, trace에 포함되지 않는다 (NFR-007). A안의 문제는 보안 우회가 아니라 권한 있는 문서 중 불필요한 문서까지 넓게 포함되어 context token과 비용이 커지는 것이고, A/B의 차이는 권한 적용 여부가 아니라 권한 검사를 통과한 문서 안에서 근거를 얼마나 정밀하게 선택하느냐다. 시연에서 권한/정책상 제외된 문서를 표시할 때는 문서명과 정확한 건수를 노출하지 않는 안전한 요약으로만 표시한다.
+
+후순위: `내 워크플로우` 상단 알림 패널(예산 초과로 정지된 workflow 개수, 예산 90% 육박 workflow 리스트)은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
 
 이 시나리오는 Nodease의 비용 최적화가 단순히 싼 모델로 바꾸는 기능이 아니라, workflow trace를 기반으로 병목 노드를 찾고, 작업 유형·권한·RAG 범위·출력 정책을 함께 조정하는 운영 흐름임을 보여준다.
 
@@ -141,7 +142,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 2. 신입사원이 `새 모듈` 버튼을 누른다.
 3. 시스템은 권한 없음 팝업을 표시한다.
 4. 신입사원은 `권한 신청하기`를 누르고 workflow 생성/배포 권한을 신청한다.
-5. 관리자가 `/dashboard/settings` 또는 관리자 화면의 `권한 신청` 탭으로 이동한다.
+5. 관리자가 `/dashboard/admin` 또는 관리자 화면의 `권한 신청` 탭으로 이동한다.
 6. 관리자는 신입사원의 권한 신청 목록을 확인하고 승인한다.
 7. 신입사원이 다시 `내 워크플로우` 화면으로 돌아와 새 모듈을 생성한다.
 
@@ -164,24 +165,26 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 20. 관리자가 admin 화면으로 돌아간다.
 21. 관리자는 audit 목록에서 권한 신청, 권한 승인, workflow 생성, 배포, 실행 기록을 확인한다.
-22. 관리자는 상단 긴급 알림 패널을 확인한다.
-23. 이번 달 조직 LLM 사용 비용을 확인한다.
-24. 예산 초과 workflow 비율을 도넛 그래프로 확인한다.
-25. 부적절한 접근/행동 탐지 건수를 확인한다.
+22. 이번 달 조직 LLM 사용 비용을 확인한다.
+23. 예산 초과 workflow 비율을 확인한다.
+
+후순위: 상단 긴급 알림 패널 확인은 후순위 구현 항목이다. 구현이 완료되면 이 막에 단계로 다시 추가한다.
 
 **4막 — 비용 위험 workflow 최적화**
 
-26. 기존 author 계정으로 전환한다.
-27. author는 `내 워크플로우` 화면에서 예산 초과 또는 예산 90% 근접 workflow 알림을 확인한다.
-28. author는 예산 90%에 육박한 workflow 리스트에서 첫 번째 workflow를 선택한다.
-29. 해당 workflow의 실행 기록이 10회 미만임에도 비용이 높다는 것을 확인한다.
-30. workflow report의 tracing 화면에서 노드별 비용을 확인한다.
-31. LLM 노드가 비용 대부분을 차지하는 것을 확인한다.
-32. author는 LLM 노드 단위 A/B 테스트를 실행한다.
-33. A안은 기존 high model, general RAG, maxOutputTokens 2000 설정으로 둔다.
-34. B안은 ticket_triage_workflow에 맞춰 mid model, permission-based RAG, 최소 JSON, maxOutputTokens 800 설정을 적용한다.
-35. A/B 결과에서 비용 절감률과 품질 유지 여부를 확인한다.
-36. 최적화 결과를 바탕으로 B안을 채택한다.
+24. 기존 author 계정으로 전환한다.
+25. author는 `내 워크플로우` 화면에서 workflow 목록과 예산 사용률을 확인한다.
+26. author는 예산 90%에 육박한 workflow를 선택한다.
+27. 해당 workflow의 실행 기록이 10회 미만임에도 비용이 높다는 것을 확인한다.
+28. workflow report의 tracing 화면에서 노드별 비용을 확인한다.
+29. LLM 노드가 비용 대부분을 차지하는 것을 확인한다.
+30. author는 LLM 노드 단위 A/B 테스트를 실행한다.
+31. A안은 기존 high model, 권한 범위 내 general RAG, maxOutputTokens 2000 설정으로 둔다.
+32. B안은 ticket_triage_workflow에 맞춰 mid model, 권한 범위 내 task-aware RAG, 최소 JSON, maxOutputTokens 800 설정을 적용한다.
+33. A/B 결과에서 비용 절감률과 품질 유지 여부를 확인한다.
+34. 최적화 결과를 바탕으로 B안을 채택한다.
+
+후순위: `내 워크플로우` 상단의 예산 초과/위험 workflow 알림 패널은 후순위 구현 항목이다. 구현이 완료되면 이 막에 단계로 다시 추가한다.
 
 ### 발표 마무리 메시지
 
@@ -201,16 +204,17 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 ### Admin 대시보드 — [features/admin-dashboard/](features/admin-dashboard/requirements.md)
 
-- FR-011: audit log 검색/필터 (행위자, action, 대상, 기간)
+- FR-011: audit log 검색/필터 (행위자, action, 대상, 기간)와 개별 로그 상세 조회 (actor, action, target, status, timestamp)
 - FR-012: workflow별 LLM 사용량/비용 집계 표시
-- FR-013: 권한 차단(`permission.denied`) 등 비정상 접근 시도 표시
+- FR-013 (후순위): 권한 차단(`permission.denied`) 등 비정상 접근 시도 표시. 현재 시나리오에서 사용하지 않으며, 구현이 완료되면 시나리오와 함께 복원한다.
 - FR-014: workflow 생성/배포 권한 신청 목록 조회와 승인/거절
-- FR-015: 조직 월간 비용, 예산 위험 workflow 비율, 부적절한 접근/행동 탐지 건수 요약
+- FR-015: 조직 월간 비용, 예산 위험 workflow 비율 요약 (부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이며, 구현 완료 시 시나리오 2에 단계로 복원한다)
 
 ### 비용 최적화 — [features/cost-optimizer/](features/cost-optimizer/requirements.md)
 
-- FR-021: workflow의 LLM 노드 현재 설정 vs 후보 설정 비교 실행 (기존 compare API 활용)
-- FR-022: `modelRouting`, `promptRouting`, permission-based RAG, `responseFormat`, `maxOutputTokens` 조정에 따른 비용 절감률과 품질 차이를 요약한 추천 리포트
+- FR-021: LLM 노드 하나를 대상으로 현재 설정(A)과 후보 설정(B)을 같은 입력, 같은 이전 노드 결과 기준으로 비교 실행. 기존 compare API는 node 단위 model/prompt 단일 교체만 지원하므로 설정 묶음 비교로 확장한다.
+- FR-022: `modelRouting`, `promptRouting`, task-aware RAG(권한 범위 내 근거 정밀 선택), `responseFormat`, `maxOutputTokens` 조정에 따른 비용 절감률과 품질 차이를 요약한 추천 리포트
+- FR-023: LLM 노드 설정 확장 — `modelRouting`, `promptRouting`, task-aware RAG 검색 모드, `responseFormat`, `maxOutputTokens` 설정을 LLM 노드에 추가한다. FR-021~022 비교의 전제이며 현재 코드에 없는 신규 기능이다. 모든 RAG 검색 모드는 NFR-007의 권한 경계 안에서 동작하며, 모드 간 차이는 권한 적용 여부가 아니라 권한 범위 내 검색 정밀도다.
 
 ### 통합 RAG — [features/knowledge/](features/knowledge/requirements.md)
 
@@ -218,6 +222,16 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-032: 권한·metadata 필터가 적용된 검색과 citation 반환
 - FR-033: retrieval 기록 추적 (redaction-safe metadata 기준)
 - FR-034: AI Builder가 생성한 workflow에서 준비된 Knowledge Base를 연결해 사내 문서 질의를 실행
+
+### 권한 신청 — [features/organization/](features/organization/requirements.md)
+
+- FR-041: workflow 생성/배포 권한이 없는 사용자에게 차단 안내를 표시하고, 요청 권한과 신청 사유를 담은 권한 신청을 제출받는다. 관리자 측 목록 조회와 승인/거절은 FR-014를 따른다. 현재 코드에는 초대(invite)만 있고 신청(request) 흐름은 없는 신규 기능이다.
+- FR-042: 권한 신청 제출/승인/거절은 canonical audit action으로 기록한다. 필요한 action 명명은 [ADR-0008](decisions/ADR-0008-audit-action-naming-standard.md) 갱신으로 정의한다.
+
+### 예산 관리 — feature 문서 TBD
+
+- FR-051: workflow 단위 예산을 설정/수정한다. 현재 코드에 예산 개념이 없는 신규 기능이며, FR-015·FR-052의 전제다.
+- FR-052: `내 워크플로우` 목록에서 workflow별 예산 사용률을 표시한다. 빌더가 비용 위험 workflow를 발견하는 경로다 (시나리오 3).
 
 ## 6. 비기능 요구사항
 
@@ -229,20 +243,24 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 | NFR-004 | Secret 비노출 | credential 원문, API key, token, raw payload는 응답/로그/trace에 노출하지 않는다. |
 | NFR-005 | 기존 경로 보존 | workflow 생성/저장/실행/배포의 기존 경로가 깨지지 않는다. |
 | NFR-006 | 성능 목표 | TBD (데모 환경 기준 목표치 확정 필요) |
+| NFR-007 | RAG 권한 경계 | 모든 RAG 검색 모드는 권한 검사를 통과한 문서만 검색 후보로 사용한다. 권한 없는 문서는 검색 후보, prompt, citation, trace 어디에도 포함되지 않는다. 권한/정책상 제외된 문서를 화면에 표시할 때는 문서명과 정확한 건수를 노출하지 않는 안전한 요약(bucketed summary)으로만 표시한다. |
 
 ## 7. 성공 지표
 
 이 프로젝트의 성공 기준은 **데모 시나리오 완주**다. 시연은 통합 데모 흐름으로 진행하며, 아래 시나리오별 조건이 그 흐름 안에서 모두 동작하면 성공으로 판단한다.
 
-- [ ] 시나리오 1: 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
-- [ ] 시나리오 2: Agent Builder가 사내 복지/휴가/인사 정책 문서를 검색하는 RAG workflow 초안을 만들고, 테스트 실행에서 응답과 citation/retrieval 근거를 확인
-- [ ] 시나리오 3: 관리자가 audit 목록과 운영 위험 패널에서 권한 신청/승인, workflow 생성/배포/실행, 비용/위험 요약을 확인
-- [ ] 시나리오 4: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, permission-based RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
+- [ ] 시나리오 1 (권한 신청): 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
+- [ ] 시나리오 1 (AI Builder): Agent Builder가 사내 복지/휴가/인사 정책 문서를 검색하는 RAG workflow 초안을 만들고, 테스트 실행에서 응답과 citation/retrieval 근거를 확인
+- [ ] 시나리오 2: 관리자가 관리자 화면에서 권한 신청/승인, workflow 생성/배포/실행 audit 기록과 조직 비용/예산 위험 요약을 확인
+- [ ] 시나리오 3: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
 
 ## 8. Open Questions
 
 - Agent Builder가 생성할 수 있는 노드 타입 범위를 어디까지 허용할지 (전체 vs 안전한 부분집합)
 - 비용 최적화의 "품질 차이 Y"를 어떤 지표로 계산할지 (LLM judge, 규칙 기반, 사람 평가)
-- Admin 대시보드의 "비정상 접근"을 어떤 기준으로 정의할지 (차단 횟수 임계값 등)
+- 예산의 설정 주체와 기간 단위 (관리자 vs workflow 소유 빌더, 월 단위 여부)
+- 권한 신청/승인의 canonical audit action 명명 (ADR-0008 갱신 시 확정)
 - NFR-006 성능 목표치
+
+후순위와 함께 미뤄진 질문: Admin 대시보드의 "비정상 접근" 판정 기준(차단 횟수 임계값 등)은 FR-013 복원 시 다시 논의한다.
 
