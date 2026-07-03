@@ -104,10 +104,16 @@ const createMockNode = (
   } as Node;
 };
 
-const createMockEdge = (id: string, source: string, target: string): Edge => ({
+const createMockEdge = (
+  id: string,
+  source: string,
+  target: string,
+  handles: Pick<Edge, 'sourceHandle' | 'targetHandle'> = {},
+): Edge => ({
   id,
   source,
   target,
+  ...handles,
 });
 
 // ============================================================================
@@ -159,6 +165,111 @@ describe('노드 추가/삭제 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.nodes).toHaveLength(1);
     expect(state.nodes[0].id).toBe('node-2');
+  });
+
+  it('선택한 중간 노드를 삭제하면 앞뒤 노드를 자동 재연결한다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'startNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'answerNode'),
+      ]);
+    useWorkflowStore.getState().setEdges([
+      createMockEdge('edge-a-b', 'node-a', 'node-b', {
+        sourceHandle: 'result',
+      }),
+      createMockEdge('edge-b-c', 'node-b', 'node-c', {
+        targetHandle: 'input',
+      }),
+    ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual(['node-a', 'node-c']);
+    expect(state.edges).toHaveLength(1);
+    expect(state.edges[0]).toMatchObject({
+      source: 'node-a',
+      sourceHandle: 'result',
+      target: 'node-c',
+      targetHandle: 'input',
+    });
+  });
+
+  it('자동 재연결은 이미 같은 연결이 있으면 중복 edge를 만들지 않는다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'startNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'answerNode'),
+      ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-a-b', 'node-a', 'node-b'),
+        createMockEdge('edge-b-c', 'node-b', 'node-c'),
+        createMockEdge('edge-a-c', 'node-a', 'node-c'),
+      ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.edges).toHaveLength(1);
+    expect(state.edges[0].id).toBe('edge-a-c');
+  });
+
+  it('자동 재연결이 그래프 검증을 통과하지 못하면 삭제만 수행한다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'codeNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'startNode'),
+      ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-a-b', 'node-a', 'node-b'),
+        createMockEdge('edge-b-c', 'node-b', 'node-c'),
+      ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual(['node-a', 'node-c']);
+    expect(state.edges).toEqual([]);
+  });
+
+  it('선택 노드 삭제와 자동 재연결은 undo 한 번으로 복구된다', () => {
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-a', 'startNode'),
+        { ...createMockNode('node-b', 'codeNode'), selected: true },
+        createMockNode('node-c', 'answerNode'),
+      ]);
+    useWorkflowStore
+      .getState()
+      .setEdges([
+        createMockEdge('edge-a-b', 'node-a', 'node-b'),
+        createMockEdge('edge-b-c', 'node-b', 'node-c'),
+      ]);
+
+    useWorkflowStore.getState().deleteSelectedElements();
+    useWorkflowStore.getState().undo();
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual([
+      'node-a',
+      'node-b',
+      'node-c',
+    ]);
+    expect(state.edges.map((edge) => edge.id)).toEqual([
+      'edge-a-b',
+      'edge-b-c',
+    ]);
   });
 
   it('onNodesChange로 노드 위치를 변경할 수 있다', () => {
@@ -254,10 +365,12 @@ describe('노드 추가/삭제 테스트', () => {
   });
 
   it('여러 노드 이동 시 그룹 origin의 snap delta로 상대 위치를 유지한다', () => {
-    useWorkflowStore.getState().setNodes([
-      createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
-      createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
+        createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
+      ]);
 
     useWorkflowStore.getState().onNodesChange([
       {
@@ -278,11 +391,13 @@ describe('노드 추가/삭제 테스트', () => {
   });
 
   it('positionChanges 순서가 노드 순서와 달라도 그룹 상대 위치를 유지한다', () => {
-    useWorkflowStore.getState().setNodes([
-      createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
-      createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
-      createMockNode('node-3', 'codeNode', { x: 41, y: 11 }),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-1', 'startNode', { x: 3, y: 7 }),
+        createMockNode('node-2', 'answerNode', { x: 18, y: 32 }),
+        createMockNode('node-3', 'codeNode', { x: 41, y: 11 }),
+      ]);
 
     useWorkflowStore.getState().onNodesChange([
       {
@@ -335,9 +450,9 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
 
   it('선택 변경은 undo 스택에 기록하지 않는다', () => {
     useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
-    useWorkflowStore.getState().onNodesChange([
-      { type: 'select', id: 'node-1', selected: true },
-    ]);
+    useWorkflowStore
+      .getState()
+      .onNodesChange([{ type: 'select', id: 'node-1', selected: true }]);
 
     useWorkflowStore.getState().undo();
     expect(useWorkflowStore.getState().nodes).toHaveLength(
@@ -399,7 +514,7 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
     ]);
   });
 
-  it('붙여넣기 재매핑은 참조 필드만 바꾸고 사용자 텍스트와 displayNumber는 복제하지 않는다', () => {
+  it('붙여넣기 재매핑은 참조 필드만 바꾸고 새 displayNumber를 배정한다', () => {
     useWorkflowStore.getState().setNodes([
       {
         ...createStartNode('source-node', {
@@ -432,7 +547,10 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
     expect(pastedSource?.data.title).toBe('source-node');
     expect(pastedSource?.data.description).toBe('source-node');
     expect(pastedSource?.data.content).toBe('source-node');
-    expect(pastedSource?.data.displayNumber).toBeUndefined();
+    expect(pastedSource?.data.displayNumber).toBe(1);
+    expect(pastedTarget?.data.displayNumber).toBe(2);
+    expect(pastedSource?.data.displayNumber).not.toBe(12);
+    expect(useWorkflowStore.getState().features.nextNodeDisplayNumber).toBe(3);
     expect(pastedTarget?.data.value_selector).toEqual([
       pastedSource?.id,
       'output',
@@ -474,9 +592,9 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
   });
 
   it('선택 노드를 즉시 복제하고 클립보드 상태는 덮어쓰지 않는다', () => {
-    useWorkflowStore.getState().setNodes([
-      { ...createMockNode('clipboard-node'), selected: true },
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([{ ...createMockNode('clipboard-node'), selected: true }]);
     useWorkflowStore.getState().copySelectedNodes();
 
     useWorkflowStore.getState().setNodes([
@@ -534,7 +652,10 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
     expect(duplicatedSource?.data.description).toBe('source-node');
     expect(duplicatedSource?.data.content).toBe('source-node');
     expect(duplicatedSource?.data.name).toBe('source-node');
-    expect(duplicatedSource?.data.displayNumber).toBeUndefined();
+    expect(duplicatedSource?.data.displayNumber).toBe(1);
+    expect(duplicatedTarget?.data.displayNumber).toBe(2);
+    expect(duplicatedSource?.data.displayNumber).not.toBe(12);
+    expect(state.features.nextNodeDisplayNumber).toBe(3);
     expect(state.copiedNodes.map((node) => node.id)).toEqual([
       'clipboard-node',
     ]);
@@ -642,10 +763,12 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
   });
 
   it('선택 노드를 삭제할 때 연결된 엣지도 함께 제거한다', () => {
-    useWorkflowStore.getState().setNodes([
-      { ...createMockNode('node-1'), selected: true },
-      createMockNode('node-2'),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        { ...createMockNode('node-1'), selected: true },
+        createMockNode('node-2'),
+      ]);
     useWorkflowStore
       .getState()
       .setEdges([createMockEdge('edge-1', 'node-1', 'node-2')]);
@@ -683,10 +806,12 @@ describe('Edge 생성/삭제 테스트', () => {
   });
 
   it('onConnect로 새 엣지를 생성할 수 있다', () => {
-    useWorkflowStore.getState().setNodes([
-      createMockNode('node-1', 'startNode'),
-      createMockNode('node-2', 'answerNode'),
-    ]);
+    useWorkflowStore
+      .getState()
+      .setNodes([
+        createMockNode('node-1', 'startNode'),
+        createMockNode('node-2', 'answerNode'),
+      ]);
     // 초기 엣지 없음
     useWorkflowStore.getState().setEdges([]);
 
@@ -746,6 +871,39 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.nodes[0].data.title).toBe('업데이트된 제목');
     expect(state.nodes[0].data.newField).toBe('newValue');
+  });
+
+  it('테스트 실행 결과를 node data에 반영해도 기존 편집 설정값은 유지된다', () => {
+    const node = createCodeNode('code-1', {
+      title: '코드 실행',
+      code: 'def main(inputs):\n    return {"ok": True}',
+      timeout: 30,
+    });
+    useWorkflowStore.getState().setNodes([node]);
+
+    useWorkflowStore.getState().updateNodeData('code-1', {
+      status: 'success',
+      observability: {
+        status: 'success',
+        latency_ms: 3400,
+        total_tokens: 361,
+        total_cost: 0.001964,
+      },
+    });
+
+    const updated = useWorkflowStore.getState().nodes[0];
+    expect(updated.data).toMatchObject({
+      title: '코드 실행',
+      code: 'def main(inputs):\n    return {"ok": True}',
+      timeout: 30,
+      status: 'success',
+      observability: {
+        status: 'success',
+        latency_ms: 3400,
+        total_tokens: 361,
+        total_cost: 0.001964,
+      },
+    });
   });
 
   it('setWorkflowData로 전체 워크플로우 데이터를 설정할 수 있다', () => {
@@ -821,6 +979,17 @@ describe('워크플로우 관리 테스트', () => {
         },
       ],
       activeWorkflowId: 'wf-1',
+      isTestPanelOpen: true,
+      testExecutionStatus: 'success',
+      testExecutionStartedAt: 1000,
+      testExecutionFinishedAt: 2000,
+      testExecutionResult: { answer: 'previous workflow result' },
+      testNodeResults: [
+        { nodeId: 'n1', nodeType: 'llmNode', output: { text: 'old' } },
+      ],
+      testExecutionError: null,
+      currentExecutingNodeId: 'n1',
+      isTestUploading: true,
     });
 
     // wf-2로 변경
@@ -830,6 +999,15 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.activeWorkflowId).toBe('wf-2');
     expect(state.nodes[0].id).toBe('n2');
     expect(state.features.nextNodeDisplayNumber).toBe(20);
+    expect(state.isTestPanelOpen).toBe(false);
+    expect(state.testExecutionStatus).toBe('idle');
+    expect(state.testExecutionStartedAt).toBeNull();
+    expect(state.testExecutionFinishedAt).toBeNull();
+    expect(state.testExecutionResult).toBeNull();
+    expect(state.testNodeResults).toEqual([]);
+    expect(state.testExecutionError).toBeNull();
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.isTestUploading).toBe(false);
   });
 
   it('setActiveWorkflowIdSafe는 로드된 대상 워크플로우의 nodes/edges/features를 반영한다', () => {
@@ -854,6 +1032,17 @@ describe('워크플로우 관리 테스트', () => {
       nodes: [createMockNode('draft-node')],
       edges: [createMockEdge('edge-1', 'draft-node', 'n1')],
       features: { nextNodeDisplayNumber: 10 },
+      isTestPanelOpen: true,
+      testExecutionStatus: 'failure',
+      testExecutionStartedAt: 1000,
+      testExecutionFinishedAt: 2000,
+      testExecutionResult: { answer: 'previous workflow result' },
+      testNodeResults: [
+        { nodeId: 'draft-node', nodeType: 'llmNode', output: { text: 'old' } },
+      ],
+      testExecutionError: 'previous workflow error',
+      currentExecutingNodeId: 'draft-node',
+      isTestUploading: true,
     });
 
     useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-2');
@@ -863,6 +1052,15 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.nodes[0].id).toBe('n2');
     expect(state.edges).toEqual([]);
     expect(state.features.nextNodeDisplayNumber).toBe(20);
+    expect(state.isTestPanelOpen).toBe(false);
+    expect(state.testExecutionStatus).toBe('idle');
+    expect(state.testExecutionStartedAt).toBeNull();
+    expect(state.testExecutionFinishedAt).toBeNull();
+    expect(state.testExecutionResult).toBeNull();
+    expect(state.testNodeResults).toEqual([]);
+    expect(state.testExecutionError).toBeNull();
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.isTestUploading).toBe(false);
   });
 
   it('setActiveWorkflowIdSafe는 대상 workflow가 없으면 id만 변경한다', () => {
@@ -883,6 +1081,17 @@ describe('워크플로우 관리 테스트', () => {
       nodes: currentNodes,
       edges: currentEdges,
       features: { nextNodeDisplayNumber: 10 },
+      isTestPanelOpen: true,
+      testExecutionStatus: 'success',
+      testExecutionStartedAt: 1000,
+      testExecutionFinishedAt: 2000,
+      testExecutionResult: { answer: 'previous workflow result' },
+      testNodeResults: [
+        { nodeId: 'draft-node', nodeType: 'llmNode', output: { text: 'old' } },
+      ],
+      testExecutionError: null,
+      currentExecutingNodeId: 'draft-node',
+      isTestUploading: true,
     });
 
     useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-missing');
@@ -892,6 +1101,15 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.nodes).toBe(currentNodes);
     expect(state.edges).toBe(currentEdges);
     expect(state.features.nextNodeDisplayNumber).toBe(10);
+    expect(state.isTestPanelOpen).toBe(false);
+    expect(state.testExecutionStatus).toBe('idle');
+    expect(state.testExecutionStartedAt).toBeNull();
+    expect(state.testExecutionFinishedAt).toBeNull();
+    expect(state.testExecutionResult).toBeNull();
+    expect(state.testNodeResults).toEqual([]);
+    expect(state.testExecutionError).toBeNull();
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.isTestUploading).toBe(false);
   });
 
   it('inactive workflow 데이터가 먼저 로드된 뒤 safe active 전환 시 화면 store에 반영한다', () => {
@@ -951,6 +1169,70 @@ describe('워크플로우 관리 테스트', () => {
       state.workflows.find((workflow) => workflow.id === 'wf-1')?.features
         .nextNodeDisplayNumber,
     ).toBe(10);
+  });
+
+  it('active workflow가 아닌 응답은 현재 편집 중인 nodes/edges를 덮어쓰지 않는다', () => {
+    const activeNodes = [createMockNode('active-node')];
+    const activeEdges = [
+      createMockEdge('active-edge', 'active-node', 'active-node'),
+    ];
+
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-active',
+      nodes: activeNodes,
+      edges: activeEdges,
+      workflows: [
+        {
+          id: 'wf-active',
+          appId: 'app-1',
+          nodes: activeNodes,
+          edges: activeEdges,
+          features: { nextNodeDisplayNumber: 10 },
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      ],
+    });
+
+    useWorkflowStore.getState().setWorkflowData(
+      {
+        nodes: [createMockNode('stale-node')],
+        edges: [createMockEdge('stale-edge', 'stale-node', 'stale-node')],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        features: { nextNodeDisplayNumber: 2 },
+      },
+      'wf-stale',
+    );
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes).toBe(activeNodes);
+    expect(state.edges).toBe(activeEdges);
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'wf-stale'),
+    ).toMatchObject({
+      id: 'wf-stale',
+      nodes: [expect.objectContaining({ id: 'stale-node' })],
+      edges: [expect.objectContaining({ id: 'stale-edge' })],
+    });
+  });
+
+  it('테스트 실행 실패 상태는 오류 메시지와 종료 시각을 남기고 실행 중 노드를 해제한다', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-04T00:00:00.000Z'));
+    useWorkflowStore.getState().beginTestExecution();
+    useWorkflowStore.getState().setCurrentExecutingNode('llm-1');
+
+    vi.setSystemTime(new Date('2026-07-04T00:00:08.600Z'));
+    useWorkflowStore
+      .getState()
+      .failTestExecution('모듈 실행 실패: node error');
+
+    const state = useWorkflowStore.getState();
+    expect(state.testExecutionStatus).toBe('failure');
+    expect(state.testExecutionError).toBe('모듈 실행 실패: node error');
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.testExecutionStartedAt).toBe(1783123200000);
+    expect(state.testExecutionFinishedAt).toBe(1783123208600);
+    vi.useRealTimers();
   });
 
   it('deleteWorkflow로 워크플로우를 삭제할 수 있다', () => {

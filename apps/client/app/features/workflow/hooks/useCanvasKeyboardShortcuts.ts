@@ -22,9 +22,7 @@ const isEditableTarget = (target: EventTarget | null) => {
 const isModalTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
 
-  return Boolean(
-    target.closest(BLOCKING_MODAL_SELECTOR),
-  );
+  return Boolean(target.closest(BLOCKING_MODAL_SELECTOR));
 };
 
 const hasBlockingModal = () =>
@@ -46,7 +44,9 @@ export function useCanvasKeyboardShortcuts({
   closePanels,
   toggleNodeLibrary,
 }: CanvasKeyboardShortcutOptions) {
-  const copySelectedNodes = useWorkflowStore((state) => state.copySelectedNodes);
+  const copySelectedNodes = useWorkflowStore(
+    (state) => state.copySelectedNodes,
+  );
   const pasteCopiedNodes = useWorkflowStore((state) => state.pasteCopiedNodes);
   const duplicateSelectedNodes = useWorkflowStore(
     (state) => state.duplicateSelectedNodes,
@@ -90,7 +90,7 @@ export function useCanvasKeyboardShortcuts({
         return;
       }
 
-      if (event.key === 'Delete') {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
         if (!hasSelectedElements()) return;
         event.preventDefault();
         deleteSelectedElements();
@@ -137,7 +137,9 @@ export function useCanvasKeyboardShortcuts({
       if (key === 'b' && !event.shiftKey) {
         event.preventDefault();
         toggleNodeLibrary();
+        return;
       }
+
     };
 
     window.addEventListener('keydown', handleKeyDown);

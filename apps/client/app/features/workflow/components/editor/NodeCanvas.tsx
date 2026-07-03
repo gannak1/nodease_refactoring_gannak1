@@ -730,14 +730,6 @@ export default function NodeCanvas() {
     ],
   );
 
-  useCanvasKeyboardShortcuts({
-    isEnabled: !isReadOnly,
-    isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
-    closeMenus: closeCanvasMenus,
-    closePanels: closeCanvasPanels,
-    toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
-  });
-
   const reactFlowConfig = useMemo(() => {
     if (interactiveMode === 'touchpad') {
       return {
@@ -780,6 +772,14 @@ export default function NodeCanvas() {
     activeWorkflowId,
     isReadOnly,
   ]);
+
+  useCanvasKeyboardShortcuts({
+    isEnabled: !isReadOnly,
+    isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
+    closeMenus: closeCanvasMenus,
+    closePanels: closeCanvasPanels,
+    toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
+  });
 
   const currentAppId = useMemo(() => {
     const activeWorkflow = workflows.find((w) => w.id === activeWorkflowId);

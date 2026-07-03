@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle, CheckCircle, ChevronRight, Loader2, X } from 'lucide-react';
+import { ChevronRight, X } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { isMockWorkflowId } from '../../utils/mockMode';
@@ -12,36 +12,8 @@ export default function EditorHeader() {
     projectApp,
     fullscreenNodeId,
     closeNodeFullscreen,
-    openTestPanel,
-    nodes,
-    testExecutionStatus,
-    testNodeResults,
-    currentExecutingNodeId,
-    isTestUploading,
   } = useWorkflowStore();
   const isMockMode = isMockWorkflowId(params.id as string);
-  const showTestStatus = testExecutionStatus !== 'idle';
-  const currentExecutingNode = nodes.find(
-    (node) => node.id === currentExecutingNodeId,
-  );
-  const currentExecutingNodeTitle =
-    currentExecutingNode?.data.title || currentExecutingNodeId || '';
-  const testStatusLabel =
-    testExecutionStatus === 'running'
-      ? isTestUploading
-        ? '파일 업로드 중'
-        : currentExecutingNodeTitle
-          ? `테스트 실행 중 · ${currentExecutingNodeTitle}`
-          : '테스트 실행 중'
-      : testExecutionStatus === 'success'
-        ? '테스트 완료'
-        : '테스트 실패';
-  const testStatusClassName =
-    testExecutionStatus === 'failure'
-      ? 'border-red-200 bg-red-50 text-red-700'
-      : testExecutionStatus === 'success'
-        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-        : 'border-blue-200 bg-blue-50 text-blue-700';
 
   return (
     <header
@@ -72,31 +44,6 @@ export default function EditorHeader() {
       </nav>
 
       <div className="flex min-w-0 shrink-0 items-center gap-2">
-        {showTestStatus && (
-          <div
-            className={`flex h-8 max-w-[420px] items-center gap-2 rounded-md border px-2.5 text-xs font-semibold shadow-sm ${testStatusClassName}`}
-          >
-            {testExecutionStatus === 'running' ? (
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-            ) : testExecutionStatus === 'success' ? (
-              <CheckCircle className="h-3.5 w-3.5 shrink-0" />
-            ) : (
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-            )}
-            <span className="min-w-0 truncate">{testStatusLabel}</span>
-            <span className="shrink-0 text-[11px] opacity-75">
-              {testNodeResults.length}개 완료
-            </span>
-            <button
-              type="button"
-              onClick={openTestPanel}
-              className="ml-1 shrink-0 rounded border border-current/20 bg-white/70 px-2 py-0.5 text-[11px] transition-colors hover:bg-white"
-            >
-              결과 보기
-            </button>
-          </div>
-        )}
-
         <div
           id="workflow-editor-header-actions"
           className="flex min-w-0 items-center gap-2"
