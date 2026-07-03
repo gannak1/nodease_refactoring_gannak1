@@ -546,7 +546,6 @@ def _ticket_ops_graph() -> dict[str, Any]:
                 220,
                 {
                     **_base_node_data("고객 티켓 수신", "고객지원 티켓 payload를 수신합니다.", 1),
-                    "path": "enterprise-ticket-demo",
                     "variable_mappings": [
                         {"json_path": "message", "variable_name": "message"},
                         {"json_path": "customerTier", "variable_name": "customerTier"},
@@ -562,7 +561,13 @@ def _ticket_ops_graph() -> dict[str, Any]:
                     **_base_node_data("티켓 처리 판단", "티켓 유형, 심각도, 승인 필요 여부를 판단합니다.", 2),
                     "provider": "openai",
                     "model_id": "gpt-4.1",
-                    "system_prompt": "고객지원 티켓을 정책 기반 JSON으로 분류합니다.",
+                    "system_prompt": (
+                        "고객지원 티켓을 처리하는 AI로서 승인 필요 여부를 JSON으로 분류합니다. "
+                        "`긴급도`는 boolean 값으로 반환합니다. SLA 위반, 크레딧/환불/보상, 법무/보안, "
+                        "대규모 장애 영향, 고객사 손실 가능성이 명시된 경우에만 true로 둡니다. "
+                        "단순 사용법 안내, 상태 확인, 일반 문의는 false로 둡니다. "
+                        "반드시 다음 키만 포함한 JSON을 반환하세요: 긴급도, 답변 초안."
+                    ),
                     "user_prompt": "고객 등급: {{ customerTier }}\n문의: {{ message }}",
                     "referenced_variables": [
                         {
@@ -590,11 +595,10 @@ def _ticket_ops_graph() -> dict[str, Any]:
                 220,
                 {
                     **_base_node_data("처리 결과 추출", "LLM JSON 문자열을 후속 분기 변수로 추출합니다.", 3),
-                    "source": {"node_id": "llm-triage", "field": "text"},
-                    "variables": [
-                        {"name": "severity", "type": "string"},
-                        {"name": "approvalRequired", "type": "boolean"},
-                        {"name": "customerReplyDraft", "type": "string"},
+                    "source_selector": ["llm-triage", "text"],
+                    "mappings": [
+                        {"name": "approvalRequired", "json_path": "긴급도"},
+                        {"name": "mailDraft", "json_path": "답변 초안"},
                     ],
                 },
             ),
@@ -632,8 +636,29 @@ def _ticket_ops_graph() -> dict[str, Any]:
                 80,
                 {
                     **_base_node_data("승인 요청 메시지", "CS 리드 승인 요청 메시지를 만듭니다.", 5),
-                    "template": "승인 요청: Enterprise 고객 보상 검토가 필요합니다.",
-                    "variables": [],
+                    "template": (
+                        "안녕하세요,\n\n"
+                        "아래 고객 요청에 대한 확인을 부탁드립니다.\n\n"
+                        "**고객 등급:** {{ customerTier }}  \n"
+                        "**고객 문의:** {{ message }}  \n"
+                        "**고객 초안:**  \n"
+                        "{{ mailDraft }}\n\n"
+                        "감사합니다."
+                    ),
+                    "variables": [
+                        {
+                            "name": "mailDraft",
+                            "value_selector": ["extract-ticket", "mailDraft"],
+                        },
+                        {
+                            "name": "customerTier",
+                            "value_selector": ["webhook-ticket", "customerTier"],
+                        },
+                        {
+                            "name": "message",
+                            "value_selector": ["webhook-ticket", "message"],
+                        },
+                    ],
                 },
             ),
             _node(
@@ -643,14 +668,18 @@ def _ticket_ops_graph() -> dict[str, Any]:
                 360,
                 {
                     **_base_node_data("고객 답변 초안", "고객에게 보낼 답변을 정리합니다.", 6),
-                    "template": "{{ customerReplyDraft }}",
+                    "template": (
+                        "안녕하세요,\n\n"
+                        "고객님의 소중한 의견에 감사드립니다. 저희는 항상 고객님의 목소리를 귀 기울여 듣고 있습니다.\n\n"
+                        "아래 내용을 확인하시고, 추가적인 질문이나 요청사항이 있으시면 언제든지 연락 주시기 바랍니다.\n\n"
+                        "{{ mailDraft }}\n\n"
+                        "감사합니다.\n\n"
+                        "좋은 하루 되세요!"
+                    ),
                     "variables": [
                         {
-                            "name": "customerReplyDraft",
-                            "value_selector": [
-                                "extract-ticket",
-                                "customerReplyDraft",
-                            ],
+                            "name": "mailDraft",
+                            "value_selector": ["extract-ticket", "mailDraft"],
                         }
                     ],
                 },
@@ -1380,7 +1409,12 @@ def _seed_run(
                 },
             },
         ),
-        ("extract-ticket", "variableExtractionNode", 0.03, {"approvalRequired": True}),
+        (
+            "extract-ticket",
+            "variableExtractionNode",
+            0.03,
+            {"approvalRequired": True, "mailDraft": output_text},
+        ),
         ("condition-approval", "conditionNode", 0.01, {"selected_handle": "approval"}),
         ("template-approval", "templateNode", 0.01, {"text": output_text}),
         ("answer-approval", "answerNode", 0.01, outputs),
