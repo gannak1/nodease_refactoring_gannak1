@@ -51,6 +51,18 @@ export interface Workflow {
   };
 }
 
+const createIdleTestExecutionState = () => ({
+  isTestPanelOpen: false,
+  testExecutionStatus: 'idle' as const,
+  testExecutionStartedAt: null,
+  testExecutionFinishedAt: null,
+  testExecutionResult: null,
+  testNodeResults: [],
+  testExecutionError: null,
+  currentExecutingNodeId: null,
+  isTestUploading: false,
+});
+
 type WorkflowState = {
   // === Editor UI 상태 (editorStore에서 유래) ===
   workflows: Workflow[];
@@ -1231,6 +1243,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         features: workflow.features,
         undoStack: [],
         redoStack: [],
+        ...createIdleTestExecutionState(),
       });
     }
   },
@@ -1242,7 +1255,12 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     const workflow = get().workflows.find((w) => w.id === id);
 
     if (!workflow) {
-      set({ activeWorkflowId: id, undoStack: [], redoStack: [] });
+      set({
+        activeWorkflowId: id,
+        undoStack: [],
+        redoStack: [],
+        ...createIdleTestExecutionState(),
+      });
       return;
     }
 
@@ -1254,6 +1272,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       features: workflow.features,
       undoStack: [],
       redoStack: [],
+      ...createIdleTestExecutionState(),
       ...(hasLoadedWorkflowData
         ? { nodes: workflow.nodes, edges: workflow.edges }
         : {}),

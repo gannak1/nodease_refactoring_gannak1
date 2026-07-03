@@ -940,6 +940,17 @@ describe('워크플로우 관리 테스트', () => {
         },
       ],
       activeWorkflowId: 'wf-1',
+      isTestPanelOpen: true,
+      testExecutionStatus: 'success',
+      testExecutionStartedAt: 1000,
+      testExecutionFinishedAt: 2000,
+      testExecutionResult: { answer: 'previous workflow result' },
+      testNodeResults: [
+        { nodeId: 'n1', nodeType: 'llmNode', output: { text: 'old' } },
+      ],
+      testExecutionError: null,
+      currentExecutingNodeId: 'n1',
+      isTestUploading: true,
     });
 
     // wf-2로 변경
@@ -949,6 +960,15 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.activeWorkflowId).toBe('wf-2');
     expect(state.nodes[0].id).toBe('n2');
     expect(state.features.nextNodeDisplayNumber).toBe(20);
+    expect(state.isTestPanelOpen).toBe(false);
+    expect(state.testExecutionStatus).toBe('idle');
+    expect(state.testExecutionStartedAt).toBeNull();
+    expect(state.testExecutionFinishedAt).toBeNull();
+    expect(state.testExecutionResult).toBeNull();
+    expect(state.testNodeResults).toEqual([]);
+    expect(state.testExecutionError).toBeNull();
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.isTestUploading).toBe(false);
   });
 
   it('setActiveWorkflowIdSafe는 로드된 대상 워크플로우의 nodes/edges/features를 반영한다', () => {
@@ -973,6 +993,17 @@ describe('워크플로우 관리 테스트', () => {
       nodes: [createMockNode('draft-node')],
       edges: [createMockEdge('edge-1', 'draft-node', 'n1')],
       features: { nextNodeDisplayNumber: 10 },
+      isTestPanelOpen: true,
+      testExecutionStatus: 'failure',
+      testExecutionStartedAt: 1000,
+      testExecutionFinishedAt: 2000,
+      testExecutionResult: { answer: 'previous workflow result' },
+      testNodeResults: [
+        { nodeId: 'draft-node', nodeType: 'llmNode', output: { text: 'old' } },
+      ],
+      testExecutionError: 'previous workflow error',
+      currentExecutingNodeId: 'draft-node',
+      isTestUploading: true,
     });
 
     useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-2');
@@ -982,6 +1013,15 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.nodes[0].id).toBe('n2');
     expect(state.edges).toEqual([]);
     expect(state.features.nextNodeDisplayNumber).toBe(20);
+    expect(state.isTestPanelOpen).toBe(false);
+    expect(state.testExecutionStatus).toBe('idle');
+    expect(state.testExecutionStartedAt).toBeNull();
+    expect(state.testExecutionFinishedAt).toBeNull();
+    expect(state.testExecutionResult).toBeNull();
+    expect(state.testNodeResults).toEqual([]);
+    expect(state.testExecutionError).toBeNull();
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.isTestUploading).toBe(false);
   });
 
   it('setActiveWorkflowIdSafe는 대상 workflow가 없으면 id만 변경한다', () => {
@@ -1002,6 +1042,17 @@ describe('워크플로우 관리 테스트', () => {
       nodes: currentNodes,
       edges: currentEdges,
       features: { nextNodeDisplayNumber: 10 },
+      isTestPanelOpen: true,
+      testExecutionStatus: 'success',
+      testExecutionStartedAt: 1000,
+      testExecutionFinishedAt: 2000,
+      testExecutionResult: { answer: 'previous workflow result' },
+      testNodeResults: [
+        { nodeId: 'draft-node', nodeType: 'llmNode', output: { text: 'old' } },
+      ],
+      testExecutionError: null,
+      currentExecutingNodeId: 'draft-node',
+      isTestUploading: true,
     });
 
     useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-missing');
@@ -1011,6 +1062,15 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.nodes).toBe(currentNodes);
     expect(state.edges).toBe(currentEdges);
     expect(state.features.nextNodeDisplayNumber).toBe(10);
+    expect(state.isTestPanelOpen).toBe(false);
+    expect(state.testExecutionStatus).toBe('idle');
+    expect(state.testExecutionStartedAt).toBeNull();
+    expect(state.testExecutionFinishedAt).toBeNull();
+    expect(state.testExecutionResult).toBeNull();
+    expect(state.testNodeResults).toEqual([]);
+    expect(state.testExecutionError).toBeNull();
+    expect(state.currentExecutingNodeId).toBeNull();
+    expect(state.isTestUploading).toBe(false);
   });
 
   it('inactive workflow 데이터가 먼저 로드된 뒤 safe active 전환 시 화면 store에 반영한다', () => {
