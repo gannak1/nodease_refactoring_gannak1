@@ -69,7 +69,15 @@ describe('workflow test cases: 노드 조작 편의성', () => {
     expect(narrow.center).toBeLessThan(wide.center);
   });
 
-  it.todo('노드 상세 편집 화면을 열면 3패널이 기본 비율로 표시된다');
+  it('노드 상세 편집 화면을 열면 3패널이 기본 비율로 표시된다', () => {
+    const fitted = getDefaultPanelWidthsForLayout(1200);
+
+    expect(fitted.left).toBeGreaterThan(0);
+    expect(fitted.center).toBeGreaterThan(0);
+    expect(fitted.right).toBeGreaterThan(0);
+    expect(fitted.center).toBeGreaterThan(fitted.left);
+    expect(fitted.left).toBeGreaterThan(fitted.right);
+  });
   it.todo(
     '패널을 최대/최소 폭까지 드래그해도 UI가 겹치거나 화면 밖으로 밀려나지 않는다',
   );
