@@ -1,6 +1,6 @@
 # Nodease - Product Requirements Document
 
-Status: Draft
+Status: Active
 
 > 명칭: Nodease는 기존 Moduly 코드를 리팩토링해 만드는 신규 서비스명이다. 코드와 배포 리소스에는 아직 `Moduly` 명칭이 남아 있으므로, 이 문서는 제품 관점에서는 Nodease를 사용하고 기존 코드/인프라 식별자는 Moduly 기준으로 읽는다.
 
