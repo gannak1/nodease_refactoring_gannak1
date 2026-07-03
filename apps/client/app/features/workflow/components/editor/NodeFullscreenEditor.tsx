@@ -35,10 +35,32 @@ type RightPanelTab = {
   label: string;
 };
 
+type NodeEditorPanelWidths = {
+  left: number;
+  center: number;
+  right: number;
+};
+
+type HorizontalResizeHandle = 'left-center' | 'center-right';
+
 const RIGHT_PANEL_TAB_LABELS: Record<RightPanelTabId, string> = {
   advanced: '고급 설정',
   knowledge: '지식 베이스',
 };
+
+const NODE_EDITOR_PANEL_WIDTHS = {
+  default: { left: 340, center: 720, right: 340 },
+  min: { left: 280, center: 420, right: 280 },
+  max: { left: 560, center: 900, right: 520 },
+  resizeHandleWidth: 8,
+  keyboardStep: 24,
+} as const;
+
+const PANEL_GROW_ORDER: Array<keyof NodeEditorPanelWidths> = [
+  'center',
+  'left',
+  'right',
+];
 
 // 입력 변수 칩의 소스 노드별 색상 (BaseNode의 호버 패널과 동일한 팔레트)
 const INPUT_CHIP_COLORS = [
@@ -60,6 +82,116 @@ const getInputChipColor = (sourceNodeId: string) => {
   }
   return INPUT_CHIP_COLORS[hash];
 };
+
+const sumPanelWidths = (widths: NodeEditorPanelWidths) =>
+  widths.left + widths.center + widths.right;
+
+const clampPanelWidth = (panel: keyof NodeEditorPanelWidths, width: number) =>
+  Math.min(
+    NODE_EDITOR_PANEL_WIDTHS.max[panel],
+    Math.max(NODE_EDITOR_PANEL_WIDTHS.min[panel], width),
+  );
+
+const getAvailablePanelWidth = (layoutWidth: number) =>
+  Math.max(
+    layoutWidth - NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2,
+    sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.min),
+  );
+
+const fitPanelWidths = (
+  widths: NodeEditorPanelWidths,
+  layoutWidth: number,
+): NodeEditorPanelWidths => {
+  const availableWidth = getAvailablePanelWidth(layoutWidth);
+  const next = {
+    left: clampPanelWidth('left', widths.left),
+    center: clampPanelWidth('center', widths.center),
+    right: clampPanelWidth('right', widths.right),
+  };
+
+  let overflow = sumPanelWidths(next) - availableWidth;
+  if (overflow > 0) {
+    for (const panel of ['center', 'right', 'left'] as const) {
+      const reducible = next[panel] - NODE_EDITOR_PANEL_WIDTHS.min[panel];
+      const reduction = Math.min(reducible, overflow);
+      next[panel] -= reduction;
+      overflow -= reduction;
+      if (overflow <= 0) break;
+    }
+  }
+
+  let underflow = availableWidth - sumPanelWidths(next);
+  if (underflow > 0) {
+    for (const panel of PANEL_GROW_ORDER) {
+      const growable = NODE_EDITOR_PANEL_WIDTHS.max[panel] - next[panel];
+      const growth = Math.min(growable, underflow);
+      next[panel] += growth;
+      underflow -= growth;
+      if (underflow <= 0) break;
+    }
+  }
+
+  return next;
+};
+
+const resizePanelWidths = (
+  handle: HorizontalResizeHandle,
+  startWidths: NodeEditorPanelWidths,
+  deltaX: number,
+  layoutWidth: number,
+): NodeEditorPanelWidths => {
+  const start = fitPanelWidths(startWidths, layoutWidth);
+
+  if (handle === 'left-center') {
+    const nextLeft = clampPanelWidth('left', start.left + deltaX);
+    const appliedDelta = nextLeft - start.left;
+    return fitPanelWidths(
+      {
+        left: nextLeft,
+        center: start.center - appliedDelta / 2,
+        right: start.right - appliedDelta / 2,
+      },
+      layoutWidth,
+    );
+  }
+
+  const boundedDelta = Math.max(
+    NODE_EDITOR_PANEL_WIDTHS.min.center - start.center,
+    Math.min(start.right - NODE_EDITOR_PANEL_WIDTHS.min.right, deltaX),
+  );
+
+  return fitPanelWidths(
+    {
+      left: start.left,
+      center: start.center + boundedDelta,
+      right: start.right - boundedDelta,
+    },
+    layoutWidth,
+  );
+};
+
+const PanelResizeHandle = ({
+  label,
+  onPointerDown,
+  onKeyDown,
+}: {
+  label: string;
+  onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+}) => (
+  <div
+    role="separator"
+    aria-orientation="vertical"
+    aria-label={label}
+    tabIndex={0}
+    onPointerDown={onPointerDown}
+    onKeyDown={onKeyDown}
+    className="group relative z-10 w-2 shrink-0 cursor-col-resize bg-white transition-colors hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset"
+  >
+    <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-slate-200 transition-colors group-hover:bg-blue-400" />
+    <div className="absolute left-1/2 top-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-300 transition-colors group-hover:bg-blue-400" />
+  </div>
+);
 
 const VariableInsertionStatus = () => {
   const { activeTarget, message } = useVariableInsertion();
@@ -293,9 +425,17 @@ export function NodeFullscreenEditor() {
   const [openNavigationPopover, setOpenNavigationPopover] = useState<
     'previous' | 'next' | null
   >(null);
+  const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(
+    NODE_EDITOR_PANEL_WIDTHS.default,
+  );
+  const [layoutWidth, setLayoutWidth] = useState<number>(
+    sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.default) +
+      NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2,
+  );
   const titleInputRef = useRef<HTMLInputElement>(null);
   const outputLabelInputRef = useRef<HTMLInputElement>(null);
   const leftPanelRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
 
   // 풀스크린을 닫을 때는 항상 이 함수를 통해, 편집 상태도 함께 리셋한다.
   const handleClose = () => {
@@ -325,6 +465,21 @@ export function NodeFullscreenEditor() {
     outputLabelInputRef.current?.select();
   }, [editingOutputKey]);
 
+  useEffect(() => {
+    const layout = layoutRef.current;
+    if (!layout) return;
+
+    const updateLayoutWidth = () => {
+      setLayoutWidth(layout.getBoundingClientRect().width);
+    };
+
+    updateLayoutWidth();
+    const resizeObserver = new ResizeObserver(updateLayoutWidth);
+    resizeObserver.observe(layout);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
   const definition = getNodeDefinitionByType(node?.type || '');
   const nodeTypeLabel = definition?.name || 'Node';
   const nodeDescription = String(
@@ -345,6 +500,16 @@ export function NodeFullscreenEditor() {
   const activeRightTabId = isCurrentRightPanelState
     ? rightPanelState.activeTabId
     : null;
+  const fittedPanelWidths = fitPanelWidths(panelWidths, layoutWidth);
+
+  const updateHorizontalPanelWidths = useCallback(
+    (handle: HorizontalResizeHandle, deltaX: number) => {
+      setPanelWidths((current) =>
+        resizePanelWidths(handle, current, deltaX, layoutWidth),
+      );
+    },
+    [layoutWidth],
+  );
 
   const openRightPanelTab = useCallback(
     (tabId: RightPanelTabId) => {
@@ -448,6 +613,54 @@ export function NodeFullscreenEditor() {
       window.addEventListener('pointerup', handlePointerUp);
     },
     [],
+  );
+
+  const handleHorizontalResizeStart = useCallback(
+    (
+      handle: HorizontalResizeHandle,
+      event: React.PointerEvent<HTMLDivElement>,
+    ) => {
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+
+      const startX = event.clientX;
+      const startWidths = fittedPanelWidths;
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const deltaX = moveEvent.clientX - startX;
+        setPanelWidths(
+          resizePanelWidths(handle, startWidths, deltaX, layoutWidth),
+        );
+      };
+      const handlePointerUp = () => {
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', handlePointerUp);
+    },
+    [fittedPanelWidths, layoutWidth],
+  );
+
+  const handleHorizontalResizeKeyDown = useCallback(
+    (
+      handle: HorizontalResizeHandle,
+      event: React.KeyboardEvent<HTMLDivElement>,
+    ) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const direction = event.key === 'ArrowLeft' ? -1 : 1;
+      updateHorizontalPanelWidths(
+        handle,
+        direction * NODE_EDITOR_PANEL_WIDTHS.keyboardStep,
+      );
+    },
+    [updateHorizontalPanelWidths],
   );
 
   const startOutputLabelEdit = useCallback(
@@ -680,245 +893,273 @@ export function NodeFullscreenEditor() {
         </div>
       </div>
 
-      {/* 본문: 세로 3분할 */}
+      {/* 본문: 가로 3분할 */}
       <VariableInsertionProvider>
-        <div className="flex flex-1 overflow-hidden">
-          {/* 좌측: 입력 / 출력 */}
+        <div className="flex flex-1 justify-center overflow-hidden bg-slate-100">
           <div
-            ref={leftPanelRef}
-            className="flex w-[340px] shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-50"
+            ref={layoutRef}
+            className="grid min-h-0 w-full max-w-[90vw] overflow-hidden bg-white"
+            style={{
+              gridTemplateColumns: `${fittedPanelWidths.left}px 8px ${fittedPanelWidths.center}px 8px ${fittedPanelWidths.right}px`,
+            }}
           >
+            {/* 좌측: 입력 / 출력 */}
             <div
-              className="flex min-h-0 flex-col p-4"
-              style={{ flexBasis: `${inputPanelRatio * 100}%` }}
+              ref={leftPanelRef}
+              className="flex min-w-0 flex-col overflow-hidden bg-slate-50"
             >
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                입력
-              </div>
-              <VariableInsertionStatus />
-              {inputVariableGroups.length === 0 ? (
-                <div className="rounded-md border border-dashed border-gray-200 bg-white p-3 text-xs text-gray-400">
-                  연결된 입력 노드가 없습니다.
+              <div
+                className="flex min-h-0 flex-col p-4"
+                style={{ flexBasis: `${inputPanelRatio * 100}%` }}
+              >
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                  입력
                 </div>
-              ) : (
-                <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                  <div className="flex flex-col gap-3">
-                    {inputVariableGroups.map((group) => {
-                      const chipColor = getInputChipColor(group.sourceNodeId);
-                      const isCollapsed =
-                        inputVariableGroups.length > 1 &&
-                        !expandedInputSourceIds.has(group.sourceNodeId);
-                      const sourceDisplayNumber = sourceDisplayNumberMap.get(
-                        group.sourceNodeId,
-                      );
-                      return (
-                        <div key={group.sourceNodeId} className="min-w-0">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedInputSources((current) => {
-                                const currentSourceIds =
-                                  current.nodeId === fullscreenNodeId
-                                    ? current.sourceIds
-                                    : new Set<string>();
-                                const next = new Set(currentSourceIds);
-                                if (next.has(group.sourceNodeId)) {
-                                  next.delete(group.sourceNodeId);
-                                } else {
-                                  next.add(group.sourceNodeId);
-                                }
-                                return {
-                                  nodeId: fullscreenNodeId,
-                                  sourceIds: next,
-                                };
-                              })
-                            }
-                            className="mb-1 flex w-full items-center justify-between gap-2 rounded-md px-0.5 py-1 text-left text-xs font-semibold text-gray-700 hover:bg-white"
-                            aria-expanded={!isCollapsed}
-                          >
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              <span className="min-w-0 truncate">
-                                {group.sourceTitle}
-                              </span>
-                              {typeof sourceDisplayNumber === 'number' && (
-                                <span
-                                  className="inline-flex h-5 shrink-0 items-center rounded-full border border-slate-200 bg-white px-1.5 text-[10px] font-bold text-slate-500"
-                                  title={`노드 번호 ${sourceDisplayNumber}`}
-                                >
-                                  #{sourceDisplayNumber}
-                                </span>
-                              )}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1 text-[10px] text-gray-400">
-                              {group.outputs.length}
-                              {isCollapsed ? (
-                                <ChevronRight className="h-3.5 w-3.5" />
-                              ) : (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                              )}
-                            </span>
-                          </button>
-                          {!isCollapsed && (
-                            <div className="flex flex-wrap content-start gap-1">
-                              {group.outputs.map((input) => (
-                                <InputVariableChip
-                                  key={`${input.sourceNodeId}-${input.key}`}
-                                  input={input}
-                                  chipColor={chipColor}
-                                />
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="입출력 패널 크기 조절"
-              tabIndex={0}
-              onPointerDown={handlePanelResizeStart}
-              onKeyDown={(event) => {
-                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')
-                  return;
-                event.preventDefault();
-                setInputPanelRatio((current) => {
-                  const delta = event.key === 'ArrowUp' ? -0.05 : 0.05;
-                  return Math.min(0.75, Math.max(0.25, current + delta));
-                });
-              }}
-              className="group relative h-2 shrink-0 cursor-row-resize border-y border-slate-200 bg-slate-100 transition-colors hover:bg-blue-50"
-            >
-              <div className="absolute left-1/2 top-1/2 h-0.5 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-300 transition-colors group-hover:bg-blue-400" />
-            </div>
-
-            <div
-              className="flex min-h-0 flex-col bg-white p-4"
-              style={{ flexBasis: `${(1 - inputPanelRatio) * 100}%` }}
-            >
-              {outputVariables.length === 0 ? (
-                <>
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                    출력
-                  </div>
+                <VariableInsertionStatus />
+                {inputVariableGroups.length === 0 ? (
                   <div className="rounded-md border border-dashed border-gray-200 bg-white p-3 text-xs text-gray-400">
-                    이 노드가 만드는 출력 변수가 없습니다.
+                    연결된 입력 노드가 없습니다.
                   </div>
-                </>
-              ) : (
-                <>
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                    출력
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                    <div className="flex flex-col gap-3">
+                      {inputVariableGroups.map((group) => {
+                        const chipColor = getInputChipColor(group.sourceNodeId);
+                        const isCollapsed =
+                          inputVariableGroups.length > 1 &&
+                          !expandedInputSourceIds.has(group.sourceNodeId);
+                        const sourceDisplayNumber = sourceDisplayNumberMap.get(
+                          group.sourceNodeId,
+                        );
+                        return (
+                          <div key={group.sourceNodeId} className="min-w-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedInputSources((current) => {
+                                  const currentSourceIds =
+                                    current.nodeId === fullscreenNodeId
+                                      ? current.sourceIds
+                                      : new Set<string>();
+                                  const next = new Set(currentSourceIds);
+                                  if (next.has(group.sourceNodeId)) {
+                                    next.delete(group.sourceNodeId);
+                                  } else {
+                                    next.add(group.sourceNodeId);
+                                  }
+                                  return {
+                                    nodeId: fullscreenNodeId,
+                                    sourceIds: next,
+                                  };
+                                })
+                              }
+                              className="mb-1 flex w-full items-center justify-between gap-2 rounded-md px-0.5 py-1 text-left text-xs font-semibold text-gray-700 hover:bg-white"
+                              aria-expanded={!isCollapsed}
+                            >
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                <span className="min-w-0 truncate">
+                                  {group.sourceTitle}
+                                </span>
+                                {typeof sourceDisplayNumber === 'number' && (
+                                  <span
+                                    className="inline-flex h-5 shrink-0 items-center rounded-full border border-slate-200 bg-white px-1.5 text-[10px] font-bold text-slate-500"
+                                    title={`노드 번호 ${sourceDisplayNumber}`}
+                                  >
+                                    #{sourceDisplayNumber}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="flex shrink-0 items-center gap-1 text-[10px] text-gray-400">
+                                {group.outputs.length}
+                                {isCollapsed ? (
+                                  <ChevronRight className="h-3.5 w-3.5" />
+                                ) : (
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                )}
+                              </span>
+                            </button>
+                            {!isCollapsed && (
+                              <div className="flex flex-wrap content-start gap-1">
+                                {group.outputs.map((input) => (
+                                  <InputVariableChip
+                                    key={`${input.sourceNodeId}-${input.key}`}
+                                    input={input}
+                                    chipColor={chipColor}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <NodeOutputsSection
-                    hideHeader
-                    className="mt-0 min-h-0 flex-1 border-t-0 pt-0"
-                    listClassName="max-h-none flex-1"
-                    outputs={outputVariables}
-                    editingOutputKey={editingOutputKey}
-                    draftOutputLabel={draftOutputLabel}
-                    onDraftOutputLabelChange={setDraftOutputLabel}
-                    onStartOutputLabelEdit={startOutputLabelEdit}
-                    onSaveOutputLabelEdit={saveOutputLabelEdit}
-                    onCancelOutputLabelEdit={cancelOutputLabelEdit}
-                    outputLabelInputRef={outputLabelInputRef}
-                  />
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* 중앙: 노드 상세 설정 */}
-          <div className="min-w-0 flex-1 overflow-y-auto p-6">
-            <div className="mx-auto w-full max-w-[720px]">
-              <NodeInlinePanel
-                node={node}
-                showFrame={false}
-                activeSidePanel={activeRightTabId}
-                onOpenSidePanel={openRightPanelTab}
-              />
-            </div>
-          </div>
-
-          {/* 우측: 추후 사용을 위해 비워둠 */}
-          <div className="flex w-[340px] shrink-0 flex-col border-l border-slate-200 bg-slate-50">
-            {rightPanelTabs.length > 0 && (
-              <div className="flex min-h-11 items-end gap-0 overflow-x-auto border-b border-slate-200 bg-slate-100 px-2 pt-2">
-                {rightPanelTabs.map((tab) => (
-                  <div
-                    key={tab.id}
-                    className={`group flex h-9 min-w-0 max-w-36 items-center gap-1 border border-b-0 px-3 text-xs font-semibold ${
-                      activeRightTabId === tab.id
-                        ? 'rounded-t-md border-slate-200 bg-white text-slate-950'
-                        : 'rounded-t-md border-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-800'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setRightPanelState((current) => ({
-                          nodeId: fullscreenNodeId,
-                          openTabs:
-                            current.nodeId === fullscreenNodeId
-                              ? current.openTabs
-                              : rightPanelTabs,
-                          activeTabId: tab.id,
-                        }))
-                      }
-                      className="min-w-0 flex-1 truncate text-left"
-                      title={tab.label}
-                    >
-                      {tab.label}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        closeRightPanelTab(tab.id);
-                      }}
-                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-800 group-hover:opacity-100 focus:opacity-100"
-                      aria-label={`${tab.label} 탭 닫기`}
-                      title="닫기"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
+                )}
               </div>
-            )}
 
-            <div className="min-h-0 flex-1 overflow-hidden bg-white">
-              {node.type === 'llmNode' && activeRightTabId === 'advanced' ? (
-                <LLMParameterSidePanel
-                  embedded
-                  nodeId={node.id}
-                  data={node.data as LLMNodeData}
-                  onClose={() => closeRightPanelTab('advanced')}
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="입출력 패널 크기 조절"
+                tabIndex={0}
+                onPointerDown={handlePanelResizeStart}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')
+                    return;
+                  event.preventDefault();
+                  setInputPanelRatio((current) => {
+                    const delta = event.key === 'ArrowUp' ? -0.05 : 0.05;
+                    return Math.min(0.75, Math.max(0.25, current + delta));
+                  });
+                }}
+                className="group relative h-2 shrink-0 cursor-row-resize border-y border-slate-200 bg-slate-100 transition-colors hover:bg-blue-50"
+              >
+                <div className="absolute left-1/2 top-1/2 h-0.5 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-300 transition-colors group-hover:bg-blue-400" />
+              </div>
+
+              <div
+                className="flex min-h-0 flex-col bg-white p-4"
+                style={{ flexBasis: `${(1 - inputPanelRatio) * 100}%` }}
+              >
+                {outputVariables.length === 0 ? (
+                  <>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                      출력
+                    </div>
+                    <div className="rounded-md border border-dashed border-gray-200 bg-white p-3 text-xs text-gray-400">
+                      이 노드가 만드는 출력 변수가 없습니다.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                      출력
+                    </div>
+                    <NodeOutputsSection
+                      hideHeader
+                      className="mt-0 min-h-0 flex-1 border-t-0 pt-0"
+                      listClassName="max-h-none flex-1"
+                      outputs={outputVariables}
+                      editingOutputKey={editingOutputKey}
+                      draftOutputLabel={draftOutputLabel}
+                      onDraftOutputLabelChange={setDraftOutputLabel}
+                      onStartOutputLabelEdit={startOutputLabelEdit}
+                      onSaveOutputLabelEdit={saveOutputLabelEdit}
+                      onCancelOutputLabelEdit={cancelOutputLabelEdit}
+                      outputLabelInputRef={outputLabelInputRef}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+
+            <PanelResizeHandle
+              label="입출력 패널과 노드 설정 패널 사이 폭 조절"
+              onPointerDown={(event) =>
+                handleHorizontalResizeStart('left-center', event)
+              }
+              onKeyDown={(event) =>
+                handleHorizontalResizeKeyDown('left-center', event)
+              }
+            />
+
+            {/* 중앙: 노드 상세 설정 */}
+            <div className="min-w-0 overflow-y-auto border-x border-slate-200 p-6">
+              <div className="mx-auto w-full max-w-[720px]">
+                <NodeInlinePanel
+                  node={node}
+                  showFrame={false}
+                  activeSidePanel={activeRightTabId}
+                  onOpenSidePanel={openRightPanelTab}
                 />
-              ) : node.type === 'llmNode' &&
-                activeRightTabId === 'knowledge' ? (
-                <LLMReferenceSidePanel
-                  embedded
-                  nodeId={node.id}
-                  data={node.data as LLMNodeData}
-                  onClose={() => closeRightPanelTab('knowledge')}
-                />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center p-6 text-center text-xs leading-relaxed text-slate-500">
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    열린 보조 패널 없음
-                  </div>
-                  <p>
-                    중앙 설정에서 고급 설정, 지식 베이스, 미리보기 같은 보조
-                    기능을 열면 이곳에 탭으로 추가됩니다.
-                  </p>
+              </div>
+            </div>
+
+            <PanelResizeHandle
+              label="노드 설정 패널과 보조 패널 사이 폭 조절"
+              onPointerDown={(event) =>
+                handleHorizontalResizeStart('center-right', event)
+              }
+              onKeyDown={(event) =>
+                handleHorizontalResizeKeyDown('center-right', event)
+              }
+            />
+
+            {/* 우측: 추후 사용을 위해 비워둠 */}
+            <div className="flex min-w-0 flex-col bg-slate-50">
+              {rightPanelTabs.length > 0 && (
+                <div className="flex min-h-11 items-end gap-0 overflow-x-auto border-b border-slate-200 bg-slate-100 px-2 pt-2">
+                  {rightPanelTabs.map((tab) => (
+                    <div
+                      key={tab.id}
+                      className={`group flex h-9 min-w-0 max-w-36 items-center gap-1 border border-b-0 px-3 text-xs font-semibold ${
+                        activeRightTabId === tab.id
+                          ? 'rounded-t-md border-slate-200 bg-white text-slate-950'
+                          : 'rounded-t-md border-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRightPanelState((current) => ({
+                            nodeId: fullscreenNodeId,
+                            openTabs:
+                              current.nodeId === fullscreenNodeId
+                                ? current.openTabs
+                                : rightPanelTabs,
+                            activeTabId: tab.id,
+                          }))
+                        }
+                        className="min-w-0 flex-1 truncate text-left"
+                        title={tab.label}
+                      >
+                        {tab.label}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeRightPanelTab(tab.id);
+                        }}
+                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-800 group-hover:opacity-100 focus:opacity-100"
+                        aria-label={`${tab.label} 탭 닫기`}
+                        title="닫기"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
+
+              <div className="min-h-0 flex-1 overflow-hidden bg-white">
+                {node.type === 'llmNode' && activeRightTabId === 'advanced' ? (
+                  <LLMParameterSidePanel
+                    embedded
+                    nodeId={node.id}
+                    data={node.data as LLMNodeData}
+                    onClose={() => closeRightPanelTab('advanced')}
+                  />
+                ) : node.type === 'llmNode' &&
+                  activeRightTabId === 'knowledge' ? (
+                  <LLMReferenceSidePanel
+                    embedded
+                    nodeId={node.id}
+                    data={node.data as LLMNodeData}
+                    onClose={() => closeRightPanelTab('knowledge')}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center p-6 text-center text-xs leading-relaxed text-slate-500">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      열린 보조 패널 없음
+                    </div>
+                    <p>
+                      중앙 설정에서 고급 설정, 지식 베이스, 미리보기 같은 보조
+                      기능을 열면 이곳에 탭으로 추가됩니다.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
