@@ -1,13 +1,16 @@
 # Workflow Requirements
 
 Status: Draft
-Related Features: auth, organization, agent-builder, audit-tracing
+Related Features: auth, organization, agent-builder, audit-tracing, knowledge
 
 ## Purpose
 
+Workflow feature는 사용자가 업무 절차를 노드 그래프로 구성하고, 수동 실행·스케줄·웹훅·API trigger로 실행할 수 있게 한다. 이 문서는 전체 workflow runtime 요구사항 중 다른 도메인과 충돌하기 쉬운 권한·실행 주체·감사 경계를 우선 기록한다.
 워크플로우 생성, 편집, 테스트 실행, 배포의 기본 사용자 흐름을 제공한다. 빌더는 캔버스에서 노드를 조합하고, 테스트 실행으로 각 노드가 정상 동작하는지 확인한 뒤 배포로 이어간다.
-
 MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 위해 테스트 실행 UX를 먼저 정리한다. 테스트 버튼을 눌렀을 때 테스트 실행 사이드바에서 각 노드의 실행 상태, 소요 시간, 비용, 토큰 사용량을 한눈에 확인할 수 있어야 한다.
+
+**문서 내에 미반영 섹션이 있는데 이 부분 밑의 문단들은 사우이 폴더 내 다른 문서에 적용 및 구현이 안되어있을 확률이 매우 높음
+
 
 ## User Stories
 
@@ -17,6 +20,12 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 빌더로서, 워크플로우 테스트가 모두 끝난 뒤 서버에서 실제 워크플로우가 실행된 시간과 브라우저 화면에서 완료까지 체감한 시간을 함께 확인하고 싶다.
 - 빌더로서, 전체 비용과 전체 토큰 사용량은 서버 실행 결과 기준으로 확인하고 싶다.
 - 빌더로서, 향후 모델/프롬프트 A/B 비교를 붙이기 전에 기본 단일 실행 결과부터 명확하게 보고 싶다.
+
+
+(루트 폴더 문서 내 미반영된 3개 항)
+- 빌더로서, 배포 전에 필요한 credential과 권한 누락을 확인하고 싶다.
+- 운영자로서, schedule/webhook/API trigger로 실행된 workflow가 어떤 주체 권한으로 외부 호출과 RAG retrieval을 수행했는지 추적하고 싶다.
+- 감사자로서, workflow owner와 실제 execution subject를 구분해 audit/trace에서 확인하고 싶다.
 
 ### 2. 노드 조작 편의성
 - 빌더로서, 노드 상세 편집 화면에서 왼쪽/가운데/오른쪽 3패널의 가로 비율을 작업 맥락에 맞게 조정하고 싶다.
@@ -33,6 +42,15 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 빌더로서, 과거 실행 기록을 참고하되 현재 노드 설정값과 과거 input/output을 혼동하지 않기를 원한다.
 
 ## Functional Requirements
+(밑에 fr이거 다 루트 폴더 문서에 미반영)
+- FR-001: Workflow run context는 organization, workflow, workflow version, run id, node id, trigger mode, actor 또는 service account 정보를 전달한다.
+- FR-002: Interactive 실행은 요청 사용자를 execution subject로 사용할 수 있다.
+- FR-003: Schedule, webhook, API trigger처럼 요청 사용자가 명확하지 않은 실행은 배포 시 승인된 service account, assigned operator, 또는 별도 정책으로 확정된 execution subject를 사용한다.
+- FR-004: Agent/LLM node 또는 RAG 옵션이 켜진 LLM node가 Knowledge retrieval을 호출할 때 workflow runtime은 명시적으로 resolve한 `execution_subject`와 sanitized `subject_resolution_reason`을 Knowledge service에 전달한다.
+- FR-005: `execution_subject`가 없거나 모호하면 Knowledge retrieval preflight를 fail-closed로 처리한다. Workflow owner 권한으로 조용히 fallback하지 않는다.
+- FR-006: Workflow owner, deployment owner, execution subject는 audit/trace에서 구분할 수 있어야 한다. Owner는 소유권과 관리 표시에는 사용할 수 있지만, 명시 정책 없이 실행 시점 data access 권한으로 사용하지 않는다.
+- FR-007: 후속 gate에서 Workflow runtime의 Knowledge Skill 사용을 허용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
+
 
 ### 1. 실행 편의성
 
@@ -119,6 +137,17 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 현재 node_id 기록이 없는 workflow run은 목록에서 제외하거나, 표시하더라도 `이 실행에서 현재 노드 기록 없음`으로 명확히 구분한다.
 - 최신 기록 불러오기는 workflow의 최신 run 1개가 아니라, 현재 node_id 기록이 존재하는 최신 run을 대상으로 한다.
 
+(미반영 항목들)
+- 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
+- Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
+- Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
+- RAG를 포함한 workflow 비교 실행이나 A/B 실행도 동일한 execution subject와 Knowledge permission/source ACL gate를 사용한다.
+- Skill이 workflow generation이나 실행 시점 RAG procedure를 안내하더라도, skill은 data access 권한을 부여하지 않는다. 실제 evidence retrieval은 Knowledge permission helper 결과로만 수행한다.
+- Code-bearing skill은 별도 sandbox/approval/egress/resource-cap gate 전까지 workflow runtime에서 실행하지 않는다.
+- Workflow Playground가 별도 실험 공간인지 canvas와 통합되는지, draft/unpublished skill을 테스트 실행에 사용할 수 있는지는 아직 확정하지 않는다.
+- Missing/ambiguous execution subject, suspended/removed membership, inactive service account는 fail-closed로 처리한다.
+
+
 ## Open Questions
 
 Open Question 중요도는 다음 3단계로 나눈다.
@@ -136,3 +165,10 @@ Open Question 중요도는 다음 3단계로 나눈다.
 | 2 | 노드 실행 기록 패널 추가 | input/output 검색을 preview 문자열 기준으로 제한할지, redaction-safe full payload 검색까지 허용할지 여부 | 검색 품질과 보안 경계가 충돌할 수 있다. | 우선 preview 문자열 검색으로 제한한다. |
 | 3 | 실행 편의성 | A/B 비교 실행 결과를 테스트 실행 사이드바 안에서 확장할지, 별도 비교 패널로 분리할지 여부 | 현재 단일 테스트 실행 UX를 막지는 않지만, 이후 비용/품질 비교 UI 구조에 영향을 준다. | 현재 TestSidebar는 단일 실행 결과만 다루고 A/B 비교 UI는 별도 후속 설계로 둔다. |
 | 3 | 노드 조작 편의성 | 패널 비율을 사용자별 preference로 영구 저장할지 여부 | 반복 작업 편의성에는 도움이 되지만 현재 리사이즈 기능 구현을 막지는 않는다. | 현재 편집 세션 안에서만 유지하고 저장하지 않는다. |
+
+(미반영 open question들)
+- Service account의 데이터 접근 범위와 승인 절차를 Auth/RBAC에서 어떤 table과 helper로 표현할지.
+- Schedule/webhook/API trigger의 `execution_subject` resolution reason enum과 audit action 이름.
+- Workflow runtime outbound egress guard를 Knowledge source egress guard와 통합할지 별도 runtime ADR로 둘지.
+- Skill execution을 runtime node로 허용할지, 허용한다면 sandbox와 approval 경계를 어디에 둘지.
+- Workflow Playground, canvas 작업 공간/사용 공간, 배포 승인 요청에서 skill binding을 어떻게 표현하고 검토할지.
