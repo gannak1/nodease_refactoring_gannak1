@@ -96,6 +96,7 @@ export interface CostOptimizerBaselineRow {
   input_preview: string;
   output_preview: string;
   has_trace: boolean;
+  node_options?: Record<string, unknown>;
   downstream_compatibility?: {
     state: string;
     label: string;

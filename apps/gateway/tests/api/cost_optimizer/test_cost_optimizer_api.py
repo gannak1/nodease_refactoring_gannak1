@@ -201,6 +201,11 @@ def _baseline_row(
         "input_preview": "고객 문의를 분류해줘",
         "output_preview": "billing",
         "has_trace": True,
+        "node_options": {
+            "model_id": "gpt-4.1-mini",
+            "system_prompt": "baseline system prompt",
+            "parameters": {"max_tokens": 800, "temperature": 0.2},
+        },
         "usage": {
             "model": "gpt-4.1-mini",
             "prompt_tokens": 300,
@@ -589,6 +594,13 @@ class TestCostOptimizerBaselineHelpers:
             status=SimpleNamespace(value="success"),
             inputs={"message": "hello", "api_key": "sk-secret"},
             outputs={"answer": "done", "encrypted_config": "ciphertext"},
+            process_data={
+                "node_options": {
+                    "model_id": "gpt-4.1-mini",
+                    "api_key": "sk-process-secret",
+                    "parameters": {"temperature": 0.2},
+                }
+            },
             error_message=None,
             trace_metadata={"trace_id": "trace-1"},
         )
@@ -611,9 +623,12 @@ class TestCostOptimizerBaselineHelpers:
 
         serialized = str(row)
         assert "sk-secret" not in serialized
+        assert "sk-process-secret" not in serialized
         assert "ciphertext" not in serialized
         assert row["input"]["api_key"] == "[REDACTED]"
         assert row["output"]["encrypted_config"] == "[REDACTED]"
+        assert row["node_options"]["api_key"] == "[REDACTED]"
+        assert row["node_options"]["model_id"] == "gpt-4.1-mini"
 
     def test_fr2_baseline_query_filters_failed_node_runs_at_db_boundary(self):
         db = MagicMock()

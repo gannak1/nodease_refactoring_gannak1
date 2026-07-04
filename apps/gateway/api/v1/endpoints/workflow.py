@@ -203,6 +203,11 @@ def _baseline_row_from_records(
     input_preview = _preview_baseline_payload(input_payload)
     output_preview = _preview_baseline_payload(output_payload)
     trace_available = bool(node_run.trace_metadata) or has_trace_input or has_trace_output
+    process_data = getattr(node_run, "process_data", None) or {}
+    node_options = (
+        process_data.get("node_options") if isinstance(process_data, dict) else {}
+    )
+    node_options = node_options if isinstance(node_options, dict) else {}
 
     return {
         "baseline_id": str(node_run.id),
@@ -235,6 +240,7 @@ def _baseline_row_from_records(
         "has_trace": trace_available,
         "input": _redact_baseline_value(input_payload),
         "output": _redact_baseline_value(output_payload),
+        "node_options": _redact_baseline_value(node_options),
         "usage": {
             "model": model,
             "prompt_tokens": int(usage.prompt_tokens or 0),
