@@ -671,6 +671,7 @@ class OrganizationMemberService:
             revoked_user_permissions=RevokedUserPermissionCounts(
                 workflow=revoked_workflow_permissions,
                 llm_credential=revoked_llm_permissions,
+                app_creation=revoked_app_creation_permissions,
                 knowledge_base=0,
                 audit=0,
             ),

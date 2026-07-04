@@ -138,6 +138,7 @@ class OrganizationCurrentResponse(OrganizationSummaryResponse):
 class RevokedUserPermissionCounts(BaseModel):
     workflow: int = Field(default=0, ge=0)
     llm_credential: int = Field(default=0, ge=0)
+    app_creation: int = Field(default=0, ge=0)
     knowledge_base: int = Field(default=0, ge=0)
     audit: int = Field(default=0, ge=0)
 
