@@ -1,7 +1,7 @@
 # Admin Dashboard API Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-103 @ 47aef8a
 
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.
 
@@ -107,7 +107,7 @@ Response `200`:
 }
 ```
 
-- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모는 예산 관리 feature(FR-051, 문서 TBD) 확정에 종속된다. 확정 전 구현에서는 `budget` 블록을 생략하거나 null로 반환할 수 있다.
+- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모는 예산 관리 feature(FR-051, 문서 TBD) 확정에 종속된다. 확정 전 구현은 `budget`을 null로 반환한다.
 - 부적절한 접근/행동 탐지 건수 필드는 FR-013 복원 시 추가한다 (후순위).
 
 ### GET /admin/permission-requests
