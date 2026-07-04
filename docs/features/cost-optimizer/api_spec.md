@@ -36,11 +36,11 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 ## Implementation Tracking
 
-현재 문서는 구현 전 API 계약이다. 실제 router/service/schema 파일명은 구현 시점에 Gateway의 기존 workflow/app API 구조에 맞춰 확정한다.
+현재 문서는 Cost Optimizer API 계약과 구현 추적 상태를 함께 기록한다. 실제 router/service/schema 파일명은 Gateway의 기존 workflow/app API 구조에 맞춰 확정한다.
 
 | FR | API/계약 단위 | 예상 코드 위치 | 구현 상태 | API 테스트 코드 | 테스트 통과 여부 |
 | --- | --- | --- | --- | --- | --- |
-| FR-001 | `GET availability` | `apps/gateway/routes/`, `apps/gateway/services/`, `apps/shared/schemas/` | 구현 전 | 작성 전 | 미실행 |
+| FR-001 | `GET availability` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-002 | `GET baselines/latest`, `GET baselines` | `apps/gateway/routes/`, `apps/gateway/services/`, `apps/shared/schemas/` | 구현 전 | 작성 전 | 미실행 |
 | FR-003 | compare candidate request schema | `apps/shared/schemas/`, `apps/gateway/services/` | 구현 전 | 작성 전 | 미실행 |
 | FR-004 | baseline input restore/lock | `apps/gateway/services/`, `apps/workflow_engine/` trace/log 조회 경계 | 구현 전 | 작성 전 | 미실행 |
@@ -74,6 +74,8 @@ Baseline API는 다음 저장소를 조합해 row와 detail을 만든다.
 | `trace_payloads` | redaction-safe input/output preview, input 복원 가능 여부, trace 존재 여부 |
 
 `workflow_runs.id`는 baseline의 전체 실행 컨텍스트이고, `workflow_node_runs.id`가 사용자가 선택하는 baseline 식별자다.
+
+Baseline API는 target LLM node의 `workflow_node_runs.status=success`인 기록만 반환한다. 실패한 node run은 baseline 후보에서 제외하고, 실패 원인 분석은 workflow 실행 로그/trace API에서 다룬다.
 
 `trace_payloads` retention, redaction, 저장 누락으로 target LLM node input을 복원할 수 없는 경우에도 baseline row는 목록에 포함한다. 다만 response는 `input_available=false`, `compare_available=false`를 반환하고, compare API는 해당 baseline으로 B 후보 실행을 시작하지 않는다.
 
@@ -188,12 +190,7 @@ Response:
 `GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest`
 
 target LLM node의 가장 최근 실행 로그를 baseline으로 반환한다.
-
-Query:
-
-| Name | Type | Default | Description |
-| --- | --- | --- | --- |
-| `status` | `success` \| `failed` \| `all` | `success` | 최신 baseline 후보 상태 |
+반환 대상은 `node_status=success`인 기록으로 제한한다.
 
 Response:
 
@@ -249,17 +246,18 @@ Response:
 `GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines`
 
 target LLM node가 포함된 실행 로그 목록을 검색/필터/정렬한다.
+반환 대상은 `node_status=success`인 기록으로 제한한다.
 
 Query:
 
 | Name | Type | Default | Description |
 | --- | --- | --- | --- |
-| `status` | `success` \| `failed` \| `all` | `all` | node run 상태 필터 |
 | `model` | string | optional | 모델 필터 |
 | `q` | string | optional | input/output preview 검색어 |
 | `date_from` | ISO datetime | optional | 시작 시각 |
 | `date_to` | ISO datetime | optional | 종료 시각 |
 | `sort` | string | `started_at_desc` | `started_at_desc`, `cost_desc`, `cost_asc`, `tokens_desc`, `latency_desc` |
+| `compare_available` | boolean | optional | input 복원 가능 여부 기준 비교 가능 row 필터 |
 | `limit` | integer | 20 | page size |
 | `offset` | integer | 0 | offset |
 

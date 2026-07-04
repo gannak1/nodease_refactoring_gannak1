@@ -59,7 +59,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 
 | ID | 기능명 | 시연 중요도 | 상태 | 상태 상세 | 요약 |
 | --- | --- | --- | --- | --- | --- |
-| FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `미완료` | `문서화` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트를 시작한다. |
+| FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `구현 완료` | `테스트 통과` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트 진입 액션과 availability 검증을 제공한다. |
 | FR-002 | A baseline 실행 로그 선택 | P1 | `미완료` | `문서화` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 사용한다. |
 | FR-003 | 비교 가능한 옵션 | P1 | `미완료` | `문서화` | 모델, prompt, `max_tokens`, `temperature`, 출력 형식을 바꿔 비교한다. |
 | FR-004 | 동일 입력 기준 비교 | P1 | `미완료` | `문서화` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
@@ -88,12 +88,14 @@ A baseline은 특정 실행 시점의 target LLM node 입력, 출력, 설정, �
 
 A baseline의 canonical id는 `workflow_node_runs.id`다. `workflow_runs`는 baseline이 속한 전체 실행 컨텍스트이고, `llm_usage_logs`는 비용/토큰/모델 원천이며, `trace_payloads`는 redaction-safe input/output preview와 trace 존재 여부의 원천이다.
 
+Baseline 후보는 target LLM node가 성공적으로 완료된 `workflow_node_runs`만 포함한다. 실패한 node run은 Cost Optimizer baseline 후보에서 제외하며, 실패 원인 분석은 실행 로그/trace 화면의 책임으로 둔다.
+
 사용자는 다음 두 방식 중 하나로 A baseline을 정할 수 있어야 한다.
 
 - 최신 실행 로그로 비교하기
 - 이전 실행 로그 선택해서 비교하기
 
-`최신 실행 로그로 비교하기`는 target LLM node의 가장 마지막 실행 로그를 A baseline으로 사용한다.
+`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 가장 최근 `workflow_node_runs`를 A baseline으로 사용한다.
 
 `이전 실행 로그 선택해서 비교하기`는 로그 선택 화면을 열고, 사용자가 특정 실행 로그를 직접 고르게 한다.
 
@@ -298,6 +300,7 @@ Cost Optimizer는 후속 기능으로 모델 라우팅과 최적화 에이전트
 - 비교 결과는 비용만으로 승자를 정하지 않는다. 사용자가 출력 결과를 보고 판단한다.
 - downstream 계약 검증은 안전성 보조 기능이며, 전체 workflow 성공을 보장하지 않는다.
 - 최종 검증은 기존 workflow 테스트 실행으로 수행할 수 있어야 한다.
+- 실패한 LLM node run은 Cost Optimizer baseline 후보에서 제외한다. credential 오류, provider 오류, timeout 같은 실패 원인은 비용 최적화가 아니라 실행 디버깅 영역에서 다룬다.
 - baseline input이 보관 기간 만료, redaction, retention, 저장 누락으로 복원되지 않는 경우 해당 baseline은 목록에 표시하되 비교 실행은 허용하지 않는다.
 
 ## Deferred Scope
@@ -328,7 +331,6 @@ Open Question 중요도는 다음 3단계로 나눈다.
 
 | Priority | 영역 | Question | 왜 중요한가 | 결정 전 임시 처리 |
 | --- | --- | --- | --- | --- |
-| Priority 1 | baseline 로그 | 최신 실행 로그를 자동 선택할 때 실패 로그도 포함할지, 성공 로그만 사용할지 | 실패 로그를 baseline으로 삼으면 원인 분석에는 좋지만 일반 최적화 비교에는 혼란이 생길 수 있다 | 기본은 성공 로그 우선, 사용자가 필터로 실패 로그를 선택할 수 있게 한다 |
 | Priority 1 | 이전 로그 선택 API | target LLM node 실행 로그를 비용/토큰/시간 기준으로 검색·필터·정렬하는 API를 별도로 둘지 | 기존 workflow run list만으로는 노드 기준 baseline 선택 UX를 만들기 어렵다 | 필요한 API 추가를 허용한다 |
 | Priority 1 | downstream 호환성 | baseline 실행 시점 graph와 현재 graph의 호환성을 어떤 기준으로 판정할지 | 다운스트림이 바뀐 상태에서 비교 결과를 잘못 해석할 수 있다 | `검증 가능`, `주의 필요`, `검증 불가` 3상태로 표시한다 |
 | Priority 1 | 비교 결과 저장 | 비교 결과를 저장할지, 화면에서만 보여줄지 | 저장 여부에 따라 DB/API/화면 이력이 달라진다 | 1차 구현에서는 화면 표시 중심으로 시작하고 usage log는 반드시 남긴다 |

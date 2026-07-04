@@ -26,11 +26,11 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 
 ## Implementation Tracking
 
-현재 문서는 구현 전 설계 기준이다. 실제 파일 경로는 구현 시점에 기존 workflow editor 구조에 맞춰 조정할 수 있다.
+현재 문서는 Cost Optimizer UI 설계 기준과 구현 추적 상태를 함께 기록한다. 실제 파일 경로는 기존 workflow editor 구조에 맞춰 조정할 수 있다.
 
 | FR | 주요 컴포넌트 | 예상 코드 위치 | 구현 상태 | 테스트 코드 | 테스트 통과 여부 |
 | --- | --- | --- | --- | --- | --- |
-| FR-001 | LLM node detail action | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
+| FR-001 | LLM node detail action | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | 통과 |
 | FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-003 | Candidate editor | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-004 | Baseline input lock display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
@@ -95,7 +95,7 @@ LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
 
 관련 FR: FR-002, FR-004, FR-007
 
-Baseline log picker는 target LLM node가 실제로 실행된 로그만 보여준다.
+Baseline log picker는 target LLM node가 성공적으로 완료된 실행 로그만 보여준다. 실패한 node run은 baseline 후보로 표시하지 않는다.
 
 baseline row의 기준 식별자는 `workflow_node_runs.id`다. UI는 이를 사용자에게 직접 노출하지 않지만, 같은 workflow run 안에 여러 node 기록이 있을 수 있으므로 내부 선택 값은 workflow run id가 아니라 node run id를 사용한다.
 
@@ -103,7 +103,7 @@ baseline row의 기준 식별자는 `workflow_node_runs.id`다. UI는 이를 사
 
 - 실행 시각
 - workflow run 상태
-- target LLM node 상태
+- target LLM node 상태: 항상 success
 - 사용 모델
 - target LLM node 비용
 - target LLM node 토큰
@@ -117,11 +117,11 @@ baseline row의 기준 식별자는 `workflow_node_runs.id`다. UI는 이를 사
 
 필터와 정렬은 다음을 지원한다.
 
-- 상태 필터: success, failed, all
 - 모델 필터
 - 날짜 범위 필터
 - 검색어: 입력/출력 preview 기준
 - 정렬: 최신순, 비용 높은순, 비용 낮은순, 토큰 높은순, 실행 시간 긴순
+- 비교 가능 여부 필터: 전체, 비교 가능, 비교 불가
 
 Baseline을 선택하면 A baseline input은 잠금 상태로 표시한다. 사용자는 A 입력을 직접 수정하지 않는다.
 
