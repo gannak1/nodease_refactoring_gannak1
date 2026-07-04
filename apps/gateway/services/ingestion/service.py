@@ -470,13 +470,7 @@ class IngestionOrchestrator:
                 source_config["target_pages"] = target_pages
         elif source_type == SourceType.API:
             api_config = meta_info.get("api_config", {})
-            # api_config가 JSON string일 수 있으므로 파싱
-            if isinstance(api_config, str):
-                try:
-                    api_config = json.loads(api_config)
-                except (TypeError, json.JSONDecodeError):
-                    api_config = {}
-            source_config = api_config
+            source_config = self._build_api_source_config(api_config)
         elif source_type == SourceType.DB:
             base_config = meta_info or {}
             # db_config가 JSON string일 수 있으므로 파싱
@@ -614,14 +608,63 @@ class IngestionOrchestrator:
             if doc.meta_info and "strategy" in doc.meta_info:
                 config["strategy"] = doc.meta_info["strategy"]
         elif doc.source_type == SourceType.API:
-            api_config = doc.meta_info.get("api_config", {})
-            config.update(api_config)
+            api_config = (doc.meta_info or {}).get("api_config", {})
+            config.update(self._build_api_source_config(api_config))
         elif doc.source_type == SourceType.DB:
             config.update(doc.meta_info or {})
             # Flatten db_config if it exists (DB Processor expects selections at root)
             if "db_config" in config and isinstance(config["db_config"], dict):
                 config.update(config["db_config"])
         return config
+
+    def _build_api_source_config(self, api_config: Any) -> Dict[str, Any]:
+        if isinstance(api_config, str):
+            try:
+                api_config = json.loads(api_config)
+            except (TypeError, json.JSONDecodeError):
+                api_config = {}
+        api_config = dict(api_config or {})
+        return {
+            "url": self._decrypt_api_source_value(
+                api_config,
+                encrypted_key="url_encrypted",
+                legacy_key="url",
+            ),
+            "method": str(api_config.get("method") or "GET").upper(),
+            "headers": self._decrypt_api_source_value(
+                api_config,
+                encrypted_key="headers_encrypted",
+                legacy_key="headers",
+                default={},
+            ),
+            "body": self._decrypt_api_source_value(
+                api_config,
+                encrypted_key="body_encrypted",
+                legacy_key="body",
+            ),
+        }
+
+    def _decrypt_api_source_value(
+        self,
+        api_config: Dict[str, Any],
+        *,
+        encrypted_key: str,
+        legacy_key: str,
+        default: Any = None,
+    ) -> Any:
+        from apps.shared.utils.encryption import encryption_manager
+
+        encrypted_value = api_config.get(encrypted_key)
+        if encrypted_value:
+            return encryption_manager.decrypt(str(encrypted_value))
+
+        legacy_value = api_config.get(legacy_key, default)
+        if not isinstance(legacy_value, str):
+            return legacy_value
+        try:
+            return encryption_manager.decrypt(legacy_value)
+        except Exception:
+            return legacy_value
 
     def _refine_chunks(
         self,

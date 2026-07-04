@@ -212,6 +212,7 @@ class DbProcessor(BaseProcessor):
         if db_type == "postgres":
             from apps.shared.connectors.postgres import PostgresConnector
 
+            # Knowledge ingestion은 기존 workflow connector와 달리 SSH tunnel을 기본 허용하지 않는다.
             return PostgresConnector()
         # 추후 mysql, oracle 등 추가
         return None

@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import AsyncIterator, List, Optional
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import (
@@ -63,9 +64,25 @@ from apps.shared.services.rag_hierarchy import (
     RAGHierarchyError,
     validate_chunking_request,
 )
+from apps.shared.services.egress_guard import (
+    API_RESPONSE_CONTENT_TYPES,
+    EgressGuardError,
+    EgressGuardPolicy,
+    safe_http_request,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+SAFE_DOCUMENT_EXTENSIONS = {
+    ".csv",
+    ".docx",
+    ".md",
+    ".pdf",
+    ".txt",
+    ".xls",
+    ".xlsx",
+}
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -270,11 +287,12 @@ async def generate_presigned_url(
         }
     """
     try:
+        safe_filename = _validate_safe_document_filename(filename)
         storage = get_storage_service()
 
         # S3 Presigned URL 생성
         presigned_data = storage.generate_presigned_upload_url(
-            filename=filename,
+            filename=safe_filename,
             content_type=content_type,
             user_id=str(current_user.id),
         )
@@ -285,10 +303,13 @@ async def generate_presigned_url(
             "method": presigned_data["method"],
             "use_backend_proxy": presigned_data.get("use_backend_proxy"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Presigned URL generation failed: {e}")
+        logger.error("Presigned URL generation failed: %s", type(e).__name__)
         raise HTTPException(
-            status_code=500, detail=f"Presigned URL 생성 실패: {str(e)}"
+            status_code=500,
+            detail={"reason_code": "storage.presigned_url_failed"},
         )
 
 
@@ -296,6 +317,7 @@ async def generate_presigned_url(
 @audit(AuditAction.DOCUMENT_UPLOAD)
 async def upload_document(
     background_tasks: BackgroundTasks,
+    request: Request,
     file: Optional[UploadFile] = File(None, alias="file"),
     knowledge_base_id: Optional[UUID] = Form(None, alias="knowledgeBaseId"),
     source_type: str = Form("FILE", alias="sourceType"),
@@ -334,6 +356,7 @@ async def upload_document(
 
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
+        request,
         db,
         current_user,
         knowledge_base_id,
@@ -371,11 +394,10 @@ async def upload_document(
     if source_enum == SourceType.FILE:
         # [NEW] S3 Direct Upload 방식
         if s3_file_url and s3_file_key:
-            # 프론트엔드가 이미 S3에 업로드한 경우
-            file_path = s3_file_url
-            # S3 키에서 파일명 추출 (uploads/user-id/uuid_filename.pdf -> uuid_filename.pdf)
-            filename = s3_file_key.split("/")[-1]
-            meta_info = {"s3_key": s3_file_key, "upload_method": "direct"}
+            file_path, filename, meta_info = _prepare_direct_upload_source(
+                s3_file_key=s3_file_key,
+                user_id=current_user.id,
+            )
 
         # [기존] 백엔드 중계 업로드 방식
         elif file:
@@ -458,7 +480,11 @@ async def analyze_document(
         result = await ingestion_service.analyze_document(document_id)
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("Document analysis failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "document.analyze_failed"},
+        )
 
 
 @router.post("/document/{document_id}/confirm")
@@ -518,7 +544,7 @@ def delete_document(
         try:
             storage.delete(doc.file_path)
         except Exception as e:
-            logger.warning(f"Failed to delete file {doc.file_path}: {e}")
+            logger.warning("Failed to delete document file: %s", type(e).__name__)
             # 파일 삭제 실패해도 DB는 삭제 진행
 
     # 3. DB 삭제 (Cascade로 청크도 같이 삭제됨)
@@ -675,7 +701,7 @@ async def get_document_progress(
                 redis_key = f"knowledge_progress:{document_id}"
                 redis_progress = redis_client.get(redis_key)
             except Exception as e:
-                logger.warning(f"Redis read failed for progress: {e}")
+                logger.warning("Redis read failed for progress: %s", type(e).__name__)
 
             # 3. 진행률 결정 (상태 기반 우선)
             if status == "completed":
@@ -726,10 +752,10 @@ async def proxy_api_preview(
     current_user: User = Depends(get_current_user),
 ):
     """
-    프론트엔드 CORS 문제 해결을 위한 API 프록시 엔드포인트
-    requests -> httpx (Async) 로 변경 (timeout 이슈 해결을 위해)
+    프론트엔드 CORS 문제 해결을 위한 API 프록시 엔드포인트.
+    Knowledge/RAG outbound guard를 거치지 않는 raw HTTP client는 사용하지 않는다.
     """
-    import httpx
+    import asyncio
 
     # 기본 헤더가 없으면 추가
     headers = request.headers or {}
@@ -737,56 +763,64 @@ async def proxy_api_preview(
         headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         )
-
-    try:
-        # 비동기 클라이언트 사용 (http_node.py 참조)
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-            response = await client.request(
-                method=request.method,
-                url=request.url,
-                headers=headers,
-                json=request.body if request.method != "GET" else None,
-            )
-
-            # 4xx, 5xx 에러 발생 시 예외 발생
-            response.raise_for_status()
-
-            try:
-                data = response.json()
-            except Exception:
-                data = response.text
-
-            return {
-                "status": response.status_code,
-                "data": data,
-                "headers": dict(response.headers),
-            }
-
-    except httpx.HTTPStatusError as e:
-        # 외부 API가 에러 응답(4xx, 5xx)을 준 경우
-        status_code = e.response.status_code
-        try:
-            detail = e.response.json()
-        except Exception:
-            detail = e.response.text
-        raise HTTPException(status_code=status_code, detail=detail)
-
-    except httpx.TimeoutException:
-        logger.error("[Proxy Log] 타임아웃 발생 (Timeout)")
-        raise HTTPException(status_code=504, detail="External API Timeout")
-
-    except httpx.RequestError as e:
-        logger.error(f"[Proxy Log] 연결 실패 (RequestError): {e}")
+    method = str(request.method or "GET").upper()
+    if method not in {"GET", "POST"}:
         raise HTTPException(
-            status_code=502, detail=f"External API Connection Error: {str(e)}"
+            status_code=400,
+            detail={"reason_code": "egress.unsupported_method"},
         )
 
+    try:
+        response = await asyncio.to_thread(
+            safe_http_request,
+            method,
+            request.url,
+            headers=headers,
+            json_body=request.body,
+            policy=EgressGuardPolicy(
+                timeout_seconds=30.0,
+                max_response_bytes=10 * 1024 * 1024,
+                allowed_content_types=API_RESPONSE_CONTENT_TYPES,
+            ),
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail={"reason_code": "egress.upstream_error"},
+            )
+
+        try:
+            data = response.json()
+        except Exception:
+            data = response.text
+
+        return {
+            "status": response.status_code,
+            "data": data,
+            "headers": response.headers,
+        }
+
+    except EgressGuardError as e:
+        logger.warning("[Proxy Log] Egress guard denied request: %s", e.reason_code)
+        status_code = 504 if e.reason_code == "egress.timeout" else 400
+        raise HTTPException(
+            status_code=status_code,
+            detail={"reason_code": e.reason_code},
+        )
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        logger.error(f"[Proxy Log] 기타 오류 발생: {type(e).__name__} - {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("[Proxy Log] 기타 오류 발생: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail={"reason_code": "egress.proxy_failed"},
+        )
 
 
 def _get_or_create_knowledge_base(
+    request: Request,
     db: Session,
     user: User,
     kb_id: Optional[UUID],
@@ -828,7 +862,68 @@ def _get_or_create_knowledge_base(
         )
         if not kb:
             raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        _authorize_upload_knowledge_base_write(request, db, user, kb)
         return kb.id, kb.embedding_model
+
+
+def _authorize_upload_knowledge_base_write(
+    request: Request,
+    db: Session,
+    user: User,
+    kb: KnowledgeBase,
+) -> None:
+    if kb.organization_id and not has_organization_scope_access(
+        db,
+        user.id,
+        kb.organization_id,
+    ):
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    if kb.user_id == user.id:
+        return
+
+    effective_auth_state = get_effective_knowledge_base_auth_state(
+        db,
+        user.id,
+        kb.id,
+        organization_id=kb.organization_id,
+    )
+    if knowledge_base_auth_state_allows(effective_auth_state, "write"):
+        return
+
+    record_resource_permission_denied(
+        user_id=user.id,
+        resource_type="knowledge_base",
+        resource_id=kb.id,
+        action="write",
+        effective_auth_state=effective_auth_state,
+        organization_id=kb.organization_id,
+        metadata={
+            "request_id": getattr(request.state, "request_id", None),
+            "path": request.url.path,
+        },
+    )
+    exc = HTTPException(
+        status_code=403,
+        detail=error_detail(
+            request,
+            "permission.denied",
+            "Knowledge Base write permission is required.",
+        ),
+    )
+    setattr(exc, "audit_recorded", True)
+    raise exc
+
+
+def _validate_safe_document_filename(filename: str) -> str:
+    safe_name = str(filename or "").replace("\\", "/").split("/")[-1]
+    ext = "." + safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+    if not safe_name or ext not in SAFE_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "file_type.unsupported"},
+        )
+    return safe_name
 
 
 def _prepare_file_source(local_service: IngestionService, file: Optional[UploadFile]):
@@ -836,9 +931,56 @@ def _prepare_file_source(local_service: IngestionService, file: Optional[UploadF
     if not file:
         raise HTTPException(status_code=400, detail="File is required for FILE source")
 
+    filename = _validate_safe_document_filename(file.filename)
+    file.filename = filename
     file_path = local_service.save_temp_file(file)
-    filename = file.filename
     return file_path, filename, {}
+
+
+def _prepare_direct_upload_source(
+    *,
+    s3_file_key: str,
+    user_id: UUID,
+) -> tuple[str, str, dict]:
+    key = str(s3_file_key or "").strip().replace("\\", "/")
+    expected_prefix = f"uploads/{user_id}/"
+    if (
+        not key
+        or key.startswith("/")
+        or ".." in key.split("/")
+        or not key.startswith(expected_prefix)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "storage.invalid_object_key"},
+        )
+
+    filename = _validate_safe_document_filename(key.rsplit("/", 1)[-1])
+    if not settings.S3_BUCKET_NAME or not settings.AWS_REGION:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "storage.s3_not_configured"},
+        )
+
+    encoded_key = quote(key, safe="/")
+    file_path = (
+        f"https://{settings.S3_BUCKET_NAME}.s3."
+        f"{settings.AWS_REGION}.amazonaws.com/{encoded_key}"
+    )
+    return file_path, filename, {"s3_key": key, "upload_method": "direct"}
+
+
+def _encrypt_source_config_value(value: str) -> str:
+    from apps.shared.utils.encryption import encryption_manager as security_service
+
+    try:
+        return security_service.encrypt(value)
+    except Exception as exc:
+        logger.error("Failed to encrypt API source configuration: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail={"reason_code": "source_config.encryption_required"},
+        ) from exc
 
 
 def _prepare_api_source(
@@ -853,34 +995,48 @@ def _prepare_api_source(
 
     import json
 
-    from apps.shared.utils.encryption import encryption_manager as security_service
-
     # 헤더 처리 (JSON 파싱 및 암호화)
     encrypted_headers = None
     if api_headers:
         try:
             json.loads(api_headers)  # 유효성 검증
-            encrypted_headers = security_service.encrypt(api_headers)
         except Exception as e:
-            logger.warning(f"Failed to process headers: {e}")
-            pass
+            logger.warning("Failed to process API source headers: %s", type(e).__name__)
+            raise HTTPException(
+                status_code=400,
+                detail={"reason_code": "validation.failed"},
+            ) from e
+        encrypted_headers = _encrypt_source_config_value(api_headers)
 
-    # 바디 처리 (JSON 파싱)
-    body = None
+    # URL query와 body에는 token/secret이 들어갈 수 있으므로 원문을 durable metadata에 저장하지 않는다.
+    encrypted_url = _encrypt_source_config_value(api_url)
+    encrypted_body = None
     if api_body:
         try:
-            body = json.loads(api_body)
+            json.loads(api_body)
         except Exception as e:
-            logger.warning(f"Failed to parse body: {e}")
-            pass
+            logger.warning("Failed to process API source body: %s", type(e).__name__)
+            raise HTTPException(
+                status_code=400,
+                detail={"reason_code": "validation.failed"},
+            ) from e
+        encrypted_body = _encrypt_source_config_value(api_body)
+
+    method = str(api_method or "GET").upper()
+    if method not in {"GET", "POST"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "egress.unsupported_method"},
+        )
 
     meta_info = {
         "api_config": {
-            "url": api_url,
-            "method": api_method,
-            "headers": encrypted_headers,
-            "body": body,
+            "url_encrypted": encrypted_url,
+            "method": method,
+            "headers_encrypted": encrypted_headers,
+            "body_encrypted": encrypted_body,
+            "safe_label": "API source",
         }
     }
 
-    return None, api_url, meta_info
+    return None, "API source", meta_info

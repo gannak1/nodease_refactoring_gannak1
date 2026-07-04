@@ -51,6 +51,12 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-027: DB schema 조회는 secret 원문을 응답 body에 포함하지 않아야 한다.
 - CONN-REQ-028: 현재 `connections` 테이블은 user-owned resource이며 `organization_id`를 갖지 않는다.
 - CONN-REQ-029: 현재 connection owner 판정은 organization/team permission helper가 아니라 `connections.user_id == current_user.id` 기준이어야 한다.
+- CONN-REQ-030: connector test, create, schema 조회 실패 응답은 raw host, database name, secret, driver detail, stack trace를 포함하지 않고 safe message 또는 safe `reason_code`로 닫아야 한다.
+- CONN-REQ-031: PostgreSQL 직접 연결 경로는 DB host/port를 사전 검증해 private, loopback, link-local, metadata, reserved target을 거부하고, 검증된 public IP로 실제 연결 대상을 고정해야 한다.
+- CONN-REQ-032: 기존 workflow DB connector compatibility 경로는 문서화된 SSH tunnel 설정을 사용할 수 있다. 이 허용은 workflow connector API 경계에서 명시적으로 선택해야 하며, arbitrary SSH command execution 허용을 의미하지 않는다.
+- CONN-REQ-033: Knowledge DB source ingestion이 공유 PostgreSQL adapter를 사용할 때는 기본 정책으로 SSH tunnel, proxy, private-network target을 거부해야 한다. 이 경로에서 tunnel을 열려면 별도 connector/egress ADR 또는 승인된 organization policy가 필요하다.
+- CONN-REQ-034: PostgreSQL schema introspection은 table, column, foreign key 개수 상한을 적용하고, 잘린 결과는 safe truncation marker로 표시해야 한다.
+- CONN-REQ-035: DB row fetch 경로는 SELECT-only guard, dangerous function/keyword blocklist, read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다.
 
 ## Policies And Edge Cases
 
@@ -59,6 +65,8 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - 현재 `GET /connectors/{connection_id}`와 `GET /connectors/{connection_id}/schema`는 없는 connection에 `404`, owner mismatch에 `403`을 반환한다.
 - create/test/schema 실패 메시지는 raw host, database, secret, driver detail을 응답에 포함하지 않아야 한다.
 - 현재 schema 조회는 SQLAlchemy inspector를 사용해 schema metadata를 읽는다.
+- schema 조회 cap은 UX용 metadata preview 범위를 제한하기 위한 것이며, connector가 전체 DB inventory를 durable storage, audit, trace, log에 저장해도 된다는 의미가 아니다.
+- SSH tunnel compatibility는 기존 workflow DB connector 기능을 보존하기 위한 경계다. Knowledge source ingestion의 기본 경계와 다르며, SSH tunnel 허용은 remote shell command 실행 허용으로 해석하지 않는다.
 - 현재 `DbProcessor`는 Knowledge DB source ingestion에서 저장된 `connection_id`를 조회하고 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
 

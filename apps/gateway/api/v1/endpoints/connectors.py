@@ -34,6 +34,14 @@ CONNECTOR_MAP = {
 }
 
 
+def _build_workflow_connector(connector_class):
+    if connector_class is PostgresConnector or issubclass(connector_class, PostgresConnector):
+        # Existing workflow DB connector는 SSH tunnel과 custom DB port를 지원해 왔다.
+        # Knowledge source ingestion은 기본 PostgresConnector()를 사용해 더 보수적인 경계를 유지한다.
+        return connector_class(allow_ssh_tunnel=True, allowed_db_ports=None)
+    return connector_class()
+
+
 @router.post("/test", response_model=DBConnectionTestResponse)
 async def test_db_connection(request: DBConnectionTestRequest) -> Any:
     """
@@ -68,7 +76,7 @@ async def test_db_connection(request: DBConnectionTestRequest) -> Any:
     try:
         from starlette.concurrency import run_in_threadpool
 
-        connector = connector_class()
+        connector = _build_workflow_connector(connector_class)
         # blocking I/O (SSH connection, DB connection)를 별도 스레드에서 실행
         is_connected = await run_in_threadpool(connector.check, config)
 
@@ -82,8 +90,12 @@ async def test_db_connection(request: DBConnectionTestRequest) -> Any:
             )
 
     except Exception as e:
-        logger.error(f"DB Connection Test Error: {str(e)}")
-        return DBConnectionTestResponse(success=False, message=f"연결 실패: {str(e)}")
+        logger.error("DB connection test failed: %s", type(e).__name__)
+        return DBConnectionTestResponse(
+            success=False,
+            message="연결 실패",
+            reason_code="connector.connection_failed",
+        )
 
 
 @router.post("", status_code=201)
@@ -112,7 +124,7 @@ async def create_connection(
 
         from starlette.concurrency import run_in_threadpool
 
-        connector = connector_class()
+        connector = _build_workflow_connector(connector_class)
 
         # blocking I/O (SSH connection, DB connection)를 별도 스레드에서 실행
         # 10초 타임아웃 적용
@@ -131,9 +143,13 @@ async def create_connection(
                 status_code=400,
                 detail="DB연결 테스트에 실패했습니다. 정보를 확인해주세요.",
             )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error("DB connection validation failed: %s", type(e).__name__)
         raise HTTPException(
-            status_code=400, detail=f"DB 연결 테스트 중 오류 발생: {str(e)}"
+            status_code=400,
+            detail={"reason_code": "connector.connection_failed"},
         )
 
     try:
@@ -151,8 +167,10 @@ async def create_connection(
                     request.ssh.private_key
                 )
     except Exception as e:
+        logger.error("Connection secret encryption failed: %s", type(e).__name__)
         raise HTTPException(
-            status_code=500, detail=f"암호화 처리 중 오류 발생: {str(e)}"
+            status_code=500,
+            detail={"reason_code": "connection_config.encrypt_failed"},
         )
 
     new_connection = Connection(
@@ -274,14 +292,21 @@ async def get_connection_schema(
             "ssh": ssh_config,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")
+        logger.error("Connection config decryption failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail={"reason_code": "connection_config.decrypt_failed"},
+        )
     connector_class = CONNECTOR_MAP.get(connection.type)
     if not connector_class:
         raise HTTPException(status_code=400, detail="Unsupported DB type")
     try:
-        connector = connector_class()
+        connector = _build_workflow_connector(connector_class)
         tables = connector.get_schema_info(config)
         return {"tables": tables}
     except Exception as e:
-        logger.error(f"Schema Fetch Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Failed to fetch schema: {str(e)}")
+        logger.error("Schema fetch failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "connector.schema_fetch_failed"},
+        )
