@@ -4,6 +4,7 @@ vi.mock('@/lib/apiClient', () => ({
   apiClient: {
     get: vi.fn(),
     post: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -12,9 +13,12 @@ import { adminApi } from './adminApi';
 
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
+const mockedDelete = vi.mocked(apiClient.delete);
 
 afterEach(() => {
-  vi.clearAllMocks();
+  // 실패한 테스트가 소비하지 못한 mockResolvedValueOnce 큐가 다음 테스트로
+  // 새지 않도록 구현까지 초기화한다.
+  vi.resetAllMocks();
 });
 
 describe('adminApi.listAuditLogs', () => {
@@ -81,6 +85,37 @@ describe('adminApi permission request actions', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/admin/permission-requests/req-2/reject',
     );
+  });
+});
+
+describe('adminApi.listAppCreationPermissions', () => {
+  it('pagination으로 App 생성 권한 보유 목록을 조회한다', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { total: 0, items: [] } });
+
+    const result = await adminApi.listAppCreationPermissions({
+      page: 1,
+      limit: 20,
+    });
+
+    expect(mockedGet).toHaveBeenCalledWith('/admin/app-creation-permissions', {
+      params: { page: 1, limit: 20 },
+    });
+    expect(result).toEqual({ total: 0, items: [] });
+  });
+});
+
+describe('adminApi.revokeAppCreationPermission', () => {
+  it('회수 endpoint를 DELETE로 호출한다', async () => {
+    mockedDelete.mockResolvedValueOnce({
+      data: { id: 'perm-1', user_id: 'user-3' },
+    });
+
+    const result = await adminApi.revokeAppCreationPermission('perm-1');
+
+    expect(mockedDelete).toHaveBeenCalledWith(
+      '/admin/app-creation-permissions/perm-1',
+    );
+    expect(result).toEqual({ id: 'perm-1', user_id: 'user-3' });
   });
 });
 
