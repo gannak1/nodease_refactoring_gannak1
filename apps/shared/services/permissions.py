@@ -20,6 +20,9 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import (
+    UserAppCreationPermission,
+)
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
@@ -176,6 +179,35 @@ def has_organization_scope_access(
         AUTH_STATE_MANAGER,
         ORGANIZATION_AUTH_MEMBER,
     }
+
+
+def has_app_creation_permission(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> bool:
+    """조직 수준 App 생성 능력 판정 (ADR-0014).
+
+    organization owner/manager는 허용하고, 그 외에는
+    user_app_creation_permissions row가 있어야 허용한다. fail-closed.
+    """
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return False
+    if not _is_active_user(db, user_uuid):
+        return False
+    if has_organization_manager_permission(db, user_uuid, organization_uuid):
+        return True
+    row = (
+        db.query(UserAppCreationPermission)
+        .filter(
+            UserAppCreationPermission.grantee_organization_id == organization_uuid,
+            UserAppCreationPermission.user_id == user_uuid,
+        )
+        .first()
+    )
+    return row is not None
 
 
 def _workflow_scope(

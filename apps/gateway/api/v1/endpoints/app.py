@@ -16,6 +16,7 @@ from apps.shared.schemas.app import (
     AppResponse,
     AppUpdateRequest,
 )
+from apps.shared.services import permissions as shared_permissions
 from apps.gateway.services.app_service import AppService
 
 router = APIRouter()
@@ -84,6 +85,12 @@ def create_app(
         organization_id = resolve_active_organization_id(
             db, request, x_organization_id, current_user.id
         )
+        # 조직 수준 App 생성 능력 판정 (ADR-0014). owner/manager 또는
+        # user_app_creation_permissions row 보유자만 허용한다.
+        if not shared_permissions.has_app_creation_permission(
+            db, current_user.id, organization_id
+        ):
+            raise HTTPException(status_code=403, detail="Forbidden")
         return AppService.create_app(
             db, payload, user_id=current_user.id, organization_id=organization_id
         )
