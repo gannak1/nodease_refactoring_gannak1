@@ -19,6 +19,7 @@ from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
     RAGEvidencePolicy,
 )
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.utils.prompt_injection_guard import build_untrusted_context_block
 from apps.workflow_engine.services.llm_service import (
     LLMCredentialNotAvailableError,
@@ -987,8 +988,8 @@ class LLMNode(Node[LLMNodeData]):
     def _knowledge_trace_metadata(
         self, knowledge_base_id: str, chunk: ChunkPreview
     ) -> Dict[str, Any]:
-        """추적 메타데이터에는 검색 출처 식별 정보만 남깁니다."""
-        metadata_summary = chunk.metadata_summary or {}
+        """추적 메타데이터에는 redaction-safe evidence 요약만 남깁니다."""
+        metadata_summary = self._safe_rag_metadata_summary(chunk.metadata_summary)
         metadata = {
             "knowledge_base_id": str(knowledge_base_id),
             "chunk_id": str(chunk.chunk_id) if chunk.chunk_id else None,
@@ -996,7 +997,6 @@ class LLMNode(Node[LLMNodeData]):
                 str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None
             ),
             "document_id": str(chunk.document_id),
-            "filename": chunk.filename,
             "page_number": chunk.page_number,
             "similarity_score": chunk.similarity_score,
             "score": chunk.score if chunk.score is not None else chunk.similarity_score,
@@ -1008,6 +1008,32 @@ class LLMNode(Node[LLMNodeData]):
         if metadata_summary.get("hierarchy_fallback"):
             metadata["hierarchy_fallback"] = True
         return metadata
+
+    def _safe_rag_metadata_summary(self, metadata_summary: Any) -> Dict[str, Any]:
+        """source title/path/url 같은 원문성 metadata를 durable trace에서 제거합니다."""
+        safe_value = TraceMetadataSanitizer.sanitize_json_safe(metadata_summary or {})
+        if not isinstance(safe_value, dict):
+            return {}
+        return self._drop_sensitive_metadata_keys(safe_value)
+
+    def _drop_sensitive_metadata_keys(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, child in value.items():
+                if TraceMetadataSanitizer.is_sensitive_metadata_key(key):
+                    continue
+                sanitized_child = self._drop_sensitive_metadata_keys(child)
+                if sanitized_child is not None:
+                    sanitized[str(key)] = sanitized_child
+            return sanitized
+        if isinstance(value, list):
+            return [
+                sanitized_child
+                for item in value
+                if (sanitized_child := self._drop_sensitive_metadata_keys(item))
+                is not None
+            ]
+        return value
 
     def _rag_retrieval_trace_payload(
         self,

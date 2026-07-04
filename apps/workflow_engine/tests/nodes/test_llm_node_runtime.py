@@ -517,14 +517,19 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
         score=0.92,
         rank=1,
         token_count=120,
-        metadata_summary={"classification": "internal", "hierarchy_fallback": True},
+        metadata_summary={
+            "classification": "internal",
+            "hierarchy_fallback": True,
+            "raw_source_url": "https://internal.example/private",
+            "source_path": "/sensitive/path",
+            "nested": {"source_title": "Sensitive title"},
+        },
         hierarchy_path=["Guide", "Intro"],
         metadata={"source": "kb"},
     )
 
     metadata = node._knowledge_trace_metadata("kb-1", chunk)  # noqa: SLF001 - 테스트용
 
-    assert metadata["filename"] == "guide.md"
     assert metadata["page_number"] == 3
     assert metadata["knowledge_base_id"] == "kb-1"
     assert metadata["chunk_id"] == str(chunk_id)
@@ -534,6 +539,7 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
     assert metadata["metadata_summary"] == {
         "classification": "internal",
         "hierarchy_fallback": True,
+        "nested": {},
     }
     assert metadata["hierarchy_fallback"] is True
     assert TraceMetadataSanitizer.summarize_rag_metadata([metadata])[
@@ -541,7 +547,11 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
     ] is True
     assert metadata["hierarchy_path"] == ["Guide", "Intro"]
     assert "content" not in metadata
+    assert "filename" not in metadata
     assert "metadata" not in metadata
+    assert "raw_source_url" not in str(metadata)
+    assert "source_path" not in str(metadata)
+    assert "Sensitive title" not in str(metadata)
 
 
 def test_rag_retrieval_trace_payload_uses_redacted_contract():
@@ -573,6 +583,7 @@ def test_rag_retrieval_trace_payload_uses_redacted_contract():
     assert payload["node_id"] == "llm-1"
     assert "workflow_node_run_id" not in payload
     assert "content" not in payload["retrieved_chunks"][0]
+    assert "filename" not in payload["retrieved_chunks"][0]
     assert "metadata" not in payload["retrieved_chunks"][0]
 
 

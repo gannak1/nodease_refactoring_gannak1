@@ -87,11 +87,16 @@ def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
                         "chunk_id": "chunk-1",
                         "parent_chunk_id": "parent-1",
                         "document_id": "doc-1",
+                        "filename": "sensitive-title.pdf",
                         "rank": 1,
                         "similarity_score": 0.9,
                         "score": 0.91,
                         "token_count": 210,
-                        "metadata_summary": {"classification": "internal"},
+                        "metadata_summary": {
+                            "classification": "internal",
+                            "source_path": "/private/source/path",
+                            "raw_source_url": "https://internal.example/private",
+                        },
                         "hierarchy_fallback": True,
                         "content": "raw chunk text",
                     }
@@ -110,6 +115,34 @@ def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
     assert metadata["rag"]["raw_content_returned"] is False
     assert "retrieval_results" not in metadata["rag"]
     assert "raw chunk text" not in str(metadata)
+    assert "sensitive-title.pdf" not in str(metadata)
+    assert "internal.example" not in str(metadata)
+    assert "/private/source/path" not in str(metadata)
+
+
+def test_rag_span_metadata_preserves_evidence_summary_fields_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "rag": {
+                "evidence_sufficient": False,
+                "insufficiency_reason": "minimum_score_not_met",
+                "source_tier_used": "company_policy",
+                "partial_result": True,
+                "failure_policy": "safe_no_result",
+                "hidden_candidate_ids": ["kb-hidden"],
+                "raw_rewritten_query": "raw query",
+            }
+        },
+    )
+
+    assert metadata["rag"]["evidence_sufficient"] is False
+    assert metadata["rag"]["insufficiency_reason"] == "minimum_score_not_met"
+    assert metadata["rag"]["source_tier_used"] == "company_policy"
+    assert metadata["rag"]["partial_result"] is True
+    assert metadata["rag"]["failure_policy"] == "safe_no_result"
+    assert "hidden_candidate_ids" not in metadata["rag"]
+    assert "raw_rewritten_query" not in metadata["rag"]
 
 
 def test_trace_detail_metadata_view_hides_error_message_and_sanitizes_metadata():
