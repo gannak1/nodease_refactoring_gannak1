@@ -198,6 +198,9 @@ def test_search_documents_uses_resolved_embedding_model_client(monkeypatch):
         def first(self):
             return SimpleNamespace(id=kb_id, embedding_model="text-embedding-test")
 
+        def all(self):
+            return [self.first()]
+
     class FakeDb:
         def query(self, model):
             if model is KnowledgeBase:
@@ -248,6 +251,113 @@ def test_search_documents_uses_resolved_embedding_model_client(monkeypatch):
         "model": embedding_model,
         "organization_id": organization_id,
     }
+
+
+def test_search_documents_merges_multiple_authorized_kbs(monkeypatch):
+    kb_a = uuid.uuid4()
+    kb_b = uuid.uuid4()
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    embedded_queries = []
+
+    class FakeClient:
+        async def embed(self, query):
+            embedded_queries.append(query)
+            return [0.1, 0.2]
+
+    class FakeKbQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=kb_a, embedding_model="text-embedding-test"),
+                SimpleNamespace(id=kb_b, embedding_model="text-embedding-test"),
+            ]
+
+    class FakeModelQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(type="embedding", is_active=True)
+
+    class FakeDb:
+        def query(self, model):
+            if model is KnowledgeBase:
+                return FakeKbQuery()
+            return FakeModelQuery()
+
+    def fake_chunk(name):
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            content=name,
+            metadata_={},
+            parent_chunk_id=None,
+            chunk_level="flat",
+            token_count=1,
+        )
+
+    def fake_doc(kb_id, filename):
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            filename=filename,
+            meta_info={"knowledge_base_id": str(kb_id)},
+            source_type="FILE",
+        )
+
+    def fake_vector_search(_vector, knowledge_base_id, *_args, **_kwargs):
+        if knowledge_base_id == str(kb_a):
+            return [(fake_chunk("A"), fake_doc(kb_a, "a.md"), 0.2)]
+        if knowledge_base_id == str(kb_b):
+            return [(fake_chunk("B"), fake_doc(kb_b, "b.md"), 0.05)]
+        return []
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *args, **kwargs: FakeClient(),
+    )
+
+    service = RetrievalService(
+        db=FakeDb(),
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+    monkeypatch.setattr(service, "_has_valid_hierarchy", lambda *_: False)
+    monkeypatch.setattr(service, "_vector_search", fake_vector_search)
+
+    result = asyncio.run(
+        service.search_documents(
+            "policy",
+            knowledge_base_ids=[str(kb_a), str(kb_b)],
+            top_k=2,
+            threshold=0,
+            hybrid_search=False,
+            use_rerank=False,
+        )
+    )
+
+    assert embedded_queries == ["policy", "policy"]
+    assert [chunk.filename for chunk in result] == ["b.md", "a.md"]
+    assert [chunk.content for chunk in result] == ["B", "A"]
+
+
+def test_search_knowledge_base_ids_normalizes_single_string_and_dedupes():
+    kb_a = uuid.uuid4()
+    kb_b = uuid.uuid4()
+    service = RetrievalService(db=None, user_id=None)
+
+    result = service._search_knowledge_base_ids(
+        knowledge_base_id=str(kb_a),
+        knowledge_base_ids=[str(kb_a), str(kb_b)],
+    )
+
+    assert result == [str(kb_a), str(kb_b)]
+    assert service._search_knowledge_base_ids(
+        knowledge_base_id=None,
+        knowledge_base_ids=str(kb_a),
+    ) == [str(kb_a)]
 
 
 def test_generate_answer_for_test_preserves_references_when_generation_model_missing(monkeypatch):

@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import Iterable
 
 from sqlalchemy import and_, bindparam, or_, select
 from sqlalchemy.orm import Session, aliased
@@ -507,6 +508,7 @@ class RetrievalService:
         self,
         query: str,
         knowledge_base_id: str = None,
+        knowledge_base_ids: Iterable[str] | None = None,
         top_k: int = 5,
         threshold: float = 0.15,
         use_rewrite: bool = False,
@@ -520,7 +522,11 @@ class RetrievalService:
         """
         [Public API] Hybrid Search (Vector + Keyword) with optional Multi-Query and Reranking (비동기)
         """
-        if not knowledge_base_id:
+        kb_ids = self._search_knowledge_base_ids(
+            knowledge_base_id=knowledge_base_id,
+            knowledge_base_ids=knowledge_base_ids,
+        )
+        if not kb_ids:
             logger.warning("Search called without knowledge_base_id")
             return []
         hierarchy_mode = normalize_hierarchy_mode(hierarchy_mode)
@@ -533,179 +539,65 @@ class RetrievalService:
             queries = [query]
 
         all_candidates = {}
+        any_hierarchy = False
 
         try:
-            kb = (
-                self.db.query(KnowledgeBase)
-                .filter(KnowledgeBase.id == knowledge_base_id)
-                .first()
-            )
-            if not kb or not kb.embedding_model:
-                return []
-            if (
-                embedding_model is not None
-                and embedding_model.model_id_for_api_call != kb.embedding_model
-            ):
-                return []
+            kbs_by_id = self._retrieval_knowledge_bases(kb_ids)
 
-            model_info = embedding_model or (
-                self.db.query(LLMModel)
-                .filter(LLMModel.model_id_for_api_call == kb.embedding_model)
-                .first()
-            )
-            if model_info and (model_info.type != "embedding" or not model_info.is_active):
-                return []
+            for current_kb_id in kb_ids:
+                kb = kbs_by_id.get(current_kb_id)
+                if not kb or not kb.embedding_model:
+                    continue
+                if (
+                    embedding_model is not None
+                    and embedding_model.model_id_for_api_call != kb.embedding_model
+                ):
+                    continue
 
-            has_hierarchy = self._has_valid_hierarchy(knowledge_base_id)
-            if hierarchy_mode == HIERARCHY_MODE_PARENT_CHILD and not has_hierarchy:
-                raise ValueError("hierarchy_unavailable")
-            use_hierarchy = (
-                hierarchy_mode in {"auto", HIERARCHY_MODE_PARENT_CHILD}
-                and has_hierarchy
-            )
-
-            if embedding_model is not None:
-                embed_client = LLMService.get_client_for_model(
-                    self.db,
-                    self.user_id,
-                    embedding_model,
-                    organization_id=self.organization_id,
+                model_info = embedding_model or (
+                    self.db.query(LLMModel)
+                    .filter(LLMModel.model_id_for_api_call == kb.embedding_model)
+                    .first()
                 )
-            else:
-                embed_client = LLMService.get_client_for_user(
-                    self.db,
-                    self.user_id,
-                    kb.embedding_model,
-                    organization_id=self.organization_id,
+                if model_info and (
+                    model_info.type != "embedding" or not model_info.is_active
+                ):
+                    continue
+
+                has_hierarchy = self._has_valid_hierarchy(str(current_kb_id))
+                if hierarchy_mode == HIERARCHY_MODE_PARENT_CHILD and not has_hierarchy:
+                    raise ValueError("hierarchy_unavailable")
+                use_hierarchy = (
+                    hierarchy_mode in {"auto", HIERARCHY_MODE_PARENT_CHILD}
+                    and has_hierarchy
                 )
+                any_hierarchy = any_hierarchy or use_hierarchy
 
-            for i, q in enumerate(queries):
-                query_vector = await embed_client.embed(q)
-                if use_hierarchy:
-                    parent_vector_results = self._vector_search(
-                        query_vector,
-                        knowledge_base_id,
-                        parent_candidate_limit(top_k),
-                        metadata_filter=metadata_filter,
-                        chunk_levels=("parent",),
-                        chunk_metadata_fallback=False,
+                if embedding_model is not None:
+                    embed_client = LLMService.get_client_for_model(
+                        self.db,
+                        self.user_id,
+                        embedding_model,
+                        organization_id=self.organization_id,
                     )
-                    if hybrid_search:
-                        parent_keyword_results = self._keyword_search(
-                            q,
-                            knowledge_base_id,
-                            parent_candidate_limit(top_k),
-                            metadata_filter=metadata_filter,
-                            chunk_levels=("parent",),
-                            chunk_metadata_fallback=False,
-                        )
-                        parent_fused = self._rrf_fusion(
-                            parent_vector_results,
-                            parent_keyword_results,
-                        )
-                    else:
-                        parent_fused = [
-                            {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
-                            for rank, (chunk, doc, _distance) in enumerate(
-                                parent_vector_results
-                            )
-                        ]
-
-                    parent_ids = [
-                        item["chunk"].id
-                        for item in parent_fused[: parent_candidate_limit(top_k)]
-                    ]
-                    vector_results = self._vector_search(
-                        query_vector,
-                        knowledge_base_id,
-                        child_pool_limit(top_k),
-                        metadata_filter=metadata_filter,
-                        chunk_levels=("child",),
-                        parent_ids=parent_ids,
-                    )
-                    if hybrid_search:
-                        keyword_results = self._keyword_search(
-                            q,
-                            knowledge_base_id,
-                            child_pool_limit(top_k),
-                            metadata_filter=metadata_filter,
-                            chunk_levels=("child",),
-                            parent_ids=parent_ids,
-                        )
-                        fused = self._rrf_fusion(vector_results, keyword_results)
-                    else:
-                        fused = [
-                            {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
-                            for rank, (chunk, doc, _distance) in enumerate(
-                                vector_results
-                            )
-                        ]
-
-                    fallback_vector_results = self._vector_search(
-                        query_vector,
-                        knowledge_base_id,
-                        top_k * 10,
-                        metadata_filter=metadata_filter,
-                        chunk_levels=(None, "flat"),
-                    )
-                    if hybrid_search:
-                        fallback_keyword_results = self._keyword_search(
-                            q,
-                            knowledge_base_id,
-                            top_k * 10,
-                            metadata_filter=metadata_filter,
-                            chunk_levels=(None, "flat"),
-                        )
-                        fallback_fused = self._rrf_fusion(
-                            fallback_vector_results,
-                            fallback_keyword_results,
-                        )
-                    else:
-                        fallback_fused = [
-                            {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
-                            for rank, (chunk, doc, _distance) in enumerate(
-                                fallback_vector_results
-                            )
-                        ]
-                    for item in fallback_fused:
-                        item["hierarchy_fallback"] = True
-                    fused.extend(fallback_fused)
                 else:
-                    vector_results = self._vector_search(
-                        query_vector,
-                        knowledge_base_id,
-                        top_k * 10,
-                        metadata_filter=metadata_filter,
-                        chunk_levels=(None, "flat", "child"),
+                    embed_client = LLMService.get_client_for_user(
+                        self.db,
+                        self.user_id,
+                        kb.embedding_model,
+                        organization_id=self.organization_id,
                     )
 
-                    if hybrid_search:
-                        keyword_results = self._keyword_search(
-                            q,
-                            knowledge_base_id,
-                            top_k * 10,
-                            metadata_filter=metadata_filter,
-                            chunk_levels=(None, "flat", "child"),
-                        )
-                        fused = self._rrf_fusion(vector_results, keyword_results)
-                    else:
-                        fused = []
-                        for rank, (chunk, doc, distance) in enumerate(vector_results):
-                            fused.append(
-                                {
-                                    "score": 1.0 / (60 + rank + 1),
-                                    "chunk": chunk,
-                                    "doc": doc,
-                                }
-                            )
-
-                for item in fused[: top_k * 10]:
-                    chunk_id = str(item["chunk"].id)
-                    if chunk_id not in all_candidates:
-                        all_candidates[chunk_id] = item
-                    else:
-                        if item["score"] > all_candidates[chunk_id]["score"]:
-                            all_candidates[chunk_id] = item
+                await self._collect_kb_candidates(
+                    all_candidates,
+                    queries=queries,
+                    embed_client=embed_client,
+                    knowledge_base_id=str(current_kb_id),
+                    top_k=top_k,
+                    metadata_filter=metadata_filter,
+                    use_hierarchy=use_hierarchy,
+                    hybrid_search=hybrid_search,
+                )
 
         except Exception as e:
             logger.error(f"Document search failed: {e}")
@@ -716,7 +608,7 @@ class RetrievalService:
             all_candidates.values(), key=lambda x: x["score"], reverse=True
         )
 
-        if hybrid_search or use_multi_query or use_hierarchy:
+        if hybrid_search or use_multi_query or any_hierarchy:
             if use_rerank:
                 candidates_to_rerank = merged_candidates[:100]
                 reranked = self._rerank(query, candidates_to_rerank, top_k)
@@ -729,7 +621,7 @@ class RetrievalService:
 
                     meta = self._chunk_metadata(chunk, doc)
                     meta["search_method"] = self._search_method(
-                        use_hierarchy=use_hierarchy,
+                        use_hierarchy=bool(item.get("use_hierarchy")),
                         hybrid_search=hybrid_search,
                         use_multi_query=use_multi_query,
                         use_rerank=True,
@@ -770,7 +662,7 @@ class RetrievalService:
 
                     meta = self._chunk_metadata(chunk, doc)
                     meta["search_method"] = self._search_method(
-                        use_hierarchy=use_hierarchy,
+                        use_hierarchy=bool(item.get("use_hierarchy")),
                         hybrid_search=hybrid_search,
                         use_multi_query=use_multi_query,
                     )
@@ -802,8 +694,10 @@ class RetrievalService:
                         )
                     )
         else:
-            for rank, (chunk, doc, distance) in enumerate(vector_results[:top_k], start=1):
-                similarity = 1 - distance
+            for rank, item in enumerate(merged_candidates[:top_k], start=1):
+                chunk = item["chunk"]
+                doc = item["doc"]
+                similarity = item.get("similarity", item["score"])
                 if similarity < threshold:
                     continue
 
@@ -833,6 +727,192 @@ class RetrievalService:
                 )
 
         return final_list
+
+    def _search_knowledge_base_ids(
+        self,
+        *,
+        knowledge_base_id: str | None,
+        knowledge_base_ids: Iterable[str] | None,
+    ) -> list[str]:
+        ordered_ids: list[str] = []
+        if knowledge_base_ids is None:
+            extra_ids = []
+        elif isinstance(knowledge_base_ids, (str, bytes)):
+            extra_ids = [knowledge_base_ids]
+        else:
+            extra_ids = list(knowledge_base_ids)
+        for value in [knowledge_base_id, *extra_ids]:
+            if value is None:
+                continue
+            normalized = str(value)
+            if normalized not in ordered_ids:
+                ordered_ids.append(normalized)
+        return ordered_ids
+
+    def _retrieval_knowledge_bases(self, kb_ids: list[str]) -> dict[str, KnowledgeBase]:
+        rows = (
+            self.db.query(KnowledgeBase)
+            .filter(KnowledgeBase.id.in_(kb_ids))
+            .all()
+        )
+        return {str(kb.id): kb for kb in rows}
+
+    async def _collect_kb_candidates(
+        self,
+        all_candidates: dict,
+        *,
+        queries: list[str],
+        embed_client,
+        knowledge_base_id: str,
+        top_k: int,
+        metadata_filter: NormalizedMetadataFilter | None,
+        use_hierarchy: bool,
+        hybrid_search: bool,
+    ) -> None:
+        for q in queries:
+            query_vector = await embed_client.embed(q)
+            if use_hierarchy:
+                fused = self._hierarchical_candidates(
+                    query=q,
+                    query_vector=query_vector,
+                    knowledge_base_id=knowledge_base_id,
+                    top_k=top_k,
+                    metadata_filter=metadata_filter,
+                    hybrid_search=hybrid_search,
+                )
+            else:
+                vector_results = self._vector_search(
+                    query_vector,
+                    knowledge_base_id,
+                    top_k * 10,
+                    metadata_filter=metadata_filter,
+                    chunk_levels=(None, "flat", "child"),
+                )
+
+                if hybrid_search:
+                    keyword_results = self._keyword_search(
+                        q,
+                        knowledge_base_id,
+                        top_k * 10,
+                        metadata_filter=metadata_filter,
+                        chunk_levels=(None, "flat", "child"),
+                    )
+                    fused = self._rrf_fusion(vector_results, keyword_results)
+                else:
+                    fused = []
+                    for chunk, doc, distance in vector_results:
+                        similarity = 1 - distance
+                        fused.append(
+                            {
+                                "score": similarity,
+                                "similarity": similarity,
+                                "chunk": chunk,
+                                "doc": doc,
+                            }
+                        )
+
+            for item in fused[: top_k * 10]:
+                item["use_hierarchy"] = use_hierarchy
+                chunk_id = str(item["chunk"].id)
+                if chunk_id not in all_candidates:
+                    all_candidates[chunk_id] = item
+                elif item["score"] > all_candidates[chunk_id]["score"]:
+                    all_candidates[chunk_id] = item
+
+    def _hierarchical_candidates(
+        self,
+        *,
+        query: str,
+        query_vector: list,
+        knowledge_base_id: str,
+        top_k: int,
+        metadata_filter: NormalizedMetadataFilter | None,
+        hybrid_search: bool,
+    ) -> list[dict]:
+        parent_vector_results = self._vector_search(
+            query_vector,
+            knowledge_base_id,
+            parent_candidate_limit(top_k),
+            metadata_filter=metadata_filter,
+            chunk_levels=("parent",),
+            chunk_metadata_fallback=False,
+        )
+        if hybrid_search:
+            parent_keyword_results = self._keyword_search(
+                query,
+                knowledge_base_id,
+                parent_candidate_limit(top_k),
+                metadata_filter=metadata_filter,
+                chunk_levels=("parent",),
+                chunk_metadata_fallback=False,
+            )
+            parent_fused = self._rrf_fusion(
+                parent_vector_results,
+                parent_keyword_results,
+            )
+        else:
+            parent_fused = [
+                {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
+                for rank, (chunk, doc, _distance) in enumerate(parent_vector_results)
+            ]
+
+        parent_ids = [
+            item["chunk"].id for item in parent_fused[: parent_candidate_limit(top_k)]
+        ]
+        vector_results = self._vector_search(
+            query_vector,
+            knowledge_base_id,
+            child_pool_limit(top_k),
+            metadata_filter=metadata_filter,
+            chunk_levels=("child",),
+            parent_ids=parent_ids,
+        )
+        if hybrid_search:
+            keyword_results = self._keyword_search(
+                query,
+                knowledge_base_id,
+                child_pool_limit(top_k),
+                metadata_filter=metadata_filter,
+                chunk_levels=("child",),
+                parent_ids=parent_ids,
+            )
+            fused = self._rrf_fusion(vector_results, keyword_results)
+        else:
+            fused = [
+                {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
+                for rank, (chunk, doc, _distance) in enumerate(vector_results)
+            ]
+
+        fallback_vector_results = self._vector_search(
+            query_vector,
+            knowledge_base_id,
+            top_k * 10,
+            metadata_filter=metadata_filter,
+            chunk_levels=(None, "flat"),
+        )
+        if hybrid_search:
+            fallback_keyword_results = self._keyword_search(
+                query,
+                knowledge_base_id,
+                top_k * 10,
+                metadata_filter=metadata_filter,
+                chunk_levels=(None, "flat"),
+            )
+            fallback_fused = self._rrf_fusion(
+                fallback_vector_results,
+                fallback_keyword_results,
+            )
+        else:
+            fallback_fused = [
+                {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
+                for rank, (chunk, doc, _distance) in enumerate(
+                    fallback_vector_results
+                )
+            ]
+        for item in fallback_fused:
+            item["hierarchy_fallback"] = True
+        fused.extend(fallback_fused)
+        return fused
 
     def _chunk_metadata(self, chunk, doc=None) -> dict:
         chunk_metadata = dict(getattr(chunk, "metadata_", None) or {})
