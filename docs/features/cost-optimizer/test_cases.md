@@ -81,6 +81,7 @@ Verified Against: TBD
 - baseline 선택 화면은 `최신 실행 로그로 비교하기`와 `이전 실행 로그 선택해서 비교하기`를 제공한다.
 - 최신 실행 로그가 없으면 최신 선택 CTA는 사용할 수 없고 로그 없음 안내가 표시된다.
 - 이전 실행 로그 picker는 실행 시각, 상태, 모델, 비용, 토큰, 실행 시간, 입력 preview, 출력 preview, trace 존재 여부, downstream 상태를 표시한다.
+- 이전 실행 로그 picker는 input 복원 불가 baseline row도 목록에 표시하되 `비교 불가` 상태로 표시한다.
 - picker 검색은 입력/출력 preview 기준으로 동작한다.
 - picker 필터는 상태, 모델, 날짜 범위를 지원한다.
 - picker 정렬은 최신순, 비용 높은순, 비용 낮은순, 토큰 높은순, 실행 시간 긴순을 지원한다.
@@ -91,12 +92,15 @@ Verified Against: TBD
 - `GET /baselines/latest?status=all`은 실패 로그를 포함해 가장 최근 로그를 반환할 수 있다.
 - `GET /baselines`는 pagination metadata와 baseline row 목록을 반환한다.
 - `GET /baselines`의 `q`, `status`, `model`, `date_from`, `date_to`, `sort` query가 API 계약대로 적용된다.
+- `GET /baselines`는 `workflow_node_runs.id`를 `baseline_id`로 반환한다.
+- input을 복원할 수 없는 baseline row는 `input_available=false`, `compare_available=false`, `unavailable_reason=input_payload_unavailable`을 반환한다.
 - baseline row는 credential 원문, API key, encrypted config를 포함하지 않는다.
 
 ### Scenario Tests
 
 - 사용자가 최신 실행 로그를 선택하면 A baseline이 자동으로 고정되고 A/B compare workspace로 이동한다.
 - 사용자가 이전 로그 picker에서 특정 row를 선택하면 해당 로그가 A baseline으로 고정된다.
+- 사용자가 `비교 불가` baseline row를 선택하면 A/B compare workspace로 이동하지 않고 input 복원 불가 안내를 본다.
 
 ## FR-003 B 후보 설정 입력
 

@@ -58,6 +58,25 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | `workflow_id` | UUID string | Cost Optimizer를 실행할 workflow id |
 | `node_id` | string | target LLM node id |
 
+## Baseline Data Sources
+
+관련 FR: FR-002, FR-004
+
+Baseline의 canonical id는 `workflow_node_runs.id`다.
+
+Baseline API는 다음 저장소를 조합해 row와 detail을 만든다.
+
+| Source | Usage |
+| --- | --- |
+| `workflow_node_runs` | baseline id, target node id/type, node status, node-level latency, node trace metadata |
+| `workflow_runs` | workflow run id, 전체 run 상태, 실행 시각, workflow/app/deployment context |
+| `llm_usage_logs` | model, prompt tokens, completion tokens, total tokens, cost, LLM latency |
+| `trace_payloads` | redaction-safe input/output preview, input 복원 가능 여부, trace 존재 여부 |
+
+`workflow_runs.id`는 baseline의 전체 실행 컨텍스트이고, `workflow_node_runs.id`가 사용자가 선택하는 baseline 식별자다.
+
+`trace_payloads` retention, redaction, 저장 누락으로 target LLM node input을 복원할 수 없는 경우에도 baseline row는 목록에 포함한다. 다만 response는 `input_available=false`, `compare_available=false`를 반환하고, compare API는 해당 baseline으로 B 후보 실행을 시작하지 않는다.
+
 ## Common Response Fragments
 
 ### DownstreamCompatibility
@@ -182,12 +201,20 @@ Response:
 {
   "baseline": {
     "baseline_id": "workflow-node-run-id",
+    "baseline_source": "workflow_node_run",
+    "source_workflow_node_run_id": "workflow-node-run-id",
     "workflow_run_id": "workflow-run-id",
     "workflow_id": "workflow-id",
     "node_id": "llm-triage",
     "run_started_at": "2026-07-04T00:00:00Z",
     "node_status": "success",
     "model": "gpt-4.1",
+    "input_available": true,
+    "output_available": true,
+    "usage_available": true,
+    "trace_available": true,
+    "compare_available": true,
+    "unavailable_reason": null,
     "input": {},
     "output": {},
     "usage": {
@@ -243,6 +270,8 @@ Response:
   "items": [
     {
       "baseline_id": "workflow-node-run-id",
+      "baseline_source": "workflow_node_run",
+      "source_workflow_node_run_id": "workflow-node-run-id",
       "workflow_run_id": "workflow-run-id",
       "run_started_at": "2026-07-04T00:00:00Z",
       "workflow_run_status": "success",
@@ -251,6 +280,12 @@ Response:
       "cost": 0.0123,
       "total_tokens": 1440,
       "latency_ms": 2100,
+      "input_available": true,
+      "output_available": true,
+      "usage_available": true,
+      "trace_available": true,
+      "compare_available": true,
+      "unavailable_reason": null,
       "input_preview": "string",
       "output_preview": "string",
       "has_trace": true,
@@ -274,6 +309,8 @@ Response:
 `POST /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare`
 
 A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재실행하지 않는다.
+
+`baseline_id`는 `workflow_node_runs.id`다. 해당 baseline의 target LLM node input을 복원할 수 없으면 API는 B 후보 실행을 시작하지 않고 `400 cost_optimizer.baseline_input_unavailable`을 반환한다.
 
 Request:
 
