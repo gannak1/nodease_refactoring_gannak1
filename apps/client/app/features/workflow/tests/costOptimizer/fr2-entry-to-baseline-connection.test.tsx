@@ -86,6 +86,7 @@ const createLlmNode = (): AppNode =>
     position: { x: 0, y: 0 },
     data: {
       title: 'LLM 비용 비교 대상',
+      provider: 'openai',
       model_id: 'gpt-4.1',
       system_prompt: '너는 고객 응대 담당자다.',
       user_prompt: '고객 문의를 분류해줘.',
@@ -93,7 +94,7 @@ const createLlmNode = (): AppNode =>
       referenced_variables: [],
       parameters: { max_tokens: 800, temperature: 0.2 },
       knowledgeBases: [],
-    } satisfies Partial<LLMNodeData>,
+    } satisfies LLMNodeData,
   }) as AppNode;
 
 const setWorkflowPermission = () => {
