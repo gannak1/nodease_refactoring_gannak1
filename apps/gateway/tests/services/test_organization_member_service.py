@@ -484,6 +484,7 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
     assert response.removed_team_memberships == 1
     assert response.revoked_user_permissions.workflow == 1
     assert response.revoked_user_permissions.llm_credential == 1
+    assert response.revoked_user_permissions.app_creation == 1
     assert target_membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
     assert db.team_memberships == []
     assert db.workflow_permissions == []
