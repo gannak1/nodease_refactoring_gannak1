@@ -1,12 +1,17 @@
 import logging
 import re
 
-from sqlalchemy import bindparam, or_, select
+from sqlalchemy import and_, bindparam, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.utils.encryption import encryption_manager
-from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    DocumentVersion,
+    KnowledgeBase,
+)
 from apps.shared.db.models.llm import LLMCredential, LLMModel, LLMProvider
 from apps.shared.schemas.rag import ChunkPreview, RAGResponse
 from apps.shared.services.rag_filters import (
@@ -190,7 +195,10 @@ class RetrievalService:
         distance_col = DocumentChunk.embedding.cosine_distance(query_vector).label(
             "distance"
         )
-        conditions = [Document.knowledge_base_id == knowledge_base_id]
+        conditions = [
+            Document.knowledge_base_id == knowledge_base_id,
+            self._retrieval_visible_chunk_condition(),
+        ]
         conditions.extend(
             build_sqlalchemy_filter_conditions(
                 metadata_filter,
@@ -203,6 +211,8 @@ class RetrievalService:
         stmt = (
             select(DocumentChunk, Document, distance_col)
             .join(Document)
+            .join(KnowledgeBase, KnowledgeBase.id == DocumentChunk.knowledge_base_id)
+            .outerjoin(DocumentVersion, DocumentChunk.document_version_id == DocumentVersion.id)
             .where(*conditions)
             .order_by(distance_col)
             .limit(top_k)
@@ -251,7 +261,16 @@ class RetrievalService:
                    ) as rank
             FROM document_chunks dc
             JOIN documents d ON dc.document_id = d.id
+            JOIN knowledge_bases kb ON dc.knowledge_base_id = kb.id
+            LEFT JOIN document_versions dv ON dc.document_version_id = dv.id
             WHERE dc.knowledge_base_id = :kb_id
+              AND (
+                  dc.document_version_id IS NULL
+                  OR (
+                      kb.active_document_version_id = dc.document_version_id
+                      AND dv.status = 'ready'
+                  )
+              )
               AND to_tsvector('english', dc.content || ' ' || COALESCE(CAST(dc.metadata->'keywords' AS TEXT), '')) @@ websearch_to_tsquery('english', :query)
               {filter_sql}
               {level_sql}
@@ -266,6 +285,17 @@ class RetrievalService:
         params.update(filter_clause.params)
         params.update(level_params)
         return self.db.execute(stmt, params).fetchall()
+
+    @staticmethod
+    def _retrieval_visible_chunk_condition():
+        return or_(
+            DocumentChunk.document_version_id.is_(None),
+            and_(
+                KnowledgeBase.active_document_version_id
+                == DocumentChunk.document_version_id,
+                DocumentVersion.status == "ready",
+            ),
+        )
 
     def _chunk_level_conditions(
         self, chunk_levels: tuple[str | None, ...] | None
@@ -313,15 +343,36 @@ class RetrievalService:
 
     def _has_valid_hierarchy(self, knowledge_base_id: str) -> bool:
         parent = aliased(DocumentChunk)
+        child_version = aliased(DocumentVersion)
+        parent_version = aliased(DocumentVersion)
         return (
             self.db.query(DocumentChunk.id)
             .join(parent, DocumentChunk.parent_chunk_id == parent.id)
+            .join(KnowledgeBase, KnowledgeBase.id == DocumentChunk.knowledge_base_id)
+            .outerjoin(child_version, DocumentChunk.document_version_id == child_version.id)
+            .outerjoin(parent_version, parent.document_version_id == parent_version.id)
             .filter(
                 DocumentChunk.knowledge_base_id == knowledge_base_id,
                 DocumentChunk.chunk_level == "child",
                 parent.chunk_level == "parent",
                 DocumentChunk.document_id == parent.document_id,
                 DocumentChunk.knowledge_base_id == parent.knowledge_base_id,
+                or_(
+                    DocumentChunk.document_version_id.is_(None),
+                    and_(
+                        KnowledgeBase.active_document_version_id
+                        == DocumentChunk.document_version_id,
+                        child_version.status == "ready",
+                    ),
+                ),
+                or_(
+                    parent.document_version_id.is_(None),
+                    and_(
+                        KnowledgeBase.active_document_version_id
+                        == parent.document_version_id,
+                        parent_version.status == "ready",
+                    ),
+                ),
             )
             .first()
             is not None
