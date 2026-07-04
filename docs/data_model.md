@@ -599,7 +599,10 @@ model catalog와 가격 정보.
 
 #### `llm_credentials`
 
-사용자/조직 credential. 원문은 암호화 저장한다.
+Organization-scoped provider credential. 정책상 개인 사용자 credential은 허용하지 않으며, credential 등록은 organization manager만 수행할 수 있다. 현재 schema의 `user_id`(필수)는 등록 행위자 또는 호환 owner reference이고, credential scope의 기준은 `organization_id`다. 원문은 암호화 저장을 목표로 한다.
+
+- 알려진 차이 (현재 구현): `organization_id`는 nullable이지만 active credential은 organization-scoped resource로 해석해야 한다. 신규 등록 경로는 organization manager 권한을 요구하고 organization scope를 채워야 한다.
+- 알려진 차이 (현재 구현): `encrypted_config`는 이름과 달리 config JSON(`apiKey`, `baseUrl`)을 암호화 없이 평문으로 저장하고, 조회 경로도 `json.loads`로 직접 읽는다 (`apps/gateway/services/llm_service.py`의 생성/조회 흐름). 암호화 저장 적용은 별도 작업이며, 그 전까지는 이 컬럼 값의 응답/로그/문서 노출 금지 규칙이 유일한 방어선이다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
