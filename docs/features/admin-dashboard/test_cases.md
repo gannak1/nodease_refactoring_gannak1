@@ -55,7 +55,9 @@ Verified Against: TBD
   - Given audit `auditor`, When audit reader 검사를 수행하면, Then 통과한다.
   - Given audit `raw_auditor`, When audit reader 검사를 수행하면, Then 통과한다.
   - Given audit auth_state가 없고 organization member인 사용자, When audit reader 검사를 수행하면, Then `403` 예외와 `permission.denied` audit 기록 요청을 만든다.
-  - Given inactive/suspended/removed membership, When audit reader 검사를 수행하면, Then fail-closed로 `403`이다.
+  - Given inactive/suspended/removed membership 또는 비활성화된 team의 audit grant, When audit reader 검사를 수행하면, Then fail-closed로 `403`이다.
+  - Given 사용자가 여러 team audit grant를 갖고 있고 첫 row는 `none`, 다른 row는 `auditor` 이상, When audit reader 검사를 수행하면, Then row 순서와 무관하게 통과한다.
+  - Given audit reader 권한이 없는 같은 organization scope 사용자, When audit reader 검사를 수행하면, Then `permission.denied` audit은 `resource_type="audit"`, `resource_id=<organization_id>`, `organization_id=<organization_id>`, `permission_action="read"`를 포함하고 전역 `auth.permission_denied` 중복 기록은 억제된다.
 - `require_org_manager(db, user, organization_id)`
   - Given organization owner/manager, When manager 검사를 수행하면, Then 통과한다.
   - Given audit `auditor` 또는 `raw_auditor`만 가진 사용자, When manager 검사를 수행하면, Then `403`이다.
