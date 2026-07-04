@@ -32,6 +32,7 @@ import { organizationApi } from '@/app/features/organization/api/organizationApi
 import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
 import { MemberStateBadge } from '@/app/features/organization/components/MemberStateBadge';
 import { OrganizationAuthBadge } from '@/app/features/organization/components/OrganizationAuthBadge';
+import { getMemberActionLocks } from '@/app/features/organization/utils/memberActionLocks';
 import type {
   MembershipState,
   OrganizationAuthState,
@@ -1621,13 +1622,12 @@ function MemberActions({
   if (member.membership_state === 'removed') {
     return <span className="text-xs text-slate-400">제거됨</span>;
   }
-  const blockedManagerAction = isSelfUnknown || isSelf || isLastActiveManager;
-  const blockTitle = isSelfUnknown
-    ? '현재 사용자 확인 전에는 위험 작업을 할 수 없습니다.'
-    : isSelf
-      ? '자기 자신에게는 이 작업을 할 수 없습니다.'
-      : '마지막 관리자는 변경할 수 없습니다.';
-  const blockedAction = actionPending || isSelfUnknown;
+  const actionLocks = getMemberActionLocks({
+    isSelf,
+    isSelfUnknown,
+    isLastActiveManager,
+    actionPending,
+  });
 
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -1640,8 +1640,8 @@ function MemberActions({
               '멤버를 정지했습니다.',
             )
           }
-          disabled={blockedAction}
-          title={isSelfUnknown ? blockTitle : undefined}
+          disabled={actionLocks.statusAction.disabled}
+          title={actionLocks.statusAction.title}
           className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           정지
@@ -1656,8 +1656,8 @@ function MemberActions({
               '멤버를 재활성화했습니다.',
             )
           }
-          disabled={blockedAction}
-          title={isSelfUnknown ? blockTitle : undefined}
+          disabled={actionLocks.statusAction.disabled}
+          title={actionLocks.statusAction.title}
           className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           재활성화
@@ -1673,8 +1673,8 @@ function MemberActions({
                 '관리자로 승격했습니다.',
               )
             }
-            disabled={blockedAction}
-            title={isSelfUnknown ? blockTitle : undefined}
+            disabled={actionLocks.memberUpdateAction.disabled}
+            title={actionLocks.memberUpdateAction.title}
             className="rounded-md border border-blue-200 px-2 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             관리자 승격
@@ -1690,8 +1690,8 @@ function MemberActions({
                 '멤버로 강등했습니다.',
               )
             }
-            disabled={actionPending || blockedManagerAction}
-            title={blockedManagerAction ? blockTitle : undefined}
+            disabled={actionLocks.managerOrRemoveAction.disabled}
+            title={actionLocks.managerOrRemoveAction.title}
             className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             멤버로 강등
@@ -1699,8 +1699,8 @@ function MemberActions({
         )}
       <button
         onClick={() => onRemoveMember(member)}
-        disabled={actionPending || blockedManagerAction}
-        title={blockedManagerAction ? blockTitle : undefined}
+        disabled={actionLocks.managerOrRemoveAction.disabled}
+        title={actionLocks.managerOrRemoveAction.title}
         className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
       >
         제거

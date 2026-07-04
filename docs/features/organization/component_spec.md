@@ -101,7 +101,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 - 제한:
   - removed member row는 action 대신 `제거됨`을 표시한다.
   - current user를 알 수 없으면 member action button을 비활성화한다.
-  - 자기 자신이거나 마지막 active manager인 row는 `강등`, `제거` button을 비활성화한다.
+  - 자기 자신이거나 마지막 active manager인 row는 `정지`, `강등`, `제거` button을 비활성화한다.
 
 ### MemberActions
 
