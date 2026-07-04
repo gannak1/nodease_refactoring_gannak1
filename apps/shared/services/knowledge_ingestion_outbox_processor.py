@@ -103,6 +103,12 @@ class KnowledgeIngestionOutboxProcessor:
         owner_token: str,
         limit: int = DEFAULT_OUTBOX_PROCESS_LIMIT,
     ) -> KnowledgeOutboxProcessResult:
+        """Due event를 처리하고 상태만 변경한다.
+
+        이 메서드는 transaction을 commit하지 않는다. Celery task나 호출자가
+        성공 시 commit, 실패 시 rollback을 담당해야 outbox 처리와 외부 worker
+        lifecycle을 한 경계에서 제어할 수 있다.
+        """
         recovered_count = self.outbox.recover_stale_leases()
         events = self.outbox.lease_due_events(owner_token=owner_token, limit=limit)
         processed_count = 0

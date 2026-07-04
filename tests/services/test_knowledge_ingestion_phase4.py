@@ -546,6 +546,76 @@ def test_outbox_processor_dispatches_unsupported_events_to_retry():
     assert event.safe_reason_code == "outbox.unsupported_event_type"
 
 
+def test_outbox_processor_process_due_events_leaves_commit_to_caller():
+    class CommitCountingDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self.commit_count = 0
+
+        def commit(self):
+            self.commit_count += 1
+
+    class FakeOutbox:
+        def recover_stale_leases(self):
+            return 0
+
+        def lease_due_events(self, *, owner_token, limit):
+            return [SimpleNamespace(event_type="unknown.event")]
+
+        def mark_retry_or_dead_letter(self, event, *, safe_reason_code):
+            event.safe_reason_code = safe_reason_code
+
+    db = CommitCountingDb()
+    processor = KnowledgeIngestionOutboxProcessor(db)
+    processor.outbox = FakeOutbox()
+
+    result = processor.process_due_events(owner_token="worker", limit=1)
+
+    assert result.processed_count == 1
+    assert db.commit_count == 0
+
+
+def test_update_status_can_clear_active_fencing_hash_on_completed_paths():
+    document_id = uuid.uuid4()
+    document = SimpleNamespace(
+        status="indexing",
+        error_message=None,
+        updated_at=None,
+        meta_info={
+            ACTIVE_FENCING_TOKEN_HASH_KEY: "old-hash",
+            "keep": "value",
+        },
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == document_id
+            return document
+
+    class FakeStatusDb:
+        commit_count = 0
+
+        def query(self, model):
+            assert model is Document
+            return FakeDocumentQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    service = IngestionOrchestrator(FakeStatusDb())
+
+    service._update_status(
+        document_id,
+        "completed",
+        meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
+    )
+
+    assert document.status == "completed"
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY not in document.meta_info
+    assert document.meta_info["keep"] == "value"
+    assert service.db.commit_count == 1
+
+
 def test_content_cursor_advances_only_after_active_ready_version():
     now = datetime(2026, 7, 4, tzinfo=timezone.utc)
     kb = SimpleNamespace(id=KB_ID, active_document_version_id=NEW_VERSION_ID)

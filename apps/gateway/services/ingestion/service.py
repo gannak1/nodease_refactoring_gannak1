@@ -193,6 +193,7 @@ class IngestionOrchestrator:
                         document_id,
                         "completed",
                         error_message="추출 가능한 콘텐츠가 없습니다.",
+                        meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
                     )
                     return
 
@@ -202,7 +203,11 @@ class IngestionOrchestrator:
                     chunking_result=chunking_result,
                     initial_status=initial_status,
                 ):
-                    self._update_status(document_id, "completed")
+                    self._update_status(
+                        document_id,
+                        "completed",
+                        meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
+                    )
                     return
 
                 document_version, failed_version_context = (
@@ -216,7 +221,7 @@ class IngestionOrchestrator:
                     # organization_id가 없는 legacy KB는 기존 처리 상태 commit 경로를 유지한다.
                     doc.content_hash = chunking_result.content_hash
 
-                self._save_to_vector_db(
+                self._persist_chunks_with_embeddings(
                     doc,
                     chunking_result.chunks,
                     chunking_mode=chunking_result.chunking_mode,
@@ -874,7 +879,7 @@ class IngestionOrchestrator:
                 refined.append({"content": split, "metadata": new_meta})
         return refined
 
-    def _save_to_vector_db(
+    def _persist_chunks_with_embeddings(
         self,
         doc: Document,
         chunks: List[Dict[str, Any]],
@@ -883,6 +888,7 @@ class IngestionOrchestrator:
         chunking_fingerprint: str | None = None,
         document_version: DocumentVersion | None = None,
     ):
+        """Chunk embedding 생성, 암호화, versioned chunk 저장을 한 ingestion boundary에서 처리한다."""
         import tiktoken
         from services.llm_service import LLMService
         from utils.encryption import encryption_manager
