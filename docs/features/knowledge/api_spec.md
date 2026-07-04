@@ -50,6 +50,8 @@ Response는 safe candidate list와 summary만 포함한다. 각 candidate는 `ca
 
 Explicit KB mode는 알려진 `knowledge_base_id`를 입력받는다. 이 직접 모드에서는 collection route permission을 요구하지 않을 수 있지만, KB helper, source ACL/requester authorization, metadata filter, hierarchy mode, final evidence policy는 항상 적용한다.
 
+MBA-105 standalone `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream`은 `evidence_sufficiency_policy`를 `minimum_evidence` 기본값으로 평가한다. Evidence가 없으면 LLM을 호출하지 않고 safe no-result로 닫으며, evidence score 또는 strict citation 기준이 부족하면 safe insufficient-evidence 응답으로 닫는다. 이 응답은 hidden KB id/name, 권한 없는 문서명, exact denied count를 포함하지 않는다.
+
 필수 목표 field:
 
 | 필드 | 규칙 |
@@ -60,7 +62,7 @@ Explicit KB mode는 알려진 `knowledge_base_id`를 입력받는다. 이 직접
 | `metadata_filter` | Permission/source ACL gate 이후 허용된 candidate 안에서만 적용 |
 | `hierarchy_mode` | 현재 metadata-aware/hierarchical RAG 계약을 따른다 |
 | `query_rewrite_mode` | 선택 목표 옵션. 기본값 `off`; deterministic/template rewrite는 opt-in. Rewrite는 접근 범위를 넓히지 않는다 |
-| `evidence_sufficiency_policy` | 선택 목표 옵션. 기본값 `minimum_evidence`; legal/policy/high-risk flow는 `strict_citation` 후보 |
+| `evidence_sufficiency_policy` | MBA-105 standalone Agent answer에서 기본값 `minimum_evidence`로 적용한다. `strict_citation`은 더 엄격한 citation 개수 검증 후보이며, `off`는 운영 runtime에서 허용하지 않는다 |
 | `source_tier_policy` | 선택 목표 옵션. Source-of-Truth Tier를 authorized evidence 안에서 ranking/tie-break/conflict hint로만 사용한다 |
 
 ### Auto Collection Answer

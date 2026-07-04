@@ -1123,13 +1123,94 @@ def test_answer_no_retrieval_results_completes_without_llm_call_or_usage_log(
     assert response.status == "completed"
     assert response.citations == []
     assert response.retrieval_summary.retrieved_chunk_count == 0
+    assert response.retrieval_summary.evidence_sufficient is False
+    assert response.retrieval_summary.insufficiency_reason == "no_evidence"
     assert response.usage_summary.total_tokens == 0
     assert "credential_id" not in response.usage_summary.model_dump(mode="json")
     assert run.status == "completed"
-    assert run.answer_summary["completion_status"] == "completed"
+    assert run.answer_summary["completion_status"] == "no_result"
     assert run.usage_summary["credential_id"] == str(execution.credential.id)
     assert run.usage_summary["model_id"] == str(execution.model.id)
     assert retrieval_audits == [True]
+
+
+def test_answer_low_score_evidence_does_not_call_llm(monkeypatch):
+    service = _service()
+    payload = _agent_payload(correlation_id="corr-low-score")
+    run = _run()
+    run.correlation_id = payload.correlation_id
+    execution = _execution(service, payload=payload, run=run)
+    chunk = ChunkPreview(
+        chunk_id=uuid.uuid4(),
+        content="weak evidence",
+        document_id=uuid.uuid4(),
+        filename="policy.md",
+        similarity_score=0.01,
+        score=0.01,
+        rank=1,
+        metadata_summary={"classification": "internal"},
+    )
+
+    async def fake_retrieve(*args, **kwargs):
+        return [chunk]
+
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(
+        service.generation,
+        "generate",
+        lambda *args, **kwargs: pytest.fail("insufficient evidence must not call LLM"),
+    )
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+
+    response = asyncio.run(service.answer(payload))
+
+    assert response.answer == "확인된 문서 기준으로는 답변 근거가 부족합니다."
+    assert response.retrieval_summary.evidence_sufficient is False
+    assert response.retrieval_summary.insufficiency_reason == "low_score"
+    assert run.answer_summary["completion_status"] == "insufficient_evidence"
+    assert response.usage_summary.total_tokens == 0
+
+
+def test_answer_strict_citation_requires_multiple_citations(monkeypatch):
+    service = _service()
+    payload = _agent_payload(
+        correlation_id="corr-strict",
+        evidence_sufficiency_policy="strict_citation",
+    )
+    run = _run()
+    run.correlation_id = payload.correlation_id
+    execution = _execution(service, payload=payload, run=run)
+    chunk = ChunkPreview(
+        chunk_id=uuid.uuid4(),
+        content="single evidence",
+        document_id=uuid.uuid4(),
+        filename="policy.md",
+        similarity_score=0.9,
+        score=0.9,
+        rank=1,
+        metadata_summary={"classification": "internal"},
+    )
+
+    async def fake_retrieve(*args, **kwargs):
+        return [chunk]
+
+    monkeypatch.setattr(service, "prepare_execution", lambda *_: execution)
+    monkeypatch.setattr(service, "_retrieve_chunks", fake_retrieve)
+    monkeypatch.setattr(
+        service.generation,
+        "generate",
+        lambda *args, **kwargs: pytest.fail("strict citation failure must not call LLM"),
+    )
+    monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
+
+    response = asyncio.run(service.answer(payload))
+
+    assert response.retrieval_summary.evidence_sufficient is False
+    assert response.retrieval_summary.insufficiency_reason == "insufficient_citation"
+    assert run.answer_summary["completion_status"] == "insufficient_evidence"
 
 
 def test_answer_retrieval_exception_returns_sanitized_generation_failure(
@@ -1392,7 +1473,7 @@ def test_answer_success_stores_redaction_safe_summaries(monkeypatch):
         similarity_score=0.92,
         score=0.92,
         rank=1,
-        metadata_summary={"classification": "internal"},
+        metadata_summary={"classification": "internal", "source_tier": "company_policy"},
         hierarchy_path=["Policy"],
     )
     retrieval_audits = []
@@ -1429,6 +1510,10 @@ def test_answer_success_stores_redaction_safe_summaries(monkeypatch):
 
     assert response.answer == "요약 답변"
     assert response.citations[0].content_preview == "원문 evidence"
+    assert response.retrieval_summary.source_tier_used == {
+        "tiers": ["company_policy"],
+        "tier_count": 1,
+    }
     assert run.status == "completed"
     assert run.citation_summary == [
         response.citations[0].model_dump(mode="json", exclude={"content_preview"})

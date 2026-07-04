@@ -90,6 +90,20 @@ def test_chunk_metadata_interprets_null_chunk_level_as_flat():
     assert metadata["chunk_level"] == "flat"
 
 
+def test_chunk_metadata_includes_safe_source_tier_from_document_version():
+    service = RetrievalService(db=None, user_id=None)
+    chunk = SimpleNamespace(
+        metadata_={},
+        chunk_level="flat",
+        document_version=SimpleNamespace(source_tier="company_policy"),
+    )
+
+    metadata = service._chunk_metadata(chunk)
+
+    assert metadata["source_tier"] == "company_policy"
+    assert service._metadata_summary(metadata)["source_tier"] == "company_policy"
+
+
 def test_metadata_summary_preserves_hierarchy_fallback_flag():
     service = RetrievalService(db=None, user_id=None)
 

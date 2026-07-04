@@ -255,7 +255,7 @@ class RetrievalService:
             SELECT dc.id, dc.content, dc.metadata, dc.document_id, d.filename,
                    d.meta_info, d.source_type,
                    dc.parent_chunk_id, dc.chunk_level, dc.section_path, dc.heading,
-                   dc.token_count,
+                   dc.token_count, dv.source_tier,
                    ts_rank(
                        to_tsvector('english', dc.content || ' ' || COALESCE(CAST(dc.metadata->'keywords' AS TEXT), '')),
                        websearch_to_tsquery('english', :query)
@@ -432,6 +432,7 @@ class RetrievalService:
                         section_path,
                         heading,
                         token_count,
+                        source_tier,
                     ):
                         self.id = c_id
                         self.content = content
@@ -441,6 +442,7 @@ class RetrievalService:
                         self.section_path = section_path
                         self.heading = heading
                         self.token_count = token_count
+                        self.source_tier = source_tier
 
                 class DummyDoc:
                     def __init__(self, d_id, filename, meta_info, source_type):
@@ -460,6 +462,7 @@ class RetrievalService:
                     row[9],
                     row[10],
                     row[11],
+                    row[12],
                 )
                 doc = DummyDoc(row[3], row[4], row[5], row[6])
                 fused_scores[doc_id] = {
@@ -933,6 +936,12 @@ class RetrievalService:
             metadata["token_count"] = token_count
         if "chunk_level" not in metadata:
             metadata["chunk_level"] = getattr(chunk, "chunk_level", None) or "flat"
+        source_tier = getattr(chunk, "source_tier", None)
+        if source_tier is None:
+            document_version = getattr(chunk, "document_version", None)
+            source_tier = getattr(document_version, "source_tier", None)
+        if source_tier and "source_tier" not in metadata:
+            metadata["source_tier"] = str(source_tier)
         section_path = getattr(chunk, "section_path", None)
         if section_path is not None and "section_path" not in metadata:
             metadata["section_path"] = section_path
@@ -963,6 +972,7 @@ class RetrievalService:
             "section_path",
             "heading",
             "hierarchy_fallback",
+            "source_tier",
         }
         return {key: metadata[key] for key in allowed_keys if key in metadata}
 
