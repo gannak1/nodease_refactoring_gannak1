@@ -308,6 +308,13 @@ downstream 호환성 상태가 `주의 필요` 또는 `검증 불가`인 경우,
 
 비용 최적화 기능 자체의 비용이 숨겨지면 안 된다.
 
+비교 실행은 다음 두 저장 단위로 추적한다.
+
+- `cost_optimizer_experiments`: 하나의 A/B 테스트 세션을 저장한다. 특정 workflow, target LLM node, A baseline `workflow_node_runs.id`, 시작 사용자, 세션 상태를 가진다.
+- `cost_optimizer_candidates`: 하나의 세션 안에서 실행한 B 후보를 저장한다. 후보 설정 snapshot, 후보 실행 run/node run 참조, 비용/토큰/latency, schema 검증 결과, retrieval summary, downstream 호환성 결과, 적용 여부를 가진다.
+
+기존 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `trace_payloads`는 실행/trace/비용의 원천으로 유지한다. Cost Optimizer 전용 테이블은 이 원천 데이터를 대체하지 않고, A baseline과 여러 B 후보 실행을 하나의 비교 흐름으로 묶기 위한 메타데이터를 저장한다.
+
 현재 코드에는 일반 workflow LLM 호출의 token, cost, latency를 `llm_usage_logs`와 workflow run 집계에 기록하는 기반이 있다. 다만 Cost Optimizer 비교 실행을 이 기록 경로와 어떻게 연결할지는 아직 구현해야 한다.
 
 ### FR-010. 권한

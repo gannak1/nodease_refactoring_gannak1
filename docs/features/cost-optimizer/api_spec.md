@@ -79,6 +79,63 @@ Baseline API는 target LLM node의 `workflow_node_runs.status=success`이고 `ou
 
 `trace_payloads` retention, redaction, 저장 누락으로 target LLM node input을 복원할 수 없는 경우에도 baseline row는 목록에 포함한다. 다만 response는 `input_available=false`, `compare_available=false`를 반환하고, compare API는 해당 baseline으로 B 후보 실행을 시작하지 않는다.
 
+## Persistence Model
+
+관련 FR: FR-005, FR-006, FR-008, FR-009
+
+Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로 사용하되, A/B 테스트 세션과 후보 실행을 묶기 위해 전용 테이블을 추가한다.
+
+### `cost_optimizer_experiments`
+
+하나의 A/B 테스트 세션을 나타낸다. 사용자가 특정 workflow의 특정 LLM node에서 baseline을 선택하면 생성된다.
+
+주요 필드:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | UUID | experiment id. compare/apply response의 상위 식별자다. |
+| `organization_id` | UUID | organization scope |
+| `workflow_id` | UUID | target workflow |
+| `app_id` | UUID | workflow가 속한 app |
+| `node_id` | string | target LLM node id |
+| `baseline_node_run_id` | UUID | A baseline의 `workflow_node_runs.id` |
+| `baseline_workflow_run_id` | UUID | A baseline이 속한 `workflow_runs.id` |
+| `baseline_node_options` | JSONB | baseline 실행 시점의 LLM node 설정 snapshot |
+| `status` | string | `draft`, `running`, `completed`, `applied`, `failed`, `archived` |
+| `created_by` | UUID | experiment 생성 사용자 |
+| `created_at`, `updated_at` | datetime | 생성/수정 시각 |
+
+### `cost_optimizer_candidates`
+
+하나의 experiment 안에서 실행한 B 후보 하나를 나타낸다. 같은 baseline으로 여러 번 후보를 실행할 수 있으므로 experiment와 candidate는 1:N 관계다.
+
+주요 필드:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | UUID | candidate id |
+| `experiment_id` | UUID | `cost_optimizer_experiments.id` |
+| `name` | string | UI의 테스트명 |
+| `candidate_settings` | JSONB | B 후보 LLM node 설정 snapshot |
+| `candidate_workflow_run_id` | UUID nullable | B 후보 실행으로 생성된 `workflow_runs.id` |
+| `candidate_node_run_id` | UUID nullable | B 후보 target node의 `workflow_node_runs.id` |
+| `usage_summary` | JSONB | model, token, cost, latency summary. 원천은 `llm_usage_logs`다. |
+| `schema_validation` | JSONB | output format/schema 검증 결과 |
+| `retrieval_summary` | JSONB | B 후보 Knowledge/RAG retrieval summary |
+| `downstream_compatibility` | JSONB | downstream 호환성 판정 결과 |
+| `diff_summary` | JSONB | A/B 비용, 토큰, latency, 출력 차이 요약 |
+| `status` | string | `draft`, `running`, `success`, `failed`, `schema_failed` |
+| `is_applied` | boolean | 현재 draft에 적용된 후보 여부 |
+| `applied_at` | datetime nullable | 적용 시각 |
+| `created_at`, `updated_at` | datetime | 생성/수정 시각 |
+
+원천 데이터 관계:
+
+- A baseline의 실행/입출력/비용 원천은 `workflow_node_runs`, `workflow_runs`, `llm_usage_logs`, `trace_payloads`다.
+- B candidate의 실제 실행/입출력/비용 원천도 동일한 기존 테이블이다.
+- `cost_optimizer_experiments`와 `cost_optimizer_candidates`는 원천 로그를 복제하기 위한 테이블이 아니라, baseline과 여러 candidate 실행을 하나의 비교 흐름으로 묶는 메타 저장소다.
+- raw prompt, credential 원문, API key, encrypted config, secret payload는 두 테이블에 저장하지 않는다.
+
 ## Common Response Fragments
 
 ### DownstreamCompatibility
