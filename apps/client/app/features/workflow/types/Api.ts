@@ -60,6 +60,19 @@ export interface WorkflowCompareResponse {
   variants: WorkflowCompareVariant[];
 }
 
+export interface CostOptimizerAvailabilityResponse {
+  available: boolean;
+  reason?: string | null;
+  workflow_id: string;
+  node_id: string;
+  node_type: string;
+  permission: {
+    can_compare: boolean;
+    can_apply: boolean;
+    required_auth_state: string;
+  };
+}
+
 // 로그 관련 타입 (Backend Schemas와 일치)
 export interface WorkflowNodeRun {
   id: string;

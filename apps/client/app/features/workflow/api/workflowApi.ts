@@ -5,6 +5,7 @@ import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
 import {
   WorkflowCreateRequest,
   WorkflowCompareResponse,
+  CostOptimizerAvailabilityResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -214,6 +215,16 @@ export const workflowApi = {
     },
   ): Promise<WorkflowCompareResponse> => {
     const response = await api.post(`/workflows/${workflowId}/compare`, data);
+    return response.data;
+  },
+
+  getCostOptimizerAvailability: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<CostOptimizerAvailabilityResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/availability`,
+    );
     return response.data;
   },
 

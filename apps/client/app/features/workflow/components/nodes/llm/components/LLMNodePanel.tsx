@@ -30,6 +30,7 @@ import {
 } from '@/app/features/workflow/utils/nodeVariablePorts';
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
+import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -649,7 +650,12 @@ export function LLMNodePanel({
         </div>
       )}
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <CostOptimizerEntryAction
+          workflowId={activeWorkflowId}
+          nodeId={nodeId}
+          workflowAccess={workflowAccess}
+        />
         <button
           type="button"
           onClick={(event) => {
