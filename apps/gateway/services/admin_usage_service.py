@@ -13,6 +13,7 @@ from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.schemas.admin_usage import (
+    AdminOrganizationSummaryResponse,
     AdminWorkflowUsageItem,
     AdminWorkflowUsageResponse,
     AdminUsagePeriodResponse,
@@ -108,6 +109,23 @@ class AdminUsageService:
             items=_page_items(sorted_items, page, limit),
         )
 
+    @staticmethod
+    def get_organization_summary(
+        db,
+        organization_id: Any,
+        now: datetime | None = None,
+    ) -> AdminOrganizationSummaryResponse:
+        period = AdminUsageService.resolve_month_period_kst(now or datetime.now(KST))
+        if hasattr(db, "usage_logs"):
+            total_cost = _organization_period_cost_fake(db, organization_id, period)
+        else:
+            total_cost = _organization_period_cost_query(db, organization_id, period)
+        return AdminOrganizationSummaryResponse(
+            month=period.start_at.strftime("%Y-%m"),
+            total_cost=float(total_cost),
+            budget=None,
+        )
+
 
 def _ensure_timezone(value: datetime) -> datetime:
     if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
@@ -129,9 +147,7 @@ def _aggregate_workflow_usage_query(
         func.sum(LLMUsageLog.completion_tokens), 0
     ).label("completion_tokens")
     call_count = func.count(LLMUsageLog.id).label("call_count")
-    total_cost = func.coalesce(
-        func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
-    ).label("total_cost")
+    total_cost = _total_cost_sum().label("total_cost")
 
     query = (
         db.query(
@@ -148,8 +164,7 @@ def _aggregate_workflow_usage_query(
             LLMUsageLog.organization_id == organization_id,
             Workflow.organization_id == organization_id,
             App.organization_id == organization_id,
-            LLMUsageLog.created_at >= period.start_at,
-            LLMUsageLog.created_at < period.end_at,
+            *_usage_in_period_conditions(period),
         )
         .group_by(LLMUsageLog.workflow_id, App.name)
     )
@@ -167,6 +182,49 @@ def _aggregate_workflow_usage_query(
             end_at=period.end_at,
         ),
         items=[_usage_item_from_row(row) for row in rows],
+    )
+
+
+def _total_cost_sum():
+    return func.coalesce(func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0)
+
+
+def _usage_in_period_conditions(period: AdminUsagePeriod):
+    return (
+        LLMUsageLog.created_at >= period.start_at,
+        LLMUsageLog.created_at < period.end_at,
+    )
+
+
+def _organization_period_cost_query(
+    db,
+    organization_id: Any,
+    period: AdminUsagePeriod,
+) -> Decimal:
+    total = (
+        db.query(_total_cost_sum())
+        .filter(
+            LLMUsageLog.organization_id == organization_id,
+            *_usage_in_period_conditions(period),
+        )
+        .scalar()
+    )
+    return AdminUsageService.coalesce_cost(total)
+
+
+def _organization_period_cost_fake(
+    db,
+    organization_id: Any,
+    period: AdminUsagePeriod,
+) -> Decimal:
+    return sum(
+        (
+            AdminUsageService.coalesce_cost(usage.total_cost)
+            for usage in db.usage_logs
+            if usage.organization_id == organization_id
+            and period.start_at <= usage.created_at < period.end_at
+        ),
+        Decimal("0"),
     )
 
 

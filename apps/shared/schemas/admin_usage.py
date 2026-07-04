@@ -24,3 +24,10 @@ class AdminWorkflowUsageResponse(BaseModel):
     total: int
     period: AdminUsagePeriodResponse
     items: list[AdminWorkflowUsageItem]
+
+
+class AdminOrganizationSummaryResponse(BaseModel):
+    month: str
+    total_cost: float
+    # 예산 관리 feature(PRD FR-051) 확정 전에는 budget 블록을 null로 반환한다.
+    budget: None = None

@@ -16,7 +16,10 @@ from apps.gateway.services.permission_request_service import PermissionRequestSe
 from apps.shared.db.models.audit_log import AuditStatus
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
-from apps.shared.schemas.admin_usage import AdminWorkflowUsageResponse
+from apps.shared.schemas.admin_usage import (
+    AdminOrganizationSummaryResponse,
+    AdminWorkflowUsageResponse,
+)
 from apps.shared.schemas.audit import AuditLogDetailResponse, AuditLogListResponse
 from apps.shared.schemas.permission_request import (
     PermissionRequestListResponse,
@@ -166,6 +169,22 @@ def list_workflow_usage(
         period=period,
         page=page,
         limit=limit,
+    )
+
+
+@router.get("/summary", response_model=AdminOrganizationSummaryResponse)
+def get_organization_summary(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """조직 월간 비용/예산 요약 (FR-015)."""
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    return AdminUsageService.get_organization_summary(
+        db, organization_id=organization_id
     )
 
 
