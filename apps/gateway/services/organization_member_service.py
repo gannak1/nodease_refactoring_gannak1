@@ -288,17 +288,15 @@ def _guard_last_manager(
 
 def _cleanup_counts(
     removed_team_memberships: int,
-    revoked_workflow_permissions: int,
-    revoked_llm_permissions: int,
-    revoked_app_creation_permissions: int = 0,
+    revoked_user_permissions: RevokedUserPermissionCounts,
 ) -> dict[str, Any]:
     return {
         "team_memberships": removed_team_memberships,
-        "user_workflow_permissions": revoked_workflow_permissions,
-        "user_llm_permissions": revoked_llm_permissions,
-        "user_app_creation_permissions": revoked_app_creation_permissions,
-        "user_knowledge_permissions": 0,
-        "user_audit_permissions": 0,
+        "user_workflow_permissions": revoked_user_permissions.workflow,
+        "user_llm_permissions": revoked_user_permissions.llm_credential,
+        "user_app_creation_permissions": revoked_user_permissions.app_creation,
+        "user_knowledge_permissions": revoked_user_permissions.knowledge_base,
+        "user_audit_permissions": revoked_user_permissions.audit,
     }
 
 
@@ -634,12 +632,14 @@ class OrganizationMemberService:
         membership.membership_state = ORGANIZATION_MEMBERSHIP_REMOVED
         membership.removed_at = _now()
 
-        cleanup = _cleanup_counts(
-            removed_team_memberships,
-            revoked_workflow_permissions,
-            revoked_llm_permissions,
-            revoked_app_creation_permissions,
+        revoked_user_permissions = RevokedUserPermissionCounts(
+            workflow=revoked_workflow_permissions,
+            llm_credential=revoked_llm_permissions,
+            app_creation=revoked_app_creation_permissions,
+            knowledge_base=0,
+            audit=0,
         )
+        cleanup = _cleanup_counts(removed_team_memberships, revoked_user_permissions)
         _add_audit_log(
             db,
             AuditAction.ORGANIZATION_MEMBER_REMOVE,
@@ -668,13 +668,7 @@ class OrganizationMemberService:
         return OrganizationMemberRemoveResponse(
             status="removed",
             removed_team_memberships=removed_team_memberships,
-            revoked_user_permissions=RevokedUserPermissionCounts(
-                workflow=revoked_workflow_permissions,
-                llm_credential=revoked_llm_permissions,
-                app_creation=revoked_app_creation_permissions,
-                knowledge_base=0,
-                audit=0,
-            ),
+            revoked_user_permissions=revoked_user_permissions,
         )
 
 
