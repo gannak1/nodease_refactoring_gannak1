@@ -46,11 +46,117 @@ Verified Against: TBD
 
 ## Unit Tests
 
-- (FR-012) workflow별 비용/토큰/호출 수 집계가 `llm_usage_logs` 합산과 일치한다. `total_cost` NULL row는 0으로 합산된다.
-- (FR-012, FR-015) KST 월 경계 계산: UTC로 저장된 row가 KST 기준 달력 월로 정확히 분류된다 (월 경계 ±1시간 케이스 포함).
-- (FR-011, FR-012) 기간 필터 경계: `startAt`과 정확히 같은 `occurred_at`/`created_at` 포함, `endAt`과 정확히 같은 값 제외.
-- (FR-015) 예산 사용률 판정이 반올림 전 값 기준으로 90%/100% 경계에서 정확히 동작한다 (예산 feature 확정 후 활성화).
-- 비용 응답 값이 반올림 없이 원본 정밀도를 유지한다 (반올림은 클라이언트 표시 계층 책임).
+단위 테스트는 endpoint/TestClient보다 service/helper method 계약을 우선 검증한다. 아래 class명은 구현 경계의 권장 이름이다. 구현 과정에서 이름이 달라지더라도 동일한 책임 단위가 보존되어야 한다.
+
+### `AdminPermissionGuard`
+
+- `require_audit_reader(db, user, organization_id)`
+  - Given organization owner/manager, When audit reader 검사를 수행하면, Then 통과한다.
+  - Given audit `auditor`, When audit reader 검사를 수행하면, Then 통과한다.
+  - Given audit `raw_auditor`, When audit reader 검사를 수행하면, Then 통과한다.
+  - Given audit auth_state가 없고 organization member인 사용자, When audit reader 검사를 수행하면, Then `403` 예외와 `permission.denied` audit 기록 요청을 만든다.
+  - Given inactive/suspended/removed membership, When audit reader 검사를 수행하면, Then fail-closed로 `403`이다.
+- `require_org_manager(db, user, organization_id)`
+  - Given organization owner/manager, When manager 검사를 수행하면, Then 통과한다.
+  - Given audit `auditor` 또는 `raw_auditor`만 가진 사용자, When manager 검사를 수행하면, Then `403`이다.
+  - Given 일반 active member, When manager 검사를 수행하면, Then `403`이다.
+  - Given invalid `organization_id`, When manager 검사를 수행하면, Then `400` 또는 validation error로 닫힌다.
+- `hide_cross_org_resource(resource_organization_id, requested_organization_id)`
+  - Given 같은 organization id, When scope 검사를 수행하면, Then 통과한다.
+  - Given 다른 organization id, When scope 검사를 수행하면, Then `404 resource.not_found` 예외를 반환한다.
+  - Given resource가 존재하지 않는 경우와 scope 밖 resource인 경우, Then API 계층에서 같은 `404` shape로 매핑된다.
+
+### `AdminAuditLogService`
+
+- `resolve_period(start_at, end_at, default_month=False)`
+  - Given timezone offset이 있는 ISO datetime, When 기간을 해석하면, Then UTC 비교 가능한 aware datetime으로 변환한다.
+  - Given timezone offset 없는 ISO datetime, When 기간을 해석하면, Then KST(Asia/Seoul)로 해석한다.
+  - Given `endAt <= startAt`, When 기간을 해석하면, Then `400`에 매핑 가능한 validation error를 반환한다.
+  - Given 시작/끝이 모두 없는 audit 검색, When 기간을 해석하면, Then 기간 필터를 적용하지 않는다.
+- `build_audit_filters(actor_id, action, target_type, target_id, status, period)`
+  - Given 각 필터 단독 입력, When query filter를 만들면, Then 해당 column 조건만 생성한다.
+  - Given 여러 필터 조합, When query filter를 만들면, Then 조건은 OR가 아니라 AND로 결합된다.
+  - Given canonical action 문자열, When action filter를 만들면, Then 사용자 친화 label이 아니라 raw action 값으로 비교한다.
+  - Given `startAt`과 정확히 같은 `occurred_at`, Then 포함 조건(`>=`)을 만든다.
+  - Given `endAt`과 정확히 같은 `occurred_at`, Then 제외 조건(`<`)을 만든다.
+- `list_audit_logs(db, user, organization_id, filters, page, limit)`
+  - Given 조직 A의 로그와 조직 B의 로그가 섞여 있을 때, When 조직 A로 조회하면, Then 조직 A scope의 row만 반환한다.
+  - Given 여러 row, When 조회하면, Then `occurred_at` 내림차순으로 정렬한다.
+  - Given `page`/`limit`, When 조회하면, Then `{total, items}`에서 `total`은 필터 전체 건수이고 `items`는 해당 page slice다.
+  - Given 결과가 없을 때, When 조회하면, Then `{total: 0, items: []}`를 반환한다.
+- `get_audit_log_detail(db, user, organization_id, audit_log_id)`
+  - Given 같은 조직의 log id, When 상세를 조회하면, Then actor/action/target/status/timestamp와 sanitized metadata를 반환한다.
+  - Given 다른 조직의 log id, When 상세를 조회하면, Then `404`를 반환한다.
+  - Given 존재하지 않는 log id, When 상세를 조회하면, Then 다른 조직 id와 구분되지 않는 `404`를 반환한다.
+- `sanitize_audit_metadata(metadata)`
+  - Given allowlist key(`request_id`, `reason`, `summary`, `organization_id` 등), When sanitize하면, Then 값이 유지된다.
+  - Given `raw_payload`, `payload`, `encrypted_config`, `api_key`, `token`, `secret`, `password`, `authorization` 계열 key, When sanitize하면, Then key 또는 value가 응답에서 제거된다.
+  - Given nested metadata 안에 secret 계열 key가 있을 때, When sanitize하면, Then 중첩 secret도 제거된다.
+  - Given metadata가 `None` 또는 빈 dict, When sanitize하면, Then 빈 dict를 반환한다.
+
+### `AdminUsageService`
+
+- `resolve_month_period_kst(now)`
+  - Given KST 2026-07-15, When 이번 달 기간을 계산하면, Then start=`2026-07-01T00:00:00+09:00`, end=`2026-08-01T00:00:00+09:00`이다.
+  - Given UTC 저장 row `2026-06-30T15:30:00Z`, When 2026년 7월 KST 기간과 비교하면, Then 포함된다.
+  - Given UTC 저장 row `2026-07-31T15:00:00Z`, When 2026년 8월 KST 시작 경계와 비교하면, Then 7월 집계에서는 제외된다.
+- `resolve_period(start_at, end_at, default_month=True)`
+  - Given 기간 미지정, When usage 조회 기간을 해석하면, Then KST 이번 달을 기본값으로 반환한다.
+  - Given offset 없는 `startAt`/`endAt`, When 해석하면, Then KST 기준으로 aware datetime을 만든다.
+  - Given `endAt <= startAt`, When 해석하면, Then validation error를 반환한다.
+- `coalesce_cost(value)`
+  - Given `None`, When 비용을 합산 전 정규화하면, Then `Decimal("0")`을 반환한다.
+  - Given `Decimal("12.345678")`, When 정규화하면, Then 반올림 없이 같은 값을 반환한다.
+- `aggregate_workflow_usage(db, organization_id, period, page, limit)`
+  - Given workflow별 usage row 여러 개, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost가 원천 row 합산과 일치한다.
+  - Given `total_cost`가 `NULL`인 row, When 집계하면, Then 0으로 합산한다.
+  - Given 조직 B의 usage row, When 조직 A로 조회하면, Then 응답에 포함하지 않는다.
+  - Given 집계 결과, When 정렬하면, Then `total_cost` 내림차순이다.
+  - Given 비용 값 `12.345678`, When 응답 모델을 만들면, Then service 응답은 `12.345678` 원본 정밀도를 유지한다.
+  - Given page/limit, When 응답을 만들면, Then `total`은 전체 workflow 집계 건수이고 `items`는 page slice다.
+- `get_organization_summary(db, organization_id, now)`
+  - Given 이번 달 usage row, When summary를 조회하면, Then 조직 월간 `total_cost` 합계를 반환한다.
+  - Given `total_cost`가 `NULL`인 row, When summary를 조회하면, Then 0으로 합산한다.
+  - Given 예산 feature가 미구현/미설정 상태, When summary를 조회하면, Then `budget`은 `None` 또는 생략 가능한 값으로 반환한다.
+- `classify_budget_usage(total_cost, budget_amount)` (예산 feature 확정 후 활성화)
+  - Given 사용률이 89.9999%, When 판정하면, Then 정상이다.
+  - Given 사용률이 90.0000%, When 판정하면, Then 위험이다.
+  - Given 사용률이 100.0000%, When 판정하면, Then 위험이며 초과는 아니다.
+  - Given 사용률이 100.0001%, When 판정하면, Then 초과다.
+  - Given 예산이 없거나 0 이하, When 판정하면, Then 위험/초과 판정 대상에서 제외한다 (비율의 분모 정의는 예산 feature 확정 시 결정 — requirements Open Question).
+
+### `PermissionRequestService`
+
+- `list_requests(db, organization_id, status, page, limit)`
+  - Given status 미지정, When 목록을 조회하면, Then `pending` 신청만 기본 반환한다.
+  - Given `approved` 또는 `rejected` status, When 목록을 조회하면, Then 해당 상태만 반환한다.
+  - Given 조직 A/B 신청이 섞여 있을 때, When 조직 A로 조회하면, Then 조직 A 신청만 반환한다.
+  - Given 여러 신청, When 조회하면, Then `created_at` 내림차순으로 정렬한다.
+  - Given 목록 item을 만들 때, Then 요청자 id/name/email, `requested_permission`, `reason`, `status`, `created_at`, `decided_by`, `decided_at`을 포함한다.
+- `ensure_request_processable(request, organization_id)`
+  - Given pending 신청과 같은 organization id, When 처리 가능성을 확인하면, Then 통과한다.
+  - Given approved/rejected 신청, When 처리 가능성을 확인하면, Then `409`에 매핑 가능한 conflict를 반환한다.
+  - Given 다른 organization id의 신청, When 처리 가능성을 확인하면, Then `404`에 매핑 가능한 not found를 반환한다.
+- `ensure_requester_is_active_member(db, request)`
+  - Given 신청자가 active member, When 승인 전 검사를 수행하면, Then 통과한다.
+  - Given 신청자가 removed/suspended/invited 상태, When 승인 전 검사를 수행하면, Then `409`를 반환한다.
+  - Given 신청자 user가 deactivated 된 상태, When 승인 전 검사를 수행하면, Then `409`를 반환한다.
+- `approve_request(db, request_id, organization_id, decided_by)`
+  - Given pending 신청, When 승인하면, Then 같은 transaction에서 status=`approved`, `decided_by`, `decided_at`을 기록한다.
+  - Given pending 신청, When 승인하면, Then `user_app_creation_permissions` row를 생성한다.
+  - Given 이미 같은 user/org 권한 row가 있는 비정상 pending 신청, When 승인하면, Then `409`를 반환하고 신청 상태, 권한 row, audit은 변하지 않는다. 정상 제출 경로에서는 기존 권한 row 보유자가 pending 신청을 만들 수 없어야 한다.
+  - Given 승인 성공, Then `permission_request.approved`와 `user_app_creation_permission.created` audit 이벤트를 각각 만든다.
+  - Given 권한 row 생성 또는 audit 준비 중 실패, When 승인하면, Then transaction은 rollback되어 신청 상태와 권한 row가 남지 않는다.
+  - Given 동시 approve/reject 경합, When 한 transaction이 먼저 처리하면, Then 나머지는 `409`이고 중복 권한 row가 없다.
+- `reject_request(db, request_id, organization_id, decided_by)`
+  - Given pending 신청, When 거절하면, Then status=`rejected`, `decided_by`, `decided_at`을 기록한다.
+  - Given 거절 성공, Then `permission_request.rejected` audit 이벤트를 만든다.
+  - Given 거절 성공, Then `user_app_creation_permissions` row는 생성하지 않는다.
+  - Given rejected 신청자, When 다시 신청 제출 흐름으로 넘어가면, Then pending 중복 규칙만 없다면 재신청 가능해야 한다.
+- `grant_app_creation_permission(db, request, decided_by)`
+  - Given `requested_permission="app.create"`, When 권한을 부여하면, Then `user_app_creation_permissions`에 organization/user/assigned_by를 기록한다.
+  - Given 지원하지 않는 requested permission, When 권한 부여를 시도하면, Then validation error로 닫는다.
+  - Given organization/user가 invalid UUID, When 권한 부여를 시도하면, Then 권한 row를 생성하지 않는다.
 
 ## API Tests
 
