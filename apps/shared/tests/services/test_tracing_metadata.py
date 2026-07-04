@@ -133,6 +133,19 @@ def test_rag_span_metadata_preserves_evidence_summary_fields_only():
                 "failure_policy": "safe_no_result",
                 "stored_result_count": 20,
                 "retrieved_chunk_summary_truncated": True,
+                "retrieval_strategy": "permission_scoped_hierarchical_hybrid",
+                "rag_mode": "explicit_kb",
+                "authorized_kb_count": 2,
+                "selected_kb_count": 1,
+                "retrieved_chunk_count": 3,
+                "context_token_estimate": 123,
+                "permission_filter_applied": True,
+                "safe_exclusion_summary": {
+                    "operational_failure_count_bucket": "1"
+                },
+                "query_rewrite_applied": False,
+                "query_rewrite_strategy": "off",
+                "source_tier_policy": "tie_break",
                 "hidden_candidate_ids": ["kb-hidden"],
                 "raw_rewritten_query": "raw query",
             }
@@ -147,6 +160,22 @@ def test_rag_span_metadata_preserves_evidence_summary_fields_only():
     assert metadata["rag"]["failure_policy"] == "safe_no_result"
     assert metadata["rag"]["stored_result_count"] == 20
     assert metadata["rag"]["retrieved_chunk_summary_truncated"] is True
+    assert (
+        metadata["rag"]["retrieval_strategy"]
+        == "permission_scoped_hierarchical_hybrid"
+    )
+    assert metadata["rag"]["rag_mode"] == "explicit_kb"
+    assert metadata["rag"]["authorized_kb_count"] == 2
+    assert metadata["rag"]["selected_kb_count"] == 1
+    assert metadata["rag"]["retrieved_chunk_count"] == 3
+    assert metadata["rag"]["context_token_estimate"] == 123
+    assert metadata["rag"]["permission_filter_applied"] is True
+    assert metadata["rag"]["safe_exclusion_summary"] == {
+        "operational_failure_count_bucket": "1"
+    }
+    assert metadata["rag"]["query_rewrite_applied"] is False
+    assert metadata["rag"]["query_rewrite_strategy"] == "off"
+    assert metadata["rag"]["source_tier_policy"] == "tie_break"
     assert "hidden_candidate_ids" not in metadata["rag"]
     assert "raw_rewritten_query" not in metadata["rag"]
 

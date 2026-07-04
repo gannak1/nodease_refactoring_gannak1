@@ -750,6 +750,9 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
                 effective_auth_state="operator",
             )
 
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
             pass
@@ -809,6 +812,10 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
     assert result.evidence_decision.partial_result is True
     assert result.evidence_decision.failed_candidate_count_bucket == "1"
     assert len(result.metadata) == 1
+    assert result.trace_summary["permission_filter_applied"] is True
+    assert result.trace_summary["safe_exclusion_summary"] == {
+        "operational_failure_count_bucket": "1"
+    }
 
 
 def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
@@ -841,6 +848,9 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
                 external_reason_code="allowed",
                 effective_auth_state="operator",
             )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
@@ -907,6 +917,188 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
 
     assert result.context.startswith("[파일: policy.md]")
     assert "공식 정책 근거" in result.context.split("\n\n", 1)[0]
+    assert result.trace_summary["source_tier_policy"] == "tie_break"
+
+
+def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    policy_kb_id = uuid.uuid4()
+    thread_kb_id = uuid.uuid4()
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=policy_kb_id),
+                SimpleNamespace(id=thread_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="operator",
+                )
+                for kb in kbs
+            }
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, knowledge_base_id, **kwargs):
+            if knowledge_base_id == str(thread_kb_id):
+                return [
+                    ChunkPreview(
+                        chunk_id=uuid.uuid4(),
+                        content="대화형 참고 근거",
+                        document_id=uuid.uuid4(),
+                        filename="thread.md",
+                        similarity_score=0.8,
+                        score=0.8,
+                        metadata_summary={"source_tier": "conversation_or_thread"},
+                    )
+                ]
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="공식 정책 근거",
+                    document_id=uuid.uuid4(),
+                    filename="policy.md",
+                    similarity_score=0.8,
+                    score=0.8,
+                    metadata_summary={"source_tier": "company_policy"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        sourceTierPolicy="off",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(thread_kb_id), name="Thread"),
+            KnowledgeBaseRef(id=str(policy_kb_id), name="Policy"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+        },
+    )
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.context.startswith("[파일: thread.md]")
+    assert result.trace_summary["source_tier_policy"] == "off"
+
+
+def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+        ),
+    )
+    kb_ids = [str(uuid.uuid4()) for _ in range(7)]
+    pool_sizes = []
+    search_calls = []
+
+    class FakeJob:
+        def __init__(self, value):
+            self.value = value
+            self.exception = None
+
+        def ready(self):
+            return True
+
+        def kill(self, block=False):
+            return None
+
+    class FakePool:
+        def __init__(self, size):
+            pool_sizes.append(size)
+
+        def spawn(self, fn, **kwargs):
+            return FakeJob(fn(**kwargs))
+
+        def kill(self, block=False):
+            return None
+
+    class FakeGevent:
+        @staticmethod
+        def joinall(jobs, timeout=None):
+            return jobs
+
+    def fake_search(**kwargs):
+        search_calls.append(kwargs["knowledge_base_id"])
+        return [
+            ChunkPreview(
+                chunk_id=uuid.uuid4(),
+                content="근거",
+                document_id=uuid.uuid4(),
+                filename="safe.md",
+                similarity_score=0.9,
+            )
+        ]
+
+    monkeypatch.setattr(
+        node,
+        "_rag_gevent_modules",
+        lambda: (FakeGevent, FakePool),
+    )
+    monkeypatch.setattr(
+        node,
+        "_search_single_rag_kb_with_new_session",
+        fake_search,
+    )
+
+    result = node._run_rag_retrieval_fanout(  # noqa: SLF001
+        query="query",
+        fallback_db_session=object(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        knowledge_base_ids=kb_ids,
+        top_k=3,
+        threshold=0.5,
+    )
+
+    assert pool_sizes == [5]
+    assert search_calls == kb_ids
+    assert result.failed_count == 0
+    assert len(result.results) == len(kb_ids)
 
 
 def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
@@ -937,6 +1129,9 @@ def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
                 external_reason_code="allowed",
                 effective_auth_state="operator",
             )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
@@ -1205,6 +1400,9 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
                     effective_auth_state="none",
                 )
             raise AssertionError(f"unexpected kb: {kb.id}")
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
 
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",

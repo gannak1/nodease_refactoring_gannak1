@@ -415,6 +415,7 @@ def test_builder_candidate_marks_runtime_unavailable_for_intended_subject():
     assert candidate.runtime_availability == "unavailable"
     assert candidate.safe_metadata["runtime_reason_code"] == "permission.denied"
     assert "knowledge_base_id" in candidate.permission.safe_metadata
+    assert runtime_helper.bulk_kb_calls == [[kb.id]]
 
 
 def test_bulk_kb_use_uses_prefetched_context_and_restores_it():

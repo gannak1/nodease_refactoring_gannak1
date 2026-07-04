@@ -24,6 +24,7 @@ class KnowledgeBaseRef(BaseModel):
 
 EvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 RAGFailurePolicy = Literal["safe_no_result", "fail_node"]
+SourceTierPolicy = Literal["tie_break", "off"]
 MAX_RAG_RETRIEVAL_KBS = 20
 MAX_RAG_CHUNKS_PER_KB = 8
 
@@ -62,6 +63,10 @@ class LLMNodeData(BaseNodeData):
     ragFailurePolicy: RAGFailurePolicy = Field(
         default="safe_no_result",
         description="근거 부족 시 LLM 호출을 막고 안전 응답 또는 노드 실패로 닫는 정책",
+    )
+    sourceTierPolicy: SourceTierPolicy = Field(
+        default="tie_break",
+        description="권한 통과 evidence 안에서 source_tier를 동점 정렬 힌트로 사용할지 결정",
     )
 
     def validate(self) -> None:

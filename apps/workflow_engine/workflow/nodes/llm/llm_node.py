@@ -19,7 +19,10 @@ from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
     RAGEvidencePolicy,
 )
-from apps.shared.services.rag_source_tier import chunk_source_tier_priority
+from apps.shared.services.rag_source_tier import (
+    chunk_source_tier_priority,
+    source_tier_tie_break_enabled,
+)
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.utils.prompt_injection_guard import build_untrusted_context_block
 from apps.workflow_engine.services.llm_service import (
@@ -36,6 +39,9 @@ logger = logging.getLogger(__name__)
 _jinja_env = Environment(autoescape=False)
 MEMORY_RUN_LIMIT = 5  # 최근 실행 몇 건을 기억 컨텍스트에 반영할지 결정
 MAX_RAG_TRACE_RETRIEVED_CHUNKS = 20
+MAX_RAG_FANOUT_CONCURRENCY = 5
+RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS = 30.0
+RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 12.0
 SUMMARY_MODEL_PREFS = {
     "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-3.5-turbo"],
     "google": ["gemini-1.5-flash", "gemini-1.5-pro"],
@@ -59,6 +65,14 @@ class WorkflowRAGSearchResult:
     evidence_decision: RAGEvidenceDecision
     should_invoke_llm: bool
     answer_override: Optional[str] = None
+    trace_summary: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class WorkflowRAGFanoutResult:
+    results: List[tuple[str, List[ChunkPreview]]]
+    failed_count: int
+    timeout_count: int = 0
 
 
 def _get_nested_value(data: Any, keys: List[str]) -> Any:
@@ -253,6 +267,7 @@ class LLMNode(Node[LLMNodeData]):
                         "payload": self._rag_retrieval_trace_payload(
                             knowledge_metadata,
                             evidence_decision=knowledge_result.evidence_decision,
+                            runtime_summary=knowledge_result.trace_summary,
                         ),
                         "scope": "span",
                     }
@@ -459,6 +474,7 @@ class LLMNode(Node[LLMNodeData]):
                         "payload": self._rag_retrieval_trace_payload(
                             knowledge_metadata,
                             evidence_decision=knowledge_result.evidence_decision,
+                            runtime_summary=knowledge_result.trace_summary,
                         ),
                         "scope": "span",
                     }
@@ -701,44 +717,37 @@ class LLMNode(Node[LLMNodeData]):
         threshold = self.data.scoreThreshold or 0.5
 
         all_chunks: List[tuple[str, ChunkPreview]] = []
-        failed_retrieval_count = 0
         authorized_kb_ids = self._authorized_runtime_kb_ids(
             db_session,
             user_id=user_id,
             organization_id=organization_uuid,
             knowledge_base_ids=kb_ids,
         )
-        retrieval = RetrievalService(
-            db_session,
-            user_id,
+
+        fanout = self._run_rag_retrieval_fanout(
+            query=query,
+            fallback_db_session=db_session,
+            user_id=user_id,
             organization_id=organization_uuid,
+            knowledge_base_ids=authorized_kb_ids,
+            top_k=top_k,
+            threshold=threshold,
         )
 
-        for kb_id in authorized_kb_ids:
-            # [GEVENT] search_documents_sync 사용
-            try:
-                chunks = retrieval.search_documents_sync(
-                    query,
-                    knowledge_base_id=kb_id,
-                    top_k=top_k,
-                    threshold=threshold,
-                    hierarchy_mode="auto",
-                )
-            except Exception:
-                if self.data.ragFailurePolicy == "fail_node":
-                    raise
-                failed_retrieval_count += 1
-                continue
+        for kb_id, chunks in fanout.results:
             self._record_rag_retrieve_audit(user_id, kb_id, len(chunks))
             for chunk in chunks:
                 all_chunks.append((kb_id, chunk))
 
+        source_tier_policy = getattr(self.data, "sourceTierPolicy", "tie_break")
         # source_tier는 권한을 통과한 evidence 안에서만 동점 정렬 힌트로 사용한다.
         sorted_chunks = sorted(
             all_chunks,
             key=lambda item: (
                 getattr(item[1], "similarity_score", 0),
-                chunk_source_tier_priority(item[1]),
+                chunk_source_tier_priority(item[1])
+                if source_tier_tie_break_enabled(source_tier_policy)
+                else 0,
             ),
             reverse=True,
         )
@@ -753,8 +762,15 @@ class LLMNode(Node[LLMNodeData]):
         )
         evidence_decision = self._rag_decision_with_operational_failures(
             evidence_decision,
-            failed_retrieval_count,
-            successful_candidate_count=len(authorized_kb_ids) - failed_retrieval_count,
+            fanout.failed_count,
+            successful_candidate_count=len(authorized_kb_ids) - fanout.failed_count,
+        )
+        trace_summary = self._rag_runtime_trace_summary(
+            authorized_kb_count=len(authorized_kb_ids),
+            retrieved_chunk_count=len(top_chunks),
+            selected_kb_count=len({kb_id for kb_id, _chunk in top_chunks}),
+            context_chunks=[chunk for _kb_id, chunk in top_chunks],
+            fanout=fanout,
         )
         if not evidence_decision.evidence_sufficient:
             if self.data.ragFailurePolicy == "fail_node":
@@ -765,6 +781,7 @@ class LLMNode(Node[LLMNodeData]):
                 evidence_decision=evidence_decision,
                 should_invoke_llm=False,
                 answer_override=self._rag_safe_no_result_answer(evidence_decision),
+                trace_summary=trace_summary,
             )
 
         # 컨텍스트 조립
@@ -780,7 +797,234 @@ class LLMNode(Node[LLMNodeData]):
             metadata=metadata_list,
             evidence_decision=evidence_decision,
             should_invoke_llm=True,
+            trace_summary=trace_summary,
         )
+
+    def _run_rag_retrieval_fanout(
+        self,
+        *,
+        query: str,
+        fallback_db_session,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        knowledge_base_ids: List[str],
+        top_k: int,
+        threshold: float,
+    ) -> WorkflowRAGFanoutResult:
+        if not knowledge_base_ids:
+            return WorkflowRAGFanoutResult(results=[], failed_count=0)
+
+        gevent_modules = self._rag_gevent_modules()
+        if gevent_modules is None or len(knowledge_base_ids) <= 1:
+            return self._run_rag_retrieval_fanout_sequential(
+                query=query,
+                db_session=fallback_db_session,
+                user_id=user_id,
+                organization_id=organization_id,
+                knowledge_base_ids=knowledge_base_ids,
+                top_k=top_k,
+                threshold=threshold,
+            )
+
+        gevent, pool_cls = gevent_modules
+        pool = pool_cls(size=min(MAX_RAG_FANOUT_CONCURRENCY, len(knowledge_base_ids)))
+        jobs = {
+            pool.spawn(
+                self._search_single_rag_kb_with_new_session,
+                query=query,
+                user_id=user_id,
+                organization_id=organization_id,
+                knowledge_base_id=kb_id,
+                top_k=top_k,
+                threshold=threshold,
+            ): kb_id
+            for kb_id in knowledge_base_ids
+        }
+        gevent.joinall(
+            list(jobs),
+            timeout=RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS,
+        )
+
+        results: List[tuple[str, List[ChunkPreview]]] = []
+        failed_count = 0
+        timeout_count = 0
+        for job, kb_id in jobs.items():
+            if not job.ready():
+                timeout_count += 1
+                failed_count += 1
+                job.kill(block=False)
+                continue
+            if job.exception is not None:
+                if self.data.ragFailurePolicy == "fail_node":
+                    pool.kill(block=False)
+                    raise job.exception
+                failed_count += 1
+                continue
+            results.append((kb_id, job.value or []))
+
+        pool.kill(block=False)
+        return WorkflowRAGFanoutResult(
+            results=results,
+            failed_count=failed_count,
+            timeout_count=timeout_count,
+        )
+
+    def _run_rag_retrieval_fanout_sequential(
+        self,
+        *,
+        query: str,
+        db_session,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        knowledge_base_ids: List[str],
+        top_k: int,
+        threshold: float,
+    ) -> WorkflowRAGFanoutResult:
+        retrieval = RetrievalService(
+            db_session,
+            user_id,
+            organization_id=organization_id,
+        )
+        results: List[tuple[str, List[ChunkPreview]]] = []
+        failed_count = 0
+        for kb_id in knowledge_base_ids:
+            try:
+                chunks = self._search_single_rag_kb(
+                    retrieval,
+                    query=query,
+                    knowledge_base_id=kb_id,
+                    top_k=top_k,
+                    threshold=threshold,
+                )
+            except Exception:
+                if self.data.ragFailurePolicy == "fail_node":
+                    raise
+                failed_count += 1
+                continue
+            results.append((kb_id, chunks))
+        return WorkflowRAGFanoutResult(results=results, failed_count=failed_count)
+
+    def _search_single_rag_kb_with_new_session(
+        self,
+        *,
+        query: str,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        knowledge_base_id: str,
+        top_k: int,
+        threshold: float,
+    ) -> List[ChunkPreview]:
+        session = SessionLocal()
+        try:
+            retrieval = RetrievalService(
+                session,
+                user_id,
+                organization_id=organization_id,
+            )
+            gevent_modules = self._rag_gevent_modules()
+            if gevent_modules is None:
+                return self._search_single_rag_kb(
+                    retrieval,
+                    query=query,
+                    knowledge_base_id=knowledge_base_id,
+                    top_k=top_k,
+                    threshold=threshold,
+                )
+            gevent, _pool_cls = gevent_modules
+            with gevent.Timeout(RAG_FANOUT_PER_KB_TIMEOUT_SECONDS):
+                return self._search_single_rag_kb(
+                    retrieval,
+                    query=query,
+                    knowledge_base_id=knowledge_base_id,
+                    top_k=top_k,
+                    threshold=threshold,
+                )
+        finally:
+            session.close()
+
+    def _search_single_rag_kb(
+        self,
+        retrieval: RetrievalService,
+        *,
+        query: str,
+        knowledge_base_id: str,
+        top_k: int,
+        threshold: float,
+    ) -> List[ChunkPreview]:
+        return retrieval.search_documents_sync(
+            query,
+            knowledge_base_id=knowledge_base_id,
+            top_k=top_k,
+            threshold=threshold,
+            hierarchy_mode="auto",
+            source_tier_policy=getattr(self.data, "sourceTierPolicy", "tie_break"),
+        )
+
+    @staticmethod
+    def _rag_gevent_modules():
+        try:
+            import gevent
+            from gevent.pool import Pool
+
+            return gevent, Pool
+        except ImportError:
+            return None
+
+    def _rag_runtime_trace_summary(
+        self,
+        *,
+        authorized_kb_count: int,
+        retrieved_chunk_count: int,
+        selected_kb_count: int,
+        context_chunks: List[ChunkPreview],
+        fanout: WorkflowRAGFanoutResult,
+    ) -> Dict[str, Any]:
+        safe_exclusion_summary: Dict[str, Any] = {}
+        if fanout.failed_count:
+            safe_exclusion_summary["operational_failure_count_bucket"] = (
+                self._bucket_count(fanout.failed_count)
+            )
+        if fanout.timeout_count:
+            safe_exclusion_summary["timeout_count_bucket"] = self._bucket_count(
+                fanout.timeout_count
+            )
+
+        return {
+            "retrieval_strategy": "permission_scoped_hierarchical_hybrid",
+            "rag_mode": "explicit_kb",
+            "authorized_kb_count": authorized_kb_count,
+            "selected_kb_count": selected_kb_count,
+            "retrieved_chunk_count": retrieved_chunk_count,
+            "context_token_estimate": self._rag_context_token_estimate(context_chunks),
+            "permission_filter_applied": True,
+            "safe_exclusion_summary": safe_exclusion_summary or None,
+            "query_rewrite_applied": False,
+            "query_rewrite_strategy": "off",
+            "source_tier_policy": getattr(self.data, "sourceTierPolicy", "tie_break"),
+            "fanout_concurrency": min(
+                MAX_RAG_FANOUT_CONCURRENCY,
+                max(authorized_kb_count, 1),
+            ),
+            "fanout_timeout_seconds": RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS,
+        }
+
+    @staticmethod
+    def _rag_context_token_estimate(chunks: List[ChunkPreview]) -> int:
+        total = 0
+        for chunk in chunks:
+            token_count = getattr(chunk, "token_count", None)
+            if isinstance(token_count, int) and token_count > 0:
+                total += token_count
+                continue
+            metadata = getattr(chunk, "metadata_summary", None) or {}
+            metadata_token_count = (
+                metadata.get("token_count") if isinstance(metadata, dict) else None
+            )
+            if isinstance(metadata_token_count, int) and metadata_token_count > 0:
+                total += metadata_token_count
+                continue
+            total += max(1, len(getattr(chunk, "content", "") or "") // 4)
+        return total
 
     def _resolve_rag_execution_subject(self) -> uuid.UUID:
         # Workflow owner나 builder 권한으로 조용히 대체하지 않는다.
@@ -843,11 +1087,14 @@ class LLMNode(Node[LLMNodeData]):
         )
 
         authorized_ids: List[str] = []
+        decisions = helper.bulk_evaluate_kb_use(
+            [kbs_by_id[kb_id] for kb_id in parsed_ids if kb_id in kbs_by_id]
+        )
         for kb_id in parsed_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 raise PermissionError("Knowledge Base is unavailable.")
-            decision = helper.evaluate_kb_use(kb)
+            decision = decisions[kb.id]
             if not decision.allowed:
                 if decision.external_reason_code == "permission.denied":
                     self._record_knowledge_permission_denied(
@@ -1100,6 +1347,7 @@ class LLMNode(Node[LLMNodeData]):
         retrieved_chunks: List[Dict[str, Any]],
         *,
         evidence_decision: RAGEvidenceDecision | None = None,
+        runtime_summary: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """`rag.retrieval` payload body는 redaction-safe evidence만 포함한다."""
         knowledge_base_ids: List[str] = []
@@ -1132,6 +1380,8 @@ class LLMNode(Node[LLMNodeData]):
                     ),
                 }
             )
+        if runtime_summary:
+            payload.update(runtime_summary)
         if knowledge_base_ids:
             payload["knowledge_base_ids"] = knowledge_base_ids
         return {key: value for key, value in payload.items() if value is not None}

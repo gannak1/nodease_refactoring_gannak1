@@ -28,7 +28,9 @@ from apps.shared.services.rag_hierarchy import (
     parent_candidate_limit,
 )
 from apps.shared.services.rag_source_tier import (
+    normalize_source_tier_policy,
     retrieval_candidate_source_tier_priority,
+    source_tier_tie_break_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -400,7 +402,14 @@ class RetrievalService:
             method = "vector"
         return f"{method}+rerank" if use_rerank else method
 
-    def _rrf_fusion(self, vector_results, keyword_results, k=60):
+    def _rrf_fusion(
+        self,
+        vector_results,
+        keyword_results,
+        k=60,
+        *,
+        source_tier_policy: str = "tie_break",
+    ):
         """
         Reciprocal Rank Fusion
         Score = 1 / (k + rank)
@@ -479,12 +488,22 @@ class RetrievalService:
 
         sorted_results = sorted(
             fused_scores.values(),
-            key=lambda x: (x["score"], retrieval_candidate_source_tier_priority(x)),
+            key=lambda x: (
+                x["score"],
+                self._candidate_source_tier_priority(x, source_tier_policy),
+            ),
             reverse=True,
         )
         return sorted_results
 
-    def _rerank(self, query: str, candidates: list, top_k: int):
+    def _rerank(
+        self,
+        query: str,
+        candidates: list,
+        top_k: int,
+        *,
+        source_tier_policy: str = "tie_break",
+    ):
         """
         Cross-Encoder Reranking using MS-MARCO based model.
         """
@@ -508,7 +527,7 @@ class RetrievalService:
                 candidates,
                 key=lambda x: (
                     x["rerank_score"],
-                    retrieval_candidate_source_tier_priority(x),
+                    self._candidate_source_tier_priority(x, source_tier_policy),
                 ),
                 reverse=True,
             )
@@ -533,6 +552,7 @@ class RetrievalService:
         metadata_filter: NormalizedMetadataFilter | None = None,
         hierarchy_mode: str = "auto",
         embedding_model: LLMModel | None = None,
+        source_tier_policy: str = "tie_break",
     ) -> list[ChunkPreview]:
         """
         [Public API] Hybrid Search (Vector + Keyword) with optional Multi-Query and Reranking (비동기)
@@ -545,6 +565,7 @@ class RetrievalService:
             logger.warning("Search called without knowledge_base_id")
             return []
         hierarchy_mode = normalize_hierarchy_mode(hierarchy_mode)
+        source_tier_policy = normalize_source_tier_policy(source_tier_policy)
 
         if use_multi_query:
             queries = await self._generate_multi_queries(query, num_variations=3)
@@ -612,6 +633,7 @@ class RetrievalService:
                     metadata_filter=metadata_filter,
                     use_hierarchy=use_hierarchy,
                     hybrid_search=hybrid_search,
+                    source_tier_policy=source_tier_policy,
                 )
 
         except Exception as e:
@@ -621,14 +643,22 @@ class RetrievalService:
         final_list = []
         merged_candidates = sorted(
             all_candidates.values(),
-            key=lambda x: (x["score"], retrieval_candidate_source_tier_priority(x)),
+            key=lambda x: (
+                x["score"],
+                self._candidate_source_tier_priority(x, source_tier_policy),
+            ),
             reverse=True,
         )
 
         if hybrid_search or use_multi_query or any_hierarchy:
             if use_rerank:
                 candidates_to_rerank = merged_candidates[:100]
-                reranked = self._rerank(query, candidates_to_rerank, top_k)
+                reranked = self._rerank(
+                    query,
+                    candidates_to_rerank,
+                    top_k,
+                    source_tier_policy=source_tier_policy,
+                )
 
                 for rank, item in enumerate(reranked, start=1):
                     chunk = item["chunk"]
@@ -766,6 +796,12 @@ class RetrievalService:
                 ordered_ids.append(normalized)
         return ordered_ids
 
+    @staticmethod
+    def _candidate_source_tier_priority(candidate: dict, policy: str) -> int:
+        if not source_tier_tie_break_enabled(policy):
+            return 0
+        return retrieval_candidate_source_tier_priority(candidate)
+
     def _retrieval_knowledge_bases(self, kb_ids: list[str]) -> dict[str, KnowledgeBase]:
         rows = (
             self.db.query(KnowledgeBase)
@@ -785,6 +821,7 @@ class RetrievalService:
         metadata_filter: NormalizedMetadataFilter | None,
         use_hierarchy: bool,
         hybrid_search: bool,
+        source_tier_policy: str,
     ) -> None:
         for q in queries:
             query_vector = await embed_client.embed(q)
@@ -796,6 +833,7 @@ class RetrievalService:
                     top_k=top_k,
                     metadata_filter=metadata_filter,
                     hybrid_search=hybrid_search,
+                    source_tier_policy=source_tier_policy,
                 )
             else:
                 vector_results = self._vector_search(
@@ -814,7 +852,11 @@ class RetrievalService:
                         metadata_filter=metadata_filter,
                         chunk_levels=(None, "flat", "child"),
                     )
-                    fused = self._rrf_fusion(vector_results, keyword_results)
+                    fused = self._rrf_fusion(
+                        vector_results,
+                        keyword_results,
+                        source_tier_policy=source_tier_policy,
+                    )
                 else:
                     fused = []
                     for chunk, doc, distance in vector_results:
@@ -845,6 +887,7 @@ class RetrievalService:
         top_k: int,
         metadata_filter: NormalizedMetadataFilter | None,
         hybrid_search: bool,
+        source_tier_policy: str = "tie_break",
     ) -> list[dict]:
         parent_vector_results = self._vector_search(
             query_vector,
@@ -866,6 +909,7 @@ class RetrievalService:
             parent_fused = self._rrf_fusion(
                 parent_vector_results,
                 parent_keyword_results,
+                source_tier_policy=source_tier_policy,
             )
         else:
             parent_fused = [
@@ -893,7 +937,11 @@ class RetrievalService:
                 chunk_levels=("child",),
                 parent_ids=parent_ids,
             )
-            fused = self._rrf_fusion(vector_results, keyword_results)
+            fused = self._rrf_fusion(
+                vector_results,
+                keyword_results,
+                source_tier_policy=source_tier_policy,
+            )
         else:
             fused = [
                 {"score": 1.0 / (60 + rank + 1), "chunk": chunk, "doc": doc}
@@ -918,6 +966,7 @@ class RetrievalService:
             fallback_fused = self._rrf_fusion(
                 fallback_vector_results,
                 fallback_keyword_results,
+                source_tier_policy=source_tier_policy,
             )
         else:
             fallback_fused = [

@@ -19,6 +19,20 @@ SOURCE_TIER_PRIORITY: dict[str, int] = {
     "conversation_or_thread": 10,
 }
 
+SOURCE_TIER_POLICY_OFF = "off"
+SOURCE_TIER_POLICY_TIE_BREAK = "tie_break"
+SOURCE_TIER_POLICIES = {
+    SOURCE_TIER_POLICY_OFF,
+    SOURCE_TIER_POLICY_TIE_BREAK,
+}
+
+
+def normalize_source_tier_policy(policy: Any) -> str:
+    if policy is None:
+        return SOURCE_TIER_POLICY_TIE_BREAK
+    value = str(policy).strip().lower()
+    return value if value in SOURCE_TIER_POLICIES else SOURCE_TIER_POLICY_TIE_BREAK
+
 
 def source_tier_priority(source_tier: Any) -> int:
     if source_tier is None:
@@ -54,3 +68,7 @@ def retrieval_candidate_source_tier_priority(candidate: dict[str, Any]) -> int:
     if isinstance(metadata, dict):
         return source_tier_priority(metadata.get("source_tier"))
     return 0
+
+
+def source_tier_tie_break_enabled(policy: Any) -> bool:
+    return normalize_source_tier_policy(policy) == SOURCE_TIER_POLICY_TIE_BREAK

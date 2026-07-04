@@ -71,6 +71,7 @@ class KnowledgeCandidateResolver:
         hidden_count = len(requested_ids) - len(kbs_by_id)
         unavailable_count = 0
         candidates: list[KnowledgeCandidate] = []
+        allowed_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
 
         kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs_by_id.values())
         for kb_id in requested_ids:
@@ -79,11 +80,22 @@ class KnowledgeCandidateResolver:
                 continue
             decision = kb_decisions[kb.id]
             if decision.allowed:
-                candidates.append(self._kb_candidate(kb, decision))
+                allowed_pairs.append((kb, decision))
             elif decision.external_reason_code == "resource.hidden":
                 hidden_count += 1
             else:
                 unavailable_count += 1
+        runtime_decisions = self._bulk_runtime_kb_decisions(
+            [kb for kb, _decision in allowed_pairs]
+        )
+        candidates = [
+            self._kb_candidate(
+                kb,
+                decision,
+                runtime_decision=runtime_decisions.get(kb.id),
+            )
+            for kb, decision in allowed_pairs
+        ]
 
         return KnowledgeCandidateResolution(
             candidates=candidates,
@@ -143,6 +155,7 @@ class KnowledgeCandidateResolver:
         hidden_count += len(kb_ids) - len(kbs_by_id)
 
         candidates: list[KnowledgeCandidate] = []
+        allowed_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
         kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs_by_id.values())
         for kb_id in kb_ids:
             kb = kbs_by_id.get(kb_id)
@@ -150,11 +163,22 @@ class KnowledgeCandidateResolver:
                 continue
             decision = kb_decisions[kb.id]
             if decision.allowed:
-                candidates.append(self._kb_candidate(kb, decision))
+                allowed_pairs.append((kb, decision))
             elif decision.external_reason_code == "resource.hidden":
                 hidden_count += 1
             else:
                 unavailable_count += 1
+        runtime_decisions = self._bulk_runtime_kb_decisions(
+            [kb for kb, _decision in allowed_pairs]
+        )
+        candidates = [
+            self._kb_candidate(
+                kb,
+                decision,
+                runtime_decision=runtime_decisions.get(kb.id),
+            )
+            for kb, decision in allowed_pairs
+        ]
 
         return KnowledgeCandidateResolution(
             candidates=candidates,
@@ -229,11 +253,15 @@ class KnowledgeCandidateResolver:
         self,
         kb: KnowledgeBase,
         permission: KnowledgePermissionDecision,
+        *,
+        runtime_decision: KnowledgePermissionDecision | None = None,
     ) -> KnowledgeCandidate:
         runtime_availability = "available"
         runtime_reason_code = None
         if self.runtime_permission_helper is not None:
-            runtime_decision = self.runtime_permission_helper.evaluate_kb_use(kb)
+            runtime_decision = runtime_decision or (
+                self.runtime_permission_helper.evaluate_kb_use(kb)
+            )
             if runtime_decision.allowed:
                 runtime_availability = "available"
             else:
@@ -252,6 +280,14 @@ class KnowledgeCandidateResolver:
             safe_label=self._kb_safe_label(kb),
             safe_metadata=safe_metadata,
         )
+
+    def _bulk_runtime_kb_decisions(
+        self,
+        kbs: list[KnowledgeBase],
+    ) -> dict[uuid.UUID, KnowledgePermissionDecision]:
+        if self.runtime_permission_helper is None or not kbs:
+            return {}
+        return self.runtime_permission_helper.bulk_evaluate_kb_use(kbs)
 
     def _kb_safe_label(self, kb: KnowledgeBase) -> str | None:
         source_identity = getattr(kb, "source_identity", None)
