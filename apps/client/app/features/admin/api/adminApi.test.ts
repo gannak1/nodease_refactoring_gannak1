@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/apiClient', () => ({
   apiClient: {
     get: vi.fn(),
+    post: vi.fn(),
   },
 }));
 
@@ -10,6 +11,7 @@ import { apiClient } from '@/lib/apiClient';
 import { adminApi } from './adminApi';
 
 const mockedGet = vi.mocked(apiClient.get);
+const mockedPost = vi.mocked(apiClient.post);
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -47,5 +49,37 @@ describe('adminApi.getAuditLogDetail', () => {
 
     expect(mockedGet).toHaveBeenCalledWith('/admin/audit-logs/log-1');
     expect(result).toEqual(detail);
+  });
+});
+
+describe('adminApi.listPermissionRequests', () => {
+  it('status와 pagination으로 권한 신청 목록을 조회한다', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { total: 0, items: [] } });
+
+    await adminApi.listPermissionRequests({
+      status: 'pending',
+      page: 1,
+      limit: 20,
+    });
+
+    expect(mockedGet).toHaveBeenCalledWith('/admin/permission-requests', {
+      params: { status: 'pending', page: 1, limit: 20 },
+    });
+  });
+});
+
+describe('adminApi permission request actions', () => {
+  it('승인/거절 action endpoint를 호출한다', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'req-1' } });
+
+    await adminApi.approvePermissionRequest('req-1');
+    await adminApi.rejectPermissionRequest('req-2');
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/admin/permission-requests/req-1/approve',
+    );
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/admin/permission-requests/req-2/reject',
+    );
   });
 });

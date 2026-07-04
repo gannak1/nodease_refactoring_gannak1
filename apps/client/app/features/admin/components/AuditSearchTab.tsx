@@ -13,6 +13,7 @@ import type {
   AuditLogStatus,
 } from '../types/AdminAudit';
 import { auditActionLabel } from '../utils/auditActionLabel';
+import { AdminPagination } from './AdminPagination';
 import { AuditDetailDrawer } from './AuditDetailDrawer';
 
 const PAGE_SIZE = 20;
@@ -310,37 +311,12 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
               })}
             </tbody>
           </table>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-sm">
-            <span className="text-slate-500">
-              {total}개 중 page {applied.page}/{totalPages}
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={() =>
-                  setApplied((prev) => ({
-                    ...prev,
-                    page: Math.max(1, prev.page - 1),
-                  }))
-                }
-                disabled={applied.page <= 1}
-                className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                이전
-              </button>
-              <button
-                onClick={() =>
-                  setApplied((prev) => ({
-                    ...prev,
-                    page: Math.min(totalPages, prev.page + 1),
-                  }))
-                }
-                disabled={applied.page >= totalPages}
-                className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                다음
-              </button>
-            </div>
-          </div>
+          <AdminPagination
+            page={applied.page}
+            totalPages={totalPages}
+            total={total}
+            onPageChange={(page) => setApplied((prev) => ({ ...prev, page }))}
+          />
         </>
       )}
 

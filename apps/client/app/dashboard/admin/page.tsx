@@ -24,6 +24,7 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/apiClient';
 import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
 import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
+import { PermissionRequestsTab } from '@/app/features/admin/components/PermissionRequestsTab';
 import { authApi } from '@/app/features/auth/api/authApi';
 import { organizationApi } from '@/app/features/organization/api/organizationApi';
 import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
@@ -50,6 +51,7 @@ type AdminTab =
   | 'members'
   | 'teams'
   | 'permissions'
+  | 'permission-requests'
   | 'credentials'
   | 'knowledge'
   | 'audit'
@@ -133,6 +135,7 @@ const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'members', label: '멤버' },
   { key: 'teams', label: '팀' },
   { key: 'permissions', label: '권한' },
+  { key: 'permission-requests', label: '권한 신청' },
   { key: 'credentials', label: 'LLM Credentials' },
   { key: 'knowledge', label: '지식 기반' },
   { key: 'audit', label: '감사 로그' },
@@ -1069,6 +1072,9 @@ export default function AdminConsolePage() {
           )}
           {activeTab === 'knowledge' && (
             <KnowledgeTab knowledgeBases={knowledgeBases} />
+          )}
+          {activeTab === 'permission-requests' && (
+            <PermissionRequestsTab members={members} />
           )}
           {activeTab === 'audit' && <AuditSearchTab members={members} />}
           {activeTab === 'organization' && (

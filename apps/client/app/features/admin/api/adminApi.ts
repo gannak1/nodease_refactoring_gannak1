@@ -4,6 +4,11 @@ import type {
   AuditLogListResponse,
   AuditLogSearchFilters,
 } from '../types/AdminAudit';
+import type {
+  PermissionRequestItem,
+  PermissionRequestListResponse,
+  PermissionRequestStatus,
+} from '../types/AdminPermissionRequest';
 
 export type AuditLogListParams = AuditLogSearchFilters & {
   page?: number;
@@ -31,6 +36,35 @@ export const adminApi = {
     auditLogId: string,
   ): Promise<AuditLogDetailResponse> => {
     const response = await apiClient.get(`/admin/audit-logs/${auditLogId}`);
+    return response.data;
+  },
+
+  listPermissionRequests: async (params: {
+    status?: PermissionRequestStatus;
+    page?: number;
+    limit?: number;
+  } = {}): Promise<PermissionRequestListResponse> => {
+    const response = await apiClient.get('/admin/permission-requests', {
+      params: compactParams(params),
+    });
+    return response.data;
+  },
+
+  approvePermissionRequest: async (
+    requestId: string,
+  ): Promise<PermissionRequestItem> => {
+    const response = await apiClient.post(
+      `/admin/permission-requests/${requestId}/approve`,
+    );
+    return response.data;
+  },
+
+  rejectPermissionRequest: async (
+    requestId: string,
+  ): Promise<PermissionRequestItem> => {
+    const response = await apiClient.post(
+      `/admin/permission-requests/${requestId}/reject`,
+    );
     return response.data;
   },
 };
