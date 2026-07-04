@@ -86,6 +86,7 @@ PRD FR-041/FR-014는 workflow 생성/배포 권한이 없는 사용자가 권한
 - [data_model.md](../data_model.md) 계획 테이블에 `permission_requests`, `user_app_creation_permissions`를 추가한다.
 - organization feature(FR-041)가 차단/신청 제출과 이 테이블들을 소유하고, admin-dashboard feature(FR-014)가 목록 조회/승인/거절 표면을 소유한다.
 - 데모 seed에 계정별 App 생성 권한 구성이 추가된다.
+- organization member 제거 시 permission cleanup 대상에 `user_app_creation_permissions`를 포함한다. 승인과 멤버 제거가 경합해도 최종 상태가 정리되는 안전망이며(제거가 나중이면 cleanup이 지우고, 승인이 나중이면 active member 검사가 거부), 기존 aggregate audit(`permission.revoke` + `reason='organization.member.remove'`) 규칙을 따른다.
 
 ## 후속 검토
 

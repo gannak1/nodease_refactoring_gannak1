@@ -31,7 +31,7 @@ Related Features: auth, workflow, knowledge, llm-credentials, audit-tracing, adm
 
 - 판정 순서와 우선순위 규칙은 [data_model.md](../../data_model.md)의 RBAC 요약을 따른다. invited/suspended/removed membership은 fail-closed이며, membership row가 없는 legacy owner/manager만 호환 fallback을 받는다.
 - user direct permission은 additive allow 전용이다. team 권한을 낮추지 못하고 explicit deny는 없다.
-- 멤버 제거 시 해당 user의 permission cleanup은 aggregate audit(`permission.revoke` + `reason='organization.member.remove'`)으로 기록한다.
+- 멤버 제거 시 해당 user의 permission cleanup은 aggregate audit(`permission.revoke` + `reason='organization.member.remove'`)으로 기록한다. cleanup 대상에는 `user_app_creation_permissions`도 포함한다 ([ADR-0014](../../decisions/ADR-0014-permission-request-and-app-creation-permission.md) — 승인과 멤버 제거가 경합해도 최종 상태가 정리되는 안전망).
 - 이미 inactive인 팀의 비활성화 요청은 같은 조직 manager라면 idempotent success로 처리한다 ([ADR-0011](../../decisions/ADR-0011-team-router-rbac-service-boundary.md)).
 - permission grant 요청은 canonical auth_state 값만 받는다. legacy 값(`read/write/execute/admin`)은 기존 row 해석에만 사용하고 신규 요청에서는 거부한다.
 - 서버는 active organization을 session/cookie에 저장하지 않는다. header가 없는 legacy 경로만 제한적 primary organization fallback을 사용한다.

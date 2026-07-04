@@ -35,6 +35,7 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 - audit metadata의 raw payload, secret 계열 값은 대시보드 응답에 노출하지 않는다 (NFR-004).
 - 권한 신청 승인은 신청자에게 `user_app_creation_permissions` row를 생성해 조직 수준 App 생성 능력을 부여한다 ([ADR-0014](../../decisions/ADR-0014-permission-request-and-app-creation-permission.md)). 승인 audit은 `permission_request.approved`(신청 처리)와 `user_app_creation_permission.created`(권한 부여)를 각각 기록한다. 배포 권한은 생성자에게 자동 부여되는 workflow manager permission으로 따라오므로 별도 부여가 없다.
 - 이미 처리된(승인/거절) 권한 신청에 대한 중복 처리 요청은 거부한다.
+- 승인 시점에 신청자가 조직의 active member가 아니면(제거/정지) 승인을 거부한다. 권한 부여와 부여 audit은 발생하지 않는다.
 - 예산이 설정되지 않은 workflow는 예산 위험/초과 판정 대상에서 제외한다.
 - 시간대 규칙: 저장은 UTC(timestamptz) 그대로 두고, "이번 달" 경계와 예산 위험/초과 판정 같은 집계 경계는 KST(Asia/Seoul) 고정으로 계산한다. FR-011/FR-012의 기간 필터 입력도 KST 기준으로 해석한다. 개별 timestamp의 화면 표시만 사용자 로컬 시간대로 렌더링한다.
 - 기간 필터와 집계 경계는 반개구간 `[start, end)`로 판정한다. 시작 시각과 정확히 같은 row는 포함하고, 끝 시각과 정확히 같은 row는 제외한다. 연속한 두 기간을 이어 붙여도 row가 중복되거나 누락되지 않는다.
