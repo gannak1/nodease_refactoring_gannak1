@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isAxiosError } from 'axios';
 import {
-  Activity,
   AlertTriangle,
   BookOpen,
   Building2,
@@ -24,6 +23,7 @@ import {
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/apiClient';
 import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
+import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
 import { authApi } from '@/app/features/auth/api/authApi';
 import { organizationApi } from '@/app/features/organization/api/organizationApi';
 import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
@@ -116,15 +116,6 @@ type ResourcePermissionListResponse = {
   user_permissions: ResourcePermissionEntry[];
 };
 
-type AuditItem = {
-  id: string;
-  occurred_at: string;
-  action: string;
-  target_type: string;
-  target_id?: string;
-  status: string;
-};
-
 type ConfirmState = {
   title: string;
   description: string;
@@ -209,7 +200,6 @@ export default function AdminConsolePage() {
     useState<ResourcePermissionListResponse | null>(null);
   const [credentialPermissions, setCredentialPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
-  const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -480,7 +470,6 @@ export default function AdminConsolePage() {
         setWorkflowPermissions(null);
         setCredentialPermissions(null);
         setKnowledgeBases([]);
-        setAuditItems([]);
         return;
       }
 
@@ -497,7 +486,7 @@ export default function AdminConsolePage() {
       setMembers(uniqueMembers([...defaultMembers, ...removedMembers]));
       setTeams(teamData);
 
-      const [providerData, credentialData, appData, knowledgeData, auditData] =
+      const [providerData, credentialData, appData, knowledgeData] =
         await Promise.all([
           apiClient
             .get<LLMProviderResponse[]>('/llm/providers')
@@ -512,19 +501,12 @@ export default function AdminConsolePage() {
             .then((response) => response.data)
             .catch(() => []),
           knowledgeApi.getKnowledgeBases().catch(() => []),
-          apiClient
-            .get<{ items: AuditItem[] }>('/users/me/audit-logs', {
-              params: { limit: 30 },
-            })
-            .then((response) => response.data.items || [])
-            .catch(() => []),
         ]);
 
       setProviders(providerData);
       setCredentials(credentialData);
       setApps(appData);
       setKnowledgeBases(knowledgeData);
-      setAuditItems(auditData);
       const firstWorkflowId =
         selectedWorkflowId ||
         appData.find((app) => app.workflow_id)?.workflow_id ||
@@ -1088,7 +1070,7 @@ export default function AdminConsolePage() {
           {activeTab === 'knowledge' && (
             <KnowledgeTab knowledgeBases={knowledgeBases} />
           )}
-          {activeTab === 'audit' && <AuditTab auditItems={auditItems} />}
+          {activeTab === 'audit' && <AuditSearchTab members={members} />}
           {activeTab === 'organization' && (
             <OrganizationTab organization={organization} />
           )}
@@ -2365,52 +2347,6 @@ function KnowledgeTab({
               >
                 권한 관리 예정
               </button>
-            </div>
-          ))
-        )}
-      </div>
-    </DashboardPanel>
-  );
-}
-
-function AuditTab({ auditItems }: { auditItems: AuditItem[] }) {
-  return (
-    <DashboardPanel
-      title="감사 로그"
-      icon={Activity}
-      aside={
-        <span className="text-xs font-medium text-amber-700">
-          현재는 내 활동 로그 기준
-        </span>
-      }
-    >
-      <div className="divide-y divide-slate-100">
-        {auditItems.length === 0 ? (
-          <Placeholder
-            title="표시할 활동이 없습니다"
-            description="조직 전체 audit API가 확정되면 이 탭을 조직 감사 로그 기준으로 전환합니다."
-          />
-        ) : (
-          auditItems.map((item) => (
-            <div
-              key={item.id}
-              className="grid gap-2 px-5 py-3 text-sm md:grid-cols-[180px_minmax(0,1fr)_120px]"
-            >
-              <span className="text-xs text-slate-500">
-                {formatDateTime(item.occurred_at)}
-              </span>
-              <span className="font-medium text-slate-900">
-                {item.action} · {item.target_type}
-              </span>
-              <span
-                className={`w-fit rounded-md px-2 py-0.5 text-xs font-semibold ${
-                  item.status === 'failure'
-                    ? 'bg-red-50 text-red-700'
-                    : 'bg-slate-100 text-slate-700'
-                }`}
-              >
-                {item.status}
-              </span>
             </div>
           ))
         )}
