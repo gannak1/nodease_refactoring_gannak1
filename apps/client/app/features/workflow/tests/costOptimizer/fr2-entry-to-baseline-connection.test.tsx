@@ -10,8 +10,16 @@ const workflowApiMock = vi.hoisted(() => ({
   listCostOptimizerBaselines: vi.fn(),
 }));
 
+const routerMock = vi.hoisted(() => ({
+  push: vi.fn(),
+}));
+
 vi.mock('../../api/workflowApi', () => ({
   workflowApi: workflowApiMock,
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => routerMock,
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -105,7 +113,7 @@ const setWorkflowPermission = () => {
   });
 };
 
-describe('FR-002 Cost Optimizer 진입-선택 화면 연결', () => {
+describe('FR-002 Cost Optimizer 진입-playground 연결', () => {
   beforeEach(() => {
     resetStore();
     setWorkflowPermission();
@@ -128,22 +136,15 @@ describe('FR-002 Cost Optimizer 진입-선택 화면 연결', () => {
     vi.restoreAllMocks();
   });
 
-  it('A/B 테스트하기 클릭 시 baseline 선택 화면이 실제 워크플로우 노드 패널 안에 열린다', async () => {
+  it('A/B 테스트하기 클릭 시 해당 workflow/node 전용 playground로 이동한다', () => {
     render(<NodeInlinePanel node={createLlmNode()} />);
 
     fireEvent.click(
       screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
     );
 
-    expect(
-      await screen.findByRole('button', {
-        name: /최신 실행 로그로 비교하기/i,
-      }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', {
-        name: /이전 실행 로그 선택해서 비교하기/i,
-      }),
-    ).toBeInTheDocument();
+    expect(routerMock.push).toHaveBeenCalledWith(
+      '/modules/workflow-1/cost-optimizer/llm-1',
+    );
   });
 });

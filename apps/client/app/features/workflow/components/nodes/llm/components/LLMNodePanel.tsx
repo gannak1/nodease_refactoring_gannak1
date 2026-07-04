@@ -31,7 +31,6 @@ import {
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
-import { CostOptimizerBaselineSelection } from '../../../costOptimizer/CostOptimizerBaselineSelection';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -69,7 +68,6 @@ interface LLMNodePanelProps {
   isAdvancedSettingsOpen?: boolean;
   onOpenAdvancedSettings?: () => void;
   onOpenKnowledgeBaseSettings?: () => void;
-  onOpenCostOptimizer?: () => void;
 }
 
 type PromptHelpId = 'fallback' | 'system' | 'user' | 'assistant';
@@ -255,7 +253,6 @@ export function LLMNodePanel({
   isAdvancedSettingsOpen,
   onOpenAdvancedSettings,
   onOpenKnowledgeBaseSettings,
-  onOpenCostOptimizer,
 }: LLMNodePanelProps) {
   const openSettingsTab = useCallback(() => {
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
@@ -272,11 +269,8 @@ export function LLMNodePanel({
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
   const [isParameterPanelOpen, setIsParameterPanelOpen] = useState(false);
-  const [isCostOptimizerOpen, setIsCostOptimizerOpen] = useState(false);
   const isUsingExternalAdvancedPanel =
     typeof onOpenAdvancedSettings === 'function';
-  const isUsingExternalCostOptimizerPanel =
-    typeof onOpenCostOptimizer === 'function';
   const isAdvancedButtonActive = isUsingExternalAdvancedPanel
     ? Boolean(isAdvancedSettingsOpen)
     : isParameterPanelOpen;
@@ -669,11 +663,6 @@ export function LLMNodePanel({
               workflowId={activeWorkflowId}
               nodeId={nodeId}
               workflowAccess={workflowAccess}
-              onOpen={
-                isUsingExternalCostOptimizerPanel
-                  ? onOpenCostOptimizer
-                  : () => setIsCostOptimizerOpen(true)
-              }
             />
             <button
               type="button"
@@ -699,17 +688,6 @@ export function LLMNodePanel({
           </div>
         </div>
       </div>
-
-      {!isUsingExternalCostOptimizerPanel && isCostOptimizerOpen ? (
-        <div className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm">
-          <CostOptimizerBaselineSelection
-            workflowId={activeWorkflowId}
-            nodeId={nodeId}
-            onBaselineSelected={() => setIsCostOptimizerOpen(false)}
-            onClose={() => setIsCostOptimizerOpen(false)}
-          />
-        </div>
-      ) : null}
 
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>

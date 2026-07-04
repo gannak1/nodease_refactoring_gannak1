@@ -19,6 +19,8 @@ interface LLMReferenceSidePanelProps {
   data: LLMNodeData;
   onClose: () => void;
   embedded?: boolean;
+  readOnly?: boolean;
+  onDataChange?: (updates: Partial<LLMNodeData>) => void;
 }
 
 export function LLMReferenceSidePanel({
@@ -26,8 +28,18 @@ export function LLMReferenceSidePanel({
   data,
   onClose,
   embedded = false,
+  readOnly = false,
+  onDataChange,
 }: LLMReferenceSidePanelProps) {
   const { updateNodeData } = useWorkflowStore();
+  const applyNodeData = (updates: Partial<LLMNodeData>) => {
+    if (readOnly) return;
+    if (onDataChange) {
+      onDataChange(updates);
+      return;
+    }
+    updateNodeData(nodeId, updates);
+  };
 
   // Knowledge base state
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
@@ -78,8 +90,11 @@ export function LLMReferenceSidePanel({
           selectedKnowledgeBases,
           bases,
         );
-        if (!isSameKnowledgeSelection(nextSelected, selectedKnowledgeBases)) {
-          updateNodeData(nodeId, { knowledgeBases: nextSelected });
+        if (
+          !readOnly &&
+          !isSameKnowledgeSelection(nextSelected, selectedKnowledgeBases)
+        ) {
+          applyNodeData({ knowledgeBases: nextSelected });
         }
       } catch (err) {
         console.error('Failed to load knowledge bases', err);
@@ -93,6 +108,7 @@ export function LLMReferenceSidePanel({
 
   // Toggle selection
   const toggleKnowledgeBase = (kb: KnowledgeBaseResponse) => {
+    if (readOnly) return;
     const current = effectiveSelectedKnowledgeBases;
     let next;
     if (selectedIds.has(kb.id)) {
@@ -100,7 +116,7 @@ export function LLMReferenceSidePanel({
     } else {
       next = [...current, { id: kb.id, name: kb.name }];
     }
-    updateNodeData(nodeId, { knowledgeBases: next });
+    applyNodeData({ knowledgeBases: next });
   };
 
   // Toggle expand/collapse for document list
@@ -212,10 +228,15 @@ export function LLMReferenceSidePanel({
                       : 'border-gray-200 hover:border-indigo-200 hover:bg-gray-50'
                   }`}
                 >
-                  <label className="flex items-start gap-3 cursor-pointer">
+                  <label
+                    className={`flex items-start gap-3 ${
+                      readOnly ? 'cursor-default' : 'cursor-pointer'
+                    }`}
+                  >
                     <input
                       type="checkbox"
                       checked={isSelected}
+                      disabled={readOnly}
                       onChange={() => toggleKnowledgeBase(kb)}
                       className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                     />
@@ -351,10 +372,11 @@ export function LLMReferenceSidePanel({
                 value={scoreThreshold}
                 onChange={(e) => {
                   const value = Number(e.target.value);
-                  updateNodeData(nodeId, {
+                  applyNodeData({
                     scoreThreshold: Number.isNaN(value) ? undefined : value,
                   });
                 }}
+                disabled={readOnly}
                 className="absolute inset-0 w-full h-6 bg-transparent accent-indigo-600 appearance-none cursor-pointer
                   [&::-webkit-slider-runnable-track]:bg-transparent
                   [&::-moz-range-track]:bg-transparent
@@ -399,10 +421,11 @@ export function LLMReferenceSidePanel({
                 value={topK}
                 onChange={(e) => {
                   const value = Number(e.target.value);
-                  updateNodeData(nodeId, {
+                  applyNodeData({
                     topK: Number.isNaN(value) ? undefined : value,
                   });
                 }}
+                disabled={readOnly}
                 className="absolute inset-0 w-full h-6 bg-transparent accent-indigo-600 appearance-none cursor-pointer
                   [&::-webkit-slider-runnable-track]:bg-transparent
                   [&::-moz-range-track]:bg-transparent

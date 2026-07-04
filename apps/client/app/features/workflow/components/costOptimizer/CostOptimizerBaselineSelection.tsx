@@ -83,6 +83,12 @@ const formatCost = (cost: number) => {
   return `$${cost.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
 };
 
+const formatLatency = (latencyMs: number) => {
+  if (!Number.isFinite(latencyMs)) return '-';
+  if (latencyMs < 1000) return `${latencyMs}ms`;
+  return `${(latencyMs / 1000).toFixed(1)}s`;
+};
+
 const formatRunTime = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -324,13 +330,23 @@ export function CostOptimizerBaselineSelection({
                   </span>
                 </div>
 
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                   <div className="rounded-md bg-slate-50 px-2 py-1">
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                       Tokens
                     </div>
                     <div className="font-semibold text-slate-700">
                       {row.compare_available ? row.total_tokens : '-'}
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-slate-50 px-2 py-1">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      Time
+                    </div>
+                    <div className="font-semibold text-slate-700">
+                      {row.compare_available
+                        ? formatLatency(row.latency_ms)
+                        : '-'}
                     </div>
                   </div>
                   <div className="rounded-md bg-slate-50 px-2 py-1">

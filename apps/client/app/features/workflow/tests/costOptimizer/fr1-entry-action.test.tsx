@@ -13,8 +13,16 @@ const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerAvailability: vi.fn(),
 }));
 
+const routerMock = vi.hoisted(() => ({
+  push: vi.fn(),
+}));
+
 vi.mock('../../api/workflowApi', () => ({
   workflowApi: workflowApiMock,
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => routerMock,
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -183,11 +191,9 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
       screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
     );
 
-    expect(
-      await screen.findByRole('button', {
-        name: /최신 실행 로그로 비교하기/i,
-      }),
-    ).toBeInTheDocument();
+    expect(routerMock.push).toHaveBeenCalledWith(
+      '/modules/workflow-1/cost-optimizer/llm-1',
+    );
   });
 
   it('availability API가 unavailable을 반환하면 A/B 테스트하기 진입 액션은 비활성화된다', async () => {

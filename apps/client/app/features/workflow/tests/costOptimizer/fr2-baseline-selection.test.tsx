@@ -185,6 +185,7 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     });
     expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
     expect(screen.getByText(/420/)).toBeInTheDocument();
+    expect(screen.getByText(/1.8s/)).toBeInTheDocument();
     expect(screen.getByText(/0.0012/)).toBeInTheDocument();
     expect(screen.getByText(/billing escalation/)).toBeInTheDocument();
     expect(screen.getByText(/enterprise response/)).toBeInTheDocument();

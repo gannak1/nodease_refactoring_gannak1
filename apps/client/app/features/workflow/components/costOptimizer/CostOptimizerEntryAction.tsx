@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { BarChart3 } from 'lucide-react';
 import { workflowApi } from '../../api/workflowApi';
 import type { WorkflowPermissionResponse } from '../../types/Api';
@@ -19,6 +20,7 @@ export const CostOptimizerEntryAction = ({
   workflowAccess,
   onOpen,
 }: CostOptimizerEntryActionProps) => {
+  const router = useRouter();
   const hasBuilderPermission = canUseCostOptimizer(workflowAccess);
   const [isAvailable, setIsAvailable] = useState(true);
 
@@ -60,7 +62,11 @@ export const CostOptimizerEntryAction = ({
       onClick={(event) => {
         event.stopPropagation();
         if (!canUse) return;
-        onOpen?.();
+        if (onOpen) {
+          onOpen();
+          return;
+        }
+        router.push(`/modules/${workflowId}/cost-optimizer/${nodeId}`);
       }}
       className="nodrag inline-flex items-center justify-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:border-emerald-700 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:shadow-none"
       title={
