@@ -1,14 +1,21 @@
-from typing import Literal
+from datetime import datetime
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.services.admin_audit_log_service import (
+    AdminAuditLogFilters,
+    AdminAuditLogService,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.services.permission_request_service import PermissionRequestService
+from apps.shared.db.models.audit_log import AuditStatus
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
+from apps.shared.schemas.audit import AuditLogDetailResponse, AuditLogListResponse
 from apps.shared.schemas.permission_request import (
     PermissionRequestListResponse,
     PermissionRequestResponse,
@@ -19,6 +26,17 @@ from apps.shared.services import permissions as shared_permissions
 router = APIRouter()
 
 
+def _resolve_active_organization(
+    db: Session,
+    request: Request,
+    x_organization_id: str | None,
+    current_user: User,
+):
+    return resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+
+
 def _resolve_managed_organization(
     db: Session,
     request: Request,
@@ -26,8 +44,8 @@ def _resolve_managed_organization(
     current_user: User,
 ):
     """active organization을 해석하고 owner/manager가 아니면 403으로 닫는다."""
-    organization_id = resolve_active_organization_id(
-        db, request, x_organization_id, current_user.id
+    organization_id = _resolve_active_organization(
+        db, request, x_organization_id, current_user
     )
     if not shared_permissions.has_organization_manager_permission(
         db, current_user.id, organization_id
@@ -66,6 +84,63 @@ def _serialize_requests(db: Session, items) -> list[PermissionRequestResponse]:
     return [
         _serialize_request(item, requesters.get(item.user_id)) for item in items
     ]
+
+
+@router.get("/audit-logs", response_model=AuditLogListResponse)
+def list_audit_logs(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    actor_id: Annotated[UUID | None, Query(alias="actorId")] = None,
+    action: str | None = None,
+    target_type: Annotated[str | None, Query(alias="targetType")] = None,
+    target_id: Annotated[str | None, Query(alias="targetId")] = None,
+    status: Annotated[AuditStatus | None, Query()] = None,
+    start_at: Annotated[datetime | None, Query(alias="startAt")] = None,
+    end_at: Annotated[datetime | None, Query(alias="endAt")] = None,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_active_organization(
+        db, request, x_organization_id, current_user
+    )
+    period = AdminAuditLogService.resolve_period(start_at, end_at)
+    return AdminAuditLogService.list_audit_logs(
+        db,
+        current_user=current_user,
+        organization_id=organization_id,
+        filters=AdminAuditLogFilters(
+            actor_id=actor_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            status=status,
+            start_at=period.start_at,
+            end_at=period.end_at,
+        ),
+        page=page,
+        limit=limit,
+    )
+
+
+@router.get("/audit-logs/{audit_log_id}", response_model=AuditLogDetailResponse)
+def get_audit_log_detail(
+    request: Request,
+    audit_log_id: UUID,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_active_organization(
+        db, request, x_organization_id, current_user
+    )
+    return AdminAuditLogService.get_audit_log_detail(
+        db,
+        current_user=current_user,
+        organization_id=organization_id,
+        audit_log_id=audit_log_id,
+    )
 
 
 @router.get(
