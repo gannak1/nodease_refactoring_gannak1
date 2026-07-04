@@ -44,6 +44,14 @@ Verified Against: TBD
 - Given organization owner/manager, Then 모든 admin API에 접근할 수 있다.
 - Given 다른 조직의 `audit_log_id`/`request_id`, When 조회/처리를 시도하면, Then `404`로 존재가 숨겨진다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
 
+### AC-6. App 생성 권한 보유 목록/회수 (FR-014 회수 확장)
+
+- Given `user_app_creation_permissions` row 보유자가 있는 조직, When owner/manager가 `GET /admin/app-creation-permissions`를 호출하면, Then 보유자(이름/이메일), 부여자, 부여 시각이 포함된 목록이 `assigned_at` 내림차순으로 반환된다. row 없이 허용되는 owner/manager는 목록에 포함되지 않는다.
+- Given 보유 row, When `DELETE /admin/app-creation-permissions/{permission_id}`로 회수하면, Then row가 삭제되고 `user_app_creation_permission.deleted` audit이 기록되며, 과거 approved 신청의 상태는 변하지 않는다.
+- Given 회수된 사용자, When App 생성(`POST /apps`)을 시도하면, Then `403 permission.denied`로 다시 차단된다.
+- Given 회수된 사용자, When 권한을 재신청(`POST /permission-requests`)하면, Then 보유/pending 없음 조건이 재충족되어 pending 신청이 생성된다.
+- Given 이미 회수됐거나 다른 조직의 `permission_id`, When 회수를 요청하면, Then `404`로 숨겨지고 `user_app_creation_permission.deleted` audit은 기록되지 않는다.
+
 ## Unit Tests
 
 단위 테스트는 endpoint/TestClient보다 service/helper method 계약을 우선 검증한다. 아래 class명은 구현 경계의 권장 이름이다. 구현 과정에서 이름이 달라지더라도 동일한 책임 단위가 보존되어야 한다.
@@ -162,6 +170,19 @@ Verified Against: TBD
   - Given 지원하지 않는 requested permission, When 권한 부여를 시도하면, Then validation error로 닫는다.
   - Given organization/user가 invalid UUID, When 권한 부여를 시도하면, Then 권한 row를 생성하지 않는다.
 
+### `AppCreationPermissionService`
+
+- `list_permissions(db, organization_id, page, limit)`
+  - Given 조직 A/B의 권한 row가 섞여 있을 때, When 조직 A로 조회하면, Then 조직 A row만 반환한다.
+  - Given 여러 row, When 조회하면, Then `assigned_at` 내림차순으로 정렬한다.
+  - Given 목록 item을 만들 때, Then row id, 보유자 id/name/email, `assigned_by`, `assigned_at`을 포함한다.
+  - Given row가 없을 때, When 조회하면, Then `{total: 0, items: []}`를 반환한다.
+- `revoke_permission(db, permission_id, organization_id, revoked_by)`
+  - Given 같은 조직의 보유 row, When 회수하면, Then row를 삭제하고 `user_app_creation_permission.deleted` audit 이벤트를 만든다 (target_type `user_app_creation_permission`, target_id는 row id).
+  - Given 회수 성공, Then 해당 사용자의 과거 `permission_requests` 상태(approved)는 변하지 않는다.
+  - Given 다른 조직의 row 또는 존재하지 않는 row, When 회수하면, Then `404`에 매핑 가능한 not found를 반환하고 audit을 만들지 않는다.
+  - Given 같은 row에 대한 동시 회수 경합, When 한 transaction이 먼저 삭제하면, Then 나머지는 `404`이고 audit은 한 번만 기록된다.
+
 ## API Tests
 
 - (FR-011) 검색 필터가 각각, 그리고 조합(AND)으로 동작한다. 정렬은 `occurred_at` 내림차순, pagination은 `page`/`limit`(최대 100)과 `{total, items}` 형식을 따른다.
@@ -170,6 +191,9 @@ Verified Against: TBD
 - (FR-014) 목록 기본 status 필터가 `pending`이고, `approved`/`rejected` 필터가 동작한다.
 - (FR-014) 승인 성공 응답에 `status`, `decided_by`, `decided_at`이 포함된다. 승인/거절의 side effect(AC-3)가 DB와 audit에 반영된다.
 - (FR-014) 이미 처리된 신청 재처리 → `409`. 동시 승인/거절 경합은 한쪽만 성공하고 나머지는 `409`를 받는다 (중복 부여 없음).
+- (FR-014 회수) 보유 목록이 `page`/`limit`과 `{total, items}` 형식, `assigned_at` 내림차순을 따른다.
+- (FR-014 회수) 회수 성공 응답에 `id`, `user_id`가 포함되고, side effect(AC-6)가 DB와 audit에 반영된다.
+- (FR-014 회수) 이미 회수됐거나 타 조직의 `permission_id` → `404`.
 - 공통: `X-Organization-Id` 누락/invalid → `400`, `endAt ≤ startAt` → `400`, `limit > 100` → `422`, 미인증 → `401`.
 - Usage 집계: `startAt`/`endAt` 중 한쪽만 제공 → `400`.
 - 공통: 검색 결과 없음은 `{ "total": 0, "items": [] }` 정상 응답이다.
@@ -181,10 +205,13 @@ Verified Against: TBD
 - 비용 탭에서 비용 상위 workflow를 확인하고 해당 workflow 화면으로 이동한다 (진입만 — 비교/최적화는 cost-optimizer 범위).
 - 승인 흐름 UI: 승인 버튼 → 확인 다이얼로그(요청자/권한/사유 표시) → 확정 → 성공 toast → 목록에서 pending 제거.
 - 이미 처리된 신청을 다른 세션에서 재처리 → "이미 처리된 신청" 안내 후 목록 갱신.
+- 회수 흐름 UI: 보유 권한 섹션의 회수 버튼 → 확인 다이얼로그(보유자/권한 표시) → 확정 → 성공 toast → 보유 목록에서 제거.
+- **회수→재차단→재신청 연결**: 승인으로 권한을 얻은 사용자의 권한을 관리자가 회수 → 해당 사용자의 App 생성이 다시 403으로 차단 → 권한 신청 UI에서 재신청 성공 → 관리자 audit 탭에서 `user_app_creation_permission.deleted`와 새 `permission_request.created` 기록 확인.
+- 이미 회수된 권한을 다른 세션에서 재회수 → "이미 회수된 권한" 안내 후 목록 갱신.
 
 ## Permission Tests
 
-- `auditor` 사용자: audit 검색/상세 200, usage/summary/permission-requests 전부 403 (`permission.denied` audit 기록).
+- `auditor` 사용자: audit 검색/상세 200, usage/summary/permission-requests/app-creation-permissions 전부 403 (`permission.denied` audit 기록).
 - audit 권한 없는 일반 member: 모든 admin API 403.
 - organization owner/manager: 모든 admin API 200.
 - 다른 organization의 audit/usage/신청 데이터가 응답에 포함되지 않고, 타 조직 id 직접 조회는 404다.
@@ -199,4 +226,6 @@ Verified Against: TBD
 - 예산 `budget` null 상태에서 UI 요약 카드가 "예산 미설정"을 표시한다 (오류 아님).
 - 승인 시점에 신청자가 조직의 active member가 아니면(제거/정지) 승인이 `409`로 거부되고, 권한 row와 audit(`user_app_creation_permission.created`)이 생성되지 않는다.
 - 멤버 제거 시 해당 user의 `user_app_creation_permissions` row가 permission cleanup으로 삭제되고, 이후 그 user의 App 생성은 다시 차단된다 (승인·제거 경합의 최종 상태 정리 — [ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)).
+- 멤버 제거 cleanup(aggregate `permission.revoke` audit)과 개별 회수(`user_app_creation_permission.deleted` audit)는 audit action이 서로 다르고, 개별 회수는 멤버 상태를 바꾸지 않는다.
+- 개별 회수 후 멤버 제거가 이어져도 cleanup은 이미 없는 row를 중복 삭제하지 않는다 (cleanup count에 미포함).
 - timestamp 표시는 사용자 로컬 시간대, `<time datetime>`은 ISO 값을 유지한다.
