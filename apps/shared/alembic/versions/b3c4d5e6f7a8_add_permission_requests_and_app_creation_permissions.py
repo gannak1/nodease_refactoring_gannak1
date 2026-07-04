@@ -4,7 +4,7 @@ Revision ID: b3c4d5e6f7a8
 Revises: d0e1f2a3b4c5
 Create Date: 2026-07-04 00:00:00.000000
 
-ADR-0014: 권한 신청과 App 생성 권한 모델.
+ADR-0016: 권한 신청과 App 생성 권한 모델.
 """
 
 from typing import Sequence, Union

@@ -19,7 +19,7 @@ PERMISSION_REQUEST_STATUSES = {
 
 
 class PermissionRequestCreateRequest(BaseModel):
-    """권한 신청 제출 요청 (ADR-0014)."""
+    """권한 신청 제출 요청 (ADR-0016)."""
 
     reason: str
     requested_permission: str = REQUESTED_PERMISSION_APP_CREATE

@@ -16,7 +16,7 @@ from apps.shared.db.base import Base
 
 
 class UserAppCreationPermission(Base):
-    """조직 수준 App 생성 능력의 user 부여 (ADR-0014).
+    """조직 수준 App 생성 능력의 user 부여 (ADR-0016).
 
     row 존재가 곧 허용이며, 단일 능력이므로 auth_state를 두지 않는다.
     """

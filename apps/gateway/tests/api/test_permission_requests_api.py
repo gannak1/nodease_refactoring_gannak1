@@ -1,4 +1,4 @@
-"""권한 신청 API(FR-041/FR-014, ADR-0014) 계약 테스트.
+"""권한 신청 API(FR-041/FR-014, ADR-0016) 계약 테스트.
 
 TDD red phase: route와 App 생성 권한 검사가 아직 없으므로 전부 실패해야 한다.
 - 신청 제출: POST /api/v1/permission-requests (organization feature)
@@ -59,7 +59,7 @@ class TestPermissionRequestRoutesRegistered(unittest.TestCase):
 
 
 class TestAppCreationPermissionEnforcement(unittest.TestCase):
-    """ADR-0014: App 생성은 owner/manager 또는 user_app_creation_permissions
+    """ADR-0016: App 생성은 owner/manager 또는 user_app_creation_permissions
     row 보유자만 허용하고, 그 외에는 403 permission.denied로 차단한다."""
 
     def setUp(self):

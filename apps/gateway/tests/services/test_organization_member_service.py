@@ -26,6 +26,7 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
 from apps.shared.schemas.organization_membership import (
     OrganizationMemberInviteRequest,
     OrganizationMemberUpdateRequest,
@@ -464,6 +465,7 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         team_memberships=[_team_membership(org.id, target.id)],
         workflow_permissions=[_user_workflow_permission(org.id, target.id)],
         llm_permissions=[_user_llm_permission(org.id, target.id)],
+        app_creation_permissions=[_user_app_creation_permission(org.id, target.id)],
     )
     monkeypatch.setattr(
         "apps.gateway.services.organization_member_service.has_organization_manager_permission",
@@ -486,10 +488,14 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
     assert db.team_memberships == []
     assert db.workflow_permissions == []
     assert db.llm_permissions == []
+    assert db.app_creation_permissions == []
     assert _audit_actions(db) == [
         AuditAction.ORGANIZATION_MEMBER_REMOVE,
         AuditAction.PERMISSION_REVOKE,
     ]
+    assert db.audit_logs[1].audit_metadata["cleanup"][
+        "user_app_creation_permissions"
+    ] == 1
     for audit_log in db.audit_logs:
         metadata = audit_log.audit_metadata
         assert metadata["request_id"] == "req-test"
@@ -732,6 +738,7 @@ class _Db:
         team_memberships=None,
         workflow_permissions=None,
         llm_permissions=None,
+        app_creation_permissions=None,
     ):
         self.users = users or []
         self.organizations = organizations or []
@@ -739,6 +746,7 @@ class _Db:
         self.team_memberships = team_memberships or []
         self.workflow_permissions = workflow_permissions or []
         self.llm_permissions = llm_permissions or []
+        self.app_creation_permissions = app_creation_permissions or []
         self.audit_logs = []
         self.commits = 0
         self.for_update_calls = 0
@@ -776,6 +784,12 @@ class _Db:
             return _Query(
                 self.llm_permissions,
                 self.llm_permissions,
+                on_for_update=self._record_for_update,
+            )
+        if model is UserAppCreationPermission:
+            return _Query(
+                self.app_creation_permissions,
+                self.app_creation_permissions,
                 on_for_update=self._record_for_update,
             )
         return _Query([], on_for_update=self._record_for_update)
@@ -888,6 +902,10 @@ def _field_value(item, field):
         "user_workflow_permissions.user_id": "user_id",
         "user_llm_permissions.grantee_organization_id": "grantee_organization_id",
         "user_llm_permissions.user_id": "user_id",
+        (
+            "user_app_creation_permissions.grantee_organization_id"
+        ): "grantee_organization_id",
+        "user_app_creation_permissions.user_id": "user_id",
     }
     return getattr(item, mapping[field])
 
@@ -964,6 +982,15 @@ def _user_llm_permission(organization_id, user_id):
         llm_credential_id=uuid4(),
         assigned_by=uuid4(),
         auth_state="viewer",
+    )
+
+
+def _user_app_creation_permission(organization_id, user_id):
+    return UserAppCreationPermission(
+        id=uuid4(),
+        grantee_organization_id=organization_id,
+        user_id=user_id,
+        assigned_by=uuid4(),
     )
 
 

@@ -57,7 +57,7 @@ def _add_audit(
 
 
 class PermissionRequestService:
-    """권한 신청 제출/조회/승인/거절 (FR-041/FR-014, ADR-0014)."""
+    """권한 신청 제출/조회/승인/거절 (FR-041/FR-014, ADR-0016)."""
 
     @staticmethod
     def _get_request(db: Session, request_id: Any) -> Optional[PermissionRequest]:

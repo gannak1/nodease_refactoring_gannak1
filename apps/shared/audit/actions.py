@@ -18,7 +18,7 @@ class AuditAction:
     PERMISSION_REVOKE = "permission.revoke"
     PERMISSION_DENIED = "permission.denied"
 
-    # 권한 신청 lifecycle과 App 생성 권한 row data-change (ADR-0014).
+    # 권한 신청 lifecycle과 App 생성 권한 row data-change (ADR-0016).
     PERMISSION_REQUEST_CREATED = "permission_request.created"
     PERMISSION_REQUEST_APPROVED = "permission_request.approved"
     PERMISSION_REQUEST_REJECTED = "permission_request.rejected"

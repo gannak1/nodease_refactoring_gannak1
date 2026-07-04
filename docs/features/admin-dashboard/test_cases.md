@@ -193,5 +193,5 @@ Verified Against: TBD
 - 가격 미등록 모델의 usage(`total_cost=0.0`)는 집계에 0으로 반영된다 — "미산정 구분 불가"는 수용된 한계이며 테스트는 0 합산 동작만 검증한다.
 - 예산 `budget` null 상태에서 UI 요약 카드가 "예산 미설정"을 표시한다 (오류 아님).
 - 승인 시점에 신청자가 조직의 active member가 아니면(제거/정지) 승인이 `409`로 거부되고, 권한 row와 audit(`user_app_creation_permission.created`)이 생성되지 않는다.
-- 멤버 제거 시 해당 user의 `user_app_creation_permissions` row가 permission cleanup으로 삭제되고, 이후 그 user의 App 생성은 다시 차단된다 (승인·제거 경합의 최종 상태 정리 — [ADR-0014](../../decisions/ADR-0014-permission-request-and-app-creation-permission.md)).
+- 멤버 제거 시 해당 user의 `user_app_creation_permissions` row가 permission cleanup으로 삭제되고, 이후 그 user의 App 생성은 다시 차단된다 (승인·제거 경합의 최종 상태 정리 — [ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)).
 - timestamp 표시는 사용자 로컬 시간대, `<time datetime>`은 ISO 값을 유지한다.

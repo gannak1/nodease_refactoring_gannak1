@@ -105,7 +105,7 @@ def approve_permission_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """권한 신청 승인 (FR-014, ADR-0014)."""
+    """권한 신청 승인 (FR-014, ADR-0016)."""
     organization_id = _resolve_managed_organization(
         db, request, x_organization_id, current_user
     )
@@ -129,7 +129,7 @@ def reject_permission_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """권한 신청 거절 (FR-014, ADR-0014)."""
+    """권한 신청 거절 (FR-014, ADR-0016)."""
     organization_id = _resolve_managed_organization(
         db, request, x_organization_id, current_user
     )

@@ -1,4 +1,4 @@
-# ADR-0014: 권한 신청과 App 생성 권한 모델
+# ADR-0016: 권한 신청과 App 생성 권한 모델
 
 Status: Accepted
 Related ADRs: [ADR-0006-accept-rbac-auth-state-and-user-direct-permission](ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md), [ADR-0008-audit-action-naming-standard](ADR-0008-audit-action-naming-standard.md), [ADR-0010-resource-access-403-404-policy](ADR-0010-resource-access-403-404-policy.md)

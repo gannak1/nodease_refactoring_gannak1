@@ -22,7 +22,7 @@ def submit_permission_request(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """workflow 생성/배포(App 생성) 권한 신청 제출 (FR-041, ADR-0014)."""
+    """workflow 생성/배포(App 생성) 권한 신청 제출 (FR-041, ADR-0016)."""
     organization_id = resolve_active_organization_id(
         db, request, x_organization_id, current_user.id
     )

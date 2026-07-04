@@ -25,6 +25,7 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
 from apps.shared.schemas.organization_membership import (
     OrganizationMemberInviteRequest,
     OrganizationMemberRemoveResponse,
@@ -289,11 +290,13 @@ def _cleanup_counts(
     removed_team_memberships: int,
     revoked_workflow_permissions: int,
     revoked_llm_permissions: int,
+    revoked_app_creation_permissions: int = 0,
 ) -> dict[str, Any]:
     return {
         "team_memberships": removed_team_memberships,
         "user_workflow_permissions": revoked_workflow_permissions,
         "user_llm_permissions": revoked_llm_permissions,
+        "user_app_creation_permissions": revoked_app_creation_permissions,
         "user_knowledge_permissions": 0,
         "user_audit_permissions": 0,
     }
@@ -620,6 +623,14 @@ class OrganizationMemberService:
             )
             .delete(synchronize_session=False)
         )
+        revoked_app_creation_permissions = (
+            db.query(UserAppCreationPermission)
+            .filter(
+                UserAppCreationPermission.grantee_organization_id == organization_id,
+                UserAppCreationPermission.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
         membership.membership_state = ORGANIZATION_MEMBERSHIP_REMOVED
         membership.removed_at = _now()
 
@@ -627,6 +638,7 @@ class OrganizationMemberService:
             removed_team_memberships,
             revoked_workflow_permissions,
             revoked_llm_permissions,
+            revoked_app_creation_permissions,
         )
         _add_audit_log(
             db,

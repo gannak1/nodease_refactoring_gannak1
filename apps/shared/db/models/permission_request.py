@@ -25,7 +25,7 @@ REQUESTED_PERMISSION_APP_CREATE = "app.create"
 
 
 class PermissionRequest(Base):
-    """권한 신청 (ADR-0014). 제출/승인/거절 상태를 보관한다."""
+    """권한 신청 (ADR-0016). 제출/승인/거절 상태를 보관한다."""
 
     __tablename__ = "permission_requests"
     __table_args__ = (
@@ -41,7 +41,7 @@ class PermissionRequest(Base):
             "flags >= 0",
             name="ck_permission_requests_flags_nonnegative",
         ),
-        # 같은 조직에 처리 대기 신청은 1건만 허용한다 (ADR-0014).
+        # 같은 조직에 처리 대기 신청은 1건만 허용한다 (ADR-0016).
         Index(
             "uq_permission_requests_pending",
             "organization_id",

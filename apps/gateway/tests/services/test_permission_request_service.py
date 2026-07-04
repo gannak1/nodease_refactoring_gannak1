@@ -1,4 +1,4 @@
-"""PermissionRequestService(FR-014, ADR-0014) 계약 테스트.
+"""PermissionRequestService(FR-014, ADR-0016) 계약 테스트.
 
 TDD red phase: 서비스와 모델이 아직 없으므로 전부 실패해야 한다.
 test_cases.md의 PermissionRequestService 단위 계약을 검증한다.

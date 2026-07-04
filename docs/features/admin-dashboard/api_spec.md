@@ -145,7 +145,7 @@ Response `200`:
 { "id": "<uuid>", "status": "approved", "decided_by": "<uuid>", "decided_at": "<datetime>" }
 ```
 
-Side effects ([ADR-0014](../../decisions/ADR-0014-permission-request-and-app-creation-permission.md)):
+Side effects ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)):
 
 - `permission_requests.status`를 `approved`로 갱신하고 `decided_by`/`decided_at`을 기록한다.
 - 신청자의 `user_app_creation_permissions` row를 생성한다.
@@ -161,7 +161,7 @@ Response `200`:
 { "id": "<uuid>", "status": "rejected", "decided_by": "<uuid>", "decided_at": "<datetime>" }
 ```
 
-Side effects: status 갱신 + `permission_request.rejected` audit 기록. 거절된 신청자는 재신청할 수 있다 (ADR-0014).
+Side effects: status 갱신 + `permission_request.rejected` audit 기록. 거절된 신청자는 재신청할 수 있다 (ADR-0016).
 
 ## Errors
 
@@ -175,7 +175,7 @@ Side effects: status 갱신 + `permission_request.rejected` audit 기록. 거절
 | 422 | request 형식 오류 |
 
 - 검색 결과 없음은 오류가 아니라 `{ "total": 0, "items": [] }` 정상 응답이다.
-- 동시 승인/거절 경합은 한쪽만 성공하고 나머지는 409를 받는다 (중복 부여 방지, ADR-0014 후속 검토).
+- 동시 승인/거절 경합은 한쪽만 성공하고 나머지는 409를 받는다 (중복 부여 방지, ADR-0016 후속 검토).
 
 ## Permissions
 

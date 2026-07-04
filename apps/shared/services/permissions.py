@@ -186,7 +186,7 @@ def has_app_creation_permission(
     user_id: Any,
     organization_id: Any,
 ) -> bool:
-    """조직 수준 App 생성 능력 판정 (ADR-0014).
+    """조직 수준 App 생성 능력 판정 (ADR-0016).
 
     organization owner/manager는 허용하고, 그 외에는
     user_app_creation_permissions row가 있어야 허용한다. fail-closed.

@@ -1,4 +1,4 @@
-"""권한 신청(ADR-0014) 모델/스키마/audit action 계약 테스트.
+"""권한 신청(ADR-0016) 모델/스키마/audit action 계약 테스트.
 
 TDD red phase: 구현 전이므로 전부 실패해야 한다.
 import를 각 테스트 안에서 수행해 케이스별로 실패 이유가 드러나게 한다.
@@ -97,7 +97,7 @@ def test_user_app_creation_permission_model_contract():
         assert required in columns, (
             f"user_app_creation_permissions.{required} column 누락"
         )
-    # 단일 능력 테이블이므로 auth_state를 두지 않는다 (ADR-0014).
+    # 단일 능력 테이블이므로 auth_state를 두지 않는다 (ADR-0016).
     assert "auth_state" not in columns
 
 
