@@ -103,6 +103,9 @@ class FakePermissionHelper(KnowledgePermissionHelper):
     def _now(self):
         return datetime(2026, 7, 4, tzinfo=timezone.utc)
 
+    def _prepare_bulk_kb_context(self, kbs):
+        return None
+
     def bulk_evaluate_kb_use(self, kbs):
         kb_list = list(kbs)
         self.bulk_kb_calls.append([kb.id for kb in kb_list])
@@ -412,3 +415,41 @@ def test_builder_candidate_marks_runtime_unavailable_for_intended_subject():
     assert candidate.runtime_availability == "unavailable"
     assert candidate.safe_metadata["runtime_reason_code"] == "permission.denied"
     assert "knowledge_base_id" in candidate.permission.safe_metadata
+
+
+def test_bulk_kb_use_uses_prefetched_context_and_restores_it():
+    kb = _kb(source_managed=True)
+    provenance = _source_provenance(freshness_epoch=13)
+
+    class BulkContextHelper(KnowledgePermissionHelper):
+        def __init__(self):
+            super().__init__(None, user_id=USER_ID, organization_id=ORG_ID)
+            self.prepare_calls = 0
+
+        def _organization_auth_state(self):
+            return ORGANIZATION_AUTH_MEMBER
+
+        def _prepare_bulk_kb_context(self, kbs):
+            self.prepare_calls += 1
+            self._bulk_manual_auth_state_by_kb_id = {
+                item.id: AUTH_STATE_OPERATOR for item in kbs
+            }
+            self._bulk_source_policy_allowed_kb_ids = set()
+            self._bulk_source_authorization_by_key = {
+                (item.id, item.source_identity_id): provenance for item in kbs
+            }
+
+        def _now(self):
+            return datetime(2026, 7, 4, tzinfo=timezone.utc)
+
+    helper = BulkContextHelper()
+
+    decisions = helper.bulk_evaluate_kb_use([kb])
+
+    assert helper.prepare_calls == 1
+    assert decisions[kb.id].allowed is True
+    assert decisions[kb.id].source_acl_state == "fresh"
+    assert decisions[kb.id].freshness_epoch == 13
+    assert helper._bulk_manual_auth_state_by_kb_id is None
+    assert helper._bulk_source_policy_allowed_kb_ids is None
+    assert helper._bulk_source_authorization_by_key is None

@@ -5,6 +5,10 @@ from types import SimpleNamespace
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential, LLMProvider
 from apps.shared.schemas.rag import ChunkPreview
+from apps.shared.services.rag_source_tier import (
+    chunk_source_tier_priority,
+    retrieval_candidate_source_tier_priority,
+)
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.retrieval import RetrievalService
 
@@ -102,6 +106,54 @@ def test_chunk_metadata_includes_safe_source_tier_from_document_version():
 
     assert metadata["source_tier"] == "company_policy"
     assert service._metadata_summary(metadata)["source_tier"] == "company_policy"
+
+
+def test_source_tier_priority_uses_authorized_evidence_tie_break_only():
+    policy_chunk = SimpleNamespace(
+        metadata_summary={"source_tier": "company_policy"},
+        similarity_score=0.77,
+    )
+    thread_chunk = SimpleNamespace(
+        metadata_summary={"source_tier": "conversation_or_thread"},
+        similarity_score=0.77,
+    )
+
+    sorted_chunks = sorted(
+        [("thread", thread_chunk), ("policy", policy_chunk)],
+        key=lambda item: (
+            getattr(item[1], "similarity_score", 0),
+            chunk_source_tier_priority(item[1]),
+        ),
+        reverse=True,
+    )
+
+    assert [kb_id for kb_id, _chunk in sorted_chunks] == ["policy", "thread"]
+
+
+def test_retrieval_candidate_source_tier_priority_reads_chunk_or_doc_metadata():
+    chunk_candidate = {
+        "score": 1.0,
+        "chunk": SimpleNamespace(source_tier="official_documentation"),
+        "doc": SimpleNamespace(meta_info={"source_tier": "conversation_or_thread"}),
+    }
+    doc_candidate = {
+        "score": 1.0,
+        "chunk": SimpleNamespace(metadata_={}),
+        "doc": SimpleNamespace(meta_info={"source_tier": "company_policy"}),
+    }
+
+    assert retrieval_candidate_source_tier_priority(chunk_candidate) > 0
+    assert retrieval_candidate_source_tier_priority(doc_candidate) > 0
+    assert retrieval_candidate_source_tier_priority(doc_candidate) > (
+        retrieval_candidate_source_tier_priority(
+            {
+                "chunk": SimpleNamespace(metadata_={}),
+                "doc": SimpleNamespace(
+                    meta_info={"source_tier": "conversation_or_thread"}
+                ),
+            }
+        )
+    )
 
 
 def test_metadata_summary_preserves_hierarchy_fallback_flag():

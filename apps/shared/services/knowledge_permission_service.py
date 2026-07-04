@@ -14,6 +14,7 @@ from apps.shared.db.models.knowledge import (
 from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
 from apps.shared.db.models.team import (
     Team,
+    TeamKnowledgePermission,
     TeamKnowledgeCollectionPermission,
     TeamMembership,
     UserKnowledgeCollectionPermission,
@@ -60,6 +61,12 @@ class KnowledgePermissionHelper:
         self.requester_subject_type = requester_subject_type
         self.requester_subject_id = requester_subject_id or user_id
         self._team_ids_cache: set[uuid.UUID] | None = None
+        self._bulk_manual_auth_state_by_kb_id: dict[uuid.UUID, str] | None = None
+        self._bulk_source_policy_allowed_kb_ids: set[uuid.UUID] | None = None
+        self._bulk_source_authorization_by_key: (
+            dict[tuple[uuid.UUID, uuid.UUID | None], SourceAuthorizationProvenance]
+            | None
+        ) = None
 
     def evaluate_collection_action(
         self,
@@ -150,7 +157,24 @@ class KnowledgePermissionHelper:
         self,
         kbs: Iterable[KnowledgeBase],
     ) -> dict[uuid.UUID, KnowledgePermissionDecision]:
-        return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+        kb_list = list(kbs)
+        if not kb_list:
+            return {}
+
+        previous_context = (
+            self._bulk_manual_auth_state_by_kb_id,
+            self._bulk_source_policy_allowed_kb_ids,
+            self._bulk_source_authorization_by_key,
+        )
+        try:
+            self._prepare_bulk_kb_context(kb_list)
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kb_list}
+        finally:
+            (
+                self._bulk_manual_auth_state_by_kb_id,
+                self._bulk_source_policy_allowed_kb_ids,
+                self._bulk_source_authorization_by_key,
+            ) = previous_context
 
     def _effective_kb_use_auth_state(self, kb: KnowledgeBase) -> str:
         manual_auth_state = self._manual_kb_auth_state(kb)
@@ -158,6 +182,8 @@ class KnowledgePermissionHelper:
         return stronger_resource_auth_state(manual_auth_state, source_policy_auth_state)
 
     def _manual_kb_auth_state(self, kb: KnowledgeBase) -> str:
+        if self._bulk_manual_auth_state_by_kb_id is not None:
+            return self._bulk_manual_auth_state_by_kb_id.get(kb.id, AUTH_STATE_NONE)
         return get_effective_knowledge_base_auth_state(
             self.db,
             self.user_id,
@@ -166,6 +192,12 @@ class KnowledgePermissionHelper:
         )
 
     def _source_policy_kb_use_auth_state(self, kb: KnowledgeBase) -> str:
+        if self._bulk_source_policy_allowed_kb_ids is not None:
+            return (
+                AUTH_STATE_OPERATOR
+                if kb.id in self._bulk_source_policy_allowed_kb_ids
+                else AUTH_STATE_NONE
+            )
         if self._organization_auth_state() == AUTH_STATE_MANAGER:
             return AUTH_STATE_MANAGER
 
@@ -277,6 +309,10 @@ class KnowledgePermissionHelper:
         self,
         kb: KnowledgeBase,
     ) -> SourceAuthorizationProvenance | None:
+        if self._bulk_source_authorization_by_key is not None:
+            return self._bulk_source_authorization_by_key.get(
+                (kb.id, kb.source_identity_id)
+            )
         query = self.db.query(SourceAuthorizationProvenance).filter(
             SourceAuthorizationProvenance.organization_id == self.organization_id,
             SourceAuthorizationProvenance.knowledge_base_id == kb.id,
@@ -298,6 +334,160 @@ class KnowledgePermissionHelper:
             )
             .first()
         )
+
+    def _prepare_bulk_kb_context(self, kbs: list[KnowledgeBase]) -> None:
+        """여러 KB 판정에 필요한 입력을 선조회해 N+1 permission query를 피한다."""
+        kb_ids = [kb.id for kb in kbs if kb is not None]
+        if not kb_ids:
+            self._bulk_manual_auth_state_by_kb_id = {}
+            self._bulk_source_policy_allowed_kb_ids = set()
+            self._bulk_source_authorization_by_key = {}
+            return
+
+        self._bulk_manual_auth_state_by_kb_id = self._bulk_manual_kb_auth_states(kbs)
+        self._bulk_source_policy_allowed_kb_ids = self._bulk_source_policy_kb_ids(kbs)
+        self._bulk_source_authorization_by_key = (
+            self._bulk_latest_source_authorization_by_key(kbs)
+        )
+
+    def _bulk_manual_kb_auth_states(
+        self, kbs: list[KnowledgeBase]
+    ) -> dict[uuid.UUID, str]:
+        kb_ids = [kb.id for kb in kbs if kb is not None]
+        states = {kb_id: AUTH_STATE_NONE for kb_id in kb_ids}
+        organization_auth_state = self._organization_auth_state()
+        if organization_auth_state == AUTH_STATE_MANAGER:
+            return {kb_id: AUTH_STATE_MANAGER for kb_id in kb_ids}
+        if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+            return states
+
+        rows = (
+            self.db.query(
+                TeamKnowledgePermission.knowledge_base_id,
+                TeamKnowledgePermission.auth_state,
+            )
+            .join(TeamMembership, TeamMembership.team_id == TeamKnowledgePermission.team_id)
+            .join(Team, Team.id == TeamKnowledgePermission.team_id)
+            .filter(
+                TeamMembership.user_id == self.user_id,
+                TeamKnowledgePermission.knowledge_base_id.in_(kb_ids),
+                Team.is_active.is_(True),
+                TeamMembership.grantee_organization_id == self.organization_id,
+                TeamKnowledgePermission.grantee_organization_id == self.organization_id,
+                TeamMembership.grantee_organization_id
+                == TeamKnowledgePermission.grantee_organization_id,
+                Team.organization_id == self.organization_id,
+            )
+            .all()
+        )
+        for kb_id, auth_state in rows:
+            states[kb_id] = stronger_resource_auth_state(states[kb_id], auth_state)
+        return states
+
+    def _bulk_source_policy_kb_ids(self, kbs: list[KnowledgeBase]) -> set[uuid.UUID]:
+        if self._organization_auth_state() == AUTH_STATE_MANAGER:
+            return {kb.id for kb in kbs if kb is not None}
+
+        kb_source_identity_by_id = {
+            kb.id: getattr(kb, "source_identity_id", None)
+            for kb in kbs
+            if kb is not None
+        }
+        if not kb_source_identity_by_id:
+            return set()
+
+        now = self._now()
+        subject_filters = [
+            and_(
+                SourcePolicyKBUseGrant.subject_type == "organization",
+                SourcePolicyKBUseGrant.subject_id == self.organization_id,
+            ),
+            and_(
+                SourcePolicyKBUseGrant.subject_type == "user",
+                SourcePolicyKBUseGrant.subject_id == self.user_id,
+            ),
+        ]
+        team_ids = self._active_team_ids()
+        if team_ids:
+            subject_filters.append(
+                and_(
+                    SourcePolicyKBUseGrant.subject_type == "team",
+                    SourcePolicyKBUseGrant.subject_id.in_(team_ids),
+                )
+            )
+
+        rows = (
+            self.db.query(
+                SourcePolicyKBUseGrant.knowledge_base_id,
+                SourcePolicyKBUseGrant.source_identity_id,
+            )
+            .filter(
+                SourcePolicyKBUseGrant.organization_id == self.organization_id,
+                SourcePolicyKBUseGrant.knowledge_base_id.in_(
+                    list(kb_source_identity_by_id)
+                ),
+                SourcePolicyKBUseGrant.permission_action == "use",
+                SourcePolicyKBUseGrant.status == "active",
+                or_(
+                    SourcePolicyKBUseGrant.expires_at.is_(None),
+                    SourcePolicyKBUseGrant.expires_at > now,
+                ),
+                or_(*subject_filters),
+            )
+            .all()
+        )
+
+        allowed_kb_ids: set[uuid.UUID] = set()
+        for kb_id, grant_source_identity_id in rows:
+            kb_source_identity_id = kb_source_identity_by_id.get(kb_id)
+            if (
+                grant_source_identity_id is None
+                or grant_source_identity_id == kb_source_identity_id
+            ):
+                allowed_kb_ids.add(kb_id)
+        return allowed_kb_ids
+
+    def _bulk_latest_source_authorization_by_key(
+        self, kbs: list[KnowledgeBase]
+    ) -> dict[tuple[uuid.UUID, uuid.UUID | None], SourceAuthorizationProvenance]:
+        source_managed = [
+            kb for kb in kbs if kb is not None and self._is_source_managed(kb)
+        ]
+        if not source_managed:
+            return {}
+
+        rows = (
+            self.db.query(SourceAuthorizationProvenance)
+            .filter(
+                SourceAuthorizationProvenance.organization_id == self.organization_id,
+                SourceAuthorizationProvenance.knowledge_base_id.in_(
+                    [kb.id for kb in source_managed]
+                ),
+                SourceAuthorizationProvenance.requester_subject_type
+                == self.requester_subject_type,
+                SourceAuthorizationProvenance.requester_subject_id
+                == self.requester_subject_id,
+                SourceAuthorizationProvenance.status == "active",
+                SourceAuthorizationProvenance.source_identity_id.in_(
+                    [kb.source_identity_id for kb in source_managed]
+                ),
+            )
+            .order_by(
+                SourceAuthorizationProvenance.knowledge_base_id,
+                SourceAuthorizationProvenance.source_identity_id,
+                SourceAuthorizationProvenance.freshness_epoch.desc(),
+                SourceAuthorizationProvenance.updated_at.desc(),
+            )
+            .all()
+        )
+
+        latest_by_key: dict[
+            tuple[uuid.UUID, uuid.UUID | None], SourceAuthorizationProvenance
+        ] = {}
+        for row in rows:
+            key = (row.knowledge_base_id, row.source_identity_id)
+            latest_by_key.setdefault(key, row)
+        return latest_by_key
 
     def _collection_has_action(
         self,

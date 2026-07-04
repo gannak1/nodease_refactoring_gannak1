@@ -19,6 +19,7 @@ from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
     RAGEvidencePolicy,
 )
+from apps.shared.services.rag_source_tier import chunk_source_tier_priority
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.utils.prompt_injection_guard import build_untrusted_context_block
 from apps.workflow_engine.services.llm_service import (
@@ -732,10 +733,13 @@ class LLMNode(Node[LLMNodeData]):
             for chunk in chunks:
                 all_chunks.append((kb_id, chunk))
 
-        # 유사도 순 정렬
+        # source_tier는 권한을 통과한 evidence 안에서만 동점 정렬 힌트로 사용한다.
         sorted_chunks = sorted(
             all_chunks,
-            key=lambda item: getattr(item[1], "similarity_score", 0),
+            key=lambda item: (
+                getattr(item[1], "similarity_score", 0),
+                chunk_source_tier_priority(item[1]),
+            ),
             reverse=True,
         )
         top_chunks = sorted_chunks[:top_k] if top_k else sorted_chunks

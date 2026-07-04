@@ -27,6 +27,9 @@ from apps.shared.services.rag_hierarchy import (
     normalize_hierarchy_mode,
     parent_candidate_limit,
 )
+from apps.shared.services.rag_source_tier import (
+    retrieval_candidate_source_tier_priority,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -475,7 +478,9 @@ class RetrievalService:
             fused_scores[doc_id]["score"] += 1.0 / (k + rank + 1)
 
         sorted_results = sorted(
-            fused_scores.values(), key=lambda x: x["score"], reverse=True
+            fused_scores.values(),
+            key=lambda x: (x["score"], retrieval_candidate_source_tier_priority(x)),
+            reverse=True,
         )
         return sorted_results
 
@@ -499,7 +504,14 @@ class RetrievalService:
             for i, item in enumerate(candidates):
                 item["rerank_score"] = float(scores[i])
 
-            reranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
+            reranked = sorted(
+                candidates,
+                key=lambda x: (
+                    x["rerank_score"],
+                    retrieval_candidate_source_tier_priority(x),
+                ),
+                reverse=True,
+            )
 
             return reranked[:top_k]
 
@@ -608,7 +620,9 @@ class RetrievalService:
 
         final_list = []
         merged_candidates = sorted(
-            all_candidates.values(), key=lambda x: x["score"], reverse=True
+            all_candidates.values(),
+            key=lambda x: (x["score"], retrieval_candidate_source_tier_priority(x)),
+            reverse=True,
         )
 
         if hybrid_search or use_multi_query or any_hierarchy:
