@@ -61,6 +61,31 @@ class WorkflowCompareRequest(BaseModel):
     right: str
 
 
+class CostOptimizerPermissionResponse(BaseModel):
+    can_compare: bool
+    can_apply: bool
+    required_auth_state: str
+
+
+class CostOptimizerAvailabilityResponse(BaseModel):
+    available: bool
+    reason: str | None = None
+    workflow_id: str
+    node_id: str
+    node_type: str
+    permission: CostOptimizerPermissionResponse
+
+
+def _find_workflow_node(graph: dict[str, Any] | None, node_id: str) -> dict[str, Any] | None:
+    if not isinstance(graph, dict):
+        return None
+    nodes = graph.get("nodes") or []
+    for node in nodes:
+        if isinstance(node, dict) and str(node.get("id")) == node_id:
+            return node
+    return None
+
+
 def validate_execution_graph(graph: dict):
     nodes = graph.get("nodes") or []
     edges = graph.get("edges") or []
@@ -191,6 +216,42 @@ def _format_compare_variant(
         if isinstance(node_output, dict)
         else 0.0,
         "latency_ms": usage.get("latency_ms") or latency_ms,
+    }
+
+
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/availability",
+    response_model=CostOptimizerAvailabilityResponse,
+)
+def get_cost_optimizer_availability(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드가 Cost Optimizer A/B 테스트 진입 대상인지 확인합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    node = _find_workflow_node(workflow.graph, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    node_type = str(node.get("type") or "")
+    if node_type != "llmNode":
+        raise HTTPException(status_code=400, detail="cost_optimizer.not_llm_node")
+
+    return {
+        "available": True,
+        "reason": None,
+        "workflow_id": str(workflow.id),
+        "node_id": node_id,
+        "node_type": node_type,
+        "permission": {
+            "can_compare": True,
+            "can_apply": True,
+            "required_auth_state": "builder",
+        },
     }
 
 
