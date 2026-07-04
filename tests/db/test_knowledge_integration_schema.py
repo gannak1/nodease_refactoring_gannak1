@@ -132,6 +132,7 @@ def test_retrieval_visible_condition_allows_legacy_or_active_ready_version():
     )
 
     assert "document_chunks.document_version_id IS NULL" in compiled
+    assert "knowledge_bases.active_document_version_id IS NULL" in compiled
     assert "knowledge_bases.active_document_version_id" in compiled
     assert "document_versions.status = 'ready'" in compiled
 
@@ -155,6 +156,7 @@ def test_keyword_search_applies_active_version_visibility_filter():
     assert result == []
     assert "LEFT JOIN document_versions dv" in captured["stmt"]
     assert "JOIN knowledge_bases kb" in captured["stmt"]
+    assert "kb.active_document_version_id IS NULL" in captured["stmt"]
     assert "dc.document_version_id IS NULL" in captured["stmt"]
     assert "kb.active_document_version_id = dc.document_version_id" in captured["stmt"]
     assert "dv.status = 'ready'" in captured["stmt"]
@@ -196,5 +198,6 @@ def test_hierarchy_availability_uses_active_ready_version_filter():
     )
 
     assert "document_chunks.document_version_id IS NULL" in compiled
+    assert "active_document_version_id IS NULL" in compiled
     assert "knowledge_bases.active_document_version_id" in compiled
     assert "status = 'ready'" in compiled

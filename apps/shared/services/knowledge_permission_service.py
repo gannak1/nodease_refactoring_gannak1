@@ -30,6 +30,7 @@ from apps.shared.schemas.knowledge import KnowledgePermissionDecision
 from apps.shared.services.permissions import (
     get_effective_knowledge_base_auth_state,
     get_organization_auth_state,
+    has_active_organization_membership,
 )
 
 
@@ -209,6 +210,8 @@ class KnowledgePermissionHelper:
     def _active_source_policy_grants(
         self, kb: KnowledgeBase
     ) -> list[SourcePolicyKBUseGrant]:
+        if not self._can_consume_source_policy_grants():
+            return []
         now = self._now()
         subject_filters = [
             and_(
@@ -387,6 +390,8 @@ class KnowledgePermissionHelper:
     def _bulk_source_policy_kb_ids(self, kbs: list[KnowledgeBase]) -> set[uuid.UUID]:
         if self._organization_auth_state() == AUTH_STATE_MANAGER:
             return {kb.id for kb in kbs if kb is not None}
+        if not self._can_consume_source_policy_grants():
+            return set()
 
         kb_source_identity_by_id = {
             kb.id: getattr(kb, "source_identity_id", None)
@@ -551,6 +556,15 @@ class KnowledgePermissionHelper:
 
     def _organization_auth_state(self) -> str:
         return get_organization_auth_state(
+            self.db,
+            self.user_id,
+            self.organization_id,
+        )
+
+    def _can_consume_source_policy_grants(self) -> bool:
+        # Source-policy grant는 조직 active member에게만 적용한다.
+        # legacy owner/manager fallback은 위의 manager override 경로에서만 처리한다.
+        return has_active_organization_membership(
             self.db,
             self.user_id,
             self.organization_id,

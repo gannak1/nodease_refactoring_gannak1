@@ -850,6 +850,10 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
             "workflow_run_id": str(uuid.uuid4()),
         },
     )
@@ -960,6 +964,10 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
         },
     )
     _patch_rag_gevent_inline(monkeypatch, node)
@@ -1064,6 +1072,10 @@ def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
         },
     )
     _patch_rag_gevent_inline(monkeypatch, node)
@@ -1129,6 +1141,10 @@ def test_llm_node_rag_template_query_rewrite_uses_safe_trace_summary(monkeypatch
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
         },
     )
 
@@ -1439,6 +1455,10 @@ def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
         },
     )
     _patch_rag_gevent_inline(monkeypatch, node)
@@ -1607,7 +1627,7 @@ def test_workflow_llm_service_requires_runtime_organization_scope(organization_i
     assert exc.value.organization_id is None
 
 
-def test_knowledge_search_requires_user_context():
+def test_knowledge_search_requires_execution_subject():
     data = LLMNodeData(
         title="LLM",
         provider="openai",
@@ -1621,6 +1641,30 @@ def test_knowledge_search_requires_user_context():
         "llm-1",
         data,
         execution_context={"organization_id": str(uuid.uuid4())},
+    )
+
+    with pytest.raises(PermissionError, match="execution subject"):
+        node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+
+def test_knowledge_search_does_not_fallback_to_user_id_without_execution_subject():
+    user_id = uuid.uuid4()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(uuid.uuid4()),
+        },
     )
 
     with pytest.raises(PermissionError, match="execution subject"):
@@ -1710,6 +1754,10 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
             "workflow_id": str(uuid.uuid4()),
             "workflow_run_id": str(uuid.uuid4()),
         },

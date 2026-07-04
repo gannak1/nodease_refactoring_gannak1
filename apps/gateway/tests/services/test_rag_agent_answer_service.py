@@ -317,10 +317,22 @@ def test_prepare_execution_blocks_kb_use_after_run_creation(monkeypatch):
         "record_lifecycle",
         lambda action, *_args, **_kwargs: lifecycle_actions.append(action),
     )
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=False,
+                external_reason_code="permission.denied",
+                effective_auth_state="viewer",
+                reason_code="kb_use_denied",
+            )
+
     monkeypatch.setattr(
         preflight_module,
-        "get_effective_knowledge_base_auth_state",
-        lambda *args, **kwargs: "viewer",
+        "KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
     )
     monkeypatch.setattr(
         preflight_module,

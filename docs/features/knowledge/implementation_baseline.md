@@ -41,7 +41,7 @@ MBA-105에서 구현하지 않는 범위:
 | ACL-only sync cadence | 15m-1h, content sync와 분리 |
 | Chunk size / overlap | child chunk 800-1,200 tokens, overlap 10-20% |
 | Parent/child hierarchy | parent 2,000-4,000 tokens, child 500-1,000 tokens |
-| Candidate caps | `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50` |
+| Candidate caps | `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`. Collection/KB candidate cap은 임의 row를 먼저 자른 뒤 authorization하는 방식이 아니라, route/use/source ACL helper를 통과한 authorized subset에 적용한다 |
 | Fanout | 단일 filtered vector/keyword query 우선, 불가하면 concurrency 5 bounded fanout |
 | Retrieval timeout | 호출당 5-10s, aggregate interactive path 15-30s |
 | Recovery scanner | local/non-prod 5m, production 후보 5-15m |
@@ -118,6 +118,8 @@ Source ACL authorization provenance 저장소는 KB `use` grant처럼 읽히지 
 
 Source ACL fact만으로는 KB `use`가 충족되지 않는다. Auto-ingested KB는 admin/team/user grant 또는 `source_policy_kb_use_grants` allow row가 존재할 때만 retrieval 후보가 된다.
 
+`subject_type="organization"` source-policy grant는 해당 organization의 active member에게만 적용된다. 단순히 `organization_id`가 일치한다는 이유로 비회원, removed, suspended, invited user에게 KB `use` 후보를 부여하지 않는다. Legacy owner/manager compatibility는 organization manager override 경로로만 취급하고 source-policy grant 소비 조건으로 확장하지 않는다.
+
 Policy expiry, connector revocation, source ACL revocation, policy disable은 source-policy-provisioned grant만 inactive 처리하고 `freshness_epoch`와 candidate cache를 갱신해야 한다. Manual team/user/admin grant row는 저장상 유지될 수 있지만, source-managed KB에서는 fresh source ACL/requester authorization gate가 fail-closed이면 retrieval 후보가 될 수 없다.
 
 ## Source Identity와 표시 정책
@@ -152,6 +154,7 @@ Target ingestion은 partial artifact를 retrieval-visible하게 만들면 안 �
 
 - `active` document version status 단독으로 active source of truth를 표현하지 않는다. `ready` status와 `knowledge_bases.active_document_version_id` pointer를 함께 active retrieval indicator로 사용한다.
 - Finalization이 성공하기 전까지 기존 active version은 계속 retrieval-visible 상태로 유지한다.
+- MBA-105 legacy compatibility에서는 `active_document_version_id`가 아직 없는 KB에 한해 `document_chunks.document_version_id IS NULL` chunk를 retrieval-visible로 둘 수 있다. KB에 active pointer가 생긴 뒤에는 `ready` active document version chunk만 retrieval-visible하다.
 - Pre-finalized chunk, vector, keyword index artifact는 retrieval-visible하지 않다.
 - External index 성공 후 DB finalize가 실패하면 기존 active version을 유지하고 cleanup을 queue에 넣는다.
 - DB finalize 성공 후 cleanup이 실패하면 같은 transaction에서 기록된 outbox event를 기준으로 새 active version을 유지하고 cleanup을 retry한다.

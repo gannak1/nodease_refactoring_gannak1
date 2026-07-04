@@ -1116,15 +1116,6 @@ class LLMNode(Node[LLMNodeData]):
                     "RAG retrieval requires a valid execution subject."
                 ) from exc
 
-        user_id_str = self.execution_context.get("user_id")
-        if user_id_str:
-            try:
-                return uuid.UUID(str(user_id_str))
-            except (TypeError, ValueError) as exc:
-                raise PermissionError(
-                    "RAG retrieval requires a valid user context."
-                ) from exc
-
         raise PermissionError("RAG retrieval requires an active execution subject.")
 
     def _authorized_runtime_kb_ids(

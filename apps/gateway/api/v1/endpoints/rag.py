@@ -28,7 +28,6 @@ from apps.gateway.core.config import settings
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
-from apps.gateway.services.organization_context import get_user_primary_organization_id
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
@@ -59,6 +58,7 @@ from apps.shared.services.permissions import (
     get_effective_knowledge_base_auth_state,
     has_organization_scope_access,
 )
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.rag_filters import normalize_metadata_filter
 from apps.shared.services.rag_hierarchy import (
     RAGHierarchyError,
@@ -124,37 +124,45 @@ def _authorize_rag_use(
             "Knowledge Base not found.",
         )
 
-    effective_auth_state = get_effective_knowledge_base_auth_state(
+    decision = KnowledgePermissionHelper(
         db,
-        current_user.id,
-        knowledge_base_id,
+        user_id=current_user.id,
         organization_id=organization_id,
-    )
-    if not knowledge_base_auth_state_allows(effective_auth_state, "use"):
-        record_resource_permission_denied(
-            user_id=current_user.id,
-            resource_type="knowledge_base",
-            resource_id=knowledge_base_id,
-            action="use",
-            effective_auth_state=effective_auth_state,
-            organization_id=organization_id,
-            metadata={
-                "request_id": getattr(request.state, "request_id", None),
-                "path": request.url.path,
-            },
-        )
-        exc = HTTPException(
-            status_code=403,
-            detail=error_detail(
-                request,
-                "permission.denied",
-                "Knowledge Base use permission is required.",
-            ),
-        )
-        setattr(exc, "audit_recorded", True)
-        raise exc
+    ).evaluate_kb_use(kb)
+    if decision.allowed:
+        return kb
 
-    return kb
+    if decision.external_reason_code == "resource.hidden":
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Knowledge Base not found.",
+        )
+
+    record_resource_permission_denied(
+        user_id=current_user.id,
+        resource_type="knowledge_base",
+        resource_id=knowledge_base_id,
+        action="use",
+        effective_auth_state=decision.effective_auth_state,
+        organization_id=organization_id,
+        metadata={
+            "request_id": getattr(request.state, "request_id", None),
+            "path": request.url.path,
+            "reason_code": decision.reason_code or "kb_use_denied",
+        },
+    )
+    exc = HTTPException(
+        status_code=403,
+        detail=error_detail(
+            request,
+            "permission.denied",
+            "Knowledge Base use permission is required.",
+        ),
+    )
+    setattr(exc, "audit_recorded", True)
+    raise exc
 
 
 def _record_rag_retrieve_audit(
@@ -318,6 +326,7 @@ async def generate_presigned_url(
 async def upload_document(
     background_tasks: BackgroundTasks,
     request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     file: Optional[UploadFile] = File(None, alias="file"),
     knowledge_base_id: Optional[UUID] = Form(None, alias="knowledgeBaseId"),
     source_type: str = Form("FILE", alias="sourceType"),
@@ -353,12 +362,14 @@ async def upload_document(
     # 0. 환경 변수 확인 (Ingestion Mode)
     ingestion_mode = (settings.STORAGE_TYPE or "LOCAL").upper()
     logger.info(f"=== [upload_document] Request Received (Mode: {ingestion_mode}) ===")
+    organization_id = parse_organization_id(request, x_organization_id)
 
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
         request,
         db,
         current_user,
+        organization_id,
         knowledge_base_id,
         name,
         description,
@@ -823,6 +834,7 @@ def _get_or_create_knowledge_base(
     request: Request,
     db: Session,
     user: User,
+    organization_id: UUID,
     kb_id: Optional[UUID],
     name: Optional[str],
     description: Optional[str],
@@ -833,6 +845,13 @@ def _get_or_create_knowledge_base(
 ) -> tuple[UUID, str]:
     """자료를 조회하거나 새로 생성합니다."""
     if not kb_id:
+        if not has_organization_scope_access(db, user.id, organization_id):
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "Knowledge Base not found.",
+            )
         if not ai_model:
             raise HTTPException(
                 status_code=400,
@@ -844,7 +863,7 @@ def _get_or_create_knowledge_base(
 
         new_kb = KnowledgeBase(
             user_id=user.id,
-            organization_id=get_user_primary_organization_id(db, user.id),
+            organization_id=organization_id,
             name=kb_name,
             description=description,
             embedding_model=ai_model,
@@ -861,6 +880,8 @@ def _get_or_create_knowledge_base(
             db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
         )
         if not kb:
+            raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        if kb.organization_id != organization_id:
             raise HTTPException(status_code=404, detail="Knowledge Base not found")
         _authorize_upload_knowledge_base_write(request, db, user, kb)
         return kb.id, kb.embedding_model

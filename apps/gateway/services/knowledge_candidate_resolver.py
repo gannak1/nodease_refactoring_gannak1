@@ -116,7 +116,10 @@ class KnowledgeCandidateResolver:
         requested_collection_ids = (
             self._dedupe_ids(collection_ids) if collection_ids is not None else None
         )
-        collections = self._collections(requested_collection_ids, max_collections)
+        collections = self._collections(
+            requested_collection_ids,
+            max_collections if requested_collection_ids is not None else None,
+        )
         route_decisions = self.permission_helper.bulk_evaluate_collection_action(
             collections,
             "route",
@@ -146,10 +149,9 @@ class KnowledgeCandidateResolver:
             )
         )
 
-        items = self._collection_items(
-            route_allowed_collection_ids,
-            max_candidate_kbs,
-        )
+        route_allowed_collection_ids = route_allowed_collection_ids[:max_collections]
+
+        items = self._collection_items(route_allowed_collection_ids, None)
         kb_ids = self._dedupe_ids([item.knowledge_base_id for item in items])
         kbs_by_id = self._knowledge_bases_by_id(kb_ids)
         hidden_count += len(kb_ids) - len(kbs_by_id)
@@ -168,6 +170,7 @@ class KnowledgeCandidateResolver:
                 hidden_count += 1
             else:
                 unavailable_count += 1
+        allowed_pairs = allowed_pairs[:max_candidate_kbs]
         runtime_decisions = self._bulk_runtime_kb_decisions(
             [kb for kb, _decision in allowed_pairs]
         )
@@ -190,7 +193,7 @@ class KnowledgeCandidateResolver:
     def _collections(
         self,
         collection_ids: Iterable[uuid.UUID] | None,
-        max_collections: int,
+        max_collections: int | None,
     ) -> list[KnowledgeCollection]:
         query = self.db.query(KnowledgeCollection).filter(
             KnowledgeCollection.organization_id == self.organization_id,
@@ -201,21 +204,23 @@ class KnowledgeCandidateResolver:
             if not requested_ids:
                 return []
             query = query.filter(KnowledgeCollection.id.in_(requested_ids))
-        return (
-            query.order_by(KnowledgeCollection.name.asc(), KnowledgeCollection.id.asc())
-            .limit(max_collections)
-            .all()
+        query = query.order_by(
+            KnowledgeCollection.name.asc(),
+            KnowledgeCollection.id.asc(),
         )
+        if max_collections is not None:
+            query = query.limit(max_collections)
+        return query.all()
 
     def _collection_items(
         self,
         collection_ids: Iterable[uuid.UUID],
-        max_candidate_kbs: int,
+        max_candidate_kbs: int | None,
     ) -> list[KnowledgeCollectionItem]:
         collection_id_list = self._dedupe_ids(collection_ids)
         if not collection_id_list:
             return []
-        return (
+        query = (
             self.db.query(KnowledgeCollectionItem)
             .filter(
                 KnowledgeCollectionItem.organization_id == self.organization_id,
@@ -226,9 +231,10 @@ class KnowledgeCandidateResolver:
                 KnowledgeCollectionItem.rank.asc(),
                 KnowledgeCollectionItem.knowledge_base_id.asc(),
             )
-            .limit(max_candidate_kbs)
-            .all()
         )
+        if max_candidate_kbs is not None:
+            query = query.limit(max_candidate_kbs)
+        return query.all()
 
     def _knowledge_bases_by_id(
         self,

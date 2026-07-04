@@ -267,7 +267,10 @@ class RetrievalService:
             LEFT JOIN document_versions dv ON dc.document_version_id = dv.id
             WHERE dc.knowledge_base_id = :kb_id
               AND (
-                  dc.document_version_id IS NULL
+                  (
+                      kb.active_document_version_id IS NULL
+                      AND dc.document_version_id IS NULL
+                  )
                   OR (
                       kb.active_document_version_id = dc.document_version_id
                       AND dv.status = 'ready'
@@ -291,7 +294,10 @@ class RetrievalService:
     @staticmethod
     def _retrieval_visible_chunk_condition():
         return or_(
-            DocumentChunk.document_version_id.is_(None),
+            and_(
+                KnowledgeBase.active_document_version_id.is_(None),
+                DocumentChunk.document_version_id.is_(None),
+            ),
             and_(
                 KnowledgeBase.active_document_version_id
                 == DocumentChunk.document_version_id,
@@ -360,7 +366,10 @@ class RetrievalService:
                 DocumentChunk.document_id == parent.document_id,
                 DocumentChunk.knowledge_base_id == parent.knowledge_base_id,
                 or_(
-                    DocumentChunk.document_version_id.is_(None),
+                    and_(
+                        KnowledgeBase.active_document_version_id.is_(None),
+                        DocumentChunk.document_version_id.is_(None),
+                    ),
                     and_(
                         KnowledgeBase.active_document_version_id
                         == DocumentChunk.document_version_id,
@@ -368,7 +377,10 @@ class RetrievalService:
                     ),
                 ),
                 or_(
-                    parent.document_version_id.is_(None),
+                    and_(
+                        KnowledgeBase.active_document_version_id.is_(None),
+                        parent.document_version_id.is_(None),
+                    ),
                     and_(
                         KnowledgeBase.active_document_version_id
                         == parent.document_version_id,

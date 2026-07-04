@@ -223,6 +223,34 @@ def test_auto_collection_mode_uses_only_route_allowed_collections():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
+def test_auto_collection_cap_applies_after_route_authorization():
+    denied_collection = _collection()
+    allowed_collection = _collection()
+    allowed_kb = _kb()
+    helper = FakePermissionHelper(
+        collection_actions={allowed_collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[denied_collection, allowed_collection],
+        items=[
+            SimpleNamespace(
+                collection_id=allowed_collection.id,
+                knowledge_base_id=allowed_kb.id,
+            )
+        ],
+        kbs=[allowed_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates(max_collections=1)
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        allowed_kb.id
+    ]
+    assert resolver.requested_item_collection_ids == {allowed_collection.id}
+    assert result.unavailable_candidate_count_bucket == "1"
+
+
 def test_auto_collection_mode_buckets_missing_requested_collection():
     existing_collection = _collection()
     kb = _kb()
@@ -274,6 +302,40 @@ def test_auto_collection_candidate_cap_is_deterministic():
     ]
     assert result.hidden_candidate_count_bucket == "0"
     assert result.unavailable_candidate_count_bucket == "0"
+
+
+def test_auto_collection_candidate_cap_applies_after_kb_authorization():
+    collection = _collection()
+    denied_kb = _kb()
+    allowed_kb = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_kb.id else "none"
+
+    helper = PerKbPermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=allowed_kb.id,
+            ),
+        ],
+        kbs=[denied_kb, allowed_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates(max_candidate_kbs=1)
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        allowed_kb.id
+    ]
+    assert result.unavailable_candidate_count_bucket == "1"
 
 
 def test_kb_use_source_acl_stale_fails_closed_after_kb_use_grant():
@@ -336,6 +398,54 @@ def test_source_policy_grant_does_not_bypass_source_acl_gate():
     assert decision.effective_auth_state == AUTH_STATE_OPERATOR
     assert decision.source_acl_state == "revoked"
     assert decision.external_reason_code == "resource.hidden"
+
+
+def test_source_policy_grant_requires_active_organization_membership():
+    kb = _kb()
+
+    class NoMembershipHelper(KnowledgePermissionHelper):
+        def __init__(self):
+            super().__init__(None, user_id=USER_ID, organization_id=ORG_ID)
+
+        def _organization_auth_state(self):
+            return ORGANIZATION_AUTH_MEMBER
+
+        def _manual_kb_auth_state(self, kb):
+            return "none"
+
+        def _can_consume_source_policy_grants(self):
+            return False
+
+    decision = NoMembershipHelper().evaluate_kb_use(kb)
+
+    assert decision.allowed is False
+    assert decision.reason_code == "kb_use_denied"
+    assert decision.effective_auth_state == "none"
+
+
+def test_source_policy_grant_applies_for_active_organization_member():
+    kb = _kb()
+
+    class ActiveMembershipHelper(KnowledgePermissionHelper):
+        def __init__(self):
+            super().__init__(None, user_id=USER_ID, organization_id=ORG_ID)
+
+        def _organization_auth_state(self):
+            return ORGANIZATION_AUTH_MEMBER
+
+        def _manual_kb_auth_state(self, kb):
+            return "none"
+
+        def _can_consume_source_policy_grants(self):
+            return True
+
+        def _active_source_policy_grants(self, kb):
+            return [object()]
+
+    decision = ActiveMembershipHelper().evaluate_kb_use(kb)
+
+    assert decision.allowed is True
+    assert decision.effective_auth_state == AUTH_STATE_OPERATOR
 
 
 def test_bucket_count_uses_safe_ranges():
