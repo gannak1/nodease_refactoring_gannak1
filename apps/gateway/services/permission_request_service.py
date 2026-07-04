@@ -5,8 +5,8 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.audit_records import add_action_audit
 from apps.shared.audit.actions import AuditAction
-from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_ACTIVE,
     OrganizationMembership,
@@ -33,27 +33,6 @@ def _mark_decided(
     request.status = status
     request.decided_by = decided_by
     request.decided_at = datetime.now(timezone.utc)
-
-
-def _add_audit(
-    db: Session,
-    action: str,
-    actor_id: Any,
-    target_type: str,
-    target_id: Any,
-) -> None:
-    db.add(
-        AuditLog(
-            action=action,
-            category="action",
-            actor_id=actor_id,
-            actor_type="user",
-            target_type=target_type,
-            target_id=str(target_id),
-            status="success",
-            audit_metadata={},
-        )
-    )
 
 
 class PermissionRequestService:
@@ -166,14 +145,14 @@ class PermissionRequestService:
             db, request, decided_by=decided_by
         )
         _mark_decided(request, PERMISSION_REQUEST_APPROVED, decided_by)
-        _add_audit(
+        add_action_audit(
             db,
             AuditAction.PERMISSION_REQUEST_APPROVED,
             decided_by,
             "permission_request",
             request.id,
         )
-        _add_audit(
+        add_action_audit(
             db,
             AuditAction.USER_APP_CREATION_PERMISSION_CREATED,
             decided_by,
@@ -194,7 +173,7 @@ class PermissionRequestService:
             db, request_id, organization_id
         )
         _mark_decided(request, PERMISSION_REQUEST_REJECTED, decided_by)
-        _add_audit(
+        add_action_audit(
             db,
             AuditAction.PERMISSION_REQUEST_REJECTED,
             decided_by,
@@ -241,7 +220,7 @@ class PermissionRequestService:
             created_at=datetime.now(timezone.utc),
         )
         db.add(request)
-        _add_audit(
+        add_action_audit(
             db,
             AuditAction.PERMISSION_REQUEST_CREATED,
             user.id,
