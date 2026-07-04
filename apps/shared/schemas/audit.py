@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from apps.shared.db.models.audit_log import ActorType, AuditCategory, AuditStatus
 
@@ -25,3 +25,7 @@ class AuditLogSchema(BaseModel):
 class AuditLogListResponse(BaseModel):
     total: int
     items: List[AuditLogSchema]
+
+
+class AuditLogDetailResponse(AuditLogSchema):
+    audit_metadata: dict[str, Any] = Field(default_factory=dict)

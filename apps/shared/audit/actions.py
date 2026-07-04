@@ -18,6 +18,13 @@ class AuditAction:
     PERMISSION_REVOKE = "permission.revoke"
     PERMISSION_DENIED = "permission.denied"
 
+    # 권한 신청 lifecycle과 App 생성 권한 row data-change (ADR-0016).
+    PERMISSION_REQUEST_CREATED = "permission_request.created"
+    PERMISSION_REQUEST_APPROVED = "permission_request.approved"
+    PERMISSION_REQUEST_REJECTED = "permission_request.rejected"
+    USER_APP_CREATION_PERMISSION_CREATED = "user_app_creation_permission.created"
+    USER_APP_CREATION_PERMISSION_DELETED = "user_app_creation_permission.deleted"
+
     # 앱/워크플로우/배포: 사용자가 워크플로우 운영 단위에서 수행한 행동.
     ORGANIZATION_UPDATE = "organization.update"
     ORGANIZATION_INVITE = "organization.invite"

@@ -10,8 +10,23 @@ Verified Against: current implementation baseline plus Knowledge target model AD
 | GET | `/api/v1/llm/agent-answer-options` | RAG Agent answer generation에 사용할 수 있는 safe model/credential pair를 반환한다 | Active organization scope, credential `use`, verified credential-model relation |
 | GET | `/api/v1/llm/my-models` | 현재 model listing surface | 현재 동작 |
 | GET | `/api/v1/llm/credentials` | 현재 credential listing surface | 현재 동작. 목표 Agent answer option 계약이 아니다 |
+| POST | `/api/v1/llm/credentials` | active organization에 LLM credential을 등록하고 provider 모델 relation을 동기화한다 | Organization manager only |
+| DELETE | `/api/v1/llm/credentials/{credential_id}` | active organization의 LLM credential을 삭제한다 | Organization manager 또는 credential `manage` |
 
 ## 요청과 응답 모델
+
+### Credential Registration
+
+Credential registration은 개인 사용자 credential 생성 API가 아니다. 요청은 active organization context에서 처리되며, 요청자는 해당 organization manager여야 한다. 일반 member는 credential `use` 또는 기존 credential `manage` 권한을 갖고 있어도 새 credential을 등록할 수 없다.
+
+Request:
+
+- `provider_id`
+- `organization_id`: 대상 organization. header 기반 active organization과 일치해야 한다. legacy fallback을 허용하는 구현에서도 결과 credential은 organization-scoped resource로 해석한다.
+- `credential_name`
+- `api_key`: raw secret. 저장 직후 응답, audit, trace, usage metadata에 원문을 반환하지 않는다.
+
+Response는 `LLMCredentialResponse`를 사용할 수 있지만, `encrypted_config`, raw `api_key`, provider raw response는 포함하지 않는다. `user_id`가 포함되는 구현에서는 등록 행위자 reference로만 해석하고 개인 credential 소유권으로 표시하지 않는다.
 
 ### Agent Answer Option
 
@@ -27,6 +42,8 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 
 ## 오류
 
+- Credential 등록 요청자가 target organization manager가 아니면 `403 permission.denied`로 실패해야 한다.
+- Organization scope 밖 `organization_id` 또는 credential id는 resource hiding 정책에 따라 `404 resource.not_found`로 숨긴다.
 - Knowledge target flow에서 generation model/credential이 없거나 보이지 않으면 answer run 생성 전에 실패한다.
 - Credential `use` denial은 KB permission 및 source ACL authorization과 독립된 permission failure다.
 - Verified credential-model relation이 없으면 fail-closed로 처리하며, client는 fallback model/credential selection을 추론하면 안 된다.
@@ -34,6 +51,8 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 
 ## 권한
 
+- Credential 등록은 organization manager 전용이다. Credential `use`, credential `manage`, workflow manager, builder/operator 권한은 새 credential 등록 권한을 부여하지 않는다.
+- 등록된 credential은 active organization scope에 속한다. 개인 사용자 credential scope를 만들지 않는다.
 - Agent answer generation preflight는 active organization scope, model visibility, credential visibility, credential `use`, verified credential-model relation을 검증해야 한다.
 - UI option API는 현재 active organization context에서 실행 가능한 safe pair만 보여줄 수 있다.
 - Credential 존재 또는 사용 가능 상태는 KB content permission, collection routing permission, source ACL authorization을 부여하지 않는다.

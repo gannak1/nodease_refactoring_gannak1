@@ -48,7 +48,17 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.permission_request import (
+    PERMISSION_REQUEST_APPROVED,
+    PERMISSION_REQUEST_PENDING,
+    PERMISSION_REQUEST_REJECTED,
+    REQUESTED_PERMISSION_APP_CREATE,
+    PermissionRequest,
+)
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import (
+    UserAppCreationPermission,
+)
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
@@ -96,6 +106,12 @@ __all__ = [
     "TeamWorkflowPermission",
     "UserWorkflowPermission",
     "UserLLMPermission",
+    "UserAppCreationPermission",
+    "PermissionRequest",
+    "PERMISSION_REQUEST_PENDING",
+    "PERMISSION_REQUEST_APPROVED",
+    "PERMISSION_REQUEST_REJECTED",
+    "REQUESTED_PERMISSION_APP_CREATE",
     "Workflow",
     "WorkflowDeployment",
     "WorkflowNodeRun",
