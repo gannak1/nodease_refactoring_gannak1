@@ -872,6 +872,96 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
     }
 
 
+def test_llm_node_rag_preserves_explicit_zero_score_threshold(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    captured_thresholds = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="operator",
+                )
+                for kb in kbs
+            }
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, threshold, **kwargs):
+            captured_thresholds.append(threshold)
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="근거",
+                    document_id=uuid.uuid4(),
+                    filename="policy.md",
+                    similarity_score=0.8,
+                    score=0.8,
+                    metadata_summary={},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        scoreThreshold=0,
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="Allowed")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.should_invoke_llm is True
+    assert captured_thresholds == [0]
+
+
 def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

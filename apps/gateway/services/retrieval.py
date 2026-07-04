@@ -672,7 +672,12 @@ class RetrievalService:
                     source_tier_policy=source_tier_policy,
                 )
 
-                for rank, item in enumerate(reranked, start=1):
+                thresholded_reranked = [
+                    item
+                    for item in reranked
+                    if float(item.get("rerank_score", 0.0)) >= threshold
+                ]
+                for rank, item in enumerate(thresholded_reranked, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
                     rerank_score = item.get("rerank_score", 0.0)
@@ -714,7 +719,12 @@ class RetrievalService:
                         )
                     )
             else:
-                for rank, item in enumerate(merged_candidates[:top_k], start=1):
+                thresholded_candidates = [
+                    item
+                    for item in merged_candidates
+                    if float(item["score"]) >= threshold
+                ][:top_k]
+                for rank, item in enumerate(thresholded_candidates, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
                     score = item["score"]

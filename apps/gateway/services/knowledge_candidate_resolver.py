@@ -116,10 +116,7 @@ class KnowledgeCandidateResolver:
         requested_collection_ids = (
             self._dedupe_ids(collection_ids) if collection_ids is not None else None
         )
-        collections = self._collections(
-            requested_collection_ids,
-            max_collections if requested_collection_ids is not None else None,
-        )
+        collections = self._collections(requested_collection_ids, None)
         route_decisions = self.permission_helper.bulk_evaluate_collection_action(
             collections,
             "route",

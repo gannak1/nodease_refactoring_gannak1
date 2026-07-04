@@ -251,6 +251,37 @@ def test_auto_collection_cap_applies_after_route_authorization():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
+def test_explicit_collection_cap_applies_after_route_authorization():
+    denied_collection = _collection()
+    allowed_collection = _collection()
+    allowed_kb = _kb()
+    helper = FakePermissionHelper(
+        collection_actions={allowed_collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[denied_collection, allowed_collection],
+        items=[
+            SimpleNamespace(
+                collection_id=allowed_collection.id,
+                knowledge_base_id=allowed_kb.id,
+            )
+        ],
+        kbs=[allowed_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates(
+        collection_ids=[denied_collection.id, allowed_collection.id],
+        max_collections=1,
+    )
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        allowed_kb.id
+    ]
+    assert resolver.requested_item_collection_ids == {allowed_collection.id}
+    assert result.unavailable_candidate_count_bucket == "1"
+
+
 def test_auto_collection_mode_buckets_missing_requested_collection():
     existing_collection = _collection()
     kb = _kb()

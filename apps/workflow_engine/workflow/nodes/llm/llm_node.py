@@ -722,7 +722,9 @@ class LLMNode(Node[LLMNodeData]):
         kb_ids = list(dict.fromkeys(kb.id for kb in self.data.knowledgeBases if kb.id))
         kb_ids = kb_ids[:MAX_RAG_RETRIEVAL_KBS]
         top_k = min(self.data.topK or 3, MAX_RAG_CHUNKS_PER_KB)
-        threshold = self.data.scoreThreshold or 0.5
+        threshold = (
+            0.5 if self.data.scoreThreshold is None else self.data.scoreThreshold
+        )
         search_query, query_rewrite_applied, query_rewrite_strategy = (
             self._rewrite_rag_query(query)
         )

@@ -1,7 +1,7 @@
 """add knowledge integration phase1 schema
 
 Revision ID: e1a2b3c4d5f6
-Revises: d0e1f2a3b4c5
+Revises: b3c4d5e6f7a8
 Create Date: 2026-07-04 00:00:00.000000
 
 """
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "e1a2b3c4d5f6"
-down_revision: Union[str, Sequence[str], None] = "d0e1f2a3b4c5"
+down_revision: Union[str, Sequence[str], None] = "b3c4d5e6f7a8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
