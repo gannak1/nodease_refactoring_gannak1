@@ -79,9 +79,10 @@ Verified Against: TBD
 ### Component Tests
 
 - baseline 선택 화면은 `최신 실행 로그로 비교하기`와 `이전 실행 로그 선택해서 비교하기`를 제공한다.
-- 최신 실행 로그가 없으면 최신 선택 CTA는 사용할 수 없고 로그 없음 안내가 표시된다.
+- `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 최신 성공 실행 로그가 없으면 최신 선택 CTA는 사용할 수 없고 로그 없음 안내가 표시된다.
 - 이전 실행 로그 picker는 실행 시각, 상태, 모델, 비용, 토큰, 실행 시간, 입력 preview, 출력 preview, trace 존재 여부, downstream 상태를 표시한다.
 - 이전 실행 로그 picker는 성공한 LLM node run만 표시하고 실패한 node run은 표시하지 않는다.
+- 이전 실행 로그 picker는 output preview 또는 usage summary가 없는 node run을 표시하지 않는다.
 - 이전 실행 로그 picker는 input 복원 불가 baseline row도 목록에 표시하되 `비교 불가` 상태로 표시한다.
 - picker 검색은 입력/출력 preview 기준으로 동작한다.
 - picker 필터는 모델, 날짜 범위, 비교 가능 여부를 지원한다.
@@ -89,18 +90,20 @@ Verified Against: TBD
 
 ### API Tests
 
-- `GET /baselines/latest`는 target LLM node의 가장 최근 성공 로그를 반환한다.
+- `GET /baselines/latest`는 target LLM node의 성공 로그 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 로그를 반환한다.
 - `GET /baselines/latest`는 실패한 node run을 baseline 후보로 반환하지 않는다.
+- `GET /baselines/latest`는 output preview 또는 usage summary가 없는 node run을 baseline 후보로 반환하지 않는다.
 - `GET /baselines`는 pagination metadata와 baseline row 목록을 반환한다.
 - `GET /baselines`의 `q`, `model`, `date_from`, `date_to`, `sort`, `compare_available` query가 API 계약대로 적용된다.
 - `GET /baselines`는 실패한 node run을 목록에 포함하지 않는다.
+- `GET /baselines`는 output preview 또는 usage summary가 없는 node run을 목록에 포함하지 않는다.
 - `GET /baselines`는 `workflow_node_runs.id`를 `baseline_id`로 반환한다.
 - input을 복원할 수 없는 baseline row는 `input_available=false`, `compare_available=false`, `unavailable_reason=input_payload_unavailable`을 반환한다.
 - baseline row는 credential 원문, API key, encrypted config를 포함하지 않는다.
 
 ### Scenario Tests
 
-- 사용자가 최신 실행 로그를 선택하면 A baseline이 자동으로 고정되고 A/B compare workspace로 이동한다.
+- 사용자가 최신 실행 로그를 선택하면 가장 최근 비교 가능 baseline이 자동으로 고정되고 A/B compare workspace로 이동한다.
 - 사용자가 이전 로그 picker에서 특정 row를 선택하면 해당 로그가 A baseline으로 고정된다.
 - 사용자가 `비교 불가` baseline row를 선택하면 A/B compare workspace로 이동하지 않고 input 복원 불가 안내를 본다.
 
@@ -108,21 +111,37 @@ Verified Against: TBD
 
 ### Component Tests
 
+- B candidate 영역은 현재 LLM 노드 설정 복사본으로 초기화된다.
 - B candidate 영역은 모델, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
 - 출력 형식은 text와 JSON을 선택할 수 있다.
+- 출력 형식이 JSON이면 JSON schema 편집 영역이 활성화된다.
+- 출력 형식이 text이면 JSON schema 편집 영역은 비활성화되거나 숨겨진다.
+- JSON schema는 key-type 행 추가 UI로 필드명, 타입, 필수 여부를 편집할 수 있다.
+- B candidate 영역은 여러 Knowledge Base, `topK`, `scoreThreshold`를 편집할 수 있다.
+- B candidate 영역은 고급 파라미터 섹션에서 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 편집할 수 있다.
+- 고급 파라미터 validation은 기존 LLM node 고급 설정 범위를 따른다.
 - 필수 후보 설정이 누락되면 `B 실행` 버튼이 disabled 상태가 되거나 validation message를 표시한다.
 - 사용할 수 없는 credential/model 후보는 선택할 수 없거나 실패 후보로 명확히 표시된다.
 
 ### API Tests
 
-- `POST /compare`는 `candidate_settings.model_id`, prompt, parameters, output_format을 request로 받는다.
-- 잘못된 `max_tokens`, `temperature`, output_format schema는 `400 cost_optimizer.invalid_candidate`를 반환한다.
+- `POST /compare`는 `candidate_settings.model_id`, prompt, parameters, output_format, knowledge를 request로 받는다.
+- `POST /compare`는 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 후보 파라미터로 받을 수 있다.
+- 잘못된 `max_tokens`, `temperature`, 고급 파라미터, output_format schema는 `400 cost_optimizer.invalid_candidate`를 반환한다.
+- 사용할 수 없는 Knowledge Base 또는 접근 권한이 없는 Knowledge Base는 `422 cost_optimizer.knowledge_unavailable`을 반환한다.
 - 사용할 수 없는 model 또는 credential은 `422 cost_optimizer.model_unavailable`을 반환한다.
+- schema 검증에 실패한 B 후보는 LLM 비용/토큰/시간을 반환하되 `schema_failed` 상태를 포함한다.
+- schema 검증에 실패한 B 후보를 apply하려고 하면 `400 cost_optimizer.schema_failed_candidate`를 반환한다.
+- 비교 실행은 `comparison_id`로 식별 가능한 기록으로 저장된다.
 
 ### Scenario Tests
 
 - 사용자가 모델만 바꾸고 B를 실행하면 A baseline과 같은 입력으로 후보 실행 결과가 생성된다.
 - 사용자가 prompt와 parameter를 함께 바꿔도 compare request는 하나의 B 후보 설정으로 전송된다.
+- 사용자가 Knowledge Base 또는 검색 설정을 바꾸고 B를 실행하면 같은 baseline input으로 다른 검색 컨텍스트를 사용한 후보 결과가 생성된다.
+- 사용자가 JSON schema를 지정하고 B를 실행하면 후보 출력은 schema 검증 결과와 함께 표시된다.
+- schema 검증에 실패한 후보는 비용과 출력 preview를 확인할 수 있지만 `현재 노드에 적용`은 사용할 수 없다.
+- 사용자가 B 후보를 적용하면 모델, prompt, parameters, output_format, schema, Knowledge/RAG 설정이 일괄 적용된다.
 
 ## FR-004 동일 입력 기준 비교
 
@@ -167,8 +186,12 @@ Verified Against: TBD
 ### Component Tests
 
 - A/B compare workspace는 A baseline, B candidate, Inspector 3영역으로 구성된다.
+- A/B compare workspace는 특정 workflow와 특정 LLM node의 context를 상단 context bar에 표시한다.
+- context bar는 workflow 이름, target LLM node 이름, baseline 실행 시각, 같은 입력 기준 badge, downstream 상태 badge를 표시한다.
 - A baseline 영역은 읽기 전용이고 baseline 실행 로그, 입력, 출력, 모델, 비용, 토큰, latency, trace 요약을 표시한다.
 - B candidate 영역은 후보 설정, 실행 상태, 출력 preview, 토큰, 비용, latency, error를 표시한다.
+- B 후보 실행 후에도 사용자는 같은 workspace 안에서 B 후보 설정을 수정하고 같은 baseline으로 다시 실행할 수 있다.
+- B 후보 설정이 마지막 실행 이후 변경되면 기존 B 결과는 stale 상태로 표시된다.
 - Inspector는 `A Trace`, `B Trace`, `Diff`, `Downstream`, `Settings` 탭을 제공한다.
 - `B Trace` 탭은 B 실행 전에는 disabled 또는 empty state이고 B 실행 후 활성화된다.
 - `Diff` 탭은 모델, prompt, parameter, 출력 형식, 비용, 토큰, latency 차이를 표시한다.
@@ -183,6 +206,8 @@ Verified Against: TBD
 
 - B 실행 성공 후 사용자는 A와 B의 출력, 비용, 토큰, latency를 한 화면에서 비교할 수 있다.
 - B 실행 실패 후에도 사용자는 A baseline과 실패 사유를 볼 수 있다.
+- 사용자가 B 실행 결과를 본 뒤 prompt 또는 model을 수정하면 workspace를 닫지 않고 같은 baseline으로 재실행할 수 있다.
+- stale 상태의 B 결과는 참고용으로 남지만 현재 후보 설정의 결과가 아니라는 안내를 표시한다.
 
 ## FR-007 Downstream 호환성 검증
 

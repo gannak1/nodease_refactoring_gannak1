@@ -87,7 +87,7 @@ LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
 - `최신 실행 로그로 비교하기`
 - `이전 실행 로그 선택해서 비교하기`
 
-`최신 실행 로그로 비교하기`는 target LLM node의 가장 마지막 실행 로그를 자동 선택한다.
+`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 baseline을 자동 선택한다.
 
 `이전 실행 로그 선택해서 비교하기`는 baseline log picker를 연다.
 
@@ -95,7 +95,7 @@ LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
 
 관련 FR: FR-002, FR-004, FR-007
 
-Baseline log picker는 target LLM node가 성공적으로 완료된 실행 로그만 보여준다. 실패한 node run은 baseline 후보로 표시하지 않는다.
+Baseline log picker는 target LLM node가 성공적으로 완료되고 output preview와 usage summary를 모두 제공할 수 있는 실행 로그만 보여준다. 실패한 node run, output preview가 없는 node run, usage summary가 없는 node run은 baseline 후보로 표시하지 않는다.
 
 baseline row의 기준 식별자는 `workflow_node_runs.id`다. UI는 이를 사용자에게 직접 노출하지 않지만, 같은 workflow run 안에 여러 node 기록이 있을 수 있으므로 내부 선택 값은 workflow run id가 아니라 node run id를 사용한다.
 
@@ -127,6 +127,8 @@ Baseline을 선택하면 A baseline input은 잠금 상태로 표시한다. 사�
 
 input을 복원할 수 없는 baseline row는 목록에 표시하되 `비교 불가` badge를 붙인다. 해당 row는 상세 확인은 가능하지만 A/B compare workspace 진입 또는 B 후보 실행에 사용할 수 없다.
 
+output preview 또는 usage summary가 없는 baseline row는 목록에 표시하지 않는다.
+
 비교 불가 row의 안내 문구:
 
 ```text
@@ -137,11 +139,35 @@ input을 복원할 수 없는 baseline row는 목록에 표시하되 `비교 불
 
 관련 FR: FR-003, FR-004, FR-005, FR-006, FR-009
 
-A/B compare workspace는 3영역 레이아웃이다.
+A/B compare workspace는 특정 workflow의 특정 LLM node에 종속된 전용 작업 화면이다. 사용자는 workflow 편집 화면에서 target LLM node의 `A/B 테스트하기` 액션으로 이 workspace에 진입한다.
+
+workspace 상단에는 context bar를 둔다.
+
+- workflow 이름
+- target LLM node 이름
+- 선택된 baseline 실행 시각
+- 같은 입력 기준 badge
+- downstream 호환성 badge
+- B 후보 실행 액션
+- 현재 노드에 적용 액션
+
+A/B compare workspace 본문은 3영역 레이아웃이다.
 
 - 왼쪽: A baseline
 - 가운데: B candidate
 - 오른쪽: Inspector
+
+workspace는 B 후보 실험 루프를 같은 화면 안에서 지원한다.
+
+1. A baseline을 고정한다.
+2. B 후보 설정을 편집한다.
+3. B 후보를 실행한다.
+4. A/B 결과를 비교한다.
+5. B 후보 설정을 다시 편집한다.
+6. 같은 baseline으로 B 후보를 다시 실행한다.
+7. 만족스러운 후보를 현재 노드에 일괄 적용한다.
+
+B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 닫게 해서는 안 된다.
 
 A baseline 영역은 읽기 전용이다.
 
@@ -154,6 +180,8 @@ A baseline 영역은 읽기 전용이다.
 
 B candidate 영역은 편집 가능하다.
 
+B candidate는 현재 LLM 노드 설정 복사본으로 초기화한다.
+
 - 모델 선택
 - system prompt 편집
 - user prompt 편집
@@ -161,7 +189,29 @@ B candidate 영역은 편집 가능하다.
 - `max_tokens` 편집
 - `temperature` 편집
 - 출력 형식 선택: text 또는 JSON
+- JSON schema 편집
+- Knowledge Base 선택
+- `topK` 편집
+- `scoreThreshold` 편집
+- 고급 파라미터 편집: `top_p`, `presence_penalty`, `frequency_penalty`, `stop`
 - B 후보 실행
+
+고급 파라미터는 기본 화면에 모두 펼쳐두지 않고 접힘 섹션으로 제공한다. 사용자는 기본 옵션만으로 빠르게 비교할 수 있고, 필요한 경우 고급 파라미터를 열어 세밀하게 조정한다.
+
+JSON schema 편집 영역은 출력 형식이 JSON일 때 활성화한다. text 출력 형식에서는 schema 입력을 비활성화하거나 숨긴다.
+
+JSON schema는 key-type 행 추가 UI로 편집한다. 사용자는 필드명, 타입, 필수 여부를 행 단위로 추가/수정/삭제한다. raw JSON schema 직접 편집은 1차 필수 UI가 아니다.
+
+Knowledge Base 선택은 복수 선택을 허용한다.
+
+고급 파라미터 validation은 기존 LLM node 고급 설정의 범위를 따른다.
+
+- `temperature`: 0~2
+- `top_p`: 0~1
+- `max_tokens`: 1~8192
+- `presence_penalty`: -2~2
+- `frequency_penalty`: -2~2
+- `stop`: 문자열 배열, 최대 4개
 
 B 후보 실행 결과에는 다음을 표시한다.
 
@@ -173,6 +223,9 @@ B 후보 실행 결과에는 다음을 표시한다.
 - estimated cost
 - latency
 - error message
+- JSON schema 검증 상태
+
+B 후보 설정이 마지막 실행 이후 변경되면 기존 실행 결과는 stale 상태로 표시한다. 이때 결과는 참고용으로 남기되, 현재 설정에 대한 결과가 아니므로 `B 후보 실행`을 다시 유도한다.
 
 화면은 A baseline과 B candidate가 같은 입력 기준이라는 점을 명확히 표시한다.
 
@@ -228,12 +281,14 @@ Inspector는 탭 구조를 사용한다.
 - 변경되는 prompt
 - 변경되는 parameter
 - 변경되는 출력 형식
+- 변경되는 JSON schema
+- 변경되는 Knowledge/RAG 설정
 - downstream 호환성 상태
 - 추가 검증 필요 여부
 
 `검증 가능`이 아닌 경우, 모달에서 현재 workflow 테스트 실행으로 최종 확인해야 함을 표시한다.
 
-적용이 완료되면 현재 LLM node draft가 B 후보 설정으로 갱신된다.
+적용은 B 후보 설정 전체를 일괄 적용한다. 적용이 완료되면 현재 LLM node draft가 B 후보 설정으로 갱신된다.
 
 ## States
 
@@ -263,7 +318,9 @@ Inspector는 탭 구조를 사용한다.
 - `editing`: B 후보 편집 중
 - `running`: B 후보 실행 중
 - `success`: B 후보 실행 성공
+- `schema_failed`: B 후보 LLM 호출은 성공했지만 JSON schema 검증 실패
 - `failed`: B 후보 실행 실패
+- `stale`: 마지막 B 실행 이후 후보 설정이 변경되어 결과가 현재 설정과 일치하지 않음
 - `applied`: B 후보가 현재 node draft에 적용됨
 
 ### Downstream Compatibility States

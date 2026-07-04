@@ -88,14 +88,14 @@ A baseline은 특정 실행 시점의 target LLM node 입력, 출력, 설정, �
 
 A baseline의 canonical id는 `workflow_node_runs.id`다. `workflow_runs`는 baseline이 속한 전체 실행 컨텍스트이고, `llm_usage_logs`는 비용/토큰/모델 원천이며, `trace_payloads`는 redaction-safe input/output preview와 trace 존재 여부의 원천이다.
 
-Baseline 후보는 target LLM node가 성공적으로 완료된 `workflow_node_runs`만 포함한다. 실패한 node run은 Cost Optimizer baseline 후보에서 제외하며, 실패 원인 분석은 실행 로그/trace 화면의 책임으로 둔다.
+Baseline 후보는 target LLM node가 성공적으로 완료된 `workflow_node_runs` 중 output preview와 usage summary를 모두 제공할 수 있는 기록만 포함한다. 실패한 node run, output preview가 없는 node run, usage summary가 없는 node run은 Cost Optimizer baseline 후보에서 제외하며, 실패 원인 분석이나 불완전한 실행 기록 확인은 실행 로그/trace 화면의 책임으로 둔다.
 
 사용자는 다음 두 방식 중 하나로 A baseline을 정할 수 있어야 한다.
 
 - 최신 실행 로그로 비교하기
 - 이전 실행 로그 선택해서 비교하기
 
-`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 가장 최근 `workflow_node_runs`를 A baseline으로 사용한다.
+`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 `workflow_node_runs`를 A baseline으로 사용한다.
 
 `이전 실행 로그 선택해서 비교하기`는 로그 선택 화면을 열고, 사용자가 특정 실행 로그를 직접 고르게 한다.
 
@@ -114,11 +114,13 @@ Baseline 후보는 target LLM node가 성공적으로 완료된 `workflow_node_r
 
 로그 선택 화면은 검색, 필터링, 정렬을 지원해야 한다. 필요한 경우 이를 위한 API를 새로 추가하는 것을 허용한다.
 
-baseline input을 복원할 수 없는 실행 로그도 목록에는 표시한다. 다만 이런 row는 `비교 불가` 상태로 표시하고 A/B 비교 실행은 막는다.
+baseline input을 복원할 수 없는 실행 로그도 목록에는 표시한다. 다만 이런 row는 `비교 불가` 상태로 표시하고 A/B 비교 실행은 막는다. output preview 또는 usage summary가 없는 실행 로그는 baseline 목록에서 제외한다.
 
 ### FR-003. 비교 가능한 옵션
 
 사용자는 B 후보를 구성할 때 여러 설정을 바꿔가며 최적화할 수 있어야 한다.
+
+B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 시작하면 B 후보는 현재 LLM 노드 설정의 복사본으로 초기화된다. 사용자는 복사된 설정에서 필요한 항목만 바꾸고 B 후보를 실행한다.
 
 1차 구현에서 후보별로 비교할 수 있는 옵션은 다음과 같다.
 
@@ -128,9 +130,30 @@ baseline input을 복원할 수 없는 실행 로그도 목록에는 표시한�
 - assistant prompt
 - `max_tokens`
 - `temperature`
-- 출력 형식
+- 출력 형식: text 또는 JSON
+- JSON schema
+- Knowledge Base 선택
+- `topK`
+- `scoreThreshold`
 
-출력 형식은 downstream 안정성에 영향을 줄 수 있으므로 비용 비교 옵션에 포함한다. 예를 들어 자유 텍스트 출력과 JSON 출력을 비교할 수 있어야 한다.
+고급 설정으로 다음 옵션도 비교할 수 있어야 한다.
+
+- `top_p`
+- `presence_penalty`
+- `frequency_penalty`
+- `stop`
+
+출력 형식과 JSON schema는 downstream 안정성에 영향을 줄 수 있으므로 비용 비교 옵션에 포함한다. 예를 들어 자유 텍스트 출력, JSON 출력, 특정 JSON schema를 만족하는 출력을 비교할 수 있어야 한다.
+
+JSON schema를 지정한 B 후보가 LLM 호출에는 성공했지만 schema 검증에 실패한 경우, 후보 실행 자체는 비용/토큰/시간과 함께 결과로 남긴다. 다만 해당 후보의 결과 상태는 `schema_failed`로 표시하고, 현재 노드에 적용할 수 없게 한다.
+
+Knowledge/RAG 설정은 후보 B에서 편집 가능하다. 같은 baseline input이라도 참조하는 Knowledge Base, 검색 개수, score threshold가 달라지면 출력 품질과 비용이 달라질 수 있기 때문이다.
+
+Knowledge Base는 여러 개 선택할 수 있다.
+
+B 후보 설정을 현재 노드에 적용할 때는 선택 항목별 부분 적용을 제공하지 않는다. 사용자는 B 후보 설정 전체를 current draft의 target LLM node에 일괄 적용한다.
+
+비교 실행은 일회성 응답으로만 버리지 않는다. B 후보 실행은 LLM 비용을 발생시키므로 비교 실행 기록, 후보 설정, 사용량, schema 검증 결과, downstream 호환성 상태를 추적 가능하게 저장해야 한다.
 
 자동 모델 추천, 모델 라우팅, RAG strategy 비교, Knowledge Skill version 비교는 1차 구현의 필수 범위는 아니지만 후속 확장 후보로 둔다.
 
@@ -162,6 +185,10 @@ A baseline 로그 선택
 ### FR-006. A/B 비교 화면
 
 A/B 비교 화면은 baseline A와 candidate B를 나란히 비교할 수 있어야 한다.
+
+이 화면은 범용 대시보드가 아니라 특정 workflow 안의 특정 LLM node에 종속된 A/B compare workspace다. 사용자는 workflow 편집 화면에서 target LLM node를 선택해 workspace로 진입하고, 이 workspace 안에서 같은 target node에 대한 baseline 선택, B 후보 편집, B 실행, 결과 비교, 재편집, 재실행, 적용까지 반복할 수 있어야 한다.
+
+비교 루프는 클릭 수가 많지 않아야 한다. 사용자가 B 실행 결과를 확인한 뒤 모델, prompt, schema, Knowledge/RAG, 고급 파라미터를 수정하고 다시 실행하는 흐름은 같은 화면 안에서 이어져야 한다. B 후보 설정을 수정할 때마다 화면을 닫거나 baseline을 다시 선택하게 해서는 안 된다.
 
 기본 레이아웃은 3개 영역으로 구성한다.
 
@@ -301,6 +328,7 @@ Cost Optimizer는 후속 기능으로 모델 라우팅과 최적화 에이전트
 - downstream 계약 검증은 안전성 보조 기능이며, 전체 workflow 성공을 보장하지 않는다.
 - 최종 검증은 기존 workflow 테스트 실행으로 수행할 수 있어야 한다.
 - 실패한 LLM node run은 Cost Optimizer baseline 후보에서 제외한다. credential 오류, provider 오류, timeout 같은 실패 원인은 비용 최적화가 아니라 실행 디버깅 영역에서 다룬다.
+- output preview 또는 usage summary가 없는 LLM node run은 Cost Optimizer baseline 후보에서 제외한다.
 - baseline input이 보관 기간 만료, redaction, retention, 저장 누락으로 복원되지 않는 경우 해당 baseline은 목록에 표시하되 비교 실행은 허용하지 않는다.
 
 ## Deferred Scope

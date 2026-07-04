@@ -75,7 +75,7 @@ Baseline API는 다음 저장소를 조합해 row와 detail을 만든다.
 
 `workflow_runs.id`는 baseline의 전체 실행 컨텍스트이고, `workflow_node_runs.id`가 사용자가 선택하는 baseline 식별자다.
 
-Baseline API는 target LLM node의 `workflow_node_runs.status=success`인 기록만 반환한다. 실패한 node run은 baseline 후보에서 제외하고, 실패 원인 분석은 workflow 실행 로그/trace API에서 다룬다.
+Baseline API는 target LLM node의 `workflow_node_runs.status=success`이고 `output_available=true`, `usage_available=true`인 기록만 반환한다. 실패한 node run, output preview가 없는 node run, usage summary가 없는 node run은 baseline 후보에서 제외하고, 실패 원인 분석이나 불완전한 실행 기록 확인은 workflow 실행 로그/trace API에서 다룬다.
 
 `trace_payloads` retention, redaction, 저장 누락으로 target LLM node input을 복원할 수 없는 경우에도 baseline row는 목록에 포함한다. 다만 response는 `input_available=false`, `compare_available=false`를 반환하고, compare API는 해당 baseline으로 B 후보 실행을 시작하지 않는다.
 
@@ -189,8 +189,8 @@ Response:
 
 `GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest`
 
-target LLM node의 가장 최근 실행 로그를 baseline으로 반환한다.
-반환 대상은 `node_status=success`인 기록으로 제한한다.
+target LLM node의 가장 최근 비교 가능 실행 로그를 baseline으로 반환한다.
+반환 대상은 `node_status=success`, `input_available=true`, `output_available=true`, `usage_available=true`인 기록으로 제한한다.
 
 Response:
 
@@ -246,7 +246,7 @@ Response:
 `GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines`
 
 target LLM node가 포함된 실행 로그 목록을 검색/필터/정렬한다.
-반환 대상은 `node_status=success`인 기록으로 제한한다.
+반환 대상은 `node_status=success`, `output_available=true`, `usage_available=true`인 기록으로 제한한다. `input_available=false`인 row는 목록에 포함하되 `compare_available=false`로 반환한다.
 
 Query:
 
@@ -323,11 +323,28 @@ Request:
     "assistant_prompt": "string",
     "parameters": {
       "max_tokens": 800,
-      "temperature": 0.2
+      "temperature": 0.2,
+      "top_p": 1,
+      "presence_penalty": 0,
+      "frequency_penalty": 0,
+      "stop": []
     },
     "output_format": {
       "type": "json",
-      "schema": {}
+      "schema": {
+        "type": "object",
+        "properties": {
+          "severity": { "type": "string" },
+          "approvalRequired": { "type": "boolean" },
+          "replyDraft": { "type": "string" }
+        },
+        "required": ["severity", "approvalRequired", "replyDraft"]
+      }
+    },
+    "knowledge": {
+      "knowledge_base_ids": ["knowledge-base-id"],
+      "top_k": 5,
+      "score_threshold": 0.7
     }
   }
 }
@@ -337,7 +354,7 @@ Response:
 
 ```json
 {
-  "comparison_id": "uuid-or-null",
+  "comparison_id": "uuid",
   "workflow_id": "uuid",
   "node_id": "llm-triage",
   "baseline": {
@@ -362,6 +379,10 @@ Response:
       "latency_ms": 1600,
       "status": "success"
     },
+    "schema_validation": {
+      "status": "valid",
+      "errors": []
+    },
     "trace": {},
     "error_message": null
   },
@@ -379,7 +400,9 @@ Response:
 }
 ```
 
-비교 실행에서 발생한 LLM call은 `llm_usage_logs`에 기록되어야 한다.
+비교 실행에서 발생한 LLM call은 `llm_usage_logs`에 기록되어야 한다. 또한 비교 실행 자체도 `comparison_id`로 재조회하거나 추적할 수 있도록 저장한다.
+
+JSON schema 검증에 실패한 경우에도 HTTP response는 200으로 반환할 수 있다. 이 경우 후보 LLM call은 성공한 것이므로 비용/토큰/시간을 반환하고, `candidate.usage.status` 또는 `candidate.schema_validation.status`를 `schema_failed`로 표시한다. schema 실패 후보는 apply API에서 거부한다.
 
 ### PATCH apply
 
@@ -389,11 +412,13 @@ Response:
 
 선택한 B 후보 설정을 current draft의 target LLM node에 적용한다.
 
+적용은 부분 적용이 아니라 B 후보 설정 전체 일괄 적용이다.
+
 Request:
 
 ```json
 {
-  "baseline_id": "workflow-node-run-id",
+  "comparison_id": "comparison-id",
   "candidate_settings": {
     "model_id": "gpt-4.1-mini",
     "system_prompt": "string",
@@ -401,11 +426,20 @@ Request:
     "assistant_prompt": "string",
     "parameters": {
       "max_tokens": 800,
-      "temperature": 0.2
+      "temperature": 0.2,
+      "top_p": 1,
+      "presence_penalty": 0,
+      "frequency_penalty": 0,
+      "stop": []
     },
     "output_format": {
       "type": "json",
       "schema": {}
+    },
+    "knowledge": {
+      "knowledge_base_ids": ["knowledge-base-id"],
+      "top_k": 5,
+      "score_threshold": 0.7
     }
   },
   "acknowledge_downstream_warning": false
@@ -437,6 +471,7 @@ Response:
 | 400 | `cost_optimizer.not_llm_node` | target node가 `llmNode`가 아님 | FR-001 |
 | 400 | `cost_optimizer.no_baseline` | baseline으로 사용할 로그가 없음 | FR-002 |
 | 400 | `cost_optimizer.invalid_candidate` | B 후보 설정이 유효하지 않음 | FR-003 |
+| 400 | `cost_optimizer.schema_failed_candidate` | schema 검증 실패 후보를 적용하려고 함 | FR-003, FR-008 |
 | 400 | `cost_optimizer.baseline_input_unavailable` | baseline input을 복원할 수 없음 | FR-004 |
 | 400 | `cost_optimizer.downstream_ack_required` | downstream warning 확인 없이 적용 요청 | FR-007, FR-008 |
 | 403 | `permission.denied` | builder 이상 권한 없음 | FR-010 |
