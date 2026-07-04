@@ -86,6 +86,8 @@ Cost Optimizer의 비교 단위는 workflow 전체가 아니라 특정 LLM 노�
 
 A baseline은 특정 실행 시점의 target LLM node 입력, 출력, 설정, 비용, 토큰, trace를 가진 비교 기준이다.
 
+A baseline의 canonical id는 `workflow_node_runs.id`다. `workflow_runs`는 baseline이 속한 전체 실행 컨텍스트이고, `llm_usage_logs`는 비용/토큰/모델 원천이며, `trace_payloads`는 redaction-safe input/output preview와 trace 존재 여부의 원천이다.
+
 사용자는 다음 두 방식 중 하나로 A baseline을 정할 수 있어야 한다.
 
 - 최신 실행 로그로 비교하기
@@ -109,6 +111,8 @@ A baseline은 특정 실행 시점의 target LLM node 입력, 출력, 설정, �
 - downstream 호환성 상태
 
 로그 선택 화면은 검색, 필터링, 정렬을 지원해야 한다. 필요한 경우 이를 위한 API를 새로 추가하는 것을 허용한다.
+
+baseline input을 복원할 수 없는 실행 로그도 목록에는 표시한다. 다만 이런 row는 `비교 불가` 상태로 표시하고 A/B 비교 실행은 막는다.
 
 ### FR-003. 비교 가능한 옵션
 
@@ -137,6 +141,8 @@ A baseline은 특정 실행 시점의 target LLM node 입력, 출력, 설정, �
 A baseline은 이미 실행된 로그이므로 A를 다시 실행하지 않아도 된다.
 
 B 후보는 A baseline의 입력을 사용해 새 설정으로 실행한다.
+
+A baseline의 target LLM node input을 복원할 수 없으면 B 후보 실행을 시작하지 않는다. 이 경우 사용자는 해당 실행 로그가 목록에 보이더라도 비교 기준으로 선택할 수 없거나, 선택 후 compare 실행 전에 차단 안내를 받아야 한다.
 
 ### FR-005. 하이브리드 비교
 
@@ -292,6 +298,7 @@ Cost Optimizer는 후속 기능으로 모델 라우팅과 최적화 에이전트
 - 비교 결과는 비용만으로 승자를 정하지 않는다. 사용자가 출력 결과를 보고 판단한다.
 - downstream 계약 검증은 안전성 보조 기능이며, 전체 workflow 성공을 보장하지 않는다.
 - 최종 검증은 기존 workflow 테스트 실행으로 수행할 수 있어야 한다.
+- baseline input이 보관 기간 만료, redaction, retention, 저장 누락으로 복원되지 않는 경우 해당 baseline은 목록에 표시하되 비교 실행은 허용하지 않는다.
 
 ## Deferred Scope
 

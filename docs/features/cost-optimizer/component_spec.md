@@ -97,6 +97,8 @@ LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
 
 Baseline log picker는 target LLM node가 실제로 실행된 로그만 보여준다.
 
+baseline row의 기준 식별자는 `workflow_node_runs.id`다. UI는 이를 사용자에게 직접 노출하지 않지만, 같은 workflow run 안에 여러 node 기록이 있을 수 있으므로 내부 선택 값은 workflow run id가 아니라 node run id를 사용한다.
+
 각 row는 다음 정보를 표시한다.
 
 - 실행 시각
@@ -110,6 +112,8 @@ Baseline log picker는 target LLM node가 실제로 실행된 로그만 보여�
 - 출력 preview
 - trace 존재 여부
 - downstream 호환성 상태
+- input 복원 가능 여부
+- 비교 가능 여부
 
 필터와 정렬은 다음을 지원한다.
 
@@ -120,6 +124,14 @@ Baseline log picker는 target LLM node가 실제로 실행된 로그만 보여�
 - 정렬: 최신순, 비용 높은순, 비용 낮은순, 토큰 높은순, 실행 시간 긴순
 
 Baseline을 선택하면 A baseline input은 잠금 상태로 표시한다. 사용자는 A 입력을 직접 수정하지 않는다.
+
+input을 복원할 수 없는 baseline row는 목록에 표시하되 `비교 불가` badge를 붙인다. 해당 row는 상세 확인은 가능하지만 A/B compare workspace 진입 또는 B 후보 실행에 사용할 수 없다.
+
+비교 불가 row의 안내 문구:
+
+```text
+입력 기록이 보관 기간 만료 또는 보안 정책으로 인해 복원되지 않아 이 실행 로그로는 A/B 테스트를 시작할 수 없습니다.
+```
 
 ### A/B Compare Workspace
 
@@ -241,6 +253,7 @@ Inspector는 탭 구조를 사용한다.
 - `latest_loaded`: 최신 baseline 선택 완료
 - `picker_open`: 이전 로그 선택 화면 열림
 - `baseline_selected`: baseline 선택 완료
+- `baseline_input_unavailable`: baseline 기록은 있으나 target LLM node input 복원 불가
 - `baseline_error`: baseline 조회 실패
 
 ### Candidate States
@@ -272,7 +285,8 @@ Inspector는 탭 구조를 사용한다.
 2. builder 이상 권한이 아니면 진입을 막는다.
 3. baseline 선택 화면을 연다.
 4. 사용자가 최신 로그 또는 이전 로그를 선택한다.
-5. baseline이 선택되면 A/B compare workspace로 이동한다.
+5. baseline input을 복원할 수 없으면 비교 불가 안내를 표시하고 A/B compare workspace로 이동하지 않는다.
+6. baseline이 선택되면 A/B compare workspace로 이동한다.
 
 ### Run Candidate B
 
