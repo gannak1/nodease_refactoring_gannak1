@@ -19,15 +19,32 @@ from apps.shared.services import permissions as shared_permissions
 router = APIRouter()
 
 
-def _require_org_manager(db: Session, user: User, organization_id) -> None:
+def _resolve_managed_organization(
+    db: Session,
+    request: Request,
+    x_organization_id: str | None,
+    current_user: User,
+):
+    """active organization을 해석하고 owner/manager가 아니면 403으로 닫는다."""
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
     if not shared_permissions.has_organization_manager_permission(
-        db, user.id, organization_id
+        db, current_user.id, organization_id
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
+    return organization_id
 
 
-def _serialize_request(db: Session, item) -> PermissionRequestResponse:
-    requester = db.query(User).filter(User.id == item.user_id).first()
+def _requesters_by_id(db: Session, items) -> dict:
+    user_ids = {item.user_id for item in items}
+    if not user_ids:
+        return {}
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    return {user.id: user for user in users}
+
+
+def _serialize_request(item, requester) -> PermissionRequestResponse:
     return PermissionRequestResponse(
         id=item.id,
         user=(
@@ -44,6 +61,13 @@ def _serialize_request(db: Session, item) -> PermissionRequestResponse:
     )
 
 
+def _serialize_requests(db: Session, items) -> list[PermissionRequestResponse]:
+    requesters = _requesters_by_id(db, items)
+    return [
+        _serialize_request(item, requesters.get(item.user_id)) for item in items
+    ]
+
+
 @router.get(
     "/permission-requests",
     response_model=PermissionRequestListResponse,
@@ -58,16 +82,15 @@ def list_permission_requests(
     current_user: User = Depends(get_current_user),
 ):
     """권한 신청 목록 조회 (FR-014)."""
-    organization_id = resolve_active_organization_id(
-        db, request, x_organization_id, current_user.id
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
     )
-    _require_org_manager(db, current_user, organization_id)
     total, items = PermissionRequestService.list_requests(
         db, organization_id, status=status, page=page, limit=limit
     )
     return PermissionRequestListResponse(
         total=total,
-        items=[_serialize_request(db, item) for item in items],
+        items=_serialize_requests(db, items),
     )
 
 
@@ -83,17 +106,16 @@ def approve_permission_request(
     current_user: User = Depends(get_current_user),
 ):
     """권한 신청 승인 (FR-014, ADR-0014)."""
-    organization_id = resolve_active_organization_id(
-        db, request, x_organization_id, current_user.id
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
     )
-    _require_org_manager(db, current_user, organization_id)
     approved = PermissionRequestService.approve_request(
         db,
         request_id=request_id,
         organization_id=organization_id,
         decided_by=current_user.id,
     )
-    return _serialize_request(db, approved)
+    return _serialize_requests(db, [approved])[0]
 
 
 @router.post(
@@ -108,14 +130,13 @@ def reject_permission_request(
     current_user: User = Depends(get_current_user),
 ):
     """권한 신청 거절 (FR-014, ADR-0014)."""
-    organization_id = resolve_active_organization_id(
-        db, request, x_organization_id, current_user.id
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
     )
-    _require_org_manager(db, current_user, organization_id)
     rejected = PermissionRequestService.reject_request(
         db,
         request_id=request_id,
         organization_id=organization_id,
         decided_by=current_user.id,
     )
-    return _serialize_request(db, rejected)
+    return _serialize_requests(db, [rejected])[0]

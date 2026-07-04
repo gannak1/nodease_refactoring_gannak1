@@ -25,6 +25,16 @@ from apps.shared.db.models.user_app_creation_permission import (
 from apps.shared.services import permissions as shared_permissions
 
 
+def _mark_decided(
+    request: PermissionRequest,
+    status: str,
+    decided_by: Any,
+) -> None:
+    request.status = status
+    request.decided_by = decided_by
+    request.decided_at = datetime.now(timezone.utc)
+
+
 def _add_audit(
     db: Session,
     action: str,
@@ -56,6 +66,16 @@ class PermissionRequestService:
             .filter(PermissionRequest.id == request_id)
             .first()
         )
+
+    @staticmethod
+    def _load_processable_request(
+        db: Session,
+        request_id: Any,
+        organization_id: Any,
+    ) -> PermissionRequest:
+        request = PermissionRequestService._get_request(db, request_id)
+        PermissionRequestService.ensure_request_processable(request, organization_id)
+        return request
 
     @staticmethod
     def ensure_request_processable(
@@ -138,15 +158,14 @@ class PermissionRequestService:
         organization_id: Any,
         decided_by: Any,
     ) -> PermissionRequest:
-        request = PermissionRequestService._get_request(db, request_id)
-        PermissionRequestService.ensure_request_processable(request, organization_id)
+        request = PermissionRequestService._load_processable_request(
+            db, request_id, organization_id
+        )
         PermissionRequestService.ensure_requester_is_active_member(db, request)
         permission = PermissionRequestService.grant_app_creation_permission(
             db, request, decided_by=decided_by
         )
-        request.status = PERMISSION_REQUEST_APPROVED
-        request.decided_by = decided_by
-        request.decided_at = datetime.now(timezone.utc)
+        _mark_decided(request, PERMISSION_REQUEST_APPROVED, decided_by)
         _add_audit(
             db,
             AuditAction.PERMISSION_REQUEST_APPROVED,
@@ -171,11 +190,10 @@ class PermissionRequestService:
         organization_id: Any,
         decided_by: Any,
     ) -> PermissionRequest:
-        request = PermissionRequestService._get_request(db, request_id)
-        PermissionRequestService.ensure_request_processable(request, organization_id)
-        request.status = PERMISSION_REQUEST_REJECTED
-        request.decided_by = decided_by
-        request.decided_at = datetime.now(timezone.utc)
+        request = PermissionRequestService._load_processable_request(
+            db, request_id, organization_id
+        )
+        _mark_decided(request, PERMISSION_REQUEST_REJECTED, decided_by)
         _add_audit(
             db,
             AuditAction.PERMISSION_REQUEST_REJECTED,
