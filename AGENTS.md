@@ -131,6 +131,29 @@ mbased는 기존 Moduly 코드를 리팩토링해 Nodease라는 기업 내부 AI
 - 공통 tracing/audit service가 trace 접근과 payload 처리의 경계다.
 - deployment/runtime 변경은 `docker/`, `dev/`, `infra/`, `scripts/`, `docs/architecture.md`의 정합성을 함께 확인한다.
 
+## Review guidelines
+
+Codex PR 리뷰는 한국어로 작성하고, 실제 장애나 제품 시연 실패로 이어질 수 있는 문제를 우선한다.
+
+리뷰 코멘트에는 가능한 경우 심각도를 `P0`, `P1`, `P2`, `P3` 중 하나로 표시한다.
+
+- `P0`: 제품 시연, 핵심 사용자 흐름, 배포, 데이터 무결성, 보안 경계를 즉시 깨뜨리는 결정적 문제. merge 전에 반드시 수정해야 한다.
+- `P1`: 주요 기능 실패, 권한 우회, API 계약 파괴, 재시도/동시성으로 인한 중복 실행처럼 실제 사용 또는 시연에서 높은 확률로 드러나는 문제. merge 전 수정을 강하게 요구한다.
+- `P2`: 특정 조건에서 실패하거나 운영 안정성, 성능, 테스트 신뢰도, 유지보수성에 의미 있는 위험을 만드는 문제. 이번 PR 또는 가까운 후속 PR에서 수정해야 한다.
+- `P3`: 명확한 개선 여지는 있지만 시연, 보안, 데이터, 핵심 기능에는 직접 영향이 낮은 문제. 선택적 개선으로 다룬다.
+
+- P0/P1 수준의 버그, 데이터 손상, 권한 우회, API 계약 파괴, 배포 장애, 제품 시연 차단 가능성을 먼저 지적한다.
+- 변경이 제품 시연에 결정적인 버그인지 판단한다. 로그인, 조직/팀 선택, workflow 생성/편집/실행/배포, RAG 질의, LLM credential 연결, audit/trace 확인 같은 데모 핵심 흐름이 깨지면 높은 우선순위로 표시한다.
+- 단순 취향, 네이밍, 사소한 리팩터링, 포맷 차이는 실제 위험과 연결되지 않으면 중요 이슈로 다루지 않는다.
+- 인증/인가가 필요한 API, workflow 실행, 배포, credential, organization/team/resource 접근 경로에서 권한 검사가 빠졌는지 확인한다.
+- DB model, migration, seed, relation, query 변경은 기존 데이터 호환성, transaction 경계, N+1, cascade/nullable 영향까지 확인한다.
+- API request/response schema가 바뀌면 `docs/features/<feature-name>/api_spec.md`, 프론트 호출부, 타입 정의, 테스트가 함께 갱신되었는지 확인한다.
+- workflow node runtime, Celery task, Redis pub/sub, schedule, async/background job 변경은 중복 실행, race condition, retry/idempotency 문제를 확인한다.
+- audit, tracing, RAG, LLM credential, deployment secret, raw payload를 다루는 변경은 secret 원문이나 민감 데이터가 응답, 로그, trace, fixture에 남지 않는지 확인한다.
+- 핵심 비즈니스 로직, 권한 정책, schema, workflow 실행 경로가 바뀌면 관련 테스트 또는 문서가 함께 갱신되었는지 확인한다.
+- 변경 범위가 공유 모듈이나 운영 경계에 닿으면 Gateway, Workflow Engine, Log System, Sandbox 중 영향받는 서비스의 테스트 범위가 충분한지 확인한다.
+- 리뷰 코멘트는 문제 위치, 재현/영향, 수정 방향이 분명할 때 남긴다. 근거가 약한 추측은 질문이나 확인 요청으로 표현한다.
+
 ## 테스트와 검증
 
 - 전체 검증: `./scripts/test.sh`
