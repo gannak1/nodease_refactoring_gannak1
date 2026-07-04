@@ -6,6 +6,9 @@ import {
   WorkflowCreateRequest,
   WorkflowCompareResponse,
   CostOptimizerAvailabilityResponse,
+  CostOptimizerBaselineListParams,
+  CostOptimizerBaselineListResponse,
+  CostOptimizerLatestBaselineResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -224,6 +227,28 @@ export const workflowApi = {
   ): Promise<CostOptimizerAvailabilityResponse> => {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/availability`,
+    );
+    return response.data;
+  },
+
+  getCostOptimizerLatestBaseline: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<CostOptimizerLatestBaselineResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/baselines/latest`,
+    );
+    return response.data;
+  },
+
+  listCostOptimizerBaselines: async (
+    workflowId: string,
+    nodeId: string,
+    params: CostOptimizerBaselineListParams = {},
+  ): Promise<CostOptimizerBaselineListResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/baselines`,
+      { params },
     );
     return response.data;
   },

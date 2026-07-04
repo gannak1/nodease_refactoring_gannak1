@@ -73,6 +73,58 @@ export interface CostOptimizerAvailabilityResponse {
   };
 }
 
+export interface CostOptimizerBaselineRow {
+  baseline_id: string;
+  baseline_source: string;
+  source_workflow_node_run_id: string;
+  workflow_run_id: string;
+  workflow_id: string;
+  node_id: string;
+  run_started_at: string;
+  workflow_run_status: string;
+  node_status: string;
+  model: string;
+  cost: number;
+  total_tokens: number;
+  latency_ms: number;
+  input_available: boolean;
+  output_available: boolean;
+  usage_available: boolean;
+  trace_available: boolean;
+  compare_available: boolean;
+  unavailable_reason?: string | null;
+  input_preview: string;
+  output_preview: string;
+  has_trace: boolean;
+  downstream_compatibility?: {
+    state: string;
+    label: string;
+    message: string;
+  };
+}
+
+export interface CostOptimizerLatestBaselineResponse {
+  baseline: CostOptimizerBaselineRow;
+}
+
+export interface CostOptimizerBaselineListResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: CostOptimizerBaselineRow[];
+}
+
+export interface CostOptimizerBaselineListParams {
+  q?: string;
+  model?: string;
+  date_from?: string;
+  date_to?: string;
+  sort?: string;
+  compare_available?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
 // 로그 관련 타입 (Backend Schemas와 일치)
 export interface WorkflowNodeRun {
   id: string;

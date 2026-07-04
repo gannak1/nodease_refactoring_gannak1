@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, List, Literal, Optional
 from uuid import UUID
 
@@ -25,12 +26,18 @@ from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
+from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import workflow_auth_state_allows
 
 # [NEW] 로깅 모델 및 스키마
-from apps.shared.db.models.workflow_run import NodeRunStatus, RunStatus, WorkflowRun
+from apps.shared.db.models.workflow_run import (
+    NodeRunStatus,
+    RunStatus,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
 from apps.shared.db.session import get_db
 from apps.shared.schemas.log import (
     DashboardStatsResponse,
@@ -76,6 +83,17 @@ class CostOptimizerAvailabilityResponse(BaseModel):
     permission: CostOptimizerPermissionResponse
 
 
+class CostOptimizerLatestBaselineResponse(BaseModel):
+    baseline: dict[str, Any]
+
+
+class CostOptimizerBaselineListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[dict[str, Any]]
+
+
 def _find_workflow_node(graph: dict[str, Any] | None, node_id: str) -> dict[str, Any] | None:
     if not isinstance(graph, dict):
         return None
@@ -84,6 +102,275 @@ def _find_workflow_node(graph: dict[str, Any] | None, node_id: str) -> dict[str,
         if isinstance(node, dict) and str(node.get("id")) == node_id:
             return node
     return None
+
+
+def _ensure_cost_optimizer_llm_node(workflow: Workflow, node_id: str) -> dict[str, Any]:
+    node = _find_workflow_node(workflow.graph, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    if str(node.get("type") or "") != "llmNode":
+        raise HTTPException(status_code=400, detail="cost_optimizer.not_llm_node")
+
+    return node
+
+
+SENSITIVE_BASELINE_KEYS = {"api_key", "authorization", "encrypted_config", "secret"}
+
+
+def _redact_baseline_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]"
+            if str(key).lower() in SENSITIVE_BASELINE_KEYS
+            else _redact_baseline_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_baseline_value(item) for item in value]
+    return value
+
+
+def _preview_baseline_payload(value: Any) -> str:
+    if value is None:
+        return ""
+    redacted = _redact_baseline_value(value)
+    if isinstance(redacted, str):
+        text = redacted
+    else:
+        text = json.dumps(redacted, ensure_ascii=False, default=str)
+    return text[:300]
+
+
+def _trace_payload_value(
+    node_run: WorkflowNodeRun,
+    payload_kind: str,
+) -> tuple[bool, bool, Any]:
+    trace_payloads = getattr(node_run, "trace_payloads", None) or []
+    for payload in trace_payloads:
+        if getattr(payload, "payload_kind", None) != payload_kind:
+            continue
+        if getattr(payload, "retention_purged_at", None) is not None:
+            return True, False, None
+        return True, True, getattr(payload, "redacted_payload", None)
+    return False, False, None
+
+
+def _usage_model_name(usage: LLMUsageLog) -> str:
+    model = getattr(usage, "model", None)
+    for attr in ("model_id_for_api_call", "name"):
+        value = getattr(model, attr, None)
+        if value:
+            return str(value)
+    return str(usage.model_id)
+
+
+def _decimal_to_float(value: Any) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    return float(value or 0)
+
+
+def _baseline_row_from_records(
+    *,
+    workflow: Workflow,
+    run: WorkflowRun,
+    node_run: WorkflowNodeRun,
+    usage: LLMUsageLog,
+) -> dict[str, Any]:
+    has_trace_input, trace_input_available, trace_input = _trace_payload_value(
+        node_run,
+        "input",
+    )
+    has_trace_output, trace_output_available, trace_output = _trace_payload_value(
+        node_run,
+        "output",
+    )
+    input_payload = trace_input if has_trace_input else node_run.inputs
+    output_payload = trace_output if has_trace_output else node_run.outputs
+    input_available = (
+        trace_input_available if has_trace_input else node_run.inputs is not None
+    )
+    output_available = (
+        trace_output_available if has_trace_output else node_run.outputs is not None
+    )
+    usage_available = usage is not None
+    compare_available = input_available and output_available and usage_available
+    total_tokens = int((usage.prompt_tokens or 0) + (usage.completion_tokens or 0))
+    cost = _decimal_to_float(usage.total_cost)
+    latency_ms = int(usage.latency_ms or 0)
+    model = _usage_model_name(usage)
+    input_preview = _preview_baseline_payload(input_payload)
+    output_preview = _preview_baseline_payload(output_payload)
+    trace_available = bool(node_run.trace_metadata) or has_trace_input or has_trace_output
+
+    return {
+        "baseline_id": str(node_run.id),
+        "baseline_source": "workflow_node_run",
+        "source_workflow_node_run_id": str(node_run.id),
+        "workflow_run_id": str(run.id),
+        "workflow_id": str(workflow.id),
+        "node_id": node_run.node_id,
+        "run_started_at": run.started_at.isoformat(),
+        "workflow_run_status": run.status.value
+        if hasattr(run.status, "value")
+        else str(run.status),
+        "node_status": node_run.status.value
+        if hasattr(node_run.status, "value")
+        else str(node_run.status),
+        "model": model,
+        "cost": cost,
+        "total_tokens": total_tokens,
+        "latency_ms": latency_ms,
+        "input_available": input_available,
+        "output_available": output_available,
+        "usage_available": usage_available,
+        "trace_available": trace_available,
+        "compare_available": compare_available,
+        "unavailable_reason": None
+        if compare_available
+        else "input_payload_unavailable",
+        "input_preview": input_preview,
+        "output_preview": output_preview,
+        "has_trace": trace_available,
+        "input": _redact_baseline_value(input_payload),
+        "output": _redact_baseline_value(output_payload),
+        "usage": {
+            "model": model,
+            "prompt_tokens": int(usage.prompt_tokens or 0),
+            "completion_tokens": int(usage.completion_tokens or 0),
+            "total_tokens": total_tokens,
+            "cost": cost,
+            "latency_ms": latency_ms,
+            "status": usage.status,
+        },
+        "trace": {
+            "input_preview": input_preview,
+            "output_preview": output_preview,
+            "messages_preview": [],
+            "rag_summary": None,
+            "error_message": node_run.error_message,
+        },
+        "downstream_compatibility": {
+            "state": "unknown",
+            "label": "판정 전",
+            "message": "downstream compatibility is not evaluated yet",
+        },
+    }
+
+
+def _cost_optimizer_baseline_rows(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+) -> list[dict[str, Any]]:
+    rows = (
+        db.query(WorkflowNodeRun, WorkflowRun, LLMUsageLog)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowNodeRun.workflow_run_id)
+        .join(
+            LLMUsageLog,
+            (LLMUsageLog.workflow_run_id == WorkflowRun.id)
+            & (LLMUsageLog.workflow_id == workflow.id)
+            & (LLMUsageLog.node_id == WorkflowNodeRun.node_id),
+        )
+        .filter(
+            WorkflowRun.workflow_id == workflow.id,
+            WorkflowNodeRun.node_id == node_id,
+            WorkflowNodeRun.node_type == "llmNode",
+            WorkflowNodeRun.status == NodeRunStatus.SUCCESS,
+            WorkflowNodeRun.outputs.is_not(None),
+            LLMUsageLog.status == "success",
+        )
+        .all()
+    )
+
+    return [
+        _baseline_row_from_records(
+            workflow=workflow,
+            run=run,
+            node_run=node_run,
+            usage=usage,
+        )
+        for node_run, run, usage in rows
+    ]
+
+
+def get_cost_optimizer_latest_baseline(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+) -> dict[str, Any]:
+    candidates = [
+        row
+        for row in _cost_optimizer_baseline_rows(db, workflow, node_id)
+        if row["compare_available"]
+    ]
+    if not candidates:
+        raise HTTPException(status_code=400, detail="cost_optimizer.no_baseline")
+    return sorted(candidates, key=lambda row: row["run_started_at"], reverse=True)[0]
+
+
+def list_cost_optimizer_baselines(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    *,
+    q: str | None = None,
+    model: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: str = "started_at_desc",
+    compare_available: bool | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    rows = _cost_optimizer_baseline_rows(db, workflow, node_id)
+
+    if q:
+        query_text = q.lower()
+        rows = [
+            row
+            for row in rows
+            if query_text in (row.get("input_preview") or "").lower()
+            or query_text in (row.get("output_preview") or "").lower()
+        ]
+    if model:
+        rows = [row for row in rows if row.get("model") == model]
+    if date_from:
+        rows = [
+            row
+            for row in rows
+            if datetime.fromisoformat(row["run_started_at"]) >= date_from
+        ]
+    if date_to:
+        rows = [
+            row
+            for row in rows
+            if datetime.fromisoformat(row["run_started_at"]) <= date_to
+        ]
+    if compare_available is not None:
+        rows = [
+            row
+            for row in rows
+            if row.get("compare_available") is compare_available
+        ]
+
+    sort_key = {
+        "cost_desc": lambda row: row.get("cost") or 0,
+        "cost_asc": lambda row: row.get("cost") or 0,
+        "tokens_desc": lambda row: row.get("total_tokens") or 0,
+        "latency_desc": lambda row: row.get("latency_ms") or 0,
+        "started_at_desc": lambda row: row.get("run_started_at") or "",
+    }.get(sort, lambda row: row.get("run_started_at") or "")
+    rows = sorted(rows, key=sort_key, reverse=sort != "cost_asc")
+
+    total = len(rows)
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": rows[offset : offset + limit],
+    }
 
 
 def validate_execution_graph(graph: dict):
@@ -233,13 +520,8 @@ def get_cost_optimizer_availability(
     특정 LLM 노드가 Cost Optimizer A/B 테스트 진입 대상인지 확인합니다.
     """
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
-    node = _find_workflow_node(workflow.graph, node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="resource.not_found")
-
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
     node_type = str(node.get("type") or "")
-    if node_type != "llmNode":
-        raise HTTPException(status_code=400, detail="cost_optimizer.not_llm_node")
 
     return {
         "available": True,
@@ -253,6 +535,63 @@ def get_cost_optimizer_availability(
             "required_auth_state": "builder",
         },
     }
+
+
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest",
+    response_model=CostOptimizerLatestBaselineResponse,
+)
+def get_cost_optimizer_latest_baseline_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드의 가장 최근 비교 가능 baseline을 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    baseline = get_cost_optimizer_latest_baseline(db, workflow, node_id)
+    return {"baseline": baseline}
+
+
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines",
+    response_model=CostOptimizerBaselineListResponse,
+)
+def list_cost_optimizer_baselines_endpoint(
+    workflow_id: str,
+    node_id: str,
+    q: str | None = None,
+    model: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: str = "started_at_desc",
+    compare_available: bool | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드의 baseline 후보 목록을 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    return list_cost_optimizer_baselines(
+        db,
+        workflow,
+        node_id,
+        q=q,
+        model=model,
+        date_from=date_from,
+        date_to=date_to,
+        sort=sort,
+        compare_available=compare_available,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # [NEW] 로그 조회 API
