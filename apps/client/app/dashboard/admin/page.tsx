@@ -23,8 +23,10 @@ import {
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/apiClient';
 import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
+import { AdminSummaryCards } from '@/app/features/admin/components/AdminSummaryCards';
 import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
 import { PermissionRequestsTab } from '@/app/features/admin/components/PermissionRequestsTab';
+import { UsageTab } from '@/app/features/admin/components/UsageTab';
 import { authApi } from '@/app/features/auth/api/authApi';
 import { organizationApi } from '@/app/features/organization/api/organizationApi';
 import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
@@ -52,6 +54,7 @@ type AdminTab =
   | 'teams'
   | 'permissions'
   | 'permission-requests'
+  | 'usage'
   | 'credentials'
   | 'knowledge'
   | 'audit'
@@ -136,6 +139,7 @@ const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'teams', label: '팀' },
   { key: 'permissions', label: '권한' },
   { key: 'permission-requests', label: '권한 신청' },
+  { key: 'usage', label: '비용' },
   { key: 'credentials', label: 'LLM Credentials' },
   { key: 'knowledge', label: '지식 기반' },
   { key: 'audit', label: '감사 로그' },
@@ -880,6 +884,8 @@ export default function AdminConsolePage() {
         </div>
       ) : (
         <>
+          <AdminSummaryCards />
+
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <DashboardSummaryCard
               label="활성 멤버"
@@ -1076,6 +1082,7 @@ export default function AdminConsolePage() {
           {activeTab === 'permission-requests' && (
             <PermissionRequestsTab members={members} />
           )}
+          {activeTab === 'usage' && <UsageTab />}
           {activeTab === 'audit' && <AuditSearchTab members={members} />}
           {activeTab === 'organization' && (
             <OrganizationTab organization={organization} />

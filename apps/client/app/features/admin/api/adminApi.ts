@@ -9,6 +9,10 @@ import type {
   PermissionRequestListResponse,
   PermissionRequestStatus,
 } from '../types/AdminPermissionRequest';
+import type {
+  AdminOrganizationSummary,
+  AdminWorkflowUsageResponse,
+} from '../types/AdminUsage';
 
 export type AuditLogListParams = AuditLogSearchFilters & {
   page?: number;
@@ -65,6 +69,23 @@ export const adminApi = {
     const response = await apiClient.post(
       `/admin/permission-requests/${requestId}/reject`,
     );
+    return response.data;
+  },
+
+  listWorkflowUsage: async (params: {
+    page?: number;
+    limit?: number;
+    startAt?: string;
+    endAt?: string;
+  } = {}): Promise<AdminWorkflowUsageResponse> => {
+    const response = await apiClient.get('/admin/usage/workflows', {
+      params: compactParams(params),
+    });
+    return response.data;
+  },
+
+  getOrganizationSummary: async (): Promise<AdminOrganizationSummary> => {
+    const response = await apiClient.get('/admin/summary');
     return response.data;
   },
 };

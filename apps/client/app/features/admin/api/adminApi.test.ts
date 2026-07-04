@@ -83,3 +83,29 @@ describe('adminApi permission request actions', () => {
     );
   });
 });
+
+describe('adminApi.listWorkflowUsage', () => {
+  it('기간 미지정 시 기간 파라미터 없이 조회한다', async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: { total: 0, period: {}, items: [] },
+    });
+
+    await adminApi.listWorkflowUsage({ page: 1, limit: 20 });
+
+    expect(mockedGet).toHaveBeenCalledWith('/admin/usage/workflows', {
+      params: { page: 1, limit: 20 },
+    });
+  });
+});
+
+describe('adminApi.getOrganizationSummary', () => {
+  it('조직 월간 요약을 조회한다', async () => {
+    const summary = { month: '2026-07', total_cost: 1.5, budget: null };
+    mockedGet.mockResolvedValueOnce({ data: summary });
+
+    const result = await adminApi.getOrganizationSummary();
+
+    expect(mockedGet).toHaveBeenCalledWith('/admin/summary');
+    expect(result).toEqual(summary);
+  });
+});
