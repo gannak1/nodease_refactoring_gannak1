@@ -10,11 +10,13 @@ from apps.gateway.services.admin_audit_log_service import (
     AdminAuditLogFilters,
     AdminAuditLogService,
 )
+from apps.gateway.services.admin_usage_service import AdminUsageService
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.services.permission_request_service import PermissionRequestService
 from apps.shared.db.models.audit_log import AuditStatus
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
+from apps.shared.schemas.admin_usage import AdminWorkflowUsageResponse
 from apps.shared.schemas.audit import AuditLogDetailResponse, AuditLogListResponse
 from apps.shared.schemas.permission_request import (
     PermissionRequestListResponse,
@@ -140,6 +142,30 @@ def get_audit_log_detail(
         current_user=current_user,
         organization_id=organization_id,
         audit_log_id=audit_log_id,
+    )
+
+
+@router.get("/usage/workflows", response_model=AdminWorkflowUsageResponse)
+def list_workflow_usage(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    start_at: Annotated[datetime | None, Query(alias="startAt")] = None,
+    end_at: Annotated[datetime | None, Query(alias="endAt")] = None,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    period = AdminUsageService.resolve_period(start_at, end_at)
+    return AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=period,
+        page=page,
+        limit=limit,
     )
 
 
