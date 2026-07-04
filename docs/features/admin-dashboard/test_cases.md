@@ -105,12 +105,14 @@ Verified Against: TBD
 - `resolve_period(start_at, end_at, default_month=True)`
   - Given 기간 미지정, When usage 조회 기간을 해석하면, Then KST 이번 달을 기본값으로 반환한다.
   - Given offset 없는 `startAt`/`endAt`, When 해석하면, Then KST 기준으로 aware datetime을 만든다.
+  - Given `startAt`/`endAt` 중 한쪽만 제공, When 해석하면, Then validation error를 반환한다.
   - Given `endAt <= startAt`, When 해석하면, Then validation error를 반환한다.
 - `coalesce_cost(value)`
   - Given `None`, When 비용을 합산 전 정규화하면, Then `Decimal("0")`을 반환한다.
   - Given `Decimal("12.345678")`, When 정규화하면, Then 반올림 없이 같은 값을 반환한다.
 - `aggregate_workflow_usage(db, organization_id, period, page, limit)`
   - Given workflow별 usage row 여러 개, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost가 원천 row 합산과 일치한다.
+  - Given workflow가 App에 연결되어 있을 때, When 집계 응답 item을 만들면, Then `workflow_name`은 `Workflow.app_id`로 연결된 `App.name`이다.
   - Given `total_cost`가 `NULL`인 row, When 집계하면, Then 0으로 합산한다.
   - Given 조직 B의 usage row, When 조직 A로 조회하면, Then 응답에 포함하지 않는다.
   - Given 집계 결과, When 정렬하면, Then `total_cost` 내림차순이다.
@@ -169,6 +171,7 @@ Verified Against: TBD
 - (FR-014) 승인 성공 응답에 `status`, `decided_by`, `decided_at`이 포함된다. 승인/거절의 side effect(AC-3)가 DB와 audit에 반영된다.
 - (FR-014) 이미 처리된 신청 재처리 → `409`. 동시 승인/거절 경합은 한쪽만 성공하고 나머지는 `409`를 받는다 (중복 부여 없음).
 - 공통: `X-Organization-Id` 누락/invalid → `400`, `endAt ≤ startAt` → `400`, `limit > 100` → `422`, 미인증 → `401`.
+- Usage 집계: `startAt`/`endAt` 중 한쪽만 제공 → `400`.
 - 공통: 검색 결과 없음은 `{ "total": 0, "items": [] }` 정상 응답이다.
 
 ## E2E Tests

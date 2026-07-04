@@ -25,8 +25,8 @@ Verified Against: TBD
 공통 규칙:
 
 - Pagination은 기존 패턴을 따른다: `page`(1-base, 기본 1), `limit`(기본 20, 최대 100), 응답은 `{ "total": <int>, "items": [...] }`.
-- 기간 파라미터 `startAt`/`endAt`은 ISO 8601 datetime이다. timezone offset이 없으면 KST(Asia/Seoul)로 해석하고, 판정은 반개구간 `[startAt, endAt)`이다 (requirements 시간대/경계 규칙).
-- 비용 값은 USD이며 원본 정밀도(NUMERIC(10,6) 합산 결과)로 반환한다. 표시 자릿수 반올림(집계 2자리, 단건 6자리)은 클라이언트 표시 계층에서 1회만 수행한다.
+- 기간 파라미터 `startAt`/`endAt`은 ISO 8601 datetime이다. timezone offset이 없으면 KST(Asia/Seoul)로 해석하고, 판정은 반개구간 `[startAt, endAt)`이다 (requirements 시간대/경계 규칙). Usage 집계는 기간 미지정 시 이번 달(KST) 기본값을 쓰며, 명시 기간은 `startAt`/`endAt`을 함께 제공해야 한다.
+- 비용 값은 USD이며 JSON number로 반환한다. 표시 자릿수 반올림(집계 2자리, 단건 6자리)은 클라이언트 표시 계층에서 1회만 수행한다.
 
 ### GET /admin/audit-logs
 
@@ -85,6 +85,7 @@ Response `200`:
 
 - 정렬은 `total_cost` 내림차순 고정 (FR-012 비용 큰 workflow 탐색).
 - `total_cost`가 NULL인 row는 0으로 합산한다.
+- `workflow_name`은 `workflows.app_id`로 연결된 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
 - 항목에서 해당 workflow 화면으로 이동하는 진입은 클라이언트 라우팅이며, 비교/최적화 실행 API는 [cost-optimizer](../cost-optimizer/api_spec.md) 범위다.
 - workflow별 예산/사용률 필드는 예산 관리 feature(PRD FR-051, 문서 TBD) 확정 후 추가한다.
 
@@ -167,7 +168,7 @@ Side effects: status 갱신 + `permission_request.rejected` audit 기록. 거절
 
 | Status | 조건 |
 | --- | --- |
-| 400 | `X-Organization-Id` 누락/invalid, 잘못된 query 값 (`endAt` ≤ `startAt` 등) |
+| 400 | `X-Organization-Id` 누락/invalid, 잘못된 query 값 (`endAt` ≤ `startAt`, usage 집계의 `startAt`/`endAt` 한쪽만 제공 등) |
 | 401 | 미인증 |
 | 403 | organization scope 안이지만 권한 부족 — audit 조회 권한 없음, owner/manager 아님. `permission.denied` audit 기록 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)) |
 | 404 | 요청 organization scope 밖의 `audit_log_id`/`request_id` — 존재를 숨긴다 (`resource.not_found`, ADR-0010) |
