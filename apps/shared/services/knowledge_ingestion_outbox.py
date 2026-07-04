@@ -6,9 +6,6 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.knowledge import (
-    DocumentChunk,
-    DocumentVersion,
-    KnowledgeBase,
     KnowledgeIngestionOutbox,
 )
 
@@ -187,57 +184,6 @@ class KnowledgeIngestionOutboxService:
             event.next_retry_at = None
             event.dead_lettered_at = now
         event.updated_at = now
-
-    def process_cleanup_superseded_event(
-        self,
-        event: KnowledgeIngestionOutbox,
-        *,
-        now: datetime | None = None,
-    ) -> int:
-        """현재 active version이 아닌 superseded version의 청크만 정리한다."""
-
-        now = now or self._now()
-        previous_version_ref = (event.target_ref or {}).get("previous_document_version_id")
-        if not previous_version_ref:
-            self.mark_succeeded(event, safe_metadata={"deleted_chunk_count": 0}, now=now)
-            return 0
-
-        previous_version_id = uuid.UUID(str(previous_version_ref))
-        previous_version = self.db.get(DocumentVersion, previous_version_id)
-        if previous_version is None:
-            self.mark_succeeded(
-                event,
-                safe_metadata={"deleted_chunk_count": 0, "version_missing": True},
-                now=now,
-            )
-            return 0
-
-        kb = self.db.get(KnowledgeBase, previous_version.knowledge_base_id)
-        if kb and kb.active_document_version_id == previous_version.id:
-            raise RuntimeError("active_version_cleanup_refused")
-
-        if previous_version.status != "superseded":
-            self.mark_succeeded(
-                event,
-                safe_metadata={
-                    "deleted_chunk_count": 0,
-                    "version_status": previous_version.status,
-                },
-                now=now,
-            )
-            return 0
-
-        deleted_count = (
-            self.db.query(DocumentChunk)
-            .filter(DocumentChunk.document_version_id == previous_version.id)
-            .delete(synchronize_session=False)
-        )
-        self.mark_succeeded(
-            event,
-            safe_metadata={"deleted_chunk_count": int(deleted_count or 0)},
-            now=now,
-        )
-        return int(deleted_count or 0)
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)

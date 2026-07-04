@@ -715,43 +715,28 @@ def rag_answer_retention_purge(self, data: Dict[str, Any]):
 def knowledge_ingestion_outbox_process(self, data: Dict[str, Any]):
     """Knowledge ingestion outbox의 cleanup/recovery event를 idempotent하게 처리한다."""
     from apps.shared.services.knowledge_ingestion_outbox import (
-        OUTBOX_EVENT_CLEANUP_SUPERSEDED,
         DEFAULT_OUTBOX_PROCESS_LIMIT,
         KnowledgeIngestionOutboxService,
+    )
+    from apps.shared.services.knowledge_ingestion_outbox_processor import (
+        KnowledgeIngestionOutboxProcessor,
     )
 
     session = SessionLocal()
     owner_token = str(uuid.uuid4())
     try:
-        service = KnowledgeIngestionOutboxService(session)
-        recovered_count = service.recover_stale_leases()
-        events = service.lease_due_events(
+        processor = KnowledgeIngestionOutboxProcessor(session)
+        result = processor.process_due_events(
             owner_token=owner_token,
             limit=KnowledgeIngestionOutboxService.validate_limit(
                 data.get("limit") or DEFAULT_OUTBOX_PROCESS_LIMIT
             ),
         )
-        processed_count = 0
-        for event in events:
-            try:
-                if event.event_type == OUTBOX_EVENT_CLEANUP_SUPERSEDED:
-                    service.process_cleanup_superseded_event(event)
-                else:
-                    service.mark_retry_or_dead_letter(
-                        event,
-                        safe_reason_code="outbox.unsupported_event_type",
-                    )
-                processed_count += 1
-            except Exception:
-                service.mark_retry_or_dead_letter(
-                    event,
-                    safe_reason_code="outbox.processing_failed",
-                )
         session.commit()
         return {
             "status": "success",
-            "processed_count": processed_count,
-            "recovered_count": recovered_count,
+            "processed_count": result.processed_count,
+            "recovered_count": result.recovered_count,
         }
     except ValueError:
         session.rollback()

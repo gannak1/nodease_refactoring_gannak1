@@ -17,6 +17,10 @@ from apps.shared.services.knowledge_ingestion_outbox import (
     OUTBOX_STATUS_SUCCEEDED,
     KnowledgeIngestionOutboxService,
 )
+from apps.shared.services.knowledge_ingestion_outbox_processor import (
+    KnowledgeIngestionOutboxProcessor,
+    SupersededVersionCleanupHandler,
+)
 from apps.shared.services.knowledge_sync_cursor import (
     KnowledgeSyncCursorError,
     KnowledgeSyncCursorService,
@@ -463,12 +467,12 @@ def test_cleanup_superseded_event_refuses_active_version_deletion():
     event = SimpleNamespace(
         target_ref={"previous_document_version_id": str(OLD_VERSION_ID)}
     )
-    service = KnowledgeIngestionOutboxService(
-        FakeDb(previous_version=previous, kb=kb)
-    )
+    db = FakeDb(previous_version=previous, kb=kb)
+    outbox = KnowledgeIngestionOutboxService(db)
+    handler = SupersededVersionCleanupHandler(db, outbox)
 
     with pytest.raises(RuntimeError):
-        service.process_cleanup_superseded_event(event)
+        handler.process(event)
 
 
 def test_cleanup_superseded_event_succeeds_when_previous_version_is_missing():
@@ -483,9 +487,11 @@ def test_cleanup_superseded_event_succeeds_when_previous_version_is_missing():
         safe_metadata={},
         updated_at=None,
     )
-    service = KnowledgeIngestionOutboxService(FakeDb())
+    db = FakeDb()
+    outbox = KnowledgeIngestionOutboxService(db)
+    handler = SupersededVersionCleanupHandler(db, outbox)
 
-    deleted_count = service.process_cleanup_superseded_event(event)
+    deleted_count = handler.process(event)
 
     assert deleted_count == 0
     assert event.status == OUTBOX_STATUS_SUCCEEDED
@@ -510,15 +516,29 @@ def test_cleanup_superseded_event_is_noop_for_non_superseded_version():
         safe_metadata={},
         updated_at=None,
     )
-    service = KnowledgeIngestionOutboxService(
-        FakeDb(previous_version=previous, kb=kb)
-    )
+    db = FakeDb(previous_version=previous, kb=kb)
+    outbox = KnowledgeIngestionOutboxService(db)
+    handler = SupersededVersionCleanupHandler(db, outbox)
 
-    deleted_count = service.process_cleanup_superseded_event(event)
+    deleted_count = handler.process(event)
 
     assert deleted_count == 0
     assert event.status == OUTBOX_STATUS_SUCCEEDED
     assert event.safe_metadata["version_status"] == "ready"
+
+
+def test_outbox_processor_dispatches_unsupported_events_to_retry():
+    event = SimpleNamespace(event_type="unknown.event")
+    processor = KnowledgeIngestionOutboxProcessor(FakeDb())
+    processor.outbox = SimpleNamespace(
+        mark_retry_or_dead_letter=lambda target, *, safe_reason_code: setattr(
+            target, "safe_reason_code", safe_reason_code
+        )
+    )
+
+    processor._process_event(event)
+
+    assert event.safe_reason_code == "outbox.unsupported_event_type"
 
 
 def test_content_cursor_advances_only_after_active_ready_version():
