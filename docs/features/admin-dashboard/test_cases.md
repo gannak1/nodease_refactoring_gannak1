@@ -39,7 +39,7 @@ Verified Against: TBD
 
 ### AC-5. 권한 경계
 
-- Given `auditor`/`raw_auditor` 전용 사용자, Then audit 검색/상세(AC-1)만 접근할 수 있고, usage/summary/permission-requests는 `403`이다. UI에서는 감사 로그 탭만 노출된다.
+- Given `auditor`/`raw_auditor` 전용 사용자, Then audit 검색/상세(AC-1)만 접근할 수 있고, usage/summary/permission-requests는 `403`이다. UI의 감사 로그 탭 단독 노출은 후순위다 (데모 시나리오 미사용, component_spec 참조).
 - Given audit 권한 없는 일반 member, Then 모든 admin API가 `403`이다.
 - Given organization owner/manager, Then 모든 admin API에 접근할 수 있다.
 - Given 다른 조직의 `audit_log_id`/`request_id`, When 조회/처리를 시도하면, Then `404`로 존재가 숨겨진다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
@@ -189,7 +189,7 @@ Verified Against: TBD
 - organization owner/manager: 모든 admin API 200.
 - 다른 organization의 audit/usage/신청 데이터가 응답에 포함되지 않고, 타 조직 id 직접 조회는 404다.
 - raw payload 조회는 admin API로 불가능하다 — `raw_auditor`의 `view_raw`는 trace visibility policy 경로에서만 판정된다.
-- UI: `auditor` 로그인 시 감사 로그 탭만 렌더링되고 요약 카드가 표시되지 않는다 (프론트 노출 제어는 보조이며, API 403이 최종 경계임을 함께 검증).
+- (후순위) UI: `auditor` 로그인 시 감사 로그 탭만 렌더링되고 요약 카드가 표시되지 않는다 (프론트 노출 제어는 보조이며, API 403이 최종 경계임을 함께 검증). auditor 전용 노출 제어 구현 시 복원한다.
 
 ## Edge Cases
 
