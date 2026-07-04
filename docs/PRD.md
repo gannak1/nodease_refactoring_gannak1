@@ -209,7 +209,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-011: audit log 검색/필터 (행위자, action, 대상, 기간)와 개별 로그 상세 조회 (actor, action, target, status, timestamp)
 - FR-012: workflow별 LLM 사용량/비용 집계 표시
 - FR-013 (후순위): 권한 차단(`permission.denied`) 등 비정상 접근 시도 표시. 현재 시나리오에서 사용하지 않으며, 구현이 완료되면 시나리오와 함께 복원한다.
-- FR-014: workflow 생성/배포 권한 신청 목록 조회와 승인/거절
+- FR-014: workflow 생성/배포 권한 신청 목록 조회와 승인/거절, 부여된 App 생성 권한의 목록 조회와 회수
 - FR-015: 조직 월간 비용, 예산 위험 workflow 비율 요약 (부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이며, 구현 완료 시 시나리오 2에 단계로 복원한다)
 
 ### 비용 최적화 — [features/cost-optimizer/](features/cost-optimizer/requirements.md)
