@@ -23,6 +23,10 @@ from apps.shared.db.models.knowledge import (
 )
 from apps.shared.db.session import SessionLocal
 from apps.shared.distributed_lock import DistributedLock
+from apps.shared.services.knowledge_ingestion_fencing import (
+    ACTIVE_FENCING_TOKEN_HASH_KEY,
+    KnowledgeIngestionFencing,
+)
 from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
     KnowledgeIngestionFinalizer,
@@ -255,11 +259,9 @@ class IngestionOrchestrator:
         self._update_status(
             document_id,
             "indexing",
-            meta_updates={
-                "active_ingestion_fencing_token_hash": hashlib.sha256(
-                    ingestion_fencing_token.encode("utf-8")
-                ).hexdigest()
-            },
+            meta_updates=KnowledgeIngestionFencing.active_document_meta_update(
+                ingestion_fencing_token
+            ),
         )
 
     def _extract_raw_blocks(self, doc: Document) -> List[Dict[str, Any]]:
@@ -463,7 +465,7 @@ class IngestionOrchestrator:
             document_id,
             "failed",
             self._safe_ingestion_error_message(error),
-            meta_updates={"active_ingestion_fencing_token_hash": None},
+            meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
         )
         self._update_progress_redis(document_id, 0, expire=True)
 

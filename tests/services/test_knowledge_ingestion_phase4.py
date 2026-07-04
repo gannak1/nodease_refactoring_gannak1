@@ -10,6 +10,11 @@ from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
     KnowledgeIngestionFinalizer,
 )
+from apps.shared.services.knowledge_ingestion_fencing import (
+    ACTIVE_FENCING_TOKEN_HASH_KEY,
+    VERSION_FENCING_TOKEN_HASH_KEY,
+    KnowledgeIngestionFencing,
+)
 from apps.shared.services.knowledge_ingestion_outbox import (
     OUTBOX_STATUS_DEAD_LETTERED,
     OUTBOX_STATUS_LEASED,
@@ -234,10 +239,10 @@ def test_finalizer_rejects_stale_worker_fencing_token():
     version = _version()
     finalizer = FakeFinalizer(db, kb=kb, version=version)
     version.safe_metadata = {
-        "ingestion_fencing_token_hash": finalizer._hash_fencing_token(token_a)
+        VERSION_FENCING_TOKEN_HASH_KEY: KnowledgeIngestionFencing.hash_token(token_a)
     }
     legacy_document.meta_info = {
-        "active_ingestion_fencing_token_hash": finalizer._hash_fencing_token(token_b)
+        ACTIVE_FENCING_TOKEN_HASH_KEY: KnowledgeIngestionFencing.hash_token(token_b)
     }
 
     with pytest.raises(KnowledgeIngestionFinalizationError):
@@ -261,14 +266,14 @@ def test_finalizer_clears_fencing_hash_after_successful_finalize():
     db = FakeDb(legacy_document=legacy_document, kb=kb)
     version = _version()
     finalizer = FakeFinalizer(db, kb=kb, version=version, chunk_count=1)
-    token_hash = finalizer._hash_fencing_token(token)
-    version.safe_metadata = {"ingestion_fencing_token_hash": token_hash}
-    legacy_document.meta_info = {"active_ingestion_fencing_token_hash": token_hash}
+    token_hash = KnowledgeIngestionFencing.hash_token(token)
+    version.safe_metadata = {VERSION_FENCING_TOKEN_HASH_KEY: token_hash}
+    legacy_document.meta_info = {ACTIVE_FENCING_TOKEN_HASH_KEY: token_hash}
 
     finalizer.finalize_active_version(version, expected_fencing_token=token)
 
     assert kb.active_document_version_id == NEW_VERSION_ID
-    assert "active_ingestion_fencing_token_hash" not in legacy_document.meta_info
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY not in legacy_document.meta_info
 
 
 def test_failed_indexing_version_is_recorded_after_rollback_context():
@@ -299,7 +304,7 @@ def test_failed_indexing_version_is_recorded_after_rollback_context():
     assert version.updated_at == now
     assert version.safe_metadata["source_type"] == "FILE"
     assert token not in str(version.safe_metadata)
-    assert "ingestion_fencing_token_hash" in version.safe_metadata
+    assert VERSION_FENCING_TOKEN_HASH_KEY in version.safe_metadata
     assert db.added == [version]
     assert db.flush_count == 1
 

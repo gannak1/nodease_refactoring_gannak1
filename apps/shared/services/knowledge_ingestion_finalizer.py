@@ -1,5 +1,4 @@
 import uuid
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +16,7 @@ from apps.shared.services.knowledge_ingestion_outbox import (
     OUTBOX_EVENT_CLEANUP_SUPERSEDED,
     KnowledgeIngestionOutboxService,
 )
+from apps.shared.services.knowledge_ingestion_fencing import KnowledgeIngestionFencing
 
 
 DEFAULT_PROCESSING_POLICY_VERSION = "knowledge-ingestion-v1"
@@ -58,11 +58,9 @@ class KnowledgeIngestionFinalizer:
         if not kb or kb.organization_id is None:
             return None
 
-        version_safe_metadata = dict(safe_metadata or {})
-        if fencing_token:
-            version_safe_metadata["ingestion_fencing_token_hash"] = (
-                self._hash_fencing_token(fencing_token)
-            )
+        version_safe_metadata = KnowledgeIngestionFencing.version_metadata(
+            safe_metadata, fencing_token
+        )
 
         version = DocumentVersion(
             id=uuid.uuid4(),
@@ -119,9 +117,11 @@ class KnowledgeIngestionFinalizer:
         if legacy_document:
             legacy_document.content_hash = version.content_hash
             legacy_document.embedding_model = version.embedding_model
-            legacy_meta = dict(getattr(legacy_document, "meta_info", None) or {})
-            legacy_meta.pop("active_ingestion_fencing_token_hash", None)
-            legacy_document.meta_info = legacy_meta
+            legacy_document.meta_info = (
+                KnowledgeIngestionFencing.clear_active_document_metadata(
+                    getattr(legacy_document, "meta_info", None)
+                )
+            )
             legacy_document.updated_at = now
 
         if previous_version:
@@ -179,11 +179,9 @@ class KnowledgeIngestionFinalizer:
         kb = self.db.get(KnowledgeBase, knowledge_base_id)
         if not kb or kb.organization_id != organization_id:
             raise KnowledgeIngestionFinalizationError("failed_version_kb_mismatch")
-        version_safe_metadata = dict(safe_metadata or {})
-        if fencing_token:
-            version_safe_metadata["ingestion_fencing_token_hash"] = (
-                self._hash_fencing_token(fencing_token)
-            )
+        version_safe_metadata = KnowledgeIngestionFencing.version_metadata(
+            safe_metadata, fencing_token
+        )
         version = DocumentVersion(
             id=uuid.uuid4(),
             organization_id=organization_id,
@@ -292,8 +290,8 @@ class KnowledgeIngestionFinalizer:
     ) -> None:
         if not expected_fencing_token:
             return
-        expected_hash = self._hash_fencing_token(expected_fencing_token)
-        version_hash = (version.safe_metadata or {}).get("ingestion_fencing_token_hash")
+        expected_hash = KnowledgeIngestionFencing.hash_token(expected_fencing_token)
+        version_hash = KnowledgeIngestionFencing.version_hash(version)
         if version_hash != expected_hash:
             raise KnowledgeIngestionFinalizationError("fencing_token_mismatch")
 
@@ -302,14 +300,9 @@ class KnowledgeIngestionFinalizer:
         legacy_document = self._lock_legacy_document(version.legacy_document_id)
         if not legacy_document:
             return
-        active_hash = (legacy_document.meta_info or {}).get(
-            "active_ingestion_fencing_token_hash"
-        )
+        active_hash = KnowledgeIngestionFencing.active_document_hash(legacy_document)
         if active_hash != expected_hash:
             raise KnowledgeIngestionFinalizationError("stale_ingestion_worker")
-
-    def _hash_fencing_token(self, fencing_token: str) -> str:
-        return hashlib.sha256(fencing_token.encode("utf-8")).hexdigest()
 
     def _lock_legacy_document(
         self, legacy_document_id: uuid.UUID | None
