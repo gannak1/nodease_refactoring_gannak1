@@ -31,11 +31,11 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR | 주요 컴포넌트 | 예상 코드 위치 | 구현 상태 | 테스트 코드 | 테스트 통과 여부 |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM node detail action | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | 통과 |
-| FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-003 | Candidate editor | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
+| FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
+| FR-003 | Candidate editor | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx` | 진행중 | 작성 전 | 미실행 |
 | FR-004 | Baseline input lock display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-005 | Hybrid compare flow state | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-006 | A/B compare workspace, Inspector | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
+| FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
 | FR-007 | Downstream compatibility badge | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-008 | Apply candidate action, confirmation modal | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-009 | Cost/usage metric display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
@@ -141,6 +141,16 @@ output preview 또는 usage summary가 없는 baseline row는 목록에 표시�
 
 A/B compare workspace는 특정 workflow의 특정 LLM node에 종속된 전용 작업 화면이다. 사용자는 workflow 편집 화면에서 target LLM node의 `A/B 테스트하기` 액션으로 이 workspace에 진입한다.
 
+현재 프론트 구현은 A/B compare workspace를 workflow editor 안의 중첩 패널이 아니라 전용 route로 둔다.
+
+- Route: `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx`
+- 진입 액션: `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`
+- baseline 선택: `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection.tsx`
+- A/B 공통 설정 패널: `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx`
+- 고급 설정 재사용 패널: `apps/client/app/features/workflow/components/nodes/llm/components/LLMParameterSidePanel.tsx`
+- 지식 베이스 재사용 패널: `apps/client/app/features/workflow/components/nodes/llm/components/LLMReferenceSidePanel.tsx`
+- 설정 변환 모델: `apps/client/app/features/workflow/components/costOptimizer/costOptimizerPlaygroundModel.ts`
+
 workspace 상단에는 context bar를 둔다.
 
 - workflow 이름
@@ -182,21 +192,60 @@ B candidate 영역은 편집 가능하다.
 
 B candidate는 현재 LLM 노드 설정 복사본으로 초기화한다.
 
+A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. 두 영역은 동일한 설정 패널 컴포넌트를 사용하고, `readOnly` 여부만 다르게 동작해야 한다.
+
+- A baseline: `NodeSettingsComparisonPanel(readOnly=true)`
+- B candidate: `NodeSettingsComparisonPanel(readOnly=false)`
+
+공통 설정 패널은 다음 탭을 제공한다.
+
+- `기본 설정`
+- `고급 설정`
+- `지식 베이스`
+
+`기본 설정` 탭은 LLM 노드 상세 편집에서 사용자가 기본적으로 조작하던 핵심 옵션을 같은 구조로 보여준다.
+
 - 모델 선택
+- fallback 모델 선택
+- task type 선택
 - system prompt 편집
 - user prompt 편집
 - assistant prompt 편집
-- `max_tokens` 편집
-- `temperature` 편집
 - 출력 형식 선택: text 또는 JSON
 - JSON schema 편집
+
+`고급 설정` 탭은 기존 LLM 노드 상세 편집의 LLM parameter 패널과 같은 구조를 사용한다. 기존 `LLMParameterSidePanel`을 재사용하되, A/B workspace에서는 실제 workflow node store를 직접 수정하지 않도록 controlled 경로를 사용한다.
+
+- A baseline은 read-only로 실행 시점 parameter 설정을 보여준다.
+- B candidate는 local candidate 상태만 수정한다.
+- 기존 LLM node detail에서는 기존처럼 workflow store를 갱신한다.
+
+`고급 설정` 탭에서 다루는 항목은 다음과 같다.
+
+- `max_tokens` 편집
+- `temperature` 편집
+- `top_p` 편집
+- `presence_penalty` 편집
+- `frequency_penalty` 편집
+- `stop` 편집
+
+`지식 베이스` 탭은 기존 LLM 노드의 지식 베이스 설정 UI와 같은 구조를 사용한다. 기존 `LLMReferenceSidePanel`을 재사용하되, A/B workspace에서는 실제 workflow node store를 직접 수정하지 않도록 controlled 경로를 사용한다.
+
+- A baseline은 read-only로 실행 시점 Knowledge/RAG 설정을 보여준다.
+- B candidate는 local candidate 상태만 수정한다.
+- 기존 LLM node detail에서는 기존처럼 workflow store를 갱신한다.
+
+지식 베이스 탭에서 다루는 항목은 다음과 같다.
+
 - Knowledge Base 선택
 - `topK` 편집
 - `scoreThreshold` 편집
-- 고급 파라미터 편집: `top_p`, `presence_penalty`, `frequency_penalty`, `stop`
+
+B candidate 영역은 다음 액션을 포함한다.
+
 - B 후보 실행
 
-고급 파라미터는 기본 화면에 모두 펼쳐두지 않고 접힘 섹션으로 제공한다. 사용자는 기본 옵션만으로 빠르게 비교할 수 있고, 필요한 경우 고급 파라미터를 열어 세밀하게 조정한다.
+고급 파라미터는 기본 설정 화면에 모두 펼쳐두지 않고 `고급 설정` 탭으로 분리한다. 사용자는 기본 옵션만으로 빠르게 비교할 수 있고, 필요한 경우 고급 설정 탭에서 세밀하게 조정한다.
 
 JSON schema 편집 영역은 출력 형식이 JSON일 때 활성화한다. text 출력 형식에서는 schema 입력을 비활성화하거나 숨긴다.
 
