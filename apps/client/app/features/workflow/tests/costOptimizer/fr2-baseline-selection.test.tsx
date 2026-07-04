@@ -243,7 +243,13 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       target: { value: 'true' },
     });
     fireEvent.change(screen.getByLabelText(/정렬/i), {
-      target: { value: 'cost_desc' },
+      target: { value: 'latency_desc' },
+    });
+    fireEvent.change(screen.getByLabelText(/시작일/i), {
+      target: { value: '2026-07-01' },
+    });
+    fireEvent.change(screen.getByLabelText(/종료일/i), {
+      target: { value: '2026-07-04' },
     });
 
     await waitFor(() => {
@@ -254,7 +260,9 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
           q: 'billing',
           model: 'gpt-4.1-mini',
           compare_available: true,
-          sort: 'cost_desc',
+          sort: 'latency_desc',
+          date_from: '2026-07-01T00:00:00',
+          date_to: '2026-07-04T23:59:59',
         }),
       );
     });

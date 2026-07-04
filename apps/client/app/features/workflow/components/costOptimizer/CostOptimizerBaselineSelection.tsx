@@ -1,7 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Clock3, ListFilter, Sparkles } from 'lucide-react';
+import {
+  Activity,
+  ArrowLeft,
+  Clock3,
+  GitCommitHorizontal,
+  ListFilter,
+  Sparkles,
+} from 'lucide-react';
 import { workflowApi } from '../../api/workflowApi';
 import type {
   CostOptimizerBaselineListParams,
@@ -114,18 +121,22 @@ export function CostOptimizerBaselineSelection({
   const [model, setModel] = useState('');
   const [compareAvailable, setCompareAvailable] = useState('');
   const [sort, setSort] = useState('started_at_desc');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const listParams = useMemo<CostOptimizerBaselineListParams>(
     () => ({
       q: q || undefined,
       model: model || undefined,
+      date_from: dateFrom ? `${dateFrom}T00:00:00` : undefined,
+      date_to: dateTo ? `${dateTo}T23:59:59` : undefined,
       compare_available:
         compareAvailable === '' ? undefined : compareAvailable === 'true',
       sort,
       limit: DEFAULT_LIMIT,
       offset: 0,
     }),
-    [compareAvailable, model, q, sort],
+    [compareAvailable, dateFrom, dateTo, model, q, sort],
   );
 
   const loadRows = useCallback(async () => {
@@ -295,8 +306,29 @@ export function CostOptimizerBaselineSelection({
                 <option value="cost_desc">비용 높은순</option>
                 <option value="cost_asc">비용 낮은순</option>
                 <option value="tokens_desc">토큰 많은순</option>
+                <option value="latency_desc">실행 시간 긴순</option>
               </select>
             </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
+                <span>시작일</span>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(event) => setDateFrom(event.target.value)}
+                  className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
+                />
+              </label>
+              <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
+                <span>종료일</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(event) => setDateTo(event.target.value)}
+                  className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
+                />
+              </label>
+            </div>
           </div>
 
           <div className="grid gap-2">
@@ -327,6 +359,20 @@ export function CostOptimizerBaselineSelection({
                     {row.compare_available
                       ? row.downstream_compatibility?.label || '검증 가능'
                       : '비교 불가'}
+                  </span>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold text-slate-600">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1">
+                    <Activity className="h-3 w-3" />
+                    Run {row.workflow_run_status}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1">
+                    <GitCommitHorizontal className="h-3 w-3" />
+                    Node {row.node_status}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1">
+                    Trace {row.trace_available || row.has_trace ? '있음' : '없음'}
                   </span>
                 </div>
 
