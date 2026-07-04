@@ -1,7 +1,6 @@
 # Organization API Spec
 
-Status: Verified
-Verified Against: feature/mba-119 @ 7aefa84
+Status: Draft
 
 기본 경로: `/api/v1`
 
@@ -44,7 +43,13 @@ Verified Against: feature/mba-119 @ 7aefa84
 | POST | `/organizations/{organization_id}/members/invitations` | 가입된 user id를 organization member로 초대한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
 | POST | `/organizations/{organization_id}/members/me/accept` | 현재 로그인한 사용자가 해당 organization에서 자신에게 온 초대를 수락한다. | `auth_token` cookie |
 | PATCH | `/organizations/{organization_id}/members/{user_id}` | member 상태 또는 organization auth state를 변경한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
-| DELETE | `/organizations/{organization_id}/members/{user_id}` | member를 removed 상태로 바꾸고 team/user direct permission을 정리한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
+| DELETE | `/organizations/{organization_id}/members/{user_id}` | member를 removed 상태로 바꾸고 team/user direct permission 및 App 생성 권한 row를 정리한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
+
+### Permission Requests
+
+| 메서드 | 경로 | 설명 | 인증 |
+| --- | --- | --- | --- |
+| POST | `/permission-requests` | 현재 사용자가 App 생성 권한(`app.create`)을 신청한다. | `auth_token` cookie, `X-Organization-Id` |
 
 ### Teams
 
@@ -121,6 +126,29 @@ Verified Against: feature/mba-119 @ 7aefa84
 요청 본문: 없음.
 
 성공 응답: `200 OK`, `OrganizationResponse`.
+
+### `POST /permission-requests`
+
+요청 header:
+
+| 이름 | 필수 | 비고 |
+| --- | --- | --- |
+| `X-Organization-Id` | 예 | 권한을 신청할 organization UUID |
+
+요청 본문:
+
+| 필드 | 타입 | 필수 | 비고 |
+| --- | --- | --- | --- |
+| `requested_permission` | `string` | 아니오 | 생략 시 `app.create`. 다른 값은 거부한다. |
+| `reason` | `string` | 예 | blank 값을 거부한다. |
+
+성공 응답: `201 Created`, `PermissionRequestResponse`.
+
+거부 조건:
+
+- 이미 App 생성 권한을 보유한 사용자(owner/manager 또는 `user_app_creation_permissions` row 보유)는 `409`를 반환한다.
+- 같은 organization에 pending `app.create` 신청이 있으면 `409`를 반환한다.
+- active organization membership이 아니면 active organization context 판정에서 거부한다.
 
 ### `PATCH /organizations/{organization_id}`
 

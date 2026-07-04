@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -37,6 +38,14 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.permission_request import (
+    PERMISSION_REQUEST_APPROVED,
+    REQUESTED_PERMISSION_APP_CREATE,
+    PermissionRequest,
+)
+from apps.shared.db.models.user_app_creation_permission import (
+    UserAppCreationPermission,
+)
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_AUTH_MEMBER,
@@ -110,6 +119,30 @@ TEAM_IDS = {
 KB_IDS = {
     "hr": _uuid(300),
     "finance": _uuid(301),
+}
+
+# author의 승인된 App 생성 권한 신청 이력 (ADR-0016).
+# rookie 신청은 라이브 데모(시나리오 1)의 제출 흐름과 충돌하므로 seed하지 않는다.
+PERMISSION_REQUEST_IDS = {
+    "author_app_create": _uuid(900),
+}
+
+APP_CREATION_PERMISSION_IDS = {
+    "author": _uuid(910),
+}
+
+# 데모 조직 공용 LLM credential. 스키마상 credential은 user_id 소유가 필수이고
+# organization_id는 nullable scope라(data_model.md), 라이브 생성 경로와 같게
+# org manager(admin) 소유 + 데모 조직 scope로 만든다. apiKey는 실제 키가 아닌
+# 명백한 더미 값이다 — 비용 탭/요약 카드 집계용이며 provider 호출은 실패한다.
+# LEGACY_DEMO_LLM_CREDENTIAL_ID(_uuid(700))는 과거 seed 정리 대상이라 재사용하지 않는다.
+LLM_CREDENTIAL_IDS = {
+    "demo_openai": _uuid(920),
+}
+
+CREDENTIAL_MODEL_REL_IDS = {
+    "gpt-4.1": _uuid(921),
+    "gpt-4.1-mini": _uuid(922),
 }
 
 DOCUMENT_IDS = {
@@ -1450,6 +1483,45 @@ def _seed_run(
         )
 
 
+def _seed_llm_credential(
+    db: Session, provider: LLMProvider, models: dict[str, LLMModel]
+) -> LLMCredential:
+    """데모 조직 공용 credential과 verified model relation (FR-012 비용 집계용)."""
+    # 현재 구현은 encrypted_config에 config JSON을 평문 저장한다 (data_model.md 알려진 한계).
+    credential = _upsert_by_id(
+        db,
+        LLMCredential,
+        LLM_CREDENTIAL_IDS["demo_openai"],
+        {
+            "provider_id": provider.id,
+            "user_id": USER_IDS["admin"],
+            "organization_id": ORG_ID,
+            "credential_name": "데모 OpenAI Credential",
+            "encrypted_config": json.dumps(
+                {"apiKey": "sk-demo-not-a-real-key", "baseUrl": provider.base_url}
+            ),
+            "config_preview": "sk-****demo",
+            "is_valid": True,
+            "quota_type": "unlimited",
+            "quota_limit": 0,
+            "quota_used": 0,
+        },
+    )
+    for model_name, rel_id in CREDENTIAL_MODEL_REL_IDS.items():
+        _upsert_by_id(
+            db,
+            LLMRelCredentialModel,
+            rel_id,
+            {
+                "credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
+                "model_id": models[model_name].id,
+                "is_verified": True,
+                "priority": 0,
+            },
+        )
+    return credential
+
+
 def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
     now = _now()
     run_specs = [
@@ -1487,31 +1559,93 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
             node_prefix=index,
         )
 
-        # Credential은 팀원이 직접 등록해 실험해야 하므로 seed하지 않는다.
-        # LLMUsageLog.credential_id가 non-null이라 더미 credential 없이 usage row도 만들지 않는다.
+        # 관리자 비용 탭/월간 요약(FR-012/FR-015)의 원천은 llm_usage_logs라
+        # run과 같은 시각/토큰/비용으로 usage row를 만든다. 실패 run은 provider
+        # 응답이 없어 usage를 기록하지 않는 실제 경로를 따른다.
+        if status == RunStatus.SUCCESS:
+            _upsert_by_id(
+                db,
+                LLMUsageLog,
+                _uuid(5000 + index),
+                {
+                    "user_id": USER_IDS[user_key],
+                    "organization_id": ORG_ID,
+                    "credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
+                    "model_id": models[model_name].id,
+                    "workflow_id": WORKFLOW_IDS[workflow_key],
+                    "workflow_run_id": run_id,
+                    "node_id": f"llm-node-{index}",
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_cost": cost,
+                    "latency_ms": latency,
+                    "status": "success",
+                    "created_at": now - timedelta(hours=index + 1),
+                },
+            )
+
+
+def _seed_permission_requests(db: Session) -> None:
+    """author의 승인된 App 생성 권한 신청과 부여 결과 (ADR-0016, FR-014)."""
+    now = _now()
+    requested_at = now - timedelta(days=7)
+    decided_at = requested_at + timedelta(hours=1)
+    _upsert_by_id(
+        db,
+        PermissionRequest,
+        PERMISSION_REQUEST_IDS["author_app_create"],
+        {
+            "organization_id": ORG_ID,
+            "user_id": USER_IDS["author"],
+            "requested_permission": REQUESTED_PERMISSION_APP_CREATE,
+            "reason": "고객지원 운영 workflow를 직접 만들고 배포해야 합니다.",
+            "status": PERMISSION_REQUEST_APPROVED,
+            "created_at": requested_at,
+            "decided_by": USER_IDS["admin"],
+            "decided_at": decided_at,
+            "options": _demo_options("permission-request-author"),
+        },
+    )
+    _upsert_by_id(
+        db,
+        UserAppCreationPermission,
+        APP_CREATION_PERMISSION_IDS["author"],
+        {
+            "grantee_organization_id": ORG_ID,
+            "user_id": USER_IDS["author"],
+            "assigned_by": USER_IDS["admin"],
+            "assigned_at": decided_at,
+            "options": _demo_options("app-creation-permission-author"),
+        },
+    )
 
 
 def _seed_audit_logs(db: Session) -> None:
     now = _now()
+    # ADR-0008 canonical action 기준. occurred_at은 index가 클수록 과거이므로
+    # 최신 이벤트를 앞에 둔다 (신청 -> 승인 -> 권한 부여가 시간순이 되도록).
     logs = [
-        (AuditAction.USER_LOGIN, "user", USER_IDS["rookie"], "신입사원 로그인"),
-        ("permission.request", "workflow", str(WORKFLOW_IDS["hr_bot_example"]), "신입사원 workflow 생성 권한 신청"),
-        (AuditAction.PERMISSION_GRANT, "workflow", str(WORKFLOW_IDS["hr_bot_example"]), "관리자 권한 승인"),
-        (AuditAction.WORKFLOW_CREATE, "workflow", str(WORKFLOW_IDS["hr_bot_example"]), "사내 문서 질문 응답 봇 생성"),
-        (AuditAction.WORKFLOW_DEPLOY, "workflow", str(WORKFLOW_IDS["ticket_ops"]), "Enterprise 고객 티켓 처리 배포"),
-        (AuditAction.WORKFLOW_EXECUTE, "workflow", str(WORKFLOW_IDS["ticket_ops"]), "고객 티켓 workflow 실행"),
-        (AuditAction.PERMISSION_DENIED, "workflow", str(WORKFLOW_IDS["ticket_ops"]), "권한 없는 workflow 접근 차단"),
-        (AuditAction.POLICY_BLOCK, "knowledge", str(KB_IDS["finance"]), "민감 문서 접근 정책 차단"),
-        (AuditAction.LLM_CALL, "workflow", str(WORKFLOW_IDS["ticket_ops"]), "LLM 비용 사용 기록"),
+        (AuditAction.USER_LOGIN, "rookie", "user", USER_IDS["rookie"], "신입사원 로그인"),
+        (AuditAction.LLM_CALL, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "LLM 비용 사용 기록"),
+        (AuditAction.WORKFLOW_EXECUTE, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "고객 티켓 workflow 실행"),
+        (AuditAction.WORKFLOW_DEPLOY, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "Enterprise 고객 티켓 처리 배포"),
+        (AuditAction.POLICY_BLOCK, "admin", "knowledge", str(KB_IDS["finance"]), "민감 문서 접근 정책 차단"),
+        (AuditAction.PERMISSION_DENIED, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "권한 없는 workflow 접근 차단"),
+        (AuditAction.WORKFLOW_CREATE, "rookie", "workflow", str(WORKFLOW_IDS["hr_bot_example"]), "사내 문서 질문 응답 봇 생성"),
+        (AuditAction.USER_APP_CREATION_PERMISSION_CREATED, "admin", "user_app_creation_permission", str(APP_CREATION_PERMISSION_IDS["author"]), "운영자 App 생성 권한 부여"),
+        (AuditAction.PERMISSION_REQUEST_APPROVED, "admin", "permission_request", str(PERMISSION_REQUEST_IDS["author_app_create"]), "운영자 권한 신청 승인"),
+        (AuditAction.PERMISSION_REQUEST_CREATED, "author", "permission_request", str(PERMISSION_REQUEST_IDS["author_app_create"]), "운영자 workflow 생성/배포 권한 신청"),
     ]
-    for index, (action, target_type, target_id, summary) in enumerate(logs):
+    for index, (action, actor_key, target_type, target_id, summary) in enumerate(
+        logs
+    ):
         _upsert_by_id(
             db,
             AuditLog,
             _uuid(4000 + index),
             {
                 "occurred_at": now - timedelta(minutes=index * 7),
-                "actor_id": USER_IDS["admin"] if index in {2, 7} else USER_IDS["rookie" if index < 4 else "author"],
+                "actor_id": USER_IDS[actor_key],
                 "actor_type": ActorType.USER,
                 "category": AuditCategory.ACTION,
                 "action": action,
@@ -1827,6 +1961,20 @@ def reset_test_data(db: Session) -> None:
         synchronize_session=False
     )
     db.query(App).filter(App.id == TEST_APP_ID).delete(synchronize_session=False)
+    db.query(PermissionRequest).filter(
+        or_(
+            PermissionRequest.organization_id == TEST_ORG_ID,
+            PermissionRequest.user_id.in_(user_ids),
+            PermissionRequest.decided_by.in_(user_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(UserAppCreationPermission).filter(
+        or_(
+            UserAppCreationPermission.grantee_organization_id == TEST_ORG_ID,
+            UserAppCreationPermission.user_id.in_(user_ids),
+            UserAppCreationPermission.assigned_by.in_(user_ids),
+        )
+    ).delete(synchronize_session=False)
     db.query(TeamMembership).filter(
         or_(
             TeamMembership.grantee_organization_id == TEST_ORG_ID,
@@ -1856,10 +2004,13 @@ def seed_demo_data(db: Session) -> None:
     _seed_users_and_org(db)
     _seed_teams_and_memberships(db)
     _seed_knowledge(db)
-    _, models = _ensure_openai_provider_and_models(db)
+    provider, models = _ensure_openai_provider_and_models(db)
     _seed_apps_and_workflows(db)
     db.flush()
     _seed_permissions(db)
+    _seed_permission_requests(db)
+    _seed_llm_credential(db, provider, models)
+    db.flush()
     _seed_runs_and_usage(db, models)
     _seed_audit_logs(db)
     db.commit()
@@ -1928,6 +2079,23 @@ def reset_demo_data(db: Session) -> None:
                 model.assigned_by.in_(user_ids),
             )
         ).delete(synchronize_session=False)
+
+    # 시연 중 라이브로 만든 권한 신청/App 생성 권한도 함께 지워
+    # 시나리오 1(차단 -> 신청 -> 승인)을 반복 시연할 수 있게 한다 (ADR-0016).
+    db.query(PermissionRequest).filter(
+        or_(
+            PermissionRequest.organization_id == ORG_ID,
+            PermissionRequest.user_id.in_(user_ids),
+            PermissionRequest.decided_by.in_(user_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(UserAppCreationPermission).filter(
+        or_(
+            UserAppCreationPermission.grantee_organization_id == ORG_ID,
+            UserAppCreationPermission.user_id.in_(user_ids),
+            UserAppCreationPermission.assigned_by.in_(user_ids),
+        )
+    ).delete(synchronize_session=False)
 
     if credential_ids:
         db.query(TeamLLMPermission).filter(

@@ -44,6 +44,13 @@ def test_create_app_uses_active_organization_header(monkeypatch):
         "resolve_active_organization_id",
         lambda db, request, raw, user_id: organization_id,
     )
+    # 이 테스트의 관심사는 조직 header 전파다. App 생성 권한 판정(ADR-0016)은
+    # 전용 테스트에서 검증하므로 여기서는 허용으로 고정한다.
+    monkeypatch.setattr(
+        app_endpoint.shared_permissions,
+        "has_app_creation_permission",
+        lambda db, user_id, org_id: True,
+    )
     monkeypatch.setattr(
         app_endpoint.AppService,
         "create_app",
@@ -676,6 +683,13 @@ def test_owner_or_manager_without_membership_can_create_and_list_apps_and_workfl
 
 def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
     _patch_audit(monkeypatch)
+    # App 생성 권한 판정(ADR-0016)은 전용 테스트에서 검증한다. 이 테스트의
+    # 관심사는 생성 후 draft manage 권한이므로 생성 능력은 허용으로 고정한다.
+    monkeypatch.setattr(
+        app_endpoint.shared_permissions,
+        "has_app_creation_permission",
+        lambda db, user_id, org_id: True,
+    )
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     session = _RouteSession(

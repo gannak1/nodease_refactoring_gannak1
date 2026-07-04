@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from apps.gateway.api.v1.endpoints import (
+    admin,
     app,
     auth,
     code_wizard,
@@ -10,6 +11,7 @@ from apps.gateway.api.v1.endpoints import (
     knowledge,
     llm,
     organization,
+    permission_request,
     permissions,
     prompt_wizard,
     rag,
@@ -46,6 +48,12 @@ api_router.include_router(team.router, prefix="/teams", tags=["teams"])
 api_router.include_router(
     permissions.router, prefix="/permissions", tags=["permissions"]
 )
+api_router.include_router(
+    permission_request.router,
+    prefix="/permission-requests",
+    tags=["permission-requests"],
+)
+api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(
     prompt_wizard.router, prefix="/prompt-wizard", tags=["prompt-wizard"]

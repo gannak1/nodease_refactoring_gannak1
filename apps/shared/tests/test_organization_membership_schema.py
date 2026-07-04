@@ -133,6 +133,7 @@ def test_remove_response_defaults_missing_cleanup_counts_to_zero():
     assert response.removed_team_memberships == 2
     assert response.revoked_user_permissions.workflow == 1
     assert response.revoked_user_permissions.llm_credential == 0
+    assert response.revoked_user_permissions.app_creation == 0
     assert response.revoked_user_permissions.knowledge_base == 0
     assert response.revoked_user_permissions.audit == 0
 
@@ -147,6 +148,9 @@ def test_remove_response_rejects_negative_cleanup_counts():
 
     with pytest.raises(ValidationError):
         RevokedUserPermissionCounts(workflow=-1)
+
+    with pytest.raises(ValidationError):
+        RevokedUserPermissionCounts(app_creation=-1)
 
 
 def _response_data():
