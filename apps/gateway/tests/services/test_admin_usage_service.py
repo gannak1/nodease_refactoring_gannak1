@@ -202,6 +202,120 @@ def test_aggregate_workflow_usage_groups_sums_sorts_scopes_and_uses_app_name():
     assert [item.workflow_id for item in second_page.items] == [cheap_workflow_id]
 
 
+def test_get_organization_summary_sums_current_month_costs_with_null_as_zero():
+    AdminUsageService, _ = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    workflow_id = uuid4()
+    other_workflow_id = uuid4()
+    app_id = uuid4()
+    other_app_id = uuid4()
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_cost=Decimal("1.100000"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=50,
+                completion_tokens=10,
+                total_cost=None,
+                created_at=datetime(2026, 7, 11, 0, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=5,
+                completion_tokens=3,
+                total_cost=Decimal("0.234567"),
+                created_at=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                other_organization_id,
+                other_workflow_id,
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_cost=Decimal("99.000000"),
+                created_at=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+        ],
+        workflows=[
+            _workflow(workflow_id, app_id, organization_id),
+            _workflow(other_workflow_id, other_app_id, other_organization_id),
+        ],
+        apps=[
+            _app(app_id, "요약 워크플로우"),
+            _app(other_app_id, "다른 조직 워크플로우"),
+        ],
+    )
+
+    summary = AdminUsageService.get_organization_summary(
+        db,
+        organization_id=organization_id,
+        now=datetime(2026, 7, 15, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert summary.month == "2026-07"
+    assert summary.total_cost == pytest.approx(1.334567)
+    # 예산 feature(FR-051) 확정 전에는 budget 블록을 None으로 반환한다.
+    assert summary.budget is None
+
+
+def test_get_organization_summary_uses_kst_month_boundaries():
+    AdminUsageService, _ = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    app_id = uuid4()
+    db = _UsageSession(
+        usage_logs=[
+            # KST 2026-07-01 00:30 저장분 — 7월 집계에 포함
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=Decimal("0.500000"),
+                created_at=datetime(2026, 6, 30, 15, 30, tzinfo=timezone.utc),
+            ),
+            # KST 2026-06-30 23:59 저장분 — 6월 집계로 제외
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=Decimal("7.000000"),
+                created_at=datetime(2026, 6, 30, 14, 59, tzinfo=timezone.utc),
+            ),
+            # KST 2026-08-01 00:00 저장분 — [start, end) 끝 경계라 제외
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=Decimal("9.000000"),
+                created_at=datetime(2026, 7, 31, 15, 0, tzinfo=timezone.utc),
+            ),
+        ],
+        workflows=[_workflow(workflow_id, app_id, organization_id)],
+        apps=[_app(app_id, "경계 워크플로우")],
+    )
+
+    summary = AdminUsageService.get_organization_summary(
+        db,
+        organization_id=organization_id,
+        now=datetime(2026, 7, 15, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert summary.month == "2026-07"
+    assert summary.total_cost == pytest.approx(0.5)
+
+
 class _UsageSession:
     def __init__(self, *, usage_logs, workflows, apps):
         self.usage_logs = usage_logs

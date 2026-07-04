@@ -17,3 +17,8 @@ class TestAdminUsageRoutesRegistered(unittest.TestCase):
         response = self.client.get("/api/v1/admin/usage/workflows")
 
         self.assertEqual(response.status_code, 401)
+
+    def test_admin_summary_route_is_registered(self):
+        response = self.client.get("/api/v1/admin/summary")
+
+        self.assertEqual(response.status_code, 401)
