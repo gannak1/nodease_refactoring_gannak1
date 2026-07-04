@@ -267,4 +267,55 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       );
     });
   });
+
+  it('picker는 더 보기로 다음 offset을 요청하고 기존 row 뒤에 append한다', async () => {
+    workflowApiMock.listCostOptimizerBaselines
+      .mockResolvedValueOnce({
+        total: 3,
+        limit: 20,
+        offset: 0,
+        items: [comparableBaseline, nonComparableBaseline],
+      })
+      .mockResolvedValueOnce({
+        total: 3,
+        limit: 20,
+        offset: 2,
+        items: [
+          {
+            ...comparableBaseline,
+            baseline_id: 'baseline-3',
+            model: 'gpt-4.1',
+            input_preview: 'third input',
+            output_preview: 'third output',
+          },
+        ],
+      });
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
+    );
+
+    await screen.findByText(/총 3개 중 2개 표시/);
+    fireEvent.click(screen.getByRole('button', { name: /더 보기/i }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.listCostOptimizerBaselines).toHaveBeenLastCalledWith(
+        'workflow-1',
+        'llm-triage',
+        expect.objectContaining({ limit: 20, offset: 2 }),
+      );
+    });
+    expect(screen.getByText(/third input/)).toBeInTheDocument();
+    expect(screen.getByText(/총 3개 중 3개 표시/)).toBeInTheDocument();
+  });
 });

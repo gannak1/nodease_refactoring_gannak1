@@ -61,7 +61,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `구현 완료` | `테스트 통과` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트 진입 액션과 availability 검증을 제공한다. |
 | FR-002 | A baseline 실행 로그 선택 | P1 | `미완료` | `문서화` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 사용한다. |
-| FR-003 | 비교 가능한 옵션 | P1 | `미완료` | `문서화` | 모델, prompt, `max_tokens`, `temperature`, 출력 형식을 바꿔 비교한다. |
+| FR-003 | 비교 가능한 옵션 | P1 | `진행중` | `구현 기반 있음` | 모델, fallback 모델, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. |
 | FR-004 | 동일 입력 기준 비교 | P1 | `미완료` | `문서화` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
 | FR-005 | 하이브리드 비교 | P1 | `미완료` | `문서화` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
 | FR-006 | A/B 비교 화면 | P1 | `진행중` | `구현 기반 있음` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교한다. |
@@ -125,6 +125,8 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 1차 구현에서 후보별로 비교할 수 있는 옵션은 다음과 같다.
 
 - 모델
+- fallback 모델
+- task type
 - system prompt
 - user prompt
 - assistant prompt
@@ -136,6 +138,10 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 - `topK`
 - `scoreThreshold`
 
+모델 후보 목록은 기존 LLM 노드 상세 편집에서 사용하는 모델 조회 경로를 재사용한다. 현재 프론트의 기존 구현은 `GET /api/v1/llm/my-models`와 모델 선택 컴포넌트를 사용한다. Cost Optimizer는 별도 모델 목록 API를 새로 만들기보다, 동일한 모델/credential 접근 기준을 사용한다. 다만 compare API는 최종적으로 선택된 모델과 credential 사용 가능 여부를 다시 검증해야 한다.
+
+프롬프트 편집은 기존 LLM 노드 상세 편집과 마찬가지로 변수 삽입을 지원해야 한다. 사용자는 upstream output 변수를 system/user/assistant prompt에 삽입할 수 있어야 하며, 등록되지 않은 변수는 실행 전에 validation으로 드러나야 한다.
+
 고급 설정으로 다음 옵션도 비교할 수 있어야 한다.
 
 - `top_p`
@@ -145,15 +151,29 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 
 출력 형식과 JSON schema는 downstream 안정성에 영향을 줄 수 있으므로 비용 비교 옵션에 포함한다. 예를 들어 자유 텍스트 출력, JSON 출력, 특정 JSON schema를 만족하는 출력을 비교할 수 있어야 한다.
 
+JSON schema 편집은 1차 구현에서 key-type 행 추가 UI로 제공한다. 각 행은 field key, type, required 여부를 가진다. type 후보는 `string`, `number`, `boolean`, `object`, `array`다.
+
+Nested schema는 `object`나 `array` 타입 필드 안에 다시 하위 필드 구조를 정의하는 schema를 뜻한다. 예를 들어 `customer: { name: string, tier: string }`처럼 객체 안의 속성까지 편집하는 것이다. 1차 UI는 flat key-type 행 편집을 기본으로 하며, `object`와 `array` 타입은 선택할 수 있지만 하위 필드 편집 UI는 후속으로 둔다. nested 구조가 반드시 필요한 경우에는 raw schema 편집 또는 후속 schema editor에서 다룬다.
+
 JSON schema를 지정한 B 후보가 LLM 호출에는 성공했지만 schema 검증에 실패한 경우, 후보 실행 자체는 비용/토큰/시간과 함께 결과로 남긴다. 다만 해당 후보의 결과 상태는 `schema_failed`로 표시하고, 현재 노드에 적용할 수 없게 한다.
 
 Knowledge/RAG 설정은 후보 B에서 편집 가능하다. 같은 baseline input이라도 참조하는 Knowledge Base, 검색 개수, score threshold가 달라지면 출력 품질과 비용이 달라질 수 있기 때문이다.
 
 Knowledge Base는 여러 개 선택할 수 있다.
 
+B 실행 시 Knowledge/RAG를 사용하면 baseline의 과거 retrieval 결과를 재사용하지 않는다. B candidate의 현재 Knowledge Base 선택, `topK`, `scoreThreshold` 기준으로 retrieval을 새로 수행한다. 그래야 모델/prompt뿐 아니라 retrieval 설정 변경이 실제 후보 결과에 반영된다.
+
+A baseline의 retrieval summary는 비교 기준 정보로만 표시한다. Inspector는 A가 어떤 Knowledge Base와 문서를 참고했는지, B가 새로 어떤 Knowledge Base와 문서를 참고했는지를 나란히 보여준다. 단, raw document content나 secret payload는 표시하지 않는다.
+
+선택 불가능하거나 접근 권한이 없는 Knowledge Base는 프론트 목록에서 제외하는 것을 우선한다. 그러나 보안 경계는 API다. compare API는 request의 `knowledge_base_ids`가 현재 사용자와 organization/workflow scope에서 사용 가능한지 다시 검증하고, 사용할 수 없으면 `422 cost_optimizer.knowledge_unavailable`을 반환한다.
+
 B 후보 설정을 현재 노드에 적용할 때는 선택 항목별 부분 적용을 제공하지 않는다. 사용자는 B 후보 설정 전체를 current draft의 target LLM node에 일괄 적용한다.
 
-비교 실행은 일회성 응답으로만 버리지 않는다. B 후보 실행은 LLM 비용을 발생시키므로 비교 실행 기록, 후보 설정, 사용량, schema 검증 결과, downstream 호환성 상태를 추적 가능하게 저장해야 한다.
+B 후보 설정 validation은 두 단계로 처리한다. 프론트는 명백히 잘못된 값이면 B 실행 버튼을 비활성화하거나 field-level message를 표시한다. API는 동일한 규칙을 최종 검증하고 잘못된 후보 설정이면 `400 cost_optimizer.invalid_candidate`를 반환한다. 프론트 validation은 UX이며, API validation이 최종 계약이다.
+
+후보를 실행하면 비교 리포트가 생성된다. 사용자는 리포트에서 A baseline과 B candidate의 출력, 비용, 토큰, latency, schema 검증 상태, retrieval summary, downstream 호환성 상태를 확인한 뒤 B 설정을 적용할지 결정한다.
+
+비교 실행은 일회성 응답으로만 버리지 않는다. B 후보 실행은 LLM 비용을 발생시키므로 비교 실행 기록, 후보 설정, 사용량, schema 검증 결과, retrieval summary, downstream 호환성 상태를 추적 가능하게 저장해야 한다.
 
 자동 모델 추천, 모델 라우팅, RAG strategy 비교, Knowledge Skill version 비교는 1차 구현의 필수 범위는 아니지만 후속 확장 후보로 둔다.
 

@@ -123,6 +123,8 @@ export function CostOptimizerBaselineSelection({
   const [sort, setSort] = useState('started_at_desc');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
 
   const listParams = useMemo<CostOptimizerBaselineListParams>(
     () => ({
@@ -134,9 +136,9 @@ export function CostOptimizerBaselineSelection({
         compareAvailable === '' ? undefined : compareAvailable === 'true',
       sort,
       limit: DEFAULT_LIMIT,
-      offset: 0,
+      offset,
     }),
-    [compareAvailable, dateFrom, dateTo, model, q, sort],
+    [compareAvailable, dateFrom, dateTo, model, offset, q, sort],
   );
 
   const loadRows = useCallback(async () => {
@@ -148,7 +150,12 @@ export function CostOptimizerBaselineSelection({
         nodeId,
         listParams,
       );
-      setRows(response.items);
+      setRows((current) =>
+        listParams.offset && listParams.offset > 0
+          ? [...current, ...response.items]
+          : response.items,
+      );
+      setTotal(response.total);
     } finally {
       setIsLoading(false);
     }
@@ -189,7 +196,47 @@ export function CostOptimizerBaselineSelection({
     setMode('initial');
     setMessage(null);
     setRows([]);
+    setOffset(0);
+    setTotal(0);
   };
+
+  const resetPagination = () => {
+    setOffset(0);
+    setTotal(0);
+    setRows([]);
+  };
+
+  const updateQuery = (value: string) => {
+    resetPagination();
+    setQ(value);
+  };
+
+  const updateModel = (value: string) => {
+    resetPagination();
+    setModel(value);
+  };
+
+  const updateCompareAvailable = (value: string) => {
+    resetPagination();
+    setCompareAvailable(value);
+  };
+
+  const updateSort = (value: string) => {
+    resetPagination();
+    setSort(value);
+  };
+
+  const updateDateFrom = (value: string) => {
+    resetPagination();
+    setDateFrom(value);
+  };
+
+  const updateDateTo = (value: string) => {
+    resetPagination();
+    setDateTo(value);
+  };
+
+  const hasMore = rows.length < total;
 
   return (
     <section aria-label="비용 최적화 baseline 선택" className="space-y-4">
@@ -269,7 +316,7 @@ export function CostOptimizerBaselineSelection({
               className="w-full rounded-md border border-slate-200 px-3 py-2 text-xs outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
               type="search"
               value={q}
-              onChange={(event) => setQ(event.target.value)}
+              onChange={(event) => updateQuery(event.target.value)}
               placeholder="입력 또는 출력 검색"
             />
             <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
@@ -277,7 +324,7 @@ export function CostOptimizerBaselineSelection({
               <select
                 className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
                 value={model}
-                onChange={(event) => setModel(event.target.value)}
+                onChange={(event) => updateModel(event.target.value)}
               >
                 <option value="">전체 모델</option>
                 <option value="gpt-4.1-mini">GPT mini</option>
@@ -288,7 +335,7 @@ export function CostOptimizerBaselineSelection({
               <select
                 className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
                 value={compareAvailable}
-                onChange={(event) => setCompareAvailable(event.target.value)}
+                onChange={(event) => updateCompareAvailable(event.target.value)}
               >
                 <option value="">전체</option>
                 <option value="true">비교 가능</option>
@@ -300,7 +347,7 @@ export function CostOptimizerBaselineSelection({
               <select
                 className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
                 value={sort}
-                onChange={(event) => setSort(event.target.value)}
+                onChange={(event) => updateSort(event.target.value)}
               >
                 <option value="started_at_desc">최신순</option>
                 <option value="cost_desc">비용 높은순</option>
@@ -315,7 +362,7 @@ export function CostOptimizerBaselineSelection({
                 <input
                   type="date"
                   value={dateFrom}
-                  onChange={(event) => setDateFrom(event.target.value)}
+                  onChange={(event) => updateDateFrom(event.target.value)}
                   className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
                 />
               </label>
@@ -324,7 +371,7 @@ export function CostOptimizerBaselineSelection({
                 <input
                   type="date"
                   value={dateTo}
-                  onChange={(event) => setDateTo(event.target.value)}
+                  onChange={(event) => updateDateTo(event.target.value)}
                   className="rounded-md border border-slate-200 px-2 py-2 text-xs font-medium text-slate-700"
                 />
               </label>
@@ -425,6 +472,24 @@ export function CostOptimizerBaselineSelection({
                 </div>
               </button>
             ))}
+          </div>
+
+          <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+            <span>
+              {total > 0
+                ? `총 ${total.toLocaleString('ko-KR')}개 중 ${rows.length.toLocaleString('ko-KR')}개 표시`
+                : '표시할 실행 로그가 없습니다'}
+            </span>
+            {hasMore ? (
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => setOffset(rows.length)}
+                className="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+              >
+                더 보기
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

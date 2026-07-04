@@ -310,6 +310,8 @@ A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재
 
 `baseline_id`는 `workflow_node_runs.id`다. 해당 baseline의 target LLM node input을 복원할 수 없으면 API는 B 후보 실행을 시작하지 않고 `400 cost_optimizer.baseline_input_unavailable`을 반환한다.
 
+Compare request의 후보 설정 필드명은 `candidate`다. Apply request의 후보 설정 필드명은 `candidate_settings`다.
+
 Request:
 
 ```json
@@ -318,6 +320,8 @@ Request:
   "candidate": {
     "label": "B",
     "model_id": "gpt-4.1-mini",
+    "fallback_model_id": "gpt-4.1",
+    "task_type": "generate",
     "system_prompt": "string",
     "user_prompt": "string",
     "assistant_prompt": "string",
@@ -349,6 +353,32 @@ Request:
   }
 }
 ```
+
+Candidate request schema:
+
+| Field | Type | Required | Validation |
+| --- | --- | --- | --- |
+| `baseline_id` | string | yes | target workflow/node scope의 `workflow_node_runs.id`여야 한다. |
+| `candidate.label` | string | no | UI 표시용 라벨이다. 기본값은 `B`다. |
+| `candidate.model_id` | string | yes | 현재 사용자와 organization scope에서 사용 가능한 model이어야 한다. |
+| `candidate.fallback_model_id` | string or null | no | 지정하면 사용 가능한 model이어야 하며 `model_id`와 같으면 invalid candidate다. |
+| `candidate.task_type` | string | no | 기본값은 현재 node 설정 또는 `generate`다. |
+| `candidate.system_prompt` | string | no | 세 prompt 중 하나 이상은 비어 있지 않아야 한다. |
+| `candidate.user_prompt` | string | no | 변수 참조는 baseline input/upstream output 기준으로 resolve 가능해야 한다. |
+| `candidate.assistant_prompt` | string | no | 변수 참조는 baseline input/upstream output 기준으로 resolve 가능해야 한다. |
+| `candidate.parameters.max_tokens` | number | yes | 1~8192 |
+| `candidate.parameters.temperature` | number | yes | 0~2 |
+| `candidate.parameters.top_p` | number | no | 0~1 |
+| `candidate.parameters.presence_penalty` | number | no | -2~2 |
+| `candidate.parameters.frequency_penalty` | number | no | -2~2 |
+| `candidate.parameters.stop` | string[] | no | 최대 4개 |
+| `candidate.output_format.type` | `text` or `json` | yes | `json`이면 schema 검증을 수행한다. |
+| `candidate.output_format.schema` | object | no | 1차 UI는 flat key-type schema를 만든다. API는 valid JSON schema object만 허용한다. |
+| `candidate.knowledge.knowledge_base_ids` | string[] | no | 모두 현재 사용자/organization/workflow scope에서 사용 가능해야 한다. |
+| `candidate.knowledge.top_k` | number | no | Knowledge/RAG 사용 시 retrieval 개수다. |
+| `candidate.knowledge.score_threshold` | number | no | Knowledge/RAG 사용 시 retrieval score threshold다. |
+
+B candidate가 Knowledge/RAG를 사용하면 compare API는 baseline의 과거 retrieval 결과를 재사용하지 않고, request의 `candidate.knowledge` 설정으로 retrieval을 새로 수행한다. Response는 baseline retrieval summary와 candidate retrieval summary를 구분해 반환해야 한다.
 
 Response:
 
@@ -414,6 +444,8 @@ JSON schema 검증에 실패한 경우에도 HTTP response는 200으로 반환�
 
 적용은 부분 적용이 아니라 B 후보 설정 전체 일괄 적용이다.
 
+Apply request의 후보 설정 필드명은 `candidate_settings`다. 이 schema는 compare request의 `candidate`와 같은 설정 구조를 사용하되, 이미 생성된 비교 결과를 적용하는 API이므로 `comparison_id`를 함께 받는다.
+
 Request:
 
 ```json
@@ -421,6 +453,8 @@ Request:
   "comparison_id": "comparison-id",
   "candidate_settings": {
     "model_id": "gpt-4.1-mini",
+    "fallback_model_id": "gpt-4.1",
+    "task_type": "generate",
     "system_prompt": "string",
     "user_prompt": "string",
     "assistant_prompt": "string",
@@ -478,6 +512,7 @@ Response:
 | 404 | `resource.not_found` | workflow, node, baseline이 없거나 scope 밖임 | FR-001, FR-002 |
 | 409 | `cost_optimizer.draft_conflict` | 현재 draft가 baseline 비교 이후 충돌됨 | FR-008 |
 | 422 | `cost_optimizer.model_unavailable` | 사용할 수 없는 credential/model 후보 | FR-003, FR-010 |
+| 422 | `cost_optimizer.knowledge_unavailable` | 사용할 수 없거나 접근 권한이 없는 Knowledge Base 후보 | FR-003, FR-010 |
 | 500 | `cost_optimizer.compare_failed` | B 후보 실행 중 예기치 않은 실패 | FR-006 |
 
 ## Permissions

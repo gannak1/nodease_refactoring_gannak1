@@ -15,6 +15,7 @@ import {
   BarChart3,
   Clock3,
   Database,
+  FileText,
   FlaskConical,
   Play,
 } from 'lucide-react';
@@ -43,6 +44,8 @@ import {
 } from '@/app/features/workflow/utils/nodeEditorPanelLayout';
 import type { CostOptimizerBaselineRow } from '@/app/features/workflow/types/Api';
 import type { AppNode, LLMNodeData } from '@/app/features/workflow/types/Nodes';
+
+type PlaygroundMode = 'setup' | 'report';
 
 const formatMetric = (value: number, suffix = '') => {
   if (!Number.isFinite(value)) return '-';
@@ -89,6 +92,7 @@ export default function CostOptimizerPlaygroundPage() {
     useState<SettingsTab>('basic');
   const [candidateSettingsTab, setCandidateSettingsTab] =
     useState<SettingsTab>('basic');
+  const [activeMode, setActiveMode] = useState<PlaygroundMode>('setup');
   const [isLoadingNode, setIsLoadingNode] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [isStale, setIsStale] = useState(false);
@@ -296,7 +300,29 @@ export default function CostOptimizerPlaygroundPage() {
               </h1>
             </div>
           </div>
-          <div className="flex items-center gap-2 text-xs font-semibold">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-1">
+              {(
+                [
+                  ['setup', '실험 설정'],
+                  ['report', '결과 분석'],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={activeMode === mode}
+                  onClick={() => setActiveMode(mode)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
+                    activeMode === mode
+                      ? 'bg-white text-emerald-700 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-700">
               같은 입력 기준
             </span>
@@ -311,17 +337,18 @@ export default function CostOptimizerPlaygroundPage() {
         ref={layoutShellRef}
         className="flex min-h-0 flex-1 justify-center overflow-hidden p-4"
       >
-        <div
-          className="grid h-full min-h-0 w-full grid-cols-1 gap-4 overflow-hidden xl:gap-0"
-          style={
-            isResizableLayout
-              ? {
-                  width: `${fittedLayoutWidth}px`,
-                  gridTemplateColumns: `${fittedPanelWidths.left}px 8px ${fittedPanelWidths.center}px 8px ${fittedPanelWidths.right}px`,
-                }
-              : undefined
-          }
-        >
+        {activeMode === 'setup' ? (
+          <div
+            className="grid h-full min-h-0 w-full grid-cols-1 gap-4 overflow-hidden xl:gap-0"
+            style={
+              isResizableLayout
+                ? {
+                    width: `${fittedLayoutWidth}px`,
+                    gridTemplateColumns: `${fittedPanelWidths.left}px 8px ${fittedPanelWidths.center}px 8px ${fittedPanelWidths.right}px`,
+                  }
+                : undefined
+            }
+          >
         <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -551,7 +578,177 @@ export default function CostOptimizerPlaygroundPage() {
             </div>
           </div>
         </aside>
-        </div>
+          </div>
+        ) : (
+          <div className="flex h-full min-h-0 w-full max-w-[90vw] flex-col gap-4 overflow-y-auto">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-600" />
+                  <h2 className="text-base font-bold">비교 리포트</h2>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveMode('setup')}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    실험 설정으로 돌아가기
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    className="rounded-md bg-slate-200 px-3 py-2 text-xs font-bold text-slate-500"
+                    title="B 후보 실행 API 연결 후 활성화됩니다."
+                  >
+                    현재 노드에 적용
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <div className="text-xs font-semibold text-slate-500">
+                    A 비용
+                  </div>
+                  <div className="mt-1 text-lg font-bold">
+                    {baseline ? `$${baseline.cost}` : '-'}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <div className="text-xs font-semibold text-slate-500">
+                    A 토큰
+                  </div>
+                  <div className="mt-1 text-lg font-bold">
+                    {baseline ? formatMetric(baseline.total_tokens) : '-'}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <div className="text-xs font-semibold text-slate-500">
+                    B 모델
+                  </div>
+                  <div className="mt-1 truncate text-lg font-bold">
+                    {candidate.model_id || '-'}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-amber-50 p-3">
+                  <div className="text-xs font-semibold text-amber-700">
+                    B 실행 상태
+                  </div>
+                  <div className="mt-1 text-sm font-bold text-amber-900">
+                    실행 대기
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[1fr_1fr_360px]">
+              <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <Clock3 className="h-4 w-4 text-emerald-600" />
+                  <h3 className="text-sm font-bold">A baseline 결과</h3>
+                </div>
+                {baseline ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <div className="rounded-md bg-slate-50 p-2">
+                        <div className="text-slate-500">모델</div>
+                        <div className="truncate font-bold">{baseline.model}</div>
+                      </div>
+                      <div className="rounded-md bg-slate-50 p-2">
+                        <div className="text-slate-500">비용</div>
+                        <div className="font-bold">${baseline.cost}</div>
+                      </div>
+                      <div className="rounded-md bg-slate-50 p-2">
+                        <div className="text-slate-500">시간</div>
+                        <div className="font-bold">
+                          {formatMetric(baseline.latency_ms, 'ms')}
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs font-bold text-slate-700">
+                        출력
+                      </div>
+                      <pre className="max-h-72 overflow-auto rounded-md bg-slate-50 p-3 text-xs text-slate-700">
+                        {baseline.output_preview || '-'}
+                      </pre>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                    먼저 실험 설정에서 A baseline을 선택하세요.
+                  </p>
+                )}
+              </section>
+
+              <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <FlaskConical className="h-4 w-4 text-emerald-600" />
+                  <h3 className="text-sm font-bold">B candidate 결과</h3>
+                </div>
+                <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-800">
+                  B 실행 후 결과 분석이 표시됩니다. 지금은 후보 설정만 준비된
+                  상태입니다.
+                </div>
+              </section>
+
+              <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-emerald-600" />
+                  <h3 className="text-sm font-bold">분석 요약</h3>
+                </div>
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <div className="text-xs font-bold text-slate-500">Diff</div>
+                    <dl className="mt-2 space-y-2 text-xs">
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-slate-500">A 모델</dt>
+                        <dd className="font-semibold">
+                          {baseline?.model || '-'}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-slate-500">B 모델</dt>
+                        <dd className="font-semibold">
+                          {candidate.model_id || '-'}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <div className="text-xs font-bold text-slate-500">
+                      RAG
+                    </div>
+                    <dl className="mt-2 space-y-2 text-xs">
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-slate-500">A 지식 베이스</dt>
+                        <dd className="font-semibold">
+                          {baselineNodeOptions?.knowledgeBases?.length ?? '-'}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-slate-500">B 지식 베이스</dt>
+                        <dd className="font-semibold">
+                          {candidate.knowledgeBases.length}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <div className="text-xs font-bold text-slate-500">
+                      Downstream
+                    </div>
+                    <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                      B 실행 결과가 생성되면 schema와 downstream 호환성 판단을
+                      함께 표시합니다.
+                    </p>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        )}
       </section>
     </main>
   );

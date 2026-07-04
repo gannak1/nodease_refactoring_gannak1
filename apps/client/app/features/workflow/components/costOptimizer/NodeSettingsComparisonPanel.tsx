@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FileJson, Wand2 } from 'lucide-react';
 
 import { PromptWizardModal } from '@/app/features/workflow/components/modals/PromptWizardModal';
 import { LLMParameterSidePanel } from '@/app/features/workflow/components/nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '@/app/features/workflow/components/nodes/llm/components/LLMReferenceSidePanel';
+import { ModelSelectDropdown } from '@/app/features/workflow/components/nodes/llm/components/ModelSelectDropdown';
 import type { LLMNodeData } from '@/app/features/workflow/types/Nodes';
 import {
   llmDataFromCandidate,
@@ -27,6 +28,15 @@ type CandidateChangeHandler = <K extends keyof CandidateDraft>(
 ) => void;
 
 type PromptField = 'system' | 'user' | 'assistant';
+
+type ModelOption = {
+  id: string;
+  model_id_for_api_call: string;
+  name: string;
+  type: string;
+  provider_name?: string;
+  is_active: boolean;
+};
 
 const promptFieldToDraftKey = {
   system: 'system_prompt',
@@ -70,6 +80,38 @@ const noopCandidateChange: CandidateChangeHandler = (key, value) => {
   void value;
 };
 
+const isChatModelOption = (model: ModelOption) => {
+  const id = model.model_id_for_api_call.toLowerCase();
+  const name = model.name.toLowerCase();
+
+  if (model.is_active === false) return false;
+  if (model.type === 'embedding') return false;
+  if (id.includes('embedding')) return false;
+  if (name.includes('embedding') || name.includes('임베딩')) return false;
+
+  return true;
+};
+
+const groupModelsByProvider = (models: ModelOption[]) => {
+  const sorted = [...models].sort((a, b) => a.name.localeCompare(b.name));
+  const grouped = sorted.reduce(
+    (acc, model) => {
+      const provider = model.provider_name || 'Unknown';
+      if (!acc[provider]) acc[provider] = [];
+      acc[provider].push(model);
+      return acc;
+    },
+    {} as Record<string, ModelOption[]>,
+  );
+
+  return Object.entries(grouped)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, providerModels]) => ({
+      provider,
+      models: providerModels,
+    }));
+};
+
 export function NodeSettingsComparisonPanel({
   title,
   nodeId,
@@ -91,6 +133,76 @@ export function NodeSettingsComparisonPanel({
 }) {
   const [wizardField, setWizardField] = useState<PromptField>('system');
   const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+
+  useEffect(() => {
+    if (readOnly) return;
+
+    const fetchMyModels = async () => {
+      try {
+        setLoadingModels(true);
+        const response = await fetch('/api/v1/llm/my-models', {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+        });
+
+        if (response.ok) {
+          setModelOptions(await response.json());
+        } else {
+          setModelOptions([]);
+        }
+      } catch {
+        setModelOptions([]);
+      } finally {
+        setLoadingModels(false);
+      }
+    };
+
+    fetchMyModels();
+  }, [readOnly]);
+
+  const chatModelOptions = useMemo(
+    () => modelOptions.filter(isChatModelOption),
+    [modelOptions],
+  );
+  const groupedModelOptions = useMemo(
+    () => groupModelsByProvider(chatModelOptions),
+    [chatModelOptions],
+  );
+  const selectedModel = useMemo(
+    () =>
+      modelOptions.find(
+        (model) => model.model_id_for_api_call === draft.model_id,
+      ),
+    [modelOptions, draft.model_id],
+  );
+  const fallbackCandidates = useMemo(
+    () =>
+      chatModelOptions.filter(
+        (model) => model.model_id_for_api_call !== draft.model_id,
+      ),
+    [chatModelOptions, draft.model_id],
+  );
+  const groupedFallbackOptions = useMemo(() => {
+    const groups = groupModelsByProvider(fallbackCandidates);
+    if (!draft.model_id) return groups;
+
+    const selectedProvider = (
+      selectedModel?.provider_name || 'Unknown'
+    ).toLowerCase();
+
+    return [...groups].sort((a, b) => {
+      const aIsSelected = a.provider.toLowerCase() === selectedProvider;
+      const bIsSelected = b.provider.toLowerCase() === selectedProvider;
+      if (aIsSelected !== bIsSelected) {
+        return aIsSelected ? 1 : -1;
+      }
+      return a.provider.localeCompare(b.provider);
+    });
+  }, [fallbackCandidates, draft.model_id, selectedModel]);
+  const fallbackDisabled = !draft.model_id?.trim();
 
   const openWizard = (field: PromptField) => {
     if (readOnly) return;
@@ -148,6 +260,12 @@ export function NodeSettingsComparisonPanel({
   );
 
   const wizardPromptKey = promptFieldToDraftKey[wizardField];
+  const handleModelChange = (modelId: string) => {
+    onChange('model_id', modelId);
+    if (draft.fallback_model_id === modelId) {
+      onChange('fallback_model_id', '');
+    }
+  };
 
   return (
     <>
@@ -162,27 +280,54 @@ export function NodeSettingsComparisonPanel({
               <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
                 <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
                   <span>기본 모델</span>
-                  <input
-                    value={draft.model_id}
-                    onChange={(event) =>
-                      onChange('model_id', event.target.value)
-                    }
-                    readOnly={readOnly}
-                    className="min-w-0 rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400 read-only:bg-slate-50"
-                    placeholder="gpt-4.1-mini"
-                  />
+                  {readOnly ? (
+                    <input
+                      value={draft.model_id}
+                      readOnly
+                      className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
+                      placeholder="모델 없음"
+                    />
+                  ) : loadingModels ? (
+                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+                      모델 로딩 중...
+                    </div>
+                  ) : (
+                    <ModelSelectDropdown
+                      value={draft.model_id || ''}
+                      onChange={handleModelChange}
+                      models={chatModelOptions}
+                      groupedModels={groupedModelOptions}
+                      placeholder="모델을 선택하세요"
+                    />
+                  )}
                 </label>
                 <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
                   <span>대체 모델</span>
-                  <input
-                    value={draft.fallback_model_id}
-                    onChange={(event) =>
-                      onChange('fallback_model_id', event.target.value)
-                    }
-                    readOnly={readOnly}
-                    className="min-w-0 rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400 read-only:bg-slate-50"
-                    placeholder="선택 없음"
-                  />
+                  {readOnly ? (
+                    <input
+                      value={draft.fallback_model_id}
+                      readOnly
+                      className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
+                      placeholder="선택 없음"
+                    />
+                  ) : loadingModels ? (
+                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+                      모델 로딩 중...
+                    </div>
+                  ) : (
+                    <ModelSelectDropdown
+                      value={draft.fallback_model_id || ''}
+                      onChange={(value) => onChange('fallback_model_id', value)}
+                      models={fallbackCandidates}
+                      groupedModels={groupedFallbackOptions}
+                      disabled={fallbackDisabled}
+                      placeholder={
+                        fallbackDisabled
+                          ? '먼저 모델을 선택하세요'
+                          : '대체 모델을 선택하세요'
+                      }
+                    />
+                  )}
                 </label>
                 <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
                   <span>Task type</span>

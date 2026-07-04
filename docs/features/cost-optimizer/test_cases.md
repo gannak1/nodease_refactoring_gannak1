@@ -34,13 +34,13 @@ Verified Against: TBD
 | FR-001 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | availability, not-LLM, not-found, builder 권한 강제 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-002 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerBaselinePicker.test.tsx` | 최신/이전 baseline 선택, 필터/정렬 UI | 작성 전 | `cd apps/client && npm run test` | 미실행 |
 | FR-002 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | latest/list baseline query | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
-| FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerCandidateEditor.test.tsx` | 후보 설정 입력/validation | 작성 전 | `cd apps/client && npm run test` | 미실행 |
+| FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 후보 모델/대체 모델 선택 UI, 후보 설정 입력/validation | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
 | FR-003 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | candidate schema validation, unavailable model | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
 | FR-004 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerBaselineLock.test.tsx` | baseline input lock 표시 | 작성 전 | `cd apps/client && npm run test` | 미실행 |
 | FR-004 | Gateway service/API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | baseline input restore, wrong baseline scope | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
 | FR-005 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerHybridCompare.test.tsx` | A 고정, B running 상태 | 작성 전 | `cd apps/client && npm run test` | 미실행 |
 | FR-005 | Gateway service/API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | A 미재실행, B만 실행 | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
-| FR-006 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerWorkspace.test.tsx` | 3패널, Inspector 탭, diff 표시 | 작성 전 | `cd apps/client && npm run test` | 미실행 |
+| FR-006 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 실험 설정/결과 분석 mode switch | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-006 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | compare response shape, safe trace | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
 | FR-007 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerDownstream.test.tsx` | downstream 3상태 badge/warning | 작성 전 | `cd apps/client && npm run test` | 미실행 |
 | FR-007 | Gateway service/API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | compatible/warning/incompatible 판정 | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
@@ -112,11 +112,14 @@ Verified Against: TBD
 ### Component Tests
 
 - B candidate 영역은 현재 LLM 노드 설정 복사본으로 초기화된다.
-- B candidate 영역은 모델, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
+- B candidate 영역은 모델, fallback 모델, task type, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
+- B candidate prompt 입력은 upstream output 변수 삽입을 지원한다.
 - 출력 형식은 text와 JSON을 선택할 수 있다.
 - 출력 형식이 JSON이면 JSON schema 편집 영역이 활성화된다.
 - 출력 형식이 text이면 JSON schema 편집 영역은 비활성화되거나 숨겨진다.
 - JSON schema는 key-type 행 추가 UI로 필드명, 타입, 필수 여부를 편집할 수 있다.
+- JSON schema type 후보는 `string`, `number`, `boolean`, `object`, `array`다.
+- 1차 UI는 nested field editor를 제공하지 않고 flat key-type row만 편집한다.
 - B candidate 영역은 여러 Knowledge Base, `topK`, `scoreThreshold`를 편집할 수 있다.
 - B candidate 영역은 고급 파라미터 섹션에서 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 편집할 수 있다.
 - 고급 파라미터 validation은 기존 LLM node 고급 설정 범위를 따른다.
@@ -125,7 +128,7 @@ Verified Against: TBD
 
 ### API Tests
 
-- `POST /compare`는 `candidate_settings.model_id`, prompt, parameters, output_format, knowledge를 request로 받는다.
+- `POST /compare`는 `candidate.model_id`, prompt, parameters, output_format, knowledge를 request로 받는다.
 - `POST /compare`는 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 후보 파라미터로 받을 수 있다.
 - 잘못된 `max_tokens`, `temperature`, 고급 파라미터, output_format schema는 `400 cost_optimizer.invalid_candidate`를 반환한다.
 - 사용할 수 없는 Knowledge Base 또는 접근 권한이 없는 Knowledge Base는 `422 cost_optimizer.knowledge_unavailable`을 반환한다.
@@ -138,7 +141,8 @@ Verified Against: TBD
 
 - 사용자가 모델만 바꾸고 B를 실행하면 A baseline과 같은 입력으로 후보 실행 결과가 생성된다.
 - 사용자가 prompt와 parameter를 함께 바꿔도 compare request는 하나의 B 후보 설정으로 전송된다.
-- 사용자가 Knowledge Base 또는 검색 설정을 바꾸고 B를 실행하면 같은 baseline input으로 다른 검색 컨텍스트를 사용한 후보 결과가 생성된다.
+- 사용자가 Knowledge Base 또는 검색 설정을 바꾸고 B를 실행하면 baseline retrieval을 재사용하지 않고 B 후보 설정 기준으로 retrieval을 새로 수행한다.
+- 비교 리포트는 A baseline retrieval summary와 B candidate retrieval summary를 구분해 표시한다.
 - 사용자가 JSON schema를 지정하고 B를 실행하면 후보 출력은 schema 검증 결과와 함께 표시된다.
 - schema 검증에 실패한 후보는 비용과 출력 preview를 확인할 수 있지만 `현재 노드에 적용`은 사용할 수 없다.
 - 사용자가 B 후보를 적용하면 모델, prompt, parameters, output_format, schema, Knowledge/RAG 설정이 일괄 적용된다.
@@ -186,6 +190,10 @@ Verified Against: TBD
 ### Component Tests
 
 - A/B compare workspace는 A baseline, B candidate, Inspector 3영역으로 구성된다.
+- A/B compare workspace는 `실험 설정`과 `결과 분석` mode switch를 제공한다.
+- 기본 mode는 `실험 설정`이다.
+- 사용자는 `결과 분석` mode로 전환할 수 있다.
+- B 실행 결과가 없으면 `결과 분석` mode는 B 실행 후 결과 분석이 표시된다는 empty state를 보여준다.
 - A/B compare workspace는 특정 workflow와 특정 LLM node의 context를 상단 context bar에 표시한다.
 - context bar는 workflow 이름, target LLM node 이름, baseline 실행 시각, 같은 입력 기준 badge, downstream 상태 badge를 표시한다.
 - A baseline 영역은 읽기 전용이고 baseline 실행 로그, 입력, 출력, 모델, 비용, 토큰, latency, trace 요약을 표시한다.

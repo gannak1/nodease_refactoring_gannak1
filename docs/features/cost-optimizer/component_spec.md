@@ -32,7 +32,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM node detail action | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | 통과 |
 | FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
-| FR-003 | Candidate editor | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx` | 진행중 | 작성 전 | 미실행 |
+| FR-003 | Candidate editor | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
 | FR-004 | Baseline input lock display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-005 | Hybrid compare flow state | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
@@ -155,13 +155,21 @@ workspace 상단에는 context bar를 둔다.
 
 - workflow 이름
 - target LLM node 이름
+- workspace mode switch: `실험 설정`, `결과 분석`
 - 선택된 baseline 실행 시각
 - 같은 입력 기준 badge
 - downstream 호환성 badge
 - B 후보 실행 액션
 - 현재 노드에 적용 액션
 
-A/B compare workspace 본문은 3영역 레이아웃이다.
+A/B compare workspace는 같은 route 안에서 두 가지 mode를 제공한다.
+
+- `실험 설정`: A baseline을 고정하고 B candidate 설정을 편집하는 mode다.
+- `결과 분석`: B 실행 결과와 비교 리포트를 확인하고 적용 여부를 판단하는 mode다.
+
+기본 진입 mode는 `실험 설정`이다. 사용자가 B 후보를 실행해 리포트가 생성되면 `결과 분석` mode로 이동할 수 있어야 한다. B 실행 API가 아직 연결되지 않은 상태에서는 `결과 분석` mode가 비어 있는 리포트 상태와 실행 대기 안내를 표시한다.
+
+`실험 설정` mode 본문은 3영역 레이아웃이다.
 
 - 왼쪽: A baseline
 - 가운데: B candidate
@@ -214,6 +222,20 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 - 출력 형식 선택: text 또는 JSON
 - JSON schema 편집
 
+모델 선택 UI는 기존 LLM 노드 상세 편집의 모델 조회/선택 기준을 따른다.
+
+- 모델 목록 API: `GET /api/v1/llm/my-models`
+- 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
+- 사용할 수 없는 credential/model은 목록에서 제외하는 것을 우선한다.
+- 목록에 보였더라도 compare API에서 최종 검증에 실패하면 실패 후보 또는 validation error로 표시한다.
+
+prompt 입력 영역은 기존 노드 상세 편집과 같이 변수 삽입을 지원한다.
+
+- upstream output variable을 system/user/assistant prompt에 삽입할 수 있어야 한다.
+- 변수 삽입 UI는 기존 `VariableTokenEditor` 계열 재사용을 우선한다.
+- 등록되지 않은 변수는 실행 전 validation message로 표시한다.
+- B candidate에서 프롬프트 마법사를 사용할 수 있다.
+
 `고급 설정` 탭은 기존 LLM 노드 상세 편집의 LLM parameter 패널과 같은 구조를 사용한다. 기존 `LLMParameterSidePanel`을 재사용하되, A/B workspace에서는 실제 workflow node store를 직접 수정하지 않도록 controlled 경로를 사용한다.
 
 - A baseline은 read-only로 실행 시점 parameter 설정을 보여준다.
@@ -251,6 +273,23 @@ JSON schema 편집 영역은 출력 형식이 JSON일 때 활성화한다. text 
 
 JSON schema는 key-type 행 추가 UI로 편집한다. 사용자는 필드명, 타입, 필수 여부를 행 단위로 추가/수정/삭제한다. raw JSON schema 직접 편집은 1차 필수 UI가 아니다.
 
+JSON schema type 후보는 다음만 제공한다.
+
+- `string`
+- `number`
+- `boolean`
+- `object`
+- `array`
+
+각 schema row는 다음 컨트롤을 가진다.
+
+- field key input
+- type select
+- required checkbox
+- delete row button
+
+Nested schema는 `object` 또는 `array` 내부의 하위 field까지 편집하는 구조다. 1차 UI는 flat key-type row까지만 제공한다. `object`와 `array` 타입은 선택할 수 있지만 하위 field editor는 제공하지 않는다.
+
 Knowledge Base 선택은 복수 선택을 허용한다.
 
 고급 파라미터 validation은 기존 LLM node 고급 설정의 범위를 따른다.
@@ -276,7 +315,58 @@ B 후보 실행 결과에는 다음을 표시한다.
 
 B 후보 설정이 마지막 실행 이후 변경되면 기존 실행 결과는 stale 상태로 표시한다. 이때 결과는 참고용으로 남기되, 현재 설정에 대한 결과가 아니므로 `B 후보 실행`을 다시 유도한다.
 
+B 후보 실행 버튼을 누르면 비교 리포트가 생성된다. 리포트는 A baseline과 B candidate의 출력, 비용, 토큰, latency, schema 검증 상태, retrieval summary, downstream 호환성 상태를 함께 보여준다. 사용자는 리포트를 본 뒤 B 후보 설정을 현재 노드에 적용할지 선택한다.
+
+stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경되면 발생한다.
+
+- model
+- fallback model
+- task type
+- system/user/assistant prompt
+- output format
+- JSON schema
+- LLM parameters
+- Knowledge Base selection
+- `topK`
+- `scoreThreshold`
+
 화면은 A baseline과 B candidate가 같은 입력 기준이라는 점을 명확히 표시한다.
+
+`결과 분석` mode는 편집 UI보다 비교 리포트 가독성을 우선한다.
+
+- 상단: 비용, 토큰, 모델, 실행 상태 요약
+- 왼쪽: A baseline 결과
+- 가운데: B candidate 결과
+- 오른쪽: Diff, RAG, downstream 분석 요약
+- 액션: `실험 설정으로 돌아가기`, `현재 노드에 적용`
+
+B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석이 표시됩니다.` empty state를 표시한다.
+
+### Candidate Settings Mapping
+
+관련 FR: FR-003, FR-008
+
+프론트 local draft, LLM node data, compare request, apply request는 다음 기준으로 매핑한다.
+
+| UI/Local field | LLM node data | `POST /compare` field | `PATCH /apply` field | 비고 |
+| --- | --- | --- | --- | --- |
+| `model_id` | `data.model_id` | `candidate.model_id` | `candidate_settings.model_id` | 기존 모델 선택 목록을 재사용한다. |
+| `fallback_model_id` | `data.fallback_model_id` | `candidate.fallback_model_id` | `candidate_settings.fallback_model_id` | 기본 모델과 같으면 validation 대상이다. |
+| `task_type` | `data.task_type` 또는 node option | `candidate.task_type` | `candidate_settings.task_type` | 비용/품질 분석 라벨과 후속 라우팅 기준으로 사용한다. |
+| `system_prompt` | `data.system_prompt` | `candidate.system_prompt` | `candidate_settings.system_prompt` | 변수 삽입 지원. |
+| `user_prompt` | `data.user_prompt` | `candidate.user_prompt` | `candidate_settings.user_prompt` | 변수 삽입 지원. |
+| `assistant_prompt` | `data.assistant_prompt` | `candidate.assistant_prompt` | `candidate_settings.assistant_prompt` | 변수 삽입 지원. |
+| `max_tokens` | `data.parameters.max_tokens` | `candidate.parameters.max_tokens` | `candidate_settings.parameters.max_tokens` | 1~8192. |
+| `temperature` | `data.parameters.temperature` | `candidate.parameters.temperature` | `candidate_settings.parameters.temperature` | 0~2. |
+| `top_p` | `data.parameters.top_p` | `candidate.parameters.top_p` | `candidate_settings.parameters.top_p` | 0~1. |
+| `presence_penalty` | `data.parameters.presence_penalty` | `candidate.parameters.presence_penalty` | `candidate_settings.parameters.presence_penalty` | -2~2. |
+| `frequency_penalty` | `data.parameters.frequency_penalty` | `candidate.parameters.frequency_penalty` | `candidate_settings.parameters.frequency_penalty` | -2~2. |
+| `stop` | `data.parameters.stop` | `candidate.parameters.stop` | `candidate_settings.parameters.stop` | 최대 4개 문자열. |
+| `output_format` | node output option | `candidate.output_format.type` | `candidate_settings.output_format.type` | `text` 또는 `json`. |
+| `json_schema` | node output option | `candidate.output_format.schema` | `candidate_settings.output_format.schema` | JSON output일 때만 사용. |
+| `knowledgeBases` | `data.knowledgeBases` | `candidate.knowledge.knowledge_base_ids` | `candidate_settings.knowledge.knowledge_base_ids` | id 배열로 변환한다. |
+| `topK` | `data.topK` | `candidate.knowledge.top_k` | `candidate_settings.knowledge.top_k` | B 실행 시 새 retrieval에 사용한다. |
+| `scoreThreshold` | `data.scoreThreshold` | `candidate.knowledge.score_threshold` | `candidate_settings.knowledge.score_threshold` | B 실행 시 새 retrieval에 사용한다. |
 
 ### Inspector
 
