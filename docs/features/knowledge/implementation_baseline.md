@@ -48,7 +48,7 @@ MBA-105에서 구현하지 않는 범위:
 | Tombstone retention | 30-90 days, legal hold가 있으면 연장 가능 |
 | Sync event retention | safe metadata only, 30-90 days 후보 |
 | Raw artifact retention | 기본 off. Opt-in 시 30-90 days 및 expiry 후 24-72h purge SLA |
-| Query rewrite 기본값 | `off`; deterministic/template rewrite만 first opt-in 후보 |
+| Query rewrite 기본값 | `off`; MBA-105 runtime은 deterministic/template rewrite opt-in만 구현 |
 | Evidence sufficiency 기본값 | `minimum_evidence`; legal/policy/compliance/high-risk flow는 `strict_citation` 후보 |
 
 ## ADR-0014 gate 대체 기준
@@ -217,7 +217,7 @@ Hidden/resource-hidden path의 external `reason_code`는 항상 `resource.hidden
 - Source tier는 retrieval/citation에 쓰는 document version 또는 canonical metadata에 둔다. Chunk metadata에는 ranking 목적으로 denormalize할 수 있다.
 - Candidate source tier enum은 `legal_regulation`, `contract`, `company_policy`, `adr_decision`, `official_documentation`, `semantic_definition`, `operational_runbook`, `curated_query_corpus`, `conversation_or_thread`로 시작할 수 있다. 최종 enum은 Legal/Compliance review를 거쳐 확정한다.
 - Legal/regulatory evidence는 strict use 전에 jurisdiction, effective date, version, review-required state를 가져야 한다.
-- Query rewrite 기본값은 `off`다. Deterministic/template rewrite는 opt-in으로 허용할 수 있다. LLM-assisted rewrite는 LLMOps/cost/security gate가 닫히기 전까지 범위 밖이다.
+- Query rewrite 기본값은 `off`다. MBA-105 runtime은 deterministic/template rewrite를 opt-in으로 구현하고, LLM-assisted rewrite는 LLMOps/cost/security gate가 닫히기 전까지 범위 밖이다.
 - Raw rewritten query는 raw prompt와 같은 민감 입력으로 보고 durable audit, trace, usage, cache key, summary에 저장하지 않는다.
 
 Slack/meeting source item의 effective ACL baseline:
@@ -280,7 +280,7 @@ Protocol adapter 요구사항:
 | Phase 3 | multi-KB cap, final evidence recheck, resource hiding matrix, retry/dead-letter transition, partial result behavior |
 | Later | golden question, source tier tuning, LLM-assisted rewrite, advanced rerank |
 
-Production readiness load test는 candidate cap, route collection cap, permission helper index, candidate cache, fanout concurrency, retrieval timeout, aggregate interactive timeout, recovery scanner cadence, trace/audit payload size, retry/dead-letter throughput, partial operational failure behavior를 포함해야 한다.
+Production readiness load test는 candidate cap, route collection cap, permission helper index, candidate cache, fanout concurrency, retrieval timeout, aggregate interactive timeout, recovery scanner cadence, trace/audit payload size, retry/dead-letter throughput, partial operational failure behavior를 포함해야 한다. 기능 회귀 테스트 통과만으로 이 성능 기준이 검증됐다고 보지 않는다.
 
 초기 pass/fail baseline은 다음 값을 출발점으로 삼는다. 실제 배포 전 owner review가 더 엄격한 값을 승인할 수 있다.
 

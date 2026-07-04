@@ -256,9 +256,9 @@ class KnowledgeCandidateResolver:
         *,
         runtime_decision: KnowledgePermissionDecision | None = None,
     ) -> KnowledgeCandidate:
-        runtime_availability = "available"
+        runtime_availability = "unknown"
         runtime_reason_code = None
-        if self.runtime_permission_helper is not None:
+        if self.runtime_permission_helper is not None or runtime_decision is not None:
             runtime_decision = runtime_decision or (
                 self.runtime_permission_helper.evaluate_kb_use(kb)
             )

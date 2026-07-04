@@ -402,6 +402,19 @@ def test_builder_candidate_uses_approved_safe_display_label_only():
     assert result.candidates[0].safe_label == "Safe approved label"
 
 
+def test_builder_candidate_runtime_availability_unknown_without_intended_subject():
+    kb = _kb()
+    actor_helper = FakePermissionHelper(kb_auth_state=AUTH_STATE_OPERATOR)
+    resolver = FakeResolver(helper=actor_helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.runtime_availability == "unknown"
+    assert "runtime_reason_code" not in candidate.safe_metadata
+
+
 def test_builder_candidate_marks_runtime_unavailable_for_intended_subject():
     kb = _kb()
     actor_helper = FakePermissionHelper(kb_auth_state=AUTH_STATE_OPERATOR)

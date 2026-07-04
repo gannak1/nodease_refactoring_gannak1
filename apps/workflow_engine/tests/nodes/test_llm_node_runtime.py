@@ -36,6 +36,7 @@ from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     SAFETY_SYSTEM_PROMPT,
     LLMNode,
+    WorkflowRAGFanoutResult,
     WorkflowRAGSearchResult,
 )
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
@@ -81,6 +82,54 @@ class SuccessClient:
             "choices": [{"message": {"content": "fallback ok"}}],
             "usage": {},
         }
+
+
+def _patch_rag_gevent_inline(monkeypatch, node):
+    """RAG fanout unit test에서 gevent 의존성 없이 bounded path를 동기 실행한다."""
+
+    class FakeTimeout(Exception):
+        def __init__(self, seconds):
+            self.seconds = seconds
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    class FakeJob:
+        def __init__(self, fn, kwargs):
+            try:
+                self.value = fn(**kwargs)
+                self.exception = None
+            except Exception as exc:  # pragma: no cover - assertion에서 검증
+                self.value = None
+                self.exception = exc
+
+        def ready(self):
+            return True
+
+        def kill(self, block=False):
+            return None
+
+    class FakePool:
+        def __init__(self, size):
+            self.size = size
+
+        def spawn(self, fn, **kwargs):
+            return FakeJob(fn, kwargs)
+
+        def kill(self, block=False):
+            return None
+
+    class FakeGevent:
+        Timeout = FakeTimeout
+
+        @staticmethod
+        def joinall(jobs, timeout=None):
+            return jobs
+
+    monkeypatch.setattr(node, "_rag_gevent_modules", lambda: (FakeGevent, FakePool))
 
 
 class FakeRuntimePriorityQuery:
@@ -804,6 +853,7 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
             "workflow_run_id": str(uuid.uuid4()),
         },
     )
+    _patch_rag_gevent_inline(monkeypatch, node)
 
     result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
@@ -912,6 +962,7 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
             "organization_id": str(organization_id),
         },
     )
+    _patch_rag_gevent_inline(monkeypatch, node)
 
     result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
@@ -1015,11 +1066,138 @@ def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
             "organization_id": str(organization_id),
         },
     )
+    _patch_rag_gevent_inline(monkeypatch, node)
 
     result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
     assert result.context.startswith("[파일: thread.md]")
     assert result.trace_summary["source_tier_policy"] == "off"
+
+
+def test_llm_node_rag_template_query_rewrite_uses_safe_trace_summary(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    captured_queries = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=True,
+                external_reason_code="allowed",
+                effective_auth_state="operator",
+            )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        queryRewriteMode="template",
+        queryRewriteTemplate="{query} 승인 기준",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        captured_queries.append(kwargs["query"])
+        return WorkflowRAGFanoutResult(
+            results=[
+                (
+                    str(kb_id),
+                    [
+                        ChunkPreview(
+                            chunk_id=uuid.uuid4(),
+                            content="병가 승인 기준 근거",
+                            document_id=uuid.uuid4(),
+                            filename="policy.md",
+                            similarity_score=0.91,
+                            score=0.91,
+                            metadata_summary={"source_tier": "company_policy"},
+                        )
+                    ],
+                )
+            ],
+            failed_count=0,
+        )
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+
+    result = node._execute_knowledge_search("병가", db_session=FakeDb())  # noqa: SLF001
+
+    assert captured_queries == ["병가 승인 기준"]
+    assert result.trace_summary["query_rewrite_applied"] is True
+    assert result.trace_summary["query_rewrite_strategy"] == "template"
+    assert "병가 승인 기준" not in str(result.trace_summary)
+    assert result.should_invoke_llm is True
+
+
+def test_llm_node_rag_template_query_rewrite_preserves_backslashes():
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+            queryRewriteMode="template",
+            queryRewriteTemplate="path={{ query }} literal={query}",
+        ),
+    )
+
+    rewritten, applied, strategy = node._rewrite_rag_query(  # noqa: SLF001
+        r"foo\1 C:\temp"
+    )
+
+    assert applied is True
+    assert strategy == "template"
+    assert rewritten == r"path=foo\1 C:\temp literal=foo\1 C:\temp"
+
+
+def test_llm_node_rejects_llm_assisted_query_rewrite_until_gate_closes():
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        queryRewriteMode="llm_assisted",
+    )
+
+    with pytest.raises(ValueError, match="llm_assisted query rewrite"):
+        data.validate()
 
 
 def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):
@@ -1101,6 +1279,104 @@ def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):
     assert len(result.results) == len(kb_ids)
 
 
+def test_llm_node_rag_single_kb_uses_bounded_pool(monkeypatch):
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+        ),
+    )
+    kb_id = str(uuid.uuid4())
+    pool_sizes = []
+    search_calls = []
+
+    class FakeJob:
+        def __init__(self, value):
+            self.value = value
+            self.exception = None
+
+        def ready(self):
+            return True
+
+        def kill(self, block=False):
+            return None
+
+    class FakePool:
+        def __init__(self, size):
+            pool_sizes.append(size)
+
+        def spawn(self, fn, **kwargs):
+            return FakeJob(fn(**kwargs))
+
+        def kill(self, block=False):
+            return None
+
+    class FakeGevent:
+        @staticmethod
+        def joinall(jobs, timeout=None):
+            return jobs
+
+    def fake_search(**kwargs):
+        search_calls.append(kwargs["knowledge_base_id"])
+        return []
+
+    monkeypatch.setattr(
+        node,
+        "_rag_gevent_modules",
+        lambda: (FakeGevent, FakePool),
+    )
+    monkeypatch.setattr(
+        node,
+        "_search_single_rag_kb_with_new_session",
+        fake_search,
+    )
+
+    result = node._run_rag_retrieval_fanout(  # noqa: SLF001
+        query="query",
+        fallback_db_session=object(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        knowledge_base_ids=[kb_id],
+        top_k=3,
+        threshold=0.5,
+    )
+
+    assert pool_sizes == [1]
+    assert search_calls == [kb_id]
+    assert result.failed_count == 0
+
+
+def test_llm_node_rag_fails_closed_when_timeout_guard_unavailable(monkeypatch):
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+        ),
+    )
+
+    monkeypatch.setattr(node, "_rag_gevent_modules", lambda: None)
+
+    result = node._run_rag_retrieval_fanout(  # noqa: SLF001
+        query="query",
+        fallback_db_session=object(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        knowledge_base_ids=[str(uuid.uuid4())],
+        top_k=3,
+        threshold=0.5,
+    )
+
+    assert result.results == []
+    assert result.failed_count == 1
+    assert result.timeout_count == 1
+
+
 def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
     monkeypatch,
 ):
@@ -1165,6 +1441,7 @@ def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
             "organization_id": str(organization_id),
         },
     )
+    _patch_rag_gevent_inline(monkeypatch, node)
 
     with pytest.raises(RuntimeError, match="vector store unavailable"):
         node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001

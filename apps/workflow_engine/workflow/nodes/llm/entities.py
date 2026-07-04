@@ -25,8 +25,10 @@ class KnowledgeBaseRef(BaseModel):
 EvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 RAGFailurePolicy = Literal["safe_no_result", "fail_node"]
 SourceTierPolicy = Literal["tie_break", "off"]
+QueryRewriteMode = Literal["off", "template", "llm_assisted"]
 MAX_RAG_RETRIEVAL_KBS = 20
 MAX_RAG_CHUNKS_PER_KB = 8
+MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH = 512
 
 
 class LLMNodeData(BaseNodeData):
@@ -67,6 +69,14 @@ class LLMNodeData(BaseNodeData):
     sourceTierPolicy: SourceTierPolicy = Field(
         default="tie_break",
         description="권한 통과 evidence 안에서 source_tier를 동점 정렬 힌트로 사용할지 결정",
+    )
+    queryRewriteMode: QueryRewriteMode = Field(
+        default="off",
+        description="RAG 검색 query rewrite 방식. llm_assisted는 별도 gate 전까지 비활성",
+    )
+    queryRewriteTemplate: Optional[str] = Field(
+        default=None,
+        description="template rewrite에서 사용할 safe query template",
     )
 
     def validate(self) -> None:
@@ -111,3 +121,14 @@ class LLMNodeData(BaseNodeData):
             self.topK = MAX_RAG_CHUNKS_PER_KB
         if len(self.knowledgeBases) > MAX_RAG_RETRIEVAL_KBS:
             self.knowledgeBases = self.knowledgeBases[:MAX_RAG_RETRIEVAL_KBS]
+
+        if self.queryRewriteMode == "llm_assisted":
+            raise ValueError("llm_assisted query rewrite는 아직 사용할 수 없습니다.")
+        if self.queryRewriteTemplate is not None:
+            stripped_template = self.queryRewriteTemplate.strip()
+            if not stripped_template:
+                self.queryRewriteTemplate = None
+            elif len(stripped_template) > MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH:
+                raise ValueError("query rewrite template이 너무 깁니다.")
+            else:
+                self.queryRewriteTemplate = stripped_template

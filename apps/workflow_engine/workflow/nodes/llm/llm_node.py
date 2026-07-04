@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -32,7 +33,12 @@ from apps.workflow_engine.services.llm_service import (
 from apps.workflow_engine.services.retrieval import RetrievalService
 
 from ..base.node import Node
-from .entities import LLMNodeData, MAX_RAG_CHUNKS_PER_KB, MAX_RAG_RETRIEVAL_KBS
+from .entities import (
+    LLMNodeData,
+    MAX_RAG_CHUNKS_PER_KB,
+    MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH,
+    MAX_RAG_RETRIEVAL_KBS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,8 @@ MAX_RAG_TRACE_RETRIEVED_CHUNKS = 20
 MAX_RAG_FANOUT_CONCURRENCY = 5
 RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS = 30.0
 RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 12.0
+MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
+QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
 SUMMARY_MODEL_PREFS = {
     "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-3.5-turbo"],
     "google": ["gemini-1.5-flash", "gemini-1.5-pro"],
@@ -715,6 +723,9 @@ class LLMNode(Node[LLMNodeData]):
         kb_ids = kb_ids[:MAX_RAG_RETRIEVAL_KBS]
         top_k = min(self.data.topK or 3, MAX_RAG_CHUNKS_PER_KB)
         threshold = self.data.scoreThreshold or 0.5
+        search_query, query_rewrite_applied, query_rewrite_strategy = (
+            self._rewrite_rag_query(query)
+        )
 
         all_chunks: List[tuple[str, ChunkPreview]] = []
         authorized_kb_ids = self._authorized_runtime_kb_ids(
@@ -725,7 +736,7 @@ class LLMNode(Node[LLMNodeData]):
         )
 
         fanout = self._run_rag_retrieval_fanout(
-            query=query,
+            query=search_query,
             fallback_db_session=db_session,
             user_id=user_id,
             organization_id=organization_uuid,
@@ -771,6 +782,8 @@ class LLMNode(Node[LLMNodeData]):
             selected_kb_count=len({kb_id for kb_id, _chunk in top_chunks}),
             context_chunks=[chunk for _kb_id, chunk in top_chunks],
             fanout=fanout,
+            query_rewrite_applied=query_rewrite_applied,
+            query_rewrite_strategy=query_rewrite_strategy,
         )
         if not evidence_decision.evidence_sufficient:
             if self.data.ragFailurePolicy == "fail_node":
@@ -815,7 +828,7 @@ class LLMNode(Node[LLMNodeData]):
             return WorkflowRAGFanoutResult(results=[], failed_count=0)
 
         gevent_modules = self._rag_gevent_modules()
-        if gevent_modules is None or len(knowledge_base_ids) <= 1:
+        if gevent_modules is None:
             return self._run_rag_retrieval_fanout_sequential(
                 query=query,
                 db_session=fallback_db_session,
@@ -858,6 +871,8 @@ class LLMNode(Node[LLMNodeData]):
                 if self.data.ragFailurePolicy == "fail_node":
                     pool.kill(block=False)
                     raise job.exception
+                if isinstance(job.exception, TimeoutError):
+                    timeout_count += 1
                 failed_count += 1
                 continue
             results.append((kb_id, job.value or []))
@@ -887,22 +902,29 @@ class LLMNode(Node[LLMNodeData]):
         )
         results: List[tuple[str, List[ChunkPreview]]] = []
         failed_count = 0
+        timeout_count = 0
         for kb_id in knowledge_base_ids:
             try:
-                chunks = self._search_single_rag_kb(
+                chunks = self._search_single_rag_kb_with_timeout(
                     retrieval,
                     query=query,
                     knowledge_base_id=kb_id,
                     top_k=top_k,
                     threshold=threshold,
                 )
-            except Exception:
+            except Exception as exc:
                 if self.data.ragFailurePolicy == "fail_node":
                     raise
+                if isinstance(exc, TimeoutError):
+                    timeout_count += 1
                 failed_count += 1
                 continue
             results.append((kb_id, chunks))
-        return WorkflowRAGFanoutResult(results=results, failed_count=failed_count)
+        return WorkflowRAGFanoutResult(
+            results=results,
+            failed_count=failed_count,
+            timeout_count=timeout_count,
+        )
 
     def _search_single_rag_kb_with_new_session(
         self,
@@ -921,26 +943,47 @@ class LLMNode(Node[LLMNodeData]):
                 user_id,
                 organization_id=organization_id,
             )
-            gevent_modules = self._rag_gevent_modules()
-            if gevent_modules is None:
-                return self._search_single_rag_kb(
-                    retrieval,
-                    query=query,
-                    knowledge_base_id=knowledge_base_id,
-                    top_k=top_k,
-                    threshold=threshold,
-                )
-            gevent, _pool_cls = gevent_modules
-            with gevent.Timeout(RAG_FANOUT_PER_KB_TIMEOUT_SECONDS):
-                return self._search_single_rag_kb(
-                    retrieval,
-                    query=query,
-                    knowledge_base_id=knowledge_base_id,
-                    top_k=top_k,
-                    threshold=threshold,
-                )
+            return self._search_single_rag_kb_with_timeout(
+                retrieval,
+                query=query,
+                knowledge_base_id=knowledge_base_id,
+                top_k=top_k,
+                threshold=threshold,
+            )
         finally:
             session.close()
+
+    def _search_single_rag_kb_with_timeout(
+        self,
+        retrieval: RetrievalService,
+        *,
+        query: str,
+        knowledge_base_id: str,
+        top_k: int,
+        threshold: float,
+    ) -> List[ChunkPreview]:
+        gevent_modules = self._rag_gevent_modules()
+        if gevent_modules is None:
+            # workflow_engine은 gevent 의존성을 갖는다. guard가 없으면 RAG 호출을
+            # 무제한으로 붙잡지 않도록 operational failure로 닫는다.
+            raise TimeoutError("RAG retrieval timeout guard is unavailable.")
+        gevent, _pool_cls = gevent_modules
+        timer = gevent.Timeout(RAG_FANOUT_PER_KB_TIMEOUT_SECONDS)
+        timer.start()
+        try:
+            return self._search_single_rag_kb(
+                retrieval,
+                query=query,
+                knowledge_base_id=knowledge_base_id,
+                top_k=top_k,
+                threshold=threshold,
+            )
+        except gevent.Timeout as exc:
+            if exc is timer:
+                raise TimeoutError("RAG retrieval timed out.") from None
+            raise
+        finally:
+            timer.cancel()
 
     def _search_single_rag_kb(
         self,
@@ -960,6 +1003,35 @@ class LLMNode(Node[LLMNodeData]):
             source_tier_policy=getattr(self.data, "sourceTierPolicy", "tie_break"),
         )
 
+    def _rewrite_rag_query(self, query: str) -> tuple[str, bool, str]:
+        mode = getattr(self.data, "queryRewriteMode", "off")
+        if mode == "off":
+            return query, False, "off"
+        if mode == "llm_assisted":
+            raise ValueError("llm_assisted query rewrite is not enabled.")
+        if mode != "template":
+            return query, False, "off"
+
+        template = (getattr(self.data, "queryRewriteTemplate", None) or "{query}")[
+            :MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH
+        ]
+        rendered = self._render_rag_query_template(template, query)
+        if not rendered:
+            return query, False, "off"
+        rewritten = rendered[:MAX_RAG_REWRITTEN_QUERY_LENGTH]
+        return rewritten, rewritten != query, "template"
+
+    def _render_rag_query_template(self, template: str, query: str) -> str:
+        # Raw rewritten query는 prompt와 유사한 민감 입력이므로 trace/log에 남기지 않는다.
+        if QUERY_REWRITE_PLACEHOLDER_RE.search(template):
+            rendered = QUERY_REWRITE_PLACEHOLDER_RE.sub(
+                lambda _match: query,
+                template,
+            )
+        else:
+            rendered = f"{query} {template}"
+        return " ".join(rendered.split())
+
     @staticmethod
     def _rag_gevent_modules():
         try:
@@ -978,6 +1050,8 @@ class LLMNode(Node[LLMNodeData]):
         selected_kb_count: int,
         context_chunks: List[ChunkPreview],
         fanout: WorkflowRAGFanoutResult,
+        query_rewrite_applied: bool,
+        query_rewrite_strategy: str,
     ) -> Dict[str, Any]:
         safe_exclusion_summary: Dict[str, Any] = {}
         if fanout.failed_count:
@@ -998,8 +1072,8 @@ class LLMNode(Node[LLMNodeData]):
             "context_token_estimate": self._rag_context_token_estimate(context_chunks),
             "permission_filter_applied": True,
             "safe_exclusion_summary": safe_exclusion_summary or None,
-            "query_rewrite_applied": False,
-            "query_rewrite_strategy": "off",
+            "query_rewrite_applied": query_rewrite_applied,
+            "query_rewrite_strategy": query_rewrite_strategy,
             "source_tier_policy": getattr(self.data, "sourceTierPolicy", "tie_break"),
             "fanout_concurrency": min(
                 MAX_RAG_FANOUT_CONCURRENCY,
