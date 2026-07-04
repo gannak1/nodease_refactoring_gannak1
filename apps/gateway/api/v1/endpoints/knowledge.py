@@ -12,7 +12,9 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    Header,
     HTTPException,
+    Request,
     Response,
     status,
 )
@@ -30,10 +32,18 @@ from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
-from apps.gateway.services.organization_context import get_user_primary_organization_id
+from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.organization_context import (
+    get_user_primary_organization_id,
+    resolve_active_organization_id,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
+from apps.shared.schemas.knowledge import (
+    KnowledgeCandidateResolution,
+    KnowledgeCandidateResolveRequest,
+)
 from apps.shared.schemas.rag import (
     DocumentPreviewRequest,
     DocumentPreviewResponse,
@@ -162,6 +172,41 @@ def list_knowledge_bases(
             )
         )
     return response
+
+
+@router.post("/candidates/resolve", response_model=KnowledgeCandidateResolution)
+def resolve_knowledge_candidates(
+    candidate_request: KnowledgeCandidateResolveRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Workflow Builder와 deployment preflight가 사용할 안전한 Knowledge 후보를 조회합니다.
+    """
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    resolver = KnowledgeCandidateResolver(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+
+    # 예상 실행 대상이 명시되어도 Phase 7에서는 후보 노출 scope만 좁힌다.
+    # 실제 runtime 권한 판정은 Workflow execution_subject 기준으로 다시 수행한다.
+    if candidate_request.mode == "explicit_kb":
+        return resolver.resolve_explicit_kbs(candidate_request.knowledge_base_ids)
+
+    return resolver.resolve_auto_collection_candidates(
+        collection_ids=candidate_request.collection_ids,
+        max_collections=candidate_request.max_collections,
+        max_candidate_kbs=candidate_request.max_candidate_kbs,
+    )
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseDetailResponse)

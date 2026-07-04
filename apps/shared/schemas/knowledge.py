@@ -22,6 +22,12 @@ RequesterSourceAuthorization = Literal[
 ResourceVisibility = Literal["visible", "resource_hidden", "hidden", "admin_visible"]
 RuntimeAvailability = Literal["available", "warning", "unavailable", "unknown"]
 KnowledgeCandidateType = Literal["knowledge_base", "collection"]
+KnowledgeCandidateResolutionMode = Literal["explicit_kb", "auto_collection"]
+KnowledgeCandidatePurpose = Literal[
+    "builder_suggestion",
+    "deployment_preflight",
+    "runtime_preview",
+]
 
 
 class KnowledgePermissionDecision(BaseModel):
@@ -50,3 +56,13 @@ class KnowledgeCandidateResolution(BaseModel):
     hidden_candidate_count_bucket: str = "0"
     unavailable_candidate_count_bucket: str = "0"
     reason_code: str | None = None
+
+
+class KnowledgeCandidateResolveRequest(BaseModel):
+    mode: KnowledgeCandidateResolutionMode
+    knowledge_base_ids: list[UUID] = Field(default_factory=list)
+    collection_ids: list[UUID] | None = None
+    intended_execution_subject_id: UUID | None = None
+    purpose: KnowledgeCandidatePurpose = "builder_suggestion"
+    max_collections: int = Field(default=20, ge=1, le=100)
+    max_candidate_kbs: int = Field(default=5000, ge=1, le=5000)

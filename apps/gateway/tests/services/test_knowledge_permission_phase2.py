@@ -6,6 +6,7 @@ from apps.gateway.services.knowledge_candidate_resolver import (
     KnowledgeCandidateResolver,
     bucket_count,
 )
+from apps.shared.schemas.knowledge import KnowledgeCandidateResolveRequest
 from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
 from apps.shared.permissions import AUTH_STATE_OPERATOR
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
@@ -36,6 +37,16 @@ def _kb(kb_id: uuid.UUID | None = None, *, source_managed=False):
         sync_state="synced",
         source_identity_id=uuid.uuid4() if source_managed else None,
         source_identity=None,
+    )
+
+
+def _source_identity():
+    return SimpleNamespace(
+        display_policy_state="pending",
+        safe_display_name="Safe approved label",
+        raw_source_url="https://internal.example/private",
+        raw_source_path="/sensitive/path",
+        raw_source_title="Sensitive title",
     )
 
 
@@ -287,3 +298,59 @@ def test_bucket_count_uses_safe_ranges():
     assert bucket_count(5) == "2-10"
     assert bucket_count(50) == "11-100"
     assert bucket_count(500) == "100+"
+
+
+def test_candidate_resolution_request_caps_builder_fanout():
+    request = KnowledgeCandidateResolveRequest(
+        mode="auto_collection",
+        max_collections=100,
+        max_candidate_kbs=5000,
+    )
+
+    assert request.max_collections == 100
+    assert request.max_candidate_kbs == 5000
+
+    try:
+        KnowledgeCandidateResolveRequest(
+            mode="auto_collection",
+            max_collections=101,
+        )
+    except ValueError as exc:
+        assert "max_collections" in str(exc)
+    else:  # pragma: no cover - pydantic must reject over-cap values
+        raise AssertionError("max_collections cap was not enforced")
+
+
+def test_builder_candidate_hides_unapproved_source_display_metadata():
+    kb = _kb(source_managed=True)
+    kb.source_identity = _source_identity()
+    helper = FakePermissionHelper(
+        kb_auth_state=AUTH_STATE_OPERATOR,
+        source_provenance=_source_provenance(),
+    )
+    resolver = FakeResolver(helper=helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.safe_label is None
+    assert "raw_source_url" not in candidate.safe_metadata
+    assert "raw_source_path" not in candidate.safe_metadata
+    assert "raw_source_title" not in candidate.safe_metadata
+
+
+def test_builder_candidate_uses_approved_safe_display_label_only():
+    kb = _kb(source_managed=True)
+    kb.source_identity = _source_identity()
+    kb.source_identity.display_policy_state = "approved"
+    helper = FakePermissionHelper(
+        kb_auth_state=AUTH_STATE_OPERATOR,
+        source_provenance=_source_provenance(),
+    )
+    resolver = FakeResolver(helper=helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].safe_label == "Safe approved label"
