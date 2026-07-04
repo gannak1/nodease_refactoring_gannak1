@@ -5,7 +5,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import tiktoken
 from fastapi import UploadFile
@@ -14,9 +14,18 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.services.ingestion.factory import IngestionFactory
 from apps.gateway.services.storage import get_storage_service
-from apps.shared.db.models.knowledge import Document, DocumentChunk, SourceType
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    DocumentVersion,
+    SourceType,
+)
 from apps.shared.db.session import SessionLocal
 from apps.shared.distributed_lock import DistributedLock
+from apps.shared.services.knowledge_ingestion_finalizer import (
+    KnowledgeIngestionFinalizationError,
+    KnowledgeIngestionFinalizer,
+)
 from apps.shared.services.ingestion.hierarchical_chunker import (
     HierarchicalChunker,
     HierarchicalChunkerConfig,
@@ -142,6 +151,10 @@ class IngestionOrchestrator:
 
             session = SessionLocal()
             self.db = session
+            document_version: DocumentVersion | None = None
+            ingestion_fencing_token = str(uuid4())
+            failed_version_context: dict[str, Any] | None = None
+            finalization_committed = False
 
             try:
                 doc = self.db.query(Document).get(document_id)
@@ -157,7 +170,15 @@ class IngestionOrchestrator:
                     return
 
                 self._update_progress_redis(document_id, 0)
-                self._update_status(document_id, "indexing")
+                self._update_status(
+                    document_id,
+                    "indexing",
+                    meta_updates={
+                        "active_ingestion_fencing_token_hash": hashlib.sha256(
+                            ingestion_fencing_token.encode("utf-8")
+                        ).hexdigest()
+                    },
+                )
 
                 # 문서 소스 타입에 맞는 Processor 생성
                 processor = IngestionFactory.get_processor(
@@ -208,9 +229,6 @@ class IngestionOrchestrator:
                 ):
                     self._update_status(document_id, "completed")
                     return
-
-                doc.content_hash = new_hash
-                self.db.commit()
 
                 if doc.source_type == "DB":
                     final_chunks = self._refine_chunks(
@@ -281,13 +299,54 @@ class IngestionOrchestrator:
                         meta.get("keyword_filter"),
                     )
 
+                finalizer = KnowledgeIngestionFinalizer(self.db)
+                document_version = finalizer.create_indexing_version(
+                    doc,
+                    content_hash=new_hash,
+                    chunking_fingerprint=current_fingerprint,
+                    embedding_model=self.ai_model,
+                    safe_metadata={
+                        "source_type": str(
+                            getattr(doc.source_type, "value", doc.source_type)
+                        ),
+                        "chunking_mode": chunking_mode,
+                    },
+                    fencing_token=ingestion_fencing_token,
+                )
+                if document_version is not None:
+                    failed_version_context = {
+                        "organization_id": document_version.organization_id,
+                        "knowledge_base_id": document_version.knowledge_base_id,
+                        "legacy_document_id": document_version.legacy_document_id,
+                        "source_identity_id": document_version.source_identity_id,
+                        "content_hash": document_version.content_hash,
+                        "chunking_fingerprint": document_version.chunking_fingerprint,
+                        "embedding_model": document_version.embedding_model,
+                        "safe_metadata": dict(document_version.safe_metadata or {}),
+                    }
+                if document_version is None:
+                    # organization_id가 없는 legacy KB는 기존 처리 상태 commit 경로를 유지한다.
+                    doc.content_hash = new_hash
+
                 self._save_to_vector_db(
                     doc,
                     filtered_chunks,
                     chunking_mode=chunking_mode,
                     chunking_fingerprint=current_fingerprint,
+                    document_version=document_version,
                 )
-                self._update_status(document_id, "completed")
+                if document_version is not None:
+                    doc.status = "completed"
+                    doc.error_message = None
+                    doc.updated_at = datetime.now(timezone.utc)
+                    finalizer.finalize_active_version(
+                        document_version,
+                        expected_fencing_token=ingestion_fencing_token,
+                    )
+                    self.db.commit()
+                    finalization_committed = True
+                else:
+                    self._update_status(document_id, "completed")
                 self._update_progress_redis(
                     document_id, 100, expire=True
                 )  # 완료 시 키 만료 또는 100 유지 후 만료
@@ -297,10 +356,40 @@ class IngestionOrchestrator:
 
             except Exception as e:
                 logger.error(
-                    f"Document processing failed - ID: {document_id}, Reason: {e}"
+                    "Document processing failed - ID: %s, error_type: %s",
+                    document_id,
+                    type(e).__name__,
                 )
                 self.db.rollback()
-                self._update_status(document_id, "failed", str(e))
+                if finalization_committed:
+                    logger.warning(
+                        "Document processing post-finalization failure ignored - ID: %s, error_type: %s",
+                        document_id,
+                        type(e).__name__,
+                    )
+                    return
+                if failed_version_context is not None and not finalization_committed:
+                    try:
+                        KnowledgeIngestionFinalizer(
+                            self.db
+                        ).record_failed_indexing_version(
+                            **failed_version_context,
+                            safe_reason_code=(
+                                "ingestion.finalization_failed"
+                                if isinstance(e, KnowledgeIngestionFinalizationError)
+                                else "ingestion.processing_failed"
+                            ),
+                            fencing_token=ingestion_fencing_token,
+                        )
+                        self.db.commit()
+                    except Exception:
+                        self.db.rollback()
+                self._update_status(
+                    document_id,
+                    "failed",
+                    self._safe_ingestion_error_message(e),
+                    meta_updates={"active_ingestion_fencing_token_hash": None},
+                )
                 self._update_progress_redis(
                     document_id, 0, expire=True
                 )  # 실패 시 진행률 키 즉시 만료
@@ -700,6 +789,7 @@ class IngestionOrchestrator:
         *,
         chunking_mode: str = "flat",
         chunking_fingerprint: str | None = None,
+        document_version: DocumentVersion | None = None,
     ):
         import tiktoken
         from services.llm_service import LLMService
@@ -889,11 +979,19 @@ class IngestionOrchestrator:
                 }
             )
 
-        # !!! CRITICAL: 기존 청크 삭제를 맨 마지막에 수행 (Atomic-like behavior) !!!
-        # 임베딩/암호화 준비 중 실패하면 삭제되지 않음.
-        self.db.query(DocumentChunk).filter(
+        # !!! CRITICAL: 기존 검색 가능 청크는 준비가 끝나기 전에는 삭제하지 않는다. !!!
+        # Versioned 경로는 새 document_version_id의 staging chunk만 교체하고,
+        # legacy NULL chunk 정리는 active pointer swap transaction에서 수행한다.
+        if document_version is not None:
+            self.db.flush()
+        chunk_delete_query = self.db.query(DocumentChunk).filter(
             DocumentChunk.document_id == doc.id
-        ).delete()
+        )
+        if document_version is not None:
+            chunk_delete_query = chunk_delete_query.filter(
+                DocumentChunk.document_version_id == document_version.id
+            )
+        chunk_delete_query.delete(synchronize_session=False)
 
         if is_hierarchical:
             parent_objects = {}
@@ -902,6 +1000,9 @@ class IngestionOrchestrator:
                 if payload["chunk_level"] == "parent":
                     parent = DocumentChunk(
                         document_id=doc.id,
+                        document_version_id=(
+                            document_version.id if document_version else None
+                        ),
                         knowledge_base_id=doc.knowledge_base_id,
                         content=payload["content"],
                         chunk_index=payload["chunk_index"],
@@ -920,6 +1021,9 @@ class IngestionOrchestrator:
                     self.db.add(
                         DocumentChunk(
                             document_id=doc.id,
+                            document_version_id=(
+                                document_version.id if document_version else None
+                            ),
                             knowledge_base_id=doc.knowledge_base_id,
                             content=payload["content"],
                             chunk_index=payload["chunk_index"],
@@ -940,6 +1044,9 @@ class IngestionOrchestrator:
                 self.db.add(
                     DocumentChunk(
                         document_id=doc.id,
+                        document_version_id=(
+                            document_version.id if document_version else None
+                        ),
                         knowledge_base_id=doc.knowledge_base_id,
                         content=payload["content"],
                         chunk_index=payload["chunk_index"],
@@ -957,6 +1064,9 @@ class IngestionOrchestrator:
                 [
                     DocumentChunk(
                         document_id=doc.id,
+                        document_version_id=(
+                            document_version.id if document_version else None
+                        ),
                         knowledge_base_id=doc.knowledge_base_id,
                         content=payload["content"],
                         chunk_index=payload["chunk_index"],
@@ -988,7 +1098,10 @@ class IngestionOrchestrator:
         doc.meta_info = new_meta
         self.db.add(doc)
 
-        self.db.commit()
+        if document_version is not None:
+            self.db.flush()
+        else:
+            self.db.commit()
 
     def _update_status(
         self,
@@ -996,6 +1109,7 @@ class IngestionOrchestrator:
         status: str,
         error_message: str = None,
         progress: int = None,
+        meta_updates: dict[str, Any | None] | None = None,
     ):
         doc = self.db.query(Document).get(document_id)
         if doc:
@@ -1004,12 +1118,23 @@ class IngestionOrchestrator:
             doc.updated_at = datetime.now(timezone.utc)
 
             # 진행률 업데이트 (meta_info 활용)
-            if progress is not None:
+            if progress is not None or meta_updates:
                 new_meta = dict(doc.meta_info or {})
-                new_meta["progress"] = progress
+                if progress is not None:
+                    new_meta["progress"] = progress
+                for key, value in (meta_updates or {}).items():
+                    if value is None:
+                        new_meta.pop(key, None)
+                    else:
+                        new_meta[key] = value
                 doc.meta_info = new_meta
 
             self.db.commit()
+
+    def _safe_ingestion_error_message(self, error: Exception) -> str:
+        if isinstance(error, KnowledgeIngestionFinalizationError):
+            return "문서 색인 최종화에 실패했습니다."
+        return "문서 처리에 실패했습니다."
 
     def reindex_knowledge_base(self, kb_id: UUID, new_model: str):
         """

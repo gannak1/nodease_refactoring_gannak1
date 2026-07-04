@@ -709,3 +709,60 @@ def rag_answer_retention_purge(self, data: Dict[str, Any]):
         raise self.retry(exc=e, countdown=2**self.request.retries)
     finally:
         session.close()
+
+
+@celery_app.task(name="log.knowledge_ingestion_outbox_process", bind=True, max_retries=3)
+def knowledge_ingestion_outbox_process(self, data: Dict[str, Any]):
+    """Knowledge ingestion outbox의 cleanup/recovery event를 idempotent하게 처리한다."""
+    from apps.shared.services.knowledge_ingestion_outbox import (
+        OUTBOX_EVENT_CLEANUP_SUPERSEDED,
+        DEFAULT_OUTBOX_PROCESS_LIMIT,
+        KnowledgeIngestionOutboxService,
+    )
+
+    session = SessionLocal()
+    owner_token = str(uuid.uuid4())
+    try:
+        service = KnowledgeIngestionOutboxService(session)
+        recovered_count = service.recover_stale_leases()
+        events = service.lease_due_events(
+            owner_token=owner_token,
+            limit=KnowledgeIngestionOutboxService.validate_limit(
+                data.get("limit") or DEFAULT_OUTBOX_PROCESS_LIMIT
+            ),
+        )
+        processed_count = 0
+        for event in events:
+            try:
+                if event.event_type == OUTBOX_EVENT_CLEANUP_SUPERSEDED:
+                    service.process_cleanup_superseded_event(event)
+                else:
+                    service.mark_retry_or_dead_letter(
+                        event,
+                        safe_reason_code="outbox.unsupported_event_type",
+                    )
+                processed_count += 1
+            except Exception:
+                service.mark_retry_or_dead_letter(
+                    event,
+                    safe_reason_code="outbox.processing_failed",
+                )
+        session.commit()
+        return {
+            "status": "success",
+            "processed_count": processed_count,
+            "recovered_count": recovered_count,
+        }
+    except ValueError:
+        session.rollback()
+        logger.warning("[Log-System] knowledge_ingestion_outbox invalid request")
+        return {"status": "failed", "error": "invalid_knowledge_outbox_request"}
+    except Exception as e:
+        session.rollback()
+        logger.error(
+            "[Log-System] knowledge_ingestion_outbox_process 실패: error_type=%s",
+            type(e).__name__,
+        )
+        raise self.retry(exc=e, countdown=2**self.request.retries)
+    finally:
+        session.close()
