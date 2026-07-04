@@ -94,6 +94,33 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     ).toBeInTheDocument();
   });
 
+  it('baseline 선택 화면은 최신 실행 로그 요약을 먼저 보여준다', async () => {
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(workflowApiMock.getCostOptimizerLatestBaseline).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-triage',
+      );
+    });
+
+    expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
+    expect(screen.getByText(/420/)).toBeInTheDocument();
+    expect(screen.getByText(/1.8s/)).toBeInTheDocument();
+    expect(screen.getByText(/0.0012/)).toBeInTheDocument();
+    expect(screen.getByText(/billing escalation/)).toBeInTheDocument();
+    expect(screen.getByText(/enterprise response/)).toBeInTheDocument();
+  });
+
   it('최신 실행 로그 선택은 latest baseline API를 호출하고 선택 결과를 전달한다', async () => {
     const CostOptimizerBaselineSelection = await loadBaselineSelection();
     const onBaselineSelected = vi.fn();

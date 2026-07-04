@@ -14,7 +14,6 @@ import {
   ArrowLeft,
   BarChart3,
   Clock3,
-  Database,
   FileText,
   FlaskConical,
   Play,
@@ -50,6 +49,106 @@ type PlaygroundMode = 'setup' | 'report';
 const formatMetric = (value: number, suffix = '') => {
   if (!Number.isFinite(value)) return '-';
   return `${value.toLocaleString('ko-KR')}${suffix}`;
+};
+
+const formatCost = (value: number) => {
+  if (!Number.isFinite(value)) return '-';
+  return `$${value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
+};
+
+const formatLatency = (latencyMs: number) => {
+  if (!Number.isFinite(latencyMs)) return '-';
+  if (latencyMs < 1000) return `${latencyMs}ms`;
+  return `${(latencyMs / 1000).toFixed(1)}s`;
+};
+
+type PreviewRow = {
+  label: string;
+  value: string;
+};
+
+const normalizePreviewValue = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+const parseJsonPreview = (value: string): unknown => {
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+};
+
+const collectPreviewRows = (
+  value: unknown,
+  prefix = '',
+  rows: PreviewRow[] = [],
+) => {
+  if (rows.length >= 6 || value === null || value === undefined) return rows;
+
+  if (typeof value !== 'object') {
+    const label = prefix.split('.').pop() || prefix || '내용';
+    const text = normalizePreviewValue(String(value));
+    if (text) rows.push({ label, value: text });
+    return rows;
+  }
+
+  if (Array.isArray(value)) {
+    value.slice(0, 4).forEach((item, index) => {
+      collectPreviewRows(item, `${prefix}[${index}]`, rows);
+    });
+    return rows;
+  }
+
+  Object.entries(value as Record<string, unknown>)
+    .slice(0, 8)
+    .forEach(([key, item]) => {
+      const nextPrefix = prefix ? `${prefix}.${key}` : key;
+      collectPreviewRows(item, nextPrefix, rows);
+    });
+  return rows;
+};
+
+const getPreviewRows = (value: string) => {
+  if (!value) return [];
+  return collectPreviewRows(parseJsonPreview(value));
+};
+
+const PreviewSection = ({
+  title,
+  value,
+}: {
+  title: string;
+  value: string;
+}) => {
+  const rows = getPreviewRows(value);
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-3">
+      <h3 className="text-xs font-bold text-slate-700">{title}</h3>
+      {rows.length > 0 ? (
+        <dl className="mt-3 space-y-2">
+          {rows.map((row, index) => (
+            <div key={`${row.label}-${index}`} className="grid gap-1">
+              <dt className="text-[11px] font-bold text-slate-400">
+                {row.label}
+              </dt>
+              <dd className="break-words rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
+                {row.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="mt-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-400">
+          보관된 preview가 없습니다.
+        </p>
+      )}
+    </section>
+  );
 };
 
 const PanelResizeHandle = ({
@@ -92,6 +191,7 @@ export default function CostOptimizerPlaygroundPage() {
     useState<SettingsTab>('basic');
   const [candidateSettingsTab, setCandidateSettingsTab] =
     useState<SettingsTab>('basic');
+  const [testName, setTestName] = useState('');
   const [activeMode, setActiveMode] = useState<PlaygroundMode>('setup');
   const [isLoadingNode, setIsLoadingNode] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -165,6 +265,10 @@ export default function CostOptimizerPlaygroundPage() {
     const data = targetNode?.data as { title?: string; label?: string } | null;
     return data?.title || data?.label || nodeId;
   }, [nodeId, targetNode]);
+  const targetNodeDetailPath = useMemo(
+    () => `/modules/${workflowId}?node=${encodeURIComponent(nodeId)}`,
+    [nodeId, workflowId],
+  );
 
   const baselineNodeOptions = baselineOptionsOf(baseline);
 
@@ -285,7 +389,7 @@ export default function CostOptimizerPlaygroundPage() {
           <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
-              onClick={() => router.push(`/modules/${workflowId}`)}
+              onClick={() => router.push(targetNodeDetailPath)}
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -301,31 +405,39 @@ export default function CostOptimizerPlaygroundPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
-            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-1">
-              {(
-                [
-                  ['setup', '실험 설정'],
-                  ['report', '결과 분석'],
-                ] as const
-              ).map(([mode, label]) => (
-                <button
-                  key={mode}
-                  type="button"
-                  aria-pressed={activeMode === mode}
-                  onClick={() => setActiveMode(mode)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
-                    activeMode === mode
-                      ? 'bg-white text-emerald-700 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-700">
-              같은 입력 기준
-            </span>
+            {baseline ? (
+              <>
+                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-1">
+                  {(
+                    [
+                      ['setup', '실험 설정'],
+                      ['report', '결과 분석'],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={activeMode === mode}
+                      onClick={() => setActiveMode(mode)}
+                      className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
+                        activeMode === mode
+                          ? 'bg-white text-emerald-700 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-blue-700">
+                  같은 입력 기준
+                </span>
+              </>
+            ) : (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-amber-700">
+                테스트 기준 선택 필요
+              </span>
+            )}
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
               workflow {workflowId.slice(0, 8)}
             </span>
@@ -337,7 +449,38 @@ export default function CostOptimizerPlaygroundPage() {
         ref={layoutShellRef}
         className="flex min-h-0 flex-1 justify-center overflow-hidden p-4"
       >
-        {activeMode === 'setup' ? (
+        {!baseline ? (
+          <div className="flex h-full min-h-0 w-full max-w-[760px] flex-col justify-center">
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-5 rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3">
+                <div className="text-sm font-bold text-emerald-950">
+                  먼저 A/B 테스트 기준을 선택하세요
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+                  기준 실행 로그가 정해지면 B 후보 설정과 Inspector가 열립니다.
+                  같은 입력을 기준으로 비교해야 비용, 출력, trace 차이가 의미를
+                  갖습니다.
+                </p>
+              </div>
+              <CostOptimizerBaselineSelection
+                workflowId={workflowId}
+                nodeId={nodeId}
+                onBaselineSelected={(selectedBaseline) => {
+                  setBaseline(selectedBaseline);
+                  setCandidate(
+                    candidateFromOptions(
+                      baselineOptionsOf(selectedBaseline) ||
+                        ((targetNode?.data || {}) as BaselineNodeOptions),
+                    ),
+                  );
+                  setActiveMode('setup');
+                  setIsStale(false);
+                }}
+                onClose={() => router.push(targetNodeDetailPath)}
+              />
+            </div>
+          </div>
+        ) : activeMode === 'setup' ? (
           <div
             className="grid h-full min-h-0 w-full grid-cols-1 gap-4 overflow-hidden xl:gap-0"
             style={
@@ -353,12 +496,16 @@ export default function CostOptimizerPlaygroundPage() {
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Clock3 className="h-4 w-4 text-emerald-600" />
-              <h2 className="text-sm font-bold">A baseline</h2>
+              <h2 className="text-sm font-bold">A 실행 시점 옵션</h2>
             </div>
             {baseline ? (
               <button
                 type="button"
-                onClick={() => setBaseline(null)}
+                onClick={() => {
+                  setBaseline(null);
+                  setActiveMode('setup');
+                  setIsStale(false);
+                }}
                 className="shrink-0 rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
               >
                 다시 선택
@@ -367,32 +514,6 @@ export default function CostOptimizerPlaygroundPage() {
           </div>
           {baseline ? (
             <div className="space-y-4">
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                <div className="text-xs font-semibold text-emerald-700">
-                  선택된 기준 실행
-                </div>
-                <div className="mt-1 text-sm font-bold text-emerald-950">
-                  {baseline.model}
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div className="rounded-md bg-slate-50 p-2">
-                  <div className="text-slate-500">비용</div>
-                  <div className="font-bold">${baseline.cost}</div>
-                </div>
-                <div className="rounded-md bg-slate-50 p-2">
-                  <div className="text-slate-500">토큰</div>
-                  <div className="font-bold">
-                    {formatMetric(baseline.total_tokens)}
-                  </div>
-                </div>
-                <div className="rounded-md bg-slate-50 p-2">
-                  <div className="text-slate-500">시간</div>
-                  <div className="font-bold">
-                    {formatMetric(baseline.latency_ms, 'ms')}
-                  </div>
-                </div>
-              </div>
               {baselineNodeOptions ? (
                 <NodeSettingsComparisonPanel
                   title="실행 시점 옵션"
@@ -408,19 +529,6 @@ export default function CostOptimizerPlaygroundPage() {
                   현재 노드 설정을 기준으로 유지됩니다.
                 </p>
               )}
-
-              <div>
-                <div className="mb-1 text-xs font-bold text-slate-700">입력</div>
-                <pre className="max-h-36 overflow-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100">
-                  {baseline.input_preview || '-'}
-                </pre>
-              </div>
-              <div>
-                <div className="mb-1 text-xs font-bold text-slate-700">출력</div>
-                <pre className="max-h-44 overflow-auto rounded-md bg-slate-50 p-3 text-xs text-slate-700">
-                  {baseline.output_preview || '-'}
-                </pre>
-              </div>
             </div>
           ) : (
             <CostOptimizerBaselineSelection
@@ -436,7 +544,7 @@ export default function CostOptimizerPlaygroundPage() {
                 );
                 setIsStale(false);
               }}
-              onClose={() => router.push(`/modules/${workflowId}`)}
+              onClose={() => router.push(targetNodeDetailPath)}
             />
           )}
         </aside>
@@ -455,7 +563,7 @@ export default function CostOptimizerPlaygroundPage() {
 
         <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="sticky top-0 z-[1] flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-sm font-bold">
                 <FlaskConical className="h-4 w-4 text-emerald-600" />
                 B candidate
@@ -463,6 +571,15 @@ export default function CostOptimizerPlaygroundPage() {
               <p className="mt-1 text-xs text-slate-500">
                 현재 LLM 노드 설정 복사본을 기준으로 후보 옵션을 조정합니다.
               </p>
+              <label className="mt-3 grid max-w-md gap-1 text-xs font-semibold text-slate-600">
+                <span>테스트명</span>
+                <input
+                  value={testName}
+                  onChange={(event) => setTestName(event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                  placeholder="예: gpt-4.1-mini 비용 절감 테스트"
+                />
+              </label>
             </div>
             <button
               type="button"
@@ -491,6 +608,7 @@ export default function CostOptimizerPlaygroundPage() {
           <div className="p-5">
             <NodeSettingsComparisonPanel
               title="후보 옵션"
+              hideTitle
               nodeId={`${nodeId}-candidate`}
               tab={candidateSettingsTab}
               onTabChange={setCandidateSettingsTab}
@@ -516,16 +634,42 @@ export default function CostOptimizerPlaygroundPage() {
         <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-emerald-600" />
-            <h2 className="text-sm font-bold">Inspector</h2>
+            <h2 className="text-sm font-bold">기준 실행 정보</h2>
           </div>
           <div className="space-y-3">
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs font-bold text-slate-500">Diff</div>
-              <dl className="mt-2 space-y-2 text-xs">
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">A 모델</dt>
-                  <dd className="font-semibold">{baseline?.model || '-'}</dd>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <div className="text-xs font-semibold text-emerald-700">
+                선택된 기준 실행
+              </div>
+              <div className="mt-1 text-sm font-bold text-emerald-950">
+                {baseline.model}
+              </div>
+              <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded-md bg-white/70 p-2">
+                  <dt className="text-emerald-700">비용</dt>
+                  <dd className="font-bold">{formatCost(baseline.cost)}</dd>
                 </div>
+                <div className="rounded-md bg-white/70 p-2">
+                  <dt className="text-emerald-700">토큰</dt>
+                  <dd className="font-bold">
+                    {formatMetric(baseline.total_tokens)}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-white/70 p-2">
+                  <dt className="text-emerald-700">시간</dt>
+                  <dd className="font-bold">
+                    {formatLatency(baseline.latency_ms)}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+            <PreviewSection title="기준 입력" value={baseline.input_preview} />
+            <PreviewSection title="기준 출력" value={baseline.output_preview} />
+            <div className="rounded-lg border border-slate-200 p-3">
+              <div className="text-xs font-bold text-slate-500">
+                B 후보 비교 컨텍스트
+              </div>
+              <dl className="mt-2 space-y-2 text-xs">
                 <div className="flex justify-between gap-3">
                   <dt className="text-slate-500">B 모델</dt>
                   <dd className="font-semibold">{candidate.model_id || '-'}</dd>
@@ -536,29 +680,11 @@ export default function CostOptimizerPlaygroundPage() {
                     {candidate.output_format.toUpperCase()}
                   </dd>
                 </div>
-              </dl>
-            </div>
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-500">
-                <Database className="h-3.5 w-3.5" />
-                Knowledge/RAG
-              </div>
-              <dl className="space-y-2 text-xs">
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">A 지식 베이스</dt>
-                  <dd className="font-semibold">
-                    {baselineNodeOptions?.knowledgeBases?.length ?? '-'}
-                  </dd>
-                </div>
                 <div className="flex justify-between gap-3">
                   <dt className="text-slate-500">B 지식 베이스</dt>
                   <dd className="font-semibold">
                     {candidate.knowledgeBases.length}
                   </dd>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">B Top K</dt>
-                  <dd className="font-semibold">{candidate.topK}</dd>
                 </div>
                 <div className="flex justify-between gap-3">
                   <dt className="text-slate-500">B Threshold</dt>

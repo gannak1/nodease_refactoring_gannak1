@@ -114,6 +114,7 @@ const groupModelsByProvider = (models: ModelOption[]) => {
 
 export function NodeSettingsComparisonPanel({
   title,
+  hideTitle = false,
   nodeId,
   tab,
   onTabChange,
@@ -123,6 +124,7 @@ export function NodeSettingsComparisonPanel({
   onNodeDataChange,
 }: {
   title: string;
+  hideTitle?: boolean;
   nodeId: string;
   tab: SettingsTab;
   onTabChange: (tab: SettingsTab) => void;
@@ -270,9 +272,13 @@ export function NodeSettingsComparisonPanel({
   return (
     <>
       <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <div className="px-3 pt-3">
-          <div className="mb-2 text-xs font-bold text-slate-700">{title}</div>
-        </div>
+        {!hideTitle ? (
+          <div className="px-3 pt-3">
+            <div className="mb-2 text-xs font-bold text-slate-700">
+              {title}
+            </div>
+          </div>
+        ) : null}
         <SettingsTabSwitch value={tab} onChange={onTabChange} />
         <div className="grid gap-5 p-5">
           {tab === 'basic' ? (

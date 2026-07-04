@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-112 @ c82a14a
 
 ## Purpose
 
@@ -41,7 +41,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR | API/계약 단위 | 예상 코드 위치 | 구현 상태 | API 테스트 코드 | 테스트 통과 여부 |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | `GET availability` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-002 | `GET baselines/latest`, `GET baselines` | `apps/gateway/routes/`, `apps/gateway/services/`, `apps/shared/schemas/` | 구현 전 | 작성 전 | 미실행 |
+| FR-002 | `GET baselines/latest`, `GET baselines` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-003 | compare candidate request schema | `apps/shared/schemas/`, `apps/gateway/services/` | 구현 전 | 작성 전 | 미실행 |
 | FR-004 | baseline input restore/lock | `apps/gateway/services/`, `apps/workflow_engine/` trace/log 조회 경계 | 구현 전 | 작성 전 | 미실행 |
 | FR-005 | hybrid compare execution | `apps/gateway/services/`, `apps/workflow_engine/` | 구현 전 | 작성 전 | 미실행 |
@@ -49,7 +49,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-007 | downstream compatibility response | `apps/gateway/services/`, workflow graph helper | 구현 전 | 작성 전 | 미실행 |
 | FR-008 | `PATCH apply` | `apps/gateway/routes/`, `apps/gateway/services/` | 구현 전 | 작성 전 | 미실행 |
 | FR-009 | LLM usage/cost logging | `apps/shared/services/`, `apps/gateway/services/`, `apps/workflow_engine/` | 구현 전 | 작성 전 | 미실행 |
-| FR-010 | builder permission enforcement | `apps/gateway/services/`, permission helper | 구현 전 | 작성 전 | 미실행 |
+| FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 진행중 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 부분 통과 |
 
 ## Common Path Parameters
 

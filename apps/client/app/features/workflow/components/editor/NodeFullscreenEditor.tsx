@@ -634,11 +634,11 @@ export function NodeFullscreenEditor() {
             type="button"
             onClick={handleClose}
             className="absolute left-0 top-4 flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
-            title="워크플로우로 돌아가기"
-            aria-label="워크플로우로 돌아가기"
+            title="워크플로우로 가기"
+            aria-label="워크플로우로 가기"
           >
             <ChevronLeft className="h-4 w-4" />
-            워크플로우로 돌아가기
+            워크플로우로 가기
           </button>
 
           <div className="flex min-w-0 max-w-[560px] items-center gap-3">

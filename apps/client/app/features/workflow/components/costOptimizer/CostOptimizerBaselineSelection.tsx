@@ -125,6 +125,10 @@ export function CostOptimizerBaselineSelection({
   const [dateTo, setDateTo] = useState('');
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
+  const [latestBaseline, setLatestBaseline] =
+    useState<CostOptimizerBaselineRow | null>(null);
+  const [isLatestLoading, setIsLatestLoading] = useState(false);
+  const [latestUnavailable, setLatestUnavailable] = useState(false);
 
   const listParams = useMemo<CostOptimizerBaselineListParams>(
     () => ({
@@ -167,16 +171,42 @@ export function CostOptimizerBaselineSelection({
     }
   }, [loadRows, mode]);
 
-  const handleLatest = async () => {
-    setMode('picker');
-    setIsLoading(true);
-    setMessage(null);
+  const loadLatestBaseline = useCallback(async () => {
+    setIsLatestLoading(true);
+    setLatestUnavailable(false);
     try {
       const response = await workflowApi.getCostOptimizerLatestBaseline(
         workflowId,
         nodeId,
       );
-      onBaselineSelected(response.baseline);
+      setLatestBaseline(response.baseline);
+      return response.baseline;
+    } catch {
+      setLatestBaseline(null);
+      setLatestUnavailable(true);
+      return null;
+    } finally {
+      setIsLatestLoading(false);
+    }
+  }, [nodeId, workflowId]);
+
+  useEffect(() => {
+    if (mode === 'initial') {
+      void loadLatestBaseline();
+    }
+  }, [loadLatestBaseline, mode]);
+
+  const handleLatest = async () => {
+    setMode('picker');
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const baseline = latestBaseline || (await loadLatestBaseline());
+      if (!baseline) {
+        setMessage(noBaselineMessage);
+        return;
+      }
+      onBaselineSelected(baseline);
     } catch {
       setMessage(noBaselineMessage);
     } finally {
@@ -262,6 +292,42 @@ export function CostOptimizerBaselineSelection({
             </span>
             <span className="mt-1 block text-xs leading-relaxed text-emerald-700">
               가장 최근의 비교 가능한 성공 로그를 바로 기준으로 사용합니다.
+            </span>
+            <span className="mt-3 block rounded-md border border-emerald-200 bg-white/70 px-3 py-2 text-xs text-emerald-950">
+              {isLatestLoading ? (
+                <span className="text-emerald-700">
+                  최신 실행 로그를 확인하는 중입니다.
+                </span>
+              ) : latestBaseline ? (
+                <span className="grid gap-2">
+                  <span className="flex flex-wrap gap-x-2 gap-y-1 font-semibold">
+                    <span>{formatRunTime(latestBaseline.run_started_at)}</span>
+                    <span>{latestBaseline.model}</span>
+                    <span>
+                      {latestBaseline.total_tokens.toLocaleString('ko-KR')} tokens
+                    </span>
+                    <span>{formatCost(latestBaseline.cost)}</span>
+                    <span>{formatLatency(latestBaseline.latency_ms)}</span>
+                  </span>
+                  <span className="grid gap-1 text-emerald-800">
+                    <span>
+                      입력: {readablePreview(latestBaseline.input_preview) || '입력 미보관'}
+                    </span>
+                    <span>
+                      출력: {readablePreview(latestBaseline.output_preview) || '출력 미보관'}
+                    </span>
+                  </span>
+                </span>
+              ) : latestUnavailable ? (
+                <span className="text-amber-700">
+                  비교 가능한 최신 실행 로그가 없습니다. 이전 실행 로그 선택을
+                  사용하세요.
+                </span>
+              ) : (
+                <span className="text-emerald-700">
+                  최신 실행 로그 요약이 이곳에 표시됩니다.
+                </span>
+              )}
             </span>
           </button>
           <button

@@ -1,7 +1,7 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-112 @ c82a14a
 
 ## Purpose
 
@@ -14,11 +14,11 @@ Verified Against: TBD
 | FR | Component Spec | API Spec | Test Focus | 테스트 코드 상태 | 테스트 통과 여부 |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM node detail action | GET availability | LLM 노드에서만 A/B 테스트 진입 가능 | 작성 완료 | 통과 |
-| FR-002 | Baseline selection, baseline log picker | GET latest baseline, GET baselines | 최신/이전 baseline 로그 선택 | 작성 전 | 미실행 |
-| FR-003 | Candidate editor | POST compare request candidate schema | B 후보 설정 입력과 검증 | 작성 전 | 미실행 |
+| FR-002 | Baseline selection, baseline log picker | GET latest baseline, GET baselines | 최신/이전 baseline 로그 선택 | 작성 완료 | 통과 |
+| FR-003 | Candidate editor | POST compare request candidate schema | B 후보 설정 입력과 검증 | 부분 작성 | 부분 통과 |
 | FR-004 | Baseline input lock display | baseline input 고정 | B 실행 입력이 A baseline 입력으로 고정됨 | 작성 전 | 미실행 |
 | FR-005 | Hybrid compare flow | POST compare | A는 재실행하지 않고 B만 실행 | 작성 전 | 미실행 |
-| FR-006 | A/B compare workspace, Inspector | compare response trace/diff | A/B 결과와 Inspector 데이터 표시 | 작성 전 | 미실행 |
+| FR-006 | A/B compare workspace, Inspector | compare response trace/diff | A/B 결과와 Inspector 데이터 표시 | 부분 작성 | 부분 통과 |
 | FR-007 | Downstream compatibility badge | downstream compatibility fragment | downstream 호환성 3상태 표시와 차단/경고 | 작성 전 | 미실행 |
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 전 | 미실행 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 전 | 미실행 |
@@ -32,8 +32,8 @@ Verified Against: TBD
 | --- | --- | --- | --- | --- | --- | --- |
 | FR-001 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | LLM 노드 전용 진입 액션, non-LLM 차단, availability 기반 비활성화 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | 통과 |
 | FR-001 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | availability, not-LLM, not-found, builder 권한 강제 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-002 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerBaselinePicker.test.tsx` | 최신/이전 baseline 선택, 필터/정렬 UI | 작성 전 | `cd apps/client && npm run test` | 미실행 |
-| FR-002 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | latest/list baseline query | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
+| FR-002 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 최신/이전 baseline 선택, 최신 로그 요약, 필터/정렬 UI | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
+| FR-002 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | latest/list baseline query, 필터/정렬/pagination, secret redaction, trace payload availability | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 후보 모델/대체 모델 선택 UI, 후보 설정 입력/validation | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
 | FR-003 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | candidate schema validation, unavailable model | 작성 전 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 미실행 |
 | FR-004 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizerBaselineLock.test.tsx` | baseline input lock 표시 | 작성 전 | `cd apps/client && npm run test` | 미실행 |
@@ -79,6 +79,7 @@ Verified Against: TBD
 ### Component Tests
 
 - baseline 선택 화면은 `최신 실행 로그로 비교하기`와 `이전 실행 로그 선택해서 비교하기`를 제공한다.
+- baseline 선택 화면은 최신 비교 가능 baseline을 미리 조회하고 실행 시각, 모델, 토큰, 비용, 실행 시간, 입력 preview, 출력 preview를 표시한다.
 - `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 최신 성공 실행 로그가 없으면 최신 선택 CTA는 사용할 수 없고 로그 없음 안내가 표시된다.
 - 이전 실행 로그 picker는 실행 시각, 상태, 모델, 비용, 토큰, 실행 시간, 입력 preview, 출력 preview, trace 존재 여부, downstream 상태를 표시한다.
 - 이전 실행 로그 picker는 성공한 LLM node run만 표시하고 실패한 node run은 표시하지 않는다.
@@ -112,6 +113,7 @@ Verified Against: TBD
 ### Component Tests
 
 - B candidate 영역은 현재 LLM 노드 설정 복사본으로 초기화된다.
+- B candidate 영역은 `후보 옵션` 같은 중복 제목 대신 `테스트명` 입력을 제공한다.
 - B candidate 영역은 모델, fallback 모델, task type, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
 - B candidate prompt 입력은 upstream output 변수 삽입을 지원한다.
 - 출력 형식은 text와 JSON을 선택할 수 있다.
@@ -189,19 +191,25 @@ Verified Against: TBD
 
 ### Component Tests
 
-- A/B compare workspace는 A baseline, B candidate, Inspector 3영역으로 구성된다.
+- A/B compare workspace의 실험 설정 mode는 A 실행 시점 옵션, B candidate, 기준 실행 정보 3영역으로 구성된다.
 - A/B compare workspace는 `실험 설정`과 `결과 분석` mode switch를 제공한다.
-- 기본 mode는 `실험 설정`이다.
+- baseline 선택 전에는 B candidate, 기준 실행 정보, mode switch를 표시하지 않는다.
+- baseline 선택 전 첫 화면은 A/B 테스트 기준 선택에 집중한다.
+- baseline 선택 단계의 `닫기`와 workspace의 `워크플로우로 돌아가기`는 `/modules/{workflowId}?node={nodeId}`로 이동해 target LLM node 상세 화면을 다시 연다.
+- baseline 선택 후 기본 mode는 `실험 설정`이다.
 - 사용자는 `결과 분석` mode로 전환할 수 있다.
 - B 실행 결과가 없으면 `결과 분석` mode는 B 실행 후 결과 분석이 표시된다는 empty state를 보여준다.
 - A/B compare workspace는 특정 workflow와 특정 LLM node의 context를 상단 context bar에 표시한다.
 - context bar는 workflow 이름, target LLM node 이름, baseline 실행 시각, 같은 입력 기준 badge, downstream 상태 badge를 표시한다.
-- A baseline 영역은 읽기 전용이고 baseline 실행 로그, 입력, 출력, 모델, 비용, 토큰, latency, trace 요약을 표시한다.
+- A 실행 시점 옵션 영역은 읽기 전용이고 baseline 실행 당시의 기본 설정, 고급 설정, 지식 베이스 설정을 표시한다.
+- 기준 실행 정보 영역은 baseline 모델, 비용, 토큰, latency, 기준 입력 preview, 기준 출력 preview를 표시한다.
+- 기준 입력/출력 preview의 긴 값은 `...`로 임의 truncation하지 않고 전체 값을 표시한다.
+- B candidate 영역은 `테스트명` 입력을 제공하고 설정 패널의 중복 제목은 표시하지 않는다.
 - B candidate 영역은 후보 설정, 실행 상태, 출력 preview, 토큰, 비용, latency, error를 표시한다.
 - B 후보 실행 후에도 사용자는 같은 workspace 안에서 B 후보 설정을 수정하고 같은 baseline으로 다시 실행할 수 있다.
 - B 후보 설정이 마지막 실행 이후 변경되면 기존 B 결과는 stale 상태로 표시된다.
-- Inspector는 `A Trace`, `B Trace`, `Diff`, `Downstream`, `Settings` 탭을 제공한다.
-- `B Trace` 탭은 B 실행 전에는 disabled 또는 empty state이고 B 실행 후 활성화된다.
+- 결과 분석 mode의 Inspector는 `A Trace`, `B Trace`, `Diff`, `Downstream`, `Settings` 탭을 제공한다.
+- 결과 분석 mode의 `B Trace` 탭은 B 실행 전에는 disabled 또는 empty state이고 B 실행 후 활성화된다.
 - `Diff` 탭은 모델, prompt, parameter, 출력 형식, 비용, 토큰, latency 차이를 표시한다.
 
 ### API Tests

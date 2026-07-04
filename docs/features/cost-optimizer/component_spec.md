@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-112 @ c82a14a
 
 ## Purpose
 
@@ -35,7 +35,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-003 | Candidate editor | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
 | FR-004 | Baseline input lock display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-005 | Hybrid compare flow state | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
+| FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-007 | Downstream compatibility badge | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-008 | Apply candidate action, confirmation modal | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
 | FR-009 | Cost/usage metric display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
@@ -88,6 +88,20 @@ LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
 - `이전 실행 로그 선택해서 비교하기`
 
 `최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 baseline을 자동 선택한다.
+
+baseline 선택 화면은 진입 시 최신 baseline을 미리 조회하고, `최신 실행 로그로 비교하기` CTA 안에 최신 로그 요약을 표시한다. 사용자는 CTA를 누르기 전에 어떤 실행 로그가 A 기준으로 고정될지 확인할 수 있어야 한다.
+
+최신 로그 요약은 다음 정보를 표시한다.
+
+- 실행 시각
+- 모델
+- 토큰
+- 비용
+- 실행 시간
+- 입력 preview
+- 출력 preview
+
+최신 비교 가능 baseline이 없으면 최신 CTA 영역에 로그 없음 안내를 표시하고, `이전 실행 로그 선택해서 비교하기` 경로를 사용할 수 있게 한다.
 
 `이전 실행 로그 선택해서 비교하기`는 baseline log picker를 연다.
 
@@ -162,18 +176,22 @@ workspace 상단에는 context bar를 둔다.
 - B 후보 실행 액션
 - 현재 노드에 적용 액션
 
+workspace의 `워크플로우로 돌아가기`와 baseline 선택 단계의 `닫기`는 단순 workflow 화면이 아니라 A/B 테스트를 시작한 target LLM node 상세 화면으로 돌아간다. 프론트 route는 `/modules/{workflowId}?node={nodeId}` 형식을 사용한다.
+
 A/B compare workspace는 같은 route 안에서 두 가지 mode를 제공한다.
 
 - `실험 설정`: A baseline을 고정하고 B candidate 설정을 편집하는 mode다.
 - `결과 분석`: B 실행 결과와 비교 리포트를 확인하고 적용 여부를 판단하는 mode다.
 
-기본 진입 mode는 `실험 설정`이다. 사용자가 B 후보를 실행해 리포트가 생성되면 `결과 분석` mode로 이동할 수 있어야 한다. B 실행 API가 아직 연결되지 않은 상태에서는 `결과 분석` mode가 비어 있는 리포트 상태와 실행 대기 안내를 표시한다.
+기준 baseline을 선택하기 전에는 `실험 설정`/`결과 분석` mode switch, B candidate, 기준 실행 정보 패널을 열지 않는다. 첫 화면은 A/B 테스트 기준 선택에 집중한다. 사용자가 baseline을 선택하면 workspace가 `실험 설정` mode로 열리고, 그때부터 B candidate와 기준 실행 정보 패널이 표시된다.
+
+기본 workspace mode는 `실험 설정`이다. 사용자가 B 후보를 실행해 리포트가 생성되면 `결과 분석` mode로 이동할 수 있어야 한다. B 실행 API가 아직 연결되지 않은 상태에서는 `결과 분석` mode가 비어 있는 리포트 상태와 실행 대기 안내를 표시한다.
 
 `실험 설정` mode 본문은 3영역 레이아웃이다.
 
-- 왼쪽: A baseline
+- 왼쪽: A 실행 시점 옵션
 - 가운데: B candidate
-- 오른쪽: Inspector
+- 오른쪽: 기준 실행 정보
 
 workspace는 B 후보 실험 루프를 같은 화면 안에서 지원한다.
 
@@ -187,18 +205,27 @@ workspace는 B 후보 실험 루프를 같은 화면 안에서 지원한다.
 
 B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 닫게 해서는 안 된다.
 
-A baseline 영역은 읽기 전용이다.
+왼쪽 A 실행 시점 옵션 영역은 읽기 전용이다.
 
-- baseline 실행 로그 정보
-- baseline 입력
-- baseline 출력
-- baseline 모델
+- baseline 실행 시점의 기본 설정
+- baseline 실행 시점의 고급 설정
+- baseline 실행 시점의 지식 베이스 설정
+
+오른쪽 기준 실행 정보 영역은 baseline이 어떤 입력과 출력으로 고정되었는지 보여준다.
+
+- 선택된 기준 실행 모델
 - baseline 비용/토큰/latency
-- baseline trace 요약
+- 기준 입력 preview
+- 기준 출력 preview
+- B 후보 비교 컨텍스트
+
+기준 입력/출력 preview는 화면에서 임의로 truncate하지 않는다. 긴 값은 줄바꿈과 패널 스크롤로 처리하고, 값 자체를 `...`로 잘라내지 않는다.
 
 B candidate 영역은 편집 가능하다.
 
 B candidate는 현재 LLM 노드 설정 복사본으로 초기화한다.
+
+B candidate 상단에는 사용자가 이번 실험을 구분할 수 있는 `테스트명` 입력을 둔다. `테스트명`은 설정 패널 제목을 대체하는 화면 메타 정보이며, `후보 옵션` 같은 중복 제목은 표시하지 않는다. 현재 프론트 구현에서는 local state로 관리하고, compare result 저장 API가 연결되면 `test_name` 또는 `experiment_name`으로 전달한다.
 
 A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. 두 영역은 동일한 설정 패널 컴포넌트를 사용하고, `readOnly` 여부만 다르게 동작해야 한다.
 
