@@ -31,6 +31,7 @@ import {
   sumPanelWidths,
 } from '../../utils/nodeEditorPanelLayout';
 import { LLMNodeData } from '../../types/Nodes';
+import { CostOptimizerBaselineSelection } from '../costOptimizer/CostOptimizerBaselineSelection';
 import { LLMParameterSidePanel } from '../nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '../nodes/llm/components/LLMReferenceSidePanel';
 import { NodeInlinePanel } from '../nodes/NodeInlinePanel';
@@ -38,7 +39,7 @@ import { NodeOutputsSection } from '../nodes/NodeOutputsSection';
 import { VariableInsertionProvider } from '../nodes/ui/VariableInsertionProvider';
 import { useVariableInsertion } from '../nodes/ui/useVariableInsertion';
 
-type RightPanelTabId = 'advanced' | 'knowledge';
+type RightPanelTabId = 'advanced' | 'knowledge' | 'costOptimizer';
 
 type RightPanelTab = {
   id: RightPanelTabId;
@@ -48,6 +49,7 @@ type RightPanelTab = {
 const RIGHT_PANEL_TAB_LABELS: Record<RightPanelTabId, string> = {
   advanced: '고급 설정',
   knowledge: '지식 베이스',
+  costOptimizer: 'A/B 테스트',
 };
 
 // 입력 변수 칩의 소스 노드별 색상 (BaseNode의 호버 패널과 동일한 팔레트)
@@ -300,6 +302,7 @@ export function NodeFullscreenEditor() {
   const openNodeFullscreen = useWorkflowStore(
     (state) => state.openNodeFullscreen,
   );
+  const activeWorkflowId = useWorkflowStore((state) => state.activeWorkflowId);
   const updateNodeData = useWorkflowStore((state) => state.updateNodeData);
   const workflowNodes = useWorkflowStore((state) => state.nodes);
   const { node, inputVariableGroups, outputVariables } =
@@ -1068,6 +1071,19 @@ export function NodeFullscreenEditor() {
                     data={node.data as LLMNodeData}
                     onClose={() => closeRightPanelTab('knowledge')}
                   />
+                ) : node.type === 'llmNode' &&
+                  activeRightTabId === 'costOptimizer' &&
+                  activeWorkflowId ? (
+                  <div className="h-full overflow-y-auto p-4">
+                    <CostOptimizerBaselineSelection
+                      workflowId={activeWorkflowId}
+                      nodeId={node.id}
+                      onBaselineSelected={() =>
+                        closeRightPanelTab('costOptimizer')
+                      }
+                      onClose={() => closeRightPanelTab('costOptimizer')}
+                    />
+                  </div>
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center p-6 text-center text-xs leading-relaxed text-slate-500">
                     <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">

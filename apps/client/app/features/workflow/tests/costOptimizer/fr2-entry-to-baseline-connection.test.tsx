@@ -1,16 +1,13 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NodeInlinePanel } from '../../components/nodes/NodeInlinePanel';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { AppNode, LLMNodeData } from '../../types/Nodes';
 
 const workflowApiMock = vi.hoisted(() => ({
-  getDraftWorkflow: vi.fn(),
-  syncDraftWorkflow: vi.fn(),
-  createWorkflow: vi.fn(),
-  listWorkflowsByApp: vi.fn(),
-  getWorkflowPermission: vi.fn(),
   getCostOptimizerAvailability: vi.fn(),
+  getCostOptimizerLatestBaseline: vi.fn(),
+  listCostOptimizerBaselines: vi.fn(),
 }));
 
 vi.mock('../../api/workflowApi', () => ({
@@ -74,12 +71,9 @@ const resetStore = () => {
   useWorkflowStore.setState(initialState, true);
 };
 
-const createLlmNode = (
-  data: Partial<LLMNodeData> = {},
-  id = 'llm-1',
-): AppNode =>
+const createLlmNode = (): AppNode =>
   ({
-    id,
+    id: 'llm-1',
     type: 'llmNode',
     position: { x: 0, y: 0 },
     data: {
@@ -91,43 +85,30 @@ const createLlmNode = (
       referenced_variables: [],
       parameters: { max_tokens: 800, temperature: 0.2 },
       knowledgeBases: [],
-      ...data,
-    },
+    } satisfies Partial<LLMNodeData>,
   }) as AppNode;
 
-const createNonLlmNode = (type: AppNode['type'] = 'templateNode'): AppNode =>
-  ({
-    id: 'non-llm-1',
-    type,
-    position: { x: 0, y: 0 },
-    data: {
-      title: 'LLM이 아닌 노드',
-    },
-  }) as AppNode;
-
-const setWorkflowPermission = (canWrite: boolean) => {
+const setWorkflowPermission = () => {
   useWorkflowStore.setState({
     activeWorkflowId: 'workflow-1',
     workflowAccess: {
       workflow_id: 'workflow-1',
       organization_id: 'org-1',
-      auth_state: canWrite ? 'builder' : 'operator',
+      auth_state: 'builder',
       can_read: true,
-      can_write: canWrite,
+      can_write: true,
       can_execute: true,
-      can_deploy: canWrite,
-      can_manage: canWrite,
+      can_deploy: true,
+      can_manage: true,
       sources: [],
     },
   });
 };
 
-const renderPanel = (node: AppNode) => render(<NodeInlinePanel node={node} />);
-
-describe('FR-001 Cost Optimizer 진입 액션', () => {
+describe('FR-002 Cost Optimizer 진입-선택 화면 연결', () => {
   beforeEach(() => {
     resetStore();
-    setWorkflowPermission(true);
+    setWorkflowPermission();
     workflowApiMock.getCostOptimizerAvailability.mockResolvedValue({
       available: true,
       reason: null,
@@ -140,10 +121,6 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
         required_auth_state: 'builder',
       },
     });
-    global.fetch = vi.fn(async () => ({
-      ok: true,
-      json: async () => [],
-    })) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -151,34 +128,9 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     vi.restoreAllMocks();
   });
 
-  it('LLM 노드 상세 패널에는 A/B 테스트하기 진입 액션이 표시된다', () => {
-    renderPanel(createLlmNode());
+  it('A/B 테스트하기 클릭 시 baseline 선택 화면이 실제 워크플로우 노드 패널 안에 열린다', async () => {
+    render(<NodeInlinePanel node={createLlmNode()} />);
 
-    expect(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
-    ).toBeInTheDocument();
-  });
-
-  it('LLM 노드가 아닌 노드 상세 패널에는 A/B 테스트하기 진입 액션이 표시되지 않는다', () => {
-    renderPanel(createNonLlmNode());
-
-    expect(
-      screen.queryByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('builder 이상 권한이 없으면 A/B 테스트하기 진입 액션은 비활성화된다', () => {
-    setWorkflowPermission(false);
-
-    renderPanel(createLlmNode());
-
-    expect(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
-    ).toBeDisabled();
-  });
-
-  it('A/B 테스트하기 클릭 시 Cost Optimizer 선택 화면을 연다', async () => {
-    renderPanel(createLlmNode());
     fireEvent.click(
       screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
     );
@@ -188,32 +140,10 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
         name: /최신 실행 로그로 비교하기/i,
       }),
     ).toBeInTheDocument();
-  });
-
-  it('availability API가 unavailable을 반환하면 A/B 테스트하기 진입 액션은 비활성화된다', async () => {
-    workflowApiMock.getCostOptimizerAvailability.mockResolvedValue({
-      available: false,
-      reason: 'cost_optimizer.not_llm_node',
-      workflow_id: 'workflow-1',
-      node_id: 'llm-1',
-      node_type: 'templateNode',
-      permission: {
-        can_compare: false,
-        can_apply: false,
-        required_auth_state: 'builder',
-      },
-    });
-
-    renderPanel(createLlmNode());
-
-    await waitFor(() => {
-      expect(workflowApiMock.getCostOptimizerAvailability).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-      );
-    });
     expect(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
-    ).toBeDisabled();
+      screen.getByRole('button', {
+        name: /이전 실행 로그 선택해서 비교하기/i,
+      }),
+    ).toBeInTheDocument();
   });
 });

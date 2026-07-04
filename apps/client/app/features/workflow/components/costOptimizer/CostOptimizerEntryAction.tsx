@@ -7,6 +7,7 @@ interface CostOptimizerEntryActionProps {
   workflowId: string;
   nodeId: string;
   workflowAccess?: WorkflowPermissionResponse | null;
+  onOpen?: () => void;
 }
 
 const canUseCostOptimizer = (workflowAccess?: WorkflowPermissionResponse | null) =>
@@ -16,6 +17,7 @@ export const CostOptimizerEntryAction = ({
   workflowId,
   nodeId,
   workflowAccess,
+  onOpen,
 }: CostOptimizerEntryActionProps) => {
   const hasBuilderPermission = canUseCostOptimizer(workflowAccess);
   const [isAvailable, setIsAvailable] = useState(true);
@@ -58,13 +60,9 @@ export const CostOptimizerEntryAction = ({
       onClick={(event) => {
         event.stopPropagation();
         if (!canUse) return;
-        window.dispatchEvent(
-          new CustomEvent('openCostOptimizer', {
-            detail: { nodeId },
-          }),
-        );
+        onOpen?.();
       }}
-      className="nodrag inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400"
+      className="nodrag inline-flex items-center justify-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:border-emerald-700 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:shadow-none"
       title={
         canUse
           ? '이 LLM 노드의 비용을 비교합니다.'

@@ -31,6 +31,7 @@ import {
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
+import { CostOptimizerBaselineSelection } from '../../../costOptimizer/CostOptimizerBaselineSelection';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -68,6 +69,7 @@ interface LLMNodePanelProps {
   isAdvancedSettingsOpen?: boolean;
   onOpenAdvancedSettings?: () => void;
   onOpenKnowledgeBaseSettings?: () => void;
+  onOpenCostOptimizer?: () => void;
 }
 
 type PromptHelpId = 'fallback' | 'system' | 'user' | 'assistant';
@@ -253,6 +255,7 @@ export function LLMNodePanel({
   isAdvancedSettingsOpen,
   onOpenAdvancedSettings,
   onOpenKnowledgeBaseSettings,
+  onOpenCostOptimizer,
 }: LLMNodePanelProps) {
   const openSettingsTab = useCallback(() => {
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
@@ -269,8 +272,11 @@ export function LLMNodePanel({
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
   const [isParameterPanelOpen, setIsParameterPanelOpen] = useState(false);
+  const [isCostOptimizerOpen, setIsCostOptimizerOpen] = useState(false);
   const isUsingExternalAdvancedPanel =
     typeof onOpenAdvancedSettings === 'function';
+  const isUsingExternalCostOptimizerPanel =
+    typeof onOpenCostOptimizer === 'function';
   const isAdvancedButtonActive = isUsingExternalAdvancedPanel
     ? Boolean(isAdvancedSettingsOpen)
     : isParameterPanelOpen;
@@ -650,34 +656,60 @@ export function LLMNodePanel({
         </div>
       )}
 
-      <div className="flex justify-end gap-2">
-        <CostOptimizerEntryAction
-          workflowId={activeWorkflowId}
-          nodeId={nodeId}
-          workflowAccess={workflowAccess}
-        />
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            if (onOpenAdvancedSettings) {
-              onOpenAdvancedSettings();
-              return;
-            }
-            setIsParameterPanelOpen((current) => !current);
-          }}
-          className={`nodrag inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-            isAdvancedButtonActive
-              ? 'border-blue-200 bg-blue-50 text-blue-700'
-              : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
-          }`}
-          aria-expanded={isAdvancedButtonActive}
-          aria-label="LLM 고급 설정 열기"
-        >
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          고급 설정
-        </button>
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-slate-900">비용 최적화</div>
+            <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+              같은 입력으로 실행 로그와 후보 설정을 비교합니다.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+            <CostOptimizerEntryAction
+              workflowId={activeWorkflowId}
+              nodeId={nodeId}
+              workflowAccess={workflowAccess}
+              onOpen={
+                isUsingExternalCostOptimizerPanel
+                  ? onOpenCostOptimizer
+                  : () => setIsCostOptimizerOpen(true)
+              }
+            />
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (onOpenAdvancedSettings) {
+                  onOpenAdvancedSettings();
+                  return;
+                }
+                setIsParameterPanelOpen((current) => !current);
+              }}
+              className={`nodrag inline-flex items-center justify-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                isAdvancedButtonActive
+                  ? 'border-blue-200 bg-blue-50 text-blue-700'
+                  : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+              }`}
+              aria-expanded={isAdvancedButtonActive}
+              aria-label="LLM 고급 설정 열기"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              고급 설정
+            </button>
+          </div>
+        </div>
       </div>
+
+      {!isUsingExternalCostOptimizerPanel && isCostOptimizerOpen ? (
+        <div className="rounded-lg border border-emerald-100 bg-white p-4 shadow-sm">
+          <CostOptimizerBaselineSelection
+            workflowId={activeWorkflowId}
+            nodeId={nodeId}
+            onBaselineSelected={() => setIsCostOptimizerOpen(false)}
+            onClose={() => setIsCostOptimizerOpen(false)}
+          />
+        </div>
+      ) : null}
 
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>

@@ -21,7 +21,7 @@ import { VisiblePropertiesControl } from './VisiblePropertiesControl';
 const isPanelSupported = (node: AppNode) =>
   node.type !== 'note' && node.type !== undefined;
 
-type NodeInlinePanelSidePanelId = 'advanced' | 'knowledge';
+type NodeInlinePanelSidePanelId = 'advanced' | 'knowledge' | 'costOptimizer';
 
 const NodePanelBody = ({
   node,
@@ -61,6 +61,9 @@ const NodePanelBody = ({
         }
         onOpenKnowledgeBaseSettings={
           onOpenSidePanel ? () => onOpenSidePanel('knowledge') : undefined
+        }
+        onOpenCostOptimizer={
+          onOpenSidePanel ? () => onOpenSidePanel('costOptimizer') : undefined
         }
       />
     );
