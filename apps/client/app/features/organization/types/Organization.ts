@@ -52,3 +52,23 @@ export type OrganizationMemberRemoveResponse = {
     audit: number;
   };
 };
+
+export type PermissionRequestCreateRequest = {
+  reason: string;
+  requested_permission?: 'app.create';
+};
+
+export type PermissionRequestResponse = {
+  id: string;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  requested_permission: 'app.create';
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+};
