@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from apps.shared.schemas.rag import RAGCitation
+from apps.shared.schemas.rag import ChunkPreview, RAGCitation
 
 
 MINIMUM_EVIDENCE_POLICY = "minimum_evidence"
@@ -65,6 +65,46 @@ class RAGEvidencePolicy:
             source_tier_used=source_tier_used,
         )
 
+    def evaluate_chunks(
+        self,
+        chunks: Iterable[ChunkPreview],
+        *,
+        policy: str = MINIMUM_EVIDENCE_POLICY,
+    ) -> RAGEvidenceDecision:
+        chunk_list = list(chunks)
+        source_tier_used = self._chunk_source_tier_summary(chunk_list)
+        if not chunk_list:
+            return RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="no_evidence",
+                source_tier_used=source_tier_used,
+            )
+
+        scores = [
+            self._chunk_score(chunk)
+            for chunk in chunk_list
+            if self._chunk_score(chunk) is not None
+        ]
+        max_score = max(scores) if scores else None
+        if max_score is not None and max_score < self.min_score:
+            return RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="low_score",
+                source_tier_used=source_tier_used,
+            )
+
+        if policy == STRICT_CITATION_POLICY and len(chunk_list) < self.strict_min_citations:
+            return RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="insufficient_citation",
+                source_tier_used=source_tier_used,
+            )
+
+        return RAGEvidenceDecision(
+            evidence_sufficient=True,
+            source_tier_used=source_tier_used,
+        )
+
     @staticmethod
     def _source_tier_summary(citations: list[RAGCitation]) -> dict[str, Any]:
         tiers = sorted(
@@ -72,6 +112,28 @@ class RAGEvidencePolicy:
                 str(citation.metadata_summary.get("source_tier"))
                 for citation in citations
                 if citation.metadata_summary.get("source_tier")
+            }
+        )
+        if not tiers:
+            return {}
+        return {
+            "tiers": tiers,
+            "tier_count": len(tiers),
+        }
+
+    @staticmethod
+    def _chunk_score(chunk: ChunkPreview) -> float | None:
+        if chunk.score is not None:
+            return chunk.score
+        return chunk.similarity_score
+
+    @staticmethod
+    def _chunk_source_tier_summary(chunks: list[ChunkPreview]) -> dict[str, Any]:
+        tiers = sorted(
+            {
+                str(chunk.metadata_summary.get("source_tier"))
+                for chunk in chunks
+                if chunk.metadata_summary.get("source_tier")
             }
         )
         if not tiers:

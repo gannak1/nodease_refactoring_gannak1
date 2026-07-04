@@ -6,9 +6,9 @@ from apps.gateway.services.knowledge_candidate_resolver import (
     KnowledgeCandidateResolver,
     bucket_count,
 )
-from apps.gateway.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
 from apps.shared.permissions import AUTH_STATE_OPERATOR
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 
 
 ORG_ID = uuid.UUID("10000000-0000-0000-0000-000000000001")

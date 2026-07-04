@@ -33,7 +33,9 @@ from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     SAFETY_SYSTEM_PROMPT,
     LLMNode,
+    WorkflowRAGSearchResult,
 )
+from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 
 
 class DummyClient:
@@ -574,6 +576,86 @@ def test_rag_retrieval_trace_payload_uses_redacted_contract():
     assert "metadata" not in payload["retrieved_chunks"][0]
 
 
+def test_llm_node_rag_no_evidence_skips_llm_call(monkeypatch):
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="사내 규정 알려줘",
+        knowledgeBases=[KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+    client = DummyClient()
+    node._client_override = client  # noqa: SLF001 - 테스트용 주입
+    decision = RAGEvidenceDecision(
+        evidence_sufficient=False,
+        insufficiency_reason="no_evidence",
+    )
+
+    monkeypatch.setattr(
+        LLMNode,
+        "_execute_knowledge_search",
+        lambda self, query, db_session: WorkflowRAGSearchResult(
+            context="",
+            metadata=[],
+            evidence_decision=decision,
+            should_invoke_llm=False,
+            answer_override="해당 질문에 답변할 수 있는 문서를 찾지 못했습니다.",
+        ),
+    )
+
+    result = node._run({})
+
+    assert client.calls == []
+    assert result["text"] == "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+    assert result["usage"] == {}
+    assert result["metadata"]["rag"]["evidence_sufficient"] is False
+    assert result["metadata"]["rag"]["insufficiency_reason"] == "no_evidence"
+    assert node._trace_payloads[0]["payload_kind"] == "rag.retrieval"
+    assert node._trace_payloads[0]["payload"]["evidence_sufficient"] is False
+
+
+def test_llm_node_rag_operational_failure_uses_safe_no_result(monkeypatch):
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="사내 규정 알려줘",
+        knowledgeBases=[KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+    client = DummyClient()
+    node._client_override = client  # noqa: SLF001 - 테스트용 주입
+
+    def raise_retrieval_error(self, query, db_session):
+        raise RuntimeError("vector store unavailable")
+
+    monkeypatch.setattr(LLMNode, "_execute_knowledge_search", raise_retrieval_error)
+
+    result = node._run({})
+
+    assert client.calls == []
+    assert result["text"] == "확인된 문서 기준으로는 답변 근거가 부족합니다."
+    assert result["metadata"]["rag"]["evidence_sufficient"] is False
+    assert result["metadata"]["rag"]["insufficiency_reason"] == "operational_error"
+
+
 def test_llm_runtime_permission_denied_uses_detailed_reason_and_unknown_target(
     monkeypatch,
 ):
@@ -750,7 +832,7 @@ def test_knowledge_search_requires_user_context():
         execution_context={"organization_id": str(uuid.uuid4())},
     )
 
-    with pytest.raises(PermissionError, match="active user context"):
+    with pytest.raises(PermissionError, match="execution subject"):
         node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
 
 
@@ -761,30 +843,57 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
     denied_kb_id = uuid.uuid4()
     retrieval_calls = []
     audit_calls = []
-    captured_init = {}
+    helper_init = {}
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
-            captured_init["organization_id"] = organization_id
+            raise AssertionError("retrieval should not initialize before authorization")
 
         def search_documents_sync(self, *args, **kwargs):
             retrieval_calls.append(kwargs["knowledge_base_id"])
             return []
 
-    def fake_auth_state(db, user_id, knowledge_base_id, organization_id=None):
-        if str(knowledge_base_id) == str(allowed_kb_id):
-            return "manager"
-        if str(knowledge_base_id) == str(denied_kb_id):
-            return "none"
-        raise AssertionError(f"unexpected kb: {knowledge_base_id}")
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=allowed_kb_id),
+                SimpleNamespace(id=denied_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            helper_init["user_id"] = user_id
+            helper_init["organization_id"] = organization_id
+
+        def evaluate_kb_use(self, kb):
+            if kb.id == allowed_kb_id:
+                return SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="manager",
+                )
+            if kb.id == denied_kb_id:
+                return SimpleNamespace(
+                    allowed=False,
+                    external_reason_code="permission.denied",
+                    effective_auth_state="none",
+                )
+            raise AssertionError(f"unexpected kb: {kb.id}")
 
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
         FakeRetrievalService,
     )
     monkeypatch.setattr(
-        "apps.workflow_engine.workflow.nodes.llm.llm_node.get_effective_knowledge_base_auth_state",
-        fake_auth_state,
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
     )
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
@@ -812,10 +921,11 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
         },
     )
 
-    with pytest.raises(PermissionError, match="Knowledge Base use permission"):
-        node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+    with pytest.raises(PermissionError, match="Knowledge Base is unavailable"):
+        node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
-    assert captured_init["organization_id"] == organization_id
+    assert helper_init["organization_id"] == organization_id
+    assert helper_init["user_id"] == user_id
     assert retrieval_calls == []
     assert audit_calls[0]["resource_id"] == str(denied_kb_id)
     assert audit_calls[0]["effective_auth_state"] == "none"

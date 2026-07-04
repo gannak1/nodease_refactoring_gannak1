@@ -26,7 +26,6 @@ from apps.gateway.services.rag_agent_answer_types import (
     RAGAnswerExecution,
     RAGAnswerResolvedContext,
 )
-from apps.gateway.services.rag_evidence_policy import RAGEvidencePolicy
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.utils.api_errors import error_detail, raise_api_error
 from apps.shared.db.models.knowledge import KnowledgeBase, RAGAnswerRun
@@ -40,6 +39,7 @@ from apps.shared.schemas.rag import (
     RAGRetrievalSummary,
     RAGUsageSummary,
 )
+from apps.shared.services.rag_evidence_policy import RAGEvidencePolicy
 
 logger = logging.getLogger(__name__)
 

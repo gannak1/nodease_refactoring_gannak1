@@ -3,7 +3,6 @@ from collections.abc import Iterable
 
 from sqlalchemy.orm import Session, joinedload
 
-from apps.gateway.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
@@ -14,6 +13,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
     KnowledgePermissionDecision,
 )
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 
 
 DEFAULT_MAX_COLLECTIONS = 20

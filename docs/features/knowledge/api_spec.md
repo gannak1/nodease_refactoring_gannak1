@@ -110,7 +110,10 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 | --- | --- |
 | `query_rewrite_mode` | `off`, `template`, `llm_assisted` 후보. Rewrite는 user query와 safe skill/template만 입력으로 사용하고, permission/source ACL candidate scope를 넓히지 않는다 |
 | `evidence_sufficiency_policy` | `minimum_evidence`, `strict_citation` 후보. 운영 runtime에서는 `off`를 허용하지 않는다. 근거가 부족하면 safe no-result 또는 insufficient-evidence 응답으로 닫는다 |
+| `rag_failure_policy` | 근거 부족 또는 실행 시점 availability 실패를 처리하는 정책. MBA-105 runtime의 구현 기본값은 `safe_no_result`이며, `fail_node`는 node 실패로 닫는다. Permission/source ACL failure는 hidden-safe reason만 허용한다 |
 | `source_tier_policy` | Source-of-Truth Tier를 authorized evidence 안에서 ranking, tie-break, conflict resolution hint로 사용할지 나타내는 목표 옵션. Baseline candidate enum은 `legal_regulation`, `contract`, `company_policy`, `adr_decision`, `official_documentation`, `semantic_definition`, `operational_runbook`, `curated_query_corpus`, `conversation_or_thread`이며 최종 enum은 Legal/Compliance review에서 확정한다 |
+
+현재 workflow graph의 LLM node data는 기존 camelCase convention을 유지하므로 구현 필드는 `evidenceSufficiencyPolicy`, `ragFailurePolicy`다. 공식 계약에서 snake_case로 설명한 값과 의미는 같으며, 공개 API shape를 새로 만들 때는 별도 API review에서 casing을 고정한다.
 
 `query_rewrite_mode`가 켜져도 raw rewritten query는 raw prompt와 유사한 민감 입력으로 취급한다. Durable audit/trace/usage metadata에는 rewrite 적용 여부, 전략, safe template id 같은 summary만 저장한다.
 
