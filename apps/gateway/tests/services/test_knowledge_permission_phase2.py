@@ -82,6 +82,7 @@ class FakePermissionHelper(KnowledgePermissionHelper):
         self.source_policy_auth_state = source_policy_auth_state
         self.source_provenance = source_provenance
         self.collection_action_calls = []
+        self.bulk_kb_calls = []
 
     def _organization_auth_state(self):
         return ORGANIZATION_AUTH_MEMBER
@@ -102,14 +103,28 @@ class FakePermissionHelper(KnowledgePermissionHelper):
     def _now(self):
         return datetime(2026, 7, 4, tzinfo=timezone.utc)
 
+    def bulk_evaluate_kb_use(self, kbs):
+        kb_list = list(kbs)
+        self.bulk_kb_calls.append([kb.id for kb in kb_list])
+        return super().bulk_evaluate_kb_use(kb_list)
+
 
 class FakeResolver(KnowledgeCandidateResolver):
-    def __init__(self, *, helper, collections=None, items=None, kbs=None):
+    def __init__(
+        self,
+        *,
+        helper,
+        runtime_helper=None,
+        collections=None,
+        items=None,
+        kbs=None,
+    ):
         super().__init__(
             None,
             user_id=USER_ID,
             organization_id=ORG_ID,
             permission_helper=helper,
+            runtime_permission_helper=runtime_helper,
         )
         self._fake_collections = list(collections or [])
         self._fake_items = list(items or [])
@@ -167,6 +182,7 @@ def test_explicit_kb_mode_does_not_require_collection_route():
 
     assert [candidate.candidate_id for candidate in result.candidates] == [kb.id]
     assert helper.collection_action_calls == []
+    assert helper.bulk_kb_calls == [[kb.id]]
     assert result.hidden_candidate_count_bucket == "0"
 
 
@@ -228,6 +244,33 @@ def test_auto_collection_mode_buckets_missing_requested_collection():
 
     assert [candidate.candidate_id for candidate in result.candidates] == [kb.id]
     assert result.hidden_candidate_count_bucket == "1"
+
+
+def test_auto_collection_candidate_cap_is_deterministic():
+    collection = _collection()
+    kbs = [_kb() for _ in range(3)]
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+            for kb in kbs
+        ],
+        kbs=kbs,
+    )
+
+    result = resolver.resolve_auto_collection_candidates(max_candidate_kbs=2)
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        kbs[0].id,
+        kbs[1].id,
+    ]
+    assert result.hidden_candidate_count_bucket == "0"
+    assert result.unavailable_candidate_count_bucket == "0"
 
 
 def test_kb_use_source_acl_stale_fails_closed_after_kb_use_grant():
@@ -354,3 +397,18 @@ def test_builder_candidate_uses_approved_safe_display_label_only():
 
     assert len(result.candidates) == 1
     assert result.candidates[0].safe_label == "Safe approved label"
+
+
+def test_builder_candidate_marks_runtime_unavailable_for_intended_subject():
+    kb = _kb()
+    actor_helper = FakePermissionHelper(kb_auth_state=AUTH_STATE_OPERATOR)
+    runtime_helper = FakePermissionHelper(kb_auth_state="none")
+    resolver = FakeResolver(helper=actor_helper, runtime_helper=runtime_helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.runtime_availability == "unavailable"
+    assert candidate.safe_metadata["runtime_reason_code"] == "permission.denied"
+    assert "knowledge_base_id" in candidate.permission.safe_metadata

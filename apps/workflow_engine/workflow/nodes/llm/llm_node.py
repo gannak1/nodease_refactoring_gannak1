@@ -28,12 +28,13 @@ from apps.workflow_engine.services.llm_service import (
 from apps.workflow_engine.services.retrieval import RetrievalService
 
 from ..base.node import Node
-from .entities import LLMNodeData
+from .entities import LLMNodeData, MAX_RAG_CHUNKS_PER_KB, MAX_RAG_RETRIEVAL_KBS
 
 logger = logging.getLogger(__name__)
 
 _jinja_env = Environment(autoescape=False)
 MEMORY_RUN_LIMIT = 5  # 최근 실행 몇 건을 기억 컨텍스트에 반영할지 결정
+MAX_RAG_TRACE_RETRIEVED_CHUNKS = 20
 SUMMARY_MODEL_PREFS = {
     "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-3.5-turbo"],
     "google": ["gemini-1.5-flash", "gemini-1.5-pro"],
@@ -693,11 +694,13 @@ class LLMNode(Node[LLMNodeData]):
                 "RAG retrieval requires an active organization context."
             ) from exc
 
-        kb_ids = [kb.id for kb in self.data.knowledgeBases if kb.id]
-        top_k = self.data.topK or 3
+        kb_ids = list(dict.fromkeys(kb.id for kb in self.data.knowledgeBases if kb.id))
+        kb_ids = kb_ids[:MAX_RAG_RETRIEVAL_KBS]
+        top_k = min(self.data.topK or 3, MAX_RAG_CHUNKS_PER_KB)
         threshold = self.data.scoreThreshold or 0.5
 
         all_chunks: List[tuple[str, ChunkPreview]] = []
+        failed_retrieval_count = 0
         authorized_kb_ids = self._authorized_runtime_kb_ids(
             db_session,
             user_id=user_id,
@@ -712,13 +715,19 @@ class LLMNode(Node[LLMNodeData]):
 
         for kb_id in authorized_kb_ids:
             # [GEVENT] search_documents_sync 사용
-            chunks = retrieval.search_documents_sync(
-                query,
-                knowledge_base_id=kb_id,
-                top_k=top_k,
-                threshold=threshold,
-                hierarchy_mode="auto",
-            )
+            try:
+                chunks = retrieval.search_documents_sync(
+                    query,
+                    knowledge_base_id=kb_id,
+                    top_k=top_k,
+                    threshold=threshold,
+                    hierarchy_mode="auto",
+                )
+            except Exception:
+                if self.data.ragFailurePolicy == "fail_node":
+                    raise
+                failed_retrieval_count += 1
+                continue
             self._record_rag_retrieve_audit(user_id, kb_id, len(chunks))
             for chunk in chunks:
                 all_chunks.append((kb_id, chunk))
@@ -737,6 +746,11 @@ class LLMNode(Node[LLMNodeData]):
         evidence_decision = RAGEvidencePolicy().evaluate_chunks(
             [chunk for _kb_id, chunk in top_chunks],
             policy=self.data.evidenceSufficiencyPolicy,
+        )
+        evidence_decision = self._rag_decision_with_operational_failures(
+            evidence_decision,
+            failed_retrieval_count,
+            successful_candidate_count=len(authorized_kb_ids) - failed_retrieval_count,
         )
         if not evidence_decision.evidence_sufficient:
             if self.data.ragFailurePolicy == "fail_node":
@@ -858,8 +872,50 @@ class LLMNode(Node[LLMNodeData]):
             "evidence_sufficient": evidence_decision.evidence_sufficient,
             "insufficiency_reason": evidence_decision.insufficiency_reason,
             "source_tier_used": evidence_decision.source_tier_used,
+            "partial_result": evidence_decision.partial_result,
+            "failed_candidate_count_bucket": (
+                evidence_decision.failed_candidate_count_bucket
+            ),
             "failure_policy": self.data.ragFailurePolicy,
         }
+
+    def _rag_decision_with_operational_failures(
+        self,
+        decision: RAGEvidenceDecision,
+        failed_count: int,
+        *,
+        successful_candidate_count: int,
+    ) -> RAGEvidenceDecision:
+        if failed_count <= 0:
+            return decision
+        failed_bucket = self._bucket_count(failed_count)
+        if successful_candidate_count <= 0:
+            return RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="operational_error",
+                source_tier_used=decision.source_tier_used,
+                partial_result=False,
+                failed_candidate_count_bucket=failed_bucket,
+            )
+        return RAGEvidenceDecision(
+            evidence_sufficient=decision.evidence_sufficient,
+            insufficiency_reason=decision.insufficiency_reason,
+            source_tier_used=decision.source_tier_used,
+            partial_result=True,
+            failed_candidate_count_bucket=failed_bucket,
+        )
+
+    @staticmethod
+    def _bucket_count(value: int) -> str:
+        if value <= 0:
+            return "0"
+        if value == 1:
+            return "1"
+        if value <= 10:
+            return "2-10"
+        if value <= 100:
+            return "11-100"
+        return "100+"
 
     def _record_rag_retrieve_audit(
         self,
@@ -1048,20 +1104,28 @@ class LLMNode(Node[LLMNodeData]):
             if knowledge_base_id and knowledge_base_id not in knowledge_base_ids:
                 knowledge_base_ids.append(str(knowledge_base_id))
 
+        stored_chunks = retrieved_chunks[:MAX_RAG_TRACE_RETRIEVED_CHUNKS]
         payload: Dict[str, Any] = {
-            "retrieved_chunks": retrieved_chunks,
+            "retrieved_chunks": stored_chunks,
             "result_count": len(retrieved_chunks),
+            "stored_result_count": len(stored_chunks),
             "policy_result": "allow",
             "raw_content_returned": False,
             "workflow_run_id": self.execution_context.get("workflow_run_id"),
             "node_id": self.id,
         }
+        if len(stored_chunks) < len(retrieved_chunks):
+            payload["retrieved_chunk_summary_truncated"] = True
         if evidence_decision is not None:
             payload.update(
                 {
                     "evidence_sufficient": evidence_decision.evidence_sufficient,
                     "insufficiency_reason": evidence_decision.insufficiency_reason,
                     "source_tier_used": evidence_decision.source_tier_used,
+                    "partial_result": evidence_decision.partial_result,
+                    "failed_candidate_count_bucket": (
+                        evidence_decision.failed_candidate_count_bucket
+                    ),
                 }
             )
         if knowledge_base_ids:

@@ -294,6 +294,8 @@ Production readiness load test는 candidate cap, route collection cap, permissio
 | Retry/dead-letter | max attempt 도달 시 dead-letter 전이, re-drive 시 idempotency key로 중복 active pointer swap 금지 |
 | Partial failure | 일부 authorized retrieval failure는 bucketed count와 safe reason만 남기고 hidden id/count 누출 없음 |
 
+Workflow LLM node의 RAG retrieval trace payload는 redaction-safe chunk summary만 저장하고, 초기 구현에서는 최대 20개 chunk summary만 durable payload에 포함한다. 전체 검색 결과 수는 safe count로 남길 수 있지만, payload가 cap을 넘으면 `retrieved_chunk_summary_truncated=true`로 표시한다.
+
 ## Gate closure 전 구현 금지
 
 - G1 data-preservation 승인 없이 destructive KB reset/split/backfill을 구현하지 않는다.

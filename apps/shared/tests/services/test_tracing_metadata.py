@@ -129,7 +129,10 @@ def test_rag_span_metadata_preserves_evidence_summary_fields_only():
                 "insufficiency_reason": "minimum_score_not_met",
                 "source_tier_used": "company_policy",
                 "partial_result": True,
+                "failed_candidate_count_bucket": "2-10",
                 "failure_policy": "safe_no_result",
+                "stored_result_count": 20,
+                "retrieved_chunk_summary_truncated": True,
                 "hidden_candidate_ids": ["kb-hidden"],
                 "raw_rewritten_query": "raw query",
             }
@@ -140,7 +143,10 @@ def test_rag_span_metadata_preserves_evidence_summary_fields_only():
     assert metadata["rag"]["insufficiency_reason"] == "minimum_score_not_met"
     assert metadata["rag"]["source_tier_used"] == "company_policy"
     assert metadata["rag"]["partial_result"] is True
+    assert metadata["rag"]["failed_candidate_count_bucket"] == "2-10"
     assert metadata["rag"]["failure_policy"] == "safe_no_result"
+    assert metadata["rag"]["stored_result_count"] == 20
+    assert metadata["rag"]["retrieved_chunk_summary_truncated"] is True
     assert "hidden_candidate_ids" not in metadata["rag"]
     assert "raw_rewritten_query" not in metadata["rag"]
 

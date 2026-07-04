@@ -64,6 +64,7 @@ from apps.shared.services.egress_guard import (
     safe_http_request,
     safe_quote_filename,
 )
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -191,10 +192,19 @@ def resolve_knowledge_candidates(
         x_organization_id,
         current_user.id,
     )
+    runtime_permission_helper = None
+    if candidate_request.intended_execution_subject_id:
+        runtime_permission_helper = KnowledgePermissionHelper(
+            db,
+            user_id=candidate_request.intended_execution_subject_id,
+            organization_id=organization_id,
+        )
+
     resolver = KnowledgeCandidateResolver(
         db,
         user_id=current_user.id,
         organization_id=organization_id,
+        runtime_permission_helper=runtime_permission_helper,
     )
 
     # 예상 실행 대상이 명시되어도 Phase 7에서는 후보 노출 scope만 좁힌다.

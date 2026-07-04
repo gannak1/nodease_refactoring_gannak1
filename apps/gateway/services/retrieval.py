@@ -1033,8 +1033,8 @@ class RetrievalService:
         """
         chunks = await self.search_documents(
             query,
-            knowledge_base_id,
-            top_k,
+            knowledge_base_id=knowledge_base_id,
+            top_k=top_k,
             metadata_filter=metadata_filter,
             hierarchy_mode=hierarchy_mode,
         )

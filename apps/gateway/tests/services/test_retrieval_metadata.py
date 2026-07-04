@@ -374,6 +374,51 @@ def test_search_knowledge_base_ids_normalizes_single_string_and_dedupes():
     ) == [str(kb_a)]
 
 
+def test_retrieve_context_passes_top_k_as_keyword(monkeypatch):
+    captured = {}
+    service = RetrievalService(db=object(), user_id=uuid.uuid4())
+
+    async def fake_search_documents(
+        query,
+        *,
+        knowledge_base_id,
+        top_k,
+        metadata_filter=None,
+        hierarchy_mode="auto",
+        **_kwargs,
+    ):
+        captured.update(
+            {
+                "query": query,
+                "knowledge_base_id": knowledge_base_id,
+                "top_k": top_k,
+                "metadata_filter": metadata_filter,
+                "hierarchy_mode": hierarchy_mode,
+            }
+        )
+        return [SimpleNamespace(content="context")]
+
+    monkeypatch.setattr(service, "search_documents", fake_search_documents)
+
+    result = asyncio.run(
+        service.retrieve_context(
+            "policy",
+            "kb-1",
+            top_k=7,
+            metadata_filter={"classification": ["internal"]},
+            hierarchy_mode="flat",
+        )
+    )
+
+    assert result == "context"
+    assert captured == {
+        "query": "policy",
+        "knowledge_base_id": "kb-1",
+        "top_k": 7,
+        "metadata_filter": {"classification": ["internal"]},
+        "hierarchy_mode": "flat",
+    }
+
 def test_generate_answer_for_test_preserves_references_when_generation_model_missing(monkeypatch):
     chunk = ChunkPreview(
         content="검색 결과",

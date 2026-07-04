@@ -24,6 +24,8 @@ class KnowledgeBaseRef(BaseModel):
 
 EvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 RAGFailurePolicy = Literal["safe_no_result", "fail_node"]
+MAX_RAG_RETRIEVAL_KBS = 20
+MAX_RAG_CHUNKS_PER_KB = 8
 
 
 class LLMNodeData(BaseNodeData):
@@ -100,3 +102,7 @@ class LLMNodeData(BaseNodeData):
 
         if self.topK < 1:
             self.topK = 1
+        if self.topK > MAX_RAG_CHUNKS_PER_KB:
+            self.topK = MAX_RAG_CHUNKS_PER_KB
+        if len(self.knowledgeBases) > MAX_RAG_RETRIEVAL_KBS:
+            self.knowledgeBases = self.knowledgeBases[:MAX_RAG_RETRIEVAL_KBS]

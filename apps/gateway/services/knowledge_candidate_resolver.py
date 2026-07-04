@@ -47,6 +47,7 @@ class KnowledgeCandidateResolver:
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
         permission_helper: KnowledgePermissionHelper | None = None,
+        runtime_permission_helper: KnowledgePermissionHelper | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
@@ -56,6 +57,7 @@ class KnowledgeCandidateResolver:
             user_id=user_id,
             organization_id=organization_id,
         )
+        self.runtime_permission_helper = runtime_permission_helper
 
     def resolve_explicit_kbs(
         self,
@@ -70,11 +72,12 @@ class KnowledgeCandidateResolver:
         unavailable_count = 0
         candidates: list[KnowledgeCandidate] = []
 
+        kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs_by_id.values())
         for kb_id in requested_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 continue
-            decision = self.permission_helper.evaluate_kb_use(kb)
+            decision = kb_decisions[kb.id]
             if decision.allowed:
                 candidates.append(self._kb_candidate(kb, decision))
             elif decision.external_reason_code == "resource.hidden":
@@ -140,11 +143,12 @@ class KnowledgeCandidateResolver:
         hidden_count += len(kb_ids) - len(kbs_by_id)
 
         candidates: list[KnowledgeCandidate] = []
+        kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs_by_id.values())
         for kb_id in kb_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 continue
-            decision = self.permission_helper.evaluate_kb_use(kb)
+            decision = kb_decisions[kb.id]
             if decision.allowed:
                 candidates.append(self._kb_candidate(kb, decision))
             elif decision.external_reason_code == "resource.hidden":
@@ -226,13 +230,27 @@ class KnowledgeCandidateResolver:
         kb: KnowledgeBase,
         permission: KnowledgePermissionDecision,
     ) -> KnowledgeCandidate:
+        runtime_availability = "available"
+        runtime_reason_code = None
+        if self.runtime_permission_helper is not None:
+            runtime_decision = self.runtime_permission_helper.evaluate_kb_use(kb)
+            if runtime_decision.allowed:
+                runtime_availability = "available"
+            else:
+                runtime_availability = "unavailable"
+                runtime_reason_code = runtime_decision.external_reason_code
+
+        safe_metadata = dict(permission.safe_metadata)
+        if runtime_reason_code:
+            safe_metadata["runtime_reason_code"] = runtime_reason_code
+
         return KnowledgeCandidate(
             candidate_id=kb.id,
             candidate_type="knowledge_base",
             permission=permission,
-            runtime_availability="available",
+            runtime_availability=runtime_availability,
             safe_label=self._kb_safe_label(kb),
-            safe_metadata=permission.safe_metadata,
+            safe_metadata=safe_metadata,
         )
 
     def _kb_safe_label(self, kb: KnowledgeBase) -> str | None:

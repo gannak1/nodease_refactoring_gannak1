@@ -15,6 +15,8 @@ class RAGEvidenceDecision:
     evidence_sufficient: bool
     insufficiency_reason: str | None = None
     source_tier_used: dict[str, Any] = field(default_factory=dict)
+    partial_result: bool = False
+    failed_candidate_count_bucket: str | None = None
 
 
 class RAGEvidencePolicy:
