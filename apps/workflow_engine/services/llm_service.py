@@ -1140,6 +1140,7 @@ class LLMService:
         workflow_run_id: Optional[uuid.UUID] = None,
         node_id: Optional[str] = None,
         credential_id: Optional[uuid.UUID] = None,
+        cost_optimizer_candidate_id: Optional[uuid.UUID] = None,
     ) -> Optional[LLMUsageLog]:
         """
         LLM 사용 로그를 DB에 저장합니다.
@@ -1203,6 +1204,19 @@ class LLMService:
                 return None
             credential_uuid = credential.id
 
+        cost_optimizer_candidate_uuid = None
+        if cost_optimizer_candidate_id:
+            try:
+                cost_optimizer_candidate_uuid = uuid.UUID(
+                    str(cost_optimizer_candidate_id)
+                )
+            except (TypeError, ValueError):
+                logger.error(
+                    "[LLMService] Usage log skipped: invalid "
+                    f"cost_optimizer_candidate_id {cost_optimizer_candidate_id}."
+                )
+                return None
+
         log = LLMUsageLog(
             user_id=user_id,
             organization_id=organization_uuid,
@@ -1210,6 +1224,7 @@ class LLMService:
             model_id=model.id,
             workflow_id=workflow_uuid,
             workflow_run_id=workflow_run_uuid,
+            cost_optimizer_candidate_id=cost_optimizer_candidate_uuid,
             node_id=node_id,
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),

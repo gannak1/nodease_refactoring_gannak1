@@ -32,17 +32,40 @@ class LLMNodeData(BaseNodeData):
     provider: Optional[str] = None
     model_id: str
     fallback_model_id: Optional[str] = None
+    task_type: str = Field(default="generate", description="LLM 노드 작업 유형")
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
     assistant_prompt: Optional[str] = None
     referenced_variables: List[LLMVariable] = Field(default_factory=list)
     context_variable: Optional[str] = None
     parameters: Dict[str, Any] = Field(default_factory=dict, description="LLM API 파라미터 (temperature, top_p, max_tokens 등)")
+    output_format: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="LLM 출력 형식 설정 (text/json 및 JSON schema)",
+    )
     
     # [NEW] Knowledge Search Integration
     knowledgeBases: List[KnowledgeBaseRef] = Field(default_factory=list, description="검색할 지식 베이스 목록")
     scoreThreshold: float = Field(default=0.5, description="유사도 점수 임계값")
     topK: int = Field(default=3, description="상위 K개 문서 반환")
+    dedupeRetrievedContext: bool = Field(
+        default=False, description="검색된 문서 조각의 중복 근거 제거 여부"
+    )
+    retrievedContextMaxChars: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="검색으로 주입되는 Knowledge/RAG context 최대 글자 수",
+    )
+    retrievedContextCompression: str = Field(
+        default="off",
+        pattern="^(off|light|strong)$",
+        description="검색 문서 압축 강도",
+    )
+    answerGroundingCheck: str = Field(
+        default="off",
+        pattern="^(off|basic|strict)$",
+        description="답변 근거 확인 수준",
+    )
 
     def validate(self) -> None:
         # 모델은 필수
