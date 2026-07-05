@@ -60,7 +60,7 @@ Status: Draft
 | Knowledge Source | Knowledge가 수집하는 외부 또는 내부 원천 시스템. 예: Drive, Wiki, ticketing tool, chat archive, API, DB, object storage. Source 자체는 Nodease 권한을 부여하지 않으며 connector와 source ACL 정책을 통해 안전하게 수집된다. |
 | Source Item | Knowledge Source 안에서 document-level KB 1개로 materialize될 수 있는 원자 항목. 파일, 페이지, ticket, thread, DB row 또는 API record가 될 수 있다. |
 | Knowledge Source Connector | Source item과 source ACL을 열거, 가져오기, 동기화하는 adapter 계층. Connector는 mbased permission을 직접 결정하지 않고 Outbound Egress Guard와 protocol adapter policy를 통과해야 한다. |
-| Knowledge Base | 목표 KB 통합 모델에서 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom. DB에서는 `knowledge_bases` table을 사용한다. 현재 구현에는 여러 문서를 포함하는 legacy 의미가 남아 있으며, target cutover는 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate를 따른다. |
+| Knowledge Base | 목표 KB 통합 모델에서 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom. DB에서는 `knowledge_bases` table을 사용한다. 현재 구현에는 여러 문서를 포함하는 legacy 의미가 남아 있으며, MBA-105 target baseline은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)와 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다. |
 | Knowledge Collection | 여러 document-level Knowledge Base를 묶는 grouping, routing, UX, operations 단위. Collection 권한은 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
 | Knowledge Skill | Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 어떤 source-of-truth tier를 먼저 볼지, 어떤 collection/KB 후보를 고려할지, 어떤 query template과 검증 절차를 쓸지 정의하는 Knowledge 도메인의 provider-neutral 절차 지식 artifact. Skill metadata/body/resource도 권한과 redaction-safe boundary 안에 있으며, 실제 근거는 KB/document version/citation에서 가져온다. |
 | Skill Metadata | Skill 선택에 필요한 name, description, tag, owner, source tier, freshness 같은 요약 정보. 이 값 자체도 민감 metadata일 수 있어 organization/permission/display policy와 redaction/cap을 거친 safe field만 Workflow Builder, router, 실행 시점 RAG 경로에 제공한다. |
@@ -71,6 +71,8 @@ Status: Draft
 | Evidence Sufficiency Policy | 검색 결과만으로 답변할 수 있는지 판단하는 LLM node의 RAG 정책. 근거가 부족하면 LLM이 추측 답변을 만들지 않고 safe no-result 또는 insufficient-evidence 응답으로 닫게 한다. |
 | Golden Question | Skill이나 retrieval strategy 회귀 검증에 쓰는 대표 질문/기대 근거 세트. 실제 raw restricted content가 아니라 safe fixture와 평가 기준으로 관리한다. |
 | Collection Route Permission | Collection을 Agent/router 후보 scope로 사용할 수 있는 권한. Collection을 볼 수 있는 `collection.read`와 다르며, 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
+| Source Authorization Provenance | 외부 source ACL fact를 Nodease가 requester authorization과 freshness 판단에 사용할 수 있게 materialize한 safe provenance. KB `use` 권한 자체가 아니며 raw source principal/path/url을 user-facing surface에 노출하지 않는다. |
+| Auto-ingested KB Use Provisioning | 자동 수집된 document-level KB가 retrieval 후보가 되도록 mbased KB `use` allow를 부여하는 절차. ADR-0017 baseline에서는 admin/team/user grant 또는 organization-approved connector/source policy가 `source_policy_kb_use_grants` row를 만들 때만 허용한다. Source ACL fact만으로는 KB `use`가 충족되지 않는다. |
 | Document Version | document-level KB의 특정 색인/version artifact. 목표 모델에서는 active version만 기본 retrieval 대상이다. |
 | Active Document Version | document-level KB에서 현재 retrieval-visible한 ready version. 새 version indexing/finalization이 성공하기 전까지 기존 active version을 비활성화하지 않는다. |
 | Active Version Finalization | 새 document version의 redacted canonical text, chunks, embeddings, index artifact가 모두 준비된 뒤 active pointer와 processed state를 같은 finalization boundary에서 전환하는 단계. Crash recovery, fencing, outbox gate가 필요하다. |
@@ -86,18 +88,18 @@ Status: Draft
 | Explicit KB Mode | 요청자가 특정 KB를 명시하는 mode. Collection route permission을 생략할 수 있지만 KB visibility, KB permission helper, source ACL gate, final evidence policy는 생략할 수 없다. |
 | Final Evidence Policy | LLM prompt, answer delta, citation preview, trace/audit summary에 evidence가 들어가기 전에 적용하는 최종 정책 gate. PII/secret, classification, source ACL, permission 상태를 안전하게 검증한다. |
 | Partial Result | 일부 authorized KB retrieval이 operational failure를 겪었지만 남은 evidence가 모두 permission/source ACL/final policy gate를 통과한 경우 반환할 수 있는 제한적 결과. 실패 후보는 safe/bucketed summary로만 표시한다. |
-| Source ACL | 외부 source system의 문서/source item 접근 제어 정보. source-managed KB에서는 mbased KB `use`와 별개의 필수 gate이며, stale/unmapped/ambiguous/unverified 상태는 fail-closed다. |
+| Source ACL | 외부 source system의 문서/source item 접근 제어 정보. source-managed KB에서는 mbased KB `use`와 별개의 필수 gate이며, stale/unmapped/ambiguous/unverified/revoked 상태는 fail-closed다. |
 | Source ACL Fact | Source system에서 가져온 ACL 원천 사실. Raw principal, raw path, raw title, raw permission 값은 user-facing UI, router, audit/trace summary에 직접 노출하지 않는다. |
 | Source ACL Freshness | Source ACL이 최신이고 requester authorization에 사용할 수 있는지 나타내는 상태. 예: `fresh`, `stale`, `unmapped`, `ambiguous`, `unverified`, `revoked`. Fresh가 아니면 source-managed KB retrieval은 fail-closed다. |
-| Source ACL Provenance | Source ACL fact를 permission helper가 소비할 수 있게 materialize한 안전한 증거/상태. KB `use` permission 자체가 아니며 raw source permission 값을 직접 노출하지 않는다. |
-| Requester Authorization | 현재 요청 actor가 source-managed KB의 원천 source에서도 접근 가능한지 확인하는 source ACL 기반 gate. Organization manager나 manual KB grant가 기본적으로 이 gate를 우회하지 않는다. |
+| Source ACL Provenance | Source Authorization Provenance의 alias. 새 문서와 table/field 이름은 Source Authorization Provenance를 우선 사용한다. |
+| Requester Authorization | 현재 요청 actor가 source-managed KB의 원천 source에서도 접근 가능한지 확인하는 source ACL 기반 gate. 판정 결과는 `allowed`, `denied`, `unknown`, `not_applicable` 같은 값으로 표현하며, source ACL freshness/mapping 상태와 분리한다. Organization manager나 manual KB grant가 기본적으로 이 gate를 우회하지 않는다. |
 | Source-Managed KB | 외부 connector/source sync가 생성·관리하는 document-level KB. 수동 grant만으로 source ACL freshness/requester authorization을 우회하지 않는다. |
 | Source Identity | Source item을 재동기화, tombstone matching, provenance 연결에 사용할 수 있게 식별하는 protected reference. Raw source id/url/path/title과 구분한다. |
 | Protected Source Identity | 사용자-facing resource가 아닌 source identity 저장 경계. HMAC/hash ref, key version, rotation/backfill, tombstone matching 정책을 갖고 raw source id/url/path/title 노출을 막는다. |
-| Safe Source Reference | raw source id/url/path/title 대신 citation, audit, UI에 제한적으로 사용할 수 있는 opaque/HMAC 기반 source reference. 구체 format은 protected source identity gate에서 확정한다. |
-| Resource-Hidden Response | scope 밖, hidden, source ACL denied/stale 등 존재 추론 위험이 있는 경우의 안전한 응답 shape. HTTP/SSE shape와 audit 여부는 resource hiding API matrix gate에서 확정한다. |
+| Safe Source Reference | raw source id/url/path/title 대신 citation, audit, UI에 제한적으로 사용할 수 있는 opaque/HMAC 기반 source reference. ADR-0017 provisional baseline은 protected source identity와 keyed HMAC reference를 사용하며, 구체 format과 key rotation/backfill column은 해당 migration/API 문서에서 고정한다. |
+| Resource-Hidden Response | scope 밖, hidden, requester source authorization denied, source ACL stale 등 존재 추론 위험이 있는 경우의 안전한 응답 shape. Knowledge 목표 구조의 provisional matrix는 ADR-0017과 Knowledge implementation baseline을 따르며, 최종 HTTP/SSE shape와 audit 여부는 구현 PR의 API/test 계약에서 고정한다. |
 | Redacted Canonical Text | source item에서 추출한 뒤 redaction/sanitization을 거친 canonical text. 목표 모델에서 chunk content, embedding input, retrieval-visible text의 기본 원천이다. |
-| Canonical Metadata Source | Target cutover 후 metadata filter, citation summary, audit/trace summary에 사용할 authoritative metadata 위치. `documents.meta_info` 이후의 최종 source는 gate에서 확정한다. |
+| Canonical Metadata Source | Target cutover 후 metadata filter, citation summary, audit/trace summary에 사용할 authoritative metadata 위치. ADR-0017 provisional baseline은 document version 또는 canonical metadata table 쪽을 기준으로 두며, `documents.meta_info` 이후의 최종 table/column은 구현 PR의 migration과 API/schema 문서에서 고정한다. |
 | Privacy Redaction Policy | PII/secret detector, masking/hash/drop/block rule, output-target별 redaction을 정의하는 공통 정책. Platform hard baseline은 관리자가 약화할 수 없고, organization/collection/source/KB 정책은 더 엄격한 방향으로만 조정한다. |
 | Display Policy | Source-derived name, title, path, URL, description 같은 metadata를 UI에 표시해도 되는지 결정하는 redaction, length cap, allowlist, role/audience 정책. 표시 가능성과 durable audit/trace 저장 가능성은 별개다. |
 | Raw Knowledge Artifact | RAG/embedding/prompt에는 사용하지 않는 protected raw source content 저장 단위. Organization/source opt-in, 암호화, retention/legal hold/purge, raw/compliance permission, fresh source ACL, access audit이 필요하다. |

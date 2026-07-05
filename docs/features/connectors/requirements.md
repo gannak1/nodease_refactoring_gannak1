@@ -51,16 +51,40 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-027: DB schema 조회는 secret 원문을 응답 body에 포함하지 않아야 한다.
 - CONN-REQ-028: 현재 `connections` 테이블은 user-owned resource이며 `organization_id`를 갖지 않는다.
 - CONN-REQ-029: 현재 connection owner 판정은 organization/team permission helper가 아니라 `connections.user_id == current_user.id` 기준이어야 한다.
+- CONN-REQ-030: connector test, create, schema 조회 실패 응답은 raw host, database name, secret, driver detail, stack trace를 포함하지 않고 safe message 또는 safe `reason_code`로 닫아야 한다.
+- CONN-REQ-031: PostgreSQL 직접 연결 경로는 DB host/port를 사전 검증해 private, loopback, link-local, metadata, reserved target을 거부하고, 검증된 public IP로 실제 연결 대상을 고정해야 한다.
+- CONN-REQ-032: 기존 workflow DB connector compatibility 경로는 문서화된 SSH tunnel 설정을 사용할 수 있다. 이 허용은 workflow connector API 경계에서 명시적으로 선택해야 하며, arbitrary SSH command execution 허용을 의미하지 않는다.
+- CONN-REQ-033: Knowledge DB source ingestion이 공유 PostgreSQL adapter를 사용할 때는 기본 정책으로 SSH tunnel, proxy, private-network target을 거부해야 한다. 이 경로에서 tunnel을 열려면 별도 connector/egress ADR 또는 승인된 organization policy가 필요하다.
+- CONN-REQ-034: PostgreSQL schema introspection은 table, column, foreign key 개수 상한을 적용하고, 잘린 결과는 safe truncation marker로 표시해야 한다.
+- CONN-REQ-035: DB row fetch 경로는 SELECT-only guard, dangerous function/keyword blocklist, read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다.
 
 ## Policies And Edge Cases
 
 - 현재 `POST /connectors/test`는 Gateway 코드상 `get_current_user`를 요구하지 않는다.
 - 현재 `POST /connectors`는 `get_current_user`를 요구하지만 resource permission table을 사용하지 않는다.
 - 현재 `GET /connectors/{connection_id}`와 `GET /connectors/{connection_id}/schema`는 없는 connection에 `404`, owner mismatch에 `403`을 반환한다.
-- 현재 create/test/schema 실패 메시지는 일부 raw exception 문자열을 detail/message에 포함할 수 있다.
+- create/test/schema 실패 메시지는 raw host, database, secret, driver detail을 응답에 포함하지 않아야 한다.
 - 현재 schema 조회는 SQLAlchemy inspector를 사용해 schema metadata를 읽는다.
+- schema 조회 cap은 UX용 metadata preview 범위를 제한하기 위한 것이며, connector가 전체 DB inventory를 durable storage, audit, trace, log에 저장해도 된다는 의미가 아니다.
+- SSH tunnel compatibility는 기존 workflow DB connector 기능을 보존하기 위한 경계다. Knowledge source ingestion의 기본 경계와 다르며, SSH tunnel 허용은 remote shell command 실행 허용으로 해석하지 않는다.
 - 현재 `DbProcessor`는 Knowledge DB source ingestion에서 저장된 `connection_id`를 조회하고 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
+
+### Knowledge Source Connector Target Requirements
+
+- CONN-KNOW-REQ-001: 목표 Knowledge source connector와 KB source collection으로 승격되는 server-side test, preview, fetch, probe는 중앙 `OutboundEgressGuard` 또는 승인된 client/dialer factory를 통과해야 한다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)). 이 요구사항은 기존 workflow DB connector API 전체가 이미 같은 보호를 받는다는 뜻이 아니다.
+- CONN-KNOW-REQ-002: HTTP/URL 계열 Knowledge connector는 DNS resolve 후 IP 재검증, IDNA/punycode/CNAME/IPv4 obfuscation canonicalization, redirect마다 재검증, private/link-local/metadata IP 차단, scheme allowlist, HTTPS downgrade 금지, `verify=false` 금지, sensitive header redirect stripping, timeout/size/content-type cap, compression bomb 방지, rate limit을 적용해야 한다.
+- CONN-KNOW-REQ-003: DB/SSH connector는 arbitrary SQL/command를 connector test, preview, sync 경로에서 허용하지 않아야 한다. 필요한 경우 read-only probe, schema introspection cap, credential scope 제한, tunnel/proxy 정책을 adapter별로 문서화해야 한다.
+- CONN-KNOW-REQ-004: Knowledge Slack/meeting connector의 초기 baseline은 channel을 Knowledge Collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑한다.
+- CONN-KNOW-REQ-005: Slack/meeting artifact-level ACL이 있으면 artifact ACL과 containing channel/workspace ACL의 교집합을 requester authorization으로 사용하고, artifact ACL을 확인할 수 없으면 fail-closed 또는 remediation 상태로 둔다. Channel membership만으로 huddle recap, canvas, meeting summary를 자동 공개하지 않는다.
+- CONN-KNOW-REQ-006: Slack/meeting DM, raw audio, raw transcript는 별도 opt-in policy 없이 수집하지 않는다.
+- CONN-KNOW-REQ-007: Source ACL sync는 source authorization provenance와 freshness evidence를 만든다. Source ACL fact만으로 mbased KB `use`를 부여하지 않으며, auto-ingested KB retrieval에는 admin/team/user grant 또는 organization-approved connector/source policy가 provision한 explicit KB `use`가 필요하다.
+
+## Knowledge Source Connector Policies
+
+- 현재 `connections` 테이블은 user 소유이며 `organization_id`가 없다. 조직 경계 판정이 다른 리소스와 다르므로, target Knowledge source connector에서 workflow/KB 권한만으로 connection use가 자동 허용된다고 해석하지 않는다.
+- connection `use`는 별도 permission table 없이 소비하는 workflow/knowledge base 권한으로 허용하는 방향을 검토하되, 현재 user-owned `connections`에서는 connection owner/organization scope 확인이 선행돼야 한다. Secret 조회/관리(manage)는 connection owner 또는 organization owner/manager로 제한한다 ([data_model.md](../../data_model.md) "만들지 않는 테이블" 참조).
+- Internal DB/API/private-network targets are denied by default for Knowledge source collection unless a future connector/egress ADR defines an explicit organization policy, approved network segment, audit-safe reason code, and operational owner.
 
 ## Open Questions
 

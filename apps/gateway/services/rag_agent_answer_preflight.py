@@ -16,7 +16,6 @@ from apps.shared.db.models.llm import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.permissions import (
-    knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
 )
 from apps.shared.schemas.rag import (
@@ -26,10 +25,10 @@ from apps.shared.schemas.rag import (
 )
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
-    get_effective_knowledge_base_auth_state,
     get_effective_llm_credential_auth_state,
     has_organization_scope_access,
 )
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.rag_filters import normalize_metadata_filter
 
 
@@ -170,28 +169,37 @@ class RAGAgentAnswerPreflightResolver:
             )
 
     def _ensure_kb_use(self, run: RAGAnswerRun, kb: KnowledgeBase) -> None:
-        effective_auth_state = get_effective_knowledge_base_auth_state(
+        decision = KnowledgePermissionHelper(
             self.db,
-            self.current_user.id,
-            kb.id,
+            user_id=self.current_user.id,
             organization_id=self.organization_id,
-        )
-        if knowledge_base_auth_state_allows(effective_auth_state, "use"):
+        ).evaluate_kb_use(kb)
+        if decision.allowed:
             return
+
+        reason_code = decision.reason_code or "kb_use_denied"
+        if decision.external_reason_code == "resource.hidden":
+            self.lifecycle.block_permission(run, reason_code)
+            raise_api_error(
+                self.request,
+                404,
+                "resource.hidden",
+                "Knowledge Base not found.",
+            )
 
         record_resource_permission_denied(
             user_id=self.current_user.id,
             resource_type="knowledge_base",
             resource_id=kb.id,
             action="use",
-            effective_auth_state=effective_auth_state,
+            effective_auth_state=decision.effective_auth_state,
             organization_id=self.organization_id,
             metadata=self._permission_metadata(
                 run,
-                reason_code="kb_use_denied",
+                reason_code=reason_code,
             ),
         )
-        self._raise_permission_block(run, "kb_use_denied")
+        self._raise_permission_block(run, reason_code)
 
     def _ensure_embedding_readiness(
         self, run: RAGAnswerRun, kb: KnowledgeBase

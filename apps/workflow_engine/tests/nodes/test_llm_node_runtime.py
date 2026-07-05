@@ -4,6 +4,7 @@ LLM 노드 런타임 최소 동작 테스트 [GEVENT] Sync 버전.
 - DB 세션 없이도 _client_override로 클라이언트를 주입해 실행 가능하도록 구성.
 """
 
+import json
 import pathlib
 import sys
 import uuid
@@ -29,11 +30,16 @@ from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
     KnowledgeBaseRef,
     LLMNodeData,
     LLMVariable,
+    MAX_RAG_CHUNKS_PER_KB,
+    MAX_RAG_RETRIEVAL_KBS,
 )
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     SAFETY_SYSTEM_PROMPT,
     LLMNode,
+    WorkflowRAGFanoutResult,
+    WorkflowRAGSearchResult,
 )
+from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 
 
 class DummyClient:
@@ -76,6 +82,54 @@ class SuccessClient:
             "choices": [{"message": {"content": "fallback ok"}}],
             "usage": {},
         }
+
+
+def _patch_rag_gevent_inline(monkeypatch, node):
+    """RAG fanout unit test에서 gevent 의존성 없이 bounded path를 동기 실행한다."""
+
+    class FakeTimeout(Exception):
+        def __init__(self, seconds):
+            self.seconds = seconds
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    class FakeJob:
+        def __init__(self, fn, kwargs):
+            try:
+                self.value = fn(**kwargs)
+                self.exception = None
+            except Exception as exc:  # pragma: no cover - assertion에서 검증
+                self.value = None
+                self.exception = exc
+
+        def ready(self):
+            return True
+
+        def kill(self, block=False):
+            return None
+
+    class FakePool:
+        def __init__(self, size):
+            self.size = size
+
+        def spawn(self, fn, **kwargs):
+            return FakeJob(fn, kwargs)
+
+        def kill(self, block=False):
+            return None
+
+    class FakeGevent:
+        Timeout = FakeTimeout
+
+        @staticmethod
+        def joinall(jobs, timeout=None):
+            return jobs
+
+    monkeypatch.setattr(node, "_rag_gevent_modules", lambda: (FakeGevent, FakePool))
 
 
 class FakeRuntimePriorityQuery:
@@ -515,14 +569,19 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
         score=0.92,
         rank=1,
         token_count=120,
-        metadata_summary={"classification": "internal", "hierarchy_fallback": True},
+        metadata_summary={
+            "classification": "internal",
+            "hierarchy_fallback": True,
+            "raw_source_url": "https://internal.example/private",
+            "source_path": "/sensitive/path",
+            "nested": {"source_title": "Sensitive title"},
+        },
         hierarchy_path=["Guide", "Intro"],
         metadata={"source": "kb"},
     )
 
     metadata = node._knowledge_trace_metadata("kb-1", chunk)  # noqa: SLF001 - 테스트용
 
-    assert metadata["filename"] == "guide.md"
     assert metadata["page_number"] == 3
     assert metadata["knowledge_base_id"] == "kb-1"
     assert metadata["chunk_id"] == str(chunk_id)
@@ -532,6 +591,7 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
     assert metadata["metadata_summary"] == {
         "classification": "internal",
         "hierarchy_fallback": True,
+        "nested": {},
     }
     assert metadata["hierarchy_fallback"] is True
     assert TraceMetadataSanitizer.summarize_rag_metadata([metadata])[
@@ -539,7 +599,11 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
     ] is True
     assert metadata["hierarchy_path"] == ["Guide", "Intro"]
     assert "content" not in metadata
+    assert "filename" not in metadata
     assert "metadata" not in metadata
+    assert "raw_source_url" not in str(metadata)
+    assert "source_path" not in str(metadata)
+    assert "Sensitive title" not in str(metadata)
 
 
 def test_rag_retrieval_trace_payload_uses_redacted_contract():
@@ -566,12 +630,931 @@ def test_rag_retrieval_trace_payload_uses_redacted_contract():
 
     assert payload["knowledge_base_ids"] == ["kb-1"]
     assert payload["result_count"] == 1
+    assert payload["stored_result_count"] == 1
     assert payload["policy_result"] == "allow"
     assert payload["raw_content_returned"] is False
     assert payload["node_id"] == "llm-1"
     assert "workflow_node_run_id" not in payload
     assert "content" not in payload["retrieved_chunks"][0]
+    assert "filename" not in payload["retrieved_chunks"][0]
     assert "metadata" not in payload["retrieved_chunks"][0]
+
+
+def test_rag_retrieval_trace_payload_caps_stored_chunk_summary():
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {"workflow_run_id": str(uuid.uuid4())}
+    retrieved_chunks = [
+        {
+            "knowledge_base_id": "kb-1",
+            "chunk_id": f"chunk-{index}",
+            "document_id": f"doc-{index}",
+            "rank": index,
+            "score": 0.9,
+            "token_count": 120,
+            "metadata_summary": {"classification": "internal"},
+        }
+        for index in range(50)
+    ]
+
+    payload = node._rag_retrieval_trace_payload(retrieved_chunks)  # noqa: SLF001
+
+    assert payload["result_count"] == 50
+    assert payload["stored_result_count"] == 20
+    assert len(payload["retrieved_chunks"]) == 20
+    assert payload["retrieved_chunk_summary_truncated"] is True
+    payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    assert payload_size <= 16 * 1024
+
+
+def test_llm_node_rag_no_evidence_skips_llm_call(monkeypatch):
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="사내 규정 알려줘",
+        knowledgeBases=[KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+    client = DummyClient()
+    node._client_override = client  # noqa: SLF001 - 테스트용 주입
+    decision = RAGEvidenceDecision(
+        evidence_sufficient=False,
+        insufficiency_reason="no_evidence",
+    )
+
+    monkeypatch.setattr(
+        LLMNode,
+        "_execute_knowledge_search",
+        lambda self, query, db_session: WorkflowRAGSearchResult(
+            context="",
+            metadata=[],
+            evidence_decision=decision,
+            should_invoke_llm=False,
+            answer_override="해당 질문에 답변할 수 있는 문서를 찾지 못했습니다.",
+        ),
+    )
+
+    result = node._run({})
+
+    assert client.calls == []
+    assert result["text"] == "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+    assert result["usage"] == {}
+    assert result["metadata"]["rag"]["evidence_sufficient"] is False
+    assert result["metadata"]["rag"]["insufficiency_reason"] == "no_evidence"
+    assert node._trace_payloads[0]["payload_kind"] == "rag.retrieval"
+    assert node._trace_payloads[0]["payload"]["evidence_sufficient"] is False
+
+
+def test_llm_node_rag_operational_failure_uses_safe_no_result(monkeypatch):
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="사내 규정 알려줘",
+        knowledgeBases=[KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+    client = DummyClient()
+    node._client_override = client  # noqa: SLF001 - 테스트용 주입
+
+    def raise_retrieval_error(self, query, db_session):
+        raise RuntimeError("vector store unavailable")
+
+    monkeypatch.setattr(LLMNode, "_execute_knowledge_search", raise_retrieval_error)
+
+    result = node._run({})
+
+    assert client.calls == []
+    assert result["text"] == "확인된 문서 기준으로는 답변 근거가 부족합니다."
+    assert result["metadata"]["rag"]["evidence_sufficient"] is False
+    assert result["metadata"]["rag"]["insufficiency_reason"] == "operational_error"
+
+
+def test_llm_node_rag_options_are_capped_during_validation():
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="사내 규정 알려줘",
+        topK=999,
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(uuid.uuid4()), name=f"KB {index}")
+            for index in range(MAX_RAG_RETRIEVAL_KBS + 5)
+        ],
+    )
+
+    data.validate()
+
+    assert data.topK == MAX_RAG_CHUNKS_PER_KB
+    assert len(data.knowledgeBases) == MAX_RAG_RETRIEVAL_KBS
+
+
+def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    ok_kb_id = uuid.uuid4()
+    fail_kb_id = uuid.uuid4()
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=ok_kb_id),
+                SimpleNamespace(id=fail_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=True,
+                external_reason_code="allowed",
+                effective_auth_state="operator",
+            )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, knowledge_base_id, **kwargs):
+            if knowledge_base_id == str(fail_kb_id):
+                raise RuntimeError("vector store unavailable")
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="근거",
+                    document_id=uuid.uuid4(),
+                    filename="safe.md",
+                    similarity_score=0.91,
+                    score=0.91,
+                    metadata_summary={"source_tier": "company_policy"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(ok_kb_id), name="Allowed"),
+            KnowledgeBaseRef(id=str(fail_kb_id), name="Failed"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.should_invoke_llm is True
+    assert result.evidence_decision.evidence_sufficient is True
+    assert result.evidence_decision.partial_result is True
+    assert result.evidence_decision.failed_candidate_count_bucket == "1"
+    assert len(result.metadata) == 1
+    assert result.trace_summary["permission_filter_applied"] is True
+    assert result.trace_summary["safe_exclusion_summary"] == {
+        "operational_failure_count_bucket": "1"
+    }
+
+
+def test_llm_node_rag_preserves_explicit_zero_score_threshold(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    captured_thresholds = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="operator",
+                )
+                for kb in kbs
+            }
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, threshold, **kwargs):
+            captured_thresholds.append(threshold)
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="근거",
+                    document_id=uuid.uuid4(),
+                    filename="policy.md",
+                    similarity_score=0.8,
+                    score=0.8,
+                    metadata_summary={},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        scoreThreshold=0,
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="Allowed")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.should_invoke_llm is True
+    assert captured_thresholds == [0]
+
+
+def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    policy_kb_id = uuid.uuid4()
+    thread_kb_id = uuid.uuid4()
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=policy_kb_id),
+                SimpleNamespace(id=thread_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=True,
+                external_reason_code="allowed",
+                effective_auth_state="operator",
+            )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, knowledge_base_id, **kwargs):
+            if knowledge_base_id == str(policy_kb_id):
+                return [
+                    ChunkPreview(
+                        chunk_id=uuid.uuid4(),
+                        content="공식 정책 근거",
+                        document_id=uuid.uuid4(),
+                        filename="policy.md",
+                        similarity_score=0.8,
+                        score=0.8,
+                        metadata_summary={"source_tier": "company_policy"},
+                    )
+                ]
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="대화형 참고 근거",
+                    document_id=uuid.uuid4(),
+                    filename="thread.md",
+                    similarity_score=0.8,
+                    score=0.8,
+                    metadata_summary={"source_tier": "conversation_or_thread"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(thread_kb_id), name="Thread"),
+            KnowledgeBaseRef(id=str(policy_kb_id), name="Policy"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.context.startswith("[파일: policy.md]")
+    assert "공식 정책 근거" in result.context.split("\n\n", 1)[0]
+    assert result.trace_summary["source_tier_policy"] == "tie_break"
+
+
+def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    policy_kb_id = uuid.uuid4()
+    thread_kb_id = uuid.uuid4()
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=policy_kb_id),
+                SimpleNamespace(id=thread_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="operator",
+                )
+                for kb in kbs
+            }
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, knowledge_base_id, **kwargs):
+            if knowledge_base_id == str(thread_kb_id):
+                return [
+                    ChunkPreview(
+                        chunk_id=uuid.uuid4(),
+                        content="대화형 참고 근거",
+                        document_id=uuid.uuid4(),
+                        filename="thread.md",
+                        similarity_score=0.8,
+                        score=0.8,
+                        metadata_summary={"source_tier": "conversation_or_thread"},
+                    )
+                ]
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="공식 정책 근거",
+                    document_id=uuid.uuid4(),
+                    filename="policy.md",
+                    similarity_score=0.8,
+                    score=0.8,
+                    metadata_summary={"source_tier": "company_policy"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        sourceTierPolicy="off",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(thread_kb_id), name="Thread"),
+            KnowledgeBaseRef(id=str(policy_kb_id), name="Policy"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.context.startswith("[파일: thread.md]")
+    assert result.trace_summary["source_tier_policy"] == "off"
+
+
+def test_llm_node_rag_template_query_rewrite_uses_safe_trace_summary(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    captured_queries = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=True,
+                external_reason_code="allowed",
+                effective_auth_state="operator",
+            )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        queryRewriteMode="template",
+        queryRewriteTemplate="{query} 승인 기준",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        captured_queries.append(kwargs["query"])
+        return WorkflowRAGFanoutResult(
+            results=[
+                (
+                    str(kb_id),
+                    [
+                        ChunkPreview(
+                            chunk_id=uuid.uuid4(),
+                            content="병가 승인 기준 근거",
+                            document_id=uuid.uuid4(),
+                            filename="policy.md",
+                            similarity_score=0.91,
+                            score=0.91,
+                            metadata_summary={"source_tier": "company_policy"},
+                        )
+                    ],
+                )
+            ],
+            failed_count=0,
+        )
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+
+    result = node._execute_knowledge_search("병가", db_session=FakeDb())  # noqa: SLF001
+
+    assert captured_queries == ["병가 승인 기준"]
+    assert result.trace_summary["query_rewrite_applied"] is True
+    assert result.trace_summary["query_rewrite_strategy"] == "template"
+    assert "병가 승인 기준" not in str(result.trace_summary)
+    assert result.should_invoke_llm is True
+
+
+def test_llm_node_rag_template_query_rewrite_preserves_backslashes():
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+            queryRewriteMode="template",
+            queryRewriteTemplate="path={{ query }} literal={query}",
+        ),
+    )
+
+    rewritten, applied, strategy = node._rewrite_rag_query(  # noqa: SLF001
+        r"foo\1 C:\temp"
+    )
+
+    assert applied is True
+    assert strategy == "template"
+    assert rewritten == r"path=foo\1 C:\temp literal=foo\1 C:\temp"
+
+
+def test_llm_node_rejects_llm_assisted_query_rewrite_until_gate_closes():
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        queryRewriteMode="llm_assisted",
+    )
+
+    with pytest.raises(ValueError, match="llm_assisted query rewrite"):
+        data.validate()
+
+
+def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+        ),
+    )
+    kb_ids = [str(uuid.uuid4()) for _ in range(7)]
+    pool_sizes = []
+    search_calls = []
+
+    class FakeJob:
+        def __init__(self, value):
+            self.value = value
+            self.exception = None
+
+        def ready(self):
+            return True
+
+        def kill(self, block=False):
+            return None
+
+    class FakePool:
+        def __init__(self, size):
+            pool_sizes.append(size)
+
+        def spawn(self, fn, **kwargs):
+            return FakeJob(fn(**kwargs))
+
+        def kill(self, block=False):
+            return None
+
+    class FakeGevent:
+        @staticmethod
+        def joinall(jobs, timeout=None):
+            return jobs
+
+    def fake_search(**kwargs):
+        search_calls.append(kwargs["knowledge_base_id"])
+        return [
+            ChunkPreview(
+                chunk_id=uuid.uuid4(),
+                content="근거",
+                document_id=uuid.uuid4(),
+                filename="safe.md",
+                similarity_score=0.9,
+            )
+        ]
+
+    monkeypatch.setattr(
+        node,
+        "_rag_gevent_modules",
+        lambda: (FakeGevent, FakePool),
+    )
+    monkeypatch.setattr(
+        node,
+        "_search_single_rag_kb_with_new_session",
+        fake_search,
+    )
+
+    result = node._run_rag_retrieval_fanout(  # noqa: SLF001
+        query="query",
+        fallback_db_session=object(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        knowledge_base_ids=kb_ids,
+        top_k=3,
+        threshold=0.5,
+    )
+
+    assert pool_sizes == [5]
+    assert search_calls == kb_ids
+    assert result.failed_count == 0
+    assert len(result.results) == len(kb_ids)
+
+
+def test_llm_node_rag_single_kb_uses_bounded_pool(monkeypatch):
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+        ),
+    )
+    kb_id = str(uuid.uuid4())
+    pool_sizes = []
+    search_calls = []
+
+    class FakeJob:
+        def __init__(self, value):
+            self.value = value
+            self.exception = None
+
+        def ready(self):
+            return True
+
+        def kill(self, block=False):
+            return None
+
+    class FakePool:
+        def __init__(self, size):
+            pool_sizes.append(size)
+
+        def spawn(self, fn, **kwargs):
+            return FakeJob(fn(**kwargs))
+
+        def kill(self, block=False):
+            return None
+
+    class FakeGevent:
+        @staticmethod
+        def joinall(jobs, timeout=None):
+            return jobs
+
+    def fake_search(**kwargs):
+        search_calls.append(kwargs["knowledge_base_id"])
+        return []
+
+    monkeypatch.setattr(
+        node,
+        "_rag_gevent_modules",
+        lambda: (FakeGevent, FakePool),
+    )
+    monkeypatch.setattr(
+        node,
+        "_search_single_rag_kb_with_new_session",
+        fake_search,
+    )
+
+    result = node._run_rag_retrieval_fanout(  # noqa: SLF001
+        query="query",
+        fallback_db_session=object(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        knowledge_base_ids=[kb_id],
+        top_k=3,
+        threshold=0.5,
+    )
+
+    assert pool_sizes == [1]
+    assert search_calls == [kb_id]
+    assert result.failed_count == 0
+
+
+def test_llm_node_rag_fails_closed_when_timeout_guard_unavailable(monkeypatch):
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+        ),
+    )
+
+    monkeypatch.setattr(node, "_rag_gevent_modules", lambda: None)
+
+    result = node._run_rag_retrieval_fanout(  # noqa: SLF001
+        query="query",
+        fallback_db_session=object(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        knowledge_base_ids=[str(uuid.uuid4())],
+        top_k=3,
+        threshold=0.5,
+    )
+
+    assert result.results == []
+    assert result.failed_count == 1
+    assert result.timeout_count == 1
+
+
+def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=True,
+                external_reason_code="allowed",
+                effective_auth_state="operator",
+            )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            raise RuntimeError("vector store unavailable")
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        ragFailurePolicy="fail_node",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    with pytest.raises(RuntimeError, match="vector store unavailable"):
+        node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
 
 def test_llm_runtime_permission_denied_uses_detailed_reason_and_unknown_target(
@@ -734,7 +1717,138 @@ def test_workflow_llm_service_requires_runtime_organization_scope(organization_i
     assert exc.value.organization_id is None
 
 
-def test_knowledge_search_requires_user_context():
+def test_knowledge_search_without_execution_subject_searches_public_collection_kbs(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    public_kb_id = uuid.uuid4()
+    captured_authorized_kbs = []
+
+    class FakeQuery:
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            item = SimpleNamespace(knowledge_base_id=public_kb_id)
+            collection = SimpleNamespace(safe_metadata={"visibility": "public"})
+            kb = SimpleNamespace(id=public_kb_id)
+            return [(item, collection, kb)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(public_kb_id), name="Public KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        captured_authorized_kbs.extend(kwargs["knowledge_base_ids"])
+        return WorkflowRAGFanoutResult(
+            results=[
+                (
+                    str(public_kb_id),
+                    [
+                        ChunkPreview(
+                            chunk_id=uuid.uuid4(),
+                            content="public policy",
+                            document_id=uuid.uuid4(),
+                            filename="public.md",
+                            similarity_score=0.9,
+                            score=0.9,
+                            metadata_summary={},
+                        )
+                    ],
+                )
+            ],
+            failed_count=0,
+        )
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+    monkeypatch.setattr(node, "_record_rag_retrieve_audit", lambda *args: None)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert captured_authorized_kbs == [str(public_kb_id)]
+    assert result.should_invoke_llm is True
+    assert "public policy" in result.context
+
+
+def test_knowledge_search_without_execution_subject_excludes_private_collection_kbs(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    private_kb_id = uuid.uuid4()
+    captured_authorized_kbs = []
+
+    class FakeQuery:
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            item = SimpleNamespace(knowledge_base_id=private_kb_id)
+            collection = SimpleNamespace(safe_metadata={})
+            kb = SimpleNamespace(id=private_kb_id)
+            return [(item, collection, kb)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(private_kb_id), name="Private KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        captured_authorized_kbs.extend(kwargs["knowledge_base_ids"])
+        return WorkflowRAGFanoutResult(results=[], failed_count=0)
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert captured_authorized_kbs == []
+    assert result.should_invoke_llm is False
+    assert result.evidence_decision.insufficiency_reason == "no_evidence"
+
+
+def test_knowledge_search_requires_execution_subject_for_private_runtime_path():
     data = LLMNodeData(
         title="LLM",
         provider="openai",
@@ -750,8 +1864,51 @@ def test_knowledge_search_requires_user_context():
         execution_context={"organization_id": str(uuid.uuid4())},
     )
 
-    with pytest.raises(PermissionError, match="active user context"):
+    with pytest.raises(PermissionError, match="credential user"):
         node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+
+def test_knowledge_search_does_not_fallback_to_user_id_without_execution_subject():
+    user_id = uuid.uuid4()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(uuid.uuid4()),
+        },
+    )
+
+    class FakeQuery:
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            item = SimpleNamespace(knowledge_base_id=uuid.uuid4())
+            collection = SimpleNamespace(safe_metadata={})
+            kb = SimpleNamespace(id=item.knowledge_base_id)
+            return [(item, collection, kb)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert result.should_invoke_llm is False
+    assert result.evidence_decision.insufficiency_reason == "no_evidence"
 
 
 def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
@@ -761,30 +1918,60 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
     denied_kb_id = uuid.uuid4()
     retrieval_calls = []
     audit_calls = []
-    captured_init = {}
+    helper_init = {}
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
-            captured_init["organization_id"] = organization_id
+            raise AssertionError("retrieval should not initialize before authorization")
 
         def search_documents_sync(self, *args, **kwargs):
             retrieval_calls.append(kwargs["knowledge_base_id"])
             return []
 
-    def fake_auth_state(db, user_id, knowledge_base_id, organization_id=None):
-        if str(knowledge_base_id) == str(allowed_kb_id):
-            return "manager"
-        if str(knowledge_base_id) == str(denied_kb_id):
-            return "none"
-        raise AssertionError(f"unexpected kb: {knowledge_base_id}")
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=allowed_kb_id),
+                SimpleNamespace(id=denied_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            helper_init["user_id"] = user_id
+            helper_init["organization_id"] = organization_id
+
+        def evaluate_kb_use(self, kb):
+            if kb.id == allowed_kb_id:
+                return SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="manager",
+                )
+            if kb.id == denied_kb_id:
+                return SimpleNamespace(
+                    allowed=False,
+                    external_reason_code="permission.denied",
+                    effective_auth_state="none",
+                )
+            raise AssertionError(f"unexpected kb: {kb.id}")
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
 
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
         FakeRetrievalService,
     )
     monkeypatch.setattr(
-        "apps.workflow_engine.workflow.nodes.llm.llm_node.get_effective_knowledge_base_auth_state",
-        fake_auth_state,
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
     )
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
@@ -807,15 +1994,20 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
         execution_context={
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
             "workflow_id": str(uuid.uuid4()),
             "workflow_run_id": str(uuid.uuid4()),
         },
     )
 
-    with pytest.raises(PermissionError, match="Knowledge Base use permission"):
-        node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+    with pytest.raises(PermissionError, match="Knowledge Base is unavailable"):
+        node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
-    assert captured_init["organization_id"] == organization_id
+    assert helper_init["organization_id"] == organization_id
+    assert helper_init["user_id"] == user_id
     assert retrieval_calls == []
     assert audit_calls[0]["resource_id"] == str(denied_kb_id)
     assert audit_calls[0]["effective_auth_state"] == "none"

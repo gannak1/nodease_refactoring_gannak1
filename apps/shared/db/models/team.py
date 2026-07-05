@@ -20,7 +20,7 @@ from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 from apps.shared.db.base import Base
 
 if TYPE_CHECKING:
-    from apps.shared.db.models.knowledge import KnowledgeBase
+    from apps.shared.db.models.knowledge import KnowledgeBase, KnowledgeCollection
     from apps.shared.db.models.llm import LLMCredential
     from apps.shared.db.models.organization import Organization
     from apps.shared.db.models.user import User
@@ -422,6 +422,125 @@ class TeamKnowledgePermission(TeamResourcePermissionMixin, Base):
     )
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship("KnowledgeBase")
+
+
+class TeamKnowledgeCollectionPermission(TeamAssignmentMixin, Base):
+    """Team additive permission row for a knowledge collection action."""
+
+    __tablename__ = "team_knowledge_collection_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "knowledge_collection_id",
+            "team_id",
+            "permission_action",
+            name="uq_team_knowledge_collection_permissions_action",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_knowledge_collection_permissions_team_org",
+        ),
+        CheckConstraint(
+            "permission_action IN ('read', 'route', 'manage', 'sync')",
+            name="ck_team_knowledge_collection_permissions_action",
+        ),
+        CheckConstraint(
+            "flags >= 0",
+            name="ck_team_knowledge_collection_permissions_flags_nonnegative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    knowledge_collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    knowledge_collection: Mapped["KnowledgeCollection"] = relationship(
+        "KnowledgeCollection"
+    )
+
+
+class UserKnowledgeCollectionPermission(Base):
+    """Direct additive user permission row for a knowledge collection action."""
+
+    __tablename__ = "user_knowledge_collection_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "user_id",
+            "knowledge_collection_id",
+            "permission_action",
+            name="uq_user_knowledge_collection_permissions_action",
+        ),
+        CheckConstraint(
+            "permission_action IN ('read', 'route', 'manage', 'sync')",
+            name="ck_user_knowledge_collection_permissions_action",
+        ),
+        CheckConstraint(
+            "flags >= 0",
+            name="ck_user_knowledge_collection_permissions_flags_nonnegative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    knowledge_collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    options: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    flags: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+
+    grantee_organization: Mapped["Organization"] = relationship(
+        "Organization",
+        foreign_keys=[grantee_organization_id],
+    )
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
+    knowledge_collection: Mapped["KnowledgeCollection"] = relationship(
+        "KnowledgeCollection"
+    )
 
 
 class TeamLLMPermission(TeamResourcePermissionMixin, Base):

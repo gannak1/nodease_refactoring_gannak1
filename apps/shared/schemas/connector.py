@@ -31,6 +31,7 @@ class DBConnectionTestRequest(BaseModel):
 class DBConnectionTestResponse(BaseModel):
     success: bool
     message: str
+    reason_code: Optional[str] = None
 
 
 class DBConnectionDetailResponse(BaseModel):

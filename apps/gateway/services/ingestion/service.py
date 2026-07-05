@@ -3,9 +3,10 @@ import json
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import tiktoken
 from fastapi import UploadFile
@@ -14,9 +15,22 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.services.ingestion.factory import IngestionFactory
 from apps.gateway.services.storage import get_storage_service
-from apps.shared.db.models.knowledge import Document, DocumentChunk, SourceType
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    DocumentVersion,
+    SourceType,
+)
 from apps.shared.db.session import SessionLocal
 from apps.shared.distributed_lock import DistributedLock
+from apps.shared.services.knowledge_ingestion_fencing import (
+    ACTIVE_FENCING_TOKEN_HASH_KEY,
+    KnowledgeIngestionFencing,
+)
+from apps.shared.services.knowledge_ingestion_finalizer import (
+    KnowledgeIngestionFinalizationError,
+    KnowledgeIngestionFinalizer,
+)
 from apps.shared.services.ingestion.hierarchical_chunker import (
     HierarchicalChunker,
     HierarchicalChunkerConfig,
@@ -32,6 +46,14 @@ from apps.shared.services.rag_hierarchy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DocumentChunkingResult:
+    chunks: List[Dict[str, Any]]
+    chunking_mode: str
+    chunking_fingerprint: str
+    content_hash: str
 
 
 class IngestionOrchestrator:
@@ -142,6 +164,10 @@ class IngestionOrchestrator:
 
             session = SessionLocal()
             self.db = session
+            document_version: DocumentVersion | None = None
+            ingestion_fencing_token = str(uuid4())
+            failed_version_context: dict[str, Any] | None = None
+            finalization_committed = False
 
             try:
                 doc = self.db.query(Document).get(document_id)
@@ -156,22 +182,9 @@ class IngestionOrchestrator:
                 if doc.status == "completed":
                     return
 
-                self._update_progress_redis(document_id, 0)
-                self._update_status(document_id, "indexing")
+                self._mark_document_indexing(document_id, ingestion_fencing_token)
 
-                # 문서 소스 타입에 맞는 Processor 생성
-                processor = IngestionFactory.get_processor(
-                    doc.source_type, self.db, self.user_id
-                )
-
-                source_config = self._build_config(doc)
-
-                result = processor.process(source_config)
-
-                if result.metadata.get("error"):
-                    raise Exception(result.metadata["error"])
-
-                raw_blocks = result.chunks
+                raw_blocks = self._extract_raw_blocks(doc)
                 if not raw_blocks:
                     logger.warning(
                         f"[IngestionOrchestrator] Document {document_id}의 raw_blocks가 비어있음."
@@ -180,114 +193,50 @@ class IngestionOrchestrator:
                         document_id,
                         "completed",
                         error_message="추출 가능한 콘텐츠가 없습니다.",
+                        meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
                     )
                     return
 
-                meta = dict(doc.meta_info or {})
-                chunking_mode = validate_chunking_request(
-                    chunking_mode=meta.get("chunking_mode"),
-                    source_type=doc.source_type,
-                    selection_mode=meta.get("selection_mode", "all"),
-                )
-                current_fingerprint = chunking_fingerprint_hash(
-                    meta_info=meta,
-                    chunk_size=doc.chunk_size,
-                    chunk_overlap=doc.chunk_overlap,
-                    source_type=doc.source_type,
-                )
-
-                full_text = "".join([b["content"] for b in raw_blocks])
-                new_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
-                # 실패했던 문서는 내용이 같아도 재처리 (status != 'failed' 조건 추가)
-                # 임베딩 모델이 변경된 경우에도 재처리
-                if (
-                    doc.content_hash == new_hash
-                    and doc.embedding_model == self.ai_model
-                    and meta.get("chunking_fingerprint_hash") == current_fingerprint
-                    and initial_status != "failed"
-                ):
-                    self._update_status(document_id, "completed")
-                    return
-
-                doc.content_hash = new_hash
-                self.db.commit()
-
-                if doc.source_type == "DB":
-                    final_chunks = self._refine_chunks(
-                        raw_blocks, override_chunk_size=8000
-                    )
-                    filtered_chunks = self._filter_chunks(
-                        final_chunks,
-                        meta.get("selection_mode", "all"),
-                        meta.get("chunk_range"),
-                        meta.get("keyword_filter"),
-                    )
-                elif chunking_mode == CHUNKING_MODE_HIERARCHICAL:
-                    preprocessed_blocks = self._preprocess_blocks(raw_blocks, meta)
-                    parent_size = parent_target_size(doc.chunk_size)
-                    chunker = HierarchicalChunker(
-                        HierarchicalChunkerConfig(
-                            child_chunk_size=doc.chunk_size,
-                            child_chunk_overlap=doc.chunk_overlap,
-                            segment_identifier=meta.get("segment_identifier", "\\n\\n"),
-                            parent_target_size=parent_size,
-                            parent_chunk_overlap=parent_overlap_size(
-                                doc.chunk_overlap,
-                                parent_size,
-                            ),
-                        )
-                    )
-                    final_chunks = chunker.build(preprocessed_blocks)
-                    filtered_chunks = filter_hierarchical_chunks(
-                        final_chunks,
-                        selection_mode=meta.get("selection_mode", "all"),
-                        keyword_filter=meta.get("keyword_filter"),
-                    )
-                else:
-                    # 전처리 적용 (FILE, API 타입)
-                    full_text = "\n".join([b["content"] for b in raw_blocks])
-                    preprocessed_text = self.preprocess_text(
-                        full_text, meta
-                    )
-                    preprocessed_blocks = [
-                        {"content": preprocessed_text, "metadata": {}}
-                    ]
-
-                    # [동적 Splitter 생성] 문서 설정 적용
-                    chunk_size = doc.chunk_size
-                    chunk_overlap = doc.chunk_overlap
-                    segment_identifier = meta.get("segment_identifier", "\\n\\n")
-
-                    separators = ["\n\n", "\n", ".", " ", ""]
-                    if segment_identifier:
-                        identifier = segment_identifier.replace("\\n", "\n")
-                        if identifier not in separators:
-                            separators.insert(0, identifier)
-
-                    doc_specific_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=chunk_size,
-                        chunk_overlap=chunk_overlap,
-                        separators=separators,
-                        keep_separator=True,  # [수정] 원복
-                    )
-
-                    final_chunks = self._refine_chunks(
-                        preprocessed_blocks, splitter=doc_specific_splitter
-                    )
-                    filtered_chunks = self._filter_chunks(
-                        final_chunks,
-                        meta.get("selection_mode", "all"),
-                        meta.get("chunk_range"),
-                        meta.get("keyword_filter"),
-                    )
-
-                self._save_to_vector_db(
+                chunking_result = self._build_document_chunks(doc, raw_blocks)
+                if self._has_current_artifacts(
                     doc,
-                    filtered_chunks,
-                    chunking_mode=chunking_mode,
-                    chunking_fingerprint=current_fingerprint,
+                    chunking_result=chunking_result,
+                    initial_status=initial_status,
+                ):
+                    self._update_status(
+                        document_id,
+                        "completed",
+                        meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
+                    )
+                    return
+
+                document_version, failed_version_context = (
+                    self._create_indexing_version(
+                        doc,
+                        chunking_result=chunking_result,
+                        fencing_token=ingestion_fencing_token,
+                    )
                 )
-                self._update_status(document_id, "completed")
+                if document_version is None:
+                    # organization_id가 없는 legacy KB는 기존 처리 상태 commit 경로를 유지한다.
+                    doc.content_hash = chunking_result.content_hash
+
+                self._persist_chunks_with_embeddings(
+                    doc,
+                    chunking_result.chunks,
+                    chunking_mode=chunking_result.chunking_mode,
+                    chunking_fingerprint=chunking_result.chunking_fingerprint,
+                    document_version=document_version,
+                )
+                if document_version is not None:
+                    self._finalize_indexing_version(
+                        doc,
+                        document_version,
+                        fencing_token=ingestion_fencing_token,
+                    )
+                    finalization_committed = True
+                else:
+                    self._update_status(document_id, "completed")
                 self._update_progress_redis(
                     document_id, 100, expire=True
                 )  # 완료 시 키 만료 또는 100 유지 후 만료
@@ -296,18 +245,255 @@ class IngestionOrchestrator:
                 )
 
             except Exception as e:
-                logger.error(
-                    f"Document processing failed - ID: {document_id}, Reason: {e}"
+                self._handle_processing_failure(
+                    document_id,
+                    e,
+                    failed_version_context=failed_version_context,
+                    finalization_committed=finalization_committed,
+                    fencing_token=ingestion_fencing_token,
                 )
-                self.db.rollback()
-                self._update_status(document_id, "failed", str(e))
-                self._update_progress_redis(
-                    document_id, 0, expire=True
-                )  # 실패 시 진행률 키 즉시 만료
 
             finally:
                 if session:
                     session.close()
+
+    def _mark_document_indexing(
+        self, document_id: UUID, ingestion_fencing_token: str
+    ) -> None:
+        self._update_progress_redis(document_id, 0)
+        self._update_status(
+            document_id,
+            "indexing",
+            meta_updates=KnowledgeIngestionFencing.active_document_meta_update(
+                ingestion_fencing_token
+            ),
+        )
+
+    def _extract_raw_blocks(self, doc: Document) -> List[Dict[str, Any]]:
+        processor = IngestionFactory.get_processor(doc.source_type, self.db, self.user_id)
+        result = processor.process(self._build_config(doc))
+        if result.metadata.get("error"):
+            raise Exception(result.metadata["error"])
+        return result.chunks
+
+    def _build_document_chunks(
+        self, doc: Document, raw_blocks: List[Dict[str, Any]]
+    ) -> DocumentChunkingResult:
+        meta = dict(doc.meta_info or {})
+        chunking_mode = validate_chunking_request(
+            chunking_mode=meta.get("chunking_mode"),
+            source_type=doc.source_type,
+            selection_mode=meta.get("selection_mode", "all"),
+        )
+        chunking_fingerprint = chunking_fingerprint_hash(
+            meta_info=meta,
+            chunk_size=doc.chunk_size,
+            chunk_overlap=doc.chunk_overlap,
+            source_type=doc.source_type,
+        )
+        content_hash = hashlib.sha256(
+            "".join([b["content"] for b in raw_blocks]).encode("utf-8")
+        ).hexdigest()
+
+        if doc.source_type == "DB":
+            final_chunks = self._refine_chunks(raw_blocks, override_chunk_size=8000)
+            filtered_chunks = self._filter_chunks(
+                final_chunks,
+                meta.get("selection_mode", "all"),
+                meta.get("chunk_range"),
+                meta.get("keyword_filter"),
+            )
+        elif chunking_mode == CHUNKING_MODE_HIERARCHICAL:
+            filtered_chunks = self._build_hierarchical_chunks(doc, raw_blocks, meta)
+        else:
+            filtered_chunks = self._build_flat_chunks(doc, raw_blocks, meta)
+
+        return DocumentChunkingResult(
+            chunks=filtered_chunks,
+            chunking_mode=chunking_mode,
+            chunking_fingerprint=chunking_fingerprint,
+            content_hash=content_hash,
+        )
+
+    def _build_hierarchical_chunks(
+        self, doc: Document, raw_blocks: List[Dict[str, Any]], meta: dict
+    ) -> List[Dict[str, Any]]:
+        preprocessed_blocks = self._preprocess_blocks(raw_blocks, meta)
+        parent_size = parent_target_size(doc.chunk_size)
+        chunker = HierarchicalChunker(
+            HierarchicalChunkerConfig(
+                child_chunk_size=doc.chunk_size,
+                child_chunk_overlap=doc.chunk_overlap,
+                segment_identifier=meta.get("segment_identifier", "\\n\\n"),
+                parent_target_size=parent_size,
+                parent_chunk_overlap=parent_overlap_size(
+                    doc.chunk_overlap,
+                    parent_size,
+                ),
+            )
+        )
+        final_chunks = chunker.build(preprocessed_blocks)
+        return filter_hierarchical_chunks(
+            final_chunks,
+            selection_mode=meta.get("selection_mode", "all"),
+            keyword_filter=meta.get("keyword_filter"),
+        )
+
+    def _build_flat_chunks(
+        self, doc: Document, raw_blocks: List[Dict[str, Any]], meta: dict
+    ) -> List[Dict[str, Any]]:
+        full_text = "\n".join([b["content"] for b in raw_blocks])
+        preprocessed_text = self.preprocess_text(full_text, meta)
+        preprocessed_blocks = [{"content": preprocessed_text, "metadata": {}}]
+
+        chunk_size = doc.chunk_size
+        chunk_overlap = doc.chunk_overlap
+        segment_identifier = meta.get("segment_identifier", "\\n\\n")
+
+        separators = ["\n\n", "\n", ".", " ", ""]
+        if segment_identifier:
+            identifier = segment_identifier.replace("\\n", "\n")
+            if identifier not in separators:
+                separators.insert(0, identifier)
+
+        doc_specific_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=separators,
+            keep_separator=True,
+        )
+
+        final_chunks = self._refine_chunks(
+            preprocessed_blocks, splitter=doc_specific_splitter
+        )
+        return self._filter_chunks(
+            final_chunks,
+            meta.get("selection_mode", "all"),
+            meta.get("chunk_range"),
+            meta.get("keyword_filter"),
+        )
+
+    def _has_current_artifacts(
+        self,
+        doc: Document,
+        *,
+        chunking_result: DocumentChunkingResult,
+        initial_status: str,
+    ) -> bool:
+        meta = dict(doc.meta_info or {})
+        # 실패했던 문서는 같은 content라도 재처리한다. 임베딩 모델이나 chunking 설정이 바뀐 경우도 재처리 대상이다.
+        return (
+            doc.content_hash == chunking_result.content_hash
+            and doc.embedding_model == self.ai_model
+            and meta.get("chunking_fingerprint_hash")
+            == chunking_result.chunking_fingerprint
+            and initial_status != "failed"
+        )
+
+    def _create_indexing_version(
+        self,
+        doc: Document,
+        *,
+        chunking_result: DocumentChunkingResult,
+        fencing_token: str,
+    ) -> tuple[DocumentVersion | None, dict[str, Any] | None]:
+        finalizer = KnowledgeIngestionFinalizer(self.db)
+        document_version = finalizer.create_indexing_version(
+            doc,
+            content_hash=chunking_result.content_hash,
+            chunking_fingerprint=chunking_result.chunking_fingerprint,
+            embedding_model=self.ai_model,
+            safe_metadata={
+                "source_type": str(getattr(doc.source_type, "value", doc.source_type)),
+                "chunking_mode": chunking_result.chunking_mode,
+            },
+            fencing_token=fencing_token,
+        )
+        if document_version is None:
+            return None, None
+        return document_version, {
+            "organization_id": document_version.organization_id,
+            "knowledge_base_id": document_version.knowledge_base_id,
+            "legacy_document_id": document_version.legacy_document_id,
+            "source_identity_id": document_version.source_identity_id,
+            "content_hash": document_version.content_hash,
+            "chunking_fingerprint": document_version.chunking_fingerprint,
+            "embedding_model": document_version.embedding_model,
+            "safe_metadata": dict(document_version.safe_metadata or {}),
+        }
+
+    def _finalize_indexing_version(
+        self,
+        doc: Document,
+        document_version: DocumentVersion,
+        *,
+        fencing_token: str,
+    ) -> None:
+        doc.status = "completed"
+        doc.error_message = None
+        doc.updated_at = datetime.now(timezone.utc)
+        KnowledgeIngestionFinalizer(self.db).finalize_active_version(
+            document_version,
+            expected_fencing_token=fencing_token,
+        )
+        self.db.commit()
+
+    def _handle_processing_failure(
+        self,
+        document_id: UUID,
+        error: Exception,
+        *,
+        failed_version_context: dict[str, Any] | None,
+        finalization_committed: bool,
+        fencing_token: str,
+    ) -> None:
+        logger.error(
+            "Document processing failed - ID: %s, error_type: %s",
+            document_id,
+            type(error).__name__,
+        )
+        self.db.rollback()
+        if finalization_committed:
+            logger.warning(
+                "Document processing post-finalization failure ignored - ID: %s, error_type: %s",
+                document_id,
+                type(error).__name__,
+            )
+            return
+        if failed_version_context is not None:
+            self._record_failed_indexing_version(
+                failed_version_context,
+                error=error,
+                fencing_token=fencing_token,
+            )
+        self._update_status(
+            document_id,
+            "failed",
+            self._safe_ingestion_error_message(error),
+            meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
+        )
+        self._update_progress_redis(document_id, 0, expire=True)
+
+    def _record_failed_indexing_version(
+        self,
+        failed_version_context: dict[str, Any],
+        *,
+        error: Exception,
+        fencing_token: str,
+    ) -> None:
+        try:
+            KnowledgeIngestionFinalizer(self.db).record_failed_indexing_version(
+                **failed_version_context,
+                safe_reason_code=(
+                    "ingestion.finalization_failed"
+                    if isinstance(error, KnowledgeIngestionFinalizationError)
+                    else "ingestion.processing_failed"
+                ),
+                fencing_token=fencing_token,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
 
     def _update_progress_redis(
         self, document_id: UUID, progress: int, expire: bool = False
@@ -470,13 +656,7 @@ class IngestionOrchestrator:
                 source_config["target_pages"] = target_pages
         elif source_type == SourceType.API:
             api_config = meta_info.get("api_config", {})
-            # api_config가 JSON string일 수 있으므로 파싱
-            if isinstance(api_config, str):
-                try:
-                    api_config = json.loads(api_config)
-                except (TypeError, json.JSONDecodeError):
-                    api_config = {}
-            source_config = api_config
+            source_config = self._build_api_source_config(api_config)
         elif source_type == SourceType.DB:
             base_config = meta_info or {}
             # db_config가 JSON string일 수 있으므로 파싱
@@ -614,14 +794,63 @@ class IngestionOrchestrator:
             if doc.meta_info and "strategy" in doc.meta_info:
                 config["strategy"] = doc.meta_info["strategy"]
         elif doc.source_type == SourceType.API:
-            api_config = doc.meta_info.get("api_config", {})
-            config.update(api_config)
+            api_config = (doc.meta_info or {}).get("api_config", {})
+            config.update(self._build_api_source_config(api_config))
         elif doc.source_type == SourceType.DB:
             config.update(doc.meta_info or {})
             # Flatten db_config if it exists (DB Processor expects selections at root)
             if "db_config" in config and isinstance(config["db_config"], dict):
                 config.update(config["db_config"])
         return config
+
+    def _build_api_source_config(self, api_config: Any) -> Dict[str, Any]:
+        if isinstance(api_config, str):
+            try:
+                api_config = json.loads(api_config)
+            except (TypeError, json.JSONDecodeError):
+                api_config = {}
+        api_config = dict(api_config or {})
+        return {
+            "url": self._decrypt_api_source_value(
+                api_config,
+                encrypted_key="url_encrypted",
+                legacy_key="url",
+            ),
+            "method": str(api_config.get("method") or "GET").upper(),
+            "headers": self._decrypt_api_source_value(
+                api_config,
+                encrypted_key="headers_encrypted",
+                legacy_key="headers",
+                default={},
+            ),
+            "body": self._decrypt_api_source_value(
+                api_config,
+                encrypted_key="body_encrypted",
+                legacy_key="body",
+            ),
+        }
+
+    def _decrypt_api_source_value(
+        self,
+        api_config: Dict[str, Any],
+        *,
+        encrypted_key: str,
+        legacy_key: str,
+        default: Any = None,
+    ) -> Any:
+        from apps.shared.utils.encryption import encryption_manager
+
+        encrypted_value = api_config.get(encrypted_key)
+        if encrypted_value:
+            return encryption_manager.decrypt(str(encrypted_value))
+
+        legacy_value = api_config.get(legacy_key, default)
+        if not isinstance(legacy_value, str):
+            return legacy_value
+        try:
+            return encryption_manager.decrypt(legacy_value)
+        except Exception:
+            return legacy_value
 
     def _refine_chunks(
         self,
@@ -650,14 +879,16 @@ class IngestionOrchestrator:
                 refined.append({"content": split, "metadata": new_meta})
         return refined
 
-    def _save_to_vector_db(
+    def _persist_chunks_with_embeddings(
         self,
         doc: Document,
         chunks: List[Dict[str, Any]],
         *,
         chunking_mode: str = "flat",
         chunking_fingerprint: str | None = None,
+        document_version: DocumentVersion | None = None,
     ):
+        """Chunk embedding 생성, 암호화, versioned chunk 저장을 한 ingestion boundary에서 처리한다."""
         import tiktoken
         from services.llm_service import LLMService
         from utils.encryption import encryption_manager
@@ -846,11 +1077,19 @@ class IngestionOrchestrator:
                 }
             )
 
-        # !!! CRITICAL: 기존 청크 삭제를 맨 마지막에 수행 (Atomic-like behavior) !!!
-        # 임베딩/암호화 준비 중 실패하면 삭제되지 않음.
-        self.db.query(DocumentChunk).filter(
+        # !!! CRITICAL: 기존 검색 가능 청크는 준비가 끝나기 전에는 삭제하지 않는다. !!!
+        # Versioned 경로는 새 document_version_id의 staging chunk만 교체하고,
+        # legacy NULL chunk 정리는 active pointer swap transaction에서 수행한다.
+        if document_version is not None:
+            self.db.flush()
+        chunk_delete_query = self.db.query(DocumentChunk).filter(
             DocumentChunk.document_id == doc.id
-        ).delete()
+        )
+        if document_version is not None:
+            chunk_delete_query = chunk_delete_query.filter(
+                DocumentChunk.document_version_id == document_version.id
+            )
+        chunk_delete_query.delete(synchronize_session=False)
 
         if is_hierarchical:
             parent_objects = {}
@@ -859,6 +1098,9 @@ class IngestionOrchestrator:
                 if payload["chunk_level"] == "parent":
                     parent = DocumentChunk(
                         document_id=doc.id,
+                        document_version_id=(
+                            document_version.id if document_version else None
+                        ),
                         knowledge_base_id=doc.knowledge_base_id,
                         content=payload["content"],
                         chunk_index=payload["chunk_index"],
@@ -877,6 +1119,9 @@ class IngestionOrchestrator:
                     self.db.add(
                         DocumentChunk(
                             document_id=doc.id,
+                            document_version_id=(
+                                document_version.id if document_version else None
+                            ),
                             knowledge_base_id=doc.knowledge_base_id,
                             content=payload["content"],
                             chunk_index=payload["chunk_index"],
@@ -897,6 +1142,9 @@ class IngestionOrchestrator:
                 self.db.add(
                     DocumentChunk(
                         document_id=doc.id,
+                        document_version_id=(
+                            document_version.id if document_version else None
+                        ),
                         knowledge_base_id=doc.knowledge_base_id,
                         content=payload["content"],
                         chunk_index=payload["chunk_index"],
@@ -914,6 +1162,9 @@ class IngestionOrchestrator:
                 [
                     DocumentChunk(
                         document_id=doc.id,
+                        document_version_id=(
+                            document_version.id if document_version else None
+                        ),
                         knowledge_base_id=doc.knowledge_base_id,
                         content=payload["content"],
                         chunk_index=payload["chunk_index"],
@@ -945,7 +1196,10 @@ class IngestionOrchestrator:
         doc.meta_info = new_meta
         self.db.add(doc)
 
-        self.db.commit()
+        if document_version is not None:
+            self.db.flush()
+        else:
+            self.db.commit()
 
     def _update_status(
         self,
@@ -953,6 +1207,7 @@ class IngestionOrchestrator:
         status: str,
         error_message: str = None,
         progress: int = None,
+        meta_updates: dict[str, Any | None] | None = None,
     ):
         doc = self.db.query(Document).get(document_id)
         if doc:
@@ -961,12 +1216,23 @@ class IngestionOrchestrator:
             doc.updated_at = datetime.now(timezone.utc)
 
             # 진행률 업데이트 (meta_info 활용)
-            if progress is not None:
+            if progress is not None or meta_updates:
                 new_meta = dict(doc.meta_info or {})
-                new_meta["progress"] = progress
+                if progress is not None:
+                    new_meta["progress"] = progress
+                for key, value in (meta_updates or {}).items():
+                    if value is None:
+                        new_meta.pop(key, None)
+                    else:
+                        new_meta[key] = value
                 doc.meta_info = new_meta
 
             self.db.commit()
+
+    def _safe_ingestion_error_message(self, error: Exception) -> str:
+        if isinstance(error, KnowledgeIngestionFinalizationError):
+            return "문서 색인 최종화에 실패했습니다."
+        return "문서 처리에 실패했습니다."
 
     def reindex_knowledge_base(self, kb_id: UUID, new_model: str):
         """

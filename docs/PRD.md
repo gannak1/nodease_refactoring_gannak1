@@ -119,7 +119,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후보, prompt, citation, trace에 포함되지 않는다 (NFR-007). A안의 문제는 보안 우회가 아니라 권한 있는 문서 중 불필요한 문서까지 넓게 포함되어 context token과 비용이 커지는 것이고, A/B의 차이는 권한 적용 여부가 아니라 권한 검사를 통과한 문서 안에서 근거를 얼마나 정밀하게 선택하느냐다. 시연에서 권한/정책상 제외된 문서를 표시할 때는 문서명과 정확한 건수를 노출하지 않는 안전한 요약으로만 표시한다.
 
-목표 KB 통합 구조에서는 source-managed KB가 mbased KB `use`와 fresh source ACL/requester authorization을 모두 통과한 경우에만 evidence로 사용된다. 자동 수집, collection routing, source ACL materialization, resource hiding API matrix는 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate가 닫힌 뒤 구현한다.
+목표 KB 통합 구조에서는 source-managed KB가 mbased KB `use`와 fresh source ACL/requester authorization을 모두 통과한 경우에만 evidence로 사용된다. 자동 수집, collection routing, source ACL materialization, resource hiding API matrix는 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 baseline을 기준으로 MBA-105에서 구현한다.
 
 후순위: `내 워크플로우` 상단 알림 패널(예산 초과로 정지된 workflow 개수, 예산 90% 육박 workflow 리스트)은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
 
@@ -224,7 +224,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-032: 권한·metadata 필터가 적용된 검색과 citation 반환
 - FR-033: retrieval 기록 추적 (redaction-safe metadata 기준)
 - FR-034: AI Builder가 생성한 workflow에서 준비된 Knowledge Base를 연결해 사내 문서 질의를 실행
-- FR-035: 목표 구조에서는 사내 문서/source item 자동 수집, document-level KB 색인, collection 묶음 관리, source ACL two-gate를 도입한다. 이 항목은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate가 닫힌 뒤 구현한다.
+- FR-035: 목표 구조에서는 사내 문서/source item 자동 수집, document-level KB 색인, collection 묶음 관리, source ACL two-gate를 도입한다. MBA-105 구현 baseline은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)와 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다.
 - FR-036: 목표 구조에서는 Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 source tier 선택, collection/KB routing hint, query template, validation checklist를 재사용하기 위해 provider-neutral Knowledge Skill을 도입할 수 있다. Skill은 권한 source나 최종 근거가 아니며 [ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)의 authorization/redaction/freshness/eval gate를 따른다.
 
 ### 권한 신청 — [features/organization/](features/organization/requirements.md)
@@ -265,6 +265,6 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - 예산의 설정 주체와 기간 단위 (관리자 vs workflow 소유 빌더, 월 단위 여부)
 - 권한 신청/승인의 canonical audit action 명명 (ADR-0008 갱신 시 확정)
 - NFR-006 성능 목표치
-- 통합 RAG의 destructive cutover/reset, post-cutover ID vocabulary, source ACL materialization, resource hiding API matrix는 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate를 닫은 뒤 구현한다.
+- 통합 RAG의 destructive production cutover/reset, raw artifact opt-in, code-bearing Knowledge Skill, platform-wide Workflow egress guard는 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md) 범위 밖이며 별도 승인 전까지 구현하지 않는다.
 
 후순위와 함께 미뤄진 질문: Admin 대시보드의 "비정상 접근" 판정 기준(차단 횟수 임계값 등)은 FR-013 복원 시 다시 논의한다.
