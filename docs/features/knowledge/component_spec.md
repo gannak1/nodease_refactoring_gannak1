@@ -1,7 +1,7 @@
 # Knowledge Component Spec
 
 Status: Draft
-MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다.
+MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다.
 
 ## Domain Components
 
@@ -75,7 +75,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 ### Runtime Collection Retrieval
 
-1. Workflow runtime이 execution subject와 active organization을 검증한다.
+1. Workflow runtime이 execution subject 또는 anonymous public-only context와 active organization을 검증한다.
 2. Listing surface에는 collection `read`, routing scope에는 collection `route`를 bulk 평가한다.
 3. Collection route scope와 KB permission helper/source ACL freshness/requester authorization 결과로 safe KB candidate set을 만든다.
 4. `query_rewrite_mode`가 켜져 있으면 user query와 safe skill/template만 사용해 검색용 query를 만든다. Rewrite는 safe candidate set을 넓히지 않는다.
@@ -95,14 +95,15 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 ### Workflow Runtime RAG
 
-1. Workflow runtime이 run context에서 execution subject를 명시적으로 resolve한다.
-2. Execution subject가 없거나 모호하면 RAG preflight를 실패시킨다. Workflow owner를 silent fallback으로 사용하지 않는다.
-3. Knowledge Permission Helper가 execution subject 기준으로 KB permission과 source ACL/requester authorization을 평가한다.
-4. Workflow가 Knowledge Skill을 사용할 경우 skill visibility, freshness/eval, safe metadata gate도 같은 execution subject 기준으로 평가한다.
-5. `general`, `permission_scoped`, `task_aware` 등 모든 운영 RAG mode는 같은 permission/source ACL/final evidence gate를 통과한다.
-6. Retrieval strategy, query rewrite, source tier, skill 차이는 gate 이후 authorized evidence를 얼마나 넓게 또는 정밀하게 선택하는지에만 영향을 준다.
-7. Evidence sufficiency policy가 insufficient로 판정하면 workflow node는 근거 부족 응답이나 안전한 분기 결과를 반환해야 하며 문서에 없는 정책 해석을 생성하지 않는다.
-8. Trace/A-B summary는 safe citation metadata, token/cost/latency, strategy, query rewrite 적용 여부, evidence sufficiency 결과, skill id/version/freshness/eval status만 노출한다.
+1. Workflow runtime이 run context에서 execution subject를 resolve한다. Interactive run은 request user를 subject로 전달할 수 있다.
+2. Execution subject가 있으면 Knowledge Permission Helper가 해당 subject 기준으로 KB permission과 source ACL/requester authorization을 평가한다.
+3. Execution subject가 없으면 Workflow owner, deployment owner, builder, `user_id`를 silent fallback으로 쓰지 않는다. Runtime은 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 candidate로 남긴다.
+4. Public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다.
+5. Workflow가 Knowledge Skill을 사용할 경우 skill visibility, freshness/eval, safe metadata gate도 execution subject가 있을 때 같은 subject 기준으로 평가한다. Anonymous public-only runtime은 skill 선택만으로 private KB 후보를 넓힐 수 없다.
+6. `general`, `permission_scoped`, `task_aware` 등 모든 운영 RAG mode는 subject 기반 gate 또는 anonymous public-only gate와 final evidence gate를 통과한다.
+7. Retrieval strategy, query rewrite, source tier, skill 차이는 gate 이후 authorized/public evidence를 얼마나 넓게 또는 정밀하게 선택하는지에만 영향을 준다.
+8. Evidence sufficiency policy가 insufficient로 판정하면 workflow node는 근거 부족 응답이나 안전한 분기 결과를 반환해야 하며 문서에 없는 정책 해석을 생성하지 않는다.
+9. Trace/A-B summary는 safe citation metadata, token/cost/latency, strategy, query rewrite 적용 여부, evidence sufficiency 결과, skill id/version/freshness/eval status만 노출한다.
 
 ### Source Sync And Version Activation
 

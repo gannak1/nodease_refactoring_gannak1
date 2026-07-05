@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline과 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
@@ -91,18 +91,19 @@ Skill candidate metadata도 같은 boundary를 따른다. Workflow Builder가 �
 
 ### Workflow Runtime RAG Execution Subject
 
-Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 `execution_subject`를 명시해야 한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다.
+Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 가능한 경우 `execution_subject`를 명시한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다. MVP에서 `execution_subject`가 없으면 retrieval은 실패가 아니라 anonymous public-only로 낮아진다.
 
 필수 계약:
 
 | 항목 | 규칙 |
 | --- | --- |
-| `execution_subject` | Workflow run context에서 명시적으로 resolve한 actor/service account. KB permission과 source ACL 평가 기준 |
-| `subject_resolution_reason` | interactive run, deployment service account, assigned operator 등 sanitized reason |
+| `execution_subject` | Workflow run context에서 명시적으로 resolve한 actor/service account. 있으면 KB permission과 source ACL 평가 기준 |
+| `subject_resolution_reason` | interactive run, deployment service account, assigned operator, anonymous public-only 등 sanitized reason. 현재 MVP runtime은 reason field 없이도 subject 부재를 anonymous public-only로 해석할 수 있다 |
 | `workflow_owner_id` | 감사/소유권 표시에는 사용할 수 있지만, 명시 설정 없이 retrieval 권한 fallback으로 사용하지 않는다 |
-| missing/ambiguous subject | retrieval preflight 실패. Silent owner fallback 금지 |
+| missing subject | Anonymous public-only retrieval. Active public collection에 연결된 active KB만 후보로 남기며 silent owner/user_id fallback은 금지 |
+| ambiguous or unsupported subject | Private retrieval fail-closed. Anonymous downgrade가 안전하게 판정되지 않으면 safe no-result 또는 failure policy를 따른다 |
 
-모든 운영 RAG mode는 `execution_subject` 기준의 KB permission/source ACL/final evidence gate를 통과해야 한다. `general RAG`는 authorized resource 안에서 넓게 검색하는 mode이고, `task-aware` 또는 `permission-scoped RAG`는 authorized resource 안에서 후보를 더 정밀하게 줄이는 mode다.
+모든 운영 RAG mode는 `execution_subject` 기준의 KB permission/source ACL/final evidence gate 또는 anonymous public-only gate를 통과해야 한다. `general RAG`는 authorized/public resource 안에서 넓게 검색하는 mode이고, `task-aware` 또는 `permission-scoped RAG`는 authorized/public resource 안에서 후보를 더 정밀하게 줄이는 mode다.
 
 ### LLM node RAG 품질 옵션
 
@@ -206,7 +207,8 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Auto collection mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, listing surface의 collection `read`, router scope의 collection `route`, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | Explicit KB mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, KB visibility/resource hiding, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | 빌더 단계 Knowledge Skill mode | active organization, skill visibility, skill safe metadata display, skill freshness/eval gate. Skill visibility는 collection route, KB permission, source ACL gate를 대체하지 않는다 |
-| 실행 시점 LLM node의 RAG 옵션 | execution subject, auto collection mode의 collection route, KB permission/source ACL gate, final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
+| 실행 시점 LLM node의 RAG 옵션 | execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate와 final evidence policy. execution subject가 없으면 anonymous public-only gate와 final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate 또는 anonymous public-only gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
+| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
 | Collection management | `collection.manage`; 기존 KB linking에는 `kb.manage`도 필요 |
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |
@@ -224,6 +226,7 @@ Resource hiding/no-result/evidence insufficiency API matrix는 [ADR-0017](../../
 - 허용된 evidence candidate resolution 이후 policy block.
 - Permission/source ACL gate를 통과한 뒤 발생한 source/connector operational failure.
 - Auto mode에서 권한 있는 candidate가 없는 경우.
+- Anonymous public-only mode에서 public candidate가 없는 경우.
 - 권한 gate 이후 evidence가 없는 경우.
 - Evidence score, citation coverage, source tier policy 기준으로 근거가 부족한 경우.
 - Evidence sufficiency policy가 `policy_filtered` 또는 `operational_partial` reason을 반환하는 경우.

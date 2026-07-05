@@ -21,7 +21,7 @@ Related Features: workflow, knowledge, llm-credentials, deployment
 - FR-002: 생성된 workflow는 기존 캔버스 편집기와 테스트 실행 경로를 그대로 사용한다. 별도 편집/실행 경로를 만들지 않는다.
 - FR-003: 생성 결과에 필요한 credential/모델/권한이 없으면 어떤 것이 부족한지 사전에 안내한다. 기존 wizard의 check-credentials 흐름을 참고한다.
 - FR-004: Workflow Builder 또는 생성된 LLM node가 사내 지식을 사용할 때는 Knowledge feature의 collection routing/KB permission/source ACL helper 결과만 사용한다. Builder와 LLM planner가 raw permission row, raw source ACL, hidden KB 목록을 직접 해석하지 않는다.
-- FR-005: Workflow runtime에서 LLM node가 RAG를 호출할 때는 run context의 명시적인 execution subject를 Knowledge service에 전달한다. Execution subject가 없거나 모호하면 workflow owner 권한으로 fallback하지 않고 preflight 실패로 처리한다.
+- FR-005: Workflow runtime에서 LLM node가 RAG를 호출할 때 run context에 명시적인 execution subject가 있으면 이를 Knowledge service에 전달한다. Execution subject가 없으면 workflow owner 권한으로 fallback하지 않고 anonymous public-only로 낮추며, 모호한 subject는 private retrieval fail-closed로 처리한다.
 - FR-006: Agent Builder는 Knowledge Skill을 workflow 생성/수정 제안과 LLM node의 RAG 옵션 구성에 사용할 수 있다. 이때 Skill은 provider-neutral 절차/context/routing artifact이며, 실행 시점 RAG 권한은 계속 Knowledge permission helper와 source ACL gate가 결정한다.
 - FR-007: Agent Builder가 Skill을 prompt context로 사용할 경우 skill visibility, safe metadata display, freshness/eval gate를 통과한 Skill metadata/body/checklist만 사용한다. Skill이 제안한 collection/KB reference는 workflow 실행 시점에 execution subject 권한으로 다시 검증된다.
 - FR-008: Agent Builder는 LLM node의 RAG 옵션인 `query_rewrite_mode`, `evidence_sufficiency_policy`, source tier hint 같은 후보를 제안할 수 있다. 기본값은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다. 이 설정은 workflow node 옵션일 뿐이며 권한 범위를 넓히거나 runtime data access를 부여하지 않는다.
@@ -32,7 +32,7 @@ Related Features: workflow, knowledge, llm-credentials, deployment
 - 생성된 workflow도 일반 workflow와 동일한 RBAC, audit, organization scope 규칙을 적용한다. 생성 경로라고 해서 권한 판정을 우회하지 않는다.
 - 프롬프트와 생성 결과에 secret 원문이 포함되지 않도록 한다.
 - 생성 실패 또는 해석 불가능한 프롬프트는 빈 캔버스가 아니라 명시적 실패 안내로 처리한다.
-- Knowledge-backed workflow generation이나 workflow 실행 시점 RAG 실행에서 collection/KB 후보를 사용할 때는 권한 helper가 만든 safe candidate set만 LLM에 전달한다. Collection visibility는 child KB content access를 의미하지 않는다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+- Knowledge-backed workflow generation이나 workflow 실행 시점 RAG 실행에서 collection/KB 후보를 사용할 때는 권한 helper가 만든 safe candidate set만 LLM에 전달한다. Execution subject가 없는 MVP runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)에 따라 public collection 소속 KB만 후보로 사용한다. Collection visibility는 authenticated subject 기반 child KB content access를 의미하지 않는다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
 - Knowledge Skill을 사용하더라도 raw skill body, hidden source reference, raw source title/path/url, restricted document list, raw prompt/completion/provider response를 LLM context, audit, trace에 넣지 않는다 ([ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)).
 - Stale/review-required skill은 workflow 생성 제안에서 remediation 안내로 표시할 수 있지만 운영 실행 시점 RAG procedure로 자동 선택하지 않는다.
 - Workflow Playground가 별도 실험 공간인지 canvas와 통합되는지, draft/unpublished skill을 workflow 테스트에 붙일 수 있는지, 배포 승인 요청에서 skill binding을 어떻게 검토할지는 아직 확정하지 않는다.

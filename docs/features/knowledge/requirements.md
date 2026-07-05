@@ -5,11 +5,11 @@ Related Features: auth, organization, workflow, agent-builder, connectors, audit
 
 ## Purpose
 
-흩어진 사내 문서와 데이터 source item을 자동 또는 수동으로 수집하고, workflow 생성과 실행에서 권한 범위 안의 근거만 검색할 수 있는 통합 RAG 기반을 제공한다. 현재 제품 방향에서는 전역 에이전트 Q&A보다 Workflow Builder가 LLM node의 RAG 옵션을 구성하고, 생성된 workflow가 실행 시점 execution subject 기준으로 검색하는 흐름을 우선한다. [PRD](../../PRD.md)의 FR-031~FR-033을 담당한다.
+흩어진 사내 문서와 데이터 source item을 자동 또는 수동으로 수집하고, workflow 생성과 실행에서 권한 범위 안의 근거만 검색할 수 있는 통합 RAG 기반을 제공한다. 현재 제품 방향에서는 전역 에이전트 Q&A보다 Workflow Builder가 LLM node의 RAG 옵션을 구성하고, 생성된 workflow가 실행 시점 execution subject 또는 anonymous public-only 기준으로 검색하는 흐름을 우선한다. [PRD](../../PRD.md)의 FR-031~FR-033을 담당한다.
 
 Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Knowledge retrieval, query rewrite, evidence sufficiency, source tier policy는 LLM node의 RAG 옵션으로 제공한다.
 
-현재 구현은 manual Knowledge Base 생성, 문서 업로드/색인, metadata-aware retrieval, hierarchical RAG, standalone RAG Agent answer 기반을 제공한다. 목표 KB 통합 모델은 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)에 따라 Knowledge Base를 document/source item 단위 permission/retrieval/sync/lifecycle atom으로 재정의하고, Knowledge Collection을 grouping/routing/UX/ops 단위로 둔다. Knowledge Skill 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다. MBA-105 구현 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)과 [implementation_baseline.md](implementation_baseline.md)를 따른다.
+현재 구현은 manual Knowledge Base 생성, 문서 업로드/색인, metadata-aware retrieval, hierarchical RAG, standalone RAG Agent answer 기반을 제공한다. 목표 KB 통합 모델은 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)에 따라 Knowledge Base를 document/source item 단위 permission/retrieval/sync/lifecycle atom으로 재정의하고, Knowledge Collection을 grouping/routing/UX/ops 단위로 둔다. Knowledge Skill 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다. MBA-105 구현 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [implementation_baseline.md](implementation_baseline.md)를 따른다.
 
 ## Current Baseline
 
@@ -18,6 +18,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - Standalone RAG Agent answer와 trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)를 따른다.
 - Knowledge Skill은 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)에 따른 provider-neutral target artifact이며, 현재 구현 완료 상태가 아니다.
 - 현재 `documents.meta_info`는 current metadata convention의 source of truth다.
+- Workflow LLM node RAG에서 `execution_subject`가 없으면 현재 MVP는 private KB retrieval을 실패시키는 대신 anonymous public-only로 낮춘다. Public-only 후보는 active Knowledge Collection의 `safe_metadata["visibility"] == "public"`에 연결된 active KB로 제한한다.
 - 목표 cutover 전까지 공식 문서는 현재 동작과 목표 모델을 분리해 읽어야 한다.
 
 ## Target Model
@@ -35,7 +36,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - 빌더로서, 수동 업로드 또는 connector sync로 생성된 지식을 collection 단위로 탐색하고 상태를 확인하고 싶다.
 - 플랫폼 관리자 또는 KB/collection manager로서, collection grouping/routing 권한과 KB content 권한을 분리해 관리하고 싶다.
 - workflow 생성 권한자로서, 자연어 요청만으로 사내 지식 검색이 필요한 LLM node의 RAG 옵션이 포함된 workflow 초안을 받고 싶다.
-- workflow 실행 사용자 또는 실행 주체로서, workflow runtime이 내 execution subject 권한 범위 안의 collection/KB 후보에서만 검색하고 citation을 남기길 원한다.
+- workflow 실행 사용자 또는 실행 주체로서, workflow runtime이 내 execution subject 권한 범위 안의 collection/KB 후보에서만 검색하고, 실행 주체가 없는 public 실행은 공개 collection/KB 후보에서만 검색하길 원한다.
 - 감사자로서, 특정 답변이 어떤 KB, document version, chunk에서 나왔는지 redaction-safe summary로 추적하고 싶다.
 - 운영자로서, source sync 실패, source ACL stale, tombstone, 재색인, purge 상태를 raw content 노출 없이 확인하고 싶다.
 - 도메인 오너로서, 반복되는 질문 유형에 맞는 Knowledge Skill의 안전한 절차/context/routing 경계를 정의하고 freshness/evaluation 상태를 관리할 수 있는 목표 기능을 원한다. 구체적인 작성 UI와 승인 UX는 아직 확정하지 않는다.
@@ -53,7 +54,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-039: Server-side URL fetch, connector preview/test, crawler/sitemap/API connector, DB/SSH/SaaS/object-storage probe는 중앙 outbound egress boundary와 protocol adapter safety policy를 통과해야 한다.
 - FR-040: Partial operational failure는 권한/source ACL failure와 구분한다. 일부 authorized KB retrieval 실패는 safe partial result로 표시할 수 있지만, permission/source ACL/final evidence failure는 evidence 제외 또는 resource-hidden response로 fail-closed한다.
 - FR-041: PII/secret redaction은 shared privacy/redaction service가 hard baseline을 제공하고, Knowledge ingestion은 이를 사용해 redacted canonical text를 생성한다. Admin policy는 baseline을 약화할 수 없고 organization/collection/source/KB 단위로 더 엄격하게 조정할 수 있다.
-- FR-042: Workflow runtime에서 RAG retrieval을 실행할 때는 workflow run context가 명시적으로 제공한 execution subject 기준으로 KB permission과 source ACL을 평가한다. Execution subject가 없거나 모호하면 workflow owner로 조용히 fallback하지 않고 preflight 실패로 처리한다.
+- FR-042: Workflow runtime에서 RAG retrieval을 실행할 때 execution subject가 있으면 해당 subject 기준으로 KB permission과 source ACL을 평가한다. Execution subject가 없으면 workflow owner, deployment owner, builder, `user_id`로 조용히 fallback하지 않고 anonymous public-only로 낮춰 active public collection에 연결된 active KB만 후보로 사용한다. Private KB 접근이 필요한 자동 실행용 service account/operator/preflight는 후속 기능이다.
 - FR-043: 운영 RAG mode는 이름이 `general`, `permission_scoped`, `task_aware`, `metadata_aware`, `hierarchical` 중 무엇이든 KB permission/source ACL/final evidence gate를 우회할 수 없다. `general RAG`는 authorized resource 안에서 넓게 검색하는 broad retrieval이고, `task-aware` 또는 `permission-scoped RAG`는 authorized resource 안에서 더 정밀하게 후보를 줄이는 retrieval이다.
 - FR-044: RAG strategy 비교와 비용 최적화를 위해 retrieval summary는 `retrieval_strategy`, `rag_mode`, selected collection/KB count, retrieved chunk count, citation count, context token estimate, retrieval latency, permission filter 여부, policy result, partial result, safe exclusion summary를 redaction-safe 형태로 제공한다.
 - FR-045: Source-managed KB에서 source ACL authorization은 KB `use`를 자동 대체하지 않는다. Auto-ingested KB는 normal mbased permission path 또는 organization-approved connector/source policy가 명시 KB `use`를 provision한 경우에만 retrieval 후보가 된다. Source ACL sync가 생성하는 record는 source authorization provenance로 취급하고 freshness/revocation/audit-safe provenance를 helper가 별도 gate로 평가한다.
@@ -76,6 +77,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 
 - Metadata는 permission source가 아니다. Metadata filter는 allowlist 기반 검색 제한이고 KB `use`/source ACL 판정을 대체하지 않는다.
 - Collection visibility나 route 권한은 child KB 존재나 content 접근을 증명하지 않는다.
+- MVP anonymous public-only runtime에서 public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. 이 visibility는 인증된 subject 기반 retrieval의 KB `use` 권한을 부여하지 않고, execution subject가 없는 public-only runtime의 candidate inclusion gate로만 사용한다.
 - Source public ACL은 organization-wide read/use로 자동 materialize하지 않는다. Connector policy와 organization policy가 명시적으로 opt-in하고 approver, expiry/reverification, revocation behavior, audit-safe metadata가 확정된 경우에만 `source_policy_kb_use_grants` provisioning 후보가 된다. 이 경우에도 Source Authorization Provenance와 requester authorization freshness gate는 별도로 필요하다.
 - Source-derived collection name/description/title/path/url은 민감 metadata일 수 있으므로 redacted, capped, display-policy-approved field로만 user-facing 저장/표시한다.
 - Raw source content 조회는 Agent answer나 SSE stream과 분리된 raw/compliance flow로만 허용한다. 요청은 active organization, KB visibility, raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal hold/purge policy, raw access audit 선기록을 모두 통과해야 한다.
@@ -104,7 +106,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 
 ## MBA-105 Implementation Baseline
 
-MBA-105는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 합의 baseline을 구현 기준으로 삼는다. 구현자가 따라야 할 운영 기본값, permission helper contract, active version finalization, resource hiding/no-result/partial result matrix, egress/protocol adapter 기준, 테스트 phase는 [implementation_baseline.md](implementation_baseline.md)에 모은다.
+MBA-105는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 합의 baseline을 구현 기준으로 삼되, Workflow RAG의 `execution_subject` 부재 처리는 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. 구현자가 따라야 할 운영 기본값, permission helper contract, active version finalization, resource hiding/no-result/partial result matrix, egress/protocol adapter 기준, 테스트 phase는 [implementation_baseline.md](implementation_baseline.md)에 모은다.
 
 ## Out Of Scope Until Separate Approval
 

@@ -2,7 +2,7 @@
 
 Status: Draft
 
-이 문서는 MBA-105 Knowledge 통합 구현자가 따라야 할 임시 구현 baseline을 한곳에 모은다. [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 기능별 구현 기준으로 풀어 쓴 문서이며, ADR과 충돌하면 ADR이 우선한다. 관련 기능은 auth, workflow, agent-builder, connectors, audit-tracing, llm-credentials, cost-optimizer다. API path, migration column, UI copy의 최종 상세는 각 구현 PR의 `api_spec.md`, `data_model.md`, component/test 문서에서 고정한다.
+이 문서는 MBA-105 Knowledge 통합 구현자가 따라야 할 임시 구현 baseline을 한곳에 모은다. [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 기능별 구현 기준으로 풀어 쓴 문서이며, Workflow RAG의 `execution_subject` 부재 처리는 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. ADR과 충돌하면 ADR이 우선한다. 관련 기능은 auth, workflow, agent-builder, connectors, audit-tracing, llm-credentials, cost-optimizer다. API path, migration column, UI copy의 최종 상세는 각 구현 PR의 `api_spec.md`, `data_model.md`, component/test 문서에서 고정한다.
 
 이 문서는 내부 planning inventory의 전체 내용을 복사한 것이 아니다. MBA-105 구현에 필요한 정책 기본값, 보안 gate, error matrix, recovery 기준만 공식 docs 구조에 맞게 승격한다.
 
@@ -13,6 +13,7 @@ MBA-105에서 baseline으로 삼는 범위:
 - document/source item 1개 = document-level Knowledge Base.
 - Knowledge Collection = grouping, routing, UX, operations 단위.
 - Workflow에는 별도 RAG node를 만들지 않고 LLM node의 RAG option/runtime path로 연결한다.
+- MVP Workflow RAG는 execution subject가 없으면 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 검색한다.
 - Source-managed KB retrieval은 mbased KB `use`와 fresh source ACL/requester authorization 두 gate를 모두 통과한다.
 - Source ACL facts는 authorization provenance와 freshness evidence이며 KB `use` 자체가 아니다.
 - Chunk content, embedding input, retrieval-visible artifact, prompt context는 redacted canonical text를 기본 원천으로 사용한다.
@@ -25,6 +26,7 @@ MBA-105에서 구현하지 않는 범위:
 - Code-bearing Knowledge Skill.
 - LLM-assisted query rewrite.
 - Break-glass source ACL bypass.
+- Private KB access for non-interactive runs through service account, assigned operator, or deployment preflight.
 - Global/main Agent retrieval path.
 - Platform-wide Workflow HTTP/GitHub/Mail egress guard.
 - Workflow Playground/canvas UX, draft skill authoring, submit-for-review, publish/deprecate UI.
@@ -59,6 +61,7 @@ ADR-0014는 목표 구조와 gate 목록을 정의한다. ADR-0017은 MBA-105 �
 | --- | --- |
 | Source ACL materialization | Source ACL fact/provenance는 KB `use` grant가 아니다. Source policy 기반 KB `use` provisioning은 `source_policy_kb_use_grants` table에만 materialize한다. |
 | Collection permission storage | `team_knowledge_collection_permissions` / `user_knowledge_collection_permissions`와 `permission_action` additive allow row를 사용한다. |
+| Anonymous public-only Workflow RAG | Execution subject가 없으면 owner/user_id fallback 없이 active public collection의 active KB만 candidate로 사용한다. Public collection은 `safe_metadata["visibility"] == "public"`으로 판정한다. |
 | Active version finalization | Active pointer swap, previous version `superseded`, processed state commit, cleanup/finalization outbox insert를 같은 DB transaction에서 수행한다. |
 | Resource hiding API matrix | 이 문서의 safe hidden/no-result/partial-result matrix를 따른다. Hidden path의 external reason은 `resource.hidden`으로 일반화한다. |
 | Retry/dead-letter vocabulary | Outbox/recovery row는 status, lease/fencing, attempt, next retry, dead-letter, re-drive contract를 가진다. |
@@ -93,6 +96,7 @@ Collection permission storage의 MBA-105 baseline table은 `team_knowledge_colle
 
 - Collection permission은 child KB content retrieval 권한을 상속하지 않는다.
 - `collection.route`는 router scope 권한이지 KB `use`가 아니다.
+- `safe_metadata["visibility"] == "public"`은 MVP anonymous public-only runtime의 candidate inclusion flag다. 누락 또는 다른 값은 private로 취급한다. 이 값은 authenticated subject 기반 retrieval의 KB `use` 권한을 부여하지 않는다.
 - Collection permission row는 기존 `auth_state` 계층으로 추론하지 않고 `permission_action` 값(`read`, `route`, `manage`, `sync`)을 저장하는 additive allow 모델을 기본으로 한다.
 - Unique key는 `(organization_id, collection_id, subject_type, subject_id, permission_action)` 또는 team/user 전용 table의 동등한 key를 사용한다.
 - Linking/unlinking에는 collection manage와 대상 KB manage가 모두 필요하다.
@@ -234,11 +238,12 @@ Slack/meeting source item의 effective ACL baseline:
 
 ## Workflow 및 Builder 기준
 
-- Runtime RAG는 명시 `execution_subject` 기준으로 평가한다.
+- Runtime RAG는 execution subject가 있으면 명시 `execution_subject` 기준으로 평가한다.
 - Interactive run은 active membership validation을 통과한 request user를 사용할 수 있다.
-- Schedule, webhook, API trigger run은 deployment-approved service account 또는 명시적으로 지정된 operator를 사용한다. Subject가 없거나 inactive, removed, ambiguous 상태면 fail-closed한다.
+- Execution subject가 없으면 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 검색한다.
+- Schedule, webhook, API trigger run의 private KB access는 deployment-approved service account 또는 명시적으로 지정된 operator가 필요하며 후속 기능이다. Subject가 없거나 inactive, removed, ambiguous 상태에서는 private KB retrieval을 수행하지 않는다.
 - Workflow owner/builder permission을 runtime fallback으로 조용히 사용하지 않는다.
-- Deployment preflight는 intended execution subject 또는 audience가 사용할 수 없는 LLM node RAG option을 탐지해야 한다.
+- Deployment preflight는 private RAG가 필요한 LLM node RAG option이 intended execution subject 또는 audience에게 사용 가능한지 탐지해야 하며 후속 기능이다. MVP에서는 subject 없는 자동 실행을 public-only로 처리한다.
 - Builder candidate API는 safe label, route availability, runtime availability warning, safe reason, required action만 반환한다.
 - Hidden KB id/name, exact denied count, raw source path/title/url, hidden source distribution은 Builder output에 포함하지 않는다.
 - Runtime failure 기본값은 user-facing flow에서는 permission-safe no-result, automation에서는 명시 fallback branch가 없는 한 fail-node/fail-workflow다.
