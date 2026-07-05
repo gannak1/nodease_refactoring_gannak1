@@ -74,7 +74,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-E002 | active organization 선택 후 API 요청은 organization header를 보내야 한다. | 선택 후 `/organizations/current` 요청에 header가 없다. | 테스트 실패. |
 | ORG-TC-E003 | Sidebar와 AdminConsolePage는 non-manager에게 관리 표면을 숨겨야 한다. | `is_manager=false`인데 관리 nav 또는 관리 테이블이 보인다. | 관리 nav 숨김, `관리 권한 없음` 표시. |
 | ORG-TC-E004 | member invite/update/remove UI는 필요한 payload와 confirm gate를 지켜야 한다. | invite payload가 비었거나 privilege/destructive action이 confirm 없이 호출된다. | API 미호출 또는 confirm 후 호출. |
-| ORG-TC-E005 | self 또는 마지막 manager action은 강등/제거를 막아야 한다. | 자기 자신 또는 마지막 manager row에서 강등/제거 button이 활성화된다. | disabled button. |
+| ORG-TC-E005 | self 또는 마지막 manager action은 정지/강등/제거를 막아야 한다. | 자기 자신 row의 `정지` button 또는 자기 자신/마지막 manager row의 강등/제거 button이 활성화된다. | disabled button이며 클릭해도 member update/remove API를 호출하지 않는다. |
 | ORG-TC-E006 | inactive team detail은 member add control을 숨겨야 한다. | inactive team에서 `추가` button이 활성화된다. | `비활성 팀에는 멤버를 추가할 수 없습니다.` 표시. |
 | ORG-TC-E007 | permission tab은 resource와 active grantee 없이는 grant를 막아야 한다. | workflow/credential id 없거나 inactive team/member로 PUT 요청이 나간다. | save disabled 또는 후보 제외. |
 | ORG-TC-E008 | active organization 변경 event 후 Sidebar는 organization name/manager flag를 새로 조회해야 한다. | event dispatch 후 이전 organization 이름이 유지된다. | `/organizations/current` 재호출. |
