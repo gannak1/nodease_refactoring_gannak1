@@ -7,19 +7,28 @@ import { PromptWizardModal } from '@/app/features/workflow/components/modals/Pro
 import { LLMParameterSidePanel } from '@/app/features/workflow/components/nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '@/app/features/workflow/components/nodes/llm/components/LLMReferenceSidePanel';
 import { ModelSelectDropdown } from '@/app/features/workflow/components/nodes/llm/components/ModelSelectDropdown';
+import { VariableTokenEditor } from '@/app/features/workflow/components/nodes/ui/VariableTokenEditor';
 import type { LLMNodeData } from '@/app/features/workflow/types/Nodes';
+import type { DraggedOutputVariable } from '@/app/features/workflow/utils/nodeVariablePorts';
+import {
+  getDroppedOutputReferenceName,
+  upsertNamedSelector,
+} from '@/app/features/workflow/utils/nodeVariablePorts';
+import { LLM_TASK_TYPES } from '@/app/features/workflow/utils/llmTaskTypes';
 import {
   llmDataFromCandidate,
   type CandidateDraft,
+  type JsonSchemaField,
+  type JsonSchemaFieldType,
   type SettingsTab,
 } from './costOptimizerPlaygroundModel';
 
-const taskTypes = [
-  { value: 'classify', label: '분류' },
-  { value: 'extract', label: '추출' },
-  { value: 'summarize', label: '요약' },
-  { value: 'generate', label: '생성' },
-  { value: 'reason', label: '추론' },
+const schemaFieldTypes: Array<{ value: JsonSchemaFieldType; label: string }> = [
+  { value: 'string', label: 'string' },
+  { value: 'number', label: 'number' },
+  { value: 'boolean', label: 'boolean' },
+  { value: 'object', label: 'object' },
+  { value: 'array', label: 'array' },
 ];
 
 type CandidateChangeHandler = <K extends keyof CandidateDraft>(
@@ -215,6 +224,22 @@ export function NodeSettingsComparisonPanel({
   const applyWizardPrompt = (improvedPrompt: string) => {
     onChange(promptFieldToDraftKey[wizardField], improvedPrompt);
   };
+  const handlePromptDropOutput = (output: DraggedOutputVariable) => {
+    const referenceName = getDroppedOutputReferenceName(
+      draft.referenced_variables,
+      output,
+      'value_selector',
+    );
+    onChange(
+      'referenced_variables',
+      upsertNamedSelector(
+        draft.referenced_variables,
+        output,
+        'value_selector',
+      ) as CandidateDraft['referenced_variables'],
+    );
+    return referenceName;
+  };
 
   const renderPromptField = ({
     field,
@@ -249,15 +274,25 @@ export function NodeSettingsComparisonPanel({
           </span>
         ) : null}
       </span>
-      <textarea
-        value={value}
-        onChange={(event) =>
-          onChange(promptFieldToDraftKey[field], event.target.value)
-        }
-        readOnly={readOnly}
-        placeholder={placeholder}
-        className={`${minHeightClassName} rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400 read-only:bg-slate-50`}
-      />
+      {readOnly ? (
+        <textarea
+          value={value}
+          readOnly
+          placeholder={placeholder}
+          className={`${minHeightClassName} rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none`}
+        />
+      ) : (
+        <VariableTokenEditor
+          value={value}
+          onChange={(nextValue) =>
+            onChange(promptFieldToDraftKey[field], nextValue)
+          }
+          onDropOutput={handlePromptDropOutput}
+          placeholder={placeholder}
+          ariaLabel={label}
+          className={minHeightClassName}
+        />
+      )}
     </label>
   );
 
@@ -267,6 +302,30 @@ export function NodeSettingsComparisonPanel({
     if (draft.fallback_model_id === modelId) {
       onChange('fallback_model_id', '');
     }
+  };
+  const updateSchemaFields = (fields: JsonSchemaField[]) => {
+    onChange('json_schema_fields', fields);
+  };
+  const addSchemaField = () => {
+    updateSchemaFields([
+      ...draft.json_schema_fields,
+      { key: '', type: 'string', required: false },
+    ]);
+  };
+  const updateSchemaField = (
+    index: number,
+    updates: Partial<JsonSchemaField>,
+  ) => {
+    updateSchemaFields(
+      draft.json_schema_fields.map((field, fieldIndex) =>
+        fieldIndex === index ? { ...field, ...updates } : field,
+      ),
+    );
+  };
+  const removeSchemaField = (index: number) => {
+    updateSchemaFields(
+      draft.json_schema_fields.filter((_, fieldIndex) => fieldIndex !== index),
+    );
   };
 
   return (
@@ -345,7 +404,7 @@ export function NodeSettingsComparisonPanel({
                     disabled={readOnly}
                     className="min-w-0 rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400 disabled:bg-slate-50"
                   >
-                    {taskTypes.map((taskType) => (
+                    {LLM_TASK_TYPES.map((taskType) => (
                       <option key={taskType.value} value={taskType.value}>
                         {taskType.label}
                       </option>
@@ -379,9 +438,99 @@ export function NodeSettingsComparisonPanel({
                   ))}
                 </div>
                 {draft.output_format === 'json' ? (
-                  <div className="mt-3 rounded-md border border-dashed border-slate-300 bg-white p-3 text-xs text-slate-500">
-                    JSON schema key-type 편집 UI는 compare API와 함께
-                    연결됩니다.
+                  <div className="mt-3 grid gap-3 rounded-md border border-dashed border-slate-300 bg-white p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-bold text-slate-700">
+                          JSON schema
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          flat key-type 행으로 출력 계약을 정의합니다.
+                        </div>
+                      </div>
+                      {!readOnly ? (
+                        <button
+                          type="button"
+                          onClick={addSchemaField}
+                          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                        >
+                          스키마 필드 추가
+                        </button>
+                      ) : null}
+                    </div>
+                    {draft.json_schema_fields.length === 0 ? (
+                      <div className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                        정의된 필드가 없습니다.
+                      </div>
+                    ) : (
+                      <div className="grid gap-2">
+                        {draft.json_schema_fields.map((field, index) => (
+                          <div
+                            key={`${field.key}-${index}`}
+                            className="grid grid-cols-[minmax(120px,1fr)_minmax(110px,140px)_auto_auto] items-center gap-2 rounded-md border border-slate-200 bg-white p-2"
+                          >
+                            <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
+                              <span>필드명</span>
+                              <input
+                                value={field.key}
+                                onChange={(event) =>
+                                  updateSchemaField(index, {
+                                    key: event.target.value,
+                                  })
+                                }
+                                readOnly={readOnly}
+                                className="min-w-0 rounded-md border border-slate-200 px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-emerald-400 read-only:bg-slate-50"
+                                placeholder="예: summary"
+                              />
+                            </label>
+                            <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
+                              <span>타입</span>
+                              <select
+                                value={field.type}
+                                onChange={(event) =>
+                                  updateSchemaField(index, {
+                                    type: event.target.value as JsonSchemaFieldType,
+                                  })
+                                }
+                                disabled={readOnly}
+                                className="min-w-0 rounded-md border border-slate-200 px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-emerald-400 disabled:bg-slate-50"
+                              >
+                                {schemaFieldTypes.map((fieldType) => (
+                                  <option
+                                    key={fieldType.value}
+                                    value={fieldType.value}
+                                  >
+                                    {fieldType.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="flex items-center gap-1 pt-5 text-xs font-semibold text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={field.required}
+                                onChange={(event) =>
+                                  updateSchemaField(index, {
+                                    required: event.target.checked,
+                                  })
+                                }
+                                disabled={readOnly}
+                              />
+                              필수
+                            </label>
+                            {!readOnly ? (
+                              <button
+                                type="button"
+                                onClick={() => removeSchemaField(index)}
+                                className="mt-5 rounded-md px-2 py-1 text-xs font-bold text-red-500 hover:bg-red-50"
+                              >
+                                삭제
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ) : null}
               </div>
