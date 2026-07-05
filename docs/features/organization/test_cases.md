@@ -20,7 +20,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 
 현재 backend coverage는 `apps/gateway/tests/api/test_organizations_api.py`, `apps/gateway/tests/api/test_teams_api.py`, `apps/gateway/tests/api/test_permissions_api.py`, `apps/gateway/tests/services/test_organization_member_service.py`, `apps/gateway/tests/services/test_team_service_permissions.py`, `apps/shared/tests/services/test_permissions.py`, `apps/shared/tests/services/test_permission_enforcement.py`, `tests/db/test_organization_user_schema.py`, `tests/db/test_team_permission_constraints.py`, `tests/test_permission_schema.py`, `apps/shared/tests/test_organization_membership_schema.py`에 분산되어 있다.
 
-현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트가 있으나, AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다.
+현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트가 있으나, AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다. App 생성 권한 신청 UI(ORG-TC-E009~E013)는 `apps/client/app/features/app/components/create-app-modal/index.test.tsx`가 담당한다.
 
 ## Unit Tests
 
@@ -78,6 +78,11 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-E006 | inactive team detail은 member add control을 숨겨야 한다. | inactive team에서 `추가` button이 활성화된다. | `비활성 팀에는 멤버를 추가할 수 없습니다.` 표시. |
 | ORG-TC-E007 | permission tab은 resource와 active grantee 없이는 grant를 막아야 한다. | workflow/credential id 없거나 inactive team/member로 PUT 요청이 나간다. | save disabled 또는 후보 제외. |
 | ORG-TC-E008 | active organization 변경 event 후 Sidebar는 organization name/manager flag를 새로 조회해야 한다. | event dispatch 후 이전 organization 이름이 유지된다. | `/organizations/current` 재호출. |
+| ORG-TC-E009 | App 생성 `403` 차단은 일반 실패 토스트 대신 권한 신청 UI로 전환해야 한다. | `POST /apps` `403`에서 `앱 생성에 실패했습니다.` 토스트가 뜨거나 권한 신청 폼이 보이지 않는다. | 권한 신청 폼 표시, 실패 토스트 없음. |
+| ORG-TC-E010 | 권한 신청 제출은 `app.create` 고정과 blank 아닌 신청 사유를 보내야 한다. | blank 사유로 API가 호출되거나 `requested_permission`이 `app.create`가 아니다. | blank 사유는 미호출 + 안내, 제출 body `{ requested_permission: 'app.create', reason }`. |
+| ORG-TC-E011 | 권한 신청 `201` 성공은 신청 완료 안내를 표시해야 한다. | 성공 후 완료 안내 없이 form이 유지된다. | 신청 완료 안내 표시. |
+| ORG-TC-E012 | 권한 신청 `409`는 detail에 따라 이미 권한 보유와 pending 중복 안내를 구분해야 한다. | 두 `409` detail이 같은 일반 오류 메시지로 표시된다. | `App creation permission already granted`는 보유 안내, `Pending permission request already exists`는 대기 안내. |
+| ORG-TC-E013 | `403`이 아닌 App 생성 실패는 기존 실패 처리를 유지해야 한다. | duplicate name `400` 또는 일반 오류에서 권한 신청 UI로 전환된다. | 기존 실패 토스트 유지, 권한 신청 폼 없음. |
 
 ## Permission Tests
 
