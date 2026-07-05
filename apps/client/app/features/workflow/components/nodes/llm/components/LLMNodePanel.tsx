@@ -28,6 +28,7 @@ import {
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
+import { LLM_TASK_TYPES } from '@/app/features/workflow/utils/llmTaskTypes';
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
@@ -257,8 +258,14 @@ export function LLMNodePanel({
   const openSettingsTab = useCallback(() => {
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
   }, []);
-  const { updateNodeData, nodes, edges, activeWorkflowId, workflowAccess } =
-    useWorkflowStore();
+  const {
+    updateNodeData,
+    nodes,
+    edges,
+    activeWorkflowId,
+    workflowAccess,
+    hasUnsavedChanges,
+  } = useWorkflowStore();
   const wizardOrganizationId = resolveWorkflowWizardOrganizationId(
     workflowAccess,
     activeWorkflowId,
@@ -663,6 +670,7 @@ export function LLMNodePanel({
               workflowId={activeWorkflowId}
               nodeId={nodeId}
               workflowAccess={workflowAccess}
+              hasUnsavedChanges={hasUnsavedChanges}
             />
             <button
               type="button"
@@ -772,6 +780,32 @@ export function LLMNodePanel({
               </button>
             </div>
           )}
+          <div className="mt-3 flex flex-col gap-1.5">
+            <label
+              htmlFor={`${nodeId}-task-type`}
+              className="text-xs font-semibold text-gray-700"
+            >
+              작업 유형
+            </label>
+            <select
+              id={`${nodeId}-task-type`}
+              value={data.task_type || 'generate'}
+              onChange={(event) =>
+                handleUpdateData('task_type', event.target.value)
+              }
+              className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {LLM_TASK_TYPES.map((taskType) => (
+                <option key={taskType.value} value={taskType.value}>
+                  {taskType.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">
+              비용 비교와 후보 적용 시 같은 작업 유형 기준으로 모델과
+              프롬프트를 평가합니다.
+            </p>
+          </div>
         </div>
       </CollapsibleSection>
 
