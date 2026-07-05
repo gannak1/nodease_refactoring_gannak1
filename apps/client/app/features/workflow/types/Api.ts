@@ -97,11 +97,7 @@ export interface CostOptimizerBaselineRow {
   output_preview: string;
   has_trace: boolean;
   node_options?: Record<string, unknown>;
-  downstream_compatibility?: {
-    state: string;
-    label: string;
-    message: string;
-  };
+  downstream_compatibility?: CostOptimizerDownstreamCompatibility;
 }
 
 export interface CostOptimizerLatestBaselineResponse {
@@ -124,6 +120,161 @@ export interface CostOptimizerBaselineListParams {
   compare_available?: boolean;
   limit?: number;
   offset?: number;
+}
+
+export interface CostOptimizerCandidateRequest {
+  label?: string;
+  model_id: string;
+  fallback_model_id?: string | null;
+  task_type?: string | null;
+  system_prompt?: string | null;
+  user_prompt?: string | null;
+  assistant_prompt?: string | null;
+  referenced_variables?: Array<{
+    name: string;
+    value_selector: string[];
+  }>;
+  parameters?: Record<string, unknown>;
+  output_format?: {
+    type: 'text' | 'json';
+    schema?: Record<string, unknown> | null;
+  };
+  knowledge?: {
+    knowledge_base_ids?: string[];
+    top_k?: number;
+    score_threshold?: number;
+    dedupe_retrieved_context?: boolean;
+    retrieved_context_max_chars?: number | null;
+    retrieved_context_compression?: 'off' | 'light' | 'strong';
+    answer_grounding_check?: 'off' | 'basic' | 'strict';
+  };
+}
+
+export interface CostOptimizerCompareRequest {
+  baseline_id: string;
+  candidate: CostOptimizerCandidateRequest;
+}
+
+export interface CostOptimizerApplyRequest {
+  comparison_id: string;
+  candidate_settings: CostOptimizerCandidateRequest;
+  acknowledge_downstream_warning?: boolean;
+}
+
+export interface CostOptimizerDownstreamCompatibility {
+  state: string;
+  label?: string;
+  message?: string;
+  baseline_downstream_hash?: string | null;
+  current_downstream_hash?: string | null;
+  first_consumer_status?: string | null;
+  contract_check?: {
+    status?: string | null;
+    checked_node_ids?: string[];
+    warnings?: string[];
+  };
+}
+
+export interface CostOptimizerUsageSummary extends Record<string, unknown> {
+  model?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  cost?: number | null;
+  total_cost?: number | null;
+  cost_unavailable?: boolean;
+  latency_ms?: number | null;
+  status?: string | null;
+}
+
+export interface CostOptimizerCompareResponse {
+  comparison_id: string;
+  workflow_id: string;
+  node_id: string;
+  baseline: {
+    baseline_id: string;
+    label?: string;
+    settings?: Record<string, unknown>;
+    input?: unknown;
+    output?: unknown;
+    usage?: CostOptimizerUsageSummary;
+    trace?: Record<string, unknown>;
+  };
+  candidate: {
+    label?: string;
+    settings?: Record<string, unknown>;
+    status: 'success' | 'failed' | 'schema_failed' | string;
+    output?: unknown;
+    usage?: CostOptimizerUsageSummary;
+    schema_validation?: {
+      status?: string | null;
+      errors?: unknown[];
+    };
+    latency_ms?: number | null;
+    trace?: Record<string, unknown>;
+    error_message?: string | null;
+  };
+  diff?: Record<string, unknown>;
+  downstream_compatibility?: CostOptimizerDownstreamCompatibility;
+}
+
+export interface CostOptimizerApplyResponse {
+  workflow_id: string;
+  node_id: string;
+  applied: boolean;
+  downstream_compatibility: CostOptimizerDownstreamCompatibility;
+  updated_draft_revision?: string | number | null;
+}
+
+export interface CostOptimizerExperimentListParams {
+  baseline_id?: string;
+  date_from?: string;
+  date_to?: string;
+  created_by?: string;
+  candidate_status?: 'success' | 'failed' | 'schema_failed' | 'running' | string;
+  model?: string;
+  is_applied?: boolean;
+  schema_status?: 'not_checked' | 'pass' | 'failed' | string;
+  downstream_state?: 'compatible' | 'warning' | 'incompatible' | 'unknown' | string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CostOptimizerCandidateSummary {
+  candidate_id: string;
+  name?: string | null;
+  status?: string | null;
+  model_id?: string | null;
+  fallback_model_id?: string | null;
+  task_type?: string | null;
+  total_cost?: number | null;
+  total_tokens?: number | null;
+  latency_ms?: number | null;
+  schema_status?: string | null;
+  downstream_state?: string | null;
+  is_applied?: boolean;
+  created_at?: string | null;
+}
+
+export interface CostOptimizerExperimentSummary {
+  experiment_id: string;
+  workflow_id: string;
+  app_id?: string | null;
+  node_id: string;
+  baseline_node_run_id?: string | null;
+  baseline_workflow_run_id?: string | null;
+  status?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  usage_summary?: CostOptimizerUsageSummary;
+  candidates: CostOptimizerCandidateSummary[];
+}
+
+export interface CostOptimizerExperimentListResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: CostOptimizerExperimentSummary[];
 }
 
 // 로그 관련 타입 (Backend Schemas와 일치)

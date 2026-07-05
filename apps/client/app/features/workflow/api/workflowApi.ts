@@ -6,8 +6,14 @@ import {
   WorkflowCreateRequest,
   WorkflowCompareResponse,
   CostOptimizerAvailabilityResponse,
+  CostOptimizerApplyRequest,
+  CostOptimizerApplyResponse,
   CostOptimizerBaselineListParams,
   CostOptimizerBaselineListResponse,
+  CostOptimizerCompareRequest,
+  CostOptimizerCompareResponse,
+  CostOptimizerExperimentListParams,
+  CostOptimizerExperimentListResponse,
   CostOptimizerLatestBaselineResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
@@ -248,6 +254,42 @@ export const workflowApi = {
   ): Promise<CostOptimizerBaselineListResponse> => {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/baselines`,
+      { params },
+    );
+    return response.data;
+  },
+
+  compareCostOptimizerCandidate: async (
+    workflowId: string,
+    nodeId: string,
+    data: CostOptimizerCompareRequest,
+  ): Promise<CostOptimizerCompareResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/compare`,
+      data,
+    );
+    return response.data;
+  },
+
+  applyCostOptimizerCandidate: async (
+    workflowId: string,
+    nodeId: string,
+    data: CostOptimizerApplyRequest,
+  ): Promise<CostOptimizerApplyResponse> => {
+    const response = await api.patch(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/apply`,
+      data,
+    );
+    return response.data;
+  },
+
+  listCostOptimizerExperiments: async (
+    workflowId: string,
+    nodeId: string,
+    params: CostOptimizerExperimentListParams = {},
+  ): Promise<CostOptimizerExperimentListResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments`,
       { params },
     );
     return response.data;
