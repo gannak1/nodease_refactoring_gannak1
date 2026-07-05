@@ -30,12 +30,6 @@ const unavailableMessage =
 const noBaselineMessage =
   '비교할 실행 로그가 없습니다. 먼저 테스트 실행을 완료해 주세요.';
 
-const compactPreview = (value: string) => {
-  if (!value) return '';
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
-};
-
 const parsePreview = (value: string): unknown => {
   const trimmed = value.trim();
   if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
@@ -53,7 +47,6 @@ const collectPreviewParts = (
   prefix = '',
   parts: string[] = [],
 ): string[] => {
-  if (parts.length >= 4) return parts;
   if (value === null || value === undefined) return parts;
 
   if (typeof value !== 'object') {
@@ -64,25 +57,23 @@ const collectPreviewParts = (
   }
 
   if (Array.isArray(value)) {
-    value.slice(0, 3).forEach((item, index) => {
+    value.forEach((item, index) => {
       collectPreviewParts(item, `${prefix}[${index}]`, parts);
     });
     return parts;
   }
 
-  Object.entries(value as Record<string, unknown>)
-    .slice(0, 8)
-    .forEach(([key, item]) => {
-      const nextPrefix = prefix ? `${prefix}.${key}` : key;
-      collectPreviewParts(item, nextPrefix, parts);
-    });
+  Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+    const nextPrefix = prefix ? `${prefix}.${key}` : key;
+    collectPreviewParts(item, nextPrefix, parts);
+  });
   return parts;
 };
 
 const readablePreview = (value: string) => {
   if (!value) return '';
   const parts = collectPreviewParts(parsePreview(value));
-  return compactPreview(parts.length > 0 ? parts.join(' · ') : value);
+  return (parts.length > 0 ? parts.join(' · ') : value).replace(/\s+/g, ' ').trim();
 };
 
 const formatCost = (cost: number) => {
@@ -283,7 +274,8 @@ export function CostOptimizerBaselineSelection({
         <div className="flex flex-col gap-3">
           <button
             type="button"
-            className="group w-full rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-100"
+            disabled={isLatestLoading || latestUnavailable}
+            className="group w-full rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:hover:border-slate-200 disabled:hover:bg-slate-50"
             onClick={handleLatest}
           >
             <span className="flex items-center gap-2 text-sm font-bold text-emerald-800">

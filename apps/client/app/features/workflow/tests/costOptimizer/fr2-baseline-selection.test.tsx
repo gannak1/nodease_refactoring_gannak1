@@ -121,6 +121,45 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     expect(screen.getByText(/enterprise response/)).toBeInTheDocument();
   });
 
+  it('baseline preview는 긴 값과 여러 JSON field를 임의로 줄이지 않고 표시한다', async () => {
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+    const longMessage =
+      'enterprise 고객의 정산 파일이 다시 생성되지 않아 월말 마감이 지연되고 있으며 담당자가 다운로드 위치와 재처리 방법을 확인해야 합니다.';
+    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
+      baseline: {
+        ...comparableBaseline,
+        input_preview: JSON.stringify({
+          message: longMessage,
+          customerTier: 'enterprise',
+          region: 'KR',
+          channel: 'slack',
+          severity: 'high',
+        }),
+        output_preview: JSON.stringify({
+          approvalRequired: false,
+          replyDraft: '정산 파일 재생성 방법과 다운로드 위치를 안내합니다.',
+          nextAction: 'notify-customer',
+          owner: 'billing-ops',
+          confidence: 0.91,
+        }),
+      },
+    });
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(new RegExp(longMessage))).toBeInTheDocument();
+    expect(screen.getByText(/severity: high/)).toBeInTheDocument();
+    expect(screen.getByText(/confidence: 0.91/)).toBeInTheDocument();
+    expect(screen.queryByText(/\.{3}/)).not.toBeInTheDocument();
+  });
+
   it('최신 실행 로그 선택은 latest baseline API를 호출하고 선택 결과를 전달한다', async () => {
     const CostOptimizerBaselineSelection = await loadBaselineSelection();
     const onBaselineSelected = vi.fn();
@@ -134,6 +173,7 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
+    await screen.findByText('gpt-4.1-mini');
     fireEvent.click(
       screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
     );
@@ -169,15 +209,20 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
+      ).toBeDisabled();
+    });
+    expect(
+      screen.getByText(/비교 가능한 최신 실행 로그가 없습니다/i),
+    ).toBeInTheDocument();
+
     fireEvent.click(
       screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
     );
 
-    await waitFor(() => {
-      expect(
-        screen.getByText(/비교할 실행 로그가 없습니다/i),
-      ).toBeInTheDocument();
-    });
+    expect(screen.queryByText(/비교할 실행 로그가 없습니다/i)).not.toBeInTheDocument();
   });
 
   it('이전 실행 로그 picker는 baseline row의 핵심 정보를 표시한다', async () => {

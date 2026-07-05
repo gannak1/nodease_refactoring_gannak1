@@ -92,6 +92,7 @@ const createLlmNode = (
     position: { x: 0, y: 0 },
     data: {
       title: 'LLM 비용 비교 대상',
+      provider: 'openai',
       model_id: 'gpt-4.1',
       system_prompt: '너는 고객 응대 담당자다.',
       user_prompt: '고객 문의를 분류해줘.',
@@ -194,6 +195,24 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     expect(routerMock.push).toHaveBeenCalledWith(
       '/modules/workflow-1/cost-optimizer/llm-1',
     );
+  });
+
+  it('저장되지 않은 draft가 있으면 저장 후 비교를 시작해야 한다는 안내를 표시한다', async () => {
+    useWorkflowStore.setState({
+      hasUnsavedChanges: true,
+    });
+
+    renderPanel(createLlmNode());
+    fireEvent.click(
+      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+    );
+
+    expect(routerMock.push).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        '현재 노드 설정을 저장한 뒤 비교를 시작할 수 있습니다.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('availability API가 unavailable을 반환하면 A/B 테스트하기 진입 액션은 비활성화된다', async () => {
