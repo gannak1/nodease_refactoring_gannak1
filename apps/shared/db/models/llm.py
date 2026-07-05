@@ -285,6 +285,12 @@ class LLMUsageLog(Base):
         nullable=True,
         index=True,
     )
+    cost_optimizer_candidate_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cost_optimizer_candidates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     node_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
