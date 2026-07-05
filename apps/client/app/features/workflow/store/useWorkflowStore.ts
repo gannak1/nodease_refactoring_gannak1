@@ -138,6 +138,7 @@ type WorkflowState = {
   features: Features; // 워크플로우 기능 설정
   envVariables: EnvVariable[]; // 환경 변수
   runtimeVariables: RuntimeVariable[]; // 런타임 변수
+  hasUnsavedChanges: boolean;
 
   // === ReactFlow 액션 ===
   onNodesChange: OnNodesChange;
@@ -211,6 +212,7 @@ type WorkflowState = {
   setFeatures: (features: Features) => void;
   setEnvVariables: (vars: EnvVariable[]) => void;
   setRuntimeVariables: (vars: RuntimeVariable[]) => void;
+  setHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
   updateNodeData: (nodeId: string, newData: Record<string, unknown>) => void;
   setWorkflowData: (
     data: {
@@ -581,6 +583,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   features: createDefaultFeatures(),
   envVariables: [],
   runtimeVariables: [],
+  hasUnsavedChanges: false,
 
   // === Inner Node Selection ===
   selectedInnerNode: null,
@@ -1185,6 +1188,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         edges: snapshot.edges || [],
         features: normalized.features,
         previewingVersion: null, // 미리보기 종료
+        hasUnsavedChanges: false,
       });
     } catch (error) {
       console.error('Failed to restore version:', error);
@@ -1364,9 +1368,11 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
   setEnvVariables: (envVariables) => set({ envVariables }),
   setRuntimeVariables: (runtimeVariables) => set({ runtimeVariables }),
+  setHasUnsavedChanges: (hasUnsavedChanges) => set({ hasUnsavedChanges }),
 
   updateNodeData: (nodeId, newData) => {
     set({
+      hasUnsavedChanges: true,
       nodes: get().nodes.map((node) => {
         if (node.id === nodeId) {
           return {
@@ -1428,6 +1434,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         features: normalized.features,
         envVariables: data.envVariables || [],
         runtimeVariables: data.runtimeVariables || [],
+        hasUnsavedChanges: false,
         undoStack: [],
         redoStack: [],
       });

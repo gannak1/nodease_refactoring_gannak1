@@ -873,6 +873,18 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(state.nodes[0].data.newField).toBe('newValue');
   });
 
+  it('노드 데이터를 수정하면 저장되지 않은 변경 상태로 표시한다', () => {
+    const node = createMockNode('node-1');
+    useWorkflowStore.getState().setNodes([node]);
+    useWorkflowStore.getState().setHasUnsavedChanges(false);
+
+    useWorkflowStore.getState().updateNodeData('node-1', {
+      title: '저장 전 제목',
+    });
+
+    expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(true);
+  });
+
   it('테스트 실행 결과를 node data에 반영해도 기존 편집 설정값은 유지된다', () => {
     const node = createCodeNode('code-1', {
       title: '코드 실행',
@@ -910,6 +922,8 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     const nodes: Node[] = [createMockNode('node-1'), createMockNode('node-2')];
     const edges: Edge[] = [createMockEdge('edge-1', 'node-1', 'node-2')];
 
+    useWorkflowStore.getState().setHasUnsavedChanges(true);
+
     useWorkflowStore.getState().setWorkflowData({
       nodes,
       edges,
@@ -925,6 +939,7 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(state.edges).toHaveLength(1);
     expect(state.features).toMatchObject({ key: 'value' });
     expect(state.envVariables).toHaveLength(1);
+    expect(state.hasUnsavedChanges).toBe(false);
   });
 
   it('setFeatures로 기능 설정을 업데이트할 수 있다', () => {
