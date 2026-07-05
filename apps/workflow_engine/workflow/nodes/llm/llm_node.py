@@ -9,7 +9,11 @@ from jinja2 import Environment
 
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
-from apps.shared.db.models.knowledge import KnowledgeBase
+from apps.shared.db.models.knowledge import (
+    KnowledgeBase,
+    KnowledgeCollection,
+    KnowledgeCollectionItem,
+)
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
@@ -710,7 +714,10 @@ class LLMNode(Node[LLMNodeData]):
 
         KnowledgeNode 로직을 재사용.
         """
-        user_id = self._resolve_rag_execution_subject()
+        execution_subject_user_id = self._resolve_rag_execution_subject()
+        credential_user_id = execution_subject_user_id or self._resolve_rag_actor_user()
+        if credential_user_id is None:
+            raise PermissionError("RAG retrieval requires a valid credential user context.")
         organization_id = self.execution_context.get("organization_id")
         try:
             organization_uuid = uuid.UUID(str(organization_id))
@@ -732,7 +739,7 @@ class LLMNode(Node[LLMNodeData]):
         all_chunks: List[tuple[str, ChunkPreview]] = []
         authorized_kb_ids = self._authorized_runtime_kb_ids(
             db_session,
-            user_id=user_id,
+            user_id=execution_subject_user_id,
             organization_id=organization_uuid,
             knowledge_base_ids=kb_ids,
         )
@@ -740,7 +747,7 @@ class LLMNode(Node[LLMNodeData]):
         fanout = self._run_rag_retrieval_fanout(
             query=search_query,
             fallback_db_session=db_session,
-            user_id=user_id,
+            user_id=credential_user_id,
             organization_id=organization_uuid,
             knowledge_base_ids=authorized_kb_ids,
             top_k=top_k,
@@ -748,7 +755,7 @@ class LLMNode(Node[LLMNodeData]):
         )
 
         for kb_id, chunks in fanout.results:
-            self._record_rag_retrieve_audit(user_id, kb_id, len(chunks))
+            self._record_rag_retrieve_audit(credential_user_id, kb_id, len(chunks))
             for chunk in chunks:
                 all_chunks.append((kb_id, chunk))
 
@@ -1102,7 +1109,7 @@ class LLMNode(Node[LLMNodeData]):
             total += max(1, len(getattr(chunk, "content", "") or "") // 4)
         return total
 
-    def _resolve_rag_execution_subject(self) -> uuid.UUID:
+    def _resolve_rag_execution_subject(self) -> uuid.UUID | None:
         # Workflow owner나 builder 권한으로 조용히 대체하지 않는다.
         # 현재 runtime은 user execution subject만 지원하며 service account는 후속 gate다.
         subject = self.execution_context.get("execution_subject")
@@ -1118,13 +1125,24 @@ class LLMNode(Node[LLMNodeData]):
                     "RAG retrieval requires a valid execution subject."
                 ) from exc
 
-        raise PermissionError("RAG retrieval requires an active execution subject.")
+        return None
+
+    def _resolve_rag_actor_user(self) -> uuid.UUID | None:
+        user_id_str = self.execution_context.get("user_id")
+        if not user_id_str:
+            return None
+        try:
+            return uuid.UUID(str(user_id_str))
+        except (TypeError, ValueError) as exc:
+            raise PermissionError(
+                "RAG retrieval requires a valid credential user context."
+            ) from exc
 
     def _authorized_runtime_kb_ids(
         self,
         db_session,
         *,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         organization_id: uuid.UUID,
         knowledge_base_ids: List[str],
     ) -> List[str]:
@@ -1137,6 +1155,13 @@ class LLMNode(Node[LLMNodeData]):
 
         if not parsed_ids:
             return []
+
+        if user_id is None:
+            return self._public_runtime_kb_ids(
+                db_session,
+                organization_id=organization_id,
+                knowledge_base_ids=parsed_ids,
+            )
 
         rows = (
             db_session.query(KnowledgeBase)
@@ -1173,6 +1198,41 @@ class LLMNode(Node[LLMNodeData]):
                 raise PermissionError("Knowledge Base is unavailable.")
             authorized_ids.append(str(kb_id))
         return authorized_ids
+
+    def _public_runtime_kb_ids(
+        self,
+        db_session,
+        *,
+        organization_id: uuid.UUID,
+        knowledge_base_ids: List[uuid.UUID],
+    ) -> List[str]:
+        rows = (
+            db_session.query(KnowledgeCollectionItem, KnowledgeCollection, KnowledgeBase)
+            .join(
+                KnowledgeCollection,
+                KnowledgeCollection.id == KnowledgeCollectionItem.collection_id,
+            )
+            .join(
+                KnowledgeBase,
+                KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id,
+            )
+            .filter(
+                KnowledgeCollectionItem.organization_id == organization_id,
+                KnowledgeCollectionItem.knowledge_base_id.in_(knowledge_base_ids),
+                KnowledgeCollection.organization_id == organization_id,
+                KnowledgeCollection.lifecycle_state == "active",
+                KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
+            )
+            .all()
+        )
+        public_kb_ids: set[uuid.UUID] = set()
+        for item, collection, _kb in rows:
+            safe_metadata = getattr(collection, "safe_metadata", None) or {}
+            if safe_metadata.get("visibility") == "public":
+                public_kb_ids.add(item.knowledge_base_id)
+
+        return [str(kb_id) for kb_id in knowledge_base_ids if kb_id in public_kb_ids]
 
     def _rag_safe_no_result_answer(
         self,

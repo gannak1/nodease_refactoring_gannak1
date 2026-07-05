@@ -720,6 +720,10 @@ def compare_workflow_variants(
 
     base_context = {
         "user_id": str(current_user.id),
+        "execution_subject": {
+            "type": "user",
+            "id": str(current_user.id),
+        },
         "workflow_id": workflow_id,
         "organization_id": (
             str(workflow.organization_id) if workflow.organization_id else None
@@ -817,6 +821,10 @@ async def execute_workflow(
         # execution_context 구성
         execution_context = {
             "user_id": str(current_user.id),
+            "execution_subject": {
+                "type": "user",
+                "id": str(current_user.id),
+            },
             "workflow_id": workflow_id,
             "organization_id": (
                 str(workflow.organization_id) if workflow.organization_id else None
@@ -942,6 +950,10 @@ async def stream_workflow(
     # 5. 실행 컨텍스트 준비
     execution_context = {
         "user_id": str(current_user.id),
+        "execution_subject": {
+            "type": "user",
+            "id": str(current_user.id),
+        },
         "workflow_id": workflow_id,
         "organization_id": (
             str(workflow.organization_id) if workflow.organization_id else None

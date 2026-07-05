@@ -389,7 +389,7 @@ class DeploymentService:
                     str(app.organization_id) if app.organization_id else None
                 ),
                 "app_id": str(app.id),
-                "trigger_mode": "app",  # 실행 모드 (앱 배포 실행)
+                "trigger_mode": trigger_mode,  # 실행 모드 (API/앱 배포 실행)
                 "deployment_id": str(deployment.id),
                 "workflow_version": deployment.version,
                 "memory_mode": memory_mode_enabled,  # 기억 모드 추가
