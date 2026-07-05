@@ -6,6 +6,7 @@ Verified Against: feature/mba-112 @ c82a14a
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-010까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
+FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이며, 현재 화면/컴포넌트 구현 범위에는 포함하지 않는다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
@@ -23,6 +24,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
+| FR-011 | Deferred model routing/optimizer agent | 후속 기능이다. 현재 UI는 모델 라우팅 또는 최적화 에이전트 패널을 제공하지 않는다. |
 
 ## Implementation Tracking
 
@@ -31,15 +33,15 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR | 주요 컴포넌트 | 예상 코드 위치 | 구현 상태 | 테스트 코드 | 테스트 통과 여부 |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM node detail action | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | 통과 |
-| FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
-| FR-003 | Candidate editor | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
-| FR-004 | Baseline input lock display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-005 | Hybrid compare flow state | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-007 | Downstream compatibility badge | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-008 | Apply candidate action, confirmation modal | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-009 | Cost/usage metric display | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
-| FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/editor/` | 구현 전 | 작성 전 | 미실행 |
+| FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
+| FR-003 | Candidate editor, LLM node setting | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMReferenceSidePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-task-type.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | 통과 |
+| FR-004 | Baseline input lock display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | 통과 |
+| FR-005 | Hybrid compare flow state | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | 통과 |
+| FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
+| FR-007 | Downstream compatibility badge | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr7-downstream-compatibility.test.tsx` | 통과 |
+| FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
+| FR-009 | Cost/usage metric display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts` | 통과 |
+| FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 
 ## Screens
 
@@ -185,7 +187,7 @@ A/B compare workspace는 같은 route 안에서 두 가지 mode를 제공한다.
 
 기준 baseline을 선택하기 전에는 `실험 설정`/`결과 분석` mode switch, B candidate, 기준 실행 정보 패널을 열지 않는다. 첫 화면은 A/B 테스트 기준 선택에 집중한다. 사용자가 baseline을 선택하면 workspace가 `실험 설정` mode로 열리고, 그때부터 B candidate와 기준 실행 정보 패널이 표시된다.
 
-기본 workspace mode는 `실험 설정`이다. 사용자가 B 후보를 실행해 리포트가 생성되면 `결과 분석` mode로 이동할 수 있어야 한다. B 실행 API가 아직 연결되지 않은 상태에서는 `결과 분석` mode가 비어 있는 리포트 상태와 실행 대기 안내를 표시한다.
+기본 workspace mode는 `실험 설정`이다. 사용자가 B 후보를 실행해 리포트가 생성되면 `결과 분석` mode로 이동할 수 있어야 한다. 아직 실행한 B 후보가 없는 상태에서 `결과 분석` mode로 이동하면 실행 대기 안내를 표시한다.
 
 `실험 설정` mode 본문은 3영역 레이아웃이다.
 
@@ -251,6 +253,8 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 
 모델 선택 UI는 기존 LLM 노드 상세 편집의 모델 조회/선택 기준을 따른다.
 
+원본 LLM 노드 상세 편집 화면도 task type 선택을 제공해야 한다. B 후보는 현재 LLM 노드 설정 복사본에서 시작하므로, 원본 화면에서 저장된 `data.task_type`과 Cost Optimizer 후보의 `candidate.task_type` 값 체계가 같아야 한다.
+
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
 - 사용할 수 없는 credential/model은 목록에서 제외하는 것을 우선한다.
@@ -289,6 +293,10 @@ prompt 입력 영역은 기존 노드 상세 편집과 같이 변수 삽입을 �
 - Knowledge Base 선택
 - `topK` 편집
 - `scoreThreshold` 편집
+- 중복 근거 제거
+- 참조 문서 길이 제한
+- 검색 문서 압축
+- 답변 근거 확인
 
 B candidate 영역은 다음 액션을 포함한다.
 
@@ -356,6 +364,10 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 - Knowledge Base selection
 - `topK`
 - `scoreThreshold`
+- 중복 근거 제거
+- 참조 문서 길이 제한
+- 검색 문서 압축
+- 답변 근거 확인
 
 화면은 A baseline과 B candidate가 같은 입력 기준이라는 점을 명확히 표시한다.
 
@@ -368,6 +380,17 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 - 액션: `실험 설정으로 돌아가기`, `현재 노드에 적용`
 
 B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석이 표시됩니다.` empty state를 표시한다.
+
+결과 분석 화면은 같은 baseline 기준의 이전 실험 이력을 표시한다. 이전 실험 이력 영역은 다음 필터를 제공한다.
+
+- 시작일
+- 종료일
+- 실행자
+- 적용 여부
+- 후보 상태
+- 모델
+- Schema 상태
+- Downstream 상태
 
 ### Candidate Settings Mapping
 
@@ -394,6 +417,10 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | `knowledgeBases` | `data.knowledgeBases` | `candidate.knowledge.knowledge_base_ids` | `candidate_settings.knowledge.knowledge_base_ids` | id 배열로 변환한다. |
 | `topK` | `data.topK` | `candidate.knowledge.top_k` | `candidate_settings.knowledge.top_k` | B 실행 시 새 retrieval에 사용한다. |
 | `scoreThreshold` | `data.scoreThreshold` | `candidate.knowledge.score_threshold` | `candidate_settings.knowledge.score_threshold` | B 실행 시 새 retrieval에 사용한다. |
+| `dedupeRetrievedContext` | `data.dedupeRetrievedContext` | `candidate.knowledge.dedupe_retrieved_context` | `candidate_settings.knowledge.dedupe_retrieved_context` | 중복 검색 근거를 제거한다. |
+| `retrievedContextMaxChars` | `data.retrievedContextMaxChars` | `candidate.knowledge.retrieved_context_max_chars` | `candidate_settings.knowledge.retrieved_context_max_chars` | author prompt가 아니라 Knowledge/RAG context만 제한한다. |
+| `retrievedContextCompression` | `data.retrievedContextCompression` | `candidate.knowledge.retrieved_context_compression` | `candidate_settings.knowledge.retrieved_context_compression` | `off`, `light`, `strong`. |
+| `answerGroundingCheck` | `data.answerGroundingCheck` | `candidate.knowledge.answer_grounding_check` | `candidate_settings.knowledge.answer_grounding_check` | `off`, `basic`, `strict`. |
 
 ### Inspector
 

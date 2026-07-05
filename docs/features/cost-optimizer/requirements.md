@@ -60,15 +60,15 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | ID | 기능명 | 시연 중요도 | 상태 | 상태 상세 | 요약 |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `구현 완료` | `테스트 통과` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트 진입 액션과 availability 검증을 제공한다. |
-| FR-002 | A baseline 실행 로그 선택 | P1 | `진행중` | `핵심 경로 구현, 테스트 통과` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 선택하는 API/UI 경로가 구현됐다. 세부 row 정보와 후속 호환성 표시는 계속 보강 대상이다. |
-| FR-003 | 비교 가능한 옵션 | P1 | `진행중` | `구현 기반 있음` | 모델, fallback 모델, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. |
-| FR-004 | 동일 입력 기준 비교 | P1 | `미완료` | `문서화` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
-| FR-005 | 하이브리드 비교 | P1 | `미완료` | `문서화` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
-| FR-006 | A/B 비교 화면 | P1 | `진행중` | `구현 기반 있음` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교한다. |
-| FR-007 | Downstream 호환성 검증 | P1 | `미완료` | `문서화` | baseline graph와 현재 graph의 downstream 호환성을 3상태로 표시한다. |
-| FR-008 | 후보 적용 | P1 | `미완료` | `문서화` | 사용자가 선택한 B 후보 설정을 현재 target LLM node draft에 적용한다. |
-| FR-009 | 비용 기록 | P1 | `진행중` | `구현 기반 있음` | 비교 실행에서 발생한 LLM 비용도 usage log에 남긴다. |
-| FR-010 | 권한 | P1 | `진행중` | `구현 기반 있음` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. |
+| FR-002 | A baseline 실행 로그 선택 | P1 | `구현 완료` | `테스트 통과` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 선택하는 API/UI 경로를 제공한다. |
+| FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 통과` | 모델, fallback 모델, task type, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. |
+| FR-004 | 동일 입력 기준 비교 | P1 | `구현 완료` | `테스트 통과` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
+| FR-005 | 하이브리드 비교 | P1 | `구현 완료` | `테스트 통과` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
+| FR-006 | A/B 비교 화면 | P1 | `구현 완료` | `테스트 통과` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교한다. |
+| FR-007 | Downstream 호환성 검증 | P1 | `구현 완료` | `테스트 통과` | baseline graph와 현재 graph의 downstream 호환성을 3상태로 판정하고 결과 분석 화면에 표시한다. warning/incompatible 후보는 적용 전 사용자 확인이 필요하다. |
+| FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
+| FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
+| FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
 | FR-011 | 모델 라우팅과 최적화 에이전트 후속 확장 | P3 | `미완료` | `후속 기능` | 모델 라우팅과 최적화 에이전트는 후속 기능으로 분리한다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
@@ -161,6 +161,15 @@ Knowledge/RAG 설정은 후보 B에서 편집 가능하다. 같은 baseline inpu
 
 Knowledge Base는 여러 개 선택할 수 있다.
 
+RAG를 곁들인 LLM 노드는 비용을 줄이더라도 author가 직접 작성한 system/user/assistant prompt를 임의로 자르지 않는다. 비용 최적화 대상은 검색으로 주입되는 동적 context와 근거 품질 검증이다.
+
+Knowledge/RAG 비용 최적화 옵션은 다음 4개를 우선 제공한다.
+
+- 중복 근거 제거: 검색된 문서 조각 중 내용이 거의 같은 근거를 한 번만 사용한다.
+- 참조 문서 길이 제한: Knowledge Base에서 가져온 문서 context의 최대 길이를 제한한다. 직접 작성한 prompt 3종은 이 제한 대상이 아니다.
+- 검색 문서 압축: 검색된 문서를 그대로 넣지 않고 질문과 관련된 핵심 내용만 줄여 전달한다.
+- 답변 근거 확인: 생성된 답변이 검색된 문서 내용으로 뒷받침되는지 확인한다.
+
 B 실행 시 Knowledge/RAG를 사용하면 baseline의 과거 retrieval 결과를 재사용하지 않는다. B candidate의 현재 Knowledge Base 선택, `topK`, `scoreThreshold` 기준으로 retrieval을 새로 수행한다. 그래야 모델/prompt뿐 아니라 retrieval 설정 변경이 실제 후보 결과에 반영된다.
 
 A baseline의 retrieval summary는 비교 기준 정보로만 표시한다. Inspector는 A가 어떤 Knowledge Base와 문서를 참고했는지, B가 새로 어떤 Knowledge Base와 문서를 참고했는지를 나란히 보여준다. 단, raw document content나 secret payload는 표시하지 않는다.
@@ -246,7 +255,7 @@ Inspector에는 다음 정보를 표시할 수 있어야 한다.
 
 비용이 낮더라도 출력 결과가 부적절하면 사용자가 선택하지 않을 수 있어야 한다.
 
-현재 코드에는 workflow 실행 결과의 비용, 토큰, latency를 표시하는 기반 UI와 trace 조회 경로가 있다. 다만 LLM 노드 비용 비교 후보별 결과 화면은 아직 구현되지 않았다.
+현재 구현은 Cost Optimizer 전용 workspace에서 B 후보 실행 결과를 A baseline과 비교해 표시한다. 결과 분석 화면은 후보별 출력, 비용, 토큰, latency, schema 검증 상태, retrieval summary, downstream 호환성 상태를 함께 보여준다.
 
 ### FR-007. Downstream 호환성 검증
 
@@ -285,6 +294,7 @@ Slack 전송, HTTP 요청, DB write처럼 외부 side effect가 있는 노드는
 - 적용 대상은 현재 workflow draft의 target LLM node다.
 - 적용 가능한 값은 비교 가능한 옵션과 같다.
 - 적용 후 사용자는 기존 workflow 저장/테스트 실행 흐름을 그대로 사용할 수 있어야 한다.
+- 저장된 experiment 후보를 적용한 경우, 결과 이력에서 어떤 후보가 적용됐는지 확인할 수 있도록 해당 후보의 적용 상태와 적용 시각/사용자를 기록해야 한다.
 
 후보 적용 시 A baseline의 과거 설정을 현재 draft에 되돌리는 동작이 아니라, 사용자가 선택한 B 후보 설정을 현재 target LLM node에 적용하는 동작이다.
 
@@ -313,9 +323,13 @@ downstream 호환성 상태가 `주의 필요` 또는 `검증 불가`인 경우,
 - `cost_optimizer_experiments`: 하나의 A/B 테스트 세션을 저장한다. 특정 workflow, target LLM node, A baseline `workflow_node_runs.id`, 시작 사용자, 세션 상태를 가진다.
 - `cost_optimizer_candidates`: 하나의 세션 안에서 실행한 B 후보를 저장한다. 후보 설정 snapshot, 후보 실행 run/node run 참조, 비용/토큰/latency, schema 검증 결과, retrieval summary, downstream 호환성 결과, 적용 여부를 가진다.
 
+A/B 테스트 시작 1회는 새 `cost_optimizer_experiments` 1개로 기록한다. 같은 baseline을 사용하더라도 사용자가 나중에 다시 A/B 테스트를 시작하면 기존 experiment를 재사용하지 않고 새 experiment를 만든다. 하나의 experiment 비용 합계는 해당 experiment에 속한 candidate 실행 비용만 포함한다. 같은 baseline 기준 누적 비용이 필요하면 `baseline_node_run_id`가 같은 여러 experiments를 합산한다.
+
+결과 분석 화면은 같은 workflow, 같은 target LLM node, 같은 baseline 기준으로 과거 experiments와 candidates를 다시 조회할 수 있어야 한다. 사용자는 기간, 실행자, 후보 상태, 모델, 적용 여부, schema 검증 상태, downstream 상태 같은 조건으로 이전 실험 결과를 좁혀 볼 수 있어야 한다.
+
 기존 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `trace_payloads`는 실행/trace/비용의 원천으로 유지한다. Cost Optimizer 전용 테이블은 이 원천 데이터를 대체하지 않고, A baseline과 여러 B 후보 실행을 하나의 비교 흐름으로 묶기 위한 메타데이터를 저장한다.
 
-현재 코드에는 일반 workflow LLM 호출의 token, cost, latency를 `llm_usage_logs`와 workflow run 집계에 기록하는 기반이 있다. 다만 Cost Optimizer 비교 실행을 이 기록 경로와 어떻게 연결할지는 아직 구현해야 한다.
+현재 코드에는 일반 workflow LLM 호출의 token, cost, latency를 `llm_usage_logs`와 workflow run 집계에 기록하는 기반이 있다. Cost Optimizer compare는 `comparison_id`가 되는 `cost_optimizer_experiments` row와 B 후보의 `cost_optimizer_candidates` row를 저장한다. B 후보 실행에서 생성되는 usage row는 `llm_usage_logs.cost_optimizer_candidate_id`로 후보 row를 직접 참조한다. 과거 experiment/candidate summary 재조회 API도 제공한다. experiment/candidate summary는 trace metadata retention 정책의 `metadata_retention_days`를 따르고, 만료된 experiment는 candidate와 함께 정리한다.
 
 ### FR-010. 권한
 
@@ -327,7 +341,7 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 - builder 이상 권한이 없으면 후보를 현재 노드에 적용할 수 없다.
 - 사용할 수 없는 credential/model 후보는 실행하지 않거나 실패 후보로 표시한다.
 
-현재 코드에는 workflow 실행/수정 권한과 LLM credential 사용 권한 검증 기반이 있다. 다만 Cost Optimizer 전용 비교 실행과 후보 적용 API에 builder 이상 권한 정책을 연결하는 작업은 남아 있다.
+현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
 ### FR-011. 모델 라우팅과 최적화 에이전트 후속 확장
 
@@ -348,7 +362,7 @@ Cost Optimizer는 후속 기능으로 모델 라우팅과 최적화 에이전트
 ## Policies And Edge Cases
 
 - 비교 실행은 실제 LLM 호출이므로 비용이 발생할 수 있다.
-- 한 후보가 실패해도 다른 후보 결과는 표시한다.
+- B 후보 실행이 실패해도 A baseline과 기존 experiment history는 유지한다. 해당 실행은 `failed` 후보로 기록하고 실패 사유를 결과 분석 화면에 표시한다.
 - 비용 정보가 없는 모델은 비용 비교 불가 상태로 표시한다.
 - credential 원문, API key, encrypted config는 응답이나 화면에 표시하지 않는다.
 - 비교 결과는 비용만으로 승자를 정하지 않는다. 사용자가 출력 결과를 보고 판단한다.
@@ -386,12 +400,12 @@ Open Question 중요도는 다음 3단계로 나눈다.
 
 | Priority | 영역 | Question | 왜 중요한가 | 결정 전 임시 처리 |
 | --- | --- | --- | --- | --- |
-| Priority 1 | 이전 로그 선택 API | target LLM node 실행 로그를 비용/토큰/시간 기준으로 검색·필터·정렬하는 API를 별도로 둘지 | 기존 workflow run list만으로는 노드 기준 baseline 선택 UX를 만들기 어렵다 | 필요한 API 추가를 허용한다 |
-| Priority 1 | downstream 호환성 | baseline 실행 시점 graph와 현재 graph의 호환성을 어떤 기준으로 판정할지 | 다운스트림이 바뀐 상태에서 비교 결과를 잘못 해석할 수 있다 | `검증 가능`, `주의 필요`, `검증 불가` 3상태로 표시한다 |
-| Priority 1 | 비교 결과 저장 | 비교 결과를 저장할지, 화면에서만 보여줄지 | 저장 여부에 따라 DB/API/화면 이력이 달라진다 | 1차 구현에서는 화면 표시 중심으로 시작하고 usage log는 반드시 남긴다 |
-| Priority 1 | 적용 방식 | 선택 후보를 draft에 바로 적용할지, versioning과 연결할지 | 사용자가 실수로 기존 설정을 잃을 수 있다 | 1차 구현에서는 draft에 적용하고 기존 저장/되돌리기 흐름을 따른다 |
-| Priority 2 | downstream 계약 검증 | 1차 구현에서 어떤 다음 노드 타입까지 계약 검증할지 | 지원하지 않는 노드가 있으면 검증 결과를 신뢰하기 어렵다 | 변수 추출, 조건 분기, 응답/Slack 템플릿부터 검토한다 |
-| Priority 2 | 실패 후보 처리 | 후보 하나가 실패했을 때 전체 비교를 실패로 볼지 | 비교 UX가 달라진다 | 실패 후보만 실패로 표시하고 나머지 후보 결과는 유지한다 |
+| Priority 1 | 이전 로그 선택 API | target LLM node 실행 로그를 비용/토큰/시간 기준으로 검색·필터·정렬하는 API를 별도로 둘지 | 기존 workflow run list만으로는 노드 기준 baseline 선택 UX를 만들기 어렵다 | 결정: LLM node 기준 baseline latest/list API를 둔다. |
+| Priority 1 | downstream 호환성 | baseline 실행 시점 graph와 현재 graph의 호환성을 어떤 기준으로 판정할지 | 다운스트림이 바뀐 상태에서 비교 결과를 잘못 해석할 수 있다 | 결정: `검증 가능`, `주의 필요`, `검증 불가` 3상태와 `unknown` fallback으로 표시한다. |
+| Priority 1 | 비교 결과 저장 | 비교 결과를 저장할지, 화면에서만 보여줄지 | 저장 여부에 따라 DB/API/화면 이력이 달라진다 | 결정: experiment/candidate 전용 테이블에 저장하고 usage log는 candidate id로 직접 연결한다. |
+| Priority 1 | 적용 방식 | 선택 후보를 draft에 바로 적용할지, versioning과 연결할지 | 사용자가 실수로 기존 설정을 잃을 수 있다 | 결정: 현재 draft target LLM node에 후보 설정 전체를 적용하고 기존 저장/되돌리기 흐름을 따른다. |
+| Priority 2 | downstream 계약 검증 | 1차 구현에서 어떤 다음 노드 타입까지 계약 검증할지 | 지원하지 않는 노드가 있으면 검증 결과를 신뢰하기 어렵다 | 결정: target LLM node를 직접 참조하는 variable extraction mapping, condition selector, answer output selector, Slack referenced variable selector를 후보 출력 기준으로 검사한다. |
+| Priority 2 | 실패 후보 처리 | B 후보 실행이 실패했을 때 workspace 전체를 실패로 볼지 | 비교 UX가 달라진다 | 해당 B 실행만 `failed` 후보로 기록하고 A baseline과 기존 history는 유지한다 |
 | Priority 3 | 자동 추천 | 가격표 기반으로 후보 모델을 자동 추천할지 | 사용성은 좋아지지만 정책과 품질 판단이 필요하다 | 1차 구현에서는 사용자가 직접 후보를 만든다 |
 | Priority 3 | 모델 라우팅 | 수동, 규칙 기반, LLM 기반 라우팅 중 어떤 방식을 먼저 제공할지 | 비용 절감 효과는 크지만 잘못 라우팅하면 품질 문제가 생긴다 | 후속 기능으로 분리한다 |
 | Priority 3 | 최적화 에이전트 | 에이전트가 어떤 근거로 모델/프롬프트/파라미터 최적화 후보를 제안할지 | 추천 자체도 비용이 들고 잘못된 추천은 workflow 품질을 해칠 수 있다 | 후속 기능으로 분리하고 자동 적용은 금지한다 |
