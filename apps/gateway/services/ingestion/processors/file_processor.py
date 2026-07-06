@@ -4,12 +4,16 @@ import os
 import tempfile
 from typing import Any, Dict
 
-import requests
-
 from apps.gateway.services.ingestion.parsers.docx_parser import DocxParser
 from apps.gateway.services.ingestion.parsers.excel_csv_parser import ExcelCsvParser
 from apps.gateway.services.ingestion.parsers.pdf_parser import PdfParser
 from apps.gateway.services.ingestion.parsers.txt_parser import TxtParser
+from apps.shared.services.egress_guard import (
+    DOCUMENT_RESPONSE_CONTENT_TYPES,
+    EgressGuardError,
+    EgressGuardPolicy,
+    download_url_to_temp_file,
+)
 from apps.shared.services.ingestion.processors.base import (
     BaseProcessor,
     ProcessingResult,
@@ -72,22 +76,23 @@ class FileProcessor(BaseProcessor):
             try:
                 parsed_blocks = parser.parse(target_path, **parse_kwargs)
             except Exception as e:
-                logger.error(f"[FileProcessor] Parsing error: {e}")
-                return ProcessingResult(chunks=[], metadata={"error": str(e)})
+                logger.error("[FileProcessor] Parsing error: %s", type(e).__name__)
+                return ProcessingResult(chunks=[], metadata={"error": "Parsing failed."})
 
             chunks = []
+            safe_source = "remote_file" if is_remote_file else file_path
             for block in parsed_blocks:
                 chunks.append(
                     {
                         "content": block["text"],
-                        "metadata": {"page": block["page"], "source": file_path},
+                        "metadata": {"page": block["page"], "source": safe_source},
                     }
                 )
 
             return ProcessingResult(
                 chunks=chunks,
                 metadata={
-                    "file_path": file_path,
+                    "file_path": safe_source,
                     "extension": ext,
                     "strategy": strategy,
                 },
@@ -113,24 +118,26 @@ class FileProcessor(BaseProcessor):
                 "Raw s3:// URL is not supported for direct processing. Use HTTP URL."
             )
 
+        from urllib.parse import urlparse
+
+        path = urlparse(url).path
+        ext = os.path.splitext(path)[1] or ".tmp"
         try:
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-
-            # 확장자 추론
-            from urllib.parse import urlparse
-
-            path = urlparse(url).path
-            ext = os.path.splitext(path)[1]
-            if not ext:
-                ext = ".tmp"
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp.write(chunk)
-                return tmp.name
+            return download_url_to_temp_file(
+                url,
+                suffix=ext,
+                policy=EgressGuardPolicy(
+                    timeout_seconds=30.0,
+                    max_response_bytes=50 * 1024 * 1024,
+                    allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
+                ),
+            )
+        except EgressGuardError as e:
+            raise RuntimeError(
+                f"Remote file download denied: {e.reason_code}"
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"Failed to download file from {url}: {e}")
+            raise RuntimeError("Remote file download failed.") from e
 
     def analyze(self, source_config: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -164,7 +171,8 @@ class FileProcessor(BaseProcessor):
             return {}
 
         except Exception as e:
-            return {"error": str(e)}
+            logger.warning("[FileProcessor] Analyze failed: %s", type(e).__name__)
+            return {"error": "Analyze failed."}
 
         finally:
             if temp_file_path and os.path.exists(temp_file_path):

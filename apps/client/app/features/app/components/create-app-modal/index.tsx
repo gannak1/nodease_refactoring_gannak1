@@ -6,7 +6,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { isAxiosError } from 'axios';
 import { toast } from 'sonner';
 import { appApi } from '../../api/appApi';
-import { organizationApi } from '../../../organization/api/organizationApi';
+import AppCreatePermissionRequestForm from '../../../organization/components/AppCreatePermissionRequestForm';
 import { AppIcon } from './AppIcon';
 import { AppIconPicker } from './AppIconPicker';
 import { AppIconSelection, CreateAppProps } from './types';
@@ -58,13 +58,12 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
 
   // 로딩 상태 (API 요청 중일 때 true)
   const [loading, setLoading] = useState(false);
-  const [requestLoading, setRequestLoading] = useState(false);
-  const [showPermissionRequest, setShowPermissionRequest] = useState(false);
-  const [requestReason, setRequestReason] = useState('');
+
+  // 모달 화면 상태: App 생성 입력 또는 App 생성 권한 신청 (ORG-REQ-048)
+  const [view, setView] = useState<'create' | 'permission-request'>('create');
 
   // 중복 생성 방지를 위한 Ref
   const isCreatingRef = useRef(false);
-  const isRequestingPermissionRef = useRef(false);
 
   // --- 생성 핸들러 (Submit Handler) ---
   const handleCreate = useCallback(async () => {
@@ -114,12 +113,7 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
         return;
       }
       if (isAppCreationPermissionDenied(error)) {
-        setRequestReason((current) =>
-          current.trim()
-            ? current
-            : `${name.trim()} 앱을 생성해 워크플로우를 구성해야 합니다.`,
-        );
-        setShowPermissionRequest(true);
+        setView('permission-request');
         return;
       }
       toast.error('앱 생성에 실패했습니다.');
@@ -130,45 +124,11 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
     }
   }, [name, description, appIcon, onSuccess, onClose, router]);
 
-  const handleSubmitPermissionRequest = useCallback(async () => {
-    if (isRequestingPermissionRef.current) return;
-
-    const reason = requestReason.trim();
-    if (!reason) {
-      toast.error('신청 사유를 입력해주세요.');
-      return;
-    }
-
-    isRequestingPermissionRef.current = true;
-    setRequestLoading(true);
-
-    try {
-      await organizationApi.submitPermissionRequest({ reason });
-      toast.success('권한 신청을 보냈습니다.');
-      onClose();
-    } catch (error: unknown) {
-      if (isAxiosError<ApiErrorResponse>(error) && error.response?.status === 409) {
-        const detail = getApiErrorDetail(error);
-        if (detail === 'App creation permission already granted') {
-          toast.error('이미 앱 생성 권한이 있습니다. 다시 생성해주세요.');
-          setShowPermissionRequest(false);
-          return;
-        }
-        toast.error('이미 대기 중인 권한 신청이 있습니다.');
-        return;
-      }
-      toast.error('권한 신청에 실패했습니다.');
-    } finally {
-      isRequestingPermissionRef.current = false;
-      setRequestLoading(false);
-    }
-  }, [onClose, requestReason]);
-
   // --- 키보드 단축키 (Keyboard Shortcuts) ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd+Enter 또는 Ctrl+Enter로 폼 제출 (빠른 생성)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      // Cmd+Enter 또는 Ctrl+Enter로 폼 제출 (빠른 생성, 생성 화면에서만)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && view === 'create') {
         e.preventDefault();
         handleCreate();
       }
@@ -188,7 +148,7 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleCreate, onClose, showAppIconPicker]);
+  }, [handleCreate, onClose, showAppIconPicker, view]);
 
   // --- 모달 외부 클릭 처리 (Backdrop Click) ---
   const handleBackdropClick = (e: React.MouseEvent) => {
@@ -218,7 +178,7 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
           {/* 헤더: 제목 및 닫기 버튼 */}
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold text-gray-900 dark:text-zinc-50">
-              {showPermissionRequest ? '앱 생성 권한 신청' : '앱 생성'}
+              {view === 'permission-request' ? '앱 생성 권한 신청' : '앱 생성'}
             </h2>
             <button
               onClick={onClose}
@@ -241,54 +201,11 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
             </button>
           </div>
 
-          {showPermissionRequest ? (
-            <>
-              <div className="space-y-5">
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">
-                  앱 생성 권한이 없습니다. 관리자에게 workflow 생성/배포 권한을
-                  신청할 수 있습니다.
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 dark:text-zinc-300 mb-2">
-                    신청 사유 <span className="text-red-500">*</span>
-                  </label>
-                  <textarea
-                    autoFocus
-                    value={requestReason}
-                    onChange={(e) => setRequestReason(e.target.value)}
-                    placeholder="권한이 필요한 이유를 입력하세요"
-                    className={twMerge(
-                      'w-full h-32 px-3 py-2 rounded-lg border bg-transparent outline-none transition-all text-sm resize-none',
-                      'border-zinc-200 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10',
-                      'dark:border-zinc-700 dark:text-zinc-100 dark:placeholder-zinc-500',
-                    )}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 mt-8">
-                <button
-                  onClick={() => setShowPermissionRequest(false)}
-                  disabled={requestLoading}
-                  className={twMerge(
-                    'px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-zinc-400 dark:hover:bg-white/5 rounded-lg transition-colors',
-                    requestLoading && 'opacity-70 cursor-not-allowed',
-                  )}
-                >
-                  앱 정보 수정
-                </button>
-                <button
-                  onClick={handleSubmitPermissionRequest}
-                  disabled={requestLoading}
-                  className={twMerge(
-                    'px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-sm transition-all flex items-center gap-2',
-                    requestLoading && 'opacity-70 cursor-not-allowed',
-                  )}
-                >
-                  {requestLoading ? '신청 중...' : '권한 신청'}
-                </button>
-              </div>
-            </>
+          {view === 'permission-request' ? (
+            <AppCreatePermissionRequestForm
+              onCancel={() => setView('create')}
+              onClose={onClose}
+            />
           ) : (
             <>
               {/* 입력 폼 영역 */}

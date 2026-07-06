@@ -34,6 +34,13 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | CONN-TC-U007 | 상세 응답 모델은 secret 필드를 포함하지 않아야 한다. | response model에 `password`, `private_key`, `encrypted_password`, `encrypted_ssh_private_key` 중 하나가 있다. | 테스트 실패. |
 | CONN-TC-U008 | PostgreSQL schema introspection은 table, column, FK shape를 보존해야 한다. | 테이블이 있는데 `table_name`, column `name/type`, FK `referenced_table/referenced_column` 중 하나가 빠진다. | 테스트 실패. |
 | CONN-TC-U009 | audit listener는 `Connection` 민감 필드를 마스킹 대상으로 등록해야 한다. | host/database/username/encrypted secret 필드 중 하나가 sensitive set에서 빠진다. | 테스트 실패. |
+| CONN-TC-U010 | PostgreSQL 직접 연결은 검증된 public IP로 연결 대상을 고정해야 한다. | 사전 DNS 검증 후 SQLAlchemy/driver가 hostname을 다시 해석하도록 둔다. | 테스트 실패. |
+| CONN-TC-U011 | PostgreSQL 직접 연결은 private, loopback, link-local, metadata, reserved target을 거부해야 한다. | `127.0.0.1`, `10.0.0.0/8`, metadata IP 중 하나로 연결을 연다. | safe reason code로 실패. |
+| CONN-TC-U012 | PostgreSQL schema introspection은 table/column/FK cap을 적용해야 한다. | cap 초과 schema가 truncation marker 없이 전체 반환된다. | 테스트 실패. |
+| CONN-TC-U013 | DB row fetch는 SELECT-only guard와 dangerous function blocklist를 적용해야 한다. | `pg_sleep`, `pg_read_file`, `dblink`, `COPY`, 복수 statement 중 하나가 통과한다. | `adapter.sql_not_allowed`. |
+| CONN-TC-U014 | DB row fetch는 read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다. | 사용자 SELECT가 cap 없이 실행되거나 row cap 초과를 부분 성공으로 반환한다. | safe reason code로 실패. |
+| CONN-TC-U015 | `PostgresConnector()` 기본 생성자는 Knowledge-safe 경계로 SSH tunnel을 거부해야 한다. | 기본 생성자가 SSH tunnel을 연다. | `adapter.ssh_tunnel_not_allowed`. |
+| CONN-TC-U016 | Workflow connector API는 기존 SSH tunnel compatibility를 명시적으로 선택해야 한다. | workflow connector API가 기본 생성자를 사용해 문서화된 SSH tunnel 설정을 깨뜨리거나, Knowledge ingestion까지 tunnel을 열어 둔다. | 테스트 실패. |
 
 ## API Tests
 
@@ -55,9 +62,12 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | CONN-TC-A014 | `GET /connectors/{id}/schema`는 인증을 요구해야 한다. | `auth_token` 쿠키 없이 요청한다. | Auth dependency의 401 응답. |
 | CONN-TC-A015 | `GET /connectors/{id}/schema`는 없는 id를 숨기지 않고 404로 반환해야 한다. | DB에 없는 connection id이다. | `404`, `Connection not found`. |
 | CONN-TC-A016 | `GET /connectors/{id}/schema`는 non-owner를 거부해야 한다. | 다른 사용자의 connection id를 요청한다. | `403`, `Not authorized`. |
-| CONN-TC-A017 | `GET /connectors/{id}/schema`는 복호화 실패를 오류로 반환해야 한다. | encrypted password가 복호화할 수 없는 값이다. | `500`, `Decryption failed: ...`. |
+| CONN-TC-A017 | `GET /connectors/{id}/schema`는 복호화 실패를 safe 오류로 반환해야 한다. | encrypted password가 복호화할 수 없는 값이다. | `500`, safe `reason_code` 응답. |
 | CONN-TC-A018 | `GET /connectors/{id}/schema`는 지원하지 않는 저장 타입을 거부해야 한다. | row의 `type`이 adapter map에 없다. | `400`, `Unsupported DB type`. |
 | CONN-TC-A019 | `GET /connectors/{id}/schema` 성공은 tables 배열을 반환해야 한다. | adapter schema 결과가 있는데 response에 `tables`가 없다. | 테스트 실패. |
+| CONN-TC-A020 | `POST /connectors/test` 실패는 raw host/database/secret/driver detail을 노출하지 않아야 한다. | adapter가 secret 포함 예외를 던진다. | `success=false`, safe message와 safe `reason_code`. |
+| CONN-TC-A021 | `POST /connectors` 저장 전 connection check 실패는 raw host/database/secret/driver detail을 노출하지 않아야 한다. | adapter가 secret 포함 예외를 던진다. | `400`, safe `reason_code`, 저장 row 없음. |
+| CONN-TC-A022 | `GET /connectors/{id}/schema` fetch 실패는 raw host/database/secret/driver detail을 노출하지 않아야 한다. | adapter가 secret 포함 예외를 던진다. | `400`, safe `reason_code`. |
 
 ## Component And Hook Tests
 
@@ -89,3 +99,17 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | --- | --- | --- | --- |
 | CONN-TC-X001 | Current gap: `connectorApi`는 connector create/test 실패 시 raw Axios error 객체를 `console.error`에 전달한다. | Axios error의 request config/data에 DB password, SSH password, private key가 포함된다. | 현재 구현은 client console log secret 비노출을 보장하지 않으므로 production 전 sanitize 필요. |
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
+
+## Knowledge Source Connector Target Tests
+
+이 섹션은 현재 workflow DB connector 테스트를 대체하지 않고, 목표 Knowledge source connector가 따라야 할 보안 경계를 추가로 검증한다. Knowledge source connector target case는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 egress/adapter baseline을 따른다.
+
+| ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
+| --- | --- | --- | --- |
+| CONN-KNOW-TC-001 | Knowledge source collection의 SSH tunnel, proxy, approved private network segment는 별도 connector/egress ADR 승인 전 기본 거부되어야 한다. | 승인 정책 없이 SSH tunnel 또는 private target을 사용한다. | safe reason code로 거부. |
+| CONN-KNOW-TC-002 | DNS rebinding과 redirect chain은 최종 target 기준으로 검증되어야 한다. | 최초 host는 안전하지만 최종 target이 private/link-local/metadata IP이다. | safe reason code로 거부. |
+| CONN-KNOW-TC-003 | Source connector의 public ACL은 organization-wide read/use로 자동 materialize되지 않아야 한다. | public ACL 하나만으로 KB `use` grant가 생성된다. | 테스트 실패. |
+| CONN-KNOW-TC-004 | Slack/meeting connector는 channel을 collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑해야 한다. | huddle recap 또는 canvas가 channel-level KB 하나에 섞인다. | 테스트 실패. |
+| CONN-KNOW-TC-005 | Slack/meeting artifact-level ACL이 있으면 artifact ACL과 containing channel/workspace ACL의 교집합만 source authorization provenance를 얻어야 한다. | channel membership만으로 artifact ACL 없는 requester가 통과한다. | fail-closed 또는 remediation. |
+| CONN-KNOW-TC-006 | Slack/meeting DM, raw audio, raw transcript는 별도 opt-in policy 없이 수집되지 않아야 한다. | opt-in 없이 raw transcript가 ingestion 대상에 포함된다. | 테스트 실패. |
+| CONN-KNOW-TC-007 | Slack/meeting ACL sync 실패나 partial ACL response는 raw channel/source title/path/url, raw principal, raw exception을 UI, audit, trace, log에 남기지 않아야 한다. | 실패 응답 또는 로그에 raw source metadata가 포함된다. | safe reason code만 남김. |

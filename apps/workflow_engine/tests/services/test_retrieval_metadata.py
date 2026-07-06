@@ -2,7 +2,8 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 
-from apps.shared.db.models.llm import LLMCredential, LLMProvider
+from apps.shared.db.models.knowledge import KnowledgeBase
+from apps.shared.db.models.llm import LLMCredential, LLMModel, LLMProvider
 from apps.shared.schemas.rag import ChunkPreview
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.services.retrieval import RetrievalService
@@ -195,3 +196,147 @@ def test_generate_answer_preserves_references_when_generation_model_missing(monk
     response = asyncio.run(service.generate_answer("query", "kb-1"))
 
     assert response.references == [chunk]
+
+
+def test_search_documents_sync_filters_hybrid_rerank_results_by_threshold(
+    monkeypatch,
+):
+    kb_id = uuid.uuid4()
+
+    class FakeClient:
+        def embed_sync(self, query):
+            return [0.1, 0.2]
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            if self.model is KnowledgeBase:
+                return SimpleNamespace(id=kb_id, embedding_model="embedding-model")
+            if self.model is LLMModel:
+                return SimpleNamespace(type="embedding", is_active=True)
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery(model)
+
+    def fake_chunk(content):
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            content=content,
+            metadata_={},
+            parent_chunk_id=None,
+            chunk_level="flat",
+            token_count=1,
+        )
+
+    doc = SimpleNamespace(
+        id=uuid.uuid4(),
+        filename="policy.md",
+        meta_info={},
+        source_type="FILE",
+    )
+    low_chunk = fake_chunk("낮은 점수 근거")
+    high_chunk = fake_chunk("충분한 점수 근거")
+
+    service = RetrievalService(db=FakeDb(), user_id=uuid.uuid4())
+    monkeypatch.setattr(service, "_has_valid_hierarchy", lambda *_args: False)
+    monkeypatch.setattr(
+        service,
+        "_vector_search",
+        lambda *_args, **_kwargs: [(low_chunk, doc, 0.2), (high_chunk, doc, 0.1)],
+    )
+    monkeypatch.setattr(service, "_keyword_search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "_rrf_fusion",
+        lambda *_args, **_kwargs: [
+            {"score": 0.2, "chunk": low_chunk, "doc": doc},
+            {"score": 0.1, "chunk": high_chunk, "doc": doc},
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_rerank",
+        lambda *_args, **_kwargs: [
+            {
+                "score": 0.2,
+                "rerank_score": 0.49,
+                "chunk": low_chunk,
+                "doc": doc,
+            },
+            {
+                "score": 0.1,
+                "rerank_score": 0.91,
+                "chunk": high_chunk,
+                "doc": doc,
+            },
+        ],
+    )
+    monkeypatch.setattr(service, "_decrypt_content", lambda content: content)
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *args, **kwargs: FakeClient(),
+    )
+
+    result = service.search_documents_sync(
+        "policy",
+        knowledge_base_id=str(kb_id),
+        threshold=0.5,
+    )
+
+    assert [chunk.content for chunk in result] == ["충분한 점수 근거"]
+    assert result[0].score == 0.91
+    assert result[0].rank == 1
+
+
+def test_retrieve_context_passes_top_k_as_keyword(monkeypatch):
+    captured = {}
+    service = RetrievalService(db=object(), user_id=uuid.uuid4())
+
+    async def fake_search_documents(
+        query,
+        *,
+        knowledge_base_id,
+        top_k,
+        metadata_filter=None,
+        hierarchy_mode="auto",
+        **_kwargs,
+    ):
+        captured.update(
+            {
+                "query": query,
+                "knowledge_base_id": knowledge_base_id,
+                "top_k": top_k,
+                "metadata_filter": metadata_filter,
+                "hierarchy_mode": hierarchy_mode,
+            }
+        )
+        return [SimpleNamespace(content="context")]
+
+    monkeypatch.setattr(service, "search_documents", fake_search_documents)
+
+    result = asyncio.run(
+        service.retrieve_context(
+            "policy",
+            "kb-1",
+            top_k=7,
+            metadata_filter={"classification": ["internal"]},
+            hierarchy_mode="flat",
+        )
+    )
+
+    assert result == "context"
+    assert captured == {
+        "query": "policy",
+        "knowledge_base_id": "kb-1",
+        "top_k": 7,
+        "metadata_filter": {"classification": ["internal"]},
+        "hierarchy_mode": "flat",
+    }

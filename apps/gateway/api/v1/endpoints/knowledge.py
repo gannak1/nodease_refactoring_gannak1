@@ -1,3 +1,4 @@
+import html
 import logging
 import mimetypes
 import os
@@ -6,20 +7,20 @@ from typing import List
 from uuid import UUID
 
 import pandas as pd
-import requests
 from docx import Document as DocxDocument
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    Header,
     HTTPException,
+    Request,
     Response,
     status,
 )
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
-    RedirectResponse,
     StreamingResponse,
 )
 from sqlalchemy import func
@@ -31,10 +32,18 @@ from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
-from apps.gateway.services.organization_context import get_user_primary_organization_id
+from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.organization_context import (
+    get_user_primary_organization_id,
+    resolve_active_organization_id,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
+from apps.shared.schemas.knowledge import (
+    KnowledgeCandidateResolution,
+    KnowledgeCandidateResolveRequest,
+)
 from apps.shared.schemas.rag import (
     DocumentPreviewRequest,
     DocumentPreviewResponse,
@@ -48,9 +57,20 @@ from apps.shared.services.rag_hierarchy import (
     RAGHierarchyError,
     validate_chunking_request,
 )
+from apps.shared.services.egress_guard import (
+    DOCUMENT_RESPONSE_CONTENT_TYPES,
+    EgressGuardError,
+    EgressGuardPolicy,
+    safe_http_request,
+    safe_quote_filename,
+)
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+SAFE_INLINE_FILE_EXTENSIONS = {".md", ".pdf", ".txt"}
+SAFE_INLINE_MEDIA_TYPES = {"application/pdf", "text/markdown", "text/plain"}
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -58,6 +78,13 @@ def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
         status_code=exc.status_code,
         detail={"reason": exc.reason, "message": exc.message},
     )
+
+
+def _content_disposition_type_for_document(filename: str, media_type: str) -> str:
+    ext = os.path.splitext(str(filename or ""))[1].lower()
+    if ext in SAFE_INLINE_FILE_EXTENSIONS and media_type in SAFE_INLINE_MEDIA_TYPES:
+        return "inline"
+    return "attachment"
 
 
 @router.post(
@@ -146,6 +173,50 @@ def list_knowledge_bases(
             )
         )
     return response
+
+
+@router.post("/candidates/resolve", response_model=KnowledgeCandidateResolution)
+def resolve_knowledge_candidates(
+    candidate_request: KnowledgeCandidateResolveRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Workflow Builder와 deployment preflight가 사용할 안전한 Knowledge 후보를 조회합니다.
+    """
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    runtime_permission_helper = None
+    if candidate_request.intended_execution_subject_id:
+        runtime_permission_helper = KnowledgePermissionHelper(
+            db,
+            user_id=candidate_request.intended_execution_subject_id,
+            organization_id=organization_id,
+        )
+
+    resolver = KnowledgeCandidateResolver(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+        runtime_permission_helper=runtime_permission_helper,
+    )
+
+    # 예상 실행 대상이 명시되어도 Phase 7에서는 후보 노출 scope만 좁힌다.
+    # 실제 runtime 권한 판정은 Workflow execution_subject 기준으로 다시 수행한다.
+    if candidate_request.mode == "explicit_kb":
+        return resolver.resolve_explicit_kbs(candidate_request.knowledge_base_ids)
+
+    return resolver.resolve_auto_collection_candidates(
+        collection_ids=candidate_request.collection_ids,
+        max_collections=candidate_request.max_collections,
+        max_candidate_kbs=candidate_request.max_candidate_kbs,
+    )
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseDetailResponse)
@@ -277,7 +348,9 @@ def delete_knowledge_base(
             except Exception as e:
                 # 파일 삭제 실패하더라도 DB 삭제는 계속 진행 (로그만 남김)
                 logger.warning(
-                    f"Failed to delete file {doc.file_path} for doc {doc.id}: {e}"
+                    "Failed to delete document file for doc %s: %s",
+                    doc.id,
+                    type(e).__name__,
                 )
 
     # DB 삭제 (Cascade로 청크도 같이 삭제됨)
@@ -371,6 +444,10 @@ def get_document_content(
     media_type, _ = mimetypes.guess_type(doc.file_path)
     if not media_type:
         media_type = "application/octet-stream"
+    content_disposition_type = _content_disposition_type_for_document(
+        doc.filename,
+        media_type,
+    )
 
     # Excel/CSV/Word 파일은 HTML로 변환하여 미리보기 제공
     ext = os.path.splitext(doc.filename)[1].lower()
@@ -385,12 +462,20 @@ def get_document_content(
                     # s3:// 프로토콜은 presigned url 변환이 필요하나, 현재는 http url을 가정
                     pass
                 else:
-                    response = requests.get(doc.file_path, stream=True)
-                    response.raise_for_status()
+                    response = safe_http_request(
+                        "GET",
+                        doc.file_path,
+                        policy=EgressGuardPolicy(
+                            timeout_seconds=30.0,
+                            max_response_bytes=50 * 1024 * 1024,
+                            allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
+                        ),
+                    )
+                    if response.status_code >= 400:
+                        raise RuntimeError("Remote file returned an error.")
 
                     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            tmp.write(chunk)
+                        tmp.write(response.content)
                         temp_file_path = tmp.name
                         target_path = temp_file_path
 
@@ -400,14 +485,19 @@ def get_document_content(
                 # WORD 처리
                 doc_word = DocxDocument(target_path)
                 paragraphs = [
-                    f"<p>{p.text}</p>" for p in doc_word.paragraphs if p.text.strip()
+                    f"<p>{html.escape(p.text)}</p>"
+                    for p in doc_word.paragraphs
+                    if p.text.strip()
                 ]
 
                 # 표 내용도 간단히 추가
                 for table in doc_word.tables:
                     rows_html = []
                     for row in table.rows:
-                        cells = [f"<td>{cell.text}</td>" for cell in row.cells]
+                        cells = [
+                            f"<td>{html.escape(cell.text)}</td>"
+                            for cell in row.cells
+                        ]
                         rows_html.append(f"<tr>{''.join(cells)}</tr>")
                     if rows_html:
                         paragraphs.append(
@@ -460,8 +550,14 @@ def get_document_content(
             </html>
             """
             return HTMLResponse(content=html_content)
+        except EgressGuardError as e:
+            logger.warning("External preview denied by egress guard: %s", e.reason_code)
+            raise HTTPException(
+                status_code=400,
+                detail={"reason_code": e.reason_code},
+            )
         except Exception as e:
-            logger.error(f"Excel conversion failed: {e}")
+            logger.error("Document preview conversion failed: %s", type(e).__name__)
             # 변환 실패 시 다운로드로 fallback
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
@@ -473,32 +569,55 @@ def get_document_content(
     # 브라우저가 s3에서 파일을 직접 받아온다.
     if is_s3_file:
         try:
-            # 1. 서버가 S3에서 파일 스트림을 가져옴
-            external_res = requests.get(doc.file_path, stream=True)
-            external_res.raise_for_status()
+            # 1. 서버가 외부 파일을 guard를 통해 가져옴
+            external_res = safe_http_request(
+                "GET",
+                doc.file_path,
+                policy=EgressGuardPolicy(
+                    timeout_seconds=30.0,
+                    max_response_bytes=50 * 1024 * 1024,
+                    allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
+                ),
+            )
+            if external_res.status_code >= 400:
+                raise RuntimeError("Remote file returned an error.")
 
             # 2. 클라이언트에게 스트리밍 전송 함수 정의
             def iterfile():
-                yield from external_res.iter_content(chunk_size=8192)
+                yield external_res.content
 
             # 3. StreamingResponse 반환
             return StreamingResponse(
                 iterfile(),
                 media_type=media_type,
                 headers={
-                    "Content-Disposition": f"inline; filename={requests.utils.quote(doc.filename)}"
+                    "Content-Disposition": (
+                        f"{content_disposition_type}; "
+                        f"filename={safe_quote_filename(doc.filename)}"
+                    )
                 },
             )
+        except EgressGuardError as e:
+            logger.warning(
+                "External file proxy denied by egress guard: %s",
+                e.reason_code,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={"reason_code": e.reason_code},
+            )
         except Exception as e:
-            logger.error(f"Failed to proxy S3 file: {e}")
-            # 실패 시 Fallback (혹은 에러처리)
-            return RedirectResponse(url=doc.file_path)
+            logger.error("Failed to proxy external file: %s", type(e).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={"reason_code": "egress.proxy_failed"},
+            )
 
     return FileResponse(
         doc.file_path,
         filename=doc.filename,
         media_type=media_type,
-        content_disposition_type="inline",
+        content_disposition_type=content_disposition_type,
     )
 
 
@@ -657,10 +776,17 @@ def preview_document_chunking(
             keyword_filter=request.keyword_filter,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Preview validation failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "validation.failed"},
+        )
     except Exception as e:
-        logger.exception("Preview failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Preview failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail={"reason_code": "preview.failed"},
+        )
 
     # 3. 응답 반환
     return DocumentPreviewResponse(

@@ -39,6 +39,7 @@ from apps.shared.schemas.rag import (
     RAGRetrievalSummary,
     RAGUsageSummary,
 )
+from apps.shared.services.rag_evidence_policy import RAGEvidencePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class RAGAgentAnswerService:
             builder=self.builder,
             audit=self.audit,
         )
+        self.evidence_policy = RAGEvidencePolicy()
 
     async def answer(self, payload: RAGAgentAnswerRequest) -> RAGAgentAnswerResponse:
         execution = self.prepare_execution(payload)
@@ -95,7 +97,7 @@ class RAGAgentAnswerService:
             timeout_stage = None
             self._raise_policy_block_if_needed(run, retrieval_summary, citations)
 
-            if chunks:
+            if self._can_generate_answer(chunks, retrieval_summary):
                 timeout_stage = "generation"
                 answer, usage_summary = await self.generation.generate(
                     execution.payload,
@@ -106,7 +108,7 @@ class RAGAgentAnswerService:
                 )
                 timeout_stage = None
             else:
-                answer = "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+                answer = self._insufficient_evidence_answer(retrieval_summary)
                 usage_summary = RAGUsageSummary(
                     model_name=execution.model.name,
                     provider=execution.model.provider_name,
@@ -260,7 +262,7 @@ class RAGAgentAnswerService:
                 },
             )
 
-            if chunks:
+            if self._can_generate_answer(chunks, retrieval_summary):
                 timeout_stage = "generation"
                 answer, usage_summary = await self.generation.generate(
                     execution.payload,
@@ -271,7 +273,7 @@ class RAGAgentAnswerService:
                 )
                 timeout_stage = None
             else:
-                answer = "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+                answer = self._insufficient_evidence_answer(retrieval_summary)
                 usage_summary = RAGUsageSummary(
                     model_name=execution.model.name,
                     provider=execution.model.provider_name,
@@ -383,6 +385,15 @@ class RAGAgentAnswerService:
             citations,
             retrieval_latency_ms,
         )
+        evidence_decision = self.evidence_policy.evaluate(
+            citations,
+            policy=execution.payload.evidence_sufficiency_policy,
+        )
+        retrieval_summary.evidence_sufficient = evidence_decision.evidence_sufficient
+        retrieval_summary.insufficiency_reason = (
+            evidence_decision.insufficiency_reason
+        )
+        retrieval_summary.source_tier_used = evidence_decision.source_tier_used
         self.audit.record_retrieval(
             execution.run,
             execution.metadata_filter,
@@ -428,7 +439,7 @@ class RAGAgentAnswerService:
             cited_document_count=len({str(c.document_id) for c in citations}),
             citation_ids=[c.citation_id for c in citations],
             policy_result=policy_result,
-            completion_status="completed",
+            completion_status=self._completion_status(retrieval_summary),
         )
         self.lifecycle.complete(
             run,
@@ -441,6 +452,26 @@ class RAGAgentAnswerService:
             ),
         )
         return answer_summary, policy_result
+
+    @staticmethod
+    def _can_generate_answer(chunks: list[Any], retrieval_summary: RAGRetrievalSummary) -> bool:
+        return bool(chunks) and retrieval_summary.evidence_sufficient
+
+    @staticmethod
+    def _completion_status(retrieval_summary: RAGRetrievalSummary) -> str:
+        if retrieval_summary.evidence_sufficient:
+            return "completed"
+        if retrieval_summary.insufficiency_reason == "no_evidence":
+            return "no_result"
+        return "insufficient_evidence"
+
+    @staticmethod
+    def _insufficient_evidence_answer(
+        retrieval_summary: RAGRetrievalSummary,
+    ) -> str:
+        if retrieval_summary.insufficiency_reason == "no_evidence":
+            return "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+        return "확인된 문서 기준으로는 답변 근거가 부족합니다."
 
     def _raise_policy_block_if_needed(
         self,

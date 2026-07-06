@@ -1,16 +1,15 @@
 # Knowledge API Spec
 
 Status: Draft
-Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
-
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. 목표 API는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 gate가 닫힌 뒤 구현한다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner/permission filtering |
-| POST | `/api/v1/rag/upload` | KB 문서 업로드/색인 요청 | KB write/manage path, current behavior |
+| POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
+| POST | `/api/v1/rag/upload` | KB 문서 업로드/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 일치하고 KB write/manage 권한을 통과해야 한다 |
 | POST | `/api/v1/rag/search-test/pure` | 검색 테스트 | active organization, KB use |
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
@@ -29,9 +28,23 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 | Raw/compliance view | `/api/v1/knowledge/kbs/{kb_id}/raw-artifacts/*` | Raw/compliance gate 이후 선택적 protected raw content access. RAG answer API에서 사용하지 않음 |
 | Source connectors | `/api/v1/knowledge/sources/*` | Source connection, sync, tombstone, ACL status, remediation |
 | Knowledge skills | `/api/v1/knowledge/skills/*` | Provider-neutral skill registry, version, freshness/eval status, safe metadata. 주 사용처는 빌더 단계 LLM node의 RAG 옵션 구성 |
-| 실행 시점 RAG retrieval | `/api/v1/rag/retrieval/*` 또는 내부 service call | Workflow LLM node의 RAG 옵션 실행 시 collection-routed 또는 KB-candidate-routed retrieval. 최종 path는 API gate에서 확정 |
+| 실행 시점 RAG retrieval | 내부 service call | Workflow LLM node의 RAG 옵션 실행 시 collection-routed 또는 KB-candidate-routed retrieval. Builder/preflight 후보 조회는 `/api/v1/knowledge/candidates/resolve`를 사용할 수 있지만, runtime retrieval은 내부 service boundary로 다시 권한을 평가한다 |
 
-이 path는 목표 후보이며 아직 승인된 API 계약이 아니다. 최종 path 이름은 API gate review에서 확정한다. 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
+공개 HTTP path가 필요한 경우에는 별도 API gate review에서 path 이름과 JSON/SSE shape를 확정한다. MBA-105의 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
+
+Builder와 deployment preflight가 사용할 MBA-105 candidate resolver contract는 다음 shape를 지켜야 한다.
+
+| 필드 | 규칙 |
+| --- | --- |
+| `actor` | Builder 또는 deployer subject. Candidate metadata 표시 권한의 기준 |
+| `intended_execution_subject_id` / `audience` | Runtime availability 계산 기준. 없으면 availability를 `unknown` 또는 `unavailable`로 낮춘다. Phase 7 baseline은 요청 필드를 받되 runtime에서는 execution_subject 기준으로 다시 판정한다 |
+| `mode` | `auto_collection` 또는 `explicit_kb` |
+| `collection_ids` | Auto collection mode에서 route scope 후보. 누락 시 actor가 route할 수 있는 safe subset만 사용 |
+| `knowledge_base_ids` | Explicit KB mode 후보. Collection route는 생략할 수 있지만 KB visibility/use/source ACL/final evidence preflight는 수행 |
+| `purpose` | `builder_suggestion`, `deployment_preflight`, `runtime_preview` 같은 bounded enum |
+| `max_collections` / `max_candidate_kbs` | 서버 cap. Baseline은 `max_collections <= 100`, `max_candidate_kbs <= 5000`을 강제한다. Cap은 route/use/source ACL helper를 통과한 authorized subset에 적용하며, 임의 row를 먼저 자른 뒤 authorization하지 않는다 |
+
+Response는 safe candidate list와 summary만 포함한다. 각 candidate는 `candidate_id`, `candidate_type`, safe label, route availability, runtime availability(`available`, `warning`, `unavailable`, `unknown`), safe reason code, required action을 반환할 수 있다. Hidden KB id/name, exact denied count, raw source path/title/url, hidden source distribution은 반환하지 않는다.
 
 ## Request Model
 
@@ -39,33 +52,35 @@ Verified Against: docs target model, ADR-0012, ADR-0013, ADR-0014, ADR-0015
 
 Explicit KB mode는 알려진 `knowledge_base_id`를 입력받는다. 이 직접 모드에서는 collection route permission을 요구하지 않을 수 있지만, KB helper, source ACL/requester authorization, metadata filter, hierarchy mode, final evidence policy는 항상 적용한다.
 
+MBA-105 standalone `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream`은 `evidence_sufficiency_policy`를 `minimum_evidence` 기본값으로 평가한다. Evidence가 없으면 LLM을 호출하지 않고 safe no-result로 닫으며, evidence score 또는 strict citation 기준이 부족하면 safe insufficient-evidence 응답으로 닫는다. 이 응답은 hidden KB id/name, 권한 없는 문서명, exact denied count를 포함하지 않는다.
+
 필수 목표 field:
 
-| Field | 규칙 |
+| 필드 | 규칙 |
 | --- | --- |
 | `knowledge_base_id` | 필수. Active organization scope 안에서만 평가하고, scope 밖이거나 사용할 수 없으면 resource-hiding matrix를 따른다 |
 | `generation_model_id` / `credential_id` | 필수. Preset/default credential selection은 별도 ADR이 승인되기 전까지 허용하지 않는다 |
 | `query` | 필수. Raw query는 기본적으로 durable 저장하지 않는다 |
 | `metadata_filter` | Permission/source ACL gate 이후 허용된 candidate 안에서만 적용 |
 | `hierarchy_mode` | 현재 metadata-aware/hierarchical RAG 계약을 따른다 |
-| `query_rewrite_mode` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 rewrite는 접근 범위를 넓히지 않는다 |
-| `evidence_sufficiency_policy` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 기본값과 threshold는 gate에서 확정한다 |
+| `query_rewrite_mode` | 선택 목표 옵션. 기본값 `off`; deterministic/template rewrite는 opt-in. Rewrite는 접근 범위를 넓히지 않는다 |
+| `evidence_sufficiency_policy` | MBA-105 standalone Agent answer에서 기본값 `minimum_evidence`로 적용한다. `strict_citation`은 더 엄격한 citation 개수 검증 후보이며, `off`는 운영 runtime에서 허용하지 않는다 |
 | `source_tier_policy` | 선택 목표 옵션. Source-of-Truth Tier를 authorized evidence 안에서 ranking/tie-break/conflict hint로만 사용한다 |
 
 ### Auto Collection Answer
 
 Auto mode는 arbitrary KB id를 permission bypass로 받지 않는다. 먼저 safe candidate set을 구성한다.
 
-| Field | 규칙 |
+| 필드 | 규칙 |
 | --- | --- |
 | `collection_ids` | 선택. 있으면 먼저 collection `route` 권한을 확인한다 |
 | `skill_ids` | 빌더 단계 선택 후보. 있으면 skill visibility, freshness/eval, display policy를 확인한다. Skill만으로 KB permission/source ACL gate를 충족할 수 없다 |
 | `generation_model_id` / `credential_id` | 필수. Auto mode는 preset/default credential selection을 의미하지 않는다 |
-| `max_collections` / `max_candidate_kbs` / `max_retrieval_kbs` | 서버가 강제하는 cap. 초기값은 product/ops 조정값이며 영구 hard contract가 아니다 |
+| `max_collections` / `max_candidate_kbs` / `max_retrieval_kbs` | 서버가 강제하는 cap. 초기 baseline은 `max_route_collections=20`, `max_candidate_kbs=5000`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`이며 운영 설정으로 조정 가능하다. 제품의 영구 고정 계약이 아니다 |
 | `metadata_filter` | Permission/source ACL candidate filtering 이후 적용 |
-| `query_rewrite_mode` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 rewrite는 접근 범위를 넓히지 않고 raw rewritten query는 durable metadata에 저장하지 않는다 |
-| `evidence_sufficiency_policy` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 기본값과 threshold는 gate에서 확정한다 |
-| `source_tier_policy` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 구체 tier enum과 canonical 저장 위치는 G9/G14에서 확정한다 |
+| `query_rewrite_mode` | 선택 목표 옵션. 기본값 `off`; rewrite는 접근 범위를 넓히지 않고 raw rewritten query는 durable metadata에 저장하지 않는다 |
+| `evidence_sufficiency_policy` | 선택 목표 옵션. 기본값 `minimum_evidence`; 근거 부족 시 safe no-result 또는 insufficient-evidence 응답 |
+| `source_tier_policy` | 선택 목표 옵션. 공통 LLM node의 RAG 옵션이며 ADR-0017의 source tier baseline을 따른다 |
 | `query` | Candidate routing과 retrieval에 사용한다. Permission decision에는 사용하지 않는다 |
 
 Router는 authorized safe candidate와 safe metadata만 받는다. Raw source ACL fact, hidden KB id, raw source title/path/url, exact hidden count, raw content는 router input에 포함하지 않는다. `collection_ids`가 없을 때 candidate source는 조직 전체 collection이 아니라 서버 정책상 actor가 route할 수 있는 collection subset이다.
@@ -76,32 +91,36 @@ Skill candidate metadata도 같은 boundary를 따른다. Workflow Builder가 �
 
 ### Workflow Runtime RAG Execution Subject
 
-Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 `execution_subject`를 명시해야 한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다.
+Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 가능한 경우 `execution_subject`를 명시한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다. MVP에서 `execution_subject`가 없으면 retrieval은 실패가 아니라 anonymous public-only로 낮아진다.
 
 필수 계약:
 
 | 항목 | 규칙 |
 | --- | --- |
-| `execution_subject` | Workflow run context에서 명시적으로 resolve한 actor/service account. KB permission과 source ACL 평가 기준 |
-| `subject_resolution_reason` | interactive run, deployment service account, assigned operator 등 sanitized reason |
+| `execution_subject` | Workflow run context에서 명시적으로 resolve한 actor/service account. 있으면 KB permission과 source ACL 평가 기준 |
+| `subject_resolution_reason` | interactive run, deployment service account, assigned operator, anonymous public-only 등 sanitized reason. 현재 MVP runtime은 reason field 없이도 subject 부재를 anonymous public-only로 해석할 수 있다 |
 | `workflow_owner_id` | 감사/소유권 표시에는 사용할 수 있지만, 명시 설정 없이 retrieval 권한 fallback으로 사용하지 않는다 |
-| missing/ambiguous subject | retrieval preflight 실패. Silent owner fallback 금지 |
+| missing subject | Anonymous public-only retrieval. Active public collection에 연결된 active KB만 후보로 남기며 silent owner/user_id fallback은 금지 |
+| ambiguous or unsupported subject | Private retrieval fail-closed. Anonymous downgrade가 안전하게 판정되지 않으면 safe no-result 또는 failure policy를 따른다 |
 
-모든 운영 RAG mode는 `execution_subject` 기준의 KB permission/source ACL/final evidence gate를 통과해야 한다. `general RAG`는 authorized resource 안에서 넓게 검색하는 mode이고, `task-aware` 또는 `permission-scoped RAG`는 authorized resource 안에서 후보를 더 정밀하게 줄이는 mode다.
+모든 운영 RAG mode는 `execution_subject` 기준의 KB permission/source ACL/final evidence gate 또는 anonymous public-only gate를 통과해야 한다. `general RAG`는 authorized/public resource 안에서 넓게 검색하는 mode이고, `task-aware` 또는 `permission-scoped RAG`는 authorized/public resource 안에서 후보를 더 정밀하게 줄이는 mode다.
 
 ### LLM node RAG 품질 옵션
 
 Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션을 제안할 수 있다. 이 옵션은 전역 에이전트 기능이나 독립형 RAG 실행 노드 기능이 아니라 생성된 LLM node의 retrieval/generation 정책이다.
 
-| Field | 의미 |
+| 필드 | 의미 |
 | --- | --- |
-| `query_rewrite_mode` | `off`, `template`, `llm_assisted` 후보. Rewrite는 user query와 safe skill/template만 입력으로 사용하고, permission/source ACL candidate scope를 넓히지 않는다 |
-| `evidence_sufficiency_policy` | `off`, `minimum_evidence`, `strict_citation` 후보. 근거가 부족하면 safe no-result 또는 insufficient-evidence 응답으로 닫는다 |
-| `source_tier_policy` | Source-of-Truth Tier를 authorized evidence 안에서 ranking, tie-break, conflict resolution hint로 사용할지 나타내는 목표 옵션. 구체 tier enum은 gate에서 확정한다 |
+| `query_rewrite_mode` | `off`, `template`, `llm_assisted` 후보. MBA-105 runtime은 `off` 기본값과 `template` opt-in만 구현한다. Rewrite는 user query와 safe skill/template만 입력으로 사용하고, permission/source ACL candidate scope를 넓히지 않는다 |
+| `evidence_sufficiency_policy` | `minimum_evidence`, `strict_citation` 후보. 운영 runtime에서는 `off`를 허용하지 않는다. 근거가 부족하면 safe no-result 또는 insufficient-evidence 응답으로 닫는다 |
+| `rag_failure_policy` | 근거 부족 또는 실행 시점 availability 실패를 처리하는 정책. MBA-105 runtime의 구현 기본값은 `safe_no_result`이며, `fail_node`는 node 실패로 닫는다. Permission/source ACL failure는 hidden-safe reason만 허용한다 |
+| `source_tier_policy` | Source-of-Truth Tier를 authorized evidence 안에서 ranking, tie-break, conflict resolution hint로 사용할지 나타내는 목표 옵션. Baseline candidate enum은 `legal_regulation`, `contract`, `company_policy`, `adr_decision`, `official_documentation`, `semantic_definition`, `operational_runbook`, `curated_query_corpus`, `conversation_or_thread`이며 최종 enum은 Legal/Compliance review에서 확정한다 |
+
+현재 workflow graph의 LLM node data는 기존 camelCase convention을 유지하므로 구현 필드는 `queryRewriteMode`, `queryRewriteTemplate`, `evidenceSufficiencyPolicy`, `ragFailurePolicy`, `sourceTierPolicy`다. 공식 계약에서 snake_case로 설명한 값과 의미는 같으며, 공개 API shape를 새로 만들 때는 별도 API review에서 casing을 고정한다.
 
 `query_rewrite_mode`가 켜져도 raw rewritten query는 raw prompt와 유사한 민감 입력으로 취급한다. Durable audit/trace/usage metadata에는 rewrite 적용 여부, 전략, safe template id 같은 summary만 저장한다.
 
-`llm_assisted` query rewrite는 LLM 호출이므로 구현 전 gate에서 execution subject, generation model/credential, credential `use` 권한, usage/cost 기록, timeout, token/cost budget, 실패 시 fallback을 확정해야 한다. Workflow runtime에서 실행되면 rewrite LLM call도 workflow 실행 주체 기준의 권한과 비용 기록을 따라야 한다.
+`llm_assisted` query rewrite는 LLM 호출이므로 별도 승인 전까지 구현하지 않는다. 승인 시 execution subject, generation model/credential, credential `use` 권한, usage/cost 기록, timeout, token/cost budget, 실패 시 fallback을 확정해야 한다. Workflow runtime에서 실행되면 rewrite LLM call도 workflow 실행 주체 기준의 권한과 비용 기록을 따라야 한다.
 
 ## Response Model
 
@@ -109,14 +128,14 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 
 목표 citation field:
 
-| Field | 의미 |
+| 필드 | 의미 |
 | --- | --- |
 | `citation_id` | 이 응답 안에서 사용하는 opaque citation identity |
 | `knowledge_base_id` | Document-level KB identity |
 | `document_version_id` | Evidence로 사용한 active version 또는 historical version identity |
 | `chunk_id` | Evidence chunk |
 | `collection_id` | Collection을 통해 선택됐을 때의 선택적 attribution |
-| `safe_source_ref` | ID vocabulary와 protected identity gate가 닫힌 뒤 사용할 수 있는 선택적 protected/HMAC source reference |
+| `safe_source_ref` | 선택적 protected/HMAC source reference. Raw source id/url/path/principal을 대체하며 display policy와 protected source identity boundary를 따른다 |
 | `rank` / `score` | Retrieval ranking summary |
 | `metadata_summary` | Redaction-safe allowlist만 허용 |
 | `content_preview` | 선택적 user-facing redacted/capped preview. Durable audit/trace/usage summary에는 기본 저장하지 않는다 |
@@ -125,7 +144,7 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 
 Skill을 사용한 workflow draft, LLM node의 RAG 옵션, workflow test run은 다음 redaction-safe provenance를 선택적으로 반환할 수 있다.
 
-| Field | 의미 |
+| 필드 | 의미 |
 | --- | --- |
 | `skill_id` | Provider-neutral Knowledge Skill identity |
 | `skill_version` | 사용한 skill version |
@@ -158,7 +177,7 @@ Operational partial failure는 반환되는 모든 evidence가 KB permission, so
 
 A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summary만 사용할 수 있다.
 
-| Field | 의미 |
+| 필드 | 의미 |
 | --- | --- |
 | `retrieval_strategy` | `general`, `permission_scoped`, `task_aware`, `metadata_aware`, `hierarchical` 같은 실행 전략 |
 | `rag_mode` | UI/실행 설정에 표시되는 RAG mode |
@@ -188,7 +207,8 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Auto collection mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, listing surface의 collection `read`, router scope의 collection `route`, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | Explicit KB mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, KB visibility/resource hiding, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | 빌더 단계 Knowledge Skill mode | active organization, skill visibility, skill safe metadata display, skill freshness/eval gate. Skill visibility는 collection route, KB permission, source ACL gate를 대체하지 않는다 |
-| 실행 시점 LLM node의 RAG 옵션 | execution subject, collection route, KB permission/source ACL gate, final evidence policy. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
+| 실행 시점 LLM node의 RAG 옵션 | execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate와 final evidence policy. execution subject가 없으면 anonymous public-only gate와 final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate 또는 anonymous public-only gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
+| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
 | Collection management | `collection.manage`; 기존 KB linking에는 `kb.manage`도 필요 |
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |
@@ -197,22 +217,27 @@ Response summary와 citation은 KB id, document version id, chunk id, citation i
 
 Raw source id/url/path/title, raw source ACL, raw principal, raw source exception, raw query, raw rewritten query, raw answer, raw prompt/completion, raw provider response, raw skill body, hidden skill source reference, content preview, credential value는 durable audit/trace/usage metadata에 저장하지 않는다. `content_preview`는 user-facing response 전용이며 redacted/capped 상태로만 반환하고 durable summary에서 제외한다. Raw artifact를 활성화하더라도 dedicated raw/compliance flow에서만 노출하며 Agent answer, retrieval context, prompt construction, SSE stream에는 사용하지 않는다. Raw/compliance access audit은 safe reference, decision, reason code, retention/legal-hold summary, request/correlation identifier만 저장한다.
 
-### Resource Hiding / No-result / Evidence Insufficiency Matrix Gate
+### Resource Hiding / No-result / Evidence Insufficiency Matrix
 
-Resource hiding/no-result/evidence insufficiency API matrix는 목표 구현 전에 승인해야 한다. 아래 항목은 matrix review를 위한 non-contract placeholder이며 구현 승인 기준이 아니다.
+Resource hiding/no-result/evidence insufficiency API matrix는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 safe hidden/no-result/partial-result baseline과 [implementation_baseline.md](implementation_baseline.md)의 matrix를 따른다. MBA-105 구현은 아래 safe envelope를 testable contract로 사용한다.
 
-- Active organization scope 밖, organization mismatch, deleted/archived hidden resource, source ACL denied/stale/unmapped/ambiguous 상태가 존재를 드러낼 수 있는 경우.
+- Active organization scope 밖, organization mismatch, deleted/archived hidden resource, requester source authorization denied 또는 source ACL stale/unmapped/ambiguous/unverified/revoked 상태가 존재를 드러낼 수 있는 경우.
 - Scope 안에서 이미 보이는 resource의 KB `use` 또는 credential `use` 권한 부족.
 - 허용된 evidence candidate resolution 이후 policy block.
 - Permission/source ACL gate를 통과한 뒤 발생한 source/connector operational failure.
 - Auto mode에서 권한 있는 candidate가 없는 경우.
+- Anonymous public-only mode에서 public candidate가 없는 경우.
 - 권한 gate 이후 evidence가 없는 경우.
 - Evidence score, citation coverage, source tier policy 기준으로 근거가 부족한 경우.
 - Evidence sufficiency policy가 `policy_filtered` 또는 `operational_partial` reason을 반환하는 경우.
 
-Matrix는 JSON/SSE shape, HTTP status 또는 terminal event 의미, answer-run 생성 여부, lifecycle audit behavior, `permission.denied`/`policy.block`/operational audit behavior, citation id 생성 시점, trace metadata, explicit KB와 auto collection mode의 hidden aggregate visibility를 정의해야 한다. Matrix가 닫히기 전 목표 구현은 hidden KB/version/chunk identity를 드러내는 answer run, `rag.retrieve` success audit, citation id, trace metadata, durable summary를 만들면 안 된다.
+기준은 hidden KB/version/chunk identity를 드러내는 answer run, `rag.retrieve` success audit, citation id, trace metadata, durable summary를 만들지 않는 것이다. Scope 밖, organization mismatch, hidden deleted/archived resource, existence inference가 가능한 requester source authorization denied 또는 source ACL stale/unmapped/ambiguous/unverified/revoked 상태는 resource-hidden/404 또는 safe no-result로 닫는다. Partial result는 permission/source ACL/final evidence gates 이후 발생한 operational failure에만 허용한다.
 
-현재 구현된 standalone single-KB `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream` lifecycle, same-scope permission preflight blocked status, trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 따른다. ADR-0014의 resource hiding matrix는 target KB cutover, source-managed KB, auto collection, multi-KB mode에 필요한 추가 gate이며, ADR-0013의 현재 단일 KB 계약을 재정의하지 않는다.
+JSON/pre-stream error envelope는 `error.code`, `error.reason_code`, `error.message`, optional `correlation_id`, optional `retryable`만 포함한다. Hidden/resource-hidden path의 `message`는 generic text를 사용하고 target KB id/name/source path/count를 포함하지 않는다. Hidden/resource-hidden path의 external `reason_code`는 `resource.hidden`으로 일반화하며, `source_authorization.denied` 또는 `source_acl.stale/unmapped/ambiguous/unverified/revoked` 같은 세부 reason은 이미 존재가 authorized context에서 보이는 resource, admin/remediation context, 또는 내부 safe audit/trace allowlist에서만 사용할 수 있다. Stream 시작 후에는 HTTP status를 바꾸지 않고 `event: error` terminal event에 같은 semantic `code`/`reason_code`/`correlation_id`/`retryable` allowlist를 넣는다.
+
+Safe no-result/insufficient-evidence response는 `status`, `evidence_sufficient=false`, `insufficiency_reason`, optional `partial_result`, optional bucketed failed candidate count, safe retryability만 포함한다. Hidden candidate id/name/count/source distribution은 포함하지 않는다.
+
+현재 구현된 standalone single-KB `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream` lifecycle, same-scope permission preflight blocked status, trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 따른다. Source-managed KB, auto collection, multi-KB mode의 target resource hiding 확장은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 provisional baseline을 따른다. 이 기준은 ADR-0013의 현재 단일 KB 계약을 재정의하지 않는다.
 
 ## Trace And Audit
 

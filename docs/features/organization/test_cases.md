@@ -19,7 +19,7 @@ Status: Draft
 
 현재 backend coverage는 `apps/gateway/tests/api/test_organizations_api.py`, `apps/gateway/tests/api/test_teams_api.py`, `apps/gateway/tests/api/test_permissions_api.py`, `apps/gateway/tests/services/test_organization_member_service.py`, `apps/gateway/tests/services/test_team_service_permissions.py`, `apps/shared/tests/services/test_permissions.py`, `apps/shared/tests/services/test_permission_enforcement.py`, `tests/db/test_organization_user_schema.py`, `tests/db/test_team_permission_constraints.py`, `tests/test_permission_schema.py`, `apps/shared/tests/test_organization_membership_schema.py`에 분산되어 있다.
 
-현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트와 App 생성 권한 신청 전환(`CreateAppModal.test.tsx`), 권한 신청 제출 wrapper(`organizationApi.test.ts`)를 포함한다. AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다.
+현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트와 권한 신청 제출 wrapper(`organizationApi.test.ts`)를 포함한다. AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다. App 생성 권한 신청 UI(ORG-TC-E009~E013)는 `apps/client/app/features/app/components/create-app-modal/index.test.tsx`가 담당한다.
 
 ## Unit Tests
 
@@ -74,11 +74,15 @@ Status: Draft
 | ORG-TC-E002 | active organization 선택 후 API 요청은 organization header를 보내야 한다. | 선택 후 `/organizations/current` 요청에 header가 없다. | 테스트 실패. |
 | ORG-TC-E003 | Sidebar와 AdminConsolePage는 non-manager에게 관리 표면을 숨겨야 한다. | `is_manager=false`인데 관리 nav 또는 관리 테이블이 보인다. | 관리 nav 숨김, `관리 권한 없음` 표시. |
 | ORG-TC-E004 | member invite/update/remove UI는 필요한 payload와 confirm gate를 지켜야 한다. | invite payload가 비었거나 privilege/destructive action이 confirm 없이 호출된다. | API 미호출 또는 confirm 후 호출. |
-| ORG-TC-E005 | self 또는 마지막 manager action은 강등/제거를 막아야 한다. | 자기 자신 또는 마지막 manager row에서 강등/제거 button이 활성화된다. | disabled button. |
+| ORG-TC-E005 | self 또는 마지막 manager action은 정지/강등/제거를 막아야 한다. | 자기 자신 row의 `정지` button 또는 자기 자신/마지막 manager row의 강등/제거 button이 활성화된다. | disabled button이며 클릭해도 member update/remove API를 호출하지 않는다. |
 | ORG-TC-E006 | inactive team detail은 member add control을 숨겨야 한다. | inactive team에서 `추가` button이 활성화된다. | `비활성 팀에는 멤버를 추가할 수 없습니다.` 표시. |
 | ORG-TC-E007 | permission tab은 resource와 active grantee 없이는 grant를 막아야 한다. | workflow/credential id 없거나 inactive team/member로 PUT 요청이 나간다. | save disabled 또는 후보 제외. |
 | ORG-TC-E008 | active organization 변경 event 후 Sidebar는 organization name/manager flag를 새로 조회해야 한다. | event dispatch 후 이전 organization 이름이 유지된다. | `/organizations/current` 재호출. |
-| ORG-TC-E009 | App 생성 권한이 없는 사용자는 생성 403 후 권한 신청 폼으로 이동해야 한다. | `POST /apps` 403 후 일반 실패 toast만 표시되거나 신청 API를 호출할 수 없다. | 같은 모달에서 신청 사유 입력 UI를 표시하고 `권한 신청`이 `POST /permission-requests`를 호출한다. |
+| ORG-TC-E009 | App 생성 `403` 차단은 일반 실패 토스트 대신 권한 신청 UI로 전환해야 한다. | `POST /apps` `403`에서 `앱 생성에 실패했습니다.` 토스트가 뜨거나 권한 신청 폼이 보이지 않는다. | 권한 신청 폼 표시, 실패 토스트 없음. |
+| ORG-TC-E010 | 권한 신청 제출은 `app.create` 고정과 blank 아닌 신청 사유를 보내야 한다. | blank 사유로 API가 호출되거나 `requested_permission`이 `app.create`가 아니다. | blank 사유는 미호출 + 안내, 제출 body `{ requested_permission: 'app.create', reason }`. |
+| ORG-TC-E011 | 권한 신청 `201` 성공은 신청 완료 안내를 표시해야 한다. | 성공 후 완료 안내 없이 form이 유지된다. | 신청 완료 안내 표시. |
+| ORG-TC-E012 | 권한 신청 `409`는 detail에 따라 이미 권한 보유와 pending 중복 안내를 구분해야 한다. | 두 `409` detail이 같은 일반 오류 메시지로 표시된다. | `App creation permission already granted`는 보유 안내, `Pending permission request already exists`는 대기 안내. |
+| ORG-TC-E013 | `403`이 아닌 App 생성 실패는 기존 실패 처리를 유지해야 한다. | duplicate name `400` 또는 일반 오류에서 권한 신청 UI로 전환된다. | 기존 실패 토스트 유지, 권한 신청 폼 없음. |
 
 ## Permission Tests
 

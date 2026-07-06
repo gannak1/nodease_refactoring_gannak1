@@ -1,8 +1,6 @@
 # LLM Credentials Test Cases
 
 Status: Draft
-Verified Against: current implementation baseline plus Knowledge target model ADR-0014
-
 ## 단위 테스트
 
 - Credential registration gate는 organization manager만 통과시키고 일반 active member, builder/operator, credential `use` 권한자, credential `manage` 권한자를 새 credential 등록 권한자로 취급하지 않는다.

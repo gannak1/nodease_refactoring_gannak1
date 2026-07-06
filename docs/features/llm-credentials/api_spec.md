@@ -1,8 +1,6 @@
 # LLM Credentials API Spec
 
 Status: Draft
-Verified Against: current implementation baseline plus Knowledge target model ADR-0014
-
 ## Endpoints
 
 | Method | Path | 설명 | 권한 |
