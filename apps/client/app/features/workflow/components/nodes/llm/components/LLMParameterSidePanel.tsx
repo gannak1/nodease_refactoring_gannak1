@@ -8,6 +8,8 @@ interface LLMParameterSidePanelProps {
   data: LLMNodeData;
   onClose: () => void;
   embedded?: boolean;
+  readOnly?: boolean;
+  onDataChange?: (updates: Partial<LLMNodeData>) => void;
 }
 
 // 파라미터 설명 (한국어)
@@ -72,6 +74,8 @@ export function LLMParameterSidePanel({
   data,
   onClose,
   embedded = false,
+  readOnly = false,
+  onDataChange,
 }: LLMParameterSidePanelProps) {
   const { updateNodeData } = useWorkflowStore();
   const [activeHelp, setActiveHelp] = useState<ParamHelpId | null>(null);
@@ -116,9 +120,18 @@ export function LLMParameterSidePanel({
     setActiveHelp((current) => (current === id ? null : id));
   };
 
+  const applyNodeData = (updates: Partial<LLMNodeData>) => {
+    if (readOnly) return;
+    if (onDataChange) {
+      onDataChange(updates);
+      return;
+    }
+    updateNodeData(nodeId, updates);
+  };
+
   // Handler to update a specific parameter
   const handleParamChange = (key: string, value: number) => {
-    updateNodeData(nodeId, {
+    applyNodeData({
       parameters: {
         ...baseParams,
         [key]: value,
@@ -128,8 +141,9 @@ export function LLMParameterSidePanel({
 
   // Handler for stop sequences
   const handleAddStopSequence = () => {
+    if (readOnly) return;
     if (stopSequences.length >= 4) return; // Max 4
-    updateNodeData(nodeId, {
+    applyNodeData({
       parameters: {
         ...baseParams,
         stop: [...stopSequences, ''],
@@ -138,8 +152,9 @@ export function LLMParameterSidePanel({
   };
 
   const handleRemoveStopSequence = (index: number) => {
+    if (readOnly) return;
     const newSeqs = stopSequences.filter((_, i) => i !== index);
-    updateNodeData(nodeId, {
+    applyNodeData({
       parameters: {
         ...baseParams,
         stop: newSeqs.length > 0 ? newSeqs : undefined,
@@ -148,9 +163,10 @@ export function LLMParameterSidePanel({
   };
 
   const handleUpdateStopSequence = (index: number, value: string) => {
+    if (readOnly) return;
     const newSeqs = [...stopSequences];
     newSeqs[index] = value;
-    updateNodeData(nodeId, {
+    applyNodeData({
       parameters: {
         ...baseParams,
         stop: newSeqs,
@@ -196,6 +212,7 @@ export function LLMParameterSidePanel({
           step={step}
           value={value}
           onChange={(e) => handleParamChange(paramKey, Number(e.target.value))}
+          disabled={readOnly}
           className="absolute inset-0 w-full h-6 bg-transparent accent-blue-600 appearance-none cursor-pointer
                 [&::-webkit-slider-runnable-track]:bg-transparent
                 [&::-moz-range-track]:bg-transparent
@@ -312,6 +329,7 @@ export function LLMParameterSidePanel({
               type="number"
               className="w-20 text-xs font-mono text-right border border-gray-300 rounded px-1.5 py-0.5 focus:border-blue-500 focus:outline-none"
               value={maxTokens}
+              readOnly={readOnly}
               onChange={(e) =>
                 handleParamChange('max_tokens', Number(e.target.value))
               }
@@ -420,9 +438,9 @@ export function LLMParameterSidePanel({
             </div>
             <button
               onClick={handleAddStopSequence}
-              disabled={stopSequences.length >= 4}
+              disabled={readOnly || stopSequences.length >= 4}
               className={`flex items-center gap-1 px-2 py-0.5 text-[10px] rounded transition-colors ${
-                stopSequences.length >= 4
+                readOnly || stopSequences.length >= 4
                   ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                   : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
               }`}
@@ -443,6 +461,7 @@ export function LLMParameterSidePanel({
                   <input
                     type="text"
                     value={seq}
+                    readOnly={readOnly}
                     onChange={(e) =>
                       handleUpdateStopSequence(index, e.target.value)
                     }
@@ -451,7 +470,8 @@ export function LLMParameterSidePanel({
                   />
                   <button
                     onClick={() => handleRemoveStopSequence(index)}
-                    className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                    disabled={readOnly}
+                    className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

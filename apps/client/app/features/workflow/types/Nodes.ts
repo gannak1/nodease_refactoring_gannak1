@@ -134,17 +134,26 @@ export interface LLMNodeData extends BaseNodeData {
   provider: string;
   model_id: string;
   fallback_model_id?: string;
+  task_type?: string;
   system_prompt?: string;
   user_prompt?: string;
   assistant_prompt?: string;
   referenced_variables: LLMVariable[];
   context_variable?: string;
   parameters: Record<string, unknown>;
+  output_format?: {
+    type?: 'text' | 'json';
+    schema?: Record<string, unknown> | null;
+  };
 
   // 지식 (Knowledge) 통합 필드
   knowledgeBases?: { id: string; name: string }[];
   scoreThreshold?: number;
   topK?: number;
+  dedupeRetrievedContext?: boolean;
+  retrievedContextMaxChars?: number;
+  retrievedContextCompression?: 'off' | 'light' | 'strong';
+  answerGroundingCheck?: 'off' | 'basic' | 'strict';
 }
 // ============================================================================
 

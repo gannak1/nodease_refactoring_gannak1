@@ -25,6 +25,9 @@ export const useAutoSync = () => {
   const envVariables = useWorkflowStore((state) => state.envVariables);
   const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
   const setWorkflowData = useWorkflowStore((state) => state.setWorkflowData);
+  const setHasUnsavedChanges = useWorkflowStore(
+    (state) => state.setHasUnsavedChanges,
+  );
   const workflowAccess = useWorkflowStore((state) => state.workflowAccess);
 
   // 로딩 완료 여부 체크
@@ -142,6 +145,7 @@ export const useAutoSync = () => {
               envVariables: currentEnvVars,
               runtimeVariables: currentRuntimeVars,
             });
+            setHasUnsavedChanges(false);
           } catch {
             // Failed to sync workflow
           }
@@ -150,7 +154,7 @@ export const useAutoSync = () => {
         { maxWait: 300000 }, // 5분이 지나면 강제로 한 번 저장
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workflowId, workflowAccess?.can_write],
+    [workflowId, workflowAccess?.can_write, setHasUnsavedChanges],
   );
 
   // debouncedSync가 변경되면 ref 업데이트

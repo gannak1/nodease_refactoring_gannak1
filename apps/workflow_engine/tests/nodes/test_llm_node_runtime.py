@@ -84,6 +84,21 @@ class SuccessClient:
         }
 
 
+class StaticTextClient:
+    """정해진 텍스트를 반환하는 테스트용 클라이언트."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.calls = []
+
+    def invoke_sync(self, messages, **kwargs):
+        self.calls.append({"messages": messages, "kwargs": kwargs})
+        return {
+            "choices": [{"message": {"content": self.text}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+
+
 def _patch_rag_gevent_inline(monkeypatch, node):
     """RAG fanout unit test에서 gevent 의존성 없이 bounded path를 동기 실행한다."""
 
@@ -177,6 +192,42 @@ class FakeRuntimePriorityDb:
         self.refreshed = row
 
 
+def _patch_allowed_knowledge_permissions(monkeypatch, knowledge_base_ids):
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=uuid.UUID(str(kb_id)))
+                for kb_id in knowledge_base_ids
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=True,
+                external_reason_code="allowed",
+                effective_auth_state="manager",
+            )
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    return FakeDb()
+
+
 def test_llm_node_runs_with_override_client():
     """클라이언트 오버라이드로 LLM 노드 실행 테스트 [GEVENT] sync"""
     dummy_client = DummyClient()
@@ -226,6 +277,105 @@ def test_llm_node_runs_with_override_client():
     # 응답 파싱 검증
     assert result["text"] == "hello world"
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
+
+
+def test_llm_node_data_preserves_output_format_for_cost_optimizer_apply():
+    """Cost Optimizer로 적용한 출력 형식/schema가 런타임 노드 데이터에서 보존된다."""
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+        output_format={
+            "type": "json",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+    )
+
+    assert data.output_format == {
+        "type": "json",
+        "schema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    }
+
+
+def test_llm_node_passes_json_response_format_to_client():
+    """JSON 출력 형식이면 LLM 호출에 JSON object 응답 힌트를 전달한다."""
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+        output_format={
+            "type": "json",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute({})
+
+    assert dummy_client.calls[0]["kwargs"]["response_format"] == {
+        "type": "json_object"
+    }
+
+
+def test_llm_node_does_not_override_explicit_response_format():
+    """사용자가 명시한 response_format은 출력 형식 기본 힌트로 덮어쓰지 않는다."""
+    dummy_client = DummyClient()
+    explicit_response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "answer_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+    }
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={"response_format": explicit_response_format},
+        output_format={"type": "json", "schema": {}},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute({})
+
+    assert dummy_client.calls[0]["kwargs"]["response_format"] == explicit_response_format
 
 
 def test_llm_node_isolates_upstream_output_from_privileged_prompts():
@@ -730,6 +880,60 @@ def test_llm_node_logs_usage_with_selected_credential_id(monkeypatch):
     assert result["text"] == "hello world"
     assert log_calls
     assert log_calls[0]["credential_id"] == credential_id
+
+
+def test_llm_node_logs_cost_optimizer_candidate_id(monkeypatch):
+    """Cost Optimizer 비교 실행의 LLM usage log는 candidate id와 직접 연결된다."""
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    cost_optimizer_candidate_id = uuid.uuid4()
+    log_calls = []
+
+    def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
+        return SimpleNamespace(
+            client=DummyClient(),
+            credential_id=credential_id,
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(
+        LLMService, "get_runtime_client_for_user", fake_get_runtime_client_for_user
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(
+        LLMService, "log_usage", lambda **kwargs: log_calls.append(kwargs)
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="primary-model",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "cost_optimizer_candidate_id": str(cost_optimizer_candidate_id),
+            "db": object(),
+        },
+    )
+
+    result = node.execute({})
+
+    assert result["text"] == "hello world"
+    assert log_calls
+    assert log_calls[0]["cost_optimizer_candidate_id"] == cost_optimizer_candidate_id
 
 
 def test_llm_node_records_one_audit_when_primary_and_fallback_selection_fail(
@@ -2499,3 +2703,275 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
     assert audit_calls[0]["resource_id"] == str(denied_kb_id)
     assert audit_calls[0]["effective_auth_state"] == "none"
     assert audit_calls[0]["organization_id"] == organization_id
+
+
+def test_knowledge_search_deduplicates_retrieved_context_when_enabled(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    def chunk(content: str, score: float, rank: int) -> ChunkPreview:
+        return ChunkPreview(
+            chunk_id=uuid.uuid4(),
+            content=content,
+            document_id=uuid.uuid4(),
+            filename=f"guide-{rank}.md",
+            similarity_score=score,
+            score=score,
+            rank=rank,
+            metadata_summary={},
+        )
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            return [
+                chunk("중복 근거입니다.", 0.93, 1),
+                chunk("중복 근거입니다.", 0.91, 2),
+                chunk("고유 근거입니다.", 0.89, 3),
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+        topK=5,
+        dedupeRetrievedContext=True,
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": fake_db,
+        },
+    )
+
+    rag_result = node._execute_knowledge_search(  # noqa: SLF001
+        "query", db_session=fake_db
+    )
+    context = rag_result.context
+    metadata = rag_result.metadata
+
+    assert context.count("중복 근거입니다.") == 1
+    assert "고유 근거입니다." in context
+    assert len(metadata) == 2
+
+
+def test_knowledge_search_limits_retrieved_context_chars(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="1234567890ABCDEFGHIJ",
+                    document_id=uuid.uuid4(),
+                    filename="long.md",
+                    similarity_score=0.93,
+                    score=0.93,
+                    rank=1,
+                    metadata_summary={},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="이 프롬프트는 제한 대상이 아니다.",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+        retrievedContextMaxChars=10,
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": fake_db,
+        },
+    )
+
+    rag_result = node._execute_knowledge_search(  # noqa: SLF001
+        "query", db_session=fake_db
+    )
+    context = rag_result.context
+    metadata = rag_result.metadata
+    content_lines = [
+        line for line in context.splitlines() if line and not line.startswith("[파일:")
+    ]
+
+    assert "[파일: long.md]" in context
+    assert "".join(content_lines) == "1234567890"
+    assert "ABCDEFGHIJ" not in context
+    assert len(metadata) == 1
+
+
+def test_knowledge_search_compresses_retrieved_context_by_query(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content=(
+                        "배송 정책은 일반 택배 기준을 따른다. "
+                        "환불 정책은 결제 후 7일 이내 요청할 수 있다. "
+                        "휴가 정책은 사내 인사 규정을 따른다."
+                    ),
+                    document_id=uuid.uuid4(),
+                    filename="policy.md",
+                    similarity_score=0.93,
+                    score=0.93,
+                    rank=1,
+                    metadata_summary={},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="환불 정책 알려줘",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+        retrievedContextCompression="strong",
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": fake_db,
+        },
+    )
+
+    rag_result = node._execute_knowledge_search(  # noqa: SLF001
+        "환불 정책 알려줘", db_session=fake_db
+    )
+    context = rag_result.context
+    metadata = rag_result.metadata
+
+    assert "환불 정책은 결제 후 7일 이내 요청할 수 있다." in context
+    assert "배송 정책은 일반 택배 기준을 따른다." not in context
+    assert "휴가 정책은 사내 인사 규정을 따른다." not in context
+    assert len(metadata) == 1
+
+
+def test_llm_node_records_answer_grounding_check_metadata(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            return [
+                ChunkPreview(
+                    chunk_id=uuid.uuid4(),
+                    content="환불 정책은 결제 후 7일 이내 요청할 수 있다.",
+                    document_id=uuid.uuid4(),
+                    filename="policy.md",
+                    similarity_score=0.93,
+                    score=0.93,
+                    rank=1,
+                    metadata_summary={},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="환불 정책 알려줘",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+        answerGroundingCheck="basic",
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": fake_db,
+        },
+    )
+    node._client_override = StaticTextClient(  # noqa: SLF001
+        "환불 정책은 결제 후 7일 이내 요청할 수 있습니다."
+    )
+
+    result = node.execute({})
+
+    assert result["metadata"]["answer_grounding"] == {
+        "mode": "basic",
+        "status": "pass",
+        "overlap_terms": ["7일", "결제", "요청할", "정책은", "환불"],
+    }
