@@ -1,4 +1,5 @@
 import html
+import json
 import logging
 import mimetypes
 import os
@@ -23,16 +24,21 @@ from fastapi.responses import (
     HTMLResponse,
     StreamingResponse,
 )
+from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.knowledge_rag_recommendation_service import (
+    KnowledgeRAGRecommendationService,
+)
 from apps.gateway.services.organization_context import (
     get_user_primary_organization_id,
     resolve_active_organization_id,
@@ -43,6 +49,8 @@ from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
     KnowledgeCandidateResolveRequest,
+    KnowledgeRAGRecommendationRequest,
+    KnowledgeRAGRecommendationResponse,
 )
 from apps.shared.schemas.rag import (
     DocumentPreviewRequest,
@@ -217,6 +225,80 @@ def resolve_knowledge_candidates(
         max_collections=candidate_request.max_collections,
         max_candidate_kbs=candidate_request.max_candidate_kbs,
     )
+
+
+def _safe_validation_errors(exc: ValidationError) -> list[dict]:
+    # workflow_intent/node_purpose는 prompt-like 입력이므로 validation 응답에서도 raw input을 제거한다.
+    # Pydantic errors()의 input 필드는 의도치 않게 사용자 원문을 echo할 수 있다.
+    errors = []
+    for error in exc.errors():
+        errors.append(
+            {
+                "loc": list(error.get("loc", ())),
+                "msg": error.get("msg", "Invalid input."),
+                "type": error.get("type", "value_error"),
+            }
+        )
+    return errors
+
+
+async def _parse_rag_recommendation_request(
+    request: Request,
+) -> KnowledgeRAGRecommendationRequest:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        raise_api_error(
+            request,
+            422,
+            "validation.failed",
+            "Request validation failed.",
+            {
+                "errors": [
+                    {
+                        "loc": ["body"],
+                        "msg": "Invalid JSON body.",
+                        "type": "json_invalid",
+                    }
+                ]
+            },
+        )
+
+    try:
+        return KnowledgeRAGRecommendationRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise_api_error(
+            request,
+            422,
+            "validation.failed",
+            "Request validation failed.",
+            {"errors": _safe_validation_errors(exc)},
+        )
+
+
+@router.post("/rag-recommendations", response_model=KnowledgeRAGRecommendationResponse)
+async def recommend_rag_options(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Workflow Builder가 LLM node RAG 옵션을 구성할 때 사용할 안전한 KB 추천을 반환합니다.
+    """
+    recommendation_request = await _parse_rag_recommendation_request(request)
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    service = KnowledgeRAGRecommendationService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+    return service.recommend_for_builder(recommendation_request)
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseDetailResponse)

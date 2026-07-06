@@ -1,4 +1,5 @@
 import uuid
+from collections import Counter
 from collections.abc import Iterable
 
 from sqlalchemy.orm import Session, joinedload
@@ -149,6 +150,12 @@ class KnowledgeCandidateResolver:
         route_allowed_collection_ids = route_allowed_collection_ids[:max_collections]
 
         items = self._collection_items(route_allowed_collection_ids, None)
+        route_allowed_collection_id_set = set(route_allowed_collection_ids)
+        collections_by_id = {
+            collection.id: collection
+            for collection in collections
+            if collection.id in route_allowed_collection_id_set
+        }
         kb_ids = self._dedupe_ids([item.knowledge_base_id for item in items])
         kbs_by_id = self._knowledge_bases_by_id(kb_ids)
         hidden_count += len(kb_ids) - len(kbs_by_id)
@@ -168,6 +175,11 @@ class KnowledgeCandidateResolver:
             else:
                 unavailable_count += 1
         allowed_pairs = allowed_pairs[:max_candidate_kbs]
+        collection_context_by_kb_id = self._collection_context_by_kb_id(
+            items,
+            collections_by_id,
+            allowed_kb_ids={kb.id for kb, _decision in allowed_pairs},
+        )
         runtime_decisions = self._bulk_runtime_kb_decisions(
             [kb for kb, _decision in allowed_pairs]
         )
@@ -176,6 +188,7 @@ class KnowledgeCandidateResolver:
                 kb,
                 decision,
                 runtime_decision=runtime_decisions.get(kb.id),
+                extra_safe_metadata=collection_context_by_kb_id.get(kb.id),
             )
             for kb, decision in allowed_pairs
         ]
@@ -242,7 +255,10 @@ class KnowledgeCandidateResolver:
             return {}
         rows = (
             self.db.query(KnowledgeBase)
-            .options(joinedload(KnowledgeBase.source_identity))
+            .options(
+                joinedload(KnowledgeBase.source_identity),
+                joinedload(KnowledgeBase.active_document_version),
+            )
             .filter(
                 KnowledgeBase.id.in_(ids),
                 KnowledgeBase.organization_id == self.organization_id,
@@ -258,6 +274,7 @@ class KnowledgeCandidateResolver:
         permission: KnowledgePermissionDecision,
         *,
         runtime_decision: KnowledgePermissionDecision | None = None,
+        extra_safe_metadata: dict | None = None,
     ) -> KnowledgeCandidate:
         runtime_availability = "unknown"
         runtime_reason_code = None
@@ -272,6 +289,9 @@ class KnowledgeCandidateResolver:
                 runtime_reason_code = runtime_decision.external_reason_code
 
         safe_metadata = dict(permission.safe_metadata)
+        safe_metadata.update(self._active_version_safe_metadata(kb))
+        if extra_safe_metadata:
+            safe_metadata.update(extra_safe_metadata)
         if runtime_reason_code:
             safe_metadata["runtime_reason_code"] = runtime_reason_code
 
@@ -298,6 +318,60 @@ class KnowledgeCandidateResolver:
             return kb.name
         if getattr(source_identity, "display_policy_state", None) == "approved":
             return getattr(source_identity, "safe_display_name", None)
+        return None
+
+    def _active_version_safe_metadata(self, kb: KnowledgeBase) -> dict:
+        # Source tier는 권한이 통과된 KB의 active ready version에서만 safe ranking hint로 전달한다.
+        # Adapter가 DocumentVersion을 직접 조회하지 않게 하여 permission/candidate 경계를 유지한다.
+        version = getattr(kb, "active_document_version", None)
+        if version is None or getattr(version, "status", None) != "ready":
+            return {}
+        source_tier = getattr(version, "source_tier", None)
+        if not isinstance(source_tier, str) or not source_tier.strip():
+            return {}
+        return {"source_tier": source_tier.strip()}
+
+    def _collection_context_by_kb_id(
+        self,
+        items: list[KnowledgeCollectionItem],
+        collections_by_id: dict[uuid.UUID, KnowledgeCollection],
+        *,
+        allowed_kb_ids: set[uuid.UUID],
+    ) -> dict[uuid.UUID, dict]:
+        allowed_items = [
+            item for item in items if item.knowledge_base_id in allowed_kb_ids
+        ]
+        linked_count_by_collection_id = Counter(
+            item.collection_id for item in allowed_items
+        )
+        context_by_kb_id: dict[uuid.UUID, dict] = {}
+        for item in allowed_items:
+            if item.knowledge_base_id in context_by_kb_id:
+                continue
+            collection = collections_by_id.get(item.collection_id)
+            if collection is None:
+                continue
+            metadata = {
+                "collection_id": str(collection.id),
+                "route_scope_type": "auto_collection",
+                "linked_kb_count_bucket": bucket_count(
+                    linked_count_by_collection_id[collection.id]
+                ),
+            }
+            safe_label = self._collection_safe_label(collection)
+            if safe_label:
+                metadata["collection_safe_label"] = safe_label
+            context_by_kb_id[item.knowledge_base_id] = metadata
+        return context_by_kb_id
+
+    def _collection_safe_label(self, collection: KnowledgeCollection) -> str | None:
+        # Collection 이름은 source-derived metadata일 수 있으므로 raw name을 fallback으로 쓰지 않는다.
+        # 승인된 safe_metadata label만 Builder recommendation summary에 전달한다.
+        metadata = getattr(collection, "safe_metadata", None) or {}
+        for key in ("collection_safe_label", "safe_label", "safe_display_name"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
         return None
 
     def _dedupe_ids(self, values: Iterable[uuid.UUID]) -> list[uuid.UUID]:
