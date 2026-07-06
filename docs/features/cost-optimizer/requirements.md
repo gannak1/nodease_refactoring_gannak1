@@ -140,6 +140,16 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 
 모델 후보 목록은 기존 LLM 노드 상세 편집에서 사용하는 모델 조회 경로를 재사용한다. 현재 프론트의 기존 구현은 `GET /api/v1/llm/my-models`와 모델 선택 컴포넌트를 사용한다. Cost Optimizer는 별도 모델 목록 API를 새로 만들기보다, 동일한 모델/credential 접근 기준을 사용한다. 다만 compare API는 최종적으로 선택된 모델과 credential 사용 가능 여부를 다시 검증해야 한다.
 
+일반 LLM 노드 상세 화면과 Cost Optimizer B 후보 화면은 같은 모델 노출 필터를 사용해야 한다. 두 화면에서 선택 가능한 모델이 다르면 사용자가 현재 노드에는 적용할 수 없는 후보를 A/B 테스트하거나, 반대로 원본 노드에서 선택 가능한 모델을 후보에서 찾지 못하는 문제가 생긴다.
+
+모델 노출 정책은 다음을 따른다.
+
+- alias 계열 모델만 기본 노출한다.
+- 날짜 suffix가 붙은 버전 모델은 기본적으로 숨긴다.
+- embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열은 일반 LLM 노드와 Cost Optimizer 후보에서 모두 숨긴다.
+- 최신 alias 모델은 provider와 무관하게 whitelist에 포함한다.
+- 가격 정보가 없는 모델은 선택 가능하더라도 결과 분석에서 비용 계산 불가 상태로 표시한다.
+
 프롬프트 편집은 기존 LLM 노드 상세 편집과 마찬가지로 변수 삽입을 지원해야 한다. 사용자는 upstream output 변수를 system/user/assistant prompt에 삽입할 수 있어야 하며, 등록되지 않은 변수는 실행 전에 validation으로 드러나야 한다.
 
 고급 설정으로 다음 옵션도 비교할 수 있어야 한다.
@@ -301,6 +311,10 @@ downstream 호환성은 다음 3상태로 표시한다.
 1차 구현에서는 downstream 전체를 자동 실행하지 않는다.
 
 대신 선택 후보의 LLM output이 다음 소비 노드의 필수 입력 계약을 만족하는지 검증한다.
+
+baseline 생성 또는 baseline 조회 시점에는 target LLM node의 downstream snapshot을 함께 만들어야 한다. 이 snapshot은 A baseline을 선택한 시점의 후속 소비 노드, edge, 입력 selector, 필수 output key/path, side-effect 여부를 담는 safe metadata다. raw payload, credential, prompt 원문, secret 값은 포함하지 않는다.
+
+Compare 실행은 현재 workflow graph만으로 downstream을 판정하지 않는다. `workflow_node_runs.id`로 식별되는 A baseline의 downstream snapshot과 B candidate output을 기준으로 contract check를 수행해야 한다. snapshot이 없으면 legacy/retention 데이터로 보고 `unknown` fallback을 반환할 수 있지만, 신규 baseline 생성/조회 경로에서는 snapshot 누락을 정상 상태로 취급하지 않는다.
 
 예:
 

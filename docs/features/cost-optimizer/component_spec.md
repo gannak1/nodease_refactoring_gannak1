@@ -258,6 +258,9 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
 - 사용할 수 없는 credential/model은 목록에서 제외하는 것을 우선한다.
+- 일반 LLM 노드 상세 화면과 Cost Optimizer B 후보 화면은 같은 workflow LLM 모델 필터를 사용한다.
+- alias 계열 모델만 기본 노출하고 날짜 suffix 모델은 숨긴다.
+- embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열은 숨긴다.
 - 목록에 보였더라도 compare API에서 최종 검증에 실패하면 실패 후보 또는 validation error로 표시한다.
 
 prompt 입력 영역은 기존 노드 상세 편집과 같이 변수 삽입을 지원한다.
@@ -539,6 +542,8 @@ Inspector는 탭 구조를 사용한다.
 - 검사한 downstream node
 - 계약 검증 warning
 - side-effect node 자동 실행 제외 안내
+
+이 패널의 상태는 현재 graph만으로 계산한 값이 아니라, A baseline 생성/조회 시점에 만든 downstream snapshot과 B candidate output의 contract check 결과를 표시한다. snapshot이 없는 legacy/retention 데이터는 `판정 불가`로 표시하고, 사용자가 현재 workflow 전체 테스트 실행으로 확인해야 함을 안내한다.
 
 ### Candidate Apply Flow
 

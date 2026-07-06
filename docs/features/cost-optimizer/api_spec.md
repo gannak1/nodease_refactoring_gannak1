@@ -106,8 +106,9 @@ Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로
 | `baseline_node_run_id` | UUID | A baseline의 `workflow_node_runs.id` |
 | `baseline_workflow_run_id` | UUID | A baseline이 속한 `workflow_runs.id` |
 | `baseline_node_options` | JSONB | baseline 실행 시점의 LLM node 설정 snapshot |
-| `baseline_usage_summary` | JSONB | baseline 비용/토큰/latency safe summary. 원천은 `llm_usage_logs`다. |
+| `baseline_usage_summary` | JSONB | baseline 비용/토큰/latency safe summary. 비용/토큰 원천은 `llm_usage_logs`이고, latency는 `llm_usage_logs.latency_ms`가 0 또는 누락이면 `workflow_node_runs.duration`을 ms로 환산해 사용한다. |
 | `baseline_trace_summary` | JSONB | baseline input/output/retrieval safe summary. raw payload와 secret은 포함하지 않는다. |
+| `baseline_downstream_snapshot` | JSONB | baseline 생성/조회 시점의 downstream safe snapshot. compare의 contract check 기준이며 raw payload와 secret은 포함하지 않는다. |
 | `usage_summary` | JSONB | 이 experiment에 속한 candidate 실행 비용/토큰/latency 합계 |
 | `status` | string | `draft`, `running`, `completed`, `applied`, `failed`, `archived` |
 | `created_by` | UUID | experiment 생성 사용자 |
@@ -150,7 +151,7 @@ Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로
 
 원천 데이터 관계:
 
-- A baseline의 실행/입출력/비용 원천은 `workflow_node_runs`, `workflow_runs`, `llm_usage_logs`, `trace_payloads`다.
+- A baseline의 실행/입출력/비용 원천은 `workflow_node_runs`, `workflow_runs`, `llm_usage_logs`, `trace_payloads`다. Baseline 실행 시간은 LLM usage latency가 없을 수 있으므로 `workflow_node_runs.duration` fallback을 허용한다.
 - B candidate의 실제 실행/입출력/비용 원천도 동일한 기존 테이블이다.
 - B candidate 실행에서 생성되는 `workflow_runs.id`는 `cost_optimizer_candidates.candidate_workflow_run_id`로 저장한다. 이 값은 candidate 실행 로그가 최신 baseline 후보로 다시 잡히지 않게 하는 1차 식별자다.
 - B candidate 실행에서 생성되는 `llm_usage_logs` row는 `cost_optimizer_candidate_id`로 `cost_optimizer_candidates.id`를 직접 참조한다. worker 전파가 지연되거나 누락되어도 Gateway는 `candidate_workflow_run_id` 기준으로 usage row를 candidate에 다시 연결한다.
@@ -159,6 +160,7 @@ Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로
 - raw prompt, credential 원문, API key, encrypted config, secret payload는 두 테이블에 저장하지 않는다.
 - `cost_optimizer_candidates.candidate_settings`의 `system_prompt`, `user_prompt`, `assistant_prompt`는 `{ redacted, present, length }` 형태의 요약만 저장한다. compare/apply 동일 후보 검증은 원문 prompt가 아니라 비가역 `_settings_fingerprint`로 수행한다.
 - `baseline_trace_summary`와 `retrieval_summary`에는 `retrieved_chunk_count`, `knowledge_base_count`, `source_summary`, `score_summary`, `hierarchy_fallback` 같은 safe summary만 저장한다. `raw_chunk_content`, `source_metadata`, raw document name/file name 계열 값은 저장하거나 반환하지 않는다. safe summary의 list 값은 최대 20개, string 값은 최대 200자로 제한한다.
+- `baseline_downstream_snapshot`에는 target node 이후 직접/간접 소비 노드의 id, type, edge, selector/path 계약, side-effect 여부, topology hash만 저장한다. 노드 실행 raw output, prompt 원문, credential, 외부 전송 payload는 저장하지 않는다.
 
 조회/제약 권장 사항:
 
@@ -210,6 +212,10 @@ Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로
 - `unknown`: 판정 불가
 
 `contract_check`는 B candidate output이 현재 target LLM node의 직접 소비 노드가 요구하는 입력 selector를 만족하는지 검사한 결과다. 현재 1차 구현은 다음 직접 소비 노드 계약을 검사한다.
+
+contract check의 기준은 baseline 생성/조회 시점에 만든 downstream snapshot이다. Compare API는 `baseline_id`로 baseline row를 복원하고, 해당 row의 `baseline_downstream_snapshot`과 B candidate output을 사용해 계약을 검사한다. 현재 workflow graph는 snapshot과의 topology/hash 비교 및 적용 위험 안내에 사용한다.
+
+신규 baseline 생성/조회 경로는 `baseline_downstream_snapshot`을 만들 수 있어야 한다. 기존 데이터, retention 만료, 또는 graph 복원 불가로 snapshot이 없을 때만 `state=unknown`, `contract_check.status=skipped`, `warnings=["baseline_downstream_snapshot_unavailable"]` 형태의 fallback을 허용한다.
 
 | Node type | 검사 기준 |
 | --- | --- |
@@ -304,6 +310,8 @@ Response:
 target LLM node의 가장 최근 비교 가능 실행 로그를 baseline으로 반환한다.
 반환 대상은 `node_status=success`, `input_available=true`, `output_available=true`, `usage_available=true`인 기록으로 제한한다.
 
+응답 생성 시 Gateway는 baseline row 내부에 `baseline_downstream_snapshot`을 생성해야 한다. API response에는 snapshot 원문을 노출하지 않고 `downstream_compatibility` summary만 반환한다. snapshot은 이후 `POST /compare`에서 B candidate output contract check의 기준으로 사용된다.
+
 Response:
 
 ```json
@@ -359,6 +367,8 @@ Response:
 
 target LLM node가 포함된 실행 로그 목록을 검색/필터/정렬한다.
 반환 대상은 `node_status=success`, `output_available=true`, `usage_available=true`인 기록으로 제한한다. `input_available=false`인 row는 목록에 포함하되 `compare_available=false`로 반환한다.
+
+목록 row도 baseline 후보로 선택될 수 있으므로 각 row를 만들 때 downstream snapshot을 생성하거나, 사용자가 해당 row를 baseline으로 선택하는 시점에 동일한 규칙으로 snapshot을 생성해야 한다. 신규 compare 가능 row에서 snapshot 생성 실패가 발생하면 `compare_available=false` 또는 `downstream_compatibility.state=unknown`과 명확한 unavailable reason을 반환한다.
 
 Query:
 
@@ -489,6 +499,8 @@ Response:
 A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재실행하지 않는다.
 
 `baseline_id`는 `workflow_node_runs.id`다. 해당 baseline의 target LLM node input을 복원할 수 없으면 API는 B 후보 실행을 시작하지 않고 `400 cost_optimizer.baseline_input_unavailable`을 반환한다.
+
+Compare는 `baseline_id`에 연결된 downstream snapshot을 복원한 뒤 B candidate output에 대해 contract check를 수행한다. snapshot이 있으면 downstream 상태는 snapshot 기반 검사 결과를 우선한다. snapshot이 없으면 신규 데이터 누락으로 보고 서버 로그에 남기며, response는 `state=unknown`, `contract_check.status=skipped`, `warnings=["baseline_downstream_snapshot_unavailable"]`를 반환한다.
 
 Compare request의 후보 설정 필드명은 `candidate`다. Apply request의 후보 설정 필드명은 `candidate_settings`다.
 

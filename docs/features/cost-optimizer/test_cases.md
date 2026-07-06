@@ -112,6 +112,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 - `GET /baselines`는 `workflow_node_runs.id`를 `baseline_id`로 반환한다.
 - input을 복원할 수 없는 baseline row는 `input_available=false`, `compare_available=false`, `unavailable_reason=input_payload_unavailable`을 반환한다.
 - baseline row는 credential 원문, API key, encrypted config를 포함하지 않는다.
+- baseline row의 `llm_usage_logs.latency_ms`가 0 또는 누락된 경우 `workflow_node_runs.duration`을 ms로 환산해 실행 시간으로 반환한다.
 
 ### Scenario Tests
 
@@ -127,6 +128,9 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 - B candidate 영역은 `후보 옵션` 같은 중복 제목 대신 `테스트명` 입력을 제공한다.
 - 원본 LLM 노드 상세 설정은 task type 선택을 제공하고, 선택 값은 node data에 저장된다.
 - B candidate 영역은 모델, fallback 모델, task type, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
+- 일반 LLM 노드 상세 화면과 B candidate 영역은 같은 workflow LLM 모델 필터를 사용한다.
+- 모델 후보 목록은 alias 계열 모델을 노출하고 날짜 suffix 모델은 숨긴다.
+- 모델 후보 목록은 embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열을 숨긴다.
 - B candidate의 task type은 Cost Optimizer local draft에서 원본 LLM node data 변환까지 보존된다.
 - B candidate prompt 입력은 upstream output 변수 삽입을 지원한다.
 - prompt 변수 삽입은 candidate `referenced_variables`를 함께 갱신하고 compare/apply request에 포함한다.
@@ -277,10 +281,14 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 
 ### API Tests
 
+- `GET /baselines/latest`는 compare 가능한 baseline을 반환할 때 downstream snapshot을 생성하고, response에는 snapshot 원문이 아니라 `downstream_compatibility` summary만 반환한다.
+- `GET /baselines`는 목록 row 생성 또는 baseline 선택 시점에 downstream snapshot을 만들 수 있어야 하며, snapshot 생성 실패 시 compare 가능 여부와 unavailable reason을 명확히 반환한다.
 - baseline downstream과 current downstream이 같으면 `compatible`을 반환한다.
 - downstream 구조가 일부 달라졌지만 첫 consumer 계약 검증이 가능하면 `warning`을 반환한다.
 - target LLM node의 출력 소비자가 사라졌거나 계약 검증이 불가능하면 `incompatible` 또는 `unknown`을 반환한다.
+- `POST /compare`는 현재 graph만 보지 않고 baseline downstream snapshot과 B candidate output을 기준으로 `contract_check`를 수행한다.
 - current downstream topology가 같더라도 B candidate output이 직접 소비 노드의 필수 selector/path를 만족하지 못하면 `incompatible`과 `contract_check.status=failed`를 반환한다.
+- baseline downstream snapshot이 없는 legacy/retention row는 `unknown`과 `contract_check.status=skipped`, `baseline_downstream_snapshot_unavailable` warning을 반환한다.
 - `variableExtractionNode`의 `source_selector`가 target LLM node를 가리키면 `mappings[].json_path`가 B candidate output JSON에 존재하는지 검사한다.
 - `conditionNode`, `answerNode`, `slackPostNode`는 target LLM node를 참조하는 selector key가 B candidate output에 존재하는지 검사한다.
 - `PATCH /apply`는 downstream warning 확인 없이 적용하는 요청을 `400 cost_optimizer.downstream_ack_required`로 거부한다.
