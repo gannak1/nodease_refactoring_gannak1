@@ -58,6 +58,7 @@ class AppCreationPermissionService:
             actor_id=revoked_by,
             target_type="user_app_creation_permission",
             target_id=permission.id,
+            organization_id=permission.grantee_organization_id,
         )
         db.commit()
         return permission

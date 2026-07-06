@@ -151,6 +151,7 @@ class PermissionRequestService:
             decided_by,
             "permission_request",
             request.id,
+            organization_id=request.organization_id,
         )
         add_action_audit(
             db,
@@ -158,6 +159,7 @@ class PermissionRequestService:
             decided_by,
             "user_app_creation_permission",
             permission.id,
+            organization_id=request.organization_id,
         )
         db.commit()
         return request
@@ -179,6 +181,7 @@ class PermissionRequestService:
             decided_by,
             "permission_request",
             request.id,
+            organization_id=request.organization_id,
         )
         db.commit()
         return request
@@ -226,6 +229,7 @@ class PermissionRequestService:
             user.id,
             "permission_request",
             request.id,
+            organization_id=request.organization_id,
         )
         db.commit()
         db.refresh(request)

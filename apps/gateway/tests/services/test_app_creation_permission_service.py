@@ -265,6 +265,7 @@ def test_revoke_permission_deletes_row_and_records_audit():
     ]
     assert audits[0].target_type == "user_app_creation_permission"
     assert audits[0].target_id == str(row.id)
+    assert audits[0].audit_metadata == {"organization_id": str(organization_id)}
     assert db.commits >= 1
 
 

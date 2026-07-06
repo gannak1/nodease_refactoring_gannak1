@@ -18,7 +18,14 @@ def add_action_audit(
     actor_id: Any,
     target_type: str,
     target_id: Any,
+    *,
+    organization_id: Any | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
+    audit_metadata = dict(metadata or {})
+    if organization_id is not None:
+        audit_metadata["organization_id"] = str(organization_id)
+
     db.add(
         AuditLog(
             action=action,
@@ -28,6 +35,6 @@ def add_action_audit(
             target_type=target_type,
             target_id=str(target_id),
             status="success",
-            audit_metadata={},
+            audit_metadata=audit_metadata,
         )
     )
