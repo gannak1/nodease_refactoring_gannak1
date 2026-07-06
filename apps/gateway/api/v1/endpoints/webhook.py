@@ -6,6 +6,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -151,6 +152,14 @@ async def receive_webhook(
     )
     if not deployment:
         raise HTTPException(status_code=404, detail="Active deployment not found")
+
+    # 5-1. 예산 초과 차단 — background 예약 전에 429로 끝낸다 (BGT-REQ-030).
+    WorkflowBudgetService.ensure_workflow_budget_allows_execution(
+        db,
+        workflow_id=app.workflow_id,
+        trigger_mode="webhook",
+        actor_id=None,
+    )
 
     # 6. 실행 모드: Celery 태스크로 워크플로우 실행 위임
     background_tasks.add_task(

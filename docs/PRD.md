@@ -232,7 +232,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-041: workflow 생성/배포 권한이 없는 사용자에게 차단 안내를 표시하고, 요청 권한과 신청 사유를 담은 권한 신청을 제출받는다. 관리자 측 목록 조회와 승인/거절은 FR-014를 따른다. 현재 코드에는 초대(invite)만 있고 신청(request) 흐름은 없는 신규 기능이다.
 - FR-042: 권한 신청 제출/승인/거절은 canonical audit action으로 기록한다. 필요한 action 명명은 [ADR-0008](decisions/ADR-0008-audit-action-naming-standard.md) 갱신으로 정의한다.
 
-### 예산 관리 — feature 문서 TBD
+### 예산 관리 — [features/budget-management/](features/budget-management/requirements.md)
 
 - FR-051: workflow 단위 예산을 설정/수정한다. 현재 코드에 예산 개념이 없는 신규 기능이며, FR-015·FR-052의 전제다.
 - FR-052: `내 워크플로우` 목록에서 workflow별 예산 사용률을 표시한다. 빌더가 비용 위험 workflow를 발견하는 경로다 (시나리오 3).

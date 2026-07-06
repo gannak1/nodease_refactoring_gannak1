@@ -62,8 +62,16 @@ for package_name, package_path in {
         parent_name, child_name = package_name.rsplit(".", 1)
         setattr(sys.modules[parent_name], child_name, package)
 
-_load_module("apps.shared.db.base", ROOT / "apps" / "shared" / "db" / "base.py")
-user_module = _load_module(
+# 주의: base/user가 이미 import돼 있으면(결합 실행에서 다른 테스트가 실제
+# 패키지를 먼저 import한 경우) 반드시 재사용한다. 여기서 격리 복사본으로
+# 교체하면 아래의 "없을 때만 로드" 분기가 나머지 모델 로드를 건너뛰어,
+# User만 담긴 불완전한 Base registry가 만들어지고 첫 User() 인스턴스화의
+# mapper 설정이 "OrganizationMembership is not defined"로 실패한다.
+if "apps.shared.db.base" not in sys.modules:
+    _load_module(
+        "apps.shared.db.base", ROOT / "apps" / "shared" / "db" / "base.py"
+    )
+user_module = sys.modules.get("apps.shared.db.models.user") or _load_module(
     "apps.shared.db.models.user",
     ROOT / "apps" / "shared" / "db" / "models" / "user.py",
 )

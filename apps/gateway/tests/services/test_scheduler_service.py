@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from apps.gateway.services.scheduler_service import SchedulerService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 
 
@@ -36,6 +37,9 @@ class FakeSession:
             return FakeQuery(self.app)
         if model is Schedule:
             return FakeQuery(self.schedule)
+        if model is WorkflowBudget:
+            # 예산 미설정 — 실행 전 예산 확인은 통과한다
+            return FakeQuery(None)
         raise AssertionError(f"unexpected query model: {model}")
 
     def commit(self):

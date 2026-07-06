@@ -12,6 +12,44 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 
+_MISSING = object()
+
+
+def _snapshot_modules(names):
+    """격리 로딩이 교체할 sys.modules 항목과 부모 패키지 속성을 저장한다."""
+    modules = {name: sys.modules.get(name) for name in names}
+    attrs = {}
+    for name in names:
+        if "." not in name:
+            continue
+        parent = modules[name.rsplit(".", 1)[0]]
+        if parent is not None:
+            attrs[name] = getattr(parent, name.rsplit(".", 1)[1], _MISSING)
+    return modules, attrs
+
+
+def _restore_modules(snapshot):
+    """격리 복사본을 걷어내고 로딩 전 import 상태로 되돌린다.
+
+    원복하지 않으면 같은 프로세스에서 뒤에 실행되는 테스트(예: tests/services)가
+    격리된 Base registry에 등록된 모델을 import해서 mapper 초기화에 실패한다.
+    """
+    modules, attrs = snapshot
+    for name, module in modules.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+    for name, value in attrs.items():
+        parent_name, child_name = name.rsplit(".", 1)
+        parent = modules[parent_name]
+        if value is _MISSING:
+            if hasattr(parent, child_name):
+                delattr(parent, child_name)
+        else:
+            setattr(parent, child_name, value)
+
+
 def _load_team_module():
     root = Path(__file__).resolve().parents[2]
     packages = {
@@ -20,32 +58,38 @@ def _load_team_module():
         "apps.shared.db": root / "apps" / "shared" / "db",
         "apps.shared.db.models": root / "apps" / "shared" / "db" / "models",
     }
-    for name, path in packages.items():
-        module = sys.modules.get(name) or types.ModuleType(name)
-        module.__path__ = [str(path)]
-        sys.modules[name] = module
-        if "." in name:
-            parent_name, child_name = name.rsplit(".", 1)
-            setattr(sys.modules[parent_name], child_name, module)
-
-    base_spec = importlib.util.spec_from_file_location(
-        "apps.shared.db.base",
-        root / "apps" / "shared" / "db" / "base.py",
+    snapshot = _snapshot_modules(
+        list(packages) + ["apps.shared.db.base", "apps.shared.db.models.team"]
     )
-    base_module = importlib.util.module_from_spec(base_spec)
-    sys.modules["apps.shared.db.base"] = base_module
-    base_spec.loader.exec_module(base_module)
-    sys.modules["apps.shared.db"].base = base_module
+    try:
+        for name, path in packages.items():
+            module = sys.modules.get(name) or types.ModuleType(name)
+            module.__path__ = [str(path)]
+            sys.modules[name] = module
+            if "." in name:
+                parent_name, child_name = name.rsplit(".", 1)
+                setattr(sys.modules[parent_name], child_name, module)
 
-    team_spec = importlib.util.spec_from_file_location(
-        "apps.shared.db.models.team",
-        root / "apps" / "shared" / "db" / "models" / "team.py",
-    )
-    team_module = importlib.util.module_from_spec(team_spec)
-    sys.modules["apps.shared.db.models.team"] = team_module
-    team_spec.loader.exec_module(team_module)
-    sys.modules["apps.shared.db.models"].team = team_module
-    return team_module
+        base_spec = importlib.util.spec_from_file_location(
+            "apps.shared.db.base",
+            root / "apps" / "shared" / "db" / "base.py",
+        )
+        base_module = importlib.util.module_from_spec(base_spec)
+        sys.modules["apps.shared.db.base"] = base_module
+        base_spec.loader.exec_module(base_module)
+        sys.modules["apps.shared.db"].base = base_module
+
+        team_spec = importlib.util.spec_from_file_location(
+            "apps.shared.db.models.team",
+            root / "apps" / "shared" / "db" / "models" / "team.py",
+        )
+        team_module = importlib.util.module_from_spec(team_spec)
+        sys.modules["apps.shared.db.models.team"] = team_module
+        team_spec.loader.exec_module(team_module)
+        sys.modules["apps.shared.db.models"].team = team_module
+        return team_module
+    finally:
+        _restore_modules(snapshot)
 
 
 def test_team_tables_use_final_names():

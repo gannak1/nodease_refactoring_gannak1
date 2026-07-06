@@ -28,6 +28,16 @@ export function AdminSummaryCards() {
     };
   }, []);
 
+  const budgetValue =
+    summary?.budget === undefined
+      ? '-'
+      : summary.budget === null
+        ? '예산 미설정'
+        : `${Math.round(summary.budget.ratio * 100)}%`;
+  const budgetDescription = summary?.budget
+    ? `위험 ${summary.budget.at_risk_count} · 초과 ${summary.budget.exceeded_count} · 예산 설정 ${summary.budget.budgeted_workflow_count}개`
+    : '예산 관리 기능 확정 후 위험/초과 비율을 제공합니다';
+
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <DashboardSummaryCard
@@ -46,9 +56,9 @@ export function AdminSummaryCards() {
       />
       <DashboardSummaryCard
         label="예산 위험 workflow"
-        value={summary && summary.budget === null ? '예산 미설정' : '-'}
+        value={budgetValue}
         icon={PiggyBank}
-        description="예산 관리 기능 확정 후 위험/초과 비율을 제공합니다"
+        description={budgetDescription}
       />
     </div>
   );

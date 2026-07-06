@@ -73,6 +73,7 @@ from apps.shared.db.models.user_app_creation_permission import (
     UserAppCreationPermission,
 )
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
     TracePayload,
@@ -137,6 +138,7 @@ __all__ = [
     "PERMISSION_REQUEST_REJECTED",
     "REQUESTED_PERMISSION_APP_CREATE",
     "Workflow",
+    "WorkflowBudget",
     "WorkflowDeployment",
     "WorkflowNodeRun",
     "WorkflowRun",

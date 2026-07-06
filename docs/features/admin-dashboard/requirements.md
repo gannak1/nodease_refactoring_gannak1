@@ -7,7 +7,7 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 
 이미 축적되는 `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터를 플랫폼 관리자와 감사자가 조회하는 관리자 화면을 제공한다. [PRD](../../PRD.md)의 FR-011~FR-015를 담당한다. 데이터 수집 경로는 구현돼 있으므로 이 feature의 범위는 조회/집계 UI와 그 권한 경계, 그리고 권한 신청의 관리자 측 처리(목록 조회/승인/거절)와 부여된 App 생성 권한의 관리(보유 목록 조회/회수)다.
 
-권한 신청의 제출(신청자 측 차단 안내와 신청 폼)은 [organization](../organization/requirements.md) 범위(PRD FR-041)이고, workflow 예산의 설정/수정은 예산 관리 feature 범위(PRD FR-051, 문서 TBD)다. 이 feature는 그 결과 데이터를 조회하고 처리하는 표면이다.
+권한 신청의 제출(신청자 측 차단 안내와 신청 폼)은 [organization](../organization/requirements.md) 범위(PRD FR-041)이고, workflow 예산의 설정/수정은 [budget-management](../budget-management/requirements.md) 범위(PRD FR-051)다. 이 feature는 그 결과 데이터를 조회하고 처리하는 표면이다.
 
 ## User Stories
 
@@ -55,4 +55,4 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 ## Open Questions
 
 - FR-013 2단계 고도화의 판정 기준(차단 횟수 임계값, 패턴 정의, 조회 시점 집계 vs 백그라운드 탐지) — 고도화 착수 시 결정. PRD Open Question과 연결.
-- FR-015 예산 위험 workflow 비율의 분모 (조직 전체 workflow vs 예산이 설정된 workflow). 예산 데이터 원천은 예산 관리 feature 문서(FR-051, TBD) 확정 시 함께 정한다.
+- (해소) FR-015 예산 위험 workflow 비율의 분모는 활성 예산 workflow 수로 확정했다. 예산 데이터 원천과 판정 규칙은 [budget-management requirements](../budget-management/requirements.md)를 따른다.

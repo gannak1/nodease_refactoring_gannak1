@@ -34,8 +34,8 @@ Verified Against: TBD
 
 - Given 조직 A의 이번 달 usage, When `GET /admin/summary`를 호출하면, Then 이번 달(KST) 조직 LLM 비용 합계가 반환된다.
 - Given KST 월 경계 근처의 usage row (예: KST 7월 1일 00:30 = UTC 6월 30일 15:30 저장), When 7월 요약을 조회하면, Then 해당 row는 7월 집계에 포함된다.
-- Given 예산 관리 feature 미확정 상태, When 요약을 조회하면, Then `budget` 블록은 null/생략될 수 있고 이는 오류가 아니다.
-- (예산 feature 확정 후) Given 예산이 설정된 workflow, When 사용률이 90% 이상이면 위험, 100%를 초과하면 초과로 분류되고, 반올림 전 값으로 판정된다. 예산 미설정 workflow는 판정 대상에서 제외된다.
+- Given 활성 예산 workflow가 없는 조직, When 요약을 조회하면, Then `budget` 블록은 null이고 이는 오류가 아니다.
+- Given 예산이 설정된 workflow, When 사용률이 90% 이상이면 위험, 100%를 초과하면 초과로 분류되고, 반올림 전 값으로 판정된다. 예산 미설정 workflow는 판정 대상에서 제외된다.
 
 ### AC-5. 권한 경계
 
@@ -129,13 +129,13 @@ Verified Against: TBD
 - `get_organization_summary(db, organization_id, now)`
   - Given 이번 달 usage row, When summary를 조회하면, Then 조직 월간 `total_cost` 합계를 반환한다.
   - Given `total_cost`가 `NULL`인 row, When summary를 조회하면, Then 0으로 합산한다.
-  - Given 예산 feature가 미구현/미설정 상태, When summary를 조회하면, Then `budget`은 `None` 또는 생략 가능한 값으로 반환한다.
-- `classify_budget_usage(total_cost, budget_amount)` (예산 feature 확정 후 활성화)
+  - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 `None`이다.
+- `classify_budget_usage(total_cost, budget_amount)`
   - Given 사용률이 89.9999%, When 판정하면, Then 정상이다.
   - Given 사용률이 90.0000%, When 판정하면, Then 위험이다.
   - Given 사용률이 100.0000%, When 판정하면, Then 위험이며 초과는 아니다.
   - Given 사용률이 100.0001%, When 판정하면, Then 초과다.
-  - Given 예산이 없거나 0 이하, When 판정하면, Then 위험/초과 판정 대상에서 제외한다 (비율의 분모 정의는 예산 feature 확정 시 결정 — requirements Open Question).
+  - Given 예산이 없거나 0 이하, When 판정하면, Then 위험/초과 판정 대상에서 제외한다. 비율의 분모는 활성 예산 workflow 수다.
 
 ### `PermissionRequestService`
 
@@ -201,7 +201,7 @@ Verified Against: TBD
 ## E2E Tests
 
 - **PRD 시나리오 1→2 연결 완주**: 권한 없는 신입 계정의 App 생성 차단(403) → 권한 신청 제출 → 관리자가 권한 신청 탭에서 승인 → 신입 계정 App 생성 성공 → 관리자 audit 탭에서 `permission_request.created/approved`, `user_app_creation_permission.created`, App/workflow 생성 기록 확인.
-- **PRD 시나리오 2 완주**: 관리자가 audit 검색으로 권한 신청/승인, workflow 생성/배포/실행 기록을 확인하고, 상단 요약 카드에서 이번 달 조직 비용을 확인한다 (예산 위험 비율은 예산 feature 확정 후 추가).
+- **PRD 시나리오 2 완주**: 관리자가 audit 검색으로 권한 신청/승인, workflow 생성/배포/실행 기록을 확인하고, 상단 요약 카드에서 이번 달 조직 비용과 예산 위험/초과 workflow 비율을 확인한다.
 - 비용 탭에서 비용 상위 workflow를 확인하고 해당 workflow 화면으로 이동한다 (진입만 — 비교/최적화는 cost-optimizer 범위).
 - 승인 흐름 UI: 승인 버튼 → 확인 다이얼로그(요청자/권한/사유 표시) → 확정 → 성공 toast → 목록에서 pending 제거.
 - 이미 처리된 신청을 다른 세션에서 재처리 → "이미 처리된 신청" 안내 후 목록 갱신.

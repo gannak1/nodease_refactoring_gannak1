@@ -21,6 +21,15 @@ class FakeCeleryApp:
         return FakeTask()
 
 
+class FakeNoBudgetDb:
+    """예산 미설정 세션 — 실행 전 예산 확인이 조용히 통과한다."""
+
+    def query(self, model, *rest):
+        return SimpleNamespace(
+            filter=lambda *args, **kwargs: SimpleNamespace(first=lambda: None)
+        )
+
+
 def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch):
     workflow_id = str(uuid.uuid4())
     app_id = uuid.uuid4()
@@ -54,7 +63,7 @@ def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch
             workflow_id,
             request,
             user_input={},
-            db=object(),
+            db=FakeNoBudgetDb(),
             current_user=current_user,
         )
     )
