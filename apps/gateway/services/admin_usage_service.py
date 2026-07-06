@@ -12,8 +12,11 @@ from sqlalchemy import func
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.schemas.admin_usage import (
+    AdminBudgetSummaryBlock,
     AdminOrganizationSummaryResponse,
+    AdminWorkflowBudgetBlock,
     AdminWorkflowUsageItem,
     AdminWorkflowUsageResponse,
     AdminUsagePeriodResponse,
@@ -72,7 +75,9 @@ class AdminUsageService:
         period: AdminUsagePeriod,
         page: int = 1,
         limit: int = 20,
+        now: datetime | None = None,
     ) -> AdminWorkflowUsageResponse:
+        budget_now = now or datetime.now(KST)
         if not hasattr(db, "usage_logs"):
             return _aggregate_workflow_usage_query(
                 db,
@@ -80,6 +85,7 @@ class AdminUsageService:
                 period=period,
                 page=page,
                 limit=limit,
+                budget_now=budget_now,
             )
 
         rows = _fake_usage_rows(db)
@@ -99,6 +105,13 @@ class AdminUsageService:
             key=lambda item: item["total_cost"],
             reverse=True,
         )
+        for item in sorted_items:
+            item["budget"] = _workflow_budget_block(
+                db,
+                organization_id=organization_id,
+                workflow_id=item["workflow_id"],
+                now=budget_now,
+            )
         total = len(sorted_items)
         return AdminWorkflowUsageResponse(
             total=total,
@@ -115,7 +128,8 @@ class AdminUsageService:
         organization_id: Any,
         now: datetime | None = None,
     ) -> AdminOrganizationSummaryResponse:
-        period = AdminUsageService.resolve_month_period_kst(now or datetime.now(KST))
+        budget_now = now or datetime.now(KST)
+        period = AdminUsageService.resolve_month_period_kst(budget_now)
         if hasattr(db, "usage_logs"):
             total_cost = _organization_period_cost_fake(db, organization_id, period)
         else:
@@ -123,7 +137,11 @@ class AdminUsageService:
         return AdminOrganizationSummaryResponse(
             month=period.start_at.strftime("%Y-%m"),
             total_cost=float(total_cost),
-            budget=None,
+            budget=_budget_summary_block(
+                db,
+                organization_id=organization_id,
+                now=budget_now,
+            ),
         )
 
 
@@ -139,6 +157,7 @@ def _aggregate_workflow_usage_query(
     period: AdminUsagePeriod,
     page: int,
     limit: int,
+    budget_now: datetime,
 ) -> AdminWorkflowUsageResponse:
     prompt_tokens = func.coalesce(func.sum(LLMUsageLog.prompt_tokens), 0).label(
         "prompt_tokens"
@@ -175,13 +194,23 @@ def _aggregate_workflow_usage_query(
         .limit(limit)
         .all()
     )
+    items = []
+    for row in rows:
+        item = _usage_item_from_row(row)
+        item.budget = _workflow_budget_block(
+            db,
+            organization_id=organization_id,
+            workflow_id=row.workflow_id,
+            now=budget_now,
+        )
+        items.append(item)
     return AdminWorkflowUsageResponse(
         total=total,
         period=AdminUsagePeriodResponse(
             start_at=period.start_at,
             end_at=period.end_at,
         ),
-        items=[_usage_item_from_row(row) for row in rows],
+        items=items,
     )
 
 
@@ -267,6 +296,129 @@ def _usage_item_from_row(row: Any) -> AdminWorkflowUsageItem:
         completion_tokens=int(row.completion_tokens or 0),
         call_count=int(row.call_count or 0),
         total_cost=float(row.total_cost or 0),
+    )
+
+
+def _budget_summary_block(
+    db,
+    organization_id: Any,
+    now: datetime,
+) -> AdminBudgetSummaryBlock | None:
+    budgets = _active_budgets(db, organization_id)
+    if not budgets:
+        return None
+
+    from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+
+    at_risk_count = 0
+    exceeded_count = 0
+    for budget in budgets:
+        current_cost = WorkflowBudgetService.get_current_month_cost(
+            db,
+            workflow_id=budget.workflow_id,
+            now=now,
+        )
+        status = WorkflowBudgetService.classify_budget_usage(
+            current_cost=current_cost,
+            monthly_budget_usd=budget.monthly_budget_usd,
+            is_enabled=budget.is_enabled,
+        )
+        if status == "at_risk":
+            at_risk_count += 1
+        elif status == "exceeded":
+            exceeded_count += 1
+
+    budgeted_count = len(budgets)
+    return AdminBudgetSummaryBlock(
+        budgeted_workflow_count=budgeted_count,
+        at_risk_count=at_risk_count,
+        exceeded_count=exceeded_count,
+        ratio=(at_risk_count + exceeded_count) / budgeted_count,
+    )
+
+
+def _workflow_budget_block(
+    db,
+    organization_id: Any,
+    workflow_id: Any,
+    now: datetime,
+) -> AdminWorkflowBudgetBlock | None:
+    budget = _active_budget_for_workflow(db, organization_id, workflow_id)
+    if budget is None:
+        return None
+
+    from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+
+    current_cost = WorkflowBudgetService.get_current_month_cost(
+        db,
+        workflow_id=workflow_id,
+        now=now,
+    )
+    monthly_budget = AdminUsageService.coalesce_cost(budget.monthly_budget_usd)
+    status = WorkflowBudgetService.classify_budget_usage(
+        current_cost=current_cost,
+        monthly_budget_usd=monthly_budget,
+        is_enabled=budget.is_enabled,
+    )
+    if status is None:
+        return None
+
+    return AdminWorkflowBudgetBlock(
+        monthly_budget_usd=float(monthly_budget),
+        current_month_cost=float(current_cost),
+        usage_ratio=float(current_cost / monthly_budget),
+        status=status,
+    )
+
+
+def _active_budgets(db, organization_id: Any) -> list[Any]:
+    if hasattr(db, "usage_logs"):
+        return [
+            budget
+            for budget in getattr(db, "budgets", [])
+            if _is_active_budget(budget, organization_id)
+        ]
+
+    return (
+        db.query(WorkflowBudget)
+        .filter(
+            WorkflowBudget.organization_id == organization_id,
+            WorkflowBudget.is_enabled.is_(True),
+            WorkflowBudget.monthly_budget_usd > 0,
+        )
+        .all()
+    )
+
+
+def _active_budget_for_workflow(db, organization_id: Any, workflow_id: Any):
+    if hasattr(db, "usage_logs"):
+        return next(
+            (
+                budget
+                for budget in getattr(db, "budgets", [])
+                if _is_active_budget(budget, organization_id)
+                and budget.workflow_id == workflow_id
+            ),
+            None,
+        )
+
+    return (
+        db.query(WorkflowBudget)
+        .filter(
+            WorkflowBudget.organization_id == organization_id,
+            WorkflowBudget.workflow_id == workflow_id,
+            WorkflowBudget.is_enabled.is_(True),
+            WorkflowBudget.monthly_budget_usd > 0,
+        )
+        .first()
+    )
+
+
+def _is_active_budget(budget: Any, organization_id: Any) -> bool:
+    return (
+        budget.organization_id == organization_id
+        and bool(budget.is_enabled)
+        and AdminUsageService.coalesce_cost(budget.monthly_budget_usd) > 0
     )
 
 

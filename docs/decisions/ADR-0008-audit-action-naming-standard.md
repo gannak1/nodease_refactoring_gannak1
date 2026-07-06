@@ -33,6 +33,7 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | 권한 신청 승인 | `permission_request.approved` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
 | 권한 신청 거절 | `permission_request.rejected` | 권한 신청 기능(PRD FR-041/FR-042) 구현 시 고정 |
 | user App 생성 권한 row 생성/회수 | `user_app_creation_permission.created`, `user_app_creation_permission.deleted` | 권한 신청 기능([ADR-0016](ADR-0016-permission-request-and-app-creation-permission.md)) 구현 시 고정 |
+| workflow 예산 생성/수정 | `workflow_budget.created`, `workflow_budget.updated` | 예산 관리 기능(PRD FR-051/FR-052) 구현 시 고정 |
 | data/model/trace policy 차단 | `policy.block` | MVP 2 |
 | data/model/trace policy 경고 | `policy.warn` | MVP 2 |
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
@@ -72,6 +73,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - `rag.answer.*`는 standalone RAG Agent answer의 사용자-facing 실행 lifecycle 감사 action이다. Retrieval 성공 감사인 `rag.retrieve`, provider 호출 감사인 `llm.call`, answer 실행 상태 record인 `rag_answer_runs.status`를 대체하지 않고, answer 요청 단위의 검색/운영 이벤트로만 사용한다.
 - `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 만들지 못한 경우에만 사용한다. 별도 `rag.answer.blocked` action은 만들지 않는다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied`와 answer run status 조합으로 표현한다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다.
 - `rag.answer.purge`는 retention purge aggregate event다. 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록하고, `audit_metadata`는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status` 같은 운영 summary allowlist로 제한한다. Raw answer/query/chunk content는 metadata에 넣지 않는다.
+- Workflow 예산 생성/수정/비활성화는 `workflow_budget.created`/`workflow_budget.updated`를 사용한다. 예산 초과 실행 차단은 별도 결과 중심 action을 만들지 않고 `policy.block`에 `audit_metadata.reason='budget.exceeded'`로 표현한다.
 
 ## 영향
 

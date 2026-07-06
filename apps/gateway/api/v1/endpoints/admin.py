@@ -16,8 +16,12 @@ from apps.gateway.services.app_creation_permission_service import (
 )
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.services.permission_request_service import PermissionRequestService
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditStatus
 from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.session import get_db
 from apps.shared.schemas.admin_usage import (
     AdminOrganizationSummaryResponse,
@@ -31,6 +35,11 @@ from apps.shared.schemas.permission_request import (
     PermissionRequestListResponse,
     PermissionRequestResponse,
     PermissionRequestUserSchema,
+)
+from apps.shared.schemas.workflow_budget import (
+    WorkflowBudgetListResponse,
+    WorkflowBudgetResponse,
+    WorkflowBudgetUpsertRequest,
 )
 from apps.shared.services import permissions as shared_permissions
 
@@ -113,6 +122,66 @@ def _serialize_app_creation_permissions(
         )
         for item in items
     ]
+
+
+def _workflow_name_in_scope(
+    db: Session,
+    organization_id,
+    workflow_id: UUID,
+) -> str:
+    row = (
+        db.query(Workflow, App.name)
+        .join(App, Workflow.app_id == App.id)
+        .filter(
+            Workflow.id == workflow_id,
+            Workflow.organization_id == organization_id,
+            App.organization_id == organization_id,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return row[1]
+
+
+def _serialize_workflow_budget(
+    db: Session,
+    budget: WorkflowBudget,
+    workflow_name: str,
+    *,
+    include_usage: bool = False,
+) -> WorkflowBudgetResponse:
+    current_month_cost = None
+    usage_ratio = None
+    status = None
+    if include_usage:
+        current_cost = WorkflowBudgetService.get_current_month_cost(
+            db,
+            workflow_id=budget.workflow_id,
+            now=datetime.now(),
+        )
+        status = WorkflowBudgetService.classify_budget_usage(
+            current_cost=current_cost,
+            monthly_budget_usd=budget.monthly_budget_usd,
+            is_enabled=budget.is_enabled,
+        )
+        current_month_cost = float(current_cost)
+        if status is not None:
+            usage_ratio = float(current_cost / budget.monthly_budget_usd)
+
+    return WorkflowBudgetResponse(
+        workflow_id=budget.workflow_id,
+        workflow_name=workflow_name,
+        monthly_budget_usd=float(budget.monthly_budget_usd),
+        is_enabled=budget.is_enabled,
+        created_by=budget.created_by,
+        updated_by=budget.updated_by,
+        created_at=budget.created_at,
+        updated_at=budget.updated_at,
+        current_month_cost=current_month_cost,
+        usage_ratio=usage_ratio,
+        status=status,
+    )
 
 
 @router.get("/audit-logs", response_model=AuditLogListResponse)
@@ -209,6 +278,106 @@ def get_organization_summary(
     )
     return AdminUsageService.get_organization_summary(
         db, organization_id=organization_id
+    )
+
+
+@router.get(
+    "/workflow-budgets",
+    response_model=WorkflowBudgetListResponse,
+)
+def list_workflow_budgets(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    query = (
+        db.query(WorkflowBudget, App.name)
+        .join(Workflow, WorkflowBudget.workflow_id == Workflow.id)
+        .join(App, Workflow.app_id == App.id)
+        .filter(
+            WorkflowBudget.organization_id == organization_id,
+            Workflow.organization_id == organization_id,
+            App.organization_id == organization_id,
+        )
+    )
+    total = query.count()
+    rows = (
+        query.order_by(WorkflowBudget.updated_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+    return WorkflowBudgetListResponse(
+        total=total,
+        items=[
+            _serialize_workflow_budget(db, budget, workflow_name)
+            for budget, workflow_name in rows
+        ],
+    )
+
+
+@router.get(
+    "/workflow-budgets/{workflow_id}",
+    response_model=WorkflowBudgetResponse,
+)
+def get_workflow_budget(
+    request: Request,
+    workflow_id: UUID,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    workflow_name = _workflow_name_in_scope(db, organization_id, workflow_id)
+    budget = (
+        db.query(WorkflowBudget)
+        .filter(
+            WorkflowBudget.organization_id == organization_id,
+            WorkflowBudget.workflow_id == workflow_id,
+        )
+        .first()
+    )
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Workflow budget not found")
+    return _serialize_workflow_budget(
+        db, budget, workflow_name, include_usage=True
+    )
+
+
+@router.put(
+    "/workflow-budgets/{workflow_id}",
+    response_model=WorkflowBudgetResponse,
+)
+def upsert_workflow_budget(
+    request: Request,
+    workflow_id: UUID,
+    body: WorkflowBudgetUpsertRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    workflow_name = _workflow_name_in_scope(db, organization_id, workflow_id)
+    budget = WorkflowBudgetService.upsert_budget(
+        db,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        actor_id=current_user.id,
+        monthly_budget_usd=body.monthly_budget_usd,
+        is_enabled=body.is_enabled,
+    )
+    return _serialize_workflow_budget(
+        db, budget, workflow_name, include_usage=True
     )
 
 

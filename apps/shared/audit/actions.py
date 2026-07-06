@@ -41,6 +41,8 @@ class AuditAction:
     WORKFLOW_UPDATE = "workflow.update"
     WORKFLOW_DEPLOY = "workflow.deploy"
     WORKFLOW_EXECUTE = "workflow.execute"
+    WORKFLOW_BUDGET_CREATED = "workflow_budget.created"
+    WORKFLOW_BUDGET_UPDATED = "workflow_budget.updated"
 
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_ACTIVATE_PREVIOUS = "deployment.activate_previous"

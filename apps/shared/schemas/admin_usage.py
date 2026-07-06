@@ -11,6 +11,20 @@ class AdminUsagePeriodResponse(BaseModel):
     end_at: datetime = Field(alias="endAt")
 
 
+class AdminWorkflowBudgetBlock(BaseModel):
+    monthly_budget_usd: float
+    current_month_cost: float
+    usage_ratio: float
+    status: str
+
+
+class AdminBudgetSummaryBlock(BaseModel):
+    budgeted_workflow_count: int
+    at_risk_count: int
+    exceeded_count: int
+    ratio: float
+
+
 class AdminWorkflowUsageItem(BaseModel):
     workflow_id: UUID
     workflow_name: str
@@ -18,6 +32,7 @@ class AdminWorkflowUsageItem(BaseModel):
     completion_tokens: int
     call_count: int
     total_cost: float
+    budget: AdminWorkflowBudgetBlock | None = None
 
 
 class AdminWorkflowUsageResponse(BaseModel):
@@ -29,5 +44,4 @@ class AdminWorkflowUsageResponse(BaseModel):
 class AdminOrganizationSummaryResponse(BaseModel):
     month: str
     total_cost: float
-    # 예산 관리 feature(PRD FR-051) 확정 전에는 budget 블록을 null로 반환한다.
-    budget: None = None
+    budget: AdminBudgetSummaryBlock | None = None
