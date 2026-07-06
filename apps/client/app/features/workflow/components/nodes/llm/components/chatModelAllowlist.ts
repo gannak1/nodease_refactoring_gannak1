@@ -1,6 +1,8 @@
 export const CHAT_MODEL_ALLOWLISTS = {
   openai: [
     'gpt-5.5', // 최신 프런티어
+    'gpt-5.5-pro', // 최신 고성능
+    'gpt-5.4-pro', // 전문 작업용 Pro
     'gpt-5.4', // 전문 작업용
     'gpt-5.4-mini', // 효율형
     'gpt-5.4-nano', // 초경량
