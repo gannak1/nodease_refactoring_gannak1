@@ -1,8 +1,12 @@
 'use client';
 
-type PreviewValue = string | number | boolean | null | PreviewValue[] | {
-  [key: string]: PreviewValue;
-};
+type PreviewValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PreviewValue[]
+  | { [key: string]: PreviewValue };
 
 interface CostOptimizerPreviewViewerProps {
   value: unknown;
@@ -10,8 +14,57 @@ interface CostOptimizerPreviewViewerProps {
   className?: string;
 }
 
-const parseJsonLikeString = (value: string): unknown => {
+interface CostOptimizerOutputPreviewPanelProps {
+  title: string;
+  value: unknown;
+  usage?: unknown;
+  emptyText?: string;
+}
+
+const keyLabelMap: Record<string, string> = {
+  answer: '답변',
+  completion_tokens: 'Completion tokens',
+  cost: 'Cost',
+  input_tokens: 'Input tokens',
+  latency_ms: 'Latency',
+  mailDraft: '답변 초안',
+  output_tokens: 'Output tokens',
+  prompt_tokens: 'Prompt tokens',
+  severity: '긴급도',
+  text: 'Text',
+  total_cost: 'Total cost',
+  total_tokens: 'Total tokens',
+  usage: 'Usage',
+};
+
+const formatPreviewKey = (key: string) => keyLabelMap[key] || key;
+const metricKeys = new Set([
+  'cost',
+  'total_cost',
+  'input_tokens',
+  'output_tokens',
+  'prompt_tokens',
+  'completion_tokens',
+  'total_tokens',
+  'latency_ms',
+]);
+const usageKeys = new Set([
+  'input_tokens',
+  'output_tokens',
+  'prompt_tokens',
+  'completion_tokens',
+  'total_tokens',
+  'latency_ms',
+]);
+
+const stripJsonCodeFence = (value: string) => {
   const trimmed = value.trim();
+  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : value;
+};
+
+const parseJsonLikeString = (value: string): unknown => {
+  const trimmed = stripJsonCodeFence(value).trim();
   if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
     return value;
   }
@@ -21,6 +74,118 @@ const parseJsonLikeString = (value: string): unknown => {
   } catch {
     return value;
   }
+};
+
+const isRecord = (value: PreviewValue): value is Record<string, PreviewValue> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isMetricKey = (key: string) => metricKeys.has(key);
+const isUsageKey = (key: string) => usageKeys.has(key);
+
+const mergeUsageValues = (
+  output: PreviewValue,
+  usage: unknown,
+): Record<string, PreviewValue> => {
+  const normalizedUsage = normalizeCostOptimizerPreview(usage);
+  const merged: Record<string, PreviewValue> = {};
+
+  if (isRecord(output)) {
+    if ('usage' in output && isRecord(output.usage)) {
+      Object.assign(merged, output.usage);
+    }
+    for (const [key, value] of Object.entries(output)) {
+      if (isUsageKey(key)) {
+        merged[key] = value;
+      }
+    }
+  }
+
+  if (isRecord(normalizedUsage)) {
+    Object.assign(merged, normalizedUsage);
+  }
+
+  return merged;
+};
+
+const outputContentOf = (output: PreviewValue): PreviewValue => {
+  if (!isRecord(output)) return output;
+
+  if ('text' in output) {
+    const text = output.text;
+    if (typeof text === 'string') {
+      return normalizeCostOptimizerPreview(text);
+    }
+    return text;
+  }
+
+  return Object.fromEntries(
+    Object.entries(output).filter(
+      ([key]) => key !== 'usage' && !isMetricKey(key),
+    ),
+  );
+};
+
+const rootMetricsOf = (output: PreviewValue) => {
+  if (!isRecord(output)) return {};
+  return Object.fromEntries(
+    Object.entries(output).filter(([key]) => isMetricKey(key)),
+  );
+};
+
+const formatMetricValue = (key: string, value: PreviewValue) => {
+  if (value === null) return '-';
+  if (typeof value === 'number') {
+    if (key.includes('cost')) {
+      return `$${value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
+    }
+    if (key === 'latency_ms') return `${value}ms`;
+    return value.toLocaleString('ko-KR');
+  }
+  return valueToCopyText(value);
+};
+
+const MetricGrid = ({
+  title,
+  values,
+  tone = 'slate',
+}: {
+  title: string;
+  values: Record<string, PreviewValue>;
+  tone?: 'blue' | 'slate';
+}) => {
+  const entries = Object.entries(values);
+  if (entries.length === 0) return null;
+
+  const itemClassName =
+    tone === 'blue'
+      ? 'rounded-md border border-blue-100 bg-blue-50 px-3 py-2'
+      : 'rounded-md border border-slate-100 bg-slate-50 px-3 py-2';
+  const labelClassName =
+    tone === 'blue'
+      ? 'text-[10px] font-bold uppercase tracking-wide text-blue-500'
+      : 'text-[10px] font-bold uppercase tracking-wide text-slate-500';
+  const valueClassName =
+    tone === 'blue'
+      ? 'mt-1 font-mono text-xs font-semibold text-blue-800'
+      : 'mt-1 font-mono text-xs font-semibold text-slate-800';
+
+  return (
+    <section className="grid gap-2">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+        {title}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {entries.map(([key, metricValue]) => (
+          <div key={key} className={itemClassName}>
+            <div className={labelClassName}>{formatPreviewKey(key)}</div>
+            <div className={valueClassName}>
+              {formatMetricValue(key, metricValue)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 };
 
 const normalizeCostOptimizerPreview = (
@@ -119,7 +284,7 @@ const PreviewNode = ({
             key={`${level}-${index}`}
             className="grid gap-1 rounded-md border border-slate-100 bg-white/70 px-2 py-1.5"
           >
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
               {index}
             </span>
             <PreviewNode value={item} level={level + 1} />
@@ -141,8 +306,8 @@ const PreviewNode = ({
           key={`${level}-${key}`}
           className="grid gap-1 rounded-md border border-slate-100 bg-white/70 px-2 py-1.5"
         >
-          <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-            {key}
+          <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            {formatPreviewKey(key)}
           </span>
           <PreviewNode value={item} level={level + 1} />
         </span>
@@ -172,5 +337,50 @@ export function CostOptimizerPreviewViewer({
     >
       <PreviewNode value={normalized} />
     </span>
+  );
+}
+
+export function CostOptimizerOutputPreviewPanel({
+  title,
+  value,
+  usage,
+  emptyText = '출력 없음',
+}: CostOptimizerOutputPreviewPanelProps) {
+  const normalized = normalizeCostOptimizerPreview(value);
+  const isEmpty =
+    normalized === null ||
+    (typeof normalized === 'string' && normalized.trim().length === 0);
+  const content = outputContentOf(normalized);
+  const rootMetrics = rootMetricsOf(normalized);
+  const usageMetrics = mergeUsageValues(normalized, usage);
+
+  return (
+    <div className="min-h-0 rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-4 py-3">
+        <h4 className="text-xs font-bold text-slate-700">{title}</h4>
+      </div>
+      <div className="grid max-h-96 gap-4 overflow-auto p-4">
+        <MetricGrid title="Metric" values={rootMetrics} tone="blue" />
+
+        <section className="grid gap-2">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            Output
+          </div>
+          {isEmpty ? (
+            <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-500">
+              {emptyText}
+            </div>
+          ) : (
+            <CostOptimizerPreviewViewer
+              value={content}
+              emptyText={emptyText}
+              className="border border-slate-100 bg-slate-50"
+            />
+          )}
+        </section>
+
+        <MetricGrid title="Usage" values={usageMetrics} />
+      </div>
+    </div>
   );
 }

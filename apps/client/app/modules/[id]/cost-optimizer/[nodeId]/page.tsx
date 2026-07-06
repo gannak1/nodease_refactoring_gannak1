@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 import { CostOptimizerBaselineSelection } from '@/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection';
-import { CostOptimizerPreviewViewer } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
+import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
 import {
   baselineOptionsOf,
@@ -79,6 +79,9 @@ const formatCost = (value: number) => {
 
 const formatCandidateCost = (value: number | null | undefined) =>
   value === null || value === undefined ? '비용 계산 불가' : formatCost(value);
+
+const formatShortId = (value: string | null | undefined) =>
+  value ? value.slice(0, 8) : '-';
 
 const formatLatency = (latencyMs: number) => {
   if (!Number.isFinite(latencyMs)) return '-';
@@ -333,6 +336,56 @@ const formatMetricChange = (
   const diff = candidateValue - baselineValue;
   if (diff === 0) return '변화 없음';
   return `${diff > 0 ? '+' : ''}${formatter(diff)}`;
+};
+
+const metricChangeDetailOf = (
+  baselineValue: number | null | undefined,
+  candidateValue: number | null | undefined,
+  formatter: (value: number) => string,
+) => {
+  if (
+    typeof baselineValue !== 'number' ||
+    !Number.isFinite(baselineValue) ||
+    typeof candidateValue !== 'number' ||
+    !Number.isFinite(candidateValue)
+  ) {
+    return {
+      summary: '-',
+      detail: '비교 기준 부족',
+      tone: 'text-slate-500',
+    };
+  }
+
+  const diff = candidateValue - baselineValue;
+  if (diff === 0) {
+    return {
+      summary: '변화 없음',
+      detail: '100% · 1.00x',
+      tone: 'text-slate-600',
+    };
+  }
+
+  if (baselineValue === 0) {
+    return {
+      summary: `${diff > 0 ? '+' : ''}${formatter(diff)}`,
+      detail: 'A baseline이 0이라 비율 비교 불가',
+      tone: diff < 0 ? 'text-emerald-700' : 'text-amber-700',
+    };
+  }
+
+  const ratio = candidateValue / baselineValue;
+  const percentChange = (ratio - 1) * 100;
+  const summary =
+    diff < 0
+      ? `${Math.abs(percentChange).toFixed(1)}% 감소`
+      : `${percentChange.toFixed(1)}% 증가`;
+  const diffLabel = `${diff > 0 ? '+' : ''}${formatter(diff)}`;
+
+  return {
+    summary,
+    detail: `${ratio.toFixed(2)}x · ${diffLabel}`,
+    tone: diff < 0 ? 'text-emerald-700' : 'text-amber-700',
+  };
 };
 
 const candidateStatusLabelOf = (status: string | null | undefined) => {
@@ -654,7 +707,6 @@ export default function CostOptimizerPlaygroundPage() {
           workflowId,
           nodeId,
           {
-            baseline_id: baseline.baseline_id,
             date_from: historyDateFrom
               ? `${historyDateFrom}T00:00:00`
               : undefined,
@@ -959,13 +1011,23 @@ export default function CostOptimizerPlaygroundPage() {
   const downstreamWarnings =
     downstreamCompatibility?.contract_check?.warnings || [];
   const historyRows = useMemo(
-    () =>
-      historyItems.flatMap((experiment) =>
+    () => {
+      const rows = historyItems.flatMap((experiment) =>
         experiment.candidates.map((historyCandidate) => ({
           experiment,
           candidate: historyCandidate,
         })),
-      ),
+      );
+      return rows.sort((a, b) => {
+        const aTime = new Date(
+          a.candidate.created_at || a.experiment.created_at || 0,
+        ).getTime();
+        const bTime = new Date(
+          b.candidate.created_at || b.experiment.created_at || 0,
+        ).getTime();
+        return bTime - aTime;
+      });
+    },
     [historyItems],
   );
   const selectedHistoryRow =
@@ -976,22 +1038,48 @@ export default function CostOptimizerPlaygroundPage() {
             row.candidate.candidate_id === selectedHistoryTarget.candidateId,
         ) ?? null
       : null;
-  const activeCandidateStatus = selectedHistoryRow
-    ? selectedHistoryRow.candidate.status
-    : candidateResult?.status;
-  const activeCandidateCost = selectedHistoryRow
-    ? selectedHistoryRow.candidate.total_cost
-    : candidateTotalCost;
-  const activeCandidateTokens = selectedHistoryRow
-    ? selectedHistoryRow.candidate.total_tokens
-    : candidateTotalTokens;
-  const activeCandidateLatency = selectedHistoryRow
-    ? selectedHistoryRow.candidate.latency_ms
-    : candidateLatency;
-  const activePromptTokens = selectedHistoryRow ? null : candidatePromptTokens;
-  const activeCompletionTokens = selectedHistoryRow
-    ? null
-    : candidateCompletionTokens;
+  const selectedHistoryBaseline =
+    selectedHistoryRow?.experiment.baseline_summary ?? null;
+  const activeCandidateMetrics = selectedHistoryRow
+    ? {
+        status: selectedHistoryRow.candidate.status,
+        cost: selectedHistoryRow.candidate.total_cost,
+        promptTokens: selectedHistoryRow.candidate.prompt_tokens ?? null,
+        completionTokens: selectedHistoryRow.candidate.completion_tokens ?? null,
+        totalTokens: selectedHistoryRow.candidate.total_tokens,
+        latency: selectedHistoryRow.candidate.latency_ms,
+      }
+    : {
+        status: candidateResult?.status,
+        cost: candidateTotalCost,
+        promptTokens: candidatePromptTokens,
+        completionTokens: candidateCompletionTokens,
+        totalTokens: candidateTotalTokens,
+        latency: candidateLatency,
+      };
+  const activeBaselineMetrics = selectedHistoryRow
+    ? {
+        cost: selectedHistoryBaseline?.cost ?? null,
+        promptTokens: selectedHistoryBaseline?.prompt_tokens ?? null,
+        completionTokens: selectedHistoryBaseline?.completion_tokens ?? null,
+        totalTokens: selectedHistoryBaseline?.total_tokens ?? null,
+        latency: selectedHistoryBaseline?.latency_ms ?? null,
+        model: selectedHistoryBaseline?.model || '-',
+      }
+    : {
+        cost: baseline?.cost ?? null,
+        promptTokens: baselinePromptTokens,
+        completionTokens: baselineCompletionTokens,
+        totalTokens: baseline?.total_tokens ?? null,
+        latency: baselineLatency,
+        model: baseline?.model || '-',
+      };
+  const activeCandidateStatus = activeCandidateMetrics.status;
+  const activeCandidateCost = activeCandidateMetrics.cost;
+  const activeCandidateTokens = activeCandidateMetrics.totalTokens;
+  const activeCandidateLatency = activeCandidateMetrics.latency;
+  const activePromptTokens = activeCandidateMetrics.promptTokens;
+  const activeCompletionTokens = activeCandidateMetrics.completionTokens;
   const activeSchemaStatus = selectedHistoryRow
     ? selectedHistoryRow.candidate.schema_status
     : candidateSchemaValidation?.status;
@@ -1009,8 +1097,29 @@ export default function CostOptimizerPlaygroundPage() {
     ? downstreamStateToneOf(activeDownstreamState)
     : downstreamToneOf(downstreamCompatibility);
   const schemaStatusLabel = activeSchemaStatusLabel;
-  const baselineCost = baseline?.cost ?? null;
-  const baselineTotalTokens = baseline?.total_tokens ?? null;
+  const baselineCost = activeBaselineMetrics.cost;
+  const baselineTotalTokens = activeBaselineMetrics.totalTokens;
+  const activeBaselinePromptTokens = activeBaselineMetrics.promptTokens;
+  const activeBaselineCompletionTokens = activeBaselineMetrics.completionTokens;
+  const activeBaselineLatency = activeBaselineMetrics.latency;
+  const activeBaselineModel = activeBaselineMetrics.model;
+  const activeBaselineOutput = selectedHistoryRow
+    ? selectedHistoryBaseline?.output ??
+      selectedHistoryBaseline?.output_preview ??
+      '선택한 이전 실험의 baseline 출력이 저장되어 있지 않습니다.'
+    : baseline?.output ?? baseline?.output_preview;
+  const activeCandidateOutput = selectedHistoryRow
+    ? selectedHistoryRow.candidate.output ??
+      selectedHistoryRow.candidate.output_preview ??
+      '선택한 이전 실험의 B candidate 출력이 저장되어 있지 않습니다.'
+    : candidateResult?.output;
+  const activeCandidateUsage = selectedHistoryRow
+    ? {
+        cost: activeCandidateCost,
+        total_tokens: activeCandidateTokens,
+        latency_ms: activeCandidateLatency,
+      }
+    : candidateUsage;
   const candidateDecision = (() => {
     if (!candidateResult && !selectedHistoryRow) return null;
     const hasCostImprovement =
@@ -1030,9 +1139,9 @@ export default function CostOptimizerPlaygroundPage() {
       typeof activeCandidateTokens === 'number' &&
       activeCandidateTokens > baselineTotalTokens;
     const hasLatencyWorsening =
-      typeof baselineLatency === 'number' &&
+      typeof activeBaselineLatency === 'number' &&
       typeof activeCandidateLatency === 'number' &&
-      activeCandidateLatency > baselineLatency;
+      activeCandidateLatency > activeBaselineLatency;
     const isSchemaFailed = schemaStatusLabel === '실패';
     const isDownstreamIncompatible = activeDownstreamState === 'incompatible';
     const isDownstreamWarning = activeDownstreamState === 'warning';
@@ -1075,7 +1184,7 @@ export default function CostOptimizerPlaygroundPage() {
       (value) => formatMetric(value),
     )}`,
     `latency 변화: ${formatMetricChange(
-      baselineLatency,
+      activeBaselineLatency,
       activeCandidateLatency,
       formatLatency,
     )}`,
@@ -1088,18 +1197,24 @@ export default function CostOptimizerPlaygroundPage() {
       label: '비용',
       baseline: baselineCost === null ? '-' : formatCost(baselineCost),
       candidate: formatCandidateCost(activeCandidateCost),
-      change: formatMetricChange(baselineCost, activeCandidateCost, formatCost),
+      change: metricChangeDetailOf(
+        baselineCost,
+        activeCandidateCost,
+        formatCost,
+      ),
     },
     {
       label: '입력 토큰',
       baseline:
-        baselinePromptTokens === null ? '-' : formatMetric(baselinePromptTokens),
+        activeBaselinePromptTokens === null
+          ? '-'
+          : formatMetric(activeBaselinePromptTokens),
       candidate:
         activePromptTokens === null
           ? '-'
           : formatMetric(activePromptTokens),
-      change: formatMetricChange(
-        baselinePromptTokens,
+      change: metricChangeDetailOf(
+        activeBaselinePromptTokens,
         activePromptTokens,
         (value) => formatMetric(value),
       ),
@@ -1107,15 +1222,15 @@ export default function CostOptimizerPlaygroundPage() {
     {
       label: '출력 토큰',
       baseline:
-        baselineCompletionTokens === null
+        activeBaselineCompletionTokens === null
           ? '-'
-          : formatMetric(baselineCompletionTokens),
+          : formatMetric(activeBaselineCompletionTokens),
       candidate:
         activeCompletionTokens === null
           ? '-'
           : formatMetric(activeCompletionTokens),
-      change: formatMetricChange(
-        baselineCompletionTokens,
+      change: metricChangeDetailOf(
+        activeBaselineCompletionTokens,
         activeCompletionTokens,
         (value) => formatMetric(value),
       ),
@@ -1128,7 +1243,7 @@ export default function CostOptimizerPlaygroundPage() {
         activeCandidateTokens === null || activeCandidateTokens === undefined
           ? '-'
           : formatMetric(activeCandidateTokens),
-      change: formatMetricChange(
+      change: metricChangeDetailOf(
         baselineTotalTokens,
         activeCandidateTokens,
         (value) => formatMetric(value),
@@ -1136,13 +1251,14 @@ export default function CostOptimizerPlaygroundPage() {
     },
     {
       label: '실행 시간',
-      baseline: baselineLatency === null ? '-' : formatLatency(baselineLatency),
+      baseline:
+        activeBaselineLatency === null ? '-' : formatLatency(activeBaselineLatency),
       candidate:
         activeCandidateLatency === null || activeCandidateLatency === undefined
           ? '-'
           : formatLatency(activeCandidateLatency),
-      change: formatMetricChange(
-        baselineLatency,
+      change: metricChangeDetailOf(
+        activeBaselineLatency,
         activeCandidateLatency,
         formatLatency,
       ),
@@ -1151,13 +1267,27 @@ export default function CostOptimizerPlaygroundPage() {
       label: '실행 상태',
       baseline: '성공',
       candidate: candidateStatusLabelOf(activeCandidateStatus),
-      change: activeCandidateStatus === 'success' ? '유지' : '악화',
+      change: {
+        summary: activeCandidateStatus === 'success' ? '유지' : '악화',
+        detail: '상태 비교',
+        tone:
+          activeCandidateStatus === 'success'
+            ? 'text-emerald-700'
+            : 'text-red-700',
+      },
     },
     {
       label: '출력 스키마',
       baseline: '기준',
       candidate: schemaStatusLabel,
-      change: schemaStatusLabel === '실패' ? '확인 필요' : '허용',
+      change: {
+        summary: schemaStatusLabel === '실패' ? '확인 필요' : '허용',
+        detail: 'schema check',
+        tone:
+          schemaStatusLabel === '실패'
+            ? 'text-red-700'
+            : 'text-emerald-700',
+      },
     },
     {
       label: '후속 노드 영향',
@@ -1166,8 +1296,16 @@ export default function CostOptimizerPlaygroundPage() {
       change:
         activeDownstreamState === 'warning' ||
         activeDownstreamState === 'incompatible'
-          ? '확인 필요'
-          : '허용',
+          ? {
+              summary: '확인 필요',
+              detail: 'downstream check',
+              tone: 'text-amber-700',
+            }
+          : {
+              summary: '허용',
+              detail: 'downstream check',
+              tone: 'text-emerald-700',
+            },
     },
   ];
   const selectedHistorySummary = (() => {
@@ -1182,6 +1320,26 @@ export default function CostOptimizerPlaygroundPage() {
       } · ${formatCandidateCost(selectedHistoryRow.candidate.total_cost)}`;
     }
     return '선택: 없음';
+  })();
+  const canApplyCurrentCandidate =
+    Boolean(candidateResult) &&
+    candidateResult?.status === 'success' &&
+    !selectedHistoryRow &&
+    !isStale &&
+    !isApplyingCandidate;
+  const applyCandidateDisabledReason = (() => {
+    if (selectedHistoryRow) {
+      return '이전 실험 이력은 현재 목록 응답에 candidate 설정 원문이 없어 바로 적용할 수 없습니다.';
+    }
+    if (!candidateResult) return '먼저 B 후보를 실행해야 적용할 수 있습니다.';
+    if (candidateResult.status !== 'success') {
+      return '성공한 B 후보 실행 결과만 적용할 수 있습니다.';
+    }
+    if (isStale) {
+      return '현재 설정으로 다시 실행한 뒤 적용하세요.';
+    }
+    if (isApplyingCandidate) return '후보 설정을 적용하는 중입니다.';
+    return 'B 후보 설정 전체를 현재 LLM 노드 draft에 적용합니다.';
   })();
   const isCurrentHistorySelected =
     selectedHistoryTarget?.type === 'current' ||
@@ -1658,19 +1816,10 @@ export default function CostOptimizerPlaygroundPage() {
                   </button>
                   <button
                     type="button"
-                    disabled={
-                      !candidateResult ||
-                      candidateResult.status !== 'success' ||
-                      isStale ||
-                      isApplyingCandidate
-                    }
+                    disabled={!canApplyCurrentCandidate}
                     onClick={handleApplyCandidate}
                     className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-                    title={
-                      candidateResult?.status === 'success'
-                        ? 'B 후보 설정 전체를 현재 LLM 노드 draft에 적용합니다.'
-                        : '성공한 B 후보 실행 결과가 있어야 적용할 수 있습니다.'
-                    }
+                    title={applyCandidateDisabledReason}
                   >
                     {isApplyingCandidate ? '적용 중' : '현재 노드에 적용'}
                   </button>
@@ -1844,6 +1993,7 @@ export default function CostOptimizerPlaygroundPage() {
                   <thead className="sticky top-0 bg-slate-50 text-slate-500">
                     <tr>
                       <th className="px-3 py-2 font-bold">실행 시각</th>
+                      <th className="px-3 py-2 font-bold">Baseline</th>
                       <th className="px-3 py-2 font-bold">테스트명</th>
                       <th className="px-3 py-2 font-bold">모델</th>
                       <th className="px-3 py-2 font-bold">비용</th>
@@ -1856,7 +2006,10 @@ export default function CostOptimizerPlaygroundPage() {
                   <tbody className="divide-y divide-slate-100">
                     {candidateResult ? (
                       <tr
-                        className={`border-l-4 ${
+                        onClick={() =>
+                          setSelectedHistoryTarget({ type: 'current' })
+                        }
+                        className={`cursor-pointer border-l-4 ${
                           isCurrentHistorySelected
                             ? 'border-emerald-500 bg-emerald-50/70'
                             : 'border-transparent hover:bg-slate-50'
@@ -1865,13 +2018,22 @@ export default function CostOptimizerPlaygroundPage() {
                         <td className="px-3 py-2 font-semibold text-slate-700">
                           방금 실행
                         </td>
+                        <td className="px-3 py-2 text-slate-600">
+                          <div className="font-semibold">
+                            {formatShortId(baseline?.baseline_id)}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            {baseline?.model || '-'}
+                          </div>
+                        </td>
                         <td className="px-3 py-2">
                           <button
                             type="button"
                             aria-label="방금 실행 선택"
-                            onClick={() =>
-                              setSelectedHistoryTarget({ type: 'current' })
-                            }
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedHistoryTarget({ type: 'current' });
+                            }}
                             className="text-left font-semibold text-slate-900 hover:text-emerald-700"
                           >
                             <span className="rounded-full border border-emerald-200 bg-white px-2 py-1 text-[11px] font-bold text-emerald-700">
@@ -1903,7 +2065,14 @@ export default function CostOptimizerPlaygroundPage() {
                     {historyRows.map(({ experiment, candidate: historyCandidate }) => (
                         <tr
                           key={`${experiment.experiment_id}-${historyCandidate.candidate_id}`}
-                          className={`border-l-4 ${
+                          onClick={() =>
+                            setSelectedHistoryTarget({
+                              type: 'history',
+                              experimentId: experiment.experiment_id,
+                              candidateId: historyCandidate.candidate_id,
+                            })
+                          }
+                          className={`cursor-pointer border-l-4 ${
                             isSelectedHistoryCandidate(
                               experiment.experiment_id,
                               historyCandidate.candidate_id,
@@ -1918,19 +2087,31 @@ export default function CostOptimizerPlaygroundPage() {
                                 experiment.created_at,
                             )}
                           </td>
+                          <td className="px-3 py-2 text-slate-600">
+                            <div className="font-semibold">
+                              {formatShortId(
+                                experiment.baseline_summary?.baseline_id ||
+                                  experiment.baseline_node_run_id,
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-400">
+                              {experiment.baseline_summary?.model || '-'}
+                            </div>
+                          </td>
                           <td className="px-3 py-2 font-semibold text-slate-900">
                             <button
                               type="button"
                               aria-label={`${
                                 historyCandidate.name || '이름 없는 후보'
                               } 선택`}
-                              onClick={() =>
+                              onClick={(event) => {
+                                event.stopPropagation();
                                 setSelectedHistoryTarget({
                                   type: 'history',
                                   experimentId: experiment.experiment_id,
                                   candidateId: historyCandidate.candidate_id,
-                                })
-                              }
+                                });
+                              }}
                               className="text-left font-semibold text-slate-900 hover:text-emerald-700"
                             >
                               {historyCandidate.name || '이름 없는 후보'}
@@ -1966,10 +2147,10 @@ export default function CostOptimizerPlaygroundPage() {
                       ))}
                     {!candidateResult &&
                     !isLoadingHistory &&
-                    historyItems.length === 0 ? (
+                    historyRows.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={9}
                           className="px-3 py-6 text-center font-semibold text-slate-500"
                         >
                           조건에 맞는 이전 실험 이력이 없습니다.
@@ -1979,7 +2160,7 @@ export default function CostOptimizerPlaygroundPage() {
                     {isLoadingHistory ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={9}
                           className="px-3 py-6 text-center font-semibold text-slate-500"
                         >
                           이전 실험 이력을 불러오는 중입니다.
@@ -1993,14 +2174,14 @@ export default function CostOptimizerPlaygroundPage() {
               )}
             </section>
 
-            {!candidateResult ? (
+            {!candidateResult && !selectedHistoryRow ? (
               <section className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-5 text-sm font-semibold leading-relaxed text-amber-800">
                 B 실행 후 결과 분석이 표시됩니다. 지금은 후보 설정만 준비된
                 상태입니다.
               </section>
             ) : null}
 
-            {candidateResult && candidateDecision ? (
+            {candidateDecision ? (
               <>
                 <section
                   className={`rounded-lg border p-5 shadow-sm ${candidateDecision.tone}`}
@@ -2051,11 +2232,39 @@ export default function CostOptimizerPlaygroundPage() {
                             </td>
                             <td className="px-3 py-2">{row.baseline}</td>
                             <td className="px-3 py-2">{row.candidate}</td>
-                            <td className="px-3 py-2 font-semibold">
-                              {row.change}
+                            <td className="px-3 py-2">
+                              <div className={`font-bold ${row.change.tone}`}>
+                                {row.change.summary}
+                              </div>
                             </td>
                           </tr>
                         ))}
+                        <tr className="bg-slate-50/80">
+                          <td className="px-3 py-3 font-bold text-slate-700">
+                            적용
+                          </td>
+                          <td className="px-3 py-3 text-slate-500">
+                            현재 노드 설정 유지
+                          </td>
+                          <td className="px-3 py-3">
+                            <button
+                              type="button"
+                              disabled={!canApplyCurrentCandidate}
+                              onClick={handleApplyCandidate}
+                              title={applyCandidateDisabledReason}
+                              className="inline-flex h-9 items-center rounded-md bg-emerald-600 px-3 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                            >
+                              {isApplyingCandidate
+                                ? '적용 중'
+                                : '이 설정으로 노드 적용하기'}
+                            </button>
+                          </td>
+                          <td className="px-3 py-3 text-xs font-semibold text-slate-500">
+                            {canApplyCurrentCandidate
+                              ? 'B 후보 설정을 현재 노드 draft에 적용합니다.'
+                              : applyCandidateDisabledReason}
+                          </td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
@@ -2064,31 +2273,31 @@ export default function CostOptimizerPlaygroundPage() {
                 <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                   <h3 className="text-sm font-bold">출력 품질 비교</h3>
                   <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                    <div>
-                      <h4 className="text-xs font-bold text-slate-600">
-                        A baseline 출력
-                      </h4>
-                      <CostOptimizerPreviewViewer
-                        value={baseline?.output ?? baseline?.output_preview}
-                        className="mt-2 max-h-96 overflow-auto"
-                      />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-slate-600">
-                        B candidate 출력
-                      </h4>
-                      <CostOptimizerPreviewViewer
-                        value={candidateResult?.output}
-                        className="mt-2 max-h-96 overflow-auto"
-                      />
-                    </div>
+                    <CostOptimizerOutputPreviewPanel
+                      title="A baseline 출력"
+                      value={activeBaselineOutput}
+                      usage={
+                        selectedHistoryRow || baseline
+                          ? {
+                              cost: baselineCost,
+                              total_tokens: baselineTotalTokens,
+                              latency_ms: activeBaselineLatency,
+                            }
+                          : undefined
+                      }
+                    />
+                    <CostOptimizerOutputPreviewPanel
+                      title="B candidate 출력"
+                      value={activeCandidateOutput}
+                      usage={activeCandidateUsage}
+                    />
                   </div>
                 </section>
               </>
             ) : null}
 
             <div className="grid min-h-0 flex-1 gap-4">
-              <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <aside className="min-h-[800px] overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-emerald-600" />
                   <h3 className="text-sm font-bold">Inspector</h3>
@@ -2190,7 +2399,7 @@ export default function CostOptimizerPlaygroundPage() {
                         <div className="flex justify-between gap-3">
                           <dt className="text-slate-500">모델</dt>
                           <dd className="font-semibold">
-                            {baseline?.model || '-'}
+                            {activeBaselineModel}
                           </dd>
                         </div>
                         <div className="flex justify-between gap-3">
@@ -2266,7 +2475,7 @@ export default function CostOptimizerPlaygroundPage() {
                             모델 차이
                           </dt>
                           <dd className="font-semibold">
-                            {baseline?.model || '-'} →{' '}
+                            {activeBaselineModel} →{' '}
                             {candidate.model_id || '-'}
                           </dd>
                         </div>
@@ -2309,7 +2518,7 @@ export default function CostOptimizerPlaygroundPage() {
                           </dt>
                           <dd className="font-semibold">
                             {formatMetricDiff(
-                              baseline?.cost,
+                              baselineCost,
                               candidateTotalCost,
                               formatCost,
                             )}
@@ -2321,7 +2530,7 @@ export default function CostOptimizerPlaygroundPage() {
                           </dt>
                           <dd className="font-semibold">
                             {formatMetricDiff(
-                              baseline?.total_tokens,
+                              baselineTotalTokens,
                               candidateTotalTokens,
                               (value) => formatMetric(value),
                             )}
@@ -2333,7 +2542,7 @@ export default function CostOptimizerPlaygroundPage() {
                           </dt>
                           <dd className="font-semibold">
                             {formatMetricDiff(
-                              baselineLatency,
+                              activeBaselineLatency,
                               candidateLatency,
                               formatLatency,
                             )}
