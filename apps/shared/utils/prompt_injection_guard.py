@@ -44,6 +44,36 @@ _SUSPICIOUS_LINE_PATTERNS = [
 ]
 
 _REDACTED_LINE = "[REDACTED: possible prompt injection]"
+_REDACTED_SECRET = "[REDACTED: sensitive value]"
+_TRUNCATED_VALUE = "[TRUNCATED]"
+_MAX_STRUCTURED_DEPTH = 4
+_MAX_STRUCTURED_ITEMS = 50
+_MAX_STRUCTURED_STRING_CHARS = 4000
+
+_SENSITIVE_KEY_PARTS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "credentials",
+    "encrypted_config",
+    "key",
+    "password",
+    "raw_body",
+    "raw_content",
+    "raw_payload",
+    "raw_response",
+    "refresh_token",
+    "secret",
+    "set_cookie",
+    "token",
+}
+
+_SECRET_VALUE_PATTERNS = [
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b"),
+    re.compile(r"(?i)\b(?:sk|pk|rk|api)[-_][A-Za-z0-9_-]{8,}\b"),
+]
 
 
 def _looks_like_instruction(line: str) -> bool:
@@ -63,6 +93,8 @@ def sanitize_untrusted_text(text: str, max_chars: int = 0) -> Tuple[str, int]:
         return "", 0
 
     cleaned = _CONTROL_CHARS_RE.sub(" ", text)
+    for pattern in _SECRET_VALUE_PATTERNS:
+        cleaned = pattern.sub(_REDACTED_SECRET, cleaned)
     redacted_lines = 0
     safe_lines = []
 
@@ -81,16 +113,88 @@ def sanitize_untrusted_text(text: str, max_chars: int = 0) -> Tuple[str, int]:
     return sanitized, redacted_lines
 
 
-def stringify_untrusted_value(value: Any) -> str:
+def _sensitive_key_path(key_path: str | None) -> bool:
+    if not key_path:
+        return False
+
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key_path)
+    parts = [
+        part.strip("_").lower()
+        for part in re.split(r"[^A-Za-z0-9_]+", normalized)
+        if part.strip("_")
+    ]
+    for part in parts:
+        if part in _SENSITIVE_KEY_PARTS:
+            return True
+        if any(
+            part.startswith(f"{sensitive}_") or part.endswith(f"_{sensitive}")
+            for sensitive in _SENSITIVE_KEY_PARTS
+        ):
+            return True
+    return False
+
+
+def _sanitize_structured_value(
+    value: Any,
+    *,
+    key_path: str | None = None,
+    depth: int = _MAX_STRUCTURED_DEPTH,
+) -> Any:
+    if _sensitive_key_path(key_path):
+        return _REDACTED_SECRET
+    if value is None:
+        return None
+    if depth <= 0:
+        return _TRUNCATED_VALUE
+    if isinstance(value, str):
+        sanitized, _redacted_count = sanitize_untrusted_text(value)
+        if len(sanitized) > _MAX_STRUCTURED_STRING_CHARS:
+            return sanitized[:_MAX_STRUCTURED_STRING_CHARS] + "\n[TRUNCATED]"
+        return sanitized
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for index, (key, child) in enumerate(value.items()):
+            if index >= _MAX_STRUCTURED_ITEMS:
+                sanitized["__truncated__"] = True
+                break
+            key_text = str(key)
+            child_path = f"{key_path}.{key_text}" if key_path else key_text
+            sanitized[key_text] = _sanitize_structured_value(
+                child,
+                key_path=child_path,
+                depth=depth - 1,
+            )
+        return sanitized
+    if isinstance(value, (list, tuple, set)):
+        result = [
+            _sanitize_structured_value(
+                child,
+                key_path=key_path,
+                depth=depth - 1,
+            )
+            for child in list(value)[:_MAX_STRUCTURED_ITEMS]
+        ]
+        if len(value) > _MAX_STRUCTURED_ITEMS:
+            result.append(_TRUNCATED_VALUE)
+        return result
+    return str(value)
+
+
+def stringify_untrusted_value(value: Any, *, key_path: str | None = None) -> str:
     """노드 출력처럼 타입이 정해지지 않은 값을 LLM context용 텍스트로 안전하게 직렬화한다."""
     if value is None:
         return ""
-    if isinstance(value, str):
-        return value
+    sanitized_value = _sanitize_structured_value(value, key_path=key_path)
+    if sanitized_value is None:
+        return ""
+    if isinstance(sanitized_value, str):
+        return sanitized_value
     try:
-        return json.dumps(value, ensure_ascii=False, default=str)
+        return json.dumps(sanitized_value, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
-        return str(value)
+        return str(sanitized_value)
 
 
 def build_untrusted_context_block(

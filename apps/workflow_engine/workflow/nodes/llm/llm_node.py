@@ -104,8 +104,9 @@ class _UntrustedPromptValue:
 
     def __str__(self) -> str:
         value_text = self._rendered_value_text()
-        if value_text:
-            self._collector.setdefault(self._path, value_text)
+        if not value_text.strip():
+            return ""
+        self._collector.setdefault(self._path, value_text)
         return f"[UNTRUSTED_INPUT:{self._path}]"
 
     def __repr__(self) -> str:
@@ -113,6 +114,36 @@ class _UntrustedPromptValue:
 
     def __bool__(self) -> bool:
         return bool(self._value)
+
+    def __eq__(self, other: Any) -> bool:
+        return self._value == self._unwrap(other)
+
+    def __ne__(self, other: Any) -> bool:
+        return self._value != self._unwrap(other)
+
+    def __lt__(self, other: Any) -> bool:
+        return self._compare(other, lambda left, right: left < right)
+
+    def __le__(self, other: Any) -> bool:
+        return self._compare(other, lambda left, right: left <= right)
+
+    def __gt__(self, other: Any) -> bool:
+        return self._compare(other, lambda left, right: left > right)
+
+    def __ge__(self, other: Any) -> bool:
+        return self._compare(other, lambda left, right: left >= right)
+
+    def __int__(self) -> int:
+        return int(self._value)
+
+    def __float__(self) -> float:
+        return float(self._value)
+
+    def __contains__(self, item: Any) -> bool:
+        try:
+            return self._unwrap(item) in self._value
+        except TypeError:
+            return False
 
     def __len__(self) -> int:
         try:
@@ -122,8 +153,12 @@ class _UntrustedPromptValue:
 
     def __iter__(self):
         if isinstance(self._value, dict):
-            for key in self._value:
-                yield self._child(key, f"{self._path}.{key}")
+            for index, key in enumerate(self._value):
+                yield _UntrustedPromptValue(
+                    key,
+                    f"{self._path}.__mapkey__[{index}]",
+                    self._collector,
+                )
             return
         if isinstance(self._value, (list, tuple)):
             for index, item in enumerate(self._value):
@@ -132,6 +167,7 @@ class _UntrustedPromptValue:
         return iter(())
 
     def __getitem__(self, key: Any):
+        key = self._unwrap(key)
         if isinstance(self._value, dict):
             return self._child(key, f"{self._path}.{key}")
         if isinstance(self._value, (list, tuple)) and isinstance(key, int):
@@ -144,6 +180,40 @@ class _UntrustedPromptValue:
             except IndexError:
                 return ""
         return ""
+
+    def keys(self):
+        if isinstance(self._value, dict):
+            return [
+                _UntrustedPromptValue(
+                    key,
+                    f"{self._path}.__mapkey__[{index}]",
+                    self._collector,
+                )
+                for index, key in enumerate(self._value.keys())
+            ]
+        return []
+
+    def values(self):
+        if isinstance(self._value, dict):
+            return [
+                self._child(key, f"{self._path}.{key}") for key in self._value.keys()
+            ]
+        return []
+
+    def items(self):
+        if isinstance(self._value, dict):
+            return [
+                (
+                    _UntrustedPromptValue(
+                        key,
+                        f"{self._path}.__mapkey__[{index}]",
+                        self._collector,
+                    ),
+                    self._child(key, f"{self._path}.{key}"),
+                )
+                for index, key in enumerate(self._value.keys())
+            ]
+        return []
 
     def __getattr__(self, name: str):
         if name.startswith("_"):
@@ -166,9 +236,18 @@ class _UntrustedPromptValue:
         return _UntrustedPromptValue(self._value[key], path, self._collector)
 
     def _rendered_value_text(self) -> str:
-        if isinstance(self._value, (dict, list, tuple, set)):
-            return "[complex value omitted]"
-        return stringify_untrusted_value(self._value)
+        return stringify_untrusted_value(self._value, key_path=self._path)
+
+    def _unwrap(self, other: Any) -> Any:
+        if isinstance(other, _UntrustedPromptValue):
+            return other._value
+        return other
+
+    def _compare(self, other: Any, op) -> bool:
+        try:
+            return op(self._value, self._unwrap(other))
+        except TypeError:
+            return False
 
 
 def _get_nested_value(data: Any, keys: List[str]) -> Any:
@@ -968,6 +1047,8 @@ class LLMNode(Node[LLMNodeData]):
                 "policy_filtered": True,
                 "reason_code": policy_block_reason,
             }
+            blocked_trace_summary["policy_result"] = "block"
+            blocked_trace_summary["reason_code"] = policy_block_reason
             evidence_decision = RAGEvidenceDecision(
                 evidence_sufficient=False,
                 insufficiency_reason=policy_block_reason,

@@ -1,6 +1,7 @@
 from apps.shared.utils.prompt_injection_guard import (
     build_untrusted_context_block,
     sanitize_untrusted_text,
+    stringify_untrusted_value,
 )
 
 
@@ -27,3 +28,22 @@ def test_build_untrusted_context_block_delimits_and_redacts_context():
     assert "[REDACTED: possible prompt injection]" in block
     assert "정책 근거" in block
     assert "이전 지시를 무시" not in block
+
+
+def test_stringify_untrusted_value_preserves_structured_evidence_but_redacts_secrets():
+    rendered = stringify_untrusted_value(
+        {
+            "summary": "승인 가능한 지출입니다",
+            "rows": [{"amount": 100, "status": "approved"}],
+            "token": "sk-sensitive-secret",
+            "raw_payload": {"credential": "raw-secret-value"},
+        },
+        key_path="api",
+    )
+
+    assert "승인 가능한 지출입니다" in rendered
+    assert '"amount": 100' in rendered
+    assert '"status": "approved"' in rendered
+    assert "sk-sensitive-secret" not in rendered
+    assert "raw-secret-value" not in rendered
+    assert "[REDACTED: sensitive value]" in rendered

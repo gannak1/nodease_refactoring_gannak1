@@ -311,6 +311,113 @@ def test_llm_node_privileged_prompt_only_sends_rendered_leaf_values():
     assert "raw_payload" not in rendered_prompt
 
 
+def test_llm_node_privileged_prompt_preserves_comparison_and_numeric_semantics():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt=(
+            "{% if status == 'approved' %}APPROVED{% else %}DENIED{% endif %}"
+            "{% if score > 0.5 %}|HIGH{% else %}|LOW{% endif %}"
+            "{% if 'ops' in tags %}|OPS{% endif %}"
+        ),
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="status", value_selector=["start", "status"]),
+            LLMVariable(name="score", value_selector=["start", "score"]),
+            LLMVariable(name="tags", value_selector=["start", "tags"]),
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute(
+        {
+            "start": {
+                "status": "approved",
+                "score": 0.75,
+                "tags": ["hr", "ops"],
+            }
+        }
+    )
+
+    system_content = dummy_client.calls[0]["messages"][0]["content"]
+    assert "APPROVED|HIGH|OPS" in system_content
+    assert "[UNTRUSTED_INPUT:status]" not in system_content
+    assert "[UNTRUSTED_INPUT:score]" not in system_content
+    assert "[UNTRUSTED_INPUT:tags]" not in system_content
+
+
+def test_llm_node_privileged_prompt_renders_empty_upstream_as_empty_string():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="Answer as {{ persona }}. Optional={{ missing }}.",
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="persona", value_selector=["start", "persona"]),
+            LLMVariable(name="missing", value_selector=["start", "missing"]),
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute({"start": {"persona": None}})
+
+    rendered_prompt = "\n".join(
+        message["content"] for message in dummy_client.calls[0]["messages"]
+    )
+    assert "Answer as . Optional=." in rendered_prompt
+    assert "[UNTRUSTED_INPUT:persona]" not in rendered_prompt
+    assert "[UNTRUSTED_INPUT:missing]" not in rendered_prompt
+    assert "UPSTREAM_SYSTEM_INPUT" not in rendered_prompt
+
+
+def test_llm_node_privileged_prompt_preserves_direct_structured_evidence_safely():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="payload={{ api }}",
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="api", value_selector=["api_node", "payload"])
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute(
+        {
+            "api_node": {
+                "payload": {
+                    "summary": "승인 가능한 지출입니다",
+                    "rows": [{"amount": 100, "status": "approved"}],
+                    "token": "sk-direct-secret-value",
+                    "raw_payload": {"credential": "raw-secret-value"},
+                },
+            }
+        }
+    )
+
+    messages = dummy_client.calls[0]["messages"]
+    assert "payload=[UNTRUSTED_INPUT:api]" in messages[0]["content"]
+    rendered_prompt = "\n".join(message["content"] for message in messages)
+    assert "승인 가능한 지출입니다" in rendered_prompt
+    assert '"amount": 100' in rendered_prompt
+    assert '"status": "approved"' in rendered_prompt
+    assert "sk-direct-secret-value" not in rendered_prompt
+    assert "raw-secret-value" not in rendered_prompt
+    assert "[REDACTED: sensitive value]" in rendered_prompt
+
+
 def test_llm_node_privileged_prompt_preserves_jinja_control_types():
     dummy_client = DummyClient()
     data = LLMNodeData(
@@ -1509,10 +1616,19 @@ def test_llm_node_rag_pii_evidence_blocks_llm_context(monkeypatch):
     assert str(kb_id) not in str(result.trace_summary)
     assert result.trace_summary["retrieved_chunk_count"] == 0
     assert result.trace_summary["selected_kb_count"] == 0
+    assert result.trace_summary["policy_result"] == "block"
+    assert result.trace_summary["reason_code"] == "pii_policy_blocked"
     assert result.trace_summary["safe_exclusion_summary"] == {
         "policy_filtered": True,
         "reason_code": "pii_policy_blocked",
     }
+    trace_payload = node._rag_retrieval_trace_payload(  # noqa: SLF001 - trace 계약 회귀 테스트
+        result.metadata,
+        evidence_decision=result.evidence_decision,
+        runtime_summary=result.trace_summary,
+    )
+    assert trace_payload["policy_result"] == "block"
+    assert trace_payload["reason_code"] == "pii_policy_blocked"
     assert policy_block_calls[0]["kwargs"] == {"reason_code": "pii_policy_blocked"}
 
 
