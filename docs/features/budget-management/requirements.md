@@ -7,7 +7,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 
 관리자가 workflow 단위 월간 LLM 예산을 설정/수정하고, 설정된 예산 대비 당월 사용률을 조회하며, 예산을 초과한 workflow의 실행을 서버에서 차단하는 기능을 제공한다. [PRD](../../PRD.md)의 FR-051(예산 설정/수정)과 FR-052(내 워크플로우 예산 사용률 표시)를 담당하고, [admin-dashboard](../admin-dashboard/requirements.md) FR-015(예산 위험 workflow 요약)의 예산 데이터 원천이다.
 
-현재 코드에는 예산 개념이 없다. 비용 원천은 이미 축적되는 `llm_usage_logs.total_cost`이며, 이 feature는 그 위에 예산 저장 구조, 판정/조회 표면, 실행 차단 경계를 추가한다.
+기존 Moduly 코드에는 예산 개념이 없었고, 이 feature는 이미 축적되는 `llm_usage_logs.total_cost` 위에 예산 저장 구조, 판정/조회 표면, 실행 차단 경계를 추가한다.
 
 ## User Stories
 
@@ -36,7 +36,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 
 - BGT-REQ-020: 관리자 workflow 사용량 조회(`GET /admin/usage/workflows`) 응답 항목에 예산 블록(예산 금액, 당월 비용, 사용률, 상태)을 포함한다. 예산 블록은 조회 기간 필터와 무관하게 항상 당월(KST) 기준으로 계산한다. 활성 예산이 없는 workflow는 null이다.
 - BGT-REQ-021: admin summary(`GET /admin/summary`)의 `budget` 블록을 실제 예산 데이터 기준으로 반환한다. `at_risk_count`, `exceeded_count`, `ratio`를 포함하고, `ratio`의 분모는 조직의 활성 예산 workflow 수다 (admin-dashboard Open Question 확정). 활성 예산 workflow가 0개면 `budget`은 null이다 ("예산 미설정" 표시).
-- BGT-REQ-022: 내 워크플로우 목록 원천인 `GET /apps` 응답 항목에 additive 필드 `budget_status`(사용률, 상태)를 추가한다. App의 primary workflow(`apps.workflow_id`) 기준이며, 활성 예산이 없으면 null이다. 예산 금액은 관리자 표면에만 노출하고 member 표면(`budget_status`)에는 사용률과 상태만 노출한다.
+- BGT-REQ-022: 내 워크플로우 목록/운영 현황 원천인 `GET /apps` 및 `GET /apps/operations`의 App summary에 additive 필드 `budget_status`(사용률, 상태)를 추가한다. App의 primary workflow(`apps.workflow_id`) 기준이며, 활성 예산이 없으면 null이다. 예산 금액은 관리자 표면에만 노출하고 member 표면(`budget_status`)에는 사용률과 상태만 노출한다.
 
 ### 실행 차단
 

@@ -1,11 +1,11 @@
 # Budget Management API Spec
 
 Status: Draft
-Verified Against: dev @ d7e7b7a
+Verified Against: TBD
 
 예산 관리 전용 API는 admin-dashboard와 같은 `/api/v1/admin/*` prefix를 사용한다. 모든 admin endpoint는 인증과 `X-Organization-Id` header를 요구하고, 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)).
 
-기존 API 확장(`GET /admin/usage/workflows`, `GET /admin/summary`, `GET /apps`)과 실행 차단 응답도 이 문서에서 정의한다. 구현 시 [admin-dashboard api_spec](../admin-dashboard/api_spec.md)과 [app-management api_spec](../app-management/api_spec.md)의 해당 응답 정의를 함께 갱신한다.
+기존 API 확장(`GET /admin/usage/workflows`, `GET /admin/summary`, `GET /apps`, `GET /apps/operations`)과 실행 차단 응답도 이 문서에서 정의한다. [admin-dashboard api_spec](../admin-dashboard/api_spec.md)과 [app-management api_spec](../app-management/api_spec.md)의 해당 응답 정의도 같은 계약을 따른다.
 
 ## Endpoints
 
@@ -142,9 +142,9 @@ Side effects:
 - `ratio` = (`at_risk_count` + `exceeded_count`) / `budgeted_workflow_count`.
 - 활성 예산 workflow가 0개면 `budget`은 null이다 (클라이언트는 "예산 미설정" 표시, BGT-REQ-021).
 
-### GET /apps (확장)
+### GET /apps, GET /apps/operations (확장)
 
-내 워크플로우 목록 원천인 기존 `AppResponse` 항목에 additive 필드 `budget_status`를 추가한다.
+내 워크플로우 목록/운영 현황 원천인 기존 `AppResponse` 또는 operations row의 `app` summary에 additive 필드 `budget_status`를 추가한다.
 
 ```json
 {
@@ -159,6 +159,7 @@ Side effects:
 - App의 primary workflow(`apps.workflow_id`) 기준이다. 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
 - member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022).
 - 목록 전체의 사용률 계산은 workflow별 당월 집계를 한 번의 grouped query로 조회한다 (N+1 금지).
+- `/dashboard/mymodule`은 `GET /apps/operations`의 `app.budget_status`를 사용한다.
 
 ## 실행 차단 응답
 

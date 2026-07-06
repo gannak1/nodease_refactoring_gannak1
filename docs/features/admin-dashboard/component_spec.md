@@ -1,7 +1,7 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: feature/mba-129 @ 4cceb58
+Verified Against: feature/mba-132 @ a843ec7
 
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
@@ -33,7 +33,9 @@ Verified Against: feature/mba-129 @ 4cceb58
 
 - 기존 `DashboardSummaryCard`를 재사용한 카드 2장: "이번 달 LLM 비용", "예산 위험 workflow".
 - 비용은 USD 소수점 2자리로 표시한다 (표시 직전 1회 반올림).
-- 예산 카드가 의존하는 판정/분모는 [budget-management](../budget-management/requirements.md)(PRD FR-051)를 따른다. API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
+- 예산 카드가 의존하는 판정/분모는 [budget-management](../budget-management/requirements.md)(PRD FR-051)를 따른다.
+- API의 `budget` 블록이 있으면 비율을 정수 %로 표시하고, 보조 문구에 `위험 <n> · 초과 <n> · 예산 설정 <n>개`를 표시한다.
+- API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
 - 데이터 원천: `GET /admin/summary`.
 
 ### AuditSearchTab (FR-011)
@@ -72,9 +74,10 @@ Verified Against: feature/mba-129 @ 4cceb58
 ### UsageTab (FR-012)
 
 - 기간 필터: 기본 이번 달(KST), `startAt`/`endAt` 지정 가능.
-- 테이블 컬럼: workflow 이름, 호출 수, prompt/completion tokens, 비용(USD 2자리). 비용 내림차순 고정 정렬.
+- 테이블 컬럼: workflow 이름, 호출 수, prompt/completion tokens, 비용(USD 2자리), 예산. 비용 내림차순 고정 정렬.
+- 예산 컬럼은 활성 예산이 있으면 예산 금액(USD 2자리), 사용률(%), 상태 배지(`BudgetStatusBadge`)를 표시한다. `budget` null이면 "미설정"을 표시한다.
+- 모든 행에 `예산 설정` 버튼을 제공하고, 클릭 시 `BudgetEditModal`을 열어 `GET/PUT /admin/workflow-budgets/{workflow_id}`로 조회/저장한다. 저장 성공 시 비용 목록과 요약 카드를 다시 조회한다.
 - 행에 해당 workflow로 이동하는 링크/버튼을 둔다 — 비용 최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/component_spec.md) 범위이며 이 탭은 진입만 제공한다.
-- workflow별 예산 사용률 컬럼은 예산 feature 확정 후 추가한다.
 - 데이터 원천: `GET /admin/usage/workflows`.
 
 ## States

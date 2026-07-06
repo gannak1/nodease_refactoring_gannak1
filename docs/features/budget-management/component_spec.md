@@ -1,7 +1,7 @@
 # Budget Management Component Spec
 
 Status: Draft
-Verified Against: dev @ d7e7b7a
+Verified Against: feature/mba-132 @ a843ec7
 
 새 화면을 만들지 않고 기존 화면 세 곳을 확장한다. 프론트의 예산 표시/차단은 UX 보조이며 최종 차단은 Gateway가 수행한다 (NFR-001).
 
@@ -20,12 +20,12 @@ Verified Against: dev @ d7e7b7a
 - 예산 컬럼: 활성 예산이 없으면(`budget` null) "미설정"과 예산 설정 버튼만 표시한다.
 - 예산 설정 버튼 → `BudgetEditModal` 열림.
 
-### `/dashboard` — 내 워크플로우 목록 (FR-052)
+### `/dashboard/mymodule` — 내 워크플로우 목록 (FR-052)
 
-기존 workflow 목록(`apps/client/app/dashboard/page.tsx`, 원천 `GET /apps`)의 각 row를 확장한다.
+기존 내 모듈 운영 목록(`apps/client/app/dashboard/mymodule/page.tsx`, 원천 `GET /apps/operations`)의 각 row를 확장한다.
 
 - `budget_status`가 있으면 사용률(%)과 상태 배지(`BudgetStatusBadge`)를 표시한다. null이면 아무것도 표시하지 않는다 (기존 레이아웃 유지).
-- `status`가 `exceeded`면 해당 row의 실행 진입(실행 버튼/링크)에 disabled 상태와 "월 예산 초과로 실행이 차단되었습니다" tooltip을 표시한다. 편집/조회 진입은 차단하지 않는다.
+- `status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시와 "월 예산 초과로 실행이 차단되었습니다" tooltip을 표시한다. 현재 `/dashboard/mymodule`에는 별도 실행 버튼이 없으므로 편집/조회 진입은 차단하지 않는다.
 - member 표면이므로 예산 금액은 표시하지 않는다 (BGT-REQ-022). 사용률과 상태만 표시한다.
 
 ### Workflow 편집 화면 — 테스트 실행
@@ -61,7 +61,7 @@ Verified Against: dev @ d7e7b7a
 - 예산 설정 API의 403(owner/manager 아님)은 안내 문구로 처리한다. UI 노출 제어(비용 탭 자체가 owner/manager 전용)가 선행하지만 서버 응답 처리도 유지한다.
 - 429 `budget.exceeded` 처리 후에도 다른 실행 오류 처리(기존 timeout/500 처리)는 그대로 유지한다.
 
-## 갱신이 필요한 기존 문서
+## 관련 기존 문서
 
-- [admin-dashboard component_spec](../admin-dashboard/component_spec.md): `AdminSummaryCards`의 예산 카드 "확정 종속" 문구를 실데이터 기준으로 갱신, 비용 탭 예산 컬럼 반영.
-- [app-management component_spec](../app-management/component_spec.md): 내 워크플로우 목록 row 확장 반영 (구현 시 확인).
+- [admin-dashboard component_spec](../admin-dashboard/component_spec.md): `AdminSummaryCards` 실데이터 표시와 비용 탭 예산 컬럼을 함께 정의한다.
+- [app-management component_spec](../app-management/component_spec.md): 내 워크플로우 목록 row의 예산 상태 표시를 함께 정의한다.

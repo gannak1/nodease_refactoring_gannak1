@@ -1,7 +1,7 @@
 # Admin Dashboard API Spec
 
 Status: Draft
-Verified Against: feature/mba-129 @ 4cceb58
+Verified Against: feature/mba-132 @ a843ec7
 
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.
 
@@ -79,7 +79,13 @@ Response `200`:
       "prompt_tokens": 12345,
       "completion_tokens": 2345,
       "call_count": 87,
-      "total_cost": 12.345678
+      "total_cost": 12.345678,
+      "budget": {
+        "monthly_budget_usd": 100.0,
+        "current_month_cost": 92.345678,
+        "usage_ratio": 0.923457,
+        "status": "at_risk"
+      }
     }
   ]
 }
@@ -89,7 +95,7 @@ Response `200`:
 - `total_cost`가 NULL인 row는 0으로 합산한다.
 - `workflow_name`은 `workflows.app_id`로 연결된 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
 - 항목에서 해당 workflow 화면으로 이동하는 진입은 클라이언트 라우팅이며, 비교/최적화 실행 API는 [cost-optimizer](../cost-optimizer/api_spec.md) 범위다.
-- workflow별 예산/사용률 필드는 [budget-management api_spec](../budget-management/api_spec.md)의 `budget` 블록 정의를 따라 추가한다 (예산 feature 구현 시).
+- workflow별 예산/사용률 필드는 [budget-management api_spec](../budget-management/api_spec.md)의 `budget` 블록 정의를 따른다. 활성 예산이 없으면 `budget`은 null이다.
 
 ### GET /admin/summary
 
@@ -102,14 +108,15 @@ Response `200`:
   "month": "2026-07",
   "total_cost": 123.456789,
   "budget": {
-    "at_risk_count": 0,
-    "exceeded_count": 0,
-    "ratio": 0.0
+    "budgeted_workflow_count": 5,
+    "at_risk_count": 1,
+    "exceeded_count": 1,
+    "ratio": 0.4
   }
 }
 ```
 
-- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 예산 feature 구현 전까지는 `budget`을 null로 반환한다.
+- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 활성 예산 workflow가 0개면 `budget`은 null이다.
 - 부적절한 접근/행동 탐지 건수 필드는 FR-013 복원 시 추가한다 (후순위).
 
 ### GET /admin/permission-requests
