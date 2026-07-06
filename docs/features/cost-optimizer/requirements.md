@@ -64,7 +64,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 통과` | 모델, fallback 모델, task type, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. |
 | FR-004 | 동일 입력 기준 비교 | P1 | `구현 완료` | `테스트 통과` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
 | FR-005 | 하이브리드 비교 | P1 | `구현 완료` | `테스트 통과` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
-| FR-006 | A/B 비교 화면 | P1 | `구현 완료` | `테스트 통과` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교한다. |
+| FR-006 | A/B 비교 화면 | P1 | `구현 완료` | `테스트 통과` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교하고, 결과 분석 화면에서 B 후보를 현재 노드에 적용해도 되는지 판단 요약을 제공한다. |
 | FR-007 | Downstream 호환성 검증 | P1 | `구현 완료` | `테스트 통과` | baseline graph와 현재 graph의 downstream 호환성을 3상태로 판정하고 결과 분석 화면에 표시한다. warning/incompatible 후보는 적용 전 사용자 확인이 필요하다. |
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
@@ -182,6 +182,21 @@ B 후보 설정 validation은 두 단계로 처리한다. 프론트는 명백히
 
 후보를 실행하면 비교 리포트가 생성된다. 사용자는 리포트에서 A baseline과 B candidate의 출력, 비용, 토큰, latency, schema 검증 상태, retrieval summary, downstream 호환성 상태를 확인한 뒤 B 설정을 적용할지 결정한다.
 
+결과 분석 화면은 단순히 A/B 값을 나열하는 화면이 아니라, B 후보를 현재 LLM 노드에 적용해도 되는지 판단하게 하는 화면이어야 한다. 따라서 결과 분석 화면은 다음 정보를 우선순위 있게 보여준다.
+
+1. 적용 판단 요약
+2. 핵심 지표 비교
+3. A/B 출력 품질 비교
+4. 설정 차이, trace, downstream 영향 같은 상세 근거
+
+적용 판단 요약은 다음 3상태 중 하나로 표시한다.
+
+- `적용 후보로 적합`: B 실행이 성공했고, schema/downstream 치명 문제가 없으며 비용 또는 토큰 개선이 확인되는 상태다.
+- `주의 필요`: B 실행은 성공했지만 latency 증가, 비용 증가, schema 경고, downstream warning처럼 적용 전 확인이 필요한 상태다.
+- `적용 비추천`: B 실행 실패, schema 실패, downstream incompatible, 비용/토큰 악화만 확인되는 상태다.
+
+판단 요약은 비용만으로 결정하지 않는다. 비용/토큰/latency 변화, schema 검증 상태, downstream 호환성, B 실행 상태를 함께 고려한다.
+
 비교 실행은 일회성 응답으로만 버리지 않는다. B 후보 실행은 LLM 비용을 발생시키므로 비교 실행 기록, 후보 설정, 사용량, schema 검증 결과, retrieval summary, downstream 호환성 상태를 추적 가능하게 저장해야 한다.
 
 자동 모델 추천, 모델 라우팅, RAG strategy 비교, Knowledge Skill version 비교는 1차 구현의 필수 범위는 아니지만 후속 확장 후보로 둔다.
@@ -219,7 +234,7 @@ A/B 비교 화면은 baseline A와 candidate B를 나란히 비교할 수 있어
 
 비교 루프는 클릭 수가 많지 않아야 한다. 사용자가 B 실행 결과를 확인한 뒤 모델, prompt, schema, Knowledge/RAG, 고급 파라미터를 수정하고 다시 실행하는 흐름은 같은 화면 안에서 이어져야 한다. B 후보 설정을 수정할 때마다 화면을 닫거나 baseline을 다시 선택하게 해서는 안 된다.
 
-기본 레이아웃은 3개 영역으로 구성한다.
+실험 설정 화면의 기본 레이아웃은 3개 영역으로 구성한다.
 
 - 왼쪽: A baseline
 - 가운데: B candidate
@@ -240,6 +255,14 @@ Inspector에는 다음 정보를 표시할 수 있어야 한다.
 
 기존 고급 설정, 지식 베이스 설정, 비교 설정은 A/B 화면 안의 상단 탭 또는 Inspector 탭으로 접근할 수 있어야 한다. 별도 패널을 계속 중첩해서 열어 화면이 복잡해지지 않게 한다.
 
+결과 분석 화면은 다음 순서로 구성한다.
+
+1. `이전 실험 이력`: 같은 baseline 기준 B 후보 실행 이력을 상단 dense table로 표시하고 분석 대상을 선택한다.
+2. `판단 요약`: 적용 후보로 적합, 주의 필요, 적용 비추천 중 하나와 그 이유를 표시한다.
+3. `핵심 지표 비교`: 비용, prompt tokens, completion tokens, total tokens, latency, 실행 상태, schema, downstream을 A/B/변화값으로 비교한다.
+4. `출력 품질 비교`: A 출력과 B 출력을 나란히 보여주고, JSON/schema가 있으면 필수 필드 충족 여부와 누락/타입 문제를 확인할 수 있게 한다.
+5. `상세 Inspector`: 설정 차이, 근거/trace, 후속 노드 영향을 탭으로 제공한다.
+
 각 후보 결과에는 다음 항목을 표시해야 한다.
 
 - 후보 이름
@@ -253,7 +276,7 @@ Inspector에는 다음 정보를 표시할 수 있어야 한다.
 - latency
 - error message
 
-비용이 낮더라도 출력 결과가 부적절하면 사용자가 선택하지 않을 수 있어야 한다.
+비용이 낮더라도 출력 결과가 부적절하면 사용자가 선택하지 않을 수 있어야 한다. 결과 분석 화면은 비용 절감 결과와 품질/호환성 위험을 분리해서 보여줘야 한다.
 
 현재 구현은 Cost Optimizer 전용 workspace에서 B 후보 실행 결과를 A baseline과 비교해 표시한다. 결과 분석 화면은 후보별 출력, 비용, 토큰, latency, schema 검증 상태, retrieval summary, downstream 호환성 상태를 함께 보여준다.
 

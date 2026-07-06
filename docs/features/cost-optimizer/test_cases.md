@@ -19,7 +19,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 | FR-003 | Candidate editor | POST compare request candidate schema | B 후보 설정 입력과 검증 | 작성 완료 | 통과 |
 | FR-004 | Baseline input lock display | baseline input 고정 | B 실행 입력이 A baseline 입력으로 고정됨 | 작성 완료 | 통과 |
 | FR-005 | Hybrid compare flow | POST compare | A는 재실행하지 않고 B만 실행 | 작성 완료 | 통과 |
-| FR-006 | A/B compare workspace, Inspector | compare response trace/diff | A/B 결과와 Inspector 데이터 표시 | 작성 완료 | 통과 |
+| FR-006 | A/B compare workspace, result analysis, Inspector | compare response trace/diff | A/B 결과, 적용 판단 요약, 핵심 지표 비교, Inspector 데이터 표시 | 작성 완료 | 통과 |
 | FR-007 | Downstream compatibility badge | downstream compatibility fragment | downstream 호환성 3상태 표시와 차단/경고 | 작성 완료 | 통과 |
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
@@ -46,7 +46,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 | FR-005 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | A 고정, B running/result 상태 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | 통과 |
 | FR-005 | Frontend API client | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-compare-api-client.test.ts` | compare API path와 request body 계약 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr4-fr5-compare-api-client.test.ts` | 통과 |
 | FR-005 | Gateway service/API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | A 미재실행, B만 실행 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-006 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 실험 설정/결과 분석 mode switch, stale 안내, Inspector 탭, schema 검증 결과, A/B retrieval summary 표시, 직접 URL 진입 권한 차단 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
+| FR-006 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 실험 설정/결과 분석 mode switch, stale 안내, 적용 판단 요약, 핵심 지표 비교, Inspector 탭, schema 검증 결과, A/B retrieval summary 표시, 직접 URL 진입 권한 차단 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-006 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | compare response shape, safe trace, RAG raw content/source metadata redaction, 비용/토큰/latency diff, 실패 후보 response | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-007 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr7-downstream-compatibility.test.tsx` | compare 응답의 downstream 3상태 라벨, 설명, 검사 노드 표시 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr7-downstream-compatibility.test.tsx` | 통과 |
 | FR-007 | Gateway service/API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | compatible/warning/incompatible 판정, `variableExtractionNode`/`conditionNode`/`answerNode`/`slackPostNode` 직접 소비 노드 contract 검사, compare response 연결 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
@@ -204,7 +204,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 
 - `POST /compare`는 A baseline을 재실행하지 않는다.
 - `POST /compare`는 B candidate 실행 결과와 A baseline summary를 함께 반환한다.
-- B candidate 실행으로 생성된 run/trace는 compare 실행으로 구분할 수 있어야 한다.
+- B candidate 실행으로 생성된 run/trace는 `candidate_workflow_run_id`와 `cost_optimizer_candidate_id`로 compare 실행임을 구분할 수 있어야 하며, baseline 후보 조회에는 다시 포함되지 않아야 한다.
 
 ### Scenario Tests
 
@@ -233,10 +233,22 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 - B 후보 실행 후에도 사용자는 같은 workspace 안에서 B 후보 설정을 수정하고 같은 baseline으로 다시 실행할 수 있다.
 - B 후보 설정이 마지막 실행 이후 변경되면 기존 B 결과는 stale 상태로 표시된다.
 - B 후보의 RAG 비용 최적화 옵션이 마지막 실행 이후 변경되면 기존 B 결과는 stale 상태로 표시된다.
-- 결과 분석 mode의 Inspector는 `A Trace`, `B Trace`, `Diff`, `Downstream`, `Settings` 탭을 제공한다.
-- 결과 분석 mode의 `B Trace` 탭은 B 실행 전에는 disabled 또는 `B 실행 후 trace가 표시됩니다.` empty state이고 B 실행 후 활성화된다.
-- `Diff` 탭은 모델, prompt, parameter, 출력 형식, 비용, 토큰, latency 차이를 표시한다.
-- `Settings` 탭은 기본 설정, 고급 설정, Knowledge/RAG 설정을 구분해 표시하고 고급 파라미터와 RAG 비용 최적화 옵션을 확인할 수 있어야 한다.
+- 결과 분석 mode 상단에는 접기 가능한 `이전 실험 이력` 패널이 표시된다.
+- 이전 실험 이력 패널은 시작일, 종료일, 실행자, 적용 여부, 후보 상태, 모델, Schema 상태, Downstream 상태 필터를 제공한다.
+- 이전 실험 이력은 card list가 아니라 실행 시각, 테스트명, 모델, 비용, 토큰, 시간, Schema, Downstream을 열로 갖는 dense table로 표시된다.
+- 이전 실험 이력 table body는 내부 스크롤을 사용하고 결과 분석 본문을 과도하게 아래로 밀지 않는다.
+- B 후보 실행 후 결과 분석 mode로 이동하면 방금 실행한 후보가 이전 실험 이력 table에서 자동 선택된다.
+- 이전 실험 이력에서 다른 row를 선택하면 아래 결과 분석 본문은 해당 후보 기준으로 갱신된다.
+- 이전 실험 이력 조회에 실패해도 이미 보유한 compare result가 있으면 결과 분석 본문은 유지된다.
+- 결과 분석 mode는 상단에 `적용 후보로 적합`, `주의 필요`, `적용 비추천` 중 하나의 판단 요약을 표시한다.
+- 판단 요약은 비용 변화율, token 변화율, latency 변화, B 실행 상태, schema 검증 상태, downstream 호환성 상태를 근거로 표시한다.
+- 결과 분석 mode는 비용, prompt tokens, completion tokens, total tokens, latency, 실행 상태, schema, downstream을 A/B/변화값 형태로 비교한다.
+- 결과 분석 mode는 A 출력과 B 출력을 나란히 표시하고 긴 값을 임의 truncation하지 않는다.
+- JSON 출력과 schema가 있으면 결과 분석 mode는 필수 field 충족 여부, 누락 field, type mismatch를 표시한다.
+- 결과 분석 mode의 Inspector는 `설정 차이`, `근거/Trace`, `후속 노드 영향` 탭을 제공한다.
+- `설정 차이` 탭은 모델, fallback 모델, task type, prompt, parameter, 출력 형식, JSON schema, Knowledge/RAG 설정 차이를 표시한다.
+- `근거/Trace` 탭은 A/B usage trace와 A/B retrieval summary를 구분해 표시한다.
+- `후속 노드 영향` 탭은 downstream 호환성 상태, 검사 노드, 계약 검증 warning, side-effect node 자동 실행 제외 안내를 표시한다.
 
 ### API Tests
 
@@ -247,7 +259,9 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 
 ### Scenario Tests
 
-- B 실행 성공 후 사용자는 A와 B의 출력, 비용, 토큰, latency를 한 화면에서 비교할 수 있다.
+- B 실행 성공 후 사용자는 A와 B의 출력, 비용, 토큰, latency를 한 화면에서 비교하고 적용 판단 요약을 확인할 수 있다.
+- 비용은 줄었지만 downstream warning이 있으면 결과 분석 화면은 `주의 필요`로 표시한다.
+- B 실행 실패, schema 실패, downstream incompatible 중 하나가 있으면 결과 분석 화면은 `적용 비추천` 또는 그에 준하는 강한 경고를 표시한다.
 - B 실행 실패 후에도 사용자는 A baseline과 실패 사유를 볼 수 있다.
 - 사용자가 B 실행 결과를 본 뒤 prompt 또는 model을 수정하면 workspace를 닫지 않고 같은 baseline으로 재실행할 수 있다.
 - stale 상태의 B 결과는 참고용으로 남지만 현재 후보 설정의 결과가 아니라는 안내를 표시한다.

@@ -80,6 +80,8 @@ Baseline API는 다음 저장소를 조합해 row와 detail을 만든다.
 
 Baseline API는 target LLM node의 `workflow_node_runs.status=success`이고 `output_available=true`, `usage_available=true`인 기록만 반환한다. 실패한 node run, output preview가 없는 node run, usage summary가 없는 node run은 baseline 후보에서 제외하고, 실패 원인 분석이나 불완전한 실행 기록 확인은 workflow 실행 로그/trace API에서 다룬다.
 
+Cost Optimizer의 B 후보 실행은 일반 workflow 실행 로그와 같은 `workflow_runs`/`workflow_node_runs`에 저장되지만, A baseline 후보로 다시 선택되면 안 된다. 따라서 baseline API는 `llm_usage_logs.cost_optimizer_candidate_id`가 있거나 `cost_optimizer_candidates.candidate_workflow_run_id`로 연결된 run을 제외한다.
+
 `trace_payloads` retention, redaction, 저장 누락으로 target LLM node input을 복원할 수 없는 경우에도 baseline row는 목록에 포함한다. 다만 response는 `input_available=false`, `compare_available=false`를 반환하고, compare API는 해당 baseline으로 B 후보 실행을 시작하지 않는다.
 
 ## Persistence Model
@@ -150,7 +152,8 @@ Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로
 
 - A baseline의 실행/입출력/비용 원천은 `workflow_node_runs`, `workflow_runs`, `llm_usage_logs`, `trace_payloads`다.
 - B candidate의 실제 실행/입출력/비용 원천도 동일한 기존 테이블이다.
-- B candidate 실행에서 생성되는 `llm_usage_logs` row는 `cost_optimizer_candidate_id`로 `cost_optimizer_candidates.id`를 직접 참조한다.
+- B candidate 실행에서 생성되는 `workflow_runs.id`는 `cost_optimizer_candidates.candidate_workflow_run_id`로 저장한다. 이 값은 candidate 실행 로그가 최신 baseline 후보로 다시 잡히지 않게 하는 1차 식별자다.
+- B candidate 실행에서 생성되는 `llm_usage_logs` row는 `cost_optimizer_candidate_id`로 `cost_optimizer_candidates.id`를 직접 참조한다. worker 전파가 지연되거나 누락되어도 Gateway는 `candidate_workflow_run_id` 기준으로 usage row를 candidate에 다시 연결한다.
 - `cost_optimizer_experiments`와 `cost_optimizer_candidates`는 원천 로그를 복제하기 위한 테이블이 아니라, baseline과 여러 candidate 실행을 하나의 비교 흐름으로 묶는 메타 저장소다.
 - experiment의 `usage_summary`는 해당 experiment에 속한 candidate 비용만 합산한다. 같은 baseline을 기준으로 여러 experiment가 있으면 baseline 누적 비용은 `baseline_node_run_id`가 같은 experiments를 별도로 합산해 계산한다.
 - raw prompt, credential 원문, API key, encrypted config, secret payload는 두 테이블에 저장하지 않는다.
@@ -584,6 +587,7 @@ Response:
   },
   "candidate": {
     "label": "B",
+    "candidate_workflow_run_id": "uuid",
     "settings": {},
     "output": {},
     "usage": {

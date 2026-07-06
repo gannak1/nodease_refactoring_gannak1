@@ -371,17 +371,93 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 
 화면은 A baseline과 B candidate가 같은 입력 기준이라는 점을 명확히 표시한다.
 
-`결과 분석` mode는 편집 UI보다 비교 리포트 가독성을 우선한다.
+`결과 분석` mode는 편집 UI보다 비교 리포트 가독성과 적용 판단을 우선한다.
 
-- 상단: 비용, 토큰, 모델, 실행 상태 요약
-- 왼쪽: A baseline 결과
-- 가운데: B candidate 결과
-- 오른쪽: Diff, RAG, downstream 분석 요약
-- 액션: `실험 설정으로 돌아가기`, `현재 노드에 적용`
+결과 분석 화면의 정보 구조는 다음 순서를 따른다.
+
+1. 상단 이전 실험 이력 패널
+2. 판단 요약
+3. 핵심 지표 비교
+4. A/B 출력 품질 비교
+5. 상세 Inspector
+6. 액션: `B 설정 다시 수정`, `현재 노드에 적용`
+
+상단 이전 실험 이력 패널은 같은 baseline 기준으로 저장된 B 후보 실행 이력을 다시 확인하고, 분석 대상을 선택하는 영역이다. 결과 분석 화면의 주 콘텐츠는 아래의 선택된 실험 분석이므로, 이력 패널은 세로 공간을 과도하게 차지하면 안 된다.
+
+상단 이전 실험 이력 패널은 다음 구조를 사용한다.
+
+```text
+[이전 실험 이력]                         [접기]
+같은 baseline 기준으로 저장된 B 후보 실행 이력을 다시 확인합니다.
+
+[시작일] [종료일] [실행자] [적용 여부] [후보 상태] [모델] [Schema] [Downstream]
+
+┌──────────────┬──────────────┬───────┬──────┬──────┬────────┬────────┬────────────┐
+│ 실행 시각     │ 테스트명      │ 모델  │ 비용 │ 토큰 │ 시간   │ Schema │ Downstream │
+├──────────────┼──────────────┼───────┼──────┼──────┼────────┼────────┼────────────┤
+│ 07.06 14:22  │ 비용 절감 v2  │ mini  │ ...  │ ...  │ ...    │ 통과   │ 검증 가능  │
+│ 07.06 14:19  │ prompt 축약   │ mini  │ ...  │ ...  │ ...    │ 실패   │ 주의 필요  │
+└──────────────┴──────────────┴───────┴──────┴──────┴────────┴────────┴────────────┘
+```
+
+이전 실험 이력은 card list가 아니라 dense table로 표시한다. 이력은 상세 콘텐츠가 아니라 선택/비교용 목록이므로, 같은 metric이 열 기준으로 정렬되어야 한다. 사용자는 비용, 토큰, latency, schema, downstream 상태를 row 간 빠르게 비교하고 하나의 후보를 선택할 수 있어야 한다.
+
+이력 패널의 높이 정책은 다음을 따른다.
+
+- 기본 상태는 화면 상단의 compact 영역으로 유지한다.
+- 필터와 table을 포함하되, table body는 내부 스크롤을 사용한다.
+- row height는 조밀하게 유지한다.
+- 선택된 row는 배경색 또는 좌측 accent border로 표시한다.
+- 방금 실행한 후보는 자동 선택하고 `방금 실행` 또는 `최신` badge를 표시한다.
+- 이력 패널을 접으면 제목, 선택된 실험 요약, `펼치기` 액션만 남긴다.
+- 이력 조회 실패 시 패널 안에 실패 안내를 표시하되, 이미 보유한 compare result가 있으면 아래 결과 분석은 유지한다.
+
+상단 판단 요약은 B 후보를 현재 노드에 적용해도 되는지 먼저 말해준다. 상태는 다음 3개 라벨을 사용한다.
+
+- `적용 후보로 적합`
+- `주의 필요`
+- `적용 비추천`
+
+판단 요약은 다음 근거를 함께 표시한다.
+
+- 비용 변화율
+- prompt/completion/total token 변화율
+- latency 변화
+- B 실행 상태
+- JSON schema 검증 상태
+- downstream 호환성 상태
+
+핵심 지표 비교는 A/B/변화값을 표 형태로 보여준다.
+
+| 항목 | A baseline | B candidate | 변화 |
+| --- | --- | --- | --- |
+| 비용 | baseline cost | candidate cost | 절감/증가 금액과 비율 |
+| prompt tokens | baseline prompt tokens | candidate prompt tokens | 증감 |
+| completion tokens | baseline completion tokens | candidate completion tokens | 증감 |
+| total tokens | baseline total tokens | candidate total tokens | 증감 |
+| latency | baseline latency | candidate latency | 증감 |
+| 실행 상태 | baseline status | candidate status | 성공/실패 변화 |
+| Schema | baseline 기준 또는 `-` | candidate schema status | 통과/실패/미사용 |
+| Downstream | baseline downstream | current compatibility | 검증 가능/주의 필요/검증 불가 |
+
+출력 품질 비교는 A 출력과 B 출력을 나란히 보여준다.
+
+- text 출력이면 전체 텍스트를 줄바꿈과 내부 스크롤로 표시한다.
+- JSON 출력이면 field 단위로 펼쳐서 볼 수 있어야 한다.
+- JSON schema가 있으면 필수 field 충족 여부, 누락 field, type mismatch를 표시한다.
+- 긴 값은 화면에서 임의로 `...` 처리하지 않는다. 패널 내부 스크롤을 사용한다.
+
+상세 Inspector는 결과를 이해하기 위한 보조 영역이다. 사용자 기준 탭 라벨은 다음을 우선한다.
+
+- `설정 차이`
+- `근거/Trace`
+- `후속 노드 영향`
+
+현재 구현이 내부적으로 `A Trace`, `B Trace`, `Diff`, `Downstream`, `Settings` 같은 탭을 사용하더라도, 사용자에게 노출되는 라벨은 위 의미를 기준으로 정리한다.
 
 B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석이 표시됩니다.` empty state를 표시한다.
 
-결과 분석 화면은 같은 baseline 기준의 이전 실험 이력을 표시한다. 이전 실험 이력 영역은 다음 필터를 제공한다.
+상단 이전 실험 이력 패널은 다음 필터를 제공한다.
 
 - 시작일
 - 종료일
@@ -426,41 +502,43 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 
 관련 FR: FR-006, FR-007, FR-009
 
-Inspector는 A/B 비교를 이해하기 위한 상세 정보 영역이다.
+Inspector는 A/B 비교를 이해하기 위한 상세 정보 영역이다. 결과 분석 화면에서 Inspector는 판단 요약의 근거를 확인하는 보조 영역이어야 하며, 판단 요약보다 먼저 읽혀서는 안 된다.
 
 Inspector는 탭 구조를 사용한다.
 
-- `A Trace`
-- `B Trace`
-- `Diff`
-- `Downstream`
-- `Settings`
+- `설정 차이`
+- `근거/Trace`
+- `후속 노드 영향`
 
-`A Trace`는 baseline 실행의 상세 정보를 보여준다.
+`설정 차이`는 A 실행 시점 옵션과 B candidate 설정의 차이를 보여준다.
+
+- 모델 차이
+- fallback 모델 차이
+- task type 차이
+- prompt 차이
+- parameter 차이
+- 출력 형식 차이
+- JSON schema 차이
+- Knowledge/RAG 설정 차이
+
+`근거/Trace`는 A와 B의 실행 근거를 함께 보여준다.
 
 - input
 - output
 - prompt/messages 요약
 - token/cost/latency breakdown
-- LLM usage trace
-- RAG retrieval summary
+- A/B LLM usage trace
+- A/B RAG retrieval summary
 - error
 
-`B Trace`는 B 후보 실행 후 활성화된다.
+`후속 노드 영향`은 downstream 호환성 상태와 계약 검증 결과를 보여준다.
 
-`Diff`는 A와 B의 차이를 보여준다.
-
-- 모델 차이
-- prompt 차이
-- parameter 차이
-- 출력 형식 차이
-- 비용 차이
-- 토큰 차이
-- latency 차이
-
-`Downstream`은 downstream 호환성 상태와 계약 검증 결과를 보여준다.
-
-`Settings`는 비교 화면 안에서 필요한 고급 설정과 지식 베이스 관련 설정을 확인하거나 편집하는 탭이다. 별도 패널을 중첩해서 열지 않는다.
+- 검증 가능
+- 주의 필요
+- 검증 불가
+- 검사한 downstream node
+- 계약 검증 warning
+- side-effect node 자동 실행 제외 안내
 
 ### Candidate Apply Flow
 
