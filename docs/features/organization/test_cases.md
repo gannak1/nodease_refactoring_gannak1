@@ -91,6 +91,9 @@ Status: Draft
 | ORG-TC-E015 | 초대 알림 overlay는 organization 초대 수락/거절을 처리해야 한다. | `수락`/`거절` 클릭 시 해당 API가 호출되지 않거나 목록을 갱신하지 않는다. | accept/decline 호출 후 `GET /notifications` 재조회. |
 | ORG-TC-E016 | `notifications.changed` SSE event는 알림 목록 재조회를 트리거해야 한다. | event 수신 후 기존 알림 목록이 유지된다. | `GET /notifications` 재호출. |
 | ORG-TC-E017 | notification SSE 응답은 no-buffer header를 내려야 한다. | `X-Accel-Buffering: no` 또는 `Cache-Control: no-transform`이 없다. | `text/event-stream`과 no-buffer header 반환. |
+| ORG-TC-E018 | Sidebar organization switcher는 현재 organization과 소속 구분을 표시해야 한다. | 현재 organization 이름 또는 `내 조직`/`멤버 조직` badge가 없다. | 현재 organization 이름과 구분 badge 표시. |
+| ORG-TC-E019 | Sidebar organization switcher는 active organization 목록을 dropdown으로 전환할 수 있어야 한다. | organization이 2개 이상인데 dropdown이 열리지 않거나 선택 시 active organization이 저장되지 않는다. | dropdown 표시, 선택 item 저장, `/dashboard` 이동. |
+| ORG-TC-E020 | Dashboard home은 active organization 변경 event를 받으면 데이터를 재조회해야 한다. | organization 전환 후 dashboard home이 이전 organization 데이터를 유지한다. | `nodease-active-organization-changed` 수신 후 dashboard home 재조회. |
 
 ## Permission Tests
 
