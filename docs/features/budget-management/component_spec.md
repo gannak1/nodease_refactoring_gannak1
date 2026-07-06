@@ -24,6 +24,7 @@ Verified Against: feature/mba-132 @ a843ec7
 
 기존 내 모듈 운영 목록(`apps/client/app/dashboard/mymodule/page.tsx`, 원천 `GET /apps/operations`)의 각 row를 확장한다.
 
+- 데이터 원천: `GET /apps/operations`의 `row.app.budget_status`. `GET /apps`는 같은 shape를 제공하지만 `/dashboard/mymodule`의 표시 원천은 operations 응답이다.
 - `budget_status`가 있으면 사용률(%)과 상태 배지(`BudgetStatusBadge`)를 표시한다. null이면 아무것도 표시하지 않는다 (기존 레이아웃 유지).
 - `status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시와 "월 예산 초과로 실행이 차단되었습니다" tooltip을 표시한다. 현재 `/dashboard/mymodule`에는 별도 실행 버튼이 없으므로 편집/조회 진입은 차단하지 않는다.
 - member 표면이므로 예산 금액은 표시하지 않는다 (BGT-REQ-022). 사용률과 상태만 표시한다.

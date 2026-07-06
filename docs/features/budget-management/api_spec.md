@@ -144,7 +144,7 @@ Side effects:
 
 ### GET /apps, GET /apps/operations (확장)
 
-내 워크플로우 목록/운영 현황 원천인 기존 `AppResponse` 또는 operations row의 `app` summary에 additive 필드 `budget_status`를 추가한다.
+내 워크플로우 목록/운영 현황 원천인 operations row의 `app` summary와 기존 `AppResponse`에 additive 필드 `budget_status`를 추가한다. `/dashboard/mymodule`의 FR-052 예산 상태 표시는 `GET /apps/operations`의 `app.budget_status`를 사용한다. `GET /apps`는 dashboard 홈, 설정, 관리자 보조 화면 등 기존 App 목록 소비자에게 같은 member 표면 요약을 제공한다.
 
 ```json
 {
@@ -157,9 +157,10 @@ Side effects:
 ```
 
 - App의 primary workflow(`apps.workflow_id`) 기준이다. 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
-- member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022).
-- 목록 전체의 사용률 계산은 workflow별 당월 집계를 한 번의 grouped query로 조회한다 (N+1 금지).
-- `/dashboard/mymodule`은 `GET /apps/operations`의 `app.budget_status`를 사용한다.
+- member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022~023).
+- `usage_ratio`와 `status`의 판정은 관리자 예산 블록과 동일하게 당월(KST) 비용 합계와 반올림 전 값을 사용한다.
+- 목록 전체의 사용률 계산은 현재 응답에 포함될 workflow id를 모아 workflow별 당월 비용을 grouped query로 조회한다 (N+1 금지).
+- `GET /apps/operations`에서는 각 row의 `app.budget_status`에 포함한다. `GET /apps`에서는 각 `AppResponse.budget_status`에 포함한다.
 
 ## 실행 차단 응답
 
