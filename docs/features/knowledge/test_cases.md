@@ -83,6 +83,14 @@ Status: Draft
 - Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다.
 - Router는 authorized safe candidate와 safe metadata만 받는다.
 - Router는 raw source ACL fact, hidden KB id, raw source title/path/url, exact hidden count, raw content를 받지 않는다.
+- Knowledge RAG Recommendation Adapter는 `KnowledgeCandidateResolver`가 반환한 safe KB candidate만 ranking하고, permission/source ACL row를 직접 조회하거나 해석하지 않는다.
+- Recommendation response item은 초기 구현에서 `candidate_type=knowledge_base`만 사용한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다.
+- `materialized_knowledge_bases`는 LLM node `knowledgeBases`로 변환 가능한 safe KB ref만 포함하고, `MAX_RAG_RETRIEVAL_KBS=20` cap을 넘지 않는다.
+- Safe label이 없는 KB recommendation은 raw KB name을 fallback으로 사용하지 않고 `null` 또는 generic label만 사용한다.
+- Recommendation request의 raw `workflow_intent`와 `node_purpose`는 durable audit/trace/log에 저장하지 않고, 길이 cap과 control character normalization을 통과해야 한다.
+- Recommendation provenance는 `recommendation_strategy`, `safe_reason_code`, `used_signals`, safe matched terms, bucketed counts 같은 allowlist만 포함하고 raw source title/path/url, hidden id/name, exact denied count를 포함하지 않는다.
+- `high_risk_domain` hint는 `strict_citation` 같은 RAG option 추천에만 영향을 주고 권한, source ACL, policy block 결정을 대체하지 않는다.
+- No recommendation result는 사용자 확인 필요 상태를 기본값으로 만들며, Builder 정책 gate 없이 자동으로 RAG 없는 LLM node를 생성하지 않는다.
 - Workflow Builder는 safe skill metadata만 받으며 raw skill body, hidden source reference, restricted document list를 받지 않는다.
 - Skill Context Loader는 선택된 skill의 redaction-safe checklist/body만 빌더 단계에 필요한 시점에 로드하고, 실제 문서 내용은 workflow 테스트 또는 실행 시점 authorized retrieval로 가져온다.
 - Skill source-of-truth tier는 LLM node의 RAG 옵션 구성과 routing/procedure hint로만 사용되고, citation/evidence는 KB/document version/chunk/decision record를 가리킨다.
