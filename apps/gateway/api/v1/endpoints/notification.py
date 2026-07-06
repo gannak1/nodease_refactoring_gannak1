@@ -17,6 +17,12 @@ from apps.shared.schemas.notification import NotificationListResponse
 
 router = APIRouter()
 
+SSE_NO_BUFFER_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
 
 @router.get("", response_model=NotificationListResponse)
 def list_notifications(
@@ -58,4 +64,8 @@ async def stream_notifications(
             await pubsub.unsubscribe(channel)
             await pubsub.close()
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=SSE_NO_BUFFER_HEADERS,
+    )

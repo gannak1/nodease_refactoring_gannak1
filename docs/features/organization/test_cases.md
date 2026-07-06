@@ -90,6 +90,7 @@ Status: Draft
 | ORG-TC-E014 | Sidebar 사용자 프로필 드롭다운은 알림 overlay를 열 수 있어야 한다. | `알림` item이 없거나 클릭해도 overlay가 열리지 않는다. | notification overlay 표시. |
 | ORG-TC-E015 | 초대 알림 overlay는 organization 초대 수락/거절을 처리해야 한다. | `수락`/`거절` 클릭 시 해당 API가 호출되지 않거나 목록을 갱신하지 않는다. | accept/decline 호출 후 `GET /notifications` 재조회. |
 | ORG-TC-E016 | `notifications.changed` SSE event는 알림 목록 재조회를 트리거해야 한다. | event 수신 후 기존 알림 목록이 유지된다. | `GET /notifications` 재호출. |
+| ORG-TC-E017 | notification SSE 응답은 no-buffer header를 내려야 한다. | `X-Accel-Buffering: no` 또는 `Cache-Control: no-transform`이 없다. | `text/event-stream`과 no-buffer header 반환. |
 
 ## Permission Tests
 

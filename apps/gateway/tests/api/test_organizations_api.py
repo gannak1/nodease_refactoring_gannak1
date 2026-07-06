@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import datetime, timezone
 from operator import eq
@@ -13,6 +14,7 @@ from apps.gateway.api.v1.endpoints.organization import (
     list_organization_memberships,
     list_organizations,
 )
+from apps.gateway.api.v1.endpoints.notification import stream_notifications
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.models.organization import Organization
@@ -589,6 +591,19 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(response.json()["items"][0]["type"], "organization.invitation")
         self.assertEqual(response.json()["items"][0]["organization_name"], "Acme")
         self.assertEqual(service.call_args.args[1], user_id)
+
+    def test_notifications_stream_sets_no_buffer_headers(self):
+        response = asyncio.run(
+            stream_notifications(
+                request=SimpleNamespace(),
+                current_user=SimpleNamespace(id=uuid4()),
+            )
+        )
+
+        self.assertIn("text/event-stream", response.headers["content-type"])
+        self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
+        self.assertEqual(response.headers["connection"], "keep-alive")
 
     def test_route_updates_member(self):
         organization_id = uuid4()

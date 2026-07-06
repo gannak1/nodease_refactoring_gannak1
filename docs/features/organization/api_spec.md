@@ -248,6 +248,14 @@ Query parameter:
 
 SSE 응답: `text/event-stream`.
 
+응답 header:
+
+| Header | 값 | 비고 |
+| --- | --- | --- |
+| `Cache-Control` | `no-cache, no-transform` | 중간 프록시가 SSE 응답을 캐싱하거나 변형하지 않도록 한다. |
+| `X-Accel-Buffering` | `no` | nginx 응답 버퍼링 비활성화 힌트. |
+| `Connection` | `keep-alive` | SSE 연결 유지. |
+
 현재 구현 event:
 
 ```text
