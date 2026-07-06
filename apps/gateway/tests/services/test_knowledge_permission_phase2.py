@@ -254,6 +254,41 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     assert "raw_source_url" not in candidate_metadata
 
 
+def test_auto_collection_summary_count_uses_authorized_candidate_subset():
+    collection = _collection(safe_metadata={"safe_label": "HR 정책"})
+    denied_kb = _kb()
+    allowed_kb = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_kb.id else "none"
+
+    helper = PerKbPermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=allowed_kb.id,
+            ),
+        ],
+        kbs=[denied_kb, allowed_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        allowed_kb.id
+    ]
+    assert result.candidates[0].safe_metadata["linked_kb_count_bucket"] == "1"
+    assert result.unavailable_candidate_count_bucket == "1"
+
+
 def test_auto_collection_cap_applies_after_route_authorization():
     denied_collection = _collection()
     allowed_collection = _collection()

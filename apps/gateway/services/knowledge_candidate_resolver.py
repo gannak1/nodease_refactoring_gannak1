@@ -150,14 +150,12 @@ class KnowledgeCandidateResolver:
         route_allowed_collection_ids = route_allowed_collection_ids[:max_collections]
 
         items = self._collection_items(route_allowed_collection_ids, None)
-        collection_context_by_kb_id = self._collection_context_by_kb_id(
-            items,
-            {
-                collection.id: collection
-                for collection in collections
-                if collection.id in set(route_allowed_collection_ids)
-            },
-        )
+        route_allowed_collection_id_set = set(route_allowed_collection_ids)
+        collections_by_id = {
+            collection.id: collection
+            for collection in collections
+            if collection.id in route_allowed_collection_id_set
+        }
         kb_ids = self._dedupe_ids([item.knowledge_base_id for item in items])
         kbs_by_id = self._knowledge_bases_by_id(kb_ids)
         hidden_count += len(kb_ids) - len(kbs_by_id)
@@ -177,6 +175,11 @@ class KnowledgeCandidateResolver:
             else:
                 unavailable_count += 1
         allowed_pairs = allowed_pairs[:max_candidate_kbs]
+        collection_context_by_kb_id = self._collection_context_by_kb_id(
+            items,
+            collections_by_id,
+            allowed_kb_ids={kb.id for kb, _decision in allowed_pairs},
+        )
         runtime_decisions = self._bulk_runtime_kb_decisions(
             [kb for kb, _decision in allowed_pairs]
         )
@@ -317,10 +320,17 @@ class KnowledgeCandidateResolver:
         self,
         items: list[KnowledgeCollectionItem],
         collections_by_id: dict[uuid.UUID, KnowledgeCollection],
+        *,
+        allowed_kb_ids: set[uuid.UUID],
     ) -> dict[uuid.UUID, dict]:
-        linked_count_by_collection_id = Counter(item.collection_id for item in items)
+        allowed_items = [
+            item for item in items if item.knowledge_base_id in allowed_kb_ids
+        ]
+        linked_count_by_collection_id = Counter(
+            item.collection_id for item in allowed_items
+        )
         context_by_kb_id: dict[uuid.UUID, dict] = {}
-        for item in items:
+        for item in allowed_items:
             if item.knowledge_base_id in context_by_kb_id:
                 continue
             collection = collections_by_id.get(item.collection_id)
