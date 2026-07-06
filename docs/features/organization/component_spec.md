@@ -84,10 +84,28 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - 렌더링:
   - organization 이름이 있으면 sidebar 하단에 organization badge block을 표시한다.
   - `isOrganizationManager`가 true일 때만 `관리` navigation item을 표시한다.
+  - 사용자 프로필 드롭다운에는 `알림`, `로그아웃` action을 표시한다.
+  - `알림` 클릭 시 페이지 이동 없이 notification overlay를 연다.
 - 데이터:
   - `authApi.me()`
   - `apiClient.get('/organizations/current')`
+  - `notificationsApi.listNotifications()`
+  - `EventSource('/api/v1/notifications/stream')`
   - `nodease-active-organization-changed` window event
+
+### NotificationOverlay
+
+- 출처: `apps/client/app/features/notifications/components/NotificationOverlay.tsx`
+- 책임: 현재 사용자의 organization 초대 알림을 표시하고 초대 수락/거절 action을 제공한다.
+- 현재 동작:
+  - Sidebar mount 시 `GET /notifications`로 초기 알림 목록을 조회한다.
+  - `notifications.changed` SSE event를 받으면 `GET /notifications`를 재조회한다.
+  - `organization.invitation` item만 렌더링한다.
+  - 각 item은 organization 이름, organization 권한(`member`/`manager`), 초대 시각, `수락`, `거절` 버튼을 표시한다.
+  - `수락`은 `POST /organizations/{organization_id}/members/me/accept`, `거절`은 `POST /organizations/{organization_id}/members/me/decline`을 호출한다.
+  - 성공 후 toast를 표시하고 알림 목록을 재조회한다.
+  - 알림이 없으면 "새 알림이 없습니다." empty state를 표시한다.
+  - 읽음/안읽음, 배지 count, 알림 히스토리는 현재 구현 범위가 아니다.
 
 ### AdminShell
 

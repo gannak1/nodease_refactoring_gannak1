@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { authApi } from '../../auth/api/authApi';
 import {
+  Bell,
   Search,
   Settings,
   BookOpen,
@@ -23,6 +24,9 @@ import {
   getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
 import { apiClient } from '@/lib/apiClient';
+import { notificationsApi } from '../../notifications/api/notificationsApi';
+import { NotificationOverlay } from '../../notifications/components/NotificationOverlay';
+import type { NotificationItem } from '../../notifications/types/Notification';
 
 const navigationItems = [
   {
@@ -72,7 +76,27 @@ export default function Sidebar() {
   const [userEmail, setUserEmail] = useState('');
   const [organizationName, setOrganizationName] = useState('');
   const [isOrganizationManager, setIsOrganizationManager] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(true);
+  const [notificationsError, setNotificationsError] = useState<string | null>(
+    null,
+  );
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const loadNotifications = useCallback(async () => {
+    setNotificationsLoading(true);
+    setNotificationsError(null);
+    try {
+      const data = await notificationsApi.listNotifications();
+      setNotifications(data.items);
+    } catch {
+      setNotifications([]);
+      setNotificationsError('알림을 불러오지 못했습니다.');
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, []);
 
   // Fetch user info
   useEffect(() => {
@@ -92,6 +116,22 @@ export default function Sidebar() {
 
     fetchUserInfo();
   }, []);
+
+  useEffect(() => {
+    loadNotifications();
+
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = notificationsApi.createEventSource();
+      eventSource.addEventListener('notifications.changed', loadNotifications);
+    } catch {
+      // SSE 연결 실패는 초기/수동 조회로 보완한다.
+    }
+
+    return () => {
+      eventSource?.close();
+    };
+  }, [loadNotifications]);
 
   useEffect(() => {
     const fetchOrganization = async () => {
@@ -273,6 +313,16 @@ export default function Sidebar() {
           >
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
               <button
+                onClick={() => {
+                  setIsDropdownOpen(false);
+                  setIsNotificationsOpen(true);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <Bell className="w-4 h-4" />
+                <span>알림</span>
+              </button>
+              <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
               >
@@ -283,6 +333,15 @@ export default function Sidebar() {
           </div>
         )}
       </div>
+      {isNotificationsOpen && (
+        <NotificationOverlay
+          notifications={notifications}
+          loading={notificationsLoading}
+          error={notificationsError}
+          onClose={() => setIsNotificationsOpen(false)}
+          onRefresh={loadNotifications}
+        />
+      )}
     </aside>
   );
 }

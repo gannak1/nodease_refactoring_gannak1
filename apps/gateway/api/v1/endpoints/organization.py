@@ -230,6 +230,27 @@ def accept_invitation(
         return _service_error_response(request, exc)
 
 
+# 초대받은 사용자가 본인의 조직 초대를 거절하는 API.
+@router.post(
+    "/{organization_id}/members/me/decline",
+    response_model=OrganizationMemberResponse,
+)
+def decline_invitation(
+    request: Request,
+    organization_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return OrganizationMemberService.decline_invitation(
+            db,
+            current_user,
+            organization_id,
+        )
+    except HTTPException as exc:
+        return _service_error_response(request, exc)
+
+
 # 조직 관리자가 멤버 상태와 권한을 변경하는 API.
 @router.patch(
     "/{organization_id}/members/{user_id}",

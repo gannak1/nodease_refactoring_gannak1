@@ -10,6 +10,7 @@ from apps.gateway.api.v1.endpoints import (
     health,
     knowledge,
     llm,
+    notification,
     organization,
     permission_request,
     permissions,
@@ -54,6 +55,9 @@ api_router.include_router(
     tags=["permission-requests"],
 )
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(
+    notification.router, prefix="/notifications", tags=["notifications"]
+)
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(
     prompt_wizard.router, prefix="/prompt-wizard", tags=["prompt-wizard"]
