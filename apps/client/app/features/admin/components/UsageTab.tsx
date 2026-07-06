@@ -8,7 +8,6 @@ import { toast } from 'sonner';
 import { DashboardPanel } from '../../dashboard/components/DashboardSurface';
 import { BudgetEditModal } from '../../budget/components/BudgetEditModal';
 import { BudgetStatusBadge } from '../../budget/components/BudgetStatusBadge';
-import type { BudgetUsageStatus } from '../../budget/types';
 import { adminApi } from '../api/adminApi';
 import type {
   AdminUsagePeriod,
@@ -20,11 +19,6 @@ const PAGE_SIZE = 20;
 
 // 비용은 원본 정밀도로 받아 표시 직전에만 USD 2자리로 반올림한다.
 const formatCost = (value: number) => `$${value.toFixed(2)}`;
-
-const normalizeBudgetStatus = (status: string): BudgetUsageStatus => {
-  if (status === 'at_risk' || status === 'exceeded') return status;
-  return 'normal';
-};
 
 export function UsageTab() {
   const [form, setForm] = useState({ startAt: '', endAt: '' });
@@ -240,7 +234,7 @@ export function UsageTab() {
                             {formatCost(item.budget.monthly_budget_usd)}
                           </span>
                           <BudgetStatusBadge
-                            status={normalizeBudgetStatus(item.budget.status)}
+                            status={item.budget.status}
                             usageRatio={item.budget.usage_ratio}
                           />
                         </>
