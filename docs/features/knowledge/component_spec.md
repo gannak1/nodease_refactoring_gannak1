@@ -21,6 +21,7 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Active Version Finalizer | Transactional active version pointer swap, previous version `superseded` 표시, content_hash/fingerprint commit, outbox insert를 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하거나 pointer swap 후 outbox insert 전에 crash window를 만들지 않는다 |
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞춘다 | DB commit 전 physical delete를 수행하지 않고 retry 가능한 cleanup만 실행한다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
+| Knowledge Collection Management Service | Manual Collection CRUD, item link/unlink/reorder, permission grant/revoke, visibility transition을 조율한다 | Controller에 business logic을 두지 않고, Collection 권한과 KB content 권한을 분리해서 검증한다 |
 | Knowledge RAG Recommendation Adapter | Workflow Builder의 자연어 intent와 LLM node purpose를 받아 safe KB recommendation과 LLM node RAG option 후보를 만든다 | 권한 판단을 직접 하지 않고 `KnowledgeCandidateResolver` 결과만 ranking한다. 초기 구현은 `candidate_type=knowledge_base`만 반환하고 Collection은 safe summary metadata로만 제공한다 |
 | Knowledge Skill Registry | Provider-neutral Knowledge Skill, version, owner/review state, freshness/eval status를 관리한다 | Skill은 빌더 단계 LLM node의 RAG 옵션 후보이며 권한 source나 source of truth가 아니다 |
 | Source-of-Truth Catalog | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 source tier와 safe reference를 관리한다 | Raw content나 hidden source identity를 router에 노출하지 않는다 |
@@ -36,7 +37,7 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 
 | Surface | 목적 |
 | --- | --- |
-| Knowledge Collections | Collection, safe metadata, sync status, route/manage/sync control을 표시한다 |
+| Knowledge Collections | Collection 목록, 상세, 생성/수정/archive, item 관리, permission grant/revoke, visibility 상태를 표시한다 |
 | KB Detail | Document-level KB lifecycle, active version, sync state, permission state를 표시한다 |
 | Source Connector Setup | Connector config, egress-safe test/preview, ACL mapping status를 관리한다 |
 | Sync Remediation Queue | Stale/unmapped/ambiguous ACL, failed sync, tombstone, retry/dead-letter status를 표시한다 |
@@ -44,6 +45,26 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Skill Management / Playground Candidate | 향후 Skill version, freshness, eval status, publication/review 상태를 표시할 수 있는 후보 surface | 실제 작성/테스트/승인 요청 UX와 Workflow Playground 통합 여부는 아직 확정하지 않는다. 표시한다면 safe metadata만 사용한다 |
 | Audit/Citation Detail | Redaction-safe citation과 retrieval summary를 표시한다. Raw content는 별도 raw/compliance surface에서만 사용한다 |
 | RAG A/B Compare | LLM node 단위 RAG strategy, token, cost, citation summary를 비교한다 |
+
+### Knowledge Collection Management UI
+
+Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리 영역에 둔다.
+
+필수 surface:
+
+- Collection 목록: safe name/description, manual/system-managed, lifecycle/sync state, visibility, bucketed linked/active KB count, caller action flags를 표시한다.
+- Collection 생성/수정: MVP 생성은 organization manager만 허용한다. `is_system_managed`나 public visibility는 일반 create/edit form에서 직접 설정하지 않는다.
+- Collection 상세: item, permission, visibility, sync/system state를 분리해서 표시한다.
+- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. Link/unlink/reorder action은 `collection.manage`와 대상 KB `manage` 경계를 따른다.
+- Permission panel: team/user subject에 `read`, `route`, `manage`, `sync` additive allow grant/revoke를 제공한다.
+- Public visibility warning flow: organization manager, explicit acknowledgement, safe exposure summary를 요구한다.
+
+금지 surface:
+
+- raw source title/path/url/principal 표시.
+- hidden KB name/id 또는 exact denied count 표시.
+- Collection manage 권한을 KB content use 권한처럼 표시.
+- Workflow Builder 화면에서 Collection 생성/삭제/권한관리를 주 기능으로 제공.
 
 ## State Model
 

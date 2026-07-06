@@ -77,11 +77,18 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-062: Slack 계열 source의 초기 granularity는 channel = Knowledge Collection, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group = document-level KB다. Channel digest는 opt-in connector policy로만 만들고 DM/raw audio/raw transcript ingestion은 기본 제외한다.
 - FR-063: RAG/LLM prompt path는 retrieved context, memory summary, upstream node output, 외부 source content를 신뢰할 수 없는 evidence로 취급한다. 이 데이터는 system/developer/user instruction source가 아니며, prompt 구성 시 delimiter와 sanitizer를 적용하고 문서 안의 지시문이 system/developer policy나 사용자의 명시 요청보다 우선하지 못하게 해야 한다.
 - FR-064: Untrusted context guardrail은 앱/워크플로우 관리자가 편집하는 system prompt가 아니라 플랫폼 최소 보안 경계다. 관리자는 앱별 system prompt를 추가할 수 있지만, retrieved context/upstream output을 instruction source로 취급하지 않는 baseline guardrail을 비활성화하거나 약화할 수 없다.
+- FR-065: Manual Knowledge Collection 관리 MVP는 Knowledge 관리 영역에서 Collection 목록, 생성, 상세, 수정, archive, item link/unlink/reorder, permission grant/revoke, public visibility 전환을 제공한다. Workflow Builder 안에서 Collection 생성/삭제를 주 기능으로 제공하지 않는다.
+- FR-066: Manual Collection 생성은 MVP에서 organization manager만 수행한다. Delegated collection creator, 생성자 bootstrap grant, organization-wide inherited grant는 별도 Auth/RBAC 결정 전까지 도입하지 않는다.
+- FR-067: Collection item link/unlink/reorder는 `collection.manage`와 대상 KB `manage`를 모두 요구한다. Collection manage만으로 하위 KB content `use` 권한을 부여하거나 link 대상 KB 존재를 노출하지 않는다.
+- FR-068: Collection permission grant/revoke는 additive allow만 제공하고 action은 `read`, `route`, `manage`, `sync`로 제한한다. Explicit deny, inheritance, role table 기반 권한 모델은 이번 Knowledge Collection 관리 MVP 범위가 아니다.
+- FR-069: Public visibility 전환은 MVP에서 organization manager와 explicit acknowledgement를 요구한다. `safe_metadata["visibility"] == "public"`은 anonymous public-only runtime candidate inclusion flag이며, 인증 사용자 KB `use` 권한이나 source ACL requester authorization을 대체하지 않는다.
+- FR-070: System-managed Collection은 connector/sync pipeline이 소유하는 Collection으로 취급한다. Manual 관리 UI는 기본적으로 읽기 전용 또는 safe override만 허용하고, connector-driven system-managed Collection 자동 생성과 remediation action은 별도 source sync phase로 분리한다.
 
 ## Policies And Edge Cases
 
 - Metadata는 permission source가 아니다. Metadata filter는 allowlist 기반 검색 제한이고 KB `use`/source ACL 판정을 대체하지 않는다.
 - Collection visibility나 route 권한은 child KB 존재나 content 접근을 증명하지 않는다.
+- Manual Collection 관리 UI/API는 Collection 권한과 KB content 권한을 분리해 표시해야 한다. `can_manage_collection=true`가 `can_use_kb=true`를 뜻하지 않으며, item list에 보이는 KB도 실행 시점 retrieval 가능성을 보장하지 않는다.
 - MVP anonymous public-only runtime에서 public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. 이 visibility는 인증된 subject 기반 retrieval의 KB `use` 권한을 부여하지 않고, execution subject가 없는 public-only runtime의 candidate inclusion gate로만 사용한다.
 - Source public ACL은 organization-wide read/use로 자동 materialize하지 않는다. Connector policy와 organization policy가 명시적으로 opt-in하고 approver, expiry/reverification, revocation behavior, audit-safe metadata가 확정된 경우에만 `source_policy_kb_use_grants` provisioning 후보가 된다. 이 경우에도 Source Authorization Provenance와 requester authorization freshness gate는 별도로 필요하다.
 - Source-derived collection name/description/title/path/url은 민감 metadata일 수 있으므로 redacted, capped, display-policy-approved field로만 user-facing 저장/표시한다.

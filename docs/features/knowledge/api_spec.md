@@ -24,6 +24,8 @@ Status: Draft
 | --- | --- | --- |
 | Collections | `/api/v1/knowledge/collections`, `/api/v1/knowledge/collections/{collection_id}` | Collection 목록, safe metadata, route/manage/sync operation |
 | Collection items | `/api/v1/knowledge/collections/{collection_id}/items` | Document-level KB link/unlink. KB content permission을 부여하지 않음 |
+| Collection permissions | `/api/v1/knowledge/collections/{collection_id}/permissions` | Collection `read`/`route`/`manage`/`sync` grant/revoke. Additive allow만 제공 |
+| Collection visibility | `/api/v1/knowledge/collections/{collection_id}/visibility` | Anonymous public-only runtime 후보 여부를 safe metadata flag로 전환 |
 | Document-level KBs | `/api/v1/knowledge/kbs/{kb_id}` | KB detail, active version, sync state, remediation summary |
 | Document versions | `/api/v1/knowledge/kbs/{kb_id}/versions/*` | Version history, active version, re-index state |
 | Raw/compliance view | `/api/v1/knowledge/kbs/{kb_id}/raw-artifacts/*` | Raw/compliance gate 이후 선택적 protected raw content access. RAG answer API에서 사용하지 않음 |
@@ -133,6 +135,67 @@ Router는 authorized safe candidate와 safe metadata만 받는다. Raw source AC
 Router candidate metadata는 safe identifier와 coarse summary로 제한한다. 예시는 `knowledge_base_id`, optional `collection_id`, safe redacted display label, coarse source type, safe classification/category/tag, coarse sync/source ACL state, request-scoped ranking hint다. Raw source id/url/path/title, raw principal, raw ACL row, exact hidden/denied count, credential value, prompt/completion, raw content는 router input이 아니다.
 
 Skill candidate metadata도 같은 boundary를 따른다. Workflow Builder가 받을 수 있는 skill field는 safe skill id, skill version, safe display label, source-of-truth tier, freshness state, eval status, validation checklist id, redaction-safe routing hint 정도로 제한한다. Raw skill body, hidden source reference, raw source title/path/url, restricted document list, raw content, prompt/completion, provider raw response는 Builder input이 아니다.
+
+## Manual Collection Management
+
+Manual Collection 관리 API는 Knowledge 관리 영역에서 사용한다. Workflow Builder가 Collection을 생성/삭제하거나 권한을 관리하는 surface가 아니다.
+
+### Collection CRUD
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/collections` | Collection 목록. `collection.read` 가능한 row만 반환 | `collection.read` 또는 organization manager override |
+| POST | `/api/v1/knowledge/collections` | Manual Collection 생성 | MVP는 organization manager만 허용 |
+| GET | `/api/v1/knowledge/collections/{collection_id}` | Collection 상세 | `collection.read` 또는 organization manager override |
+| PATCH | `/api/v1/knowledge/collections/{collection_id}` | safe name/description/metadata 수정 | `collection.manage` 또는 organization manager override |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}` | physical delete가 아니라 archive 전이 | `collection.manage` 또는 organization manager override |
+
+Response는 `id`, `name`, `description`, `is_system_managed`, `sync_state`, `lifecycle_state`, `visibility`, bucketed linked/active KB count, caller action flags, `safe_metadata`, timestamps만 포함한다. Raw source title/path/url/principal, hidden KB name/id, exact denied count는 반환하지 않는다.
+
+Create request는 `name`, optional `description`, optional allowlisted `safe_metadata`만 받는다. Client는 `is_system_managed=true`, source identity, raw source URL/path/title, permission row를 create body에 넣을 수 없다. Duplicate safe name은 safe `409 conflict`로 반환한다.
+
+Update request는 visibility를 바꾸지 않는다. Public/private 전환은 별도 visibility endpoint만 사용한다. System-managed Collection은 connector/sync가 소유하므로 manual update는 safe override가 승인된 field로 제한한다.
+
+### Collection Item Management
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/collections/{collection_id}/items` | linked KB item 목록 | `collection.read` |
+| POST | `/api/v1/knowledge/collections/{collection_id}/items` | KB link | `collection.manage` + 대상 KB `manage` |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}/items/{item_id}` | KB unlink | `collection.manage` + 대상 KB `manage` |
+| PATCH | `/api/v1/knowledge/collections/{collection_id}/items/reorder` | deterministic rank 변경 | `collection.manage` |
+| GET | `/api/v1/knowledge/collections/{collection_id}/link-candidates` | link 가능한 KB 후보 | `collection.manage`; 기본적으로 대상 KB `manage` 가능한 후보만 반환 |
+
+Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
+
+### Collection Permission Management
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/collections/{collection_id}/permissions` | permission grant 목록 | `collection.manage` 또는 organization manager |
+| POST | `/api/v1/knowledge/collections/{collection_id}/permissions` | team/user action grant | `collection.manage` 또는 organization manager |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}/permissions/{permission_id}` | grant revoke | `collection.manage` 또는 organization manager |
+
+Grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Explicit deny, inherited grant, role table 연결은 이번 MVP 범위가 아니다. Revoke는 자기 자신의 마지막 `manage` grant를 제거하는 edge case를 safe denial로 처리하거나 organization manager만 허용해야 한다.
+
+### Public Visibility
+
+```text
+POST /api/v1/knowledge/collections/{collection_id}/visibility
+```
+
+Request:
+
+```json
+{
+  "visibility": "public",
+  "acknowledged_public_runtime_exposure": true
+}
+```
+
+MVP에서 public/private visibility 전환은 organization manager만 허용한다. Public 전환에는 explicit acknowledgement가 필요하다. 전환 전 summary는 linked KB count bucket, active KB count bucket, safe sensitive-content warning, anonymous public-only runtime 영향 요약만 포함한다. Raw KB title/path/url, hidden KB id/name, exact denied count는 포함하지 않는다.
+
+`safe_metadata["visibility"] == "public"`은 anonymous public-only runtime의 candidate inclusion flag다. 인증 사용자 KB `use`, source ACL requester authorization, final evidence policy를 대체하지 않는다.
 
 ### Workflow Runtime RAG Execution Subject
 
