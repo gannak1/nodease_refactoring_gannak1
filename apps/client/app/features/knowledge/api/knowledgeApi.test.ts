@@ -18,6 +18,7 @@ vi.mock('@/lib/apiClient', () => ({
 }));
 
 import { knowledgeApi, RAGAgentStreamEvent } from './knowledgeApi';
+import { apiClient } from '@/lib/apiClient';
 
 const streamResponse = (chunks: Array<string | Uint8Array>, status = 200): Response => {
   const encoder = new TextEncoder();
@@ -242,5 +243,82 @@ describe('knowledgeApi.streamAgentAnswer', () => {
     await expect(
       knowledgeApi.streamAgentAnswer(payload, () => undefined),
     ).rejects.toThrow('Permission denied.');
+  });
+});
+
+describe('knowledgeApi collection management', () => {
+  it('loads Knowledge Collections from the management endpoint', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      data: {
+        collections: [
+          {
+            id: 'collection-1',
+            organization_id: 'org-1',
+            name: 'HR',
+            is_system_managed: false,
+            sync_state: 'manual',
+            lifecycle_state: 'active',
+            visibility: 'private',
+            linked_kb_count_bucket: '1',
+            active_kb_count_bucket: '1',
+            can_read: true,
+            can_route: true,
+            can_manage: true,
+            can_sync: false,
+            safe_metadata: {},
+            created_at: '2026-07-07T00:00:00Z',
+            updated_at: '2026-07-07T00:00:00Z',
+          },
+        ],
+      },
+    });
+
+    const collections = await knowledgeApi.getKnowledgeCollections();
+
+    expect(apiClient.get).toHaveBeenCalledWith('/knowledge/collections', {
+      params: undefined,
+    });
+    expect(collections).toHaveLength(1);
+    expect(JSON.stringify(collections)).not.toContain('raw_source_url');
+  });
+
+  it('updates public visibility with explicit acknowledgement', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        collection: { id: 'collection-1', visibility: 'public' },
+        public_runtime_effect: 'anonymous_public_only_candidate',
+        linked_kb_count_bucket: '1',
+        active_kb_count_bucket: '1',
+        sensitive_content_warning: 'unknown_or_present',
+      },
+    });
+
+    await knowledgeApi.updateKnowledgeCollectionVisibility('collection-1', {
+      visibility: 'public',
+      acknowledged_public_runtime_exposure: true,
+    });
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/visibility',
+      {
+        visibility: 'public',
+        acknowledged_public_runtime_exposure: true,
+      },
+    );
+  });
+
+  it('links KBs through the Collection item endpoint', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { items: [] },
+    });
+
+    await knowledgeApi.linkKnowledgeCollectionItem('collection-1', {
+      knowledge_base_id: 'kb-1',
+    });
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/items',
+      { knowledge_base_id: 'kb-1' },
+    );
   });
 });

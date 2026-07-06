@@ -6,6 +6,17 @@ import {
   KnowledgeBaseDetailResponse,
   DocumentResponse,
   SourceType,
+  KnowledgeCollectionAction,
+  KnowledgeCollectionResponse,
+  KnowledgeCollectionListResponse,
+  KnowledgeCollectionItemResponse,
+  KnowledgeCollectionItemsResponse,
+  KnowledgeCollectionLinkCandidate,
+  KnowledgeCollectionLinkCandidatesResponse,
+  KnowledgeCollectionPermissionResponse,
+  KnowledgeCollectionPermissionsResponse,
+  KnowledgeCollectionVisibility,
+  KnowledgeCollectionVisibilityResponse,
 } from '../types/Knowledge';
 
 export interface JoinConfig {
@@ -151,6 +162,17 @@ export type {
   KnowledgeBaseCreate,
   KnowledgeBaseResponse,
   KnowledgeBaseDetailResponse,
+  KnowledgeCollectionAction,
+  KnowledgeCollectionResponse,
+  KnowledgeCollectionListResponse,
+  KnowledgeCollectionItemResponse,
+  KnowledgeCollectionItemsResponse,
+  KnowledgeCollectionLinkCandidate,
+  KnowledgeCollectionLinkCandidatesResponse,
+  KnowledgeCollectionPermissionResponse,
+  KnowledgeCollectionPermissionsResponse,
+  KnowledgeCollectionVisibility,
+  KnowledgeCollectionVisibilityResponse,
 };
 
 import {
@@ -309,6 +331,129 @@ export const knowledgeApi = {
   // 지식 베이스 삭제
   deleteKnowledgeBase: async (id: string): Promise<void> => {
     await api.delete(`/knowledge/${id}`);
+  },
+
+  getKnowledgeCollections: async (params?: {
+    lifecycle_state?: 'active' | 'archived' | 'deleted';
+    visibility?: KnowledgeCollectionVisibility;
+    system_managed?: boolean;
+    limit?: number;
+  }): Promise<KnowledgeCollectionResponse[]> => {
+    const response = await api.get<KnowledgeCollectionListResponse>(
+      '/knowledge/collections',
+      { params },
+    );
+    return response.data.collections;
+  },
+
+  createKnowledgeCollection: async (data: {
+    name: string;
+    description?: string | null;
+    safe_metadata?: Record<string, unknown>;
+  }): Promise<KnowledgeCollectionResponse> => {
+    const response = await api.post('/knowledge/collections', data);
+    return response.data;
+  },
+
+  updateKnowledgeCollection: async (
+    id: string,
+    data: {
+      name?: string;
+      description?: string | null;
+      safe_metadata?: Record<string, unknown>;
+    },
+  ): Promise<KnowledgeCollectionResponse> => {
+    const response = await api.patch(`/knowledge/collections/${id}`, data);
+    return response.data;
+  },
+
+  archiveKnowledgeCollection: async (id: string): Promise<void> => {
+    await api.delete(`/knowledge/collections/${id}`);
+  },
+
+  getKnowledgeCollectionItems: async (
+    id: string,
+  ): Promise<KnowledgeCollectionItemsResponse> => {
+    const response = await api.get(`/knowledge/collections/${id}/items`);
+    return response.data;
+  },
+
+  linkKnowledgeCollectionItem: async (
+    id: string,
+    data: { knowledge_base_id: string; rank?: number },
+  ): Promise<KnowledgeCollectionItemsResponse> => {
+    const response = await api.post(`/knowledge/collections/${id}/items`, data);
+    return response.data;
+  },
+
+  unlinkKnowledgeCollectionItem: async (
+    id: string,
+    itemId: string,
+  ): Promise<void> => {
+    await api.delete(`/knowledge/collections/${id}/items/${itemId}`);
+  },
+
+  reorderKnowledgeCollectionItems: async (
+    id: string,
+    items: { item_id: string; rank: number }[],
+  ): Promise<KnowledgeCollectionItemsResponse> => {
+    const response = await api.patch(
+      `/knowledge/collections/${id}/items/reorder`,
+      { items },
+    );
+    return response.data;
+  },
+
+  getKnowledgeCollectionLinkCandidates: async (
+    id: string,
+  ): Promise<KnowledgeCollectionLinkCandidatesResponse> => {
+    const response = await api.get(
+      `/knowledge/collections/${id}/link-candidates`,
+    );
+    return response.data;
+  },
+
+  getKnowledgeCollectionPermissions: async (
+    id: string,
+  ): Promise<KnowledgeCollectionPermissionsResponse> => {
+    const response = await api.get(`/knowledge/collections/${id}/permissions`);
+    return response.data;
+  },
+
+  grantKnowledgeCollectionPermission: async (
+    id: string,
+    data: {
+      subject_type: 'team' | 'user';
+      subject_id: string;
+      permission_action: KnowledgeCollectionAction;
+    },
+  ): Promise<KnowledgeCollectionPermissionsResponse> => {
+    const response = await api.post(
+      `/knowledge/collections/${id}/permissions`,
+      data,
+    );
+    return response.data;
+  },
+
+  revokeKnowledgeCollectionPermission: async (
+    id: string,
+    permissionId: string,
+  ): Promise<void> => {
+    await api.delete(`/knowledge/collections/${id}/permissions/${permissionId}`);
+  },
+
+  updateKnowledgeCollectionVisibility: async (
+    id: string,
+    data: {
+      visibility: KnowledgeCollectionVisibility;
+      acknowledged_public_runtime_exposure: boolean;
+    },
+  ): Promise<KnowledgeCollectionVisibilityResponse> => {
+    const response = await api.post(
+      `/knowledge/collections/${id}/visibility`,
+      data,
+    );
+    return response.data;
   },
 
   // 문서 파싱 승인 (LlamaParse 비용 발생 등)
