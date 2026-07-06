@@ -9,8 +9,10 @@ from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionServiceError,
 )
 from apps.shared.schemas.knowledge import (
+    KnowledgeCollectionCreateRequest,
     KnowledgeCollectionItemLinkRequest,
     KnowledgeCollectionResponse,
+    KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
 )
 
@@ -75,6 +77,35 @@ def test_safe_metadata_rejects_raw_source_keys(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.code == "validation.failed"
+
+
+def test_create_collection_rejects_blank_name_after_normalization(monkeypatch):
+    service = _service(monkeypatch)
+    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service.create_collection(KnowledgeCollectionCreateRequest(name="   \t  "))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "validation.failed"
+    assert exc_info.value.details == {"field": "name"}
+
+
+def test_update_collection_rejects_blank_name_after_normalization(monkeypatch):
+    service = _service(monkeypatch)
+    collection = _collection()
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_require_collection_action", lambda collection, action: None)
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service.update_collection(
+            collection.id,
+            KnowledgeCollectionUpdateRequest(name=" \n "),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "validation.failed"
+    assert exc_info.value.details == {"field": "name"}
 
 
 def test_public_visibility_requires_acknowledgement(monkeypatch):

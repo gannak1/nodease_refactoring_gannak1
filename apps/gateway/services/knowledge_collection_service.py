@@ -162,9 +162,10 @@ class KnowledgeCollectionService:
     ) -> KnowledgeCollectionResponse:
         self._require_org_manager()
         safe_metadata = self._sanitize_safe_metadata(request.safe_metadata)
+        name = self._normalize_required_text(request.name, "name")
         collection = KnowledgeCollection(
             organization_id=self.organization_id,
-            name=request.name.strip(),
+            name=name,
             description=self._normalize_optional_text(request.description),
             safe_metadata=safe_metadata,
             created_by=self.user_id,
@@ -200,7 +201,7 @@ class KnowledgeCollectionService:
                 "System-managed collections cannot be manually edited.",
             )
         if request.name is not None:
-            collection.name = request.name.strip()
+            collection.name = self._normalize_required_text(request.name, "name")
         if request.description is not None:
             collection.description = self._normalize_optional_text(request.description)
         if request.safe_metadata is not None:
@@ -864,6 +865,17 @@ class KnowledgeCollectionService:
             return None
         normalized = " ".join(value.split())
         return normalized or None
+
+    def _normalize_required_text(self, value: str, field: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise KnowledgeCollectionServiceError(
+                400,
+                "validation.failed",
+                "Required text field cannot be blank.",
+                {"field": field},
+            )
+        return normalized
 
     def _record_collection_audit(
         self,
