@@ -108,6 +108,58 @@ def test_update_collection_rejects_blank_name_after_normalization(monkeypatch):
     assert exc_info.value.details == {"field": "name"}
 
 
+def test_team_manage_revoke_detects_current_users_last_management_path(monkeypatch):
+    service = _service(monkeypatch)
+    team_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        team_id=team_id,
+        permission_action="manage",
+    )
+    monkeypatch.setattr(service, "_is_org_manager", lambda: False)
+    monkeypatch.setattr(service, "_active_team_ids", lambda: {team_id})
+    monkeypatch.setattr(
+        service,
+        "_has_alternate_collection_manage_path",
+        lambda collection_id, *, exclude_permission_id: False,
+    )
+
+    assert (
+        service._would_revoke_current_user_last_manage_path(
+            uuid.uuid4(),
+            "team",
+            row,
+        )
+        is True
+    )
+
+
+def test_team_manage_revoke_allows_when_alternate_management_path_exists(monkeypatch):
+    service = _service(monkeypatch)
+    team_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        team_id=team_id,
+        permission_action="manage",
+    )
+    monkeypatch.setattr(service, "_is_org_manager", lambda: False)
+    monkeypatch.setattr(service, "_active_team_ids", lambda: {team_id})
+    monkeypatch.setattr(
+        service,
+        "_has_alternate_collection_manage_path",
+        lambda collection_id, *, exclude_permission_id: True,
+    )
+
+    assert (
+        service._would_revoke_current_user_last_manage_path(
+            uuid.uuid4(),
+            "team",
+            row,
+        )
+        is False
+    )
+
+
 def test_public_visibility_requires_acknowledgement(monkeypatch):
     service = _service(monkeypatch)
     collection = _collection()

@@ -16,6 +16,7 @@ from apps.shared.db.models.knowledge import (
 from apps.shared.db.models.team import (
     Team,
     TeamKnowledgeCollectionPermission,
+    TeamMembership,
     UserKnowledgeCollectionPermission,
 )
 from apps.shared.db.models.user import User
@@ -477,11 +478,10 @@ class KnowledgeCollectionService:
             subject_type = "user"
         if row is None:
             raise KnowledgeCollectionServiceError(404, "resource.hidden", "Resource not found.")
-        if (
-            subject_type == "user"
-            and row.user_id == self.user_id
-            and row.permission_action == "manage"
-            and not self._is_org_manager()
+        if self._would_revoke_current_user_last_manage_path(
+            collection.id,
+            subject_type,
+            row,
         ):
             raise KnowledgeCollectionServiceError(
                 403,
@@ -876,6 +876,84 @@ class KnowledgeCollectionService:
                 {"field": field},
             )
         return normalized
+
+    def _would_revoke_current_user_last_manage_path(
+        self,
+        collection_id: uuid.UUID,
+        subject_type: str,
+        row: TeamKnowledgeCollectionPermission | UserKnowledgeCollectionPermission,
+    ) -> bool:
+        if self._is_org_manager() or row.permission_action != "manage":
+            return False
+
+        if subject_type == "user":
+            if getattr(row, "user_id", None) != self.user_id:
+                return False
+        elif subject_type == "team":
+            if getattr(row, "team_id", None) not in self._active_team_ids():
+                return False
+        else:
+            return False
+
+        # 본인의 마지막 manage 경로를 끊으면 이후 복구가 관리자 개입에 의존한다.
+        return not self._has_alternate_collection_manage_path(
+            collection_id,
+            exclude_permission_id=row.id,
+        )
+
+    def _has_alternate_collection_manage_path(
+        self,
+        collection_id: uuid.UUID,
+        *,
+        exclude_permission_id: uuid.UUID,
+    ) -> bool:
+        direct_user_grant = (
+            self.db.query(UserKnowledgeCollectionPermission.id)
+            .filter(
+                UserKnowledgeCollectionPermission.user_id == self.user_id,
+                UserKnowledgeCollectionPermission.grantee_organization_id
+                == self.organization_id,
+                UserKnowledgeCollectionPermission.knowledge_collection_id
+                == collection_id,
+                UserKnowledgeCollectionPermission.permission_action == "manage",
+                UserKnowledgeCollectionPermission.id != exclude_permission_id,
+            )
+            .first()
+        )
+        if direct_user_grant is not None:
+            return True
+
+        team_ids = self._active_team_ids()
+        if not team_ids:
+            return False
+        return (
+            self.db.query(TeamKnowledgeCollectionPermission.id)
+            .filter(
+                TeamKnowledgeCollectionPermission.grantee_organization_id
+                == self.organization_id,
+                TeamKnowledgeCollectionPermission.knowledge_collection_id
+                == collection_id,
+                TeamKnowledgeCollectionPermission.permission_action == "manage",
+                TeamKnowledgeCollectionPermission.team_id.in_(team_ids),
+                TeamKnowledgeCollectionPermission.id != exclude_permission_id,
+            )
+            .first()
+            is not None
+        )
+
+    def _active_team_ids(self) -> set[uuid.UUID]:
+        rows = (
+            self.db.query(TeamMembership.team_id)
+            .join(Team, Team.id == TeamMembership.team_id)
+            .filter(
+                TeamMembership.user_id == self.user_id,
+                TeamMembership.grantee_organization_id == self.organization_id,
+                Team.organization_id == self.organization_id,
+                Team.is_active.is_(True),
+            )
+            .all()
+        )
+        return {row[0] for row in rows}
 
     def _record_collection_audit(
         self,
