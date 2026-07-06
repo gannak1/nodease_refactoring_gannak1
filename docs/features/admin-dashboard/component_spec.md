@@ -33,7 +33,7 @@ Verified Against: feature/mba-129 @ 4cceb58
 
 - 기존 `DashboardSummaryCard`를 재사용한 카드 2장: "이번 달 LLM 비용", "예산 위험 workflow".
 - 비용은 USD 소수점 2자리로 표시한다 (표시 직전 1회 반올림).
-- 예산 카드가 의존하는 판정/분모는 예산 관리 feature(PRD FR-051, 문서 TBD) 확정에 종속된다. API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
+- 예산 카드가 의존하는 판정/분모는 [budget-management](../budget-management/requirements.md)(PRD FR-051)를 따른다. API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
 - 데이터 원천: `GET /admin/summary`.
 
 ### AuditSearchTab (FR-011)

@@ -89,7 +89,7 @@ Response `200`:
 - `total_cost`가 NULL인 row는 0으로 합산한다.
 - `workflow_name`은 `workflows.app_id`로 연결된 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
 - 항목에서 해당 workflow 화면으로 이동하는 진입은 클라이언트 라우팅이며, 비교/최적화 실행 API는 [cost-optimizer](../cost-optimizer/api_spec.md) 범위다.
-- workflow별 예산/사용률 필드는 예산 관리 feature(PRD FR-051, 문서 TBD) 확정 후 추가한다.
+- workflow별 예산/사용률 필드는 [budget-management api_spec](../budget-management/api_spec.md)의 `budget` 블록 정의를 따라 추가한다 (예산 feature 구현 시).
 
 ### GET /admin/summary
 
@@ -109,7 +109,7 @@ Response `200`:
 }
 ```
 
-- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모는 예산 관리 feature(FR-051, 문서 TBD) 확정에 종속된다. 확정 전 구현은 `budget`을 null로 반환한다.
+- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 예산 feature 구현 전까지는 `budget`을 null로 반환한다.
 - 부적절한 접근/행동 탐지 건수 필드는 FR-013 복원 시 추가한다 (후순위).
 
 ### GET /admin/permission-requests
