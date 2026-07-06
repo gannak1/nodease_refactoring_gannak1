@@ -19,7 +19,7 @@ Status: Draft
 | --- | --- |
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_llm_permissions` |
-| 앱/워크플로우 | `apps`, `workflows`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs` |
+| 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
@@ -275,6 +275,24 @@ project/endpoint boundary.
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - UNIQUE `(id, organization_id)` — user direct permission의 복합 FK 대상.
+
+#### `workflow_budgets`
+
+workflow 단위 월간 LLM 예산 ([features/budget-management](features/budget-management/requirements.md)). workflow당 최대 1 row로 최신 설정만 유지하고, 비활성화는 row 삭제가 아니라 `is_enabled=false`다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id, index |
+| workflow_id | UUID | NOT NULL, UNIQUE |
+| monthly_budget_usd | NUMERIC(12,2) | NOT NULL, CHECK > 0 |
+| is_enabled | BOOLEAN | NOT NULL, default true |
+| created_by / updated_by | UUID | NULL, FK→users.id |
+| created_at / updated_at | DATETIME | NOT NULL |
+| options / flags | JSONB / BIGINT | NOT NULL — 공통 확장 컬럼 관례 |
+
+- UNIQUE `(workflow_id)` — workflow당 예산 1개. 동시 upsert 경합 방어의 기반이다.
+- 복합 FK `(workflow_id, organization_id)` → `workflows(id, organization_id)` ON DELETE CASCADE — 예산의 organization과 대상 workflow의 organization 정합을 DB에서 강제하고, workflow 삭제 시 예산도 삭제한다. `workflow_id`의 참조 무결성은 이 복합 FK가 담당한다 (단일 컬럼 FK 없음).
 
 #### `workflow_deployments`
 
