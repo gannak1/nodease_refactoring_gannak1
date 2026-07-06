@@ -37,6 +37,12 @@ def _available_model_options(*model_ids):
     ]
 
 
+def _configure_cost_optimizer_experiment_query(db, experiment):
+    (
+        db.query.return_value.options.return_value.filter.return_value.first.return_value
+    ) = experiment
+
+
 class TestCostOptimizerAvailabilityApi:
     def setup_method(self):
         self.client = TestClient(app)
@@ -1028,6 +1034,10 @@ class TestCostOptimizerCompareApi:
         assert sent_tasks[0]["name"] == "workflow.execute"
         assert sent_tasks[0]["args"][1] == {"message": "baseline input only"}
         assert UUID(sent_tasks[0]["args"][2]["workflow_run_id"])
+        assert sent_tasks[0]["args"][2]["execution_subject"] == {
+            "type": "user",
+            "id": str(user_id),
+        }
         patched_graph = sent_tasks[0]["args"][0]
         assert [node["type"] for node in patched_graph["nodes"]] == [
             "startNode",
@@ -2201,17 +2211,26 @@ class TestCostOptimizerApplyApi:
         request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
             **candidate_settings
         )
-        db.query.return_value.filter.return_value.all.return_value = [
+        _configure_cost_optimizer_experiment_query(
+            db,
             SimpleNamespace(
-                experiment_id=comparison_id,
-                candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
-                    request_candidate
-                ),
-                status="success",
-                schema_status="pass",
-                downstream_compatibility={"state": "compatible"},
-            )
-        ]
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            request_candidate
+                        ),
+                        status="success",
+                        schema_status="pass",
+                        downstream_compatibility={"state": "compatible"},
+                    )
+                ],
+            ),
+        )
         workflow = SimpleNamespace(
             id=workflow_id,
             organization_id=organization_id,
@@ -2326,7 +2345,16 @@ class TestCostOptimizerApplyApi:
             applied_at=None,
             applied_by=None,
         )
-        db.query.return_value.filter.return_value.all.return_value = [stored_candidate]
+        _configure_cost_optimizer_experiment_query(
+            db,
+            SimpleNamespace(
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[stored_candidate],
+            ),
+        )
         workflow = SimpleNamespace(
             id=workflow_id,
             organization_id=organization_id,
@@ -2426,6 +2454,81 @@ class TestCostOptimizerApplyApi:
         assert response.json()["detail"] == "cost_optimizer.candidate_not_found"
         db.commit.assert_not_called()
 
+    def test_fr8_apply_rejects_comparison_from_other_workflow_scope(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        app_id = uuid4()
+        user_id = uuid4()
+        comparison_id = uuid4()
+        db = MagicMock()
+        candidate_settings = {
+            "label": "B",
+            "model_id": "gpt-4.1-mini",
+            "parameters": {"max_tokens": 800, "temperature": 0.1},
+        }
+        request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
+            **candidate_settings
+        )
+        external_candidate = SimpleNamespace(
+            experiment_id=comparison_id,
+            candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                request_candidate
+            ),
+            status="success",
+            schema_status="pass",
+            downstream_compatibility={"state": "compatible"},
+            is_applied=False,
+            applied_at=None,
+            applied_by=None,
+        )
+        _configure_cost_optimizer_experiment_query(db, None)
+        workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            graph={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "position": {"x": 100, "y": 120},
+                        "data": {"model_id": "gpt-4.1"},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-4.1-mini"),
+            ),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply",
+                json={
+                    "comparison_id": str(comparison_id),
+                    "candidate_settings": candidate_settings,
+                    "acknowledge_downstream_warning": True,
+                },
+            )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "cost_optimizer.candidate_not_found"
+        assert external_candidate.is_applied is False
+        assert external_candidate.applied_by is None
+        assert external_candidate.applied_at is None
+        db.commit.assert_not_called()
+
     def test_fr8_apply_rejects_candidate_settings_not_in_comparison(self):
         workflow_id = uuid4()
         organization_id = uuid4()
@@ -2455,9 +2558,16 @@ class TestCostOptimizerApplyApi:
             applied_at=None,
             applied_by=None,
         )
-        db.query.return_value.filter.return_value.all.return_value = [
-            stored_candidate_row
-        ]
+        _configure_cost_optimizer_experiment_query(
+            db,
+            SimpleNamespace(
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[stored_candidate_row],
+            ),
+        )
         workflow = SimpleNamespace(
             id=workflow_id,
             organization_id=organization_id,
@@ -2518,16 +2628,25 @@ class TestCostOptimizerApplyApi:
         request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
             **candidate_settings
         )
-        db.query.return_value.filter.return_value.all.return_value = [
+        _configure_cost_optimizer_experiment_query(
+            db,
             SimpleNamespace(
-                experiment_id=comparison_id,
-                candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
-                    request_candidate
-                ),
-                status="schema_failed",
-                schema_status="failed",
-            )
-        ]
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            request_candidate
+                        ),
+                        status="schema_failed",
+                        schema_status="failed",
+                    )
+                ],
+            ),
+        )
         workflow = SimpleNamespace(
             id=workflow_id,
             organization_id=organization_id,
@@ -2597,25 +2716,34 @@ class TestCostOptimizerApplyApi:
             user_prompt="other user prompt",
             parameters={"max_tokens": 800, "temperature": 0.1},
         )
-        db.query.return_value.filter.return_value.all.return_value = [
+        _configure_cost_optimizer_experiment_query(
+            db,
             SimpleNamespace(
-                experiment_id=comparison_id,
-                candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
-                    other_candidate
-                ),
-                status="success",
-                schema_status="pass",
-                downstream_compatibility={"state": "compatible"},
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            other_candidate
+                        ),
+                        status="success",
+                        schema_status="pass",
+                        downstream_compatibility={"state": "compatible"},
+                    ),
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            target_candidate
+                        ),
+                        status="schema_failed",
+                        schema_status="failed",
+                    ),
+                ],
             ),
-            SimpleNamespace(
-                experiment_id=comparison_id,
-                candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
-                    target_candidate
-                ),
-                status="schema_failed",
-                schema_status="failed",
-            ),
-        ]
+        )
         workflow = SimpleNamespace(
             id=workflow_id,
             organization_id=organization_id,
@@ -2675,17 +2803,26 @@ class TestCostOptimizerApplyApi:
         request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
             **candidate_settings
         )
-        db.query.return_value.filter.return_value.all.return_value = [
+        _configure_cost_optimizer_experiment_query(
+            db,
             SimpleNamespace(
-                experiment_id=comparison_id,
-                candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
-                    request_candidate
-                ),
-                status="success",
-                schema_status="pass",
-                downstream_compatibility={"state": "warning"},
-            )
-        ]
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            request_candidate
+                        ),
+                        status="success",
+                        schema_status="pass",
+                        downstream_compatibility={"state": "warning"},
+                    )
+                ],
+            ),
+        )
         workflow = SimpleNamespace(
             id=workflow_id,
             organization_id=organization_id,

@@ -16,7 +16,7 @@ from sqlalchemy.dialects import postgresql
 revision: str = "f9a0b1c2d3e4"
 down_revision: Union[str, Sequence[str], None] = "f8a9b0c1d2e3"
 branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = "d0e1f2a3b4c5"
 
 
 def _jsonb():
