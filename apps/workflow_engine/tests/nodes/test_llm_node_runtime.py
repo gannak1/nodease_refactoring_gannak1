@@ -206,21 +206,19 @@ def test_llm_node_runs_with_override_client():
     # 클라이언트 호출 검증
     assert dummy_client.calls
     called = dummy_client.calls[0]
-    assert called["messages"][0] == {"role": "system", "content": SAFETY_SYSTEM_PROMPT}
-    assert called["messages"][1] == {
-        "role": "system",
-        "content": "sys [UNTRUSTED_INPUT:var]",
-    }
+    assert called["messages"][0]["role"] == "system"
+    assert SAFETY_SYSTEM_PROMPT in called["messages"][0]["content"]
+    assert "sys [UNTRUSTED_INPUT:var]" in called["messages"][0]["content"]
+    assert called["messages"][1]["role"] == "user"
+    assert "[BEGIN UPSTREAM_SYSTEM_INPUT - UNTRUSTED]" in called["messages"][1]["content"]
+    assert "X" in called["messages"][1]["content"]
     assert called["messages"][2]["role"] == "user"
-    assert "[BEGIN UPSTREAM_SYSTEM_INPUT - UNTRUSTED]" in called["messages"][2]["content"]
-    assert "X" in called["messages"][2]["content"]
-    assert called["messages"][3]["role"] == "user"
     assert (
         "[BEGIN UPSTREAM_ASSISTANT_INPUT - UNTRUSTED]"
-        in called["messages"][3]["content"]
+        in called["messages"][2]["content"]
     )
-    assert called["messages"][4] == {"role": "user", "content": "user X"}
-    assert called["messages"][5] == {
+    assert called["messages"][3] == {"role": "user", "content": "user X"}
+    assert called["messages"][4] == {
         "role": "assistant",
         "content": "assistant [UNTRUSTED_INPUT:var]",
     }
@@ -264,7 +262,7 @@ def test_llm_node_isolates_upstream_output_from_privileged_prompts():
     ]
     assert all("Ignore previous instructions" not in content for content in privileged_messages)
     assert all("정상적인 외부 데이터" not in content for content in privileged_messages)
-    assert messages[1]["content"] == "고정 정책. upstream=[UNTRUSTED_INPUT:var]"
+    assert "고정 정책. upstream=[UNTRUSTED_INPUT:var]" in messages[0]["content"]
     assert messages[-1]["content"] == "이전 답변 참고 [UNTRUSTED_INPUT:var]"
     untrusted_blocks = [
         message["content"]
@@ -274,6 +272,84 @@ def test_llm_node_isolates_upstream_output_from_privileged_prompts():
     assert len(untrusted_blocks) == 2
     assert any("[REDACTED: possible prompt injection]" in block for block in untrusted_blocks)
     assert any("정상적인 외부 데이터" in block for block in untrusted_blocks)
+
+
+def test_llm_node_privileged_prompt_only_sends_rendered_leaf_values():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="summary={{ api.summary }}",
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="api", value_selector=["api_node", "payload"])
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute(
+        {
+            "api_node": {
+                "payload": {
+                    "summary": "공개 요약",
+                    "token": "sk-secret-value",
+                    "raw_payload": {"credential": "needle-secret-value"},
+                },
+            }
+        }
+    )
+
+    messages = dummy_client.calls[0]["messages"]
+    assert "summary=[UNTRUSTED_INPUT:api.summary]" in messages[0]["content"]
+    rendered_prompt = "\n".join(message["content"] for message in messages)
+    assert "공개 요약" in rendered_prompt
+    assert "sk-secret-value" not in rendered_prompt
+    assert "needle-secret-value" not in rendered_prompt
+    assert "raw_payload" not in rendered_prompt
+
+
+def test_llm_node_privileged_prompt_preserves_jinja_control_types():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt=(
+            "{% if flag %}ON{% else %}OFF{% endif %}"
+            "{% for item in items %}|{{ item.name }}{% endfor %}"
+        ),
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="flag", value_selector=["start", "flag"]),
+            LLMVariable(name="items", value_selector=["start", "items"]),
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute(
+        {
+            "start": {
+                "flag": False,
+                "items": [
+                    {"name": "A", "token": "secret-a"},
+                    {"name": "B", "token": "secret-b"},
+                ],
+            }
+        }
+    )
+
+    messages = dummy_client.calls[0]["messages"]
+    assert "OFF|[UNTRUSTED_INPUT:items[0].name]|[UNTRUSTED_INPUT:items[1].name]" in messages[0]["content"]
+    rendered_prompt = "\n".join(message["content"] for message in messages)
+    assert "A" in rendered_prompt
+    assert "B" in rendered_prompt
+    assert "secret-a" not in rendered_prompt
+    assert "secret-b" not in rendered_prompt
 
 
 def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
@@ -1390,11 +1466,13 @@ def test_llm_node_rag_pii_evidence_blocks_llm_context(monkeypatch):
         "_authorized_runtime_kb_ids",
         lambda *args, **kwargs: [str(kb_id)],
     )
-    audit_calls = []
+    policy_block_calls = []
     monkeypatch.setattr(
         node,
-        "_record_rag_retrieve_audit",
-        lambda *args, **kwargs: audit_calls.append({"args": args, "kwargs": kwargs}),
+        "_record_rag_policy_block_audit",
+        lambda *args, **kwargs: policy_block_calls.append(
+            {"args": args, "kwargs": kwargs}
+        ),
     )
 
     def fake_fanout(**kwargs):
@@ -1424,13 +1502,18 @@ def test_llm_node_rag_pii_evidence_blocks_llm_context(monkeypatch):
 
     assert result.should_invoke_llm is False
     assert result.context == ""
+    assert result.metadata == []
     assert result.evidence_decision.evidence_sufficient is False
     assert result.evidence_decision.insufficiency_reason == "pii_policy_blocked"
     assert "민감한 개인정보 evidence" not in str(result.trace_summary)
-    assert audit_calls[0]["kwargs"] == {
-        "policy_result": "block",
+    assert str(kb_id) not in str(result.trace_summary)
+    assert result.trace_summary["retrieved_chunk_count"] == 0
+    assert result.trace_summary["selected_kb_count"] == 0
+    assert result.trace_summary["safe_exclusion_summary"] == {
+        "policy_filtered": True,
         "reason_code": "pii_policy_blocked",
     }
+    assert policy_block_calls[0]["kwargs"] == {"reason_code": "pii_policy_blocked"}
 
 
 def test_llm_node_rag_pii_evidence_fail_node_raises(monkeypatch):
@@ -1460,11 +1543,13 @@ def test_llm_node_rag_pii_evidence_fail_node_raises(monkeypatch):
         "_authorized_runtime_kb_ids",
         lambda *args, **kwargs: [str(kb_id)],
     )
-    audit_calls = []
+    policy_block_calls = []
     monkeypatch.setattr(
         node,
-        "_record_rag_retrieve_audit",
-        lambda *args, **kwargs: audit_calls.append({"args": args, "kwargs": kwargs}),
+        "_record_rag_policy_block_audit",
+        lambda *args, **kwargs: policy_block_calls.append(
+            {"args": args, "kwargs": kwargs}
+        ),
     )
     monkeypatch.setattr(
         node,
@@ -1492,8 +1577,33 @@ def test_llm_node_rag_pii_evidence_fail_node_raises(monkeypatch):
 
     with pytest.raises(PermissionError, match="blocked by policy"):
         node._execute_knowledge_search("병가", db_session=object())  # noqa: SLF001
-    assert audit_calls[0]["kwargs"] == {
-        "policy_result": "block",
+    assert policy_block_calls[0]["kwargs"] == {"reason_code": "pii_policy_blocked"}
+
+
+def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "workflow_id": str(uuid.uuid4()),
+        "workflow_run_id": str(uuid.uuid4()),
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    user_id = uuid.uuid4()
+    node._record_rag_policy_block_audit(  # noqa: SLF001 - audit helper 회귀 테스트
+        user_id,
+        reason_code="pii_policy_blocked",
+    )
+
+    assert audit_calls[0]["action"] == "policy.block"
+    assert audit_calls[0]["target_type"] == "workflow_node"
+    assert audit_calls[0]["target_id"] == "llm-1"
+    assert audit_calls[0]["metadata"]["policy_result"] == {
+        "result": "block",
         "reason_code": "pii_policy_blocked",
     }
 

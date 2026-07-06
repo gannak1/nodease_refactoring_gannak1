@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from jinja2 import Environment, meta
+from jinja2 import Environment
 
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
@@ -92,6 +92,83 @@ class WorkflowRAGFanoutResult:
 class PromptRenderResult:
     content: str
     untrusted_context_block: str = ""
+
+
+class _UntrustedPromptValue:
+    """Jinja 제어문 타입 의미는 유지하되 출력되는 leaf 값만 untrusted block으로 분리한다."""
+
+    def __init__(self, value: Any, path: str, collector: dict[str, str]) -> None:
+        self._value = value
+        self._path = path
+        self._collector = collector
+
+    def __str__(self) -> str:
+        value_text = self._rendered_value_text()
+        if value_text:
+            self._collector.setdefault(self._path, value_text)
+        return f"[UNTRUSTED_INPUT:{self._path}]"
+
+    def __repr__(self) -> str:
+        return str(self)
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __len__(self) -> int:
+        try:
+            return len(self._value)
+        except TypeError:
+            return 0
+
+    def __iter__(self):
+        if isinstance(self._value, dict):
+            for key in self._value:
+                yield self._child(key, f"{self._path}.{key}")
+            return
+        if isinstance(self._value, (list, tuple)):
+            for index, item in enumerate(self._value):
+                yield _UntrustedPromptValue(item, f"{self._path}[{index}]", self._collector)
+            return
+        return iter(())
+
+    def __getitem__(self, key: Any):
+        if isinstance(self._value, dict):
+            return self._child(key, f"{self._path}.{key}")
+        if isinstance(self._value, (list, tuple)) and isinstance(key, int):
+            try:
+                return _UntrustedPromptValue(
+                    self._value[key],
+                    f"{self._path}[{key}]",
+                    self._collector,
+                )
+            except IndexError:
+                return ""
+        return ""
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if isinstance(self._value, dict):
+            return self._child(name, f"{self._path}.{name}")
+        if hasattr(self._value, name):
+            return _UntrustedPromptValue(
+                getattr(self._value, name),
+                f"{self._path}.{name}",
+                self._collector,
+            )
+        return ""
+
+    def _child(self, key: Any, path: str):
+        if not isinstance(self._value, dict):
+            return ""
+        if key not in self._value:
+            return ""
+        return _UntrustedPromptValue(self._value[key], path, self._collector)
+
+    def _rendered_value_text(self) -> str:
+        if isinstance(self._value, (dict, list, tuple, set)):
+            return "[complex value omitted]"
+        return stringify_untrusted_value(self._value)
 
 
 def _get_nested_value(data: Any, keys: List[str]) -> Any:
@@ -337,10 +414,11 @@ class LLMNode(Node[LLMNodeData]):
                     "프롬프트 렌더링 결과가 모두 비어있습니다. 입력 변수가 올바르게 전달되었는지 확인해주세요."
                 )
 
-            # 안전 가드를 우선 배치하고, 비신뢰 컨텍스트는 system과 분리합니다.
-            messages = [{"role": "system", "content": SAFETY_SYSTEM_PROMPT}]
+            # 안전 가드는 단일 system 메시지에 합쳐 provider별 system 처리 차이를 피한다.
+            system_parts = [SAFETY_SYSTEM_PROMPT]
             if system_content:
-                messages.append({"role": "system", "content": system_content})
+                system_parts.append(system_content)
+            messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
             for untrusted_block in privileged_untrusted_blocks:
                 messages.append({"role": "user", "content": untrusted_block})
@@ -573,25 +651,22 @@ class LLMNode(Node[LLMNodeData]):
             return PromptRenderResult(content="")
 
         context = self._prompt_variable_context(inputs)
-        used_variables = self._template_variable_names(template)
-        render_context = dict(context)
-        untrusted_sections: list[str] = []
-
-        for var_name in sorted(used_variables):
-            if var_name not in context:
-                continue
-            value_text = stringify_untrusted_value(context.get(var_name))
-            if not value_text.strip():
-                render_context[var_name] = ""
-                continue
-            render_context[var_name] = f"[UNTRUSTED_INPUT:{var_name}]"
-            untrusted_sections.append(f"{var_name}:\n{value_text}")
+        collector: dict[str, str] = {}
+        render_context = {
+            var_name: _UntrustedPromptValue(value, var_name, collector)
+            for var_name, value in context.items()
+        }
 
         try:
             content = _jinja_env.from_string(template).render(**render_context)
         except Exception as e:
             raise ValueError(f"프롬프트 렌더링 실패: {e}")
 
+        untrusted_sections = [
+            f"{path}:\n{value_text}"
+            for path, value_text in sorted(collector.items())
+            if value_text.strip()
+        ]
         untrusted_context_block = build_untrusted_context_block(
             "\n\n".join(untrusted_sections),
             label=label,
@@ -629,14 +704,6 @@ class LLMNode(Node[LLMNodeData]):
                 context[var_name] = source_data
 
         return context
-
-    @staticmethod
-    def _template_variable_names(template: str) -> set[str]:
-        try:
-            parsed = _jinja_env.parse(template)
-            return set(meta.find_undeclared_variables(parsed))
-        except Exception as e:
-            raise ValueError(f"프롬프트 렌더링 실패: {e}")
 
     def _build_memory_summary(self) -> Optional[str]:
         """
@@ -880,14 +947,27 @@ class LLMNode(Node[LLMNodeData]):
         policy_block_reason = blocked_evidence_reason_for_chunks(selected_chunks)
         if policy_block_reason:
             # 정책상 외부 LLM에 전달할 수 없는 evidence는 근거 충분성과 무관하게 차단한다.
-            for kb_id, result_count in rag_result_counts:
-                self._record_rag_retrieve_audit(
-                    credential_user_id,
-                    kb_id,
-                    result_count,
-                    policy_result="block",
-                    reason_code=policy_block_reason,
-                )
+            self._record_rag_policy_block_audit(
+                credential_user_id,
+                reason_code=policy_block_reason,
+            )
+            blocked_trace_summary = self._rag_runtime_trace_summary(
+                authorized_kb_count=len(authorized_kb_ids),
+                retrieved_chunk_count=0,
+                selected_kb_count=0,
+                context_chunks=[],
+                fanout=WorkflowRAGFanoutResult(
+                    results=[],
+                    failed_count=fanout.failed_count,
+                    timeout_count=fanout.timeout_count,
+                ),
+                query_rewrite_applied=query_rewrite_applied,
+                query_rewrite_strategy=query_rewrite_strategy,
+            )
+            blocked_trace_summary["safe_exclusion_summary"] = {
+                "policy_filtered": True,
+                "reason_code": policy_block_reason,
+            }
             evidence_decision = RAGEvidenceDecision(
                 evidence_sufficient=False,
                 insufficiency_reason=policy_block_reason,
@@ -901,11 +981,11 @@ class LLMNode(Node[LLMNodeData]):
                 raise PermissionError("RAG evidence is blocked by policy.")
             return WorkflowRAGSearchResult(
                 context="",
-                metadata=metadata_list,
+                metadata=[],
                 evidence_decision=evidence_decision,
                 should_invoke_llm=False,
                 answer_override=self._rag_safe_no_result_answer(evidence_decision),
-                trace_summary=trace_summary,
+                trace_summary=blocked_trace_summary,
             )
         for kb_id, result_count in rag_result_counts:
             self._record_rag_retrieve_audit(
@@ -1442,6 +1522,32 @@ class LLMNode(Node[LLMNodeData]):
             target_type="knowledge_base",
             target_id=knowledge_base_id,
             status="success",
+            metadata=metadata,
+        )
+
+    def _record_rag_policy_block_audit(
+        self,
+        user_id: uuid.UUID,
+        *,
+        reason_code: str,
+    ) -> None:
+        metadata = {
+            "workflow_id": self.execution_context.get("workflow_id"),
+            "workflow_run_id": self.execution_context.get("workflow_run_id"),
+            "node_id": self.id,
+            "policy_result": {
+                "result": "block",
+                "reason_code": reason_code,
+            },
+        }
+        record_audit(
+            action=AuditAction.POLICY_BLOCK,
+            category="action",
+            actor_id=user_id,
+            actor_type="user",
+            target_type="workflow_node",
+            target_id=self.id,
+            status="failure",
             metadata=metadata,
         )
 
