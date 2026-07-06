@@ -211,3 +211,25 @@ def test_recommendation_cap_and_stable_ranking():
     assert len(result.recommendations) == 1
     assert result.recommendations[0].candidate_id == higher.candidate_id
     assert result.summary.recommendation_count_bucket == "1"
+
+
+def test_auto_collection_omitted_scope_and_explicit_empty_scope_are_distinct():
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    service = _service(resolver)
+
+    service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(workflow_intent="휴가 정책")
+    )
+    service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 정책",
+            mode="auto_collection",
+            collection_ids=[],
+            max_collections=50,
+        )
+    )
+
+    assert resolver.auto_calls[0]["collection_ids"] is None
+    assert resolver.auto_calls[0]["max_collections"] == 20
+    assert resolver.auto_calls[1]["collection_ids"] == []
+    assert resolver.auto_calls[1]["max_collections"] == 50

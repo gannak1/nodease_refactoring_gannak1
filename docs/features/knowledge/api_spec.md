@@ -58,7 +58,7 @@ Request body는 raw user input으로 간주한다.
 | `workflow_intent` | 필수. 길이 cap과 control character normalization을 적용한다. Raw text는 durable audit/trace/log에 저장하지 않는다 |
 | `node_purpose` | 선택. LLM node 목적 요약. Raw text는 durable metadata에 저장하지 않는다 |
 | `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환한다 |
-| `collection_ids` | 선택. Auto collection 후보 scope. Collection은 recommendation item으로 반환하지 않고 safe summary로만 제공한다 |
+| `collection_ids` | 선택. Auto collection 후보 scope. Field를 생략하면 actor가 route할 수 있는 서버 정책상 collection subset을 사용한다. 명시적으로 `[]`를 보내면 빈 scope로 해석해 recommendation을 만들지 않는다. Collection은 recommendation item으로 반환하지 않고 safe summary로만 제공한다 |
 | `knowledge_base_ids` | 선택. Explicit KB 후보 |
 | `intended_execution_subject_id` | 선택. Runtime availability warning 계산용. 실행 권한 보장이 아니며 runtime은 다시 검증한다 |
 | `max_recommendations` | 서버 cap. 초기 기본값은 5, 최대 20 |
@@ -88,6 +88,8 @@ Response item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
 
 금지: raw workflow intent, raw node purpose, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
+
+Validation 실패 응답도 같은 금지선을 따른다. `workflow_intent`, `node_purpose` 같은 raw prompt-like input은 Pydantic/FastAPI validation detail의 `input` 값으로 echo하지 않고, field path/type/message 수준의 sanitized error만 반환한다.
 
 ## Request Model
 

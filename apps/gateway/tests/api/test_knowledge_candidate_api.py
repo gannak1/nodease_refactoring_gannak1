@@ -193,3 +193,24 @@ def test_knowledge_rag_recommendation_route_uses_server_context(monkeypatch):
         "Knowledge Base"
     )
     assert "raw_source_url" not in str(body)
+
+
+def test_knowledge_rag_recommendation_validation_does_not_echo_raw_input():
+    secret_marker = "SECRET_INTENT_SHOULD_NOT_ECHO"
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge/rag-recommendations",
+            json={
+                "workflow_intent": secret_marker + ("x" * 4000),
+            },
+            headers={"X-Organization-Id": str(uuid.uuid4())},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 422
+    body_text = response.text
+    assert response.json()["error"]["code"] == "validation.failed"
+    assert secret_marker not in body_text

@@ -255,7 +255,10 @@ class KnowledgeCandidateResolver:
             return {}
         rows = (
             self.db.query(KnowledgeBase)
-            .options(joinedload(KnowledgeBase.source_identity))
+            .options(
+                joinedload(KnowledgeBase.source_identity),
+                joinedload(KnowledgeBase.active_document_version),
+            )
             .filter(
                 KnowledgeBase.id.in_(ids),
                 KnowledgeBase.organization_id == self.organization_id,
@@ -286,6 +289,7 @@ class KnowledgeCandidateResolver:
                 runtime_reason_code = runtime_decision.external_reason_code
 
         safe_metadata = dict(permission.safe_metadata)
+        safe_metadata.update(self._active_version_safe_metadata(kb))
         if extra_safe_metadata:
             safe_metadata.update(extra_safe_metadata)
         if runtime_reason_code:
@@ -315,6 +319,17 @@ class KnowledgeCandidateResolver:
         if getattr(source_identity, "display_policy_state", None) == "approved":
             return getattr(source_identity, "safe_display_name", None)
         return None
+
+    def _active_version_safe_metadata(self, kb: KnowledgeBase) -> dict:
+        # Source tier는 권한이 통과된 KB의 active ready version에서만 safe ranking hint로 전달한다.
+        # Adapter가 DocumentVersion을 직접 조회하지 않게 하여 permission/candidate 경계를 유지한다.
+        version = getattr(kb, "active_document_version", None)
+        if version is None or getattr(version, "status", None) != "ready":
+            return {}
+        source_tier = getattr(version, "source_tier", None)
+        if not isinstance(source_tier, str) or not source_tier.strip():
+            return {}
+        return {"source_tier": source_tier.strip()}
 
     def _collection_context_by_kb_id(
         self,

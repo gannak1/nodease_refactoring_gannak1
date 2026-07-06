@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.services.knowledge_candidate_resolver import (
     DEFAULT_MAX_CANDIDATE_KBS,
-    DEFAULT_MAX_COLLECTIONS,
     KnowledgeCandidateResolver,
     bucket_count,
 )
@@ -119,10 +118,20 @@ class KnowledgeRAGRecommendationService:
         if recommendation_mode == "explicit_kb":
             return resolver.resolve_explicit_kbs(request.knowledge_base_ids)
         return resolver.resolve_auto_collection_candidates(
-            collection_ids=request.collection_ids or None,
-            max_collections=min(request.max_collections, DEFAULT_MAX_COLLECTIONS),
+            collection_ids=self._collection_scope(request),
+            max_collections=request.max_collections,
             max_candidate_kbs=min(request.max_candidate_kbs, DEFAULT_MAX_CANDIDATE_KBS),
         )
+
+    def _collection_scope(
+        self,
+        request: KnowledgeRAGRecommendationRequest,
+    ) -> list[uuid.UUID] | None:
+        # collection_ids를 생략한 경우만 "route 가능한 전체 scope"로 해석한다.
+        # 명시적으로 []를 보낸 경우는 사용자가 scope를 비운 것이므로 후보 없음으로 유지한다.
+        if "collection_ids" in request.model_fields_set:
+            return request.collection_ids
+        return None
 
     def _resolved_mode(self, request: KnowledgeRAGRecommendationRequest) -> str:
         if request.mode in {"explicit_kb", "auto_collection"}:
