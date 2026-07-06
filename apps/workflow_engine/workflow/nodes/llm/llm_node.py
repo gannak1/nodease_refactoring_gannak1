@@ -61,8 +61,8 @@ MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
 QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
 SUMMARY_MODEL_PREFS = {
     "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-3.5-turbo"],
-    "google": ["gemini-1.5-flash", "gemini-1.5-pro"],
-    "anthropic": ["claude-3-haiku-20240307", "claude-3-5-sonnet-20240620"],
+    "google": ["gemini-3.1-flash-lite", "gemini-2.5-flash"],
+    "anthropic": ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
 }
 
 SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
