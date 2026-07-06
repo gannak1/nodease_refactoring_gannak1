@@ -1755,6 +1755,8 @@ def _cost_optimizer_candidate_settings_match(
 
 def _ensure_cost_optimizer_candidate_apply_allowed(
     db: Session,
+    workflow: Workflow,
+    node_id: str,
     comparison_id: str | None,
     candidate_settings: CostOptimizerCandidateRequest,
     acknowledge_downstream_warning: bool,
@@ -1766,11 +1768,18 @@ def _ensure_cost_optimizer_candidate_apply_allowed(
             detail="cost_optimizer.candidate_not_found",
         )
 
-    rows = (
-        db.query(CostOptimizerCandidate)
-        .filter(CostOptimizerCandidate.experiment_id == experiment_id)
-        .all()
+    experiment = (
+        db.query(CostOptimizerExperiment)
+        .options(selectinload(CostOptimizerExperiment.candidates))
+        .filter(
+            CostOptimizerExperiment.id == experiment_id,
+            CostOptimizerExperiment.workflow_id == workflow.id,
+            CostOptimizerExperiment.node_id == node_id,
+            CostOptimizerExperiment.organization_id == workflow.organization_id,
+        )
+        .first()
     )
+    rows = list(getattr(experiment, "candidates", []) or []) if experiment else []
     if not rows:
         raise HTTPException(
             status_code=400,
@@ -2203,6 +2212,10 @@ def _cost_optimizer_candidate_execution_context(
 ) -> dict[str, Any]:
     return {
         "user_id": str(current_user.id),
+        "execution_subject": {
+            "type": "user",
+            "id": str(current_user.id),
+        },
         "workflow_id": str(workflow.id),
         "workflow_run_id": str(workflow_run_id),
         "organization_id": (
@@ -2728,6 +2741,8 @@ def apply_cost_optimizer_candidate(
     applied_candidate_row, comparison_candidate_rows = (
         _ensure_cost_optimizer_candidate_apply_allowed(
             db,
+            workflow,
+            node_id,
             request_body.comparison_id,
             request_body.candidate_settings,
             request_body.acknowledge_downstream_warning,
