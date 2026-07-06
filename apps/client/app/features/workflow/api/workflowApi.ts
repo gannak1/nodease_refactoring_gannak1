@@ -39,6 +39,31 @@ const cloneMockResponse = <T>(value: T): T => {
   return JSON.parse(JSON.stringify(value)) as T;
 };
 
+const createHttpError = (
+  status: number,
+  data: unknown,
+  fallbackMessage: string,
+) => {
+  const detail =
+    typeof data === 'object' && data !== null && 'detail' in data
+      ? (data as { detail?: unknown }).detail
+      : undefined;
+  const message =
+    typeof detail === 'string'
+      ? detail
+      : typeof detail === 'object' &&
+          detail !== null &&
+          'message' in detail &&
+          typeof (detail as { message?: unknown }).message === 'string'
+        ? (detail as { message: string }).message
+        : fallbackMessage;
+
+  return Object.assign(new Error(message), {
+    isAxiosError: true,
+    response: { status, data },
+  });
+};
+
 // 401 에러 인터셉터 (인증 만료 시 로그인 페이지로)
 api.interceptors.response.use(
   (response) => response,
@@ -138,7 +163,11 @@ export const workflowApi = {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || 'Workflow execution failed');
+      throw createHttpError(
+        response.status,
+        errorData,
+        'Workflow execution failed',
+      );
     }
 
     if (!response.body) {

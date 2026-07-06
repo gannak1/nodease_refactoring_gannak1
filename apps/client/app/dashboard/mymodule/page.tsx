@@ -22,6 +22,8 @@ import {
 import CreateAppModal from '@/app/features/app/components/create-app-modal';
 import EditAppModal from '@/app/features/app/components/edit-app-modal';
 import { appApi, type App } from '@/app/features/app/api/appApi';
+import { BudgetStatusBadge } from '@/app/features/budget/components/BudgetStatusBadge';
+import { budgetRunBlockMessage } from '@/app/features/budget/utils/budgetGuard';
 import {
   moduleOperationsApi,
   type ModuleOperationRow,
@@ -570,6 +572,7 @@ function ModuleOperationTableRow({
   const deploymentState = row.deploymentState;
   const canEdit = canEditApp(row, isOrgManager);
   const canToggle = canToggleDeployment(row);
+  const runBlockMessage = budgetRunBlockMessage(row.app.budget_status);
 
   return (
     <tr className="text-sm text-slate-700 hover:bg-slate-50">
@@ -591,6 +594,14 @@ function ModuleOperationTableRow({
             <span className="mt-1 line-clamp-2 block text-xs text-slate-500">
               {row.app.description || '설명 없음'}
             </span>
+            {row.app.budget_status && (
+              <span className="mt-2 block">
+                <BudgetStatusBadge
+                  status={row.app.budget_status.status}
+                  usageRatio={row.app.budget_status.usage_ratio}
+                />
+              </span>
+            )}
             <span className="mt-2 block text-xs text-slate-400">
               마지막 수정 {formatDate(row.app.updated_at)}
             </span>
@@ -637,6 +648,14 @@ function ModuleOperationTableRow({
           {row.dataQuality.latestRunUnavailable && (
             <span className="w-fit rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-700">
               예정
+            </span>
+          )}
+          {runBlockMessage && (
+            <span
+              title={runBlockMessage}
+              className="w-fit rounded bg-red-100 px-1 text-[10px] font-bold text-red-700"
+            >
+              실행 차단
             </span>
           )}
         </div>

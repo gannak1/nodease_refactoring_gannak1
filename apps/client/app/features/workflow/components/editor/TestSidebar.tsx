@@ -4,6 +4,10 @@ import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
 import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
 import {
+  BUDGET_EXCEEDED_MESSAGE,
+  isBudgetExceededError,
+} from '@/app/features/budget/utils/budgetGuard';
+import {
   X,
   Play,
   RefreshCw,
@@ -652,8 +656,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       }
     } catch (err: any) {
       console.error('Execution failed:', err);
-      failTestExecution(err.message || '실행 중 오류가 발생했습니다.');
-      toast.error('실행 실패');
+      const budgetExceeded = isBudgetExceededError(err);
+      failTestExecution(
+        budgetExceeded
+          ? BUDGET_EXCEEDED_MESSAGE
+          : err.message || '실행 중 오류가 발생했습니다.',
+      );
+      toast.error(budgetExceeded ? BUDGET_EXCEEDED_MESSAGE : '실행 실패');
     } finally {
       setTestUploading(false);
       setPreflightStatus('idle');

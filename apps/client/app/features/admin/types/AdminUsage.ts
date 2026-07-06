@@ -1,3 +1,12 @@
+import type { BudgetUsageStatus } from '../../budget/types';
+
+export type AdminWorkflowBudgetUsage = {
+  monthly_budget_usd: number;
+  current_month_cost: number;
+  usage_ratio: number;
+  status: BudgetUsageStatus | string;
+};
+
 export type AdminWorkflowUsageItem = {
   workflow_id: string;
   workflow_name: string;
@@ -5,6 +14,7 @@ export type AdminWorkflowUsageItem = {
   completion_tokens: number;
   call_count: number;
   total_cost: number;
+  budget?: AdminWorkflowBudgetUsage | null;
 };
 
 export type AdminUsagePeriod = {
@@ -18,9 +28,15 @@ export type AdminWorkflowUsageResponse = {
   items: AdminWorkflowUsageItem[];
 };
 
-// budget 블록은 예산 관리 feature(PRD FR-051) 확정 전까지 null이다.
+export type AdminBudgetSummary = {
+  budgeted_workflow_count: number;
+  at_risk_count: number;
+  exceeded_count: number;
+  ratio: number;
+};
+
 export type AdminOrganizationSummary = {
   month: string;
   total_cost: number;
-  budget: null;
+  budget: AdminBudgetSummary | null;
 };

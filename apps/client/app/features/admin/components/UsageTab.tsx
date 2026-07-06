@@ -6,6 +6,9 @@ import { isAxiosError } from 'axios';
 import { ArrowUpRight, BarChart3, RotateCcw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { DashboardPanel } from '../../dashboard/components/DashboardSurface';
+import { BudgetEditModal } from '../../budget/components/BudgetEditModal';
+import { BudgetStatusBadge } from '../../budget/components/BudgetStatusBadge';
+import type { BudgetUsageStatus } from '../../budget/types';
 import { adminApi } from '../api/adminApi';
 import type {
   AdminUsagePeriod,
@@ -17,6 +20,11 @@ const PAGE_SIZE = 20;
 
 // 비용은 원본 정밀도로 받아 표시 직전에만 USD 2자리로 반올림한다.
 const formatCost = (value: number) => `$${value.toFixed(2)}`;
+
+const normalizeBudgetStatus = (status: string): BudgetUsageStatus => {
+  if (status === 'at_risk' || status === 'exceeded') return status;
+  return 'normal';
+};
 
 export function UsageTab() {
   const [form, setForm] = useState({ startAt: '', endAt: '' });
@@ -32,6 +40,10 @@ export function UsageTab() {
   const [error, setError] = useState<
     { kind: 'forbidden' | 'unknown'; message: string } | null
   >(null);
+  const [budgetEditor, setBudgetEditor] = useState<{
+    workflowId: string;
+    workflowName: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -195,6 +207,9 @@ export function UsageTab() {
                   비용 (USD) ↓
                 </th>
                 <th scope="col" className="px-3 py-2 font-semibold">
+                  예산
+                </th>
+                <th scope="col" className="px-3 py-2 font-semibold">
                   이동
                 </th>
               </tr>
@@ -218,6 +233,37 @@ export function UsageTab() {
                     {formatCost(item.total_cost)}
                   </td>
                   <td className="px-3 py-3">
+                    <div className="flex flex-col items-start gap-2">
+                      {item.budget ? (
+                        <>
+                          <span className="text-sm font-semibold text-slate-900">
+                            {formatCost(item.budget.monthly_budget_usd)}
+                          </span>
+                          <BudgetStatusBadge
+                            status={normalizeBudgetStatus(item.budget.status)}
+                            usageRatio={item.budget.usage_ratio}
+                          />
+                        </>
+                      ) : (
+                        <span className="text-sm font-medium text-slate-500">
+                          미설정
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBudgetEditor({
+                            workflowId: item.workflow_id,
+                            workflowName: item.workflow_name,
+                          })
+                        }
+                        className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                      >
+                        예산 설정
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3">
                     <Link
                       href={`/modules/${item.workflow_id}`}
                       className="flex w-fit items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
@@ -237,6 +283,18 @@ export function UsageTab() {
             onPageChange={(page) => setApplied((prev) => ({ ...prev, page }))}
           />
         </>
+      )}
+      {budgetEditor && (
+        <BudgetEditModal
+          workflowId={budgetEditor.workflowId}
+          workflowName={budgetEditor.workflowName}
+          onClose={() => setBudgetEditor(null)}
+          onSaved={() => {
+            setBudgetEditor(null);
+            toast.success('예산을 저장했습니다.');
+            load();
+          }}
+        />
       )}
     </DashboardPanel>
   );
