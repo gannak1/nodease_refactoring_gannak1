@@ -18,6 +18,7 @@ import { LLM_TASK_TYPES } from '@/app/features/workflow/utils/llmTaskTypes';
 import {
   llmDataFromCandidate,
   type CandidateDraft,
+  type CostOptimizerContractChip,
   type JsonSchemaField,
   type JsonSchemaFieldType,
   type SettingsTab,
@@ -131,6 +132,7 @@ export function NodeSettingsComparisonPanel({
   readOnly = false,
   onChange = noopCandidateChange,
   onNodeDataChange,
+  ioContract,
 }: {
   title: string;
   hideTitle?: boolean;
@@ -141,11 +143,22 @@ export function NodeSettingsComparisonPanel({
   readOnly?: boolean;
   onChange?: CandidateChangeHandler;
   onNodeDataChange?: (updates: Partial<LLMNodeData>) => void;
+  ioContract?: {
+    inputs: CostOptimizerContractChip[];
+    outputs: CostOptimizerContractChip[];
+  };
 }) {
   const [wizardField, setWizardField] = useState<PromptField>('system');
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [activePromptField, setActivePromptField] =
+    useState<PromptField>('user');
+  const [pendingInputInsertion, setPendingInputInsertion] = useState<{
+    field: PromptField;
+    id: string;
+    output: DraggedOutputVariable;
+  } | null>(null);
 
   useEffect(() => {
     if (readOnly) return;
@@ -214,6 +227,18 @@ export function NodeSettingsComparisonPanel({
     });
   }, [fallbackCandidates, draft.model_id, selectedModel]);
   const fallbackDisabled = !draft.model_id?.trim();
+  const promptTokenLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    for (const reference of draft.referenced_variables || []) {
+      if (!reference || typeof reference !== 'object') continue;
+      const name = String((reference as { name?: unknown }).name || '').trim();
+      if (name) labels[name] = name;
+    }
+    for (const chip of ioContract?.inputs || []) {
+      if (chip.key.trim()) labels[chip.key] = chip.key;
+    }
+    return labels;
+  }, [draft.referenced_variables, ioContract?.inputs]);
 
   const openWizard = (field: PromptField) => {
     if (readOnly) return;
@@ -240,6 +265,25 @@ export function NodeSettingsComparisonPanel({
     );
     return referenceName;
   };
+  const insertInputVariable = (
+    field: PromptField,
+    chip: CostOptimizerContractChip,
+  ) => {
+    if (readOnly) return;
+    const sourceNodeId = chip.source || 'baseline-input';
+    const output: DraggedOutputVariable = {
+      key: chip.key,
+      label: chip.key,
+      dataType: 'string',
+      sourceNodeId,
+      sourceTitle: chip.source || '기준 입력',
+    };
+    setPendingInputInsertion({
+      field,
+      id: `${field}-${chip.source || 'input'}-${chip.key}-${Date.now()}`,
+      output,
+    });
+  };
 
   const renderPromptField = ({
     field,
@@ -254,7 +298,11 @@ export function NodeSettingsComparisonPanel({
     minHeightClassName: string;
     placeholder: string;
   }) => (
-    <label className="grid gap-1 text-xs font-semibold text-slate-600">
+    <div
+      className="grid gap-1 text-xs font-semibold text-slate-600"
+      onClick={() => setActivePromptField(field)}
+      onFocus={() => setActivePromptField(field)}
+    >
       <span className="flex items-center justify-between gap-2">
         <span>{label}</span>
         {!readOnly ? (
@@ -278,6 +326,7 @@ export function NodeSettingsComparisonPanel({
         <textarea
           value={value}
           readOnly
+          aria-label={label}
           placeholder={placeholder}
           className={`${minHeightClassName} rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none`}
         />
@@ -288,12 +337,78 @@ export function NodeSettingsComparisonPanel({
             onChange(promptFieldToDraftKey[field], nextValue)
           }
           onDropOutput={handlePromptDropOutput}
+          insertOutputRequest={
+            pendingInputInsertion?.field === field ? pendingInputInsertion : null
+          }
           placeholder={placeholder}
           ariaLabel={label}
           className={minHeightClassName}
+          tokenLabels={promptTokenLabels}
         />
       )}
-    </label>
+    </div>
+  );
+
+  const renderPromptInputVariables = () => {
+    if (readOnly || !ioContract?.inputs.length) return null;
+
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-blue-100 bg-blue-50/50 px-2 py-1.5">
+        <span className="text-[11px] font-bold text-blue-700">
+          입력 변수
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {ioContract.inputs.map((chip) => (
+            <button
+              key={`${chip.source || 'input'}-${chip.key}`}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => insertInputVariable(activePromptField, chip)}
+              title={[chip.detail, chip.value].filter(Boolean).join('\n')}
+              className="inline-flex max-w-full items-center rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[11px] font-bold text-blue-700 hover:border-blue-300 hover:bg-blue-100"
+            >
+              {chip.key}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderContractChips = (
+    title: string,
+    description: string,
+    chips: CostOptimizerContractChip[],
+    emptyText: string,
+  ) => (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="text-xs font-bold text-slate-700">{title}</div>
+      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+        {description}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {chips.length > 0 ? (
+          chips.map((chip) => (
+            <span
+              key={`${title}-${chip.key}`}
+              title={[chip.detail, chip.value].filter(Boolean).join('\n')}
+              className="inline-flex max-w-full items-center rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700"
+            >
+              {chip.key}
+              {chip.source ? (
+                <span className="ml-1 font-semibold text-slate-400">
+                  {chip.source}
+                </span>
+              ) : null}
+            </span>
+          ))
+        ) : (
+          <span className="text-[11px] font-semibold text-slate-400">
+            {emptyText}
+          </span>
+        )}
+      </div>
+    </div>
   );
 
   const wizardPromptKey = promptFieldToDraftKey[wizardField];
@@ -535,7 +650,25 @@ export function NodeSettingsComparisonPanel({
                 ) : null}
               </div>
 
+              {ioContract ? (
+                <div className="grid gap-2">
+                  {renderContractChips(
+                    '기준 입력',
+                    'A baseline 실행에서 고정된 입력값입니다. B 후보에서는 수정하지 않습니다.',
+                    ioContract.inputs,
+                    '보관된 입력값이 없습니다.',
+                  )}
+                  {renderContractChips(
+                    '후속 노드가 사용하는 출력',
+                    '현재 downstream 노드가 기대하는 출력 계약입니다. B 후보는 이 값을 유지해야 합니다.',
+                    ioContract.outputs,
+                    '현재 이 노드 출력을 직접 사용하는 downstream 출력 계약이 없습니다.',
+                  )}
+                </div>
+              ) : null}
+
               <div className="grid gap-3">
+                {renderPromptInputVariables()}
                 {renderPromptField({
                   field: 'system',
                   label: '시스템 프롬프트',

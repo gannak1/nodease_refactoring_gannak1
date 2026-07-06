@@ -95,6 +95,8 @@ export interface CostOptimizerBaselineRow {
   unavailable_reason?: string | null;
   input_preview: string;
   output_preview: string;
+  input?: unknown;
+  output?: unknown;
   has_trace: boolean;
   node_options?: Record<string, unknown>;
   downstream_compatibility?: CostOptimizerDownstreamCompatibility;

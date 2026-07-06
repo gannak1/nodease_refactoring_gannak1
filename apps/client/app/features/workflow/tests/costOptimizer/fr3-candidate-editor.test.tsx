@@ -1,12 +1,17 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeSettingsComparisonPanel } from '../../components/costOptimizer/NodeSettingsComparisonPanel';
 import {
   compareRequestCandidateFromDraft,
+  downstreamOutputContractChipsFromNodes,
+  inputContractChipsFromBaseline,
   llmDataFromCandidate,
   type CandidateDraft,
 } from '../../components/costOptimizer/costOptimizerPlaygroundModel';
+import type { CostOptimizerBaselineRow } from '../../types/Api';
+import type { AppNode } from '../../types/Nodes';
 
 vi.mock(
   '@/app/features/workflow/components/nodes/llm/components/ModelSelectDropdown',
@@ -68,6 +73,8 @@ vi.mock('@/app/features/workflow/components/nodes/ui/VariableTokenEditor', () =>
     value,
     onChange,
     onDropOutput,
+    insertOutputRequest,
+    tokenLabels,
   }: {
     ariaLabel?: string;
     value: string;
@@ -79,33 +86,55 @@ vi.mock('@/app/features/workflow/components/nodes/ui/VariableTokenEditor', () =>
       sourceNodeId: string;
       sourceTitle: string;
     }) => string | void;
-  }) => (
-    <div>
-      <textarea
-        aria-label={ariaLabel}
-        data-testid={`variable-token-editor-${ariaLabel}`}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-      {onDropOutput ? (
-        <button
-          type="button"
-          onClick={() => {
-            const name = onDropOutput({
-              key: 'message',
-              label: 'message',
-              dataType: 'string',
-              sourceNodeId: 'start-1',
-              sourceTitle: '고객 티켓 수신',
-            });
-            onChange(`${value}{{${name || 'message'}}}`);
-          }}
-        >
-          {ariaLabel}에 변수 삽입
-        </button>
-      ) : null}
-    </div>
-  ),
+    insertOutputRequest?: {
+      id: string;
+      output: {
+        key: string;
+        label: string;
+        dataType: 'string';
+        sourceNodeId: string;
+        sourceTitle: string;
+      };
+    } | null;
+    tokenLabels?: Record<string, string>;
+  }) => {
+    useEffect(() => {
+      if (!insertOutputRequest) return;
+      const name =
+        onDropOutput?.(insertOutputRequest.output) ||
+        insertOutputRequest.output.key;
+      onChange(`${value}{{${name}}}`);
+    }, [insertOutputRequest, onChange, onDropOutput, value]);
+
+    return (
+      <div>
+        <textarea
+          aria-label={ariaLabel}
+          data-testid={`variable-token-editor-${ariaLabel}`}
+          data-token-labels={JSON.stringify(tokenLabels || {})}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        {onDropOutput ? (
+          <button
+            type="button"
+            onClick={() => {
+              const name = onDropOutput({
+                key: 'message',
+                label: 'message',
+                dataType: 'string',
+                sourceNodeId: 'start-1',
+                sourceTitle: '고객 티켓 수신',
+              });
+              onChange(`${value}{{${name || 'message'}}}`);
+            }}
+          >
+            {ariaLabel}에 변수 삽입
+          </button>
+        ) : null}
+      </div>
+    );
+  },
 }));
 
 const baseDraft: CandidateDraft = {
@@ -248,6 +277,92 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
     expect(
       screen.queryByRole('option', { name: 'Legacy Chat' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('B 후보 기본 설정은 기준 입력과 후속 노드 출력 계약을 읽기 전용 칩으로 표시한다', () => {
+    render(
+      <NodeSettingsComparisonPanel
+        title="B Candidate"
+        nodeId="llm-1"
+        tab="basic"
+        onTabChange={vi.fn()}
+        draft={baseDraft}
+        onChange={vi.fn()}
+        ioContract={{
+          inputs: [
+            {
+              key: 'message',
+              source: 'webhook-ticket',
+              value: '정산 파일을 다시 생성하는 방법을 안내해 주세요.',
+            },
+            { key: 'customerTier', source: 'webhook-ticket', value: 'enterprise' },
+          ],
+          outputs: [
+            {
+              key: 'approvalRequired',
+              source: '처리 결과 추출',
+              detail: 'JSON path: 긴급도',
+            },
+            {
+              key: 'mailDraft',
+              source: '처리 결과 추출',
+              detail: 'JSON path: 답변 초안',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('기준 입력')).toBeInTheDocument();
+    expect(screen.getByText('후속 노드가 사용하는 출력')).toBeInTheDocument();
+    expect(screen.getAllByText('message').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('customerTier').length).toBeGreaterThan(0);
+    expect(screen.getByText('approvalRequired')).toBeInTheDocument();
+    expect(screen.getByText('mailDraft')).toBeInTheDocument();
+  });
+
+  it('기준 입력과 variable extraction downstream 출력 계약을 데이터에서 계산한다', () => {
+    const baseline = {
+      input: {
+        'webhook-ticket': {
+          message: '정산 파일을 다시 생성하는 방법을 안내해 주세요.',
+          customerTier: 'enterprise',
+        },
+      },
+      input_preview: '',
+      output_preview: '',
+    } as CostOptimizerBaselineRow;
+    const nodes = [
+      {
+        id: 'llm-triage',
+        type: 'llmNode',
+        position: { x: 0, y: 0 },
+        data: { title: '티켓 처리 판단' },
+      },
+      {
+        id: 'extract-ticket',
+        type: 'variableExtractionNode',
+        position: { x: 0, y: 0 },
+        data: {
+          title: '처리 결과 추출',
+          source_selector: ['llm-triage', 'text'],
+          mappings: [
+            { name: 'approvalRequired', json_path: '긴급도' },
+            { name: 'mailDraft', json_path: '답변 초안' },
+          ],
+        },
+      },
+    ] as unknown as AppNode[];
+
+    expect(inputContractChipsFromBaseline(baseline).map((chip) => chip.key)).toEqual([
+      'message',
+      'customerTier',
+    ]);
+    expect(
+      downstreamOutputContractChipsFromNodes(nodes, 'llm-triage').map(
+        (chip) => chip.key,
+      ),
+    ).toEqual(['approvalRequired', 'mailDraft']);
   });
 
   it('JSON 출력 형식에서는 flat key-type schema 행을 추가하고 required 여부를 편집한다', () => {
@@ -422,6 +537,41 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
 
     expect(onChange).toHaveBeenCalledWith('referenced_variables', [
       { name: 'message', value_selector: ['start-1', 'message'] },
+    ]);
+    expect(onChange).toHaveBeenCalledWith(
+      'user_prompt',
+      '사용자 프롬프트{{message}}',
+    );
+  });
+
+  it('입력 변수 칩을 클릭하면 해당 프롬프트에 변수 토큰과 참조 정보를 추가한다', () => {
+    const onChange = vi.fn();
+
+    render(
+      <NodeSettingsComparisonPanel
+        title="B Candidate"
+        nodeId="llm-1"
+        tab="basic"
+        onTabChange={vi.fn()}
+        draft={baseDraft}
+        onChange={onChange}
+        ioContract={{
+          inputs: [{ key: 'message', source: 'webhook-ticket' }],
+          outputs: [],
+        }}
+      />,
+    );
+
+    expect(
+      screen
+        .getByTestId('variable-token-editor-사용자 프롬프트')
+        .getAttribute('data-token-labels'),
+    ).toContain('"message":"message"');
+
+    fireEvent.click(screen.getByRole('button', { name: 'message' }));
+
+    expect(onChange).toHaveBeenCalledWith('referenced_variables', [
+      { name: 'message', value_selector: ['webhook-ticket', 'message'] },
     ]);
     expect(onChange).toHaveBeenCalledWith(
       'user_prompt',

@@ -26,7 +26,10 @@ import {
   candidateFromNode,
   candidateFromOptions,
   compareRequestCandidateFromDraft,
+  downstreamOutputContractChipsFromNodes,
   findTargetNode,
+  inputContractChipsFromBaseline,
+  nodesFromDraft,
   type BaselineNodeOptions,
   type CandidateDraft,
   type SettingsTab,
@@ -438,6 +441,7 @@ export default function CostOptimizerPlaygroundPage() {
   const nodeId = params.nodeId;
 
   const [targetNode, setTargetNode] = useState<AppNode | null>(null);
+  const [workflowNodes, setWorkflowNodes] = useState<AppNode[]>([]);
   const [workflowTitle, setWorkflowTitle] = useState('');
   const [baseline, setBaseline] = useState<CostOptimizerBaselineRow | null>(
     null,
@@ -509,6 +513,7 @@ export default function CostOptimizerPlaygroundPage() {
             ),
           );
           setTargetNode(null);
+          setWorkflowNodes([]);
           setWorkflowTitle('');
           return;
         }
@@ -528,12 +533,14 @@ export default function CostOptimizerPlaygroundPage() {
             typeof value === 'string' && value.trim().length > 0,
         );
         const node = findTargetNode(draft, nodeId);
+        setWorkflowNodes(nodesFromDraft(draft));
         setWorkflowTitle(nextWorkflowTitle?.trim() || workflowId);
         setTargetNode(node);
         setCandidate(candidateFromNode(node));
       } catch {
         if (!active) return;
         setLoadError('워크플로우 정보를 불러오지 못했습니다.');
+        setWorkflowNodes([]);
         setWorkflowTitle('');
       } finally {
         if (active) setIsLoadingNode(false);
@@ -652,6 +659,13 @@ export default function CostOptimizerPlaygroundPage() {
   );
 
   const baselineNodeOptions = baselineOptionsOf(baseline);
+  const candidateIoContract = useMemo(
+    () => ({
+      inputs: inputContractChipsFromBaseline(baseline),
+      outputs: downstreamOutputContractChipsFromNodes(workflowNodes, nodeId),
+    }),
+    [baseline, nodeId, workflowNodes],
+  );
 
   const updateCandidate = <K extends keyof CandidateDraft>(
     key: K,
@@ -978,9 +992,6 @@ export default function CostOptimizerPlaygroundPage() {
                 테스트 기준 선택 필요
               </span>
             )}
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
-              workflow {workflowTitle || workflowId.slice(0, 8)}
-            </span>
           </div>
         </div>
       </header>
@@ -1006,8 +1017,8 @@ export default function CostOptimizerPlaygroundPage() {
             </div>
           </div>
         ) : !baseline ? (
-          <div className="flex h-full min-h-0 w-full max-w-[760px] flex-col justify-center">
-            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex h-full min-h-0 w-full max-w-[760px] flex-col overflow-y-auto py-6">
+            <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-5 rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3">
                 <div className="text-sm font-bold text-emerald-950">
                   먼저 A/B 테스트 기준을 선택하세요
@@ -1207,6 +1218,7 @@ export default function CostOptimizerPlaygroundPage() {
               draft={candidate}
               onChange={updateCandidate}
               onNodeDataChange={updateCandidateNodeData}
+              ioContract={candidateIoContract}
             />
           </div>
         </section>

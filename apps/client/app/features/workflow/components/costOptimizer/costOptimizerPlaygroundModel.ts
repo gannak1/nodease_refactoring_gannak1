@@ -49,21 +49,193 @@ export type BaselineNodeOptions = Partial<LLMNodeData> & {
 };
 
 export type SettingsTab = 'basic' | 'advanced' | 'knowledge';
+export type CostOptimizerContractChip = {
+  key: string;
+  source?: string;
+  detail?: string;
+  value?: string;
+};
+
+export const nodesFromDraft = (draft: unknown): AppNode[] => {
+  const candidate = draft as {
+    nodes?: AppNode[];
+    graph?: { nodes?: AppNode[] };
+  };
+  return candidate.nodes || candidate.graph?.nodes || [];
+};
 
 export const findTargetNode = (
   draft: unknown,
   nodeId: string,
 ): AppNode | null => {
-  const candidate = draft as {
-    nodes?: AppNode[];
-    graph?: { nodes?: AppNode[] };
-  };
-  const nodes = candidate.nodes || candidate.graph?.nodes || [];
+  const nodes = nodesFromDraft(draft);
   return nodes.find((node) => node.id === nodeId) || null;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const parseJsonPreview = (value: string): unknown => {
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+    return value;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+};
+
+const stringifyContractValue = (value: unknown): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+};
+
+const addUniqueContractChip = (
+  chips: CostOptimizerContractChip[],
+  chip: CostOptimizerContractChip,
+) => {
+  if (!chip.key.trim()) return;
+  if (chips.some((item) => item.key === chip.key)) return;
+  chips.push(chip);
+};
+
+const flattenInputContract = (
+  value: unknown,
+  chips: CostOptimizerContractChip[],
+  path: string[] = [],
+) => {
+  if (value === null || value === undefined) return;
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      flattenInputContract(item, chips, [...path, `[${index}]`]);
+    });
+    return;
+  }
+
+  if (isRecord(value)) {
+    Object.entries(value).forEach(([key, item]) => {
+      flattenInputContract(item, chips, [...path, key]);
+    });
+    return;
+  }
+
+  const key = path[path.length - 1] || 'input';
+  const source = path.length > 1 ? path.slice(0, -1).join('.') : undefined;
+  addUniqueContractChip(chips, {
+    key,
+    source,
+    detail: path.join('.'),
+    value: stringifyContractValue(value),
+  });
+};
+
+export const inputContractChipsFromBaseline = (
+  baseline: CostOptimizerBaselineRow | null,
+): CostOptimizerContractChip[] => {
+  if (!baseline) return [];
+  const sourceValue =
+    baseline.input !== undefined
+      ? baseline.input
+      : parseJsonPreview(baseline.input_preview || '');
+  const chips: CostOptimizerContractChip[] = [];
+  flattenInputContract(sourceValue, chips);
+  return chips;
+};
+
+const selectorReferencesNode = (
+  value: unknown,
+  nodeId: string,
+): value is string[] =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.every((item) => typeof item === 'string') &&
+  value[0] === nodeId;
+
+const collectDirectSelectors = (
+  value: unknown,
+  nodeId: string,
+  chips: CostOptimizerContractChip[],
+  source?: string,
+) => {
+  if (selectorReferencesNode(value, nodeId)) {
+    addUniqueContractChip(chips, {
+      key: value[1] || 'output',
+      source,
+      detail: value.join('.'),
+    });
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectDirectSelectors(item, nodeId, chips, source));
+    return;
+  }
+
+  if (!isRecord(value)) return;
+
+  Object.entries(value).forEach(([key, item]) => {
+    if (
+      key === 'value_selector' ||
+      key === 'variable_selector' ||
+      key === 'source_selector'
+    ) {
+      collectDirectSelectors(item, nodeId, chips, source);
+      return;
+    }
+    collectDirectSelectors(item, nodeId, chips, source);
+  });
+};
+
+export const downstreamOutputContractChipsFromNodes = (
+  nodes: AppNode[],
+  nodeId: string,
+): CostOptimizerContractChip[] => {
+  const chips: CostOptimizerContractChip[] = [];
+
+  nodes
+    .filter((node) => node.id !== nodeId)
+    .forEach((node) => {
+      const data = (node.data || {}) as Record<string, unknown>;
+      const source =
+        typeof data.title === 'string' && data.title.trim()
+          ? data.title
+          : node.id;
+
+      if (
+        node.type === 'variableExtractionNode' &&
+        selectorReferencesNode(data.source_selector, nodeId)
+      ) {
+        const mappings = Array.isArray(data.mappings) ? data.mappings : [];
+        mappings.forEach((mapping) => {
+          if (!isRecord(mapping) || typeof mapping.name !== 'string') return;
+          addUniqueContractChip(chips, {
+            key: mapping.name,
+            source,
+            detail:
+              typeof mapping.json_path === 'string'
+                ? `JSON path: ${mapping.json_path}`
+                : undefined,
+          });
+        });
+        return;
+      }
+
+      collectDirectSelectors(data, nodeId, chips, source);
+    });
+
+  return chips;
+};
 
 const jsonSchemaFieldTypes = new Set<JsonSchemaFieldType>([
   'string',
