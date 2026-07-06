@@ -299,6 +299,14 @@ def _usage_item_from_row(row: Any) -> AdminWorkflowUsageItem:
     )
 
 
+def _budget_service():
+    """workflow_budget_service가 이 모듈을 top-level import하므로,
+    역방향은 호출 시점 지연 import로 순환을 끊는다."""
+    from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+
+    return WorkflowBudgetService
+
+
 def _budget_summary_block(
     db,
     organization_id: Any,
@@ -308,7 +316,7 @@ def _budget_summary_block(
     if not budgets:
         return None
 
-    from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+    WorkflowBudgetService = _budget_service()
 
     at_risk_count = 0
     exceeded_count = 0
@@ -347,7 +355,7 @@ def _workflow_budget_block(
     if budget is None:
         return None
 
-    from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+    WorkflowBudgetService = _budget_service()
 
     current_cost = WorkflowBudgetService.get_current_month_cost(
         db,

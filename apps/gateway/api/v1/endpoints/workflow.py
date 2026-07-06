@@ -21,6 +21,7 @@ from apps.gateway.services.organization_context import resolve_active_organizati
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
@@ -805,6 +806,14 @@ async def execute_workflow(
     # 1. 권한 확인
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
 
+    # 1-1. 예산 초과 차단 — dispatch try 블록 밖이어야 429가 500으로 감싸이지 않는다.
+    WorkflowBudgetService.ensure_workflow_budget_allows_execution(
+        db,
+        workflow_id=workflow_id,
+        trigger_mode="test",
+        actor_id=current_user.id,
+    )
+
     memory_mode_enabled = False
     if isinstance(user_input, dict):
         # 프론트 토글 상태가 실행 입력에 섞여 올 수 있으므로 분리해서 컨텍스트에만 전달
@@ -885,6 +894,14 @@ async def stream_workflow(
     memory_mode_enabled = False
     # 1. 권한 확인
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
+
+    # 1-1. 예산 초과 차단 — SSE 스트림이 시작되기 전에 429로 끝낸다 (BGT-REQ-030).
+    WorkflowBudgetService.ensure_workflow_budget_allows_execution(
+        db,
+        workflow_id=workflow_id,
+        trigger_mode="test",
+        actor_id=current_user.id,
+    )
 
     # 2. Request에서 FormData 파싱
     content_type = request.headers.get("content-type", "")

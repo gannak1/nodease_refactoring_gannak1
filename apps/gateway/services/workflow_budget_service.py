@@ -5,10 +5,17 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func
+from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+# admin_usage_service는 이 모듈을 함수 안에서 지연 import한다 (순환 의존 차단).
+# top-level import는 이 방향(budget → admin_usage)만 허용한다.
+from apps.gateway.services.admin_usage_service import (
+    KST,
+    AdminUsageService,
+    _total_cost_sum,
+)
 from apps.gateway.services.audit_records import add_action_audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMUsageLog
@@ -24,11 +31,8 @@ class WorkflowBudgetService:
         monthly_budget_usd: Any,
         is_enabled: bool = True,
     ) -> str | None:
-        if not is_enabled or monthly_budget_usd is None:
-            return None
-
-        budget = _to_decimal(monthly_budget_usd)
-        if budget <= 0:
+        budget = _active_budget_amount(monthly_budget_usd, is_enabled)
+        if budget is None:
             return None
 
         ratio = _to_decimal(current_cost) / budget
@@ -44,8 +48,6 @@ class WorkflowBudgetService:
         workflow_id: Any,
         now: datetime,
     ) -> Decimal:
-        from apps.gateway.services.admin_usage_service import AdminUsageService
-
         period = AdminUsageService.resolve_month_period_kst(now)
         if hasattr(db, "usage_logs"):
             return _current_month_cost_fake(
@@ -71,7 +73,7 @@ class WorkflowBudgetService:
     ) -> WorkflowBudget:
         amount = _to_decimal(monthly_budget_usd)
         enabled = bool(is_enabled)
-        existing = _find_budget(db, organization_id, workflow_id)
+        existing = _find_budget(db, workflow_id, organization_id=organization_id)
 
         if existing is None:
             budget = WorkflowBudget(
@@ -87,7 +89,7 @@ class WorkflowBudgetService:
                 db.flush()
             except IntegrityError:
                 db.rollback()
-                existing = _find_budget(db, organization_id, workflow_id)
+                existing = _find_budget(db, workflow_id, organization_id=organization_id)
                 if existing is None:
                     raise
                 return _update_budget(
@@ -116,16 +118,100 @@ class WorkflowBudgetService:
             is_enabled=enabled,
         )
 
+    @staticmethod
+    def ensure_workflow_budget_allows_execution(
+        db: Session,
+        *,
+        workflow_id: Any,
+        trigger_mode: str,
+        actor_id: Any = None,
+        now: datetime | None = None,
+    ) -> None:
+        """예산 초과 workflow의 실행을 dispatch 전에 차단한다 (BGT-REQ-030~035).
 
-def _find_budget(db: Session, organization_id: Any, workflow_id: Any):
-    return (
-        db.query(WorkflowBudget)
-        .filter(
-            WorkflowBudget.organization_id == organization_id,
-            WorkflowBudget.workflow_id == workflow_id,
+        활성 예산이 없는 workflow는 집계 없이 통과한다 (기존 경로 보존).
+        판정은 매 호출 새로 집계하며 (캐시 금지), 차단 audit은 요청 실패와
+        무관하게 커밋한다.
+        """
+        if workflow_id is None:
+            return
+
+        normalized_id = _normalize_workflow_id(workflow_id)
+        budget = _find_budget(db, normalized_id)
+        if budget is None:
+            return
+        if _active_budget_amount(budget.monthly_budget_usd, budget.is_enabled) is None:
+            return
+
+        try:
+            current_cost = WorkflowBudgetService.get_current_month_cost(
+                db,
+                workflow_id=normalized_id,
+                now=now or datetime.now(KST),
+            )
+        except Exception:
+            # 활성 예산 workflow의 집계 실패는 fail-closed 차단 (BGT-REQ-033).
+            raise _budget_exceeded_error()
+
+        status = WorkflowBudgetService.classify_budget_usage(
+            current_cost,
+            budget.monthly_budget_usd,
+            budget.is_enabled,
         )
-        .first()
+        if status != "exceeded":
+            return
+
+        add_action_audit(
+            db,
+            AuditAction.POLICY_BLOCK,
+            actor_id=actor_id,
+            target_type="workflow",
+            target_id=normalized_id,
+            organization_id=budget.organization_id,
+            metadata={"reason": "budget.exceeded", "trigger_mode": trigger_mode},
+            status="failure",
+        )
+        db.commit()
+        raise _budget_exceeded_error()
+
+
+def _budget_exceeded_error() -> HTTPException:
+    # 응답 메시지에 예산/비용 금액을 노출하지 않는다 (BGT-REQ-031).
+    return HTTPException(
+        status_code=429,
+        detail={
+            "code": "budget.exceeded",
+            "message": "Workflow monthly budget exceeded.",
+        },
     )
+
+
+def _normalize_workflow_id(value: Any):
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return value
+
+
+def _find_budget(db: Session, workflow_id: Any, organization_id: Any = None):
+    query = db.query(WorkflowBudget).filter(
+        WorkflowBudget.workflow_id == workflow_id
+    )
+    if organization_id is not None:
+        query = query.filter(WorkflowBudget.organization_id == organization_id)
+    return query.first()
+
+
+def _active_budget_amount(monthly_budget_usd: Any, is_enabled: Any) -> Decimal | None:
+    """활성 예산 금액. 비활성/미설정/0 이하는 None — 판정·차단 제외 (BGT-REQ-010)."""
+    if not is_enabled or monthly_budget_usd is None:
+        return None
+    amount = _to_decimal(monthly_budget_usd)
+    if amount <= 0:
+        return None
+    return amount
 
 
 def _current_month_cost_fake(
@@ -134,8 +220,6 @@ def _current_month_cost_fake(
     workflow_id: Any,
     period: Any,
 ) -> Decimal:
-    from apps.gateway.services.admin_usage_service import AdminUsageService
-
     return sum(
         (
             AdminUsageService.coalesce_cost(usage.total_cost)
@@ -153,12 +237,8 @@ def _current_month_cost_query(
     workflow_id: Any,
     period: Any,
 ) -> Decimal:
-    from apps.gateway.services.admin_usage_service import AdminUsageService
-
     total = (
-        db.query(
-            func.coalesce(func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0)
-        )
+        db.query(_total_cost_sum())
         .filter(
             LLMUsageLog.workflow_id == workflow_id,
             LLMUsageLog.created_at >= period.start_at,
