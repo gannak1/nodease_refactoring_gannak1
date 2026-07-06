@@ -14,6 +14,7 @@ import type {
   CostOptimizerBaselineListParams,
   CostOptimizerBaselineRow,
 } from '../../types/Api';
+import { CostOptimizerPreviewViewer } from './CostOptimizerPreviewViewer';
 
 interface CostOptimizerBaselineSelectionProps {
   workflowId: string;
@@ -301,12 +302,26 @@ export function CostOptimizerBaselineSelection({
                     <span>{formatCost(latestBaseline.cost)}</span>
                     <span>{formatLatency(latestBaseline.latency_ms)}</span>
                   </span>
-                  <span className="grid gap-1 text-emerald-800">
-                    <span>
-                      입력: {readablePreview(latestBaseline.input_preview) || '입력 미보관'}
+                  <span className="grid gap-2 text-emerald-800">
+                    <span className="grid gap-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+                        입력
+                      </span>
+                      <CostOptimizerPreviewViewer
+                        value={latestBaseline.input ?? latestBaseline.input_preview}
+                        emptyText="입력 미보관"
+                        className="border border-emerald-100 bg-white/80 text-emerald-950"
+                      />
                     </span>
-                    <span>
-                      출력: {readablePreview(latestBaseline.output_preview) || '출력 미보관'}
+                    <span className="grid gap-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">
+                        출력
+                      </span>
+                      <CostOptimizerPreviewViewer
+                        value={latestBaseline.output ?? latestBaseline.output_preview}
+                        emptyText="출력 미보관"
+                        className="border border-emerald-100 bg-white/80 text-emerald-950"
+                      />
                     </span>
                   </span>
                 </span>

@@ -15,6 +15,7 @@ const workflowApiMock = vi.hoisted(() => ({
   getDraftWorkflow: vi.fn(),
   getCostOptimizerAvailability: vi.fn(),
   compareCostOptimizerCandidate: vi.fn(),
+  listCostOptimizerExperiments: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -70,6 +71,21 @@ vi.mock(
                 followUp: '일곱 번째 출력 필드도 보여야 함',
                 auditNote: '여덟 번째 출력 필드도 보여야 함',
               }),
+              output: {
+                cost: 0.0012,
+                text: JSON.stringify({
+                  answer:
+                    'baseline output '.repeat(20) +
+                    '끝까지 보여야 하는 출력 문장',
+                  approvalRequired: false,
+                  urgency: 'normal',
+                  routedTeam: 'support',
+                  category: 'billing',
+                  confidence: 0.91,
+                  followUp: '일곱 번째 출력 필드도 보여야 함',
+                  auditNote: '여덟 번째 출력 필드도 보여야 함',
+                }),
+              },
               has_trace: true,
               downstream_compatibility: {
                 state: 'compatible',
@@ -211,6 +227,31 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
         message: 'downstream compatible',
       },
     });
+    workflowApiMock.listCostOptimizerExperiments.mockResolvedValue({
+      items: [
+        {
+          experiment_id: 'experiment-1',
+          workflow_id: 'workflow-1',
+          node_id: 'llm-1',
+          created_at: '2026-07-05T02:00:00Z',
+          candidates: [
+            {
+              candidate_id: 'candidate-history-1',
+              name: 'mini 비용 절감',
+              status: 'success',
+              model_id: 'gpt-4.1-mini',
+              total_cost: 0.00042,
+              total_tokens: 128,
+              latency_ms: 940,
+              schema_status: 'pass',
+              downstream_state: 'compatible',
+              is_applied: false,
+              created_at: '2026-07-05T02:00:00Z',
+            },
+          ],
+        },
+      ],
+    });
   });
 
   afterEach(() => {
@@ -351,7 +392,7 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.getByText('검증 가능')).toBeInTheDocument();
   });
 
-  it('B 실행 전 결과 분석 mode의 B Trace는 empty state를 표시한다', async () => {
+  it('B 실행 전 결과 분석 mode는 empty state를 표시한다', async () => {
     const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
 
     render(<CostOptimizerPlaygroundPage />);
@@ -366,10 +407,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       screen.getByRole('button', { name: '테스트 baseline 선택' }),
     );
     fireEvent.click(screen.getByRole('button', { name: '결과 분석' }));
-    fireEvent.click(screen.getByRole('button', { name: 'B Trace' }));
 
     expect(
-      screen.getByText('B 실행 후 trace가 표시됩니다.'),
+      screen.getByText(/B 실행 후 결과 분석이 표시됩니다/),
     ).toBeInTheDocument();
   });
 
@@ -479,6 +519,36 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     ).toBeDisabled();
   });
 
+  it('B 실행 후 후보 설정이 바뀌어도 실험 설정 패널에는 stale 안내를 표시하지 않는다', async () => {
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '실험 설정으로 돌아가기' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '후보 모델 변경' }));
+
+    expect(
+      screen.queryByText(/후보 설정이 마지막 B 실행 이후 변경되었습니다/),
+    ).not.toBeInTheDocument();
+  });
+
   it('B 실행 후 RAG 비용 최적화 옵션이 바뀌면 결과 분석에서도 stale 안내를 표시한다', async () => {
     const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
 
@@ -567,7 +637,7 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     ).toBeInTheDocument();
   });
 
-  it('결과 분석 mode의 Inspector는 A/B trace, diff, downstream, settings 탭을 제공한다', async () => {
+  it('결과 분석 mode는 이전 실험 이력, 판단 요약, 핵심 지표 비교, 출력 품질 비교를 표시한다', async () => {
     const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
 
     render(<CostOptimizerPlaygroundPage />);
@@ -587,18 +657,110 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
 
-    expect(screen.getByRole('button', { name: 'A Trace' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'B Trace' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Diff' })).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Downstream' }),
+      screen.getByRole('heading', { name: '이전 실험 이력' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '펼치기' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('columnheader', { name: '실행 시각' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(/선택: 방금 실행/).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
+
+    expect(
+      screen.getByRole('columnheader', { name: '실행 시각' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Settings' }),
+      screen.getByRole('columnheader', { name: '테스트명' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('방금 실행').length).toBeGreaterThan(0);
+    expect(screen.getByText('적용 후보로 적합')).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: '핵심 지표 비교' })).toBeInTheDocument();
+    expect(screen.getByText('입력 토큰')).toBeInTheDocument();
+    expect(screen.getByText('출력 토큰')).toBeInTheDocument();
+    expect(screen.getByText('전체 토큰')).toBeInTheDocument();
+    expect(screen.getByText('실행 시간')).toBeInTheDocument();
+    expect(screen.getByText('출력 스키마')).toBeInTheDocument();
+    expect(screen.getAllByText('후속 노드 영향').length).toBeGreaterThan(0);
+    expect(screen.getByRole('heading', { name: '출력 품질 비교' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'A baseline 출력' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'B candidate 출력' })).toBeInTheDocument();
+    expect(screen.getAllByText('approvalRequired').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/baseline output/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/candidate output/).length).toBeGreaterThan(0);
+  });
+
+  it('이전 실험 이력은 접고 펼칠 수 있으며 선택한 이력 summary를 Inspector에서 보여준다', async () => {
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
+    });
+
+    expect(screen.getByRole('button', { name: '펼치기' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('columnheader', { name: '실행 시각' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(/선택: 방금 실행/).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /mini 비용 절감 선택/ }),
+      ).toBeInTheDocument();
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /mini 비용 절감 선택/ }),
+    );
+
+    expect(screen.getByText('선택한 이전 실험')).toBeInTheDocument();
+    expect(screen.getAllByText('mini 비용 절감').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('gpt-4.1-mini').length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/이전 실험 이력 API가 제공하는 summary 기준입니다/),
     ).toBeInTheDocument();
   });
 
-  it('Diff 탭은 모델, prompt, parameter, 출력 형식, 비용, 토큰, latency 차이를 표시한다', async () => {
+  it('이전 실험 이력 선택 시 schema와 downstream 판정을 선택 이력 기준으로 표시한다', async () => {
+    workflowApiMock.listCostOptimizerExperiments.mockResolvedValueOnce({
+      items: [
+        {
+          experiment_id: 'experiment-risky',
+          workflow_id: 'workflow-1',
+          node_id: 'llm-1',
+          created_at: '2026-07-05T03:00:00Z',
+          candidates: [
+            {
+              candidate_id: 'candidate-risky-1',
+              name: 'schema 누락 후보',
+              status: 'schema_failed',
+              model_id: 'gpt-4.1-mini',
+              total_cost: 0.00031,
+              total_tokens: 96,
+              latency_ms: 700,
+              schema_status: 'failed',
+              downstream_state: 'incompatible',
+              is_applied: false,
+              created_at: '2026-07-05T03:00:00Z',
+            },
+          ],
+        },
+      ],
+    });
     const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
 
     render(<CostOptimizerPlaygroundPage />);
@@ -618,18 +780,92 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Diff' }));
+    fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /schema 누락 후보 선택/ }),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /schema 누락 후보 선택/ }),
+    );
+
+    expect(screen.getByText('적용 비추천')).toBeInTheDocument();
+    expect(screen.getByText('Schema: 실패')).toBeInTheDocument();
+    expect(screen.getByText('Downstream: 검증 불가')).toBeInTheDocument();
+    expect(screen.getByText('Schema 판정')).toBeInTheDocument();
+    expect(screen.getByText('후속 노드 판정')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '후속 노드 영향' }));
+
+    expect(screen.getAllByText('검증 불가').length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/저장된 이전 실험 summary 기준의 downstream 판정입니다/),
+    ).toBeInTheDocument();
+  });
+
+  it('결과 분석 mode의 Inspector는 설정 차이, 근거/Trace, 후속 노드 영향 탭을 제공한다', async () => {
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
+    });
+
+    expect(
+      screen.getByRole('button', { name: '설정 차이' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '근거/Trace' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '후속 노드 영향' }),
+    ).toBeInTheDocument();
+  });
+
+  it('설정 차이 탭은 모델, prompt, parameter, 출력 형식 차이를 표시한다', async () => {
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '설정 차이' }));
 
     expect(screen.getByText('모델 차이')).toBeInTheDocument();
     expect(screen.getByText('prompt 차이')).toBeInTheDocument();
     expect(screen.getByText('parameter 차이')).toBeInTheDocument();
     expect(screen.getByText('출력 형식 차이')).toBeInTheDocument();
-    expect(screen.getByText('비용 차이')).toBeInTheDocument();
-    expect(screen.getByText('토큰 차이')).toBeInTheDocument();
-    expect(screen.getByText('latency 차이')).toBeInTheDocument();
   });
 
-  it('Diff 탭은 schema 검증 결과와 A/B retrieval summary를 구분해 표시한다', async () => {
+  it('근거/Trace 탭은 schema 검증 결과와 A/B retrieval summary를 구분해 표시한다', async () => {
     workflowApiMock.compareCostOptimizerCandidate.mockResolvedValueOnce({
       comparison_id: 'comparison-1',
       workflow_id: 'workflow-1',
@@ -692,7 +928,7 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Diff' }));
+    fireEvent.click(screen.getByRole('button', { name: '근거/Trace' }));
 
     expect(screen.getByText('Schema 검증')).toBeInTheDocument();
     expect(screen.getAllByText('실패').length).toBeGreaterThan(0);
@@ -703,9 +939,11 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.getByText('B retrieval summary')).toBeInTheDocument();
     expect(screen.getByText(/HR Policy/)).toBeInTheDocument();
     expect(screen.getByText(/Billing Guide/)).toBeInTheDocument();
+    expect(screen.getByText('A usage trace')).toBeInTheDocument();
+    expect(screen.getByText('B usage trace')).toBeInTheDocument();
   });
 
-  it('Settings 탭은 고급 설정과 Knowledge/RAG 설정을 함께 표시한다', async () => {
+  it('후속 노드 영향 탭은 downstream 상태와 side-effect 제외 안내를 표시한다', async () => {
     const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
 
     render(<CostOptimizerPlaygroundPage />);
@@ -725,20 +963,12 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: '후속 노드 영향' }));
 
-    expect(screen.getByText('고급 설정')).toBeInTheDocument();
-    expect(screen.getByText('temperature')).toBeInTheDocument();
-    expect(screen.getByText('top_p')).toBeInTheDocument();
-    expect(screen.getByText('presence_penalty')).toBeInTheDocument();
-    expect(screen.getByText('frequency_penalty')).toBeInTheDocument();
-    expect(screen.getByText('stop')).toBeInTheDocument();
-    expect(screen.getByText('Knowledge/RAG 설정')).toBeInTheDocument();
-    expect(screen.getByText('topK')).toBeInTheDocument();
-    expect(screen.getByText('scoreThreshold')).toBeInTheDocument();
-    expect(screen.getByText('중복 근거 제거')).toBeInTheDocument();
-    expect(screen.getByText('참조 문서 길이 제한')).toBeInTheDocument();
-    expect(screen.getByText('검색 문서 압축')).toBeInTheDocument();
-    expect(screen.getByText('답변 근거 확인')).toBeInTheDocument();
+    expect(screen.getAllByText('Downstream 상태').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('검증 가능').length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/외부 전송이나 쓰기 작업이 있는 downstream 노드는 자동 실행하지 않습니다/),
+    ).toBeInTheDocument();
   });
 });

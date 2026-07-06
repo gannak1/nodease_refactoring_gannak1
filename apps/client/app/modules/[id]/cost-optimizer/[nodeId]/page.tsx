@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import { CostOptimizerBaselineSelection } from '@/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection';
+import { CostOptimizerPreviewViewer } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
 import {
   baselineOptionsOf,
@@ -54,14 +55,16 @@ import type {
 import type { AppNode, LLMNodeData } from '@/app/features/workflow/types/Nodes';
 
 type PlaygroundMode = 'setup' | 'report';
-type InspectorTab = 'a-trace' | 'b-trace' | 'diff' | 'downstream' | 'settings';
+type InspectorTab = 'settings-diff' | 'trace' | 'downstream';
+type SelectedHistoryTarget =
+  | { type: 'current' }
+  | { type: 'history'; experimentId: string; candidateId: string }
+  | null;
 
 const inspectorTabs: Array<{ value: InspectorTab; label: string }> = [
-  { value: 'a-trace', label: 'A Trace' },
-  { value: 'b-trace', label: 'B Trace' },
-  { value: 'diff', label: 'Diff' },
-  { value: 'downstream', label: 'Downstream' },
-  { value: 'settings', label: 'Settings' },
+  { value: 'settings-diff', label: '설정 차이' },
+  { value: 'trace', label: '근거/Trace' },
+  { value: 'downstream', label: '후속 노드 영향' },
 ];
 
 const formatMetric = (value: number, suffix = '') => {
@@ -150,21 +153,6 @@ const readNumber = (
     }
   }
   return null;
-};
-
-const formatOutputPreview = (value: unknown) => {
-  if (value === null || value === undefined) return '-';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && 'text' in value) {
-    const text = (value as { text?: unknown }).text;
-    if (typeof text === 'string') return text;
-  }
-
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 };
 
 const formatJsonSchemaSummary = (candidate: CandidateDraft) => {
@@ -329,11 +317,68 @@ const formatMetricDiff = (
   return `${formatter(baselineValue)} → ${formatter(candidateValue)} (${diffLabel})`;
 };
 
+const formatMetricChange = (
+  baselineValue: number | null | undefined,
+  candidateValue: number | null | undefined,
+  formatter: (value: number) => string,
+) => {
+  if (
+    typeof baselineValue !== 'number' ||
+    !Number.isFinite(baselineValue) ||
+    typeof candidateValue !== 'number' ||
+    !Number.isFinite(candidateValue)
+  ) {
+    return '-';
+  }
+  const diff = candidateValue - baselineValue;
+  if (diff === 0) return '변화 없음';
+  return `${diff > 0 ? '+' : ''}${formatter(diff)}`;
+};
+
+const candidateStatusLabelOf = (status: string | null | undefined) => {
+  if (status === 'success') return '성공';
+  if (status === 'schema_failed') return 'Schema 실패';
+  if (status === 'failed') return '실패';
+  if (status === 'running') return '실행 중';
+  return status || '-';
+};
+
+const downstreamStateLabelOf = (state: string | null | undefined) => {
+  if (state === 'compatible') return '검증 가능';
+  if (state === 'warning') return '주의 필요';
+  if (state === 'incompatible') return '검증 불가';
+  if (state === 'unknown') return '판정 전';
+  return state || '-';
+};
+
 const schemaStatusLabelOf = (status: string | null | undefined) => {
   if (status === 'schema_failed' || status === 'failed') return '실패';
   if (status === 'valid' || status === 'pass') return '통과';
   if (status === 'skipped' || status === 'not_checked') return '검증 안 함';
   return '검증 안 함';
+};
+
+const schemaStatusToneOf = (status: string | null | undefined) => {
+  if (status === 'schema_failed' || status === 'failed') {
+    return 'border-red-200 bg-red-50 text-red-800';
+  }
+  if (status === 'valid' || status === 'pass') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+  }
+  return 'border-slate-200 bg-slate-50 text-slate-600';
+};
+
+const downstreamStateToneOf = (state: string | null | undefined) => {
+  if (state === 'compatible') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+  }
+  if (state === 'warning') {
+    return 'border-amber-200 bg-amber-50 text-amber-800';
+  }
+  if (state === 'incompatible') {
+    return 'border-red-200 bg-red-50 text-red-800';
+  }
+  return 'border-slate-200 bg-slate-50 text-slate-600';
 };
 
 const schemaErrorsOf = (errors: unknown[] | undefined) =>
@@ -489,7 +534,7 @@ export default function CostOptimizerPlaygroundPage() {
   const [testName, setTestName] = useState('');
   const [activeMode, setActiveMode] = useState<PlaygroundMode>('setup');
   const [activeInspectorTab, setActiveInspectorTab] =
-    useState<InspectorTab>('diff');
+    useState<InspectorTab>('settings-diff');
   const [isLoadingNode, setIsLoadingNode] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [compareResult, setCompareResult] =
@@ -515,6 +560,9 @@ export default function CostOptimizerPlaygroundPage() {
   >([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(true);
+  const [selectedHistoryTarget, setSelectedHistoryTarget] =
+    useState<SelectedHistoryTarget>(null);
   const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(
     NODE_EDITOR_PANEL_WIDTHS.default,
   );
@@ -790,11 +838,12 @@ export default function CostOptimizerPlaygroundPage() {
         },
       );
       setCompareResult(response);
+      setSelectedHistoryTarget({ type: 'current' });
       setActiveInspectorTab(
         response.downstream_compatibility?.state === 'warning' ||
           response.downstream_compatibility?.state === 'incompatible'
           ? 'downstream'
-          : 'diff',
+          : 'settings-diff',
       );
       setIsStale(false);
       setActiveMode('report');
@@ -859,7 +908,6 @@ export default function CostOptimizerPlaygroundPage() {
     NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2;
   const candidateResult = compareResult?.candidate ?? null;
   const candidateUsage = candidateResult?.usage;
-  const candidateOutput = formatOutputPreview(candidateResult?.output);
   const candidateTotalTokens = readNumber(candidateUsage, [
     'total_tokens',
     'totalTokens',
@@ -910,6 +958,241 @@ export default function CostOptimizerPlaygroundPage() {
     downstreamCompatibility?.contract_check?.checked_node_ids || [];
   const downstreamWarnings =
     downstreamCompatibility?.contract_check?.warnings || [];
+  const historyRows = useMemo(
+    () =>
+      historyItems.flatMap((experiment) =>
+        experiment.candidates.map((historyCandidate) => ({
+          experiment,
+          candidate: historyCandidate,
+        })),
+      ),
+    [historyItems],
+  );
+  const selectedHistoryRow =
+    selectedHistoryTarget?.type === 'history'
+      ? historyRows.find(
+          (row) =>
+            row.experiment.experiment_id === selectedHistoryTarget.experimentId &&
+            row.candidate.candidate_id === selectedHistoryTarget.candidateId,
+        ) ?? null
+      : null;
+  const activeCandidateStatus = selectedHistoryRow
+    ? selectedHistoryRow.candidate.status
+    : candidateResult?.status;
+  const activeCandidateCost = selectedHistoryRow
+    ? selectedHistoryRow.candidate.total_cost
+    : candidateTotalCost;
+  const activeCandidateTokens = selectedHistoryRow
+    ? selectedHistoryRow.candidate.total_tokens
+    : candidateTotalTokens;
+  const activeCandidateLatency = selectedHistoryRow
+    ? selectedHistoryRow.candidate.latency_ms
+    : candidateLatency;
+  const activePromptTokens = selectedHistoryRow ? null : candidatePromptTokens;
+  const activeCompletionTokens = selectedHistoryRow
+    ? null
+    : candidateCompletionTokens;
+  const activeSchemaStatus = selectedHistoryRow
+    ? selectedHistoryRow.candidate.schema_status
+    : candidateSchemaValidation?.status;
+  const activeSchemaStatusLabel = schemaStatusLabelOf(activeSchemaStatus);
+  const activeDownstreamState = selectedHistoryRow
+    ? selectedHistoryRow.candidate.downstream_state
+    : downstreamCompatibility?.state;
+  const activeDownstreamLabel = selectedHistoryRow
+    ? downstreamStateLabelOf(activeDownstreamState)
+    : downstreamLabelOf(downstreamCompatibility);
+  const activeDownstreamMessage = selectedHistoryRow
+    ? '저장된 이전 실험 summary 기준의 downstream 판정입니다. 상세 contract check와 warning은 해당 실험 상세 API가 제공될 때 확장합니다.'
+    : downstreamMessageOf(downstreamCompatibility);
+  const activeDownstreamTone = selectedHistoryRow
+    ? downstreamStateToneOf(activeDownstreamState)
+    : downstreamToneOf(downstreamCompatibility);
+  const schemaStatusLabel = activeSchemaStatusLabel;
+  const baselineCost = baseline?.cost ?? null;
+  const baselineTotalTokens = baseline?.total_tokens ?? null;
+  const candidateDecision = (() => {
+    if (!candidateResult && !selectedHistoryRow) return null;
+    const hasCostImprovement =
+      typeof baselineCost === 'number' &&
+      typeof activeCandidateCost === 'number' &&
+      activeCandidateCost < baselineCost;
+    const hasTokenImprovement =
+      typeof baselineTotalTokens === 'number' &&
+      typeof activeCandidateTokens === 'number' &&
+      activeCandidateTokens < baselineTotalTokens;
+    const hasCostWorsening =
+      typeof baselineCost === 'number' &&
+      typeof activeCandidateCost === 'number' &&
+      activeCandidateCost > baselineCost;
+    const hasTokenWorsening =
+      typeof baselineTotalTokens === 'number' &&
+      typeof activeCandidateTokens === 'number' &&
+      activeCandidateTokens > baselineTotalTokens;
+    const hasLatencyWorsening =
+      typeof baselineLatency === 'number' &&
+      typeof activeCandidateLatency === 'number' &&
+      activeCandidateLatency > baselineLatency;
+    const isSchemaFailed = schemaStatusLabel === '실패';
+    const isDownstreamIncompatible = activeDownstreamState === 'incompatible';
+    const isDownstreamWarning = activeDownstreamState === 'warning';
+    const isCandidateFailed =
+      Boolean(activeCandidateStatus) && activeCandidateStatus !== 'success';
+
+    if (isCandidateFailed || isSchemaFailed || isDownstreamIncompatible) {
+      return {
+        label: '적용 비추천',
+        tone: 'border-red-200 bg-red-50 text-red-800',
+      };
+    }
+    if (
+      hasCostWorsening ||
+      hasTokenWorsening ||
+      hasLatencyWorsening ||
+      isDownstreamWarning
+    ) {
+      return {
+        label: '주의 필요',
+        tone: 'border-amber-200 bg-amber-50 text-amber-800',
+      };
+    }
+    if (hasCostImprovement || hasTokenImprovement) {
+      return {
+        label: '적용 후보로 적합',
+        tone: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      };
+    }
+    return {
+      label: '주의 필요',
+      tone: 'border-amber-200 bg-amber-50 text-amber-800',
+    };
+  })();
+  const decisionReasons = [
+    `비용 변화: ${formatMetricChange(baselineCost, activeCandidateCost, formatCost)}`,
+    `토큰 변화: ${formatMetricChange(
+      baselineTotalTokens,
+      activeCandidateTokens,
+      (value) => formatMetric(value),
+    )}`,
+    `latency 변화: ${formatMetricChange(
+      baselineLatency,
+      activeCandidateLatency,
+      formatLatency,
+    )}`,
+    `B 실행 상태: ${candidateStatusLabelOf(activeCandidateStatus)}`,
+    `Schema: ${schemaStatusLabel}`,
+    `Downstream: ${activeDownstreamLabel}`,
+  ];
+  const comparisonRows = [
+    {
+      label: '비용',
+      baseline: baselineCost === null ? '-' : formatCost(baselineCost),
+      candidate: formatCandidateCost(activeCandidateCost),
+      change: formatMetricChange(baselineCost, activeCandidateCost, formatCost),
+    },
+    {
+      label: '입력 토큰',
+      baseline:
+        baselinePromptTokens === null ? '-' : formatMetric(baselinePromptTokens),
+      candidate:
+        activePromptTokens === null
+          ? '-'
+          : formatMetric(activePromptTokens),
+      change: formatMetricChange(
+        baselinePromptTokens,
+        activePromptTokens,
+        (value) => formatMetric(value),
+      ),
+    },
+    {
+      label: '출력 토큰',
+      baseline:
+        baselineCompletionTokens === null
+          ? '-'
+          : formatMetric(baselineCompletionTokens),
+      candidate:
+        activeCompletionTokens === null
+          ? '-'
+          : formatMetric(activeCompletionTokens),
+      change: formatMetricChange(
+        baselineCompletionTokens,
+        activeCompletionTokens,
+        (value) => formatMetric(value),
+      ),
+    },
+    {
+      label: '전체 토큰',
+      baseline:
+        baselineTotalTokens === null ? '-' : formatMetric(baselineTotalTokens),
+      candidate:
+        activeCandidateTokens === null || activeCandidateTokens === undefined
+          ? '-'
+          : formatMetric(activeCandidateTokens),
+      change: formatMetricChange(
+        baselineTotalTokens,
+        activeCandidateTokens,
+        (value) => formatMetric(value),
+      ),
+    },
+    {
+      label: '실행 시간',
+      baseline: baselineLatency === null ? '-' : formatLatency(baselineLatency),
+      candidate:
+        activeCandidateLatency === null || activeCandidateLatency === undefined
+          ? '-'
+          : formatLatency(activeCandidateLatency),
+      change: formatMetricChange(
+        baselineLatency,
+        activeCandidateLatency,
+        formatLatency,
+      ),
+    },
+    {
+      label: '실행 상태',
+      baseline: '성공',
+      candidate: candidateStatusLabelOf(activeCandidateStatus),
+      change: activeCandidateStatus === 'success' ? '유지' : '악화',
+    },
+    {
+      label: '출력 스키마',
+      baseline: '기준',
+      candidate: schemaStatusLabel,
+      change: schemaStatusLabel === '실패' ? '확인 필요' : '허용',
+    },
+    {
+      label: '후속 노드 영향',
+      baseline: downstreamLabelOf(baseline?.downstream_compatibility),
+      candidate: activeDownstreamLabel,
+      change:
+        activeDownstreamState === 'warning' ||
+        activeDownstreamState === 'incompatible'
+          ? '확인 필요'
+          : '허용',
+    },
+  ];
+  const selectedHistorySummary = (() => {
+    if (selectedHistoryTarget?.type === 'current' && candidateResult) {
+      return `선택: 방금 실행 · ${candidate.model_id || '-'} · ${formatCandidateCost(
+        candidateTotalCost,
+      )}`;
+    }
+    if (selectedHistoryRow) {
+      return `선택: ${selectedHistoryRow.candidate.name || '이름 없는 후보'} · ${
+        selectedHistoryRow.candidate.model_id || '-'
+      } · ${formatCandidateCost(selectedHistoryRow.candidate.total_cost)}`;
+    }
+    return '선택: 없음';
+  })();
+  const isCurrentHistorySelected =
+    selectedHistoryTarget?.type === 'current' ||
+    (!selectedHistoryTarget && Boolean(candidateResult));
+  const isSelectedHistoryCandidate = (
+    experimentId: string,
+    candidateId: string,
+  ) =>
+    selectedHistoryTarget?.type === 'history' &&
+    selectedHistoryTarget.experimentId === experimentId &&
+    selectedHistoryTarget.candidateId === candidateId;
 
   const updateHorizontalPanelWidths = useCallback(
     (handle: HorizontalResizeHandle, deltaX: number) => {
@@ -1085,6 +1368,7 @@ export default function CostOptimizerPlaygroundPage() {
                   setActiveMode('setup');
                   setIsStale(false);
                   setCompareResult(null);
+                  setSelectedHistoryTarget(null);
                   setCandidateError('');
                   setApplyError('');
                   setApplySuccess(false);
@@ -1119,6 +1403,7 @@ export default function CostOptimizerPlaygroundPage() {
                       setActiveMode('setup');
                       setIsStale(false);
                       setCompareResult(null);
+                      setSelectedHistoryTarget(null);
                       setCandidateError('');
                       setApplyError('');
                       setApplySuccess(false);
@@ -1161,6 +1446,7 @@ export default function CostOptimizerPlaygroundPage() {
                     );
                     setIsStale(false);
                     setCompareResult(null);
+                    setSelectedHistoryTarget(null);
                     setCandidateError('');
                     setApplyError('');
                     setApplySuccess(false);
@@ -1242,13 +1528,6 @@ export default function CostOptimizerPlaygroundPage() {
               {candidateError ? (
                 <p className="m-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                   {candidateError}
-                </p>
-              ) : null}
-
-              {isStale ? (
-                <p className="mx-5 mt-5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
-                  후보 설정이 마지막 B 실행 이후 변경되었습니다. 현재 설정으로
-                  다시 실행해야 합니다.
                 </p>
               ) : null}
 
@@ -1417,195 +1696,473 @@ export default function CostOptimizerPlaygroundPage() {
                 비교 실행에서 발생한 LLM 비용도 usage 기록에 포함됩니다. B
                 후보를 반복 실행하면 각 실행 비용이 별도로 추적됩니다.
               </p>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-4">
-                <div className="rounded-lg bg-slate-50 p-3">
-                  <div className="text-xs font-semibold text-slate-500">
-                    A 비용
-                  </div>
-                  <div className="mt-1 text-lg font-bold">
-                    {baseline ? `$${baseline.cost}` : '-'}
-                  </div>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3">
-                  <div className="text-xs font-semibold text-slate-500">
-                    A 토큰
-                  </div>
-                  <div className="mt-1 text-lg font-bold">
-                    {baseline ? formatMetric(baseline.total_tokens) : '-'}
-                  </div>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3">
-                  <div className="text-xs font-semibold text-slate-500">
-                    B 모델
-                  </div>
-                  <div className="mt-1 truncate text-lg font-bold">
-                    {candidate.model_id || '-'}
-                  </div>
-                </div>
-                <div className="rounded-lg bg-amber-50 p-3">
-                  <div className="text-xs font-semibold text-amber-700">
-                    B 실행 상태
-                  </div>
-                  <div className="mt-1 text-sm font-bold text-amber-900">
-                    {candidateResult
-                      ? candidateResult.status === 'success'
-                        ? '성공'
-                        : '실패'
-                      : isRunningCandidate
-                        ? '실행 중'
-                        : '실행 대기'}
-                  </div>
-                </div>
-              </div>
             </div>
 
-            <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[1fr_1fr_360px]">
-              <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-center gap-2">
-                  <Clock3 className="h-4 w-4 text-emerald-600" />
-                  <h3 className="text-sm font-bold">A baseline 결과</h3>
-                </div>
-                {baseline ? (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">모델</div>
-                        <div className="truncate font-bold">
-                          {baseline.model}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">비용</div>
-                        <div className="font-bold">${baseline.cost}</div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">A 프롬프트 토큰</div>
-                        <div className="font-bold">
-                          {baselinePromptTokens === null
-                            ? '-'
-                            : formatMetric(baselinePromptTokens)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">A 응답 토큰</div>
-                        <div className="font-bold">
-                          {baselineCompletionTokens === null
-                            ? '-'
-                            : formatMetric(baselineCompletionTokens)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">전체 토큰</div>
-                        <div className="font-bold">
-                          {formatMetric(baseline.total_tokens)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">시간</div>
-                        <div className="font-bold">
-                          {baselineLatency === null
-                            ? '-'
-                            : formatLatency(baselineLatency)}
-                        </div>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="mb-1 text-xs font-bold text-slate-700">
-                        출력
-                      </div>
-                      <pre className="max-h-72 overflow-auto rounded-md bg-slate-50 p-3 text-xs text-slate-700">
-                        {baseline.output_preview || '-'}
-                      </pre>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-                    먼저 실험 설정에서 A baseline을 선택하세요.
+            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold">이전 실험 이력</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                    결과 분석 기준으로 볼 후보 실행을 확인합니다. 방금 실행한
+                    후보는 자동 선택 상태로 표시합니다.
                   </p>
-                )}
-              </section>
-
-              <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-center gap-2">
-                  <FlaskConical className="h-4 w-4 text-emerald-600" />
-                  <h3 className="text-sm font-bold">B candidate 결과</h3>
                 </div>
-                {candidateResult ? (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-6">
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">상태</div>
-                        <div className="font-bold">
-                          {candidateResult.status}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">비용</div>
-                        <div className="font-bold">
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                    {selectedHistorySummary}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setIsHistoryCollapsed((current) => !current)
+                    }
+                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    {isHistoryCollapsed ? '펼치기' : '접기'}
+                  </button>
+                </div>
+              </div>
+
+              {isHistoryCollapsed ? (
+                <p className="mt-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-600">
+                  {selectedHistorySummary}
+                </p>
+              ) : (
+                <>
+                <div className="grid gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    시작일
+                    <input
+                      type="date"
+                      value={historyDateFrom}
+                      onChange={(event) =>
+                        setHistoryDateFrom(event.target.value)
+                      }
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    />
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    종료일
+                    <input
+                      type="date"
+                      value={historyDateTo}
+                      onChange={(event) => setHistoryDateTo(event.target.value)}
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    />
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    실행자
+                    <input
+                      value={historyCreatedBy}
+                      onChange={(event) =>
+                        setHistoryCreatedBy(event.target.value)
+                      }
+                      placeholder="user id"
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    />
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    적용 여부
+                    <select
+                      value={historyIsApplied}
+                      onChange={(event) =>
+                        setHistoryIsApplied(event.target.value)
+                      }
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    >
+                      <option value="">전체</option>
+                      <option value="true">적용됨</option>
+                      <option value="false">미적용</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    후보 상태
+                    <select
+                      value={historyCandidateStatus}
+                      onChange={(event) =>
+                        setHistoryCandidateStatus(event.target.value)
+                      }
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    >
+                      <option value="">전체</option>
+                      <option value="success">성공</option>
+                      <option value="failed">실패</option>
+                      <option value="schema_failed">Schema 실패</option>
+                      <option value="running">실행 중</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    모델 필터
+                    <input
+                      value={historyModel}
+                      onChange={(event) => setHistoryModel(event.target.value)}
+                      placeholder="예: gpt-4.1-mini"
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    />
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    Schema 상태
+                    <select
+                      value={historySchemaStatus}
+                      onChange={(event) =>
+                        setHistorySchemaStatus(event.target.value)
+                      }
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    >
+                      <option value="">전체</option>
+                      <option value="not_checked">미검사</option>
+                      <option value="pass">통과</option>
+                      <option value="failed">실패</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1 font-semibold text-slate-600">
+                    Downstream 상태
+                    <select
+                      value={historyDownstreamState}
+                      onChange={(event) =>
+                        setHistoryDownstreamState(event.target.value)
+                      }
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+                    >
+                      <option value="">전체</option>
+                      <option value="compatible">검증 가능</option>
+                      <option value="warning">주의 필요</option>
+                      <option value="incompatible">검증 불가</option>
+                      <option value="unknown">판정 전</option>
+                    </select>
+                  </label>
+                </div>
+
+              {historyError ? (
+                <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+                  {historyError}
+                </p>
+              ) : null}
+
+              <div className="mt-4 max-h-72 overflow-auto rounded-lg border border-slate-200">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2 font-bold">실행 시각</th>
+                      <th className="px-3 py-2 font-bold">테스트명</th>
+                      <th className="px-3 py-2 font-bold">모델</th>
+                      <th className="px-3 py-2 font-bold">비용</th>
+                      <th className="px-3 py-2 font-bold">토큰</th>
+                      <th className="px-3 py-2 font-bold">시간</th>
+                      <th className="px-3 py-2 font-bold">Schema</th>
+                      <th className="px-3 py-2 font-bold">Downstream</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {candidateResult ? (
+                      <tr
+                        className={`border-l-4 ${
+                          isCurrentHistorySelected
+                            ? 'border-emerald-500 bg-emerald-50/70'
+                            : 'border-transparent hover:bg-slate-50'
+                        }`}
+                      >
+                        <td className="px-3 py-2 font-semibold text-slate-700">
+                          방금 실행
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            aria-label="방금 실행 선택"
+                            onClick={() =>
+                              setSelectedHistoryTarget({ type: 'current' })
+                            }
+                            className="text-left font-semibold text-slate-900 hover:text-emerald-700"
+                          >
+                            <span className="rounded-full border border-emerald-200 bg-white px-2 py-1 text-[11px] font-bold text-emerald-700">
+                              방금 실행
+                            </span>{' '}
+                            {testName.trim() || 'B'}
+                          </button>
+                        </td>
+                        <td className="px-3 py-2">{candidate.model_id || '-'}</td>
+                        <td className="px-3 py-2">
                           {formatCandidateCost(candidateTotalCost)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">B 프롬프트 토큰</div>
-                        <div className="font-bold">
-                          {candidatePromptTokens === null
-                            ? '-'
-                            : formatMetric(candidatePromptTokens)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">B 응답 토큰</div>
-                        <div className="font-bold">
-                          {candidateCompletionTokens === null
-                            ? '-'
-                            : formatMetric(candidateCompletionTokens)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">전체 토큰</div>
-                        <div className="font-bold">
+                        </td>
+                        <td className="px-3 py-2">
                           {candidateTotalTokens === null
                             ? '-'
                             : formatMetric(candidateTotalTokens)}
-                        </div>
-                      </div>
-                      <div className="rounded-md bg-slate-50 p-2">
-                        <div className="text-slate-500">시간</div>
-                        <div className="font-bold">
+                        </td>
+                        <td className="px-3 py-2">
                           {candidateLatency === null
                             ? '-'
                             : formatLatency(candidateLatency)}
-                        </div>
-                      </div>
-                    </div>
-                    {candidateResult.error_message ? (
-                      <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                        {candidateResult.error_message}
-                      </p>
+                        </td>
+                        <td className="px-3 py-2">{schemaStatusLabel}</td>
+                        <td className="px-3 py-2">
+                          {downstreamLabelOf(downstreamCompatibility)}
+                        </td>
+                      </tr>
                     ) : null}
+                    {historyRows.map(({ experiment, candidate: historyCandidate }) => (
+                        <tr
+                          key={`${experiment.experiment_id}-${historyCandidate.candidate_id}`}
+                          className={`border-l-4 ${
+                            isSelectedHistoryCandidate(
+                              experiment.experiment_id,
+                              historyCandidate.candidate_id,
+                            )
+                              ? 'border-emerald-500 bg-emerald-50/70'
+                              : 'border-transparent hover:bg-slate-50'
+                          }`}
+                        >
+                          <td className="px-3 py-2 text-slate-600">
+                            {formatContextDateTime(
+                              historyCandidate.created_at ||
+                                experiment.created_at,
+                            )}
+                          </td>
+                          <td className="px-3 py-2 font-semibold text-slate-900">
+                            <button
+                              type="button"
+                              aria-label={`${
+                                historyCandidate.name || '이름 없는 후보'
+                              } 선택`}
+                              onClick={() =>
+                                setSelectedHistoryTarget({
+                                  type: 'history',
+                                  experimentId: experiment.experiment_id,
+                                  candidateId: historyCandidate.candidate_id,
+                                })
+                              }
+                              className="text-left font-semibold text-slate-900 hover:text-emerald-700"
+                            >
+                              {historyCandidate.name || '이름 없는 후보'}
+                            </button>
+                          </td>
+                          <td className="px-3 py-2">
+                            {historyCandidate.model_id || '-'}
+                          </td>
+                          <td className="px-3 py-2">
+                            {formatCandidateCost(historyCandidate.total_cost)}
+                          </td>
+                          <td className="px-3 py-2">
+                            {typeof historyCandidate.total_tokens === 'number'
+                              ? formatMetric(historyCandidate.total_tokens)
+                              : '-'}
+                          </td>
+                          <td className="px-3 py-2">
+                            {typeof historyCandidate.latency_ms === 'number'
+                              ? formatLatency(historyCandidate.latency_ms)
+                              : '-'}
+                          </td>
+                          <td className="px-3 py-2">
+                            {schemaStatusLabelOf(
+                              historyCandidate.schema_status,
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            {downstreamStateLabelOf(
+                              historyCandidate.downstream_state,
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    {!candidateResult &&
+                    !isLoadingHistory &&
+                    historyItems.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="px-3 py-6 text-center font-semibold text-slate-500"
+                        >
+                          조건에 맞는 이전 실험 이력이 없습니다.
+                        </td>
+                      </tr>
+                    ) : null}
+                    {isLoadingHistory ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="px-3 py-6 text-center font-semibold text-slate-500"
+                        >
+                          이전 실험 이력을 불러오는 중입니다.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+                </>
+              )}
+            </section>
+
+            {!candidateResult ? (
+              <section className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-5 text-sm font-semibold leading-relaxed text-amber-800">
+                B 실행 후 결과 분석이 표시됩니다. 지금은 후보 설정만 준비된
+                상태입니다.
+              </section>
+            ) : null}
+
+            {candidateResult && candidateDecision ? (
+              <>
+                <section
+                  className={`rounded-lg border p-5 shadow-sm ${candidateDecision.tone}`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
-                      <div className="mb-1 text-xs font-bold text-slate-700">
-                        출력
-                      </div>
-                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 p-3 text-xs text-slate-700">
-                        {candidateOutput}
-                      </pre>
+                      <h3 className="text-base font-bold">
+                        {candidateDecision.label}
+                      </h3>
+                      <p className="mt-1 text-xs font-semibold">
+                        비용만이 아니라 실행 상태, schema, downstream, latency를
+                        함께 본 판단입니다.
+                      </p>
+                    </div>
+                    <div className="grid gap-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                      {decisionReasons.map((reason) => (
+                        <span
+                          key={reason}
+                          className="rounded-md border border-current/20 bg-white/70 px-2 py-1 font-semibold"
+                        >
+                          {reason}
+                        </span>
+                      ))}
                     </div>
                   </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-800">
-                    B 실행 후 결과 분석이 표시됩니다. 지금은 후보 설정만 준비된
-                    상태입니다.
-                  </div>
-                )}
-              </section>
+                </section>
 
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="text-sm font-bold">핵심 지표 비교</h3>
+                  <div className="mt-4 overflow-auto rounded-lg border border-slate-200">
+                    <table
+                      aria-label="핵심 지표 비교"
+                      className="min-w-full text-left text-xs"
+                    >
+                      <thead className="bg-slate-50 text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-bold">항목</th>
+                          <th className="px-3 py-2 font-bold">A baseline</th>
+                          <th className="px-3 py-2 font-bold">B candidate</th>
+                          <th className="px-3 py-2 font-bold">변화</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {comparisonRows.map((row) => (
+                          <tr key={row.label}>
+                            <td className="px-3 py-2 font-bold text-slate-700">
+                              {row.label}
+                            </td>
+                            <td className="px-3 py-2">{row.baseline}</td>
+                            <td className="px-3 py-2">{row.candidate}</td>
+                            <td className="px-3 py-2 font-semibold">
+                              {row.change}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <h3 className="text-sm font-bold">출력 품질 비교</h3>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-600">
+                        A baseline 출력
+                      </h4>
+                      <CostOptimizerPreviewViewer
+                        value={baseline?.output ?? baseline?.output_preview}
+                        className="mt-2 max-h-96 overflow-auto"
+                      />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-600">
+                        B candidate 출력
+                      </h4>
+                      <CostOptimizerPreviewViewer
+                        value={candidateResult?.output}
+                        className="mt-2 max-h-96 overflow-auto"
+                      />
+                    </div>
+                  </div>
+                </section>
+              </>
+            ) : null}
+
+            <div className="grid min-h-0 flex-1 gap-4">
               <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-emerald-600" />
                   <h3 className="text-sm font-bold">Inspector</h3>
                 </div>
+                {selectedHistoryRow ? (
+                  <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                    <div className="font-bold">선택한 이전 실험</div>
+                    <dl className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      <div>
+                        <dt className="text-emerald-700">테스트명</dt>
+                        <dd className="font-semibold">
+                          {selectedHistoryRow.candidate.name ||
+                            '이름 없는 후보'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-emerald-700">모델</dt>
+                        <dd className="font-semibold">
+                          {selectedHistoryRow.candidate.model_id || '-'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-emerald-700">비용/토큰/시간</dt>
+                        <dd className="font-semibold">
+                          {formatCandidateCost(
+                            selectedHistoryRow.candidate.total_cost,
+                          )}{' '}
+                          ·{' '}
+                          {typeof selectedHistoryRow.candidate.total_tokens ===
+                          'number'
+                            ? formatMetric(
+                                selectedHistoryRow.candidate.total_tokens,
+                              )
+                            : '-'}{' '}
+                          ·{' '}
+                          {typeof selectedHistoryRow.candidate.latency_ms ===
+                          'number'
+                            ? formatLatency(
+                                selectedHistoryRow.candidate.latency_ms,
+                              )
+                            : '-'}
+                        </dd>
+                      </div>
+                      <div
+                        className={`rounded-md border px-2 py-1 ${schemaStatusToneOf(
+                          selectedHistoryRow.candidate.schema_status,
+                        )}`}
+                      >
+                        <dt>Schema 판정</dt>
+                        <dd className="font-semibold">
+                          {schemaStatusLabelOf(
+                            selectedHistoryRow.candidate.schema_status,
+                          )}
+                        </dd>
+                      </div>
+                      <div
+                        className={`rounded-md border px-2 py-1 ${downstreamStateToneOf(
+                          selectedHistoryRow.candidate.downstream_state,
+                        )}`}
+                      >
+                        <dt>후속 노드 판정</dt>
+                        <dd className="font-semibold">
+                          {downstreamStateLabelOf(
+                            selectedHistoryRow.candidate.downstream_state,
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className="mt-2 leading-relaxed text-emerald-800">
+                      이전 실험 이력 API가 제공하는 summary 기준입니다. raw
+                      prompt, raw trace, secret 값은 표시하지 않습니다.
+                    </p>
+                  </div>
+                ) : null}
                 <div className="mb-4 flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
                   {inspectorTabs.map((tab) => (
                     <button
@@ -1624,10 +2181,10 @@ export default function CostOptimizerPlaygroundPage() {
                   ))}
                 </div>
                 <div className="space-y-3">
-                  {activeInspectorTab === 'a-trace' ? (
+                  {activeInspectorTab === 'trace' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
-                        A Trace
+                        A usage trace
                       </div>
                       <dl className="mt-2 space-y-2 text-xs">
                         <div className="flex justify-between gap-3">
@@ -1662,10 +2219,10 @@ export default function CostOptimizerPlaygroundPage() {
                     </div>
                   ) : null}
 
-                  {activeInspectorTab === 'b-trace' ? (
+                  {activeInspectorTab === 'trace' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
-                        B Trace
+                        B usage trace
                       </div>
                       {candidateResult ? (
                         <dl className="mt-2 space-y-2 text-xs">
@@ -1698,10 +2255,10 @@ export default function CostOptimizerPlaygroundPage() {
                     </div>
                   ) : null}
 
-                  {activeInspectorTab === 'diff' ? (
+                  {activeInspectorTab === 'settings-diff' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
-                        Diff
+                        설정 차이
                       </div>
                       <dl className="mt-2 space-y-2 text-xs">
                         <div className="grid gap-1">
@@ -1786,10 +2343,10 @@ export default function CostOptimizerPlaygroundPage() {
                     </div>
                   ) : null}
 
-                  {activeInspectorTab === 'diff' ? (
+                  {activeInspectorTab === 'trace' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
-                        RAG
+                        근거/Trace
                       </div>
                       <dl className="mt-2 space-y-3 text-xs">
                         <div className="flex justify-between gap-3">
@@ -1809,11 +2366,15 @@ export default function CostOptimizerPlaygroundPage() {
                             Schema 검증
                           </dt>
                           <dd className="font-semibold">
-                            {schemaStatusLabelOf(
-                              candidateSchemaValidation?.status,
-                            )}
+                            {activeSchemaStatusLabel}
                           </dd>
-                          {candidateSchemaErrors.length > 0 ? (
+                          {selectedHistoryRow ? (
+                            <p className="text-[11px] leading-relaxed text-slate-500">
+                              이전 실험 이력 API는 schema summary만 제공합니다.
+                              상세 오류는 방금 실행한 후보의 compare 응답에서
+                              확인할 수 있습니다.
+                            </p>
+                          ) : candidateSchemaErrors.length > 0 ? (
                             <ul className="space-y-1 text-[11px] leading-relaxed text-red-700">
                               {candidateSchemaErrors.map((error) => (
                                 <li key={error}>- {error}</li>
@@ -1850,18 +2411,16 @@ export default function CostOptimizerPlaygroundPage() {
                   {activeInspectorTab === 'downstream' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
-                        Downstream
+                        Downstream 상태
                       </div>
                       <div
-                        className={`mt-2 rounded-md border px-3 py-2 text-xs ${downstreamToneOf(
-                          downstreamCompatibility,
-                        )}`}
+                        className={`mt-2 rounded-md border px-3 py-2 text-xs ${activeDownstreamTone}`}
                       >
                         <div className="font-bold">
-                          {downstreamLabelOf(downstreamCompatibility)}
+                          {activeDownstreamLabel}
                         </div>
                         <p className="mt-1 leading-relaxed">
-                          {downstreamMessageOf(downstreamCompatibility)}
+                          {activeDownstreamMessage}
                         </p>
                       </div>
                       <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
@@ -1869,7 +2428,7 @@ export default function CostOptimizerPlaygroundPage() {
                         실행하지 않습니다. Slack 전송, HTTP 요청, DB write는
                         전체 workflow 테스트에서 별도 확인하세요.
                       </p>
-                      {downstreamCheckedNodeIds.length > 0 ? (
+                      {!selectedHistoryRow && downstreamCheckedNodeIds.length > 0 ? (
                         <div className="mt-3">
                           <div className="text-[11px] font-bold text-slate-500">
                             검사 노드
@@ -1886,7 +2445,7 @@ export default function CostOptimizerPlaygroundPage() {
                           </div>
                         </div>
                       ) : null}
-                      {downstreamWarnings.length > 0 ? (
+                      {!selectedHistoryRow && downstreamWarnings.length > 0 ? (
                         <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-amber-700">
                           {downstreamWarnings.map((warning) => (
                             <li key={warning}>- {warning}</li>
@@ -1896,7 +2455,7 @@ export default function CostOptimizerPlaygroundPage() {
                     </div>
                   ) : null}
 
-                  {activeInspectorTab === 'settings' ? (
+                  {activeInspectorTab === 'settings-diff' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
                         Settings
@@ -2038,187 +2597,6 @@ export default function CostOptimizerPlaygroundPage() {
               </aside>
             </div>
 
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-bold">이전 실험 이력</h3>
-                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                    같은 baseline 기준으로 저장된 B 후보 실행 이력을 다시
-                    확인합니다.
-                  </p>
-                </div>
-                <div className="grid gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    시작일
-                    <input
-                      type="date"
-                      value={historyDateFrom}
-                      onChange={(event) =>
-                        setHistoryDateFrom(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    종료일
-                    <input
-                      type="date"
-                      value={historyDateTo}
-                      onChange={(event) => setHistoryDateTo(event.target.value)}
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    실행자
-                    <input
-                      value={historyCreatedBy}
-                      onChange={(event) =>
-                        setHistoryCreatedBy(event.target.value)
-                      }
-                      placeholder="user id"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    적용 여부
-                    <select
-                      value={historyIsApplied}
-                      onChange={(event) =>
-                        setHistoryIsApplied(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="true">적용됨</option>
-                      <option value="false">미적용</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    후보 상태
-                    <select
-                      value={historyCandidateStatus}
-                      onChange={(event) =>
-                        setHistoryCandidateStatus(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="success">성공</option>
-                      <option value="failed">실패</option>
-                      <option value="schema_failed">Schema 실패</option>
-                      <option value="running">실행 중</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    모델 필터
-                    <input
-                      value={historyModel}
-                      onChange={(event) => setHistoryModel(event.target.value)}
-                      placeholder="예: gpt-4.1-mini"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    Schema 상태
-                    <select
-                      value={historySchemaStatus}
-                      onChange={(event) =>
-                        setHistorySchemaStatus(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="not_checked">미검사</option>
-                      <option value="pass">통과</option>
-                      <option value="failed">실패</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    Downstream 상태
-                    <select
-                      value={historyDownstreamState}
-                      onChange={(event) =>
-                        setHistoryDownstreamState(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="compatible">검증 가능</option>
-                      <option value="warning">주의 필요</option>
-                      <option value="incompatible">검증 불가</option>
-                      <option value="unknown">판정 전</option>
-                    </select>
-                  </label>
-                </div>
-              </div>
-
-              {historyError ? (
-                <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
-                  {historyError}
-                </p>
-              ) : null}
-
-              <div className="mt-4 space-y-2">
-                {isLoadingHistory ? (
-                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500">
-                    이전 실험 이력을 불러오는 중입니다.
-                  </div>
-                ) : historyItems.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500">
-                    조건에 맞는 이전 실험 이력이 없습니다.
-                  </div>
-                ) : (
-                  historyItems.flatMap((experiment) =>
-                    experiment.candidates.map((historyCandidate) => (
-                      <div
-                        key={`${experiment.experiment_id}-${historyCandidate.candidate_id}`}
-                        className="grid gap-2 rounded-md border border-slate-200 px-3 py-3 text-xs md:grid-cols-[1.4fr_1fr_repeat(4,minmax(80px,auto))]"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate font-bold text-slate-900">
-                            {historyCandidate.name || '이름 없는 후보'}
-                          </div>
-                          <div className="mt-1 text-slate-500">
-                            {experiment.created_at || '-'}
-                          </div>
-                        </div>
-                        <div className="font-semibold text-slate-700">
-                          {historyCandidate.model_id || '-'}
-                        </div>
-                        <div>
-                          <div className="text-slate-500">비용</div>
-                          <div className="font-bold">
-                            {formatCandidateCost(historyCandidate.total_cost)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-slate-500">토큰</div>
-                          <div className="font-bold">
-                            {typeof historyCandidate.total_tokens === 'number'
-                              ? formatMetric(historyCandidate.total_tokens)
-                              : '-'}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-slate-500">시간</div>
-                          <div className="font-bold">
-                            {typeof historyCandidate.latency_ms === 'number'
-                              ? formatLatency(historyCandidate.latency_ms)
-                              : '-'}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-slate-500">상태</div>
-                          <div className="font-bold">
-                            {historyCandidate.status || '-'}
-                          </div>
-                        </div>
-                      </div>
-                    )),
-                  )
-                )}
-              </div>
-            </section>
           </div>
         )}
       </section>

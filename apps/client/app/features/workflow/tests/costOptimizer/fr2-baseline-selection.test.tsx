@@ -155,9 +155,76 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     );
 
     expect(await screen.findByText(new RegExp(longMessage))).toBeInTheDocument();
-    expect(screen.getByText(/severity: high/)).toBeInTheDocument();
-    expect(screen.getByText(/confidence: 0.91/)).toBeInTheDocument();
+    expect(screen.getByText('severity')).toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
+    expect(screen.getByText('confidence')).toBeInTheDocument();
+    expect(screen.getByText('0.91')).toBeInTheDocument();
     expect(screen.queryByText(/\.{3}/)).not.toBeInTheDocument();
+  });
+
+  it('baseline 최신 preview는 LLM text 안의 JSON 문자열도 viewer로 풀어서 표시한다', async () => {
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
+      baseline: {
+        ...comparableBaseline,
+        output_preview: JSON.stringify({
+          cost: 0.0012,
+          text: JSON.stringify({
+            approvalRequired: false,
+            mailDraft: '고객에게 정산 파일 재생성 방법을 안내합니다.',
+          }),
+          model: 'gpt-4.1',
+        }),
+      },
+    });
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('approvalRequired')).toBeInTheDocument();
+    expect(screen.getByText('false')).toBeInTheDocument();
+    expect(screen.getByText('mailDraft')).toBeInTheDocument();
+    expect(
+      screen.getByText('고객에게 정산 파일 재생성 방법을 안내합니다.'),
+    ).toBeInTheDocument();
+  });
+
+  it('baseline 최신 preview는 잘린 output_preview보다 보존된 output payload를 우선 표시한다', async () => {
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
+      baseline: {
+        ...comparableBaseline,
+        output_preview: '{"cost":0.0012,"text":"{\\"approvalRequired\\":false',
+        output: {
+          cost: 0.0012,
+          text: JSON.stringify({
+            approvalRequired: false,
+            mailDraft: 'preview가 잘려도 이 전체 답변 초안을 보여줘야 합니다.',
+          }),
+        },
+      },
+    });
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('mailDraft')).toBeInTheDocument();
+    expect(
+      screen.getByText('preview가 잘려도 이 전체 답변 초안을 보여줘야 합니다.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/approvalRequired\\":false/)).not.toBeInTheDocument();
   });
 
   it('최신 실행 로그 선택은 latest baseline API를 호출하고 선택 결과를 전달한다', async () => {
