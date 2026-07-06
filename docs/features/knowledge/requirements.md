@@ -72,6 +72,8 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-057: LLM node의 RAG 옵션은 `query_rewrite_mode`를 가질 수 있다. MBA-105 runtime은 `off`를 기본값으로 두고 deterministic/template rewrite를 opt-in으로 구현한다. `llm_assisted` rewrite는 LLM 호출이므로 execution subject, generation model/credential, credential `use`, usage/cost 기록, timeout, token/cost budget, 실패 시 fallback 정책이 별도 승인되기 전에는 구현하지 않는다. Rewrite는 user query와 safe skill/template만 사용하고 접근 가능한 collection/KB 범위를 넓히지 않는다.
 - FR-058: LLM node의 RAG 옵션은 목표 옵션으로 `evidence_sufficiency_policy`를 가질 수 있다. 운영 runtime의 초기 기본값은 `minimum_evidence`이며 `off`를 허용하지 않는다. Legal, policy, compliance, high-risk flow는 `strict_citation` 후보를 사용한다. 근거가 부족하면 LLM이 추측 답변을 만들지 않고 safe no-result 또는 insufficient-evidence 응답을 반환해야 한다.
 - FR-059: Slack 계열 source의 초기 granularity는 channel = Knowledge Collection, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group = document-level KB다. Channel digest는 opt-in connector policy로만 만들고 DM/raw audio/raw transcript ingestion은 기본 제외한다.
+- FR-060: RAG/LLM prompt path는 retrieved context, memory summary, upstream node output, 외부 source content를 신뢰할 수 없는 evidence로 취급한다. 이 데이터는 system/developer/user instruction source가 아니며, prompt 구성 시 delimiter와 sanitizer를 적용하고 문서 안의 지시문이 system/developer policy나 사용자의 명시 요청보다 우선하지 못하게 해야 한다.
+- FR-061: Untrusted context guardrail은 앱/워크플로우 관리자가 편집하는 system prompt가 아니라 플랫폼 최소 보안 경계다. 관리자는 앱별 system prompt를 추가할 수 있지만, retrieved context/upstream output을 instruction source로 취급하지 않는 baseline guardrail을 비활성화하거나 약화할 수 없다.
 
 ## Policies And Edge Cases
 
@@ -97,6 +99,9 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - Skill metadata가 먼저 로드되는 Builder UX/API를 만들더라도 전역 metadata 선노출은 금지한다. Builder에는 authorization-scoped safe skill metadata만 전달하고, skill hint는 실행 시점 permission helper 결과와 교집합 처리한다.
 - Query rewrite 결과 원문은 raw prompt와 유사한 민감 입력으로 취급한다. Durable audit/trace/usage metadata에는 raw rewritten query를 저장하지 않고, rewrite 적용 여부와 전략 같은 safe summary만 저장한다.
 - Evidence sufficiency 판정은 권한/정책상 제외된 문서의 존재를 암시하면 안 된다. 부족 사유는 `no_evidence`, `low_score`, `insufficient_citation`, `policy_filtered`, `operational_partial` 같은 safe reason class로 낮춘다.
+- Retrieved context, memory summary, upstream node output, external connector content에 포함된 지시문은 untrusted evidence 안의 텍스트로만 처리한다. Prompt injection으로 의심되는 라인은 redaction 또는 delimiter 경계 안에서 무해화하고, LLM system prompt에는 해당 text를 instruction처럼 직접 합치지 않는다.
+- Workflow LLM node에서 system/assistant prompt에 referenced variable이 쓰이면 해당 upstream value 원문은 privileged role에 직접 렌더링하지 않고 user-role untrusted evidence block으로 분리한다. User prompt 변수는 워크플로우 작성자의 명시 요청 구성 경로이므로 기존 의미를 유지하되, RAG/memory/connector context와 결합될 때 platform guardrail이 우선한다.
+- Standalone Agent answer와 Workflow LLM node RAG 경로는 `classification=pii` evidence를 외부 LLM prompt에 넣기 전에 차단한다. 이 차단은 evidence sufficiency보다 우선하며 raw content, hidden KB id, exact denied count를 응답/trace/audit에 저장하지 않는다.
 - Skill authoring, test, review, publish UI는 아직 확정하지 않는다. Workflow Playground가 별도 실험 공간인지, canvas와 통합되는지, skill binding을 어떤 화면에서 조작하는지는 Workflow/Agent Builder/Knowledge 공동 UX gate에서 결정한다.
 - Published 전 draft skill을 workflow 실험에서 허용할지 여부도 아직 제품 UX/API 결정 대상이다. 허용하더라도 운영 실행 시점 자동 후보가 될 수 없고, actor의 KB permission/source ACL/redaction/freshness/eval gate를 우회할 수 없다.
 - 임의 코드 실행 skill은 이 feature 범위에서 승인하지 않는다. Code-bearing skill은 sandbox, approval workflow, egress guard, dependency policy, timeout/resource cap, audit gate가 닫힌 뒤 별도 ADR로만 도입한다.
