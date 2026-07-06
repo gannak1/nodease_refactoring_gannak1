@@ -226,7 +226,7 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
     expect(screen.getByLabelText('먼저 모델을 선택하세요')).toBeDisabled();
   });
 
-  it('모델 후보 목록에서는 비활성 모델과 embedding 모델을 제외한다', async () => {
+  it('모델 후보 목록에서는 비활성 모델, 날짜 버전, workflow LLM 외 용도 모델을 제외한다', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -242,6 +242,14 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
           },
           {
             id: 'model-2',
+            model_id_for_api_call: 'o1-pro',
+            name: 'o1-pro',
+            type: 'chat',
+            provider_name: 'OpenAI',
+            is_active: true,
+          },
+          {
+            id: 'model-3',
             model_id_for_api_call: 'text-embedding-3-small',
             name: 'Text Embedding 3 Small',
             type: 'embedding',
@@ -249,12 +257,28 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
             is_active: true,
           },
           {
-            id: 'model-3',
+            id: 'model-4',
             model_id_for_api_call: 'legacy-chat',
             name: 'Legacy Chat',
             type: 'chat',
             provider_name: 'OpenAI',
             is_active: false,
+          },
+          {
+            id: 'model-5',
+            model_id_for_api_call: 'gpt-5.2-pro-2025-12-11',
+            name: 'gpt-5.2-pro-2025-12-11',
+            type: 'chat',
+            provider_name: 'OpenAI',
+            is_active: true,
+          },
+          {
+            id: 'model-6',
+            model_id_for_api_call: 'gpt-realtime',
+            name: 'gpt-realtime',
+            type: 'realtime',
+            provider_name: 'OpenAI',
+            is_active: true,
           },
         ],
       }),
@@ -274,12 +298,19 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
     expect(
       await screen.findAllByRole('option', { name: 'GPT-4.1 mini' }),
     ).toHaveLength(2);
+    expect(screen.getAllByRole('option', { name: 'o1-pro' })).toHaveLength(2);
 
     expect(
       screen.queryByRole('option', { name: 'Text Embedding 3 Small' }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('option', { name: 'Legacy Chat' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('option', { name: 'gpt-5.2-pro-2025-12-11' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('option', { name: 'gpt-realtime' }),
     ).not.toBeInTheDocument();
   });
 

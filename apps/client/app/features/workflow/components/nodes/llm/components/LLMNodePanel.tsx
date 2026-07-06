@@ -29,6 +29,7 @@ import {
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
 import { LLM_TASK_TYPES } from '@/app/features/workflow/utils/llmTaskTypes';
+import { isWorkflowChatModelOption } from '@/app/features/workflow/utils/llmModelFilters';
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
@@ -119,115 +120,6 @@ const HelpPopover = ({
 // 1. 시스템 프롬프트 또는 사용자 프롬프트 중 하나 이상 입력되어야 함
 // 2. 모델이 선택되어야 함
 
-const isChatModelOption = (model: ModelOption) => {
-  const id = model.model_id_for_api_call.toLowerCase();
-  const name = model.name.toLowerCase();
-
-  // provider_name이 있으면 사용, 없으면 model_id로 추론
-  let provider = (model.provider_name || '').toLowerCase();
-  if (!provider) {
-    if (
-      id.startsWith('gpt-') ||
-      id.startsWith('o1') ||
-      id.startsWith('o3') ||
-      id.startsWith('o4') ||
-      id.startsWith('chatgpt')
-    ) {
-      provider = 'openai';
-    } else if (
-      id.startsWith('gemini') ||
-      id.startsWith('gemma') ||
-      id.startsWith('models/gemini')
-    ) {
-      provider = 'google';
-    } else if (id.startsWith('claude')) {
-      provider = 'anthropic';
-    } else if (id.startsWith('grok')) {
-      provider = 'xai';
-    } else if (id.startsWith('deepseek')) {
-      provider = 'deepseek';
-    }
-  }
-
-  // Embedding 모델 제외
-  if (id.includes('embedding') || model.type === 'embedding') return false;
-  if (name.includes('embedding') || name.includes('임베딩')) return false;
-
-  // ========== OpenAI 화이트리스트 (16개) - 정확히 일치만 허용 ==========
-  if (
-    provider.includes('openai') ||
-    id.startsWith('gpt-') ||
-    id.startsWith('o1') ||
-    id.startsWith('o3') ||
-    id.startsWith('o4') ||
-    id.startsWith('chatgpt')
-  ) {
-    const allowedOpenAI = new Set([
-      'gpt-5.2', // 범용 플래그십
-      'gpt-5.1', // 코딩/명령 이행 강화
-      'gpt-5', // GPT-5 시리즈 시작
-      'o3-pro', // 초고도 추론
-      'o3', // 논리 특화
-      'o1', // 추론 전용
-      'gpt-4.1', // 100만 토큰 컨텍스트
-      'gpt-4o', // 멀티모달 표준
-      'gpt-4-turbo-preview', // 최적화된 GPT-4
-      'chatgpt-4o-latest', // 동적 업데이트
-      'gpt-5-mini', // 효율 모델
-      'gpt-5-nano', // 초경량
-      'gpt-4.1-mini', // 경량 GPT-4급
-      'gpt-4o-mini', // 저렴한 멀티모달
-      'o3-mini', // 실시간 추론
-      'o4-mini', // 차세대 에이전트용
-    ]);
-    const cleanId = id.replace('models/', '');
-    const isAllowed = allowedOpenAI.has(cleanId);
-    if (!isAllowed) return false;
-  }
-
-  // ========== Anthropic 화이트리스트 (10개) - 정확히 일치만 허용 ==========
-  if (provider.includes('anthropic') || id.startsWith('claude')) {
-    const allowedAnthropic = new Set([
-      'claude-opus-4-5-20251101', // 최신 최상위
-      'claude-sonnet-4-5-20250929', // 에이전트/컴퓨터 제어
-      'claude-haiku-4-5-20251001', // 최신 경량
-      'claude-3-5-sonnet-latest', // 안정된 3.5
-      'claude-3-5-opus-latest', // 깊은 분석
-      'claude-3-5-haiku-latest', // 3.5 경량
-      'claude-opus-4-1-20250805', // 고성능 안정화
-      'claude-sonnet-4-20250514', // 2025 상반기 주력
-      'claude-3-5-sonnet-20241022', // 선호도 높은 구버전
-      'claude-3-opus-20240229', // 레거시 플래그십
-    ]);
-    const cleanId = id.replace('models/', '');
-    const isAllowed = allowedAnthropic.has(cleanId);
-    if (!isAllowed) return false;
-  }
-
-  // ========== Google 화이트리스트 (8개) - 정확히 일치만 허용 ==========
-  if (
-    provider.includes('google') ||
-    id.includes('gemini') ||
-    id.includes('gemma')
-  ) {
-    const allowedGoogle = new Set([
-      'gemini-3-pro', // 2026 주력
-      'gemini-3-flash', // 초고속
-      'gemini-2.5-pro', // 대형 컨텍스트
-      'gemini-2.5-flash', // 범용 속도형
-      'gemini-2.0-flash', // 안정된 표준
-      'gemini-2.0-flash-lite', // 초경량
-      'gemini-robotics-er-1.5-preview', // 로보틱스 특화
-      'gemma-3-27b-it', // 오픈 가중치
-    ]);
-    const cleanId = id.replace('models/', '');
-    const isAllowed = allowedGoogle.has(cleanId);
-    if (!isAllowed) return false;
-  }
-
-  return true;
-};
-
 const groupModelsByProvider = (models: ModelOption[]) => {
   const sorted = [...models].sort((a, b) => a.name.localeCompare(b.name));
   const grouped = sorted.reduce(
@@ -313,7 +205,7 @@ export function LLMNodePanel({
   };
 
   const chatModelOptions = useMemo(
-    () => modelOptions.filter(isChatModelOption),
+    () => modelOptions.filter(isWorkflowChatModelOption),
     [modelOptions],
   );
   const groupedModelOptions = useMemo(

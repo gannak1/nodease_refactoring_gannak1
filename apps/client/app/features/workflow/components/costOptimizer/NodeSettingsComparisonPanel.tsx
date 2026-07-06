@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileJson, Wand2 } from 'lucide-react';
 
 import { PromptWizardModal } from '@/app/features/workflow/components/modals/PromptWizardModal';
@@ -15,6 +15,7 @@ import {
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
 import { LLM_TASK_TYPES } from '@/app/features/workflow/utils/llmTaskTypes';
+import { isWorkflowChatModelOption } from '@/app/features/workflow/utils/llmModelFilters';
 import {
   llmDataFromCandidate,
   type CandidateDraft,
@@ -90,18 +91,6 @@ const noopCandidateChange: CandidateChangeHandler = (key, value) => {
   void value;
 };
 
-const isChatModelOption = (model: ModelOption) => {
-  const id = model.model_id_for_api_call.toLowerCase();
-  const name = model.name.toLowerCase();
-
-  if (model.is_active === false) return false;
-  if (model.type === 'embedding') return false;
-  if (id.includes('embedding')) return false;
-  if (name.includes('embedding') || name.includes('임베딩')) return false;
-
-  return true;
-};
-
 const groupModelsByProvider = (models: ModelOption[]) => {
   const sorted = [...models].sort((a, b) => a.name.localeCompare(b.name));
   const grouped = sorted.reduce(
@@ -159,6 +148,7 @@ export function NodeSettingsComparisonPanel({
     id: string;
     output: DraggedOutputVariable;
   } | null>(null);
+  const inputInsertionSequenceRef = useRef(0);
 
   useEffect(() => {
     if (readOnly) return;
@@ -188,7 +178,7 @@ export function NodeSettingsComparisonPanel({
   }, [readOnly]);
 
   const chatModelOptions = useMemo(
-    () => modelOptions.filter(isChatModelOption),
+    () => modelOptions.filter(isWorkflowChatModelOption),
     [modelOptions],
   );
   const groupedModelOptions = useMemo(
@@ -278,9 +268,10 @@ export function NodeSettingsComparisonPanel({
       sourceNodeId,
       sourceTitle: chip.source || '기준 입력',
     };
+    inputInsertionSequenceRef.current += 1;
     setPendingInputInsertion({
       field,
-      id: `${field}-${chip.source || 'input'}-${chip.key}-${Date.now()}`,
+      id: `${field}-${chip.source || 'input'}-${chip.key}-${inputInsertionSequenceRef.current}`,
       output,
     });
   };
