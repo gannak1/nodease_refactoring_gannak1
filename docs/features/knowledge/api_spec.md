@@ -62,7 +62,10 @@ Request body는 raw user input으로 간주한다.
 | `knowledge_base_ids` | 선택. Explicit KB 후보 |
 | `intended_execution_subject_id` | 선택. Runtime availability warning 계산용. 실행 권한 보장이 아니며 runtime은 다시 검증한다 |
 | `max_recommendations` | 서버 cap. 초기 기본값은 5, 최대 20 |
+| `max_collections` | Auto collection 후보 탐색 cap. 서버 기본값 20, 최대 100 |
+| `max_candidate_kbs` | Auto collection에서 resolver가 만들 수 있는 KB 후보 cap. 서버 기본값과 최대값은 5000이며, 실제 response recommendation 수는 `max_recommendations`가 다시 제한한다 |
 | `high_risk_domain` | Builder hint. `strict_citation` 같은 option recommendation에만 사용하며 권한, policy block, compliance decision에 사용하지 않는다 |
+| `allow_query_rewrite` | `high_risk_domain`이 있는 경우 safe template 기반 `queryRewriteMode=template` 추천을 허용할지 결정한다. 이 값은 권한 후보를 넓히거나 LLM-assisted rewrite를 승인하지 않는다 |
 
 Response item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다. 현재 Workflow LLM node는 `knowledgeBases`를 실행 입력으로 사용하므로 recommendation result는 `materialized_knowledge_bases`를 통해 LLM node `knowledgeBases`로 변환한다.
 
@@ -81,6 +84,8 @@ Response item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환
 | `provenance` | `recommendation_strategy`, `safe_reason_code`, `used_signals`, `matched_safe_terms`, bucketed counts 같은 redaction-safe summary |
 | `runtime_availability` | `available`, `warning`, `unavailable`, `unknown`. Intended subject가 없으면 private 후보를 `available`로 올리지 않는다 |
 | `warnings` | Safe warning code/message만 허용 |
+| `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
+| `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
 
 금지: raw workflow intent, raw node purpose, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
 
