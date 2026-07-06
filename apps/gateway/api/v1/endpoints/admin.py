@@ -10,7 +10,7 @@ from apps.gateway.services.admin_audit_log_service import (
     AdminAuditLogFilters,
     AdminAuditLogService,
 )
-from apps.gateway.services.admin_usage_service import AdminUsageService
+from apps.gateway.services.admin_usage_service import KST, AdminUsageService
 from apps.gateway.services.app_creation_permission_service import (
     AppCreationPermissionService,
 )
@@ -158,7 +158,7 @@ def _serialize_workflow_budget(
         current_cost = WorkflowBudgetService.get_current_month_cost(
             db,
             workflow_id=budget.workflow_id,
-            now=datetime.now(),
+            now=datetime.now(KST),
         )
         status = WorkflowBudgetService.classify_budget_usage(
             current_cost=current_cost,
