@@ -16,14 +16,14 @@ ORG_ID = uuid.UUID("10000000-0000-0000-0000-000000000001")
 USER_ID = uuid.UUID("20000000-0000-0000-0000-000000000001")
 
 
-def _collection(collection_id: uuid.UUID | None = None, *, actions=None):
+def _collection(collection_id: uuid.UUID | None = None, *, actions=None, safe_metadata=None):
     return SimpleNamespace(
         id=collection_id or uuid.uuid4(),
         organization_id=ORG_ID,
         lifecycle_state="active",
         sync_state="synced",
         is_system_managed=False,
-        safe_metadata={},
+        safe_metadata=safe_metadata or {},
         _actions=set(actions or []),
     )
 
@@ -221,6 +221,37 @@ def test_auto_collection_mode_uses_only_route_allowed_collections():
     ]
     assert resolver.requested_item_collection_ids == {allowed_collection.id}
     assert result.unavailable_candidate_count_bucket == "1"
+
+
+def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
+    collection = _collection(
+        safe_metadata={
+            "safe_label": "HR 정책",
+            "raw_source_url": "https://internal.example/private",
+        }
+    )
+    kb = _kb()
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+        ],
+        kbs=[kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    candidate_metadata = result.candidates[0].safe_metadata
+    assert candidate_metadata["collection_id"] == str(collection.id)
+    assert candidate_metadata["collection_safe_label"] == "HR 정책"
+    assert candidate_metadata["route_scope_type"] == "auto_collection"
+    assert candidate_metadata["linked_kb_count_bucket"] == "1"
+    assert "raw_source_url" not in candidate_metadata
 
 
 def test_auto_collection_cap_applies_after_route_authorization():

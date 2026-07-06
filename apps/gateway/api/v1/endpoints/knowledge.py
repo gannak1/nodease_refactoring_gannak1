@@ -33,6 +33,9 @@ from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.knowledge_rag_recommendation_service import (
+    KnowledgeRAGRecommendationService,
+)
 from apps.gateway.services.organization_context import (
     get_user_primary_organization_id,
     resolve_active_organization_id,
@@ -43,6 +46,8 @@ from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
     KnowledgeCandidateResolveRequest,
+    KnowledgeRAGRecommendationRequest,
+    KnowledgeRAGRecommendationResponse,
 )
 from apps.shared.schemas.rag import (
     DocumentPreviewRequest,
@@ -217,6 +222,31 @@ def resolve_knowledge_candidates(
         max_collections=candidate_request.max_collections,
         max_candidate_kbs=candidate_request.max_candidate_kbs,
     )
+
+
+@router.post("/rag-recommendations", response_model=KnowledgeRAGRecommendationResponse)
+def recommend_rag_options(
+    recommendation_request: KnowledgeRAGRecommendationRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Workflow Builder가 LLM node RAG 옵션을 구성할 때 사용할 안전한 KB 추천을 반환합니다.
+    """
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    service = KnowledgeRAGRecommendationService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+    return service.recommend_for_builder(recommendation_request)
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseDetailResponse)
