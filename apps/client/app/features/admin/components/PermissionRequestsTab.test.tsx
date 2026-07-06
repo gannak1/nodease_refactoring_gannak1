@@ -13,6 +13,8 @@ vi.mock('../api/adminApi', () => ({
     listPermissionRequests: vi.fn(),
     approvePermissionRequest: vi.fn(),
     rejectPermissionRequest: vi.fn(),
+    listAppCreationPermissions: vi.fn(),
+    revokeAppCreationPermission: vi.fn(),
   },
 }));
 
@@ -31,6 +33,8 @@ import type { OrganizationMember } from '../../organization/types/Organization';
 const mockedList = vi.mocked(adminApi.listPermissionRequests);
 const mockedApprove = vi.mocked(adminApi.approvePermissionRequest);
 const mockedReject = vi.mocked(adminApi.rejectPermissionRequest);
+const mockedListHolders = vi.mocked(adminApi.listAppCreationPermissions);
+const mockedRevoke = vi.mocked(adminApi.revokeAppCreationPermission);
 
 const members = [
   {
@@ -62,9 +66,22 @@ const approvedRequest = {
   decided_at: '2026-07-03T09:00:00+09:00',
 };
 
+const holderPermission = {
+  id: 'perm-1',
+  user: { id: 'user-3', name: '김빌더', email: 'builder@example.com' },
+  assigned_by: 'manager-1',
+  assigned_at: '2026-07-01T09:00:00+09:00',
+};
+
 const conflictError = () => {
   const error = new AxiosError('Conflict');
   error.response = { status: 409 } as AxiosResponse;
+  return error;
+};
+
+const notFoundError = () => {
+  const error = new AxiosError('Not Found');
+  error.response = { status: 404 } as AxiosResponse;
   return error;
 };
 
@@ -185,5 +202,82 @@ describe('PermissionRequestsTab', () => {
     expect(
       await screen.findByText(/권한 신청 관리 권한이 없습니다/),
     ).toBeInTheDocument();
+  });
+});
+
+describe('PermissionRequestsTab 보유 권한 섹션 (FR-014 회수 확장)', () => {
+  it('보유자, 부여자와 함께 보유 목록을 표시하고 행별 회수 버튼을 둔다', async () => {
+    mockedList.mockResolvedValue({ total: 0, items: [] });
+    mockedListHolders.mockResolvedValue({ total: 1, items: [holderPermission] });
+
+    render(<PermissionRequestsTab members={members} />);
+
+    expect(await screen.findByText('보유 권한')).toBeInTheDocument();
+    expect(screen.getByText('김빌더')).toBeInTheDocument();
+    expect(screen.getByText('builder@example.com')).toBeInTheDocument();
+    // 부여자(assigned_by)는 members로 이름을 표시한다.
+    expect(screen.getByText('김관리')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '회수' })).toBeInTheDocument();
+    expect(mockedListHolders).toHaveBeenCalledWith({ page: 1, limit: 20 });
+  });
+
+  it('보유 row가 없으면 empty state를 표시한다', async () => {
+    mockedList.mockResolvedValue({ total: 0, items: [] });
+    mockedListHolders.mockResolvedValue({ total: 0, items: [] });
+
+    render(<PermissionRequestsTab members={members} />);
+
+    expect(
+      await screen.findByText(/부여된 App 생성 권한이 없습니다/),
+    ).toBeInTheDocument();
+  });
+
+  it('회수 흐름: 확인 다이얼로그에서 확정하면 API 호출, 성공 toast, 두 목록 갱신', async () => {
+    mockedList.mockResolvedValue({ total: 0, items: [] });
+    mockedListHolders.mockResolvedValue({ total: 1, items: [holderPermission] });
+    mockedRevoke.mockResolvedValue({ id: 'perm-1', user_id: 'user-3' });
+
+    render(<PermissionRequestsTab members={members} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '회수' }));
+
+    const dialog = screen.getByRole('dialog', {
+      name: 'App 생성 권한 회수 확인',
+    });
+    expect(
+      within(dialog).getByText('김빌더 (builder@example.com)'),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('워크플로우 생성/배포'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '회수 확정' }));
+
+    await waitFor(() => expect(mockedRevoke).toHaveBeenCalledWith('perm-1'));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith('권한을 회수했습니다.'),
+    );
+    // 확정 후 보유 목록과 신청 목록을 함께 다시 불러온다 (초기 1회 + 갱신 1회).
+    await waitFor(() => expect(mockedListHolders).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(2));
+    expect(
+      screen.queryByRole('dialog', { name: 'App 생성 권한 회수 확인' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('이미 회수된 권한(404)은 안내 toast 후 보유 목록을 갱신한다', async () => {
+    mockedList.mockResolvedValue({ total: 0, items: [] });
+    mockedListHolders.mockResolvedValue({ total: 1, items: [holderPermission] });
+    mockedRevoke.mockRejectedValue(notFoundError());
+
+    render(<PermissionRequestsTab members={members} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '회수' }));
+    fireEvent.click(screen.getByRole('button', { name: '회수 확정' }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('이미 회수된 권한입니다.'),
+    );
+    await waitFor(() => expect(mockedListHolders).toHaveBeenCalledTimes(2));
   });
 });

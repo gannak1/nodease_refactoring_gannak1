@@ -9,6 +9,8 @@ import type {
   OrganizationMemberUpdateRequest,
   OrganizationResponse,
   OrganizationSummary,
+  PermissionRequestCreateRequest,
+  PermissionRequestResponse,
 } from '../types/Organization';
 
 export const organizationApi = {
@@ -83,6 +85,16 @@ export const organizationApi = {
       `/organizations/${organizationId}/members/${userId}`,
       { headers: activeOrganizationHeaders(organizationId) },
     );
+    return response.data;
+  },
+
+  submitPermissionRequest: async (
+    payload: PermissionRequestCreateRequest,
+  ): Promise<PermissionRequestResponse> => {
+    const response = await apiClient.post('/permission-requests', {
+      requested_permission: 'app.create',
+      ...payload,
+    });
     return response.data;
   },
 };

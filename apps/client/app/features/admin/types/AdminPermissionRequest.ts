@@ -21,3 +21,20 @@ export type PermissionRequestListResponse = {
   total: number;
   items: PermissionRequestItem[];
 };
+
+export type AppCreationPermissionItem = {
+  id: string;
+  user: PermissionRequestUser | null;
+  assigned_by: string;
+  assigned_at: string;
+};
+
+export type AppCreationPermissionListResponse = {
+  total: number;
+  items: AppCreationPermissionItem[];
+};
+
+export type AppCreationPermissionRevokeResponse = {
+  id: string;
+  user_id: string;
+};

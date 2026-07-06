@@ -49,6 +49,19 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
   - code에는 access-management branch가 남아 있지만 `visibleTabs`에는 `access` tab이 포함되지 않는다.
   - 따라서 organization member/team/permission 관리의 현재 사용자 경로는 AdminConsolePage다.
 
+### CreateAppModal Permission Request State
+
+- 출처: `apps/client/app/features/app/components/create-app-modal/index.tsx`
+- 경로: `/dashboard/mymodule`의 App 생성 모달
+- 책임: App 생성 권한이 없는 사용자가 `POST /apps`에서 `403`을 받으면 권한 신청 사유 입력 UI로 전환한다.
+- 현재 동작:
+  - App 생성 API가 `403`을 반환하면 일반 실패 toast를 표시하지 않고 모달 제목을 `앱 생성 권한 신청`으로 바꾼다.
+  - 사유 textarea를 표시하고, 앱 이름이 있으면 기본 신청 사유를 생성한다.
+  - `권한 신청` 클릭 시 `organizationApi.submitPermissionRequest`로 `POST /permission-requests`를 호출한다.
+  - 제출 성공 시 success toast를 표시하고 모달을 닫는다.
+  - `409 Pending permission request already exists`는 중복 신청 안내 toast로 처리한다.
+  - `409 App creation permission already granted`는 이미 권한이 있다는 안내 후 App 생성 입력 상태로 되돌린다.
+
 ## Components
 
 ### ActiveOrganizationGate
@@ -243,7 +256,7 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 ### organizationApi
 
 - 출처: `apps/client/app/features/organization/api/organizationApi.ts`
-- 책임: organization member API wrapper를 제공한다.
+- 책임: organization context, member, 권한 신청 API wrapper를 제공한다.
 - 호출:
   - `listOrganizations()`: `GET /organizations`
   - `listMemberships()`: `GET /organizations/memberships`
@@ -253,6 +266,7 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
   - `acceptInvitation(organizationId)`: `POST /organizations/{id}/members/me/accept`
   - `updateMember(organizationId, userId, payload)`: `PATCH /organizations/{id}/members/{user_id}`
   - `removeMember(organizationId, userId)`: `DELETE /organizations/{id}/members/{user_id}`
+  - `submitPermissionRequest(payload)`: `POST /permission-requests`
 
 ### activeOrganization Helpers
 
@@ -346,6 +360,13 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - organization name과 auth badge를 표시한다.
 - `access` branch 상태와 handler는 코드에 존재하지만 visible navigation에서 선택할 수 없다.
 
+### CreateAppModal Permission Request State
+
+- 기본 상태는 App 이름/설명/아이콘 입력 form이다.
+- `POST /apps`가 `403`이면 `showPermissionRequest=true`가 되고 신청 사유 form을 표시한다.
+- 신청 제출 중에는 신청 버튼과 `앱 정보 수정` 버튼을 비활성화한다.
+- 신청 성공 후에는 부모 성공 콜백을 호출하지 않고 모달만 닫는다. App은 아직 생성되지 않았기 때문이다.
+
 ## Interactions
 
 ### Active Organization Resolution
@@ -406,6 +427,14 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - SettingsPage는 `/organizations`와 `/organizations/current`로 organization context를 확인하고 organization name/auth badge를 표시한다.
 - visible settings tab에서는 organization member/team mutation을 제공하지 않는다.
 
+### App Creation Permission Request
+
+- 사용자가 `CreateAppModal`에서 App 생성을 시도한다.
+- `appApi.createApp`이 성공하면 기존처럼 목록 갱신, 모달 닫기, workflow editor 이동을 수행한다.
+- `appApi.createApp`이 `403`을 반환하면 같은 모달 안에서 권한 신청 사유 입력 상태로 전환한다.
+- 사용자가 사유를 입력하고 `권한 신청`을 누르면 `POST /permission-requests`에 `{ requested_permission: "app.create", reason }`를 보낸다.
+- 제출 성공 후 관리자는 AdminConsolePage의 `권한 신청` 탭에서 승인/거절한다.
+
 ## Accessibility
 
 - ActiveOrganizationGate의 organization 선택은 `<button>` 요소로 구현되어 키보드 조작이 가능하다.
@@ -417,4 +446,5 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - icon-only buttons 일부는 `title`을 제공한다.
 - `ActiveOrganizationMemberPicker`는 native `<select>`를 사용한다. 별도 `<label>`은 호출자가 제공해야 한다.
 - inline error/notice blocks는 시각적으로 구분되지만 `role="alert"`나 `aria-live`는 확인되지 않는다.
+- CreateAppModal은 `role="dialog"`와 `aria-modal="true"`를 제공하며, 권한 신청 상태도 같은 dialog 안에서 표시된다.
 - AppCreatePermissionRequestForm의 신청 사유 textarea는 `<label>`과 연결하고, 완료/오류 안내는 텍스트로 렌더링해 스크린 리더가 읽을 수 있어야 한다.

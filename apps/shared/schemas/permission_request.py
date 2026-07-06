@@ -64,3 +64,22 @@ class PermissionRequestResponse(BaseModel):
 class PermissionRequestListResponse(BaseModel):
     total: int
     items: list[PermissionRequestResponse]
+
+
+class AppCreationPermissionResponse(BaseModel):
+    """App 생성 권한 보유 항목 (FR-014 회수 확장)."""
+
+    id: UUID
+    user: Optional[PermissionRequestUserSchema] = None
+    assigned_by: UUID
+    assigned_at: datetime
+
+
+class AppCreationPermissionListResponse(BaseModel):
+    total: int
+    items: list[AppCreationPermissionResponse]
+
+
+class AppCreationPermissionRevokeResponse(BaseModel):
+    id: UUID
+    user_id: UUID

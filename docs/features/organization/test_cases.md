@@ -1,7 +1,6 @@
 # Organization Test Cases
 
 Status: Draft
-Verified Against: feature/mba-119 @ 7aefa84
 
 ## Minimum Failure Rule
 
@@ -20,7 +19,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 
 현재 backend coverage는 `apps/gateway/tests/api/test_organizations_api.py`, `apps/gateway/tests/api/test_teams_api.py`, `apps/gateway/tests/api/test_permissions_api.py`, `apps/gateway/tests/services/test_organization_member_service.py`, `apps/gateway/tests/services/test_team_service_permissions.py`, `apps/shared/tests/services/test_permissions.py`, `apps/shared/tests/services/test_permission_enforcement.py`, `tests/db/test_organization_user_schema.py`, `tests/db/test_team_permission_constraints.py`, `tests/test_permission_schema.py`, `apps/shared/tests/test_organization_membership_schema.py`에 분산되어 있다.
 
-현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트가 있으나, AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다. App 생성 권한 신청 UI(ORG-TC-E009~E013)는 `apps/client/app/features/app/components/create-app-modal/index.test.tsx`가 담당한다.
+현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트와 권한 신청 제출 wrapper(`organizationApi.test.ts`)를 포함한다. AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다. App 생성 권한 신청 UI(ORG-TC-E009~E013)는 `apps/client/app/features/app/components/create-app-modal/index.test.tsx`가 담당한다.
 
 ## Unit Tests
 
@@ -65,6 +64,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-A015 | permission PUT은 organization manager 또는 target resource manager만 허용해야 한다. | manage 권한 없는 active member가 permission을 저장한다. | `403`, `permission.denied`. |
 | ORG-TC-A016 | permission PUT은 canonical auth_state만 허용해야 한다. | `{ "auth_state": "admin" }` 또는 audit-only value가 통과한다. | `422`, `validation.failed`. |
 | ORG-TC-A017 | permission DELETE는 missing row를 숨기고, existing direct row는 target user active 여부와 무관하게 회수해야 한다. | missing row가 success거나 deactivated/removed user의 existing direct row 삭제가 실패한다. | `404` 또는 permission row 삭제. |
+| ORG-TC-A018 | 권한 신청 제출 wrapper는 `app.create`와 신청 사유를 보내야 한다. | `requested_permission`이 빠지거나 `reason`이 변형되어 전송된다. | `POST /permission-requests` payload가 `{ requested_permission: "app.create", reason }`이다. |
 
 ## E2E Tests
 

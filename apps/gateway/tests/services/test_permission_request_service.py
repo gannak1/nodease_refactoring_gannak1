@@ -4,8 +4,8 @@ TDD red phase: 서비스와 모델이 아직 없으므로 전부 실패해야 �
 test_cases.md의 PermissionRequestService 단위 계약을 검증한다.
 class/method 이름은 test_cases.md의 권장 이름을 따른다.
 
-audit 기록의 존재는 AuditAction 상수 계약(shared)과 API/E2E 테스트에서 검증하고,
-여기서는 신청 상태 전이와 권한 row 생성이라는 관측 가능한 상태 변화만 다룬다.
+신청 상태 전이, 권한 row 생성, 같은 트랜잭션에 남기는 organization-scoped audit
+metadata를 검증한다.
 """
 
 from datetime import datetime, timezone
@@ -15,6 +15,8 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.sql.operators import eq
 
+from apps.shared.audit.actions import AuditAction
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_ACTIVE,
     ORGANIZATION_MEMBERSHIP_INVITED,
@@ -162,6 +164,35 @@ class _Db:
         return [obj for obj in self.added if isinstance(obj, model)]
 
 
+# --- submit_request ---------------------------------------------------------
+
+
+def test_submit_request_creates_pending_request_and_records_org_scoped_audit():
+    organization_id = uuid4()
+    requester = _user()
+    db = _Db(rows=[requester])
+
+    request = _service().submit_request(
+        db,
+        user=requester,
+        organization_id=organization_id,
+        requested_permission="app.create",
+        reason="workflow를 만들고 싶습니다",
+    )
+
+    assert request.organization_id == organization_id
+    assert request.user_id == requester.id
+    assert request.status == "pending"
+    audits = db.added_of(AuditLog)
+    assert [audit.action for audit in audits] == [
+        AuditAction.PERMISSION_REQUEST_CREATED
+    ]
+    assert audits[0].target_type == "permission_request"
+    assert audits[0].target_id == str(request.id)
+    assert audits[0].audit_metadata == {"organization_id": str(organization_id)}
+    assert db.commits >= 1
+
+
 # --- ensure_request_processable -------------------------------------------
 
 
@@ -269,6 +300,15 @@ def test_approve_request_marks_request_and_grants_permission():
     assert granted[0].grantee_organization_id == organization_id
     assert granted[0].user_id == requester.id
     assert granted[0].assigned_by == decided_by
+    audits = db.added_of(AuditLog)
+    assert [audit.action for audit in audits] == [
+        AuditAction.PERMISSION_REQUEST_APPROVED,
+        AuditAction.USER_APP_CREATION_PERMISSION_CREATED,
+    ]
+    assert [audit.audit_metadata for audit in audits] == [
+        {"organization_id": str(organization_id)},
+        {"organization_id": str(organization_id)},
+    ]
     assert db.commits >= 1
 
 
@@ -345,6 +385,11 @@ def test_reject_request_marks_rejected_without_permission_row():
     assert request.decided_by == decided_by
     assert request.decided_at is not None
     assert db.added_of(_permission_model()) == []
+    audits = db.added_of(AuditLog)
+    assert [audit.action for audit in audits] == [
+        AuditAction.PERMISSION_REQUEST_REJECTED
+    ]
+    assert audits[0].audit_metadata == {"organization_id": str(organization_id)}
     assert db.commits >= 1
 
 

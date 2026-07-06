@@ -8,6 +8,7 @@ import type { OrganizationMember } from '../../organization/types/Organization';
 import { DashboardPanel } from '../../dashboard/components/DashboardSurface';
 import { adminApi } from '../api/adminApi';
 import type {
+  AppCreationPermissionItem,
   PermissionRequestItem,
   PermissionRequestStatus,
 } from '../types/AdminPermissionRequest';
@@ -56,6 +57,16 @@ export function PermissionRequestsTab({ members }: PermissionRequestsTabProps) {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [processing, setProcessing] = useState(false);
 
+  // 보유 권한 섹션 (FR-014 회수 확장)
+  const [holders, setHolders] = useState<AppCreationPermissionItem[]>([]);
+  const [holdersTotal, setHoldersTotal] = useState(0);
+  const [holdersPage, setHoldersPage] = useState(1);
+  const [holdersLoading, setHoldersLoading] = useState(true);
+  const [holdersError, setHoldersError] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] =
+    useState<AppCreationPermissionItem | null>(null);
+  const [revoking, setRevoking] = useState(false);
+
   const memberNamesByUserId = useMemo(
     () => new Map(members.map((member) => [member.user_id, member.user_name])),
     [members],
@@ -94,6 +105,51 @@ export function PermissionRequestsTab({ members }: PermissionRequestsTabProps) {
   useEffect(() => {
     load();
   }, [load]);
+
+  const loadHolders = useCallback(async () => {
+    setHoldersLoading(true);
+    setHoldersError(null);
+    try {
+      const data = await adminApi.listAppCreationPermissions({
+        page: holdersPage,
+        limit: PAGE_SIZE,
+      });
+      setHolders(data.items);
+      setHoldersTotal(data.total);
+    } catch {
+      setHolders([]);
+      setHoldersTotal(0);
+      setHoldersError('App 생성 권한 보유 목록을 불러오지 못했습니다.');
+    } finally {
+      setHoldersLoading(false);
+    }
+  }, [holdersPage]);
+
+  useEffect(() => {
+    loadHolders();
+  }, [loadHolders]);
+
+  const revokeConfirmed = async () => {
+    if (!revokeTarget) return;
+    setRevoking(true);
+    try {
+      await adminApi.revokeAppCreationPermission(revokeTarget.id);
+      toast.success('권한을 회수했습니다.');
+      setRevokeTarget(null);
+      // 회수된 사용자는 재신청할 수 있으므로 신청 목록도 함께 갱신한다.
+      await Promise.all([loadHolders(), load()]);
+    } catch (err) {
+      if (isAxiosError(err) && err.response?.status === 404) {
+        toast.error('이미 회수된 권한입니다.');
+        setRevokeTarget(null);
+        await Promise.all([loadHolders(), load()]);
+      } else {
+        toast.error('권한 회수에 실패했습니다.');
+      }
+    } finally {
+      setRevoking(false);
+    }
+  };
 
   const processConfirmed = async () => {
     if (!confirmState) return;
@@ -293,6 +349,106 @@ export function PermissionRequestsTab({ members }: PermissionRequestsTabProps) {
         </>
       )}
 
+      {error?.kind !== 'forbidden' && (
+        <section className="border-t border-slate-100">
+          <h3 className="px-5 pt-4 text-sm font-semibold text-slate-950">
+            보유 권한
+          </h3>
+          <p className="px-5 pt-1 text-xs text-slate-500">
+            App 생성 권한을 보유한 멤버입니다. 조직 관리자(owner/manager)는 별도
+            부여 없이 허용되므로 표시되지 않습니다.
+          </p>
+          {holdersLoading ? (
+            <p className="px-5 py-8 text-center text-sm text-slate-500">
+              보유 권한을 불러오는 중...
+            </p>
+          ) : holdersError ? (
+            <div className="flex flex-col items-center gap-3 px-5 py-8 text-center">
+              <p className="text-sm text-slate-600">{holdersError}</p>
+              <button
+                onClick={loadHolders}
+                className="h-9 rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                다시 시도
+              </button>
+            </div>
+          ) : holders.length === 0 ? (
+            <p className="px-5 py-8 text-center text-sm text-slate-500">
+              부여된 App 생성 권한이 없습니다.
+            </p>
+          ) : (
+            <>
+              <table className="mt-2 w-full text-left text-sm">
+                <caption className="sr-only">
+                  App 생성 권한 보유 목록 (부여일 내림차순)
+                </caption>
+                <thead>
+                  <tr className="border-b border-slate-100 text-xs uppercase text-slate-500">
+                    <th scope="col" className="px-5 py-2 font-semibold">
+                      보유자
+                    </th>
+                    <th scope="col" className="px-3 py-2 font-semibold">
+                      부여자
+                    </th>
+                    <th scope="col" className="px-3 py-2 font-semibold">
+                      부여일
+                    </th>
+                    <th scope="col" className="px-3 py-2 font-semibold">
+                      처리
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holders.map((item) => (
+                    <tr key={item.id} className="border-b border-slate-50">
+                      <td className="px-5 py-3">
+                        {item.user ? (
+                          <span className="flex flex-col">
+                            <span className="font-medium text-slate-900">
+                              {item.user.name}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              {item.user.email}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">
+                            알 수 없는 사용자
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-slate-700">
+                        {memberNamesByUserId.get(item.assigned_by) ||
+                          '확인 불가'}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-slate-500">
+                        <time dateTime={item.assigned_at}>
+                          {new Date(item.assigned_at).toLocaleString()}
+                        </time>
+                      </td>
+                      <td className="px-3 py-3">
+                        <button
+                          onClick={() => setRevokeTarget(item)}
+                          className="h-8 rounded-md border border-red-200 px-3 text-xs font-semibold text-red-700 hover:bg-red-50"
+                        >
+                          회수
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <AdminPagination
+                page={holdersPage}
+                totalPages={Math.max(1, Math.ceil(holdersTotal / PAGE_SIZE))}
+                total={holdersTotal}
+                onPageChange={setHoldersPage}
+              />
+            </>
+          )}
+        </section>
+      )}
+
       {confirmState && (
         <ProcessConfirmDialog
           state={confirmState}
@@ -303,7 +459,94 @@ export function PermissionRequestsTab({ members }: PermissionRequestsTabProps) {
           }}
         />
       )}
+
+      {revokeTarget && (
+        <RevokeConfirmDialog
+          target={revokeTarget}
+          processing={revoking}
+          onConfirm={revokeConfirmed}
+          onCancel={() => {
+            if (!revoking) setRevokeTarget(null);
+          }}
+        />
+      )}
     </DashboardPanel>
+  );
+}
+
+function RevokeConfirmDialog({
+  target,
+  processing,
+  onConfirm,
+  onCancel,
+}: {
+  target: AppCreationPermissionItem;
+  processing: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      <div
+        className="absolute inset-0 bg-slate-950/30"
+        onClick={onCancel}
+        aria-hidden="true"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="App 생성 권한 회수 확인"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') onCancel();
+        }}
+        className="relative w-full max-w-md rounded-lg bg-white p-5 shadow-xl"
+      >
+        <h2 className="text-sm font-semibold text-slate-950">
+          App 생성 권한을 회수할까요?
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          회수하면 해당 멤버의 새 모듈 생성이 다시 차단됩니다. 멤버는 권한을
+          재신청할 수 있습니다.
+        </p>
+        <dl className="mt-4 flex flex-col gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+          <div className="flex gap-2">
+            <dt className="w-20 shrink-0 text-xs font-semibold text-slate-500">
+              보유자
+            </dt>
+            <dd className="text-slate-900">
+              {target.user
+                ? `${target.user.name} (${target.user.email})`
+                : '알 수 없는 사용자'}
+            </dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-20 shrink-0 text-xs font-semibold text-slate-500">
+              권한
+            </dt>
+            <dd className="text-slate-900">
+              {requestedPermissionLabel('app.create')}
+            </dd>
+          </div>
+        </dl>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={processing}
+            className="h-9 rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            취소
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={processing}
+            autoFocus
+            className="h-9 rounded-md bg-red-600 px-4 text-sm font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {processing ? '처리 중...' : '회수 확정'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

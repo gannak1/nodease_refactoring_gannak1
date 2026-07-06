@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { isAxiosError } from 'axios';
 import { toast } from 'sonner';
 import { appApi } from '../../api/appApi';
 import AppCreatePermissionRequestForm from '../../../organization/components/AppCreatePermissionRequestForm';
@@ -10,6 +11,27 @@ import { AppIcon } from './AppIcon';
 import { AppIconPicker } from './AppIconPicker';
 import { AppIconSelection, CreateAppProps } from './types';
 import { twMerge } from 'tailwind-merge';
+
+type ApiErrorResponse = {
+  detail?: string;
+  error?: {
+    code?: string;
+    message?: string;
+  };
+};
+
+const getApiErrorDetail = (error: unknown) =>
+  isAxiosError<ApiErrorResponse>(error)
+    ? error.response?.data?.detail
+    : undefined;
+
+const isAppCreationPermissionDenied = (error: unknown) => {
+  if (!isAxiosError<ApiErrorResponse>(error)) return false;
+  if (error.response?.status !== 403) return false;
+
+  const code = error.response.data?.error?.code;
+  return !code || code === 'permission.denied';
+};
 
 /**
  * 앱 생성 모달 컴포넌트
@@ -81,19 +103,17 @@ export default function CreateAppModal({ onSuccess, onClose }: CreateAppProps) {
       if (response.workflow_id) {
         router.push(`/modules/${response.workflow_id}`);
       }
-    } catch (error: any) {
-      // 403 permission.denied: App 생성 권한 없음. 오류가 아니라 권한 신청으로
-      // 이어지는 정상 분기이므로 로깅 없이 신청 화면으로 전환한다 (ORG-REQ-048).
-      if (error.response?.status === 403) {
-        setView('permission-request');
-        return;
-      }
-      console.error('앱 생성 실패:', error);
+    } catch (error: unknown) {
       if (
+        isAxiosError<ApiErrorResponse>(error) &&
         error.response?.status === 400 &&
-        error.response?.data?.detail === 'App with this name already exists.'
+        getApiErrorDetail(error) === 'App with this name already exists.'
       ) {
         toast.error('이미 존재하는 앱 이름입니다.');
+        return;
+      }
+      if (isAppCreationPermissionDenied(error)) {
+        setView('permission-request');
         return;
       }
       toast.error('앱 생성에 실패했습니다.');

@@ -1,7 +1,7 @@
 # Admin Dashboard API Spec
 
 Status: Draft
-Verified Against: feature/mba-103 @ 47aef8a
+Verified Against: feature/mba-129 @ 4cceb58
 
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.
 
@@ -16,6 +16,8 @@ Verified Against: feature/mba-103 @ 47aef8a
 | GET | `/api/v1/admin/permission-requests` | 권한 신청 목록 조회 (FR-014) | organization owner/manager |
 | POST | `/api/v1/admin/permission-requests/{request_id}/approve` | 권한 신청 승인 (FR-014) | organization owner/manager |
 | POST | `/api/v1/admin/permission-requests/{request_id}/reject` | 권한 신청 거절 (FR-014) | organization owner/manager |
+| GET | `/api/v1/admin/app-creation-permissions` | App 생성 권한 보유 목록 조회 (FR-014 회수 확장) | organization owner/manager |
+| DELETE | `/api/v1/admin/app-creation-permissions/{permission_id}` | App 생성 권한 회수 (FR-014 회수 확장) | organization owner/manager |
 
 - FR-013(후순위) 복원 시 1단계 차단 이벤트 나열은 `GET /admin/audit-logs`의 `action` 필터(`permission.denied` 등)로 처리 가능한지 먼저 검토하고, 부족하면 endpoint를 추가한다.
 - action-style POST(`/approve`, `/reject`)는 기존 `PATCH /deployments/{id}/toggle` 같은 repo 관례를 따른다.
@@ -164,6 +166,50 @@ Response `200`:
 
 Side effects: status 갱신 + `permission_request.rejected` audit 기록. 거절된 신청자는 재신청할 수 있다 (ADR-0016).
 
+### GET /admin/app-creation-permissions
+
+Query: `page`, `limit`
+
+Response `200`:
+
+```json
+{
+  "total": 2,
+  "items": [
+    {
+      "id": "<uuid>",
+      "user": { "id": "<uuid>", "name": "<string>", "email": "<string>" },
+      "assigned_by": "<uuid>",
+      "assigned_at": "<datetime>"
+    }
+  ]
+}
+```
+
+- `id`는 `user_app_creation_permissions` row id다. 회수(DELETE)의 path parameter로 사용한다.
+- 목록은 row 보유자만 포함한다. organization owner/manager는 row 없이 App 생성이 허용되므로 목록에 나타나지 않는다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)).
+- 신청 승인 없이 seed로 부여된 row도 포함한다.
+- 정렬은 `assigned_at` 내림차순.
+
+### DELETE /admin/app-creation-permissions/{permission_id}
+
+Request body: 없음.
+
+Response `200`:
+
+```json
+{ "id": "<uuid>", "user_id": "<uuid>" }
+```
+
+Side effects ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)):
+
+- `user_app_creation_permissions` row를 삭제한다.
+- audit: `user_app_creation_permission.deleted`를 기록한다 (target_type `user_app_creation_permission`, target_id는 row id, [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
+- `permission_requests`의 과거 신청 상태(approved)는 바꾸지 않는다.
+- 회수 이후 해당 사용자의 App 생성(`POST /apps`)은 다시 `403 permission.denied`로 차단되고, 사용자는 `POST /permission-requests`로 재신청할 수 있다 (보유/pending 없음 조건 재충족).
+
+존재하지 않거나 요청 organization scope 밖의 `permission_id`는 `404`로 숨긴다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)). 이미 회수된 row의 재회수 요청도 같은 `404`다.
+
 ## Errors
 
 | Status | 조건 |
@@ -171,7 +217,7 @@ Side effects: status 갱신 + `permission_request.rejected` audit 기록. 거절
 | 400 | `X-Organization-Id` 누락/invalid, 잘못된 query 값 (`endAt` ≤ `startAt`, usage 집계의 `startAt`/`endAt` 한쪽만 제공 등) |
 | 401 | 미인증 |
 | 403 | organization scope 안이지만 권한 부족 — audit 조회 권한 없음, owner/manager 아님. `permission.denied` audit 기록 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)) |
-| 404 | 요청 organization scope 밖의 `audit_log_id`/`request_id` — 존재를 숨긴다 (`resource.not_found`, ADR-0010) |
+| 404 | 요청 organization scope 밖의 `audit_log_id`/`request_id`/`permission_id`, 이미 회수됐거나 존재하지 않는 `permission_id` — 존재를 숨긴다 (`resource.not_found`, ADR-0010) |
 | 409 | 이미 처리된(approved/rejected) 신청에 대한 approve/reject 재요청. 승인 시점에 신청자가 조직의 active member가 아닌 경우(제거/정지)의 approve |
 | 422 | request 형식 오류 |
 

@@ -11,6 +11,9 @@ from apps.gateway.services.admin_audit_log_service import (
     AdminAuditLogService,
 )
 from apps.gateway.services.admin_usage_service import AdminUsageService
+from apps.gateway.services.app_creation_permission_service import (
+    AppCreationPermissionService,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.services.permission_request_service import PermissionRequestService
 from apps.shared.db.models.audit_log import AuditStatus
@@ -22,6 +25,9 @@ from apps.shared.schemas.admin_usage import (
 )
 from apps.shared.schemas.audit import AuditLogDetailResponse, AuditLogListResponse
 from apps.shared.schemas.permission_request import (
+    AppCreationPermissionListResponse,
+    AppCreationPermissionResponse,
+    AppCreationPermissionRevokeResponse,
     PermissionRequestListResponse,
     PermissionRequestResponse,
     PermissionRequestUserSchema,
@@ -59,7 +65,8 @@ def _resolve_managed_organization(
     return organization_id
 
 
-def _requesters_by_id(db: Session, items) -> dict:
+def _users_by_id(db: Session, items) -> dict:
+    """`user_id`를 가진 row 목록에서 관련 User를 한 번에 조회한다."""
     user_ids = {item.user_id for item in items}
     if not user_ids:
         return {}
@@ -67,14 +74,16 @@ def _requesters_by_id(db: Session, items) -> dict:
     return {user.id: user for user in users}
 
 
+def _user_schema_or_none(user) -> PermissionRequestUserSchema | None:
+    if user is None:
+        return None
+    return PermissionRequestUserSchema.model_validate(user)
+
+
 def _serialize_request(item, requester) -> PermissionRequestResponse:
     return PermissionRequestResponse(
         id=item.id,
-        user=(
-            PermissionRequestUserSchema.model_validate(requester)
-            if requester is not None
-            else None
-        ),
+        user=_user_schema_or_none(requester),
         requested_permission=item.requested_permission,
         reason=item.reason,
         status=item.status,
@@ -85,9 +94,24 @@ def _serialize_request(item, requester) -> PermissionRequestResponse:
 
 
 def _serialize_requests(db: Session, items) -> list[PermissionRequestResponse]:
-    requesters = _requesters_by_id(db, items)
+    requesters = _users_by_id(db, items)
     return [
         _serialize_request(item, requesters.get(item.user_id)) for item in items
+    ]
+
+
+def _serialize_app_creation_permissions(
+    db: Session, items
+) -> list[AppCreationPermissionResponse]:
+    holders = _users_by_id(db, items)
+    return [
+        AppCreationPermissionResponse(
+            id=item.id,
+            user=_user_schema_or_none(holders.get(item.user_id)),
+            assigned_by=item.assigned_by,
+            assigned_at=item.assigned_at,
+        )
+        for item in items
     ]
 
 
@@ -260,3 +284,55 @@ def reject_permission_request(
         decided_by=current_user.id,
     )
     return _serialize_requests(db, [rejected])[0]
+
+
+@router.get(
+    "/app-creation-permissions",
+    response_model=AppCreationPermissionListResponse,
+)
+def list_app_creation_permissions(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """App 생성 권한 보유 목록 조회 (FR-014 회수 확장, ADR-0016)."""
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    total, items = AppCreationPermissionService.list_permissions(
+        db, organization_id, page=page, limit=limit
+    )
+    return AppCreationPermissionListResponse(
+        total=total,
+        items=_serialize_app_creation_permissions(db, items),
+    )
+
+
+@router.delete(
+    "/app-creation-permissions/{permission_id}",
+    response_model=AppCreationPermissionRevokeResponse,
+)
+def revoke_app_creation_permission(
+    request: Request,
+    permission_id: UUID,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """App 생성 권한 회수 (FR-014 회수 확장, ADR-0016)."""
+    organization_id = _resolve_managed_organization(
+        db, request, x_organization_id, current_user
+    )
+    revoked = AppCreationPermissionService.revoke_permission(
+        db,
+        permission_id=permission_id,
+        organization_id=organization_id,
+        revoked_by=current_user.id,
+    )
+    return AppCreationPermissionRevokeResponse(
+        id=revoked.id,
+        user_id=revoked.user_id,
+    )

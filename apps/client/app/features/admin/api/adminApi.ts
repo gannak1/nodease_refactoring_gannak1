@@ -5,6 +5,8 @@ import type {
   AuditLogSearchFilters,
 } from '../types/AdminAudit';
 import type {
+  AppCreationPermissionListResponse,
+  AppCreationPermissionRevokeResponse,
   PermissionRequestItem,
   PermissionRequestListResponse,
   PermissionRequestStatus,
@@ -68,6 +70,25 @@ export const adminApi = {
   ): Promise<PermissionRequestItem> => {
     const response = await apiClient.post(
       `/admin/permission-requests/${requestId}/reject`,
+    );
+    return response.data;
+  },
+
+  listAppCreationPermissions: async (params: {
+    page?: number;
+    limit?: number;
+  } = {}): Promise<AppCreationPermissionListResponse> => {
+    const response = await apiClient.get('/admin/app-creation-permissions', {
+      params: compactParams(params),
+    });
+    return response.data;
+  },
+
+  revokeAppCreationPermission: async (
+    permissionId: string,
+  ): Promise<AppCreationPermissionRevokeResponse> => {
+    const response = await apiClient.delete(
+      `/admin/app-creation-permissions/${permissionId}`,
     );
     return response.data;
   },
