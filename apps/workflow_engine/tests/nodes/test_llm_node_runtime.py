@@ -378,6 +378,72 @@ def test_llm_node_privileged_prompt_renders_empty_upstream_as_empty_string():
     assert "UPSTREAM_SYSTEM_INPUT" not in rendered_prompt
 
 
+def test_llm_node_privileged_prompt_preserves_nested_undefined_semantics():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt=(
+            "Summary={{ api.summary|default('n/a') }}|"
+            "{% if api.summary is defined %}DEFINED{% else %}MISSING{% endif %}"
+        ),
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="api", value_selector=["api_node", "payload"])
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute({"api_node": {"payload": {"status": "ok"}}})
+
+    rendered_prompt = "\n".join(
+        message["content"] for message in dummy_client.calls[0]["messages"]
+    )
+    assert "Summary=n/a|MISSING" in rendered_prompt
+    assert "[UNTRUSTED_INPUT:api.summary]" not in rendered_prompt
+    assert "UPSTREAM_SYSTEM_INPUT" not in rendered_prompt
+
+
+def test_llm_node_privileged_prompt_preserves_dict_get_semantics():
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt=(
+            "Summary={{ api.get('summary', 'n/a') }}|"
+            "Missing={{ api.get('missing', 'n/a') }}"
+        ),
+        user_prompt="사용자 요청",
+        referenced_variables=[
+            LLMVariable(name="api", value_selector=["api_node", "payload"])
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute(
+        {
+            "api_node": {
+                "payload": {
+                    "summary": "공개 요약",
+                    "token": "sk-dict-get-secret",
+                }
+            }
+        }
+    )
+
+    messages = dummy_client.calls[0]["messages"]
+    assert "Summary=[UNTRUSTED_INPUT:api.summary]|Missing=n/a" in messages[0]["content"]
+    rendered_prompt = "\n".join(message["content"] for message in messages)
+    assert "공개 요약" in rendered_prompt
+    assert "sk-dict-get-secret" not in rendered_prompt
+
+
 def test_llm_node_privileged_prompt_preserves_direct_structured_evidence_safely():
     dummy_client = DummyClient()
     data = LLMNodeData(
@@ -1699,9 +1765,11 @@ def test_llm_node_rag_pii_evidence_fail_node_raises(monkeypatch):
 def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
     node = LLMNode.__new__(LLMNode)
     node.id = "llm-1"
+    organization_id = uuid.uuid4()
     node.execution_context = {
         "workflow_id": str(uuid.uuid4()),
         "workflow_run_id": str(uuid.uuid4()),
+        "organization_id": str(organization_id),
     }
     audit_calls = []
     monkeypatch.setattr(
@@ -1722,6 +1790,7 @@ def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
         "result": "block",
         "reason_code": "pii_policy_blocked",
     }
+    assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
 
 
 def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):

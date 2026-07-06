@@ -178,8 +178,8 @@ class _UntrustedPromptValue:
                     self._collector,
                 )
             except IndexError:
-                return ""
-        return ""
+                return self._undefined(str(key))
+        return self._undefined(str(key))
 
     def keys(self):
         if isinstance(self._value, dict):
@@ -215,6 +215,13 @@ class _UntrustedPromptValue:
             ]
         return []
 
+    def get(self, key: Any, default: Any = None):
+        """dict.get()을 쓰는 기존 Jinja 템플릿의 의미를 보존한다."""
+        key = self._unwrap(key)
+        if isinstance(self._value, dict) and key in self._value:
+            return self._child(key, f"{self._path}.{key}")
+        return default
+
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
@@ -226,13 +233,13 @@ class _UntrustedPromptValue:
                 f"{self._path}.{name}",
                 self._collector,
             )
-        return ""
+        return self._undefined(name)
 
     def _child(self, key: Any, path: str):
         if not isinstance(self._value, dict):
-            return ""
+            return self._undefined(str(key))
         if key not in self._value:
-            return ""
+            return self._undefined(str(key))
         return _UntrustedPromptValue(self._value[key], path, self._collector)
 
     def _rendered_value_text(self) -> str:
@@ -248,6 +255,9 @@ class _UntrustedPromptValue:
             return op(self._value, self._unwrap(other))
         except TypeError:
             return False
+
+    def _undefined(self, name: str):
+        return _jinja_env.undefined(name=name)
 
 
 def _get_nested_value(data: Any, keys: List[str]) -> Any:
@@ -1621,6 +1631,9 @@ class LLMNode(Node[LLMNodeData]):
                 "reason_code": reason_code,
             },
         }
+        organization_id = self.execution_context.get("organization_id")
+        if organization_id:
+            metadata["organization_id"] = str(organization_id)
         record_audit(
             action=AuditAction.POLICY_BLOCK,
             category="action",
