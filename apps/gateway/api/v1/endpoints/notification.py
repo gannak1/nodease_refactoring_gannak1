@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from apps.gateway.services.notification_service import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
-from apps.shared.pubsub import get_redis_client
+from apps.shared.pubsub import get_async_redis_client
 from apps.shared.schemas.notification import NotificationListResponse
 
 router = APIRouter()
@@ -29,23 +29,33 @@ def list_notifications(
 
 
 @router.get("/stream")
-def stream_notifications(
+async def stream_notifications(
+    request: Request,
     current_user: User = Depends(get_current_user),
 ):
-    def event_generator():
-        client = get_redis_client()
+    async def event_generator():
+        client = get_async_redis_client()
         pubsub = client.pubsub()
         channel = notification_channel(current_user.id)
         try:
-            pubsub.subscribe(channel)
-            for message in pubsub.listen():
-                if message["type"] != "message":
+            await pubsub.subscribe(channel)
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=15.0,
+                )
+                if message is None:
+                    yield ": heartbeat\n\n"
                     continue
+
                 event = json.loads(message["data"])
                 event_type = event.get("type") or NOTIFICATION_EVENT_CHANGED
                 yield f"event: {event_type}\ndata: {{}}\n\n"
         finally:
-            pubsub.unsubscribe(channel)
-            pubsub.close()
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
