@@ -332,6 +332,7 @@ class TestCostOptimizerBaselinesApi:
             ],
         )
         baseline = _baseline_row()
+        baseline["downstream_snapshot"] = {"contracts": ["internal-only"]}
 
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
@@ -361,6 +362,8 @@ class TestCostOptimizerBaselinesApi:
         assert payload["baseline"]["output_available"] is True
         assert payload["baseline"]["usage_available"] is True
         assert payload["baseline"]["compare_available"] is True
+        assert "downstream_snapshot" not in payload["baseline"]
+        assert "internal-only" not in response.text
 
     def test_fr2_latest_baseline_returns_no_baseline_when_comparable_log_is_missing(self):
         workflow_id = uuid4()
@@ -412,6 +415,7 @@ class TestCostOptimizerBaselinesApi:
             _baseline_row(),
             _baseline_row(input_available=False, compare_available=False),
         ]
+        rows[0]["downstream_snapshot"] = {"contracts": ["internal-only"]}
 
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
@@ -443,6 +447,8 @@ class TestCostOptimizerBaselinesApi:
         assert "api_key" not in serialized
         assert "encrypted_config" not in serialized
         assert "raw_payload" not in serialized
+        assert "downstream_snapshot" not in serialized
+        assert "internal-only" not in serialized
 
     def test_fr2_baseline_list_passes_search_filter_sort_and_pagination_options(self):
         workflow_id = uuid4()
@@ -1023,12 +1029,30 @@ class TestCostOptimizerCompareApi:
         assert sent_tasks[0]["args"][1] == {"message": "baseline input only"}
         assert UUID(sent_tasks[0]["args"][2]["workflow_run_id"])
         patched_graph = sent_tasks[0]["args"][0]
-        patched_node = patched_graph["nodes"][0]
+        assert [node["type"] for node in patched_graph["nodes"]] == [
+            "startNode",
+            "llmNode",
+        ]
+        assert patched_graph["edges"] == [
+            {
+                "id": "cost-optimizer-input-to-llm-triage",
+                "source": "__cost_optimizer_baseline_input__",
+                "target": "llm-triage",
+            }
+        ]
+        patched_node = patched_graph["nodes"][1]
         assert patched_node["data"]["model_id"] == "gpt-4.1-mini"
         assert patched_node["data"]["system_prompt"] == "candidate system"
         assert patched_node["data"]["user_prompt"] == "candidate user {{message}}"
         assert patched_node["data"]["referenced_variables"] == [
-            {"name": "message", "value_selector": ["start-1", "message"]}
+            {
+                "name": "message",
+                "value_selector": [
+                    "__cost_optimizer_baseline_input__",
+                    "start-1",
+                    "message",
+                ],
+            }
         ]
         assert sent_tasks[0]["args"][2]["trigger_mode"] == "cost_optimizer_compare"
 
@@ -1042,6 +1066,152 @@ class TestCostOptimizerCompareApi:
             "cost": 0.0001,
             "model": "gpt-4.1-mini",
         }
+        assert payload["candidate"]["settings"]["referenced_variables"] == [
+            {"name": "message", "value_selector": ["start-1", "message"]}
+        ]
+
+    def test_fr5_compare_runs_only_target_llm_with_baseline_node_input(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        baseline_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "webhook-ticket",
+                    "type": "webhookTrigger",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "variable_mappings": [
+                            {"variable_name": "message", "json_path": "message"}
+                        ]
+                    },
+                },
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "position": {"x": 100, "y": 0},
+                    "data": {
+                        "model_id": "gpt-4.1",
+                        "user_prompt": "문의: {{ message }}",
+                        "referenced_variables": [
+                            {
+                                "name": "message",
+                                "value_selector": ["webhook-ticket", "message"],
+                            }
+                        ],
+                    },
+                },
+                {
+                    "id": "extract-ticket",
+                    "type": "variableExtractionNode",
+                    "position": {"x": 200, "y": 0},
+                    "data": {
+                        "source_selector": ["llm-triage", "text"],
+                        "mappings": [{"json_path": "mailDraft"}],
+                    },
+                },
+            ],
+        )
+        workflow.graph["edges"] = [
+            {"id": "e1", "source": "webhook-ticket", "target": "llm-triage"},
+            {"id": "e2", "source": "llm-triage", "target": "extract-ticket"},
+        ]
+        baseline = _baseline_row(
+            baseline_id=baseline_id,
+            input_available=True,
+            compare_available=True,
+        )
+        baseline["input"] = {
+            "webhook-ticket": {
+                "message": "SLA 위반 가능성이 있는 장애입니다.",
+            }
+        }
+        sent_tasks = []
+
+        class FakeTask:
+            def get(self, timeout):
+                return {
+                    "status": "success",
+                    "result": {
+                        "llm-triage": {
+                            "text": '{"mailDraft": "확인했습니다."}',
+                            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                            "cost": 0.0001,
+                            "model": "gpt-4.1-mini",
+                        }
+                    },
+                }
+
+        def fake_send_task(name, args, kwargs):
+            sent_tasks.append({"name": name, "args": args, "kwargs": kwargs})
+            return FakeTask()
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.get_cost_optimizer_baseline_by_id",
+                return_value=baseline,
+                create=True,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-4.1-mini"),
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
+                side_effect=fake_send_task,
+            ),
+        ):
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/compare",
+                json={
+                    "baseline_id": str(baseline_id),
+                    "candidate": {
+                        "label": "B",
+                        "model_id": "gpt-4.1-mini",
+                        "user_prompt": "문의: {{ message }}",
+                        "referenced_variables": [
+                            {
+                                "name": "message",
+                                "value_selector": ["webhook-ticket", "message"],
+                            }
+                        ],
+                        "parameters": {"max_tokens": 800, "temperature": 0.1},
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        graph = sent_tasks[0]["args"][0]
+        assert [node["id"] for node in graph["nodes"]] == [
+            "__cost_optimizer_baseline_input__",
+            "llm-triage",
+        ]
+        assert all(node["id"] != "webhook-ticket" for node in graph["nodes"])
+        assert all(node["id"] != "extract-ticket" for node in graph["nodes"])
+        assert sent_tasks[0]["args"][1] == baseline["input"]
+        llm_node = graph["nodes"][1]
+        assert llm_node["data"]["referenced_variables"] == [
+            {
+                "name": "message",
+                "value_selector": [
+                    "__cost_optimizer_baseline_input__",
+                    "webhook-ticket",
+                    "message",
+                ],
+            }
+        ]
 
     def test_fr4_compare_rejects_baseline_without_restorable_input(self):
         workflow_id = uuid4()
@@ -2881,6 +3051,70 @@ class TestCostOptimizerBaselineHelpers:
         assert result["contract_check"]["status"] == "pass"
         assert result["contract_check"]["warnings"] == []
 
+    def test_fr7_downstream_contract_uses_baseline_snapshot_contracts(self):
+        baseline_graph = {
+            "nodes": [
+                {"id": "llm-triage", "type": "llmNode"},
+                {
+                    "id": "extract-result",
+                    "type": "variableExtractionNode",
+                    "data": {
+                        "source_selector": ["llm-triage", "text"],
+                        "mappings": [
+                            {
+                                "name": "답변 초안",
+                                "json_path": "mailDraft",
+                            }
+                        ],
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "llm-triage", "target": "extract-result"},
+            ],
+        }
+        current_graph_without_contract_data = {
+            "nodes": [
+                {"id": "llm-triage", "type": "llmNode"},
+                {
+                    "id": "extract-result",
+                    "type": "variableExtractionNode",
+                    "data": {},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "llm-triage", "target": "extract-result"},
+            ],
+        }
+        baseline_snapshot = workflow_endpoint.build_cost_optimizer_downstream_snapshot(
+            baseline_graph,
+            "llm-triage",
+        )
+
+        result = workflow_endpoint.build_cost_optimizer_downstream_compatibility(
+            baseline_snapshot,
+            current_graph_without_contract_data,
+            "llm-triage",
+            candidate_output={"text": '{"approvalRequired": true}'},
+        )
+
+        assert result["state"] == "incompatible"
+        assert result["contract_check"]["status"] == "failed"
+        assert result["contract_check"]["checked_node_ids"] == ["extract-result"]
+        assert "mailDraft" in result["contract_check"]["warnings"][0]
+
+    def test_fr7_downstream_missing_snapshot_returns_skipped_fallback(self):
+        result = workflow_endpoint.build_cost_optimizer_downstream_compatibility(
+            None,
+            {"nodes": [], "edges": []},
+            "llm-triage",
+            candidate_output={"text": "{}"},
+        )
+
+        assert result["state"] == "unknown"
+        assert result["contract_check"]["status"] == "skipped"
+        assert "baseline_downstream_snapshot_unavailable" in result["contract_check"]["warnings"]
+
     @pytest.mark.parametrize(
         ("consumer", "warning_key"),
         [
@@ -3227,6 +3461,47 @@ class TestCostOptimizerBaselineHelpers:
         assert row["output"]["encrypted_config"] == "[REDACTED]"
         assert row["node_options"]["api_key"] == "[REDACTED]"
         assert row["node_options"]["model_id"] == "gpt-4.1-mini"
+
+    def test_fr2_baseline_row_uses_node_run_duration_when_usage_latency_is_zero(self):
+        workflow = SimpleNamespace(id=uuid4())
+        run = SimpleNamespace(
+            id=uuid4(),
+            workflow_id=workflow.id,
+            status=SimpleNamespace(value="success"),
+            started_at=datetime(2026, 7, 4, tzinfo=timezone.utc),
+        )
+        node_run = SimpleNamespace(
+            id=uuid4(),
+            workflow_run_id=run.id,
+            node_id="llm-triage",
+            node_type="llmNode",
+            status=SimpleNamespace(value="success"),
+            inputs={"message": "hello"},
+            outputs={"answer": "done"},
+            process_data={},
+            error_message=None,
+            trace_metadata={},
+            duration=2.395438,
+        )
+        usage = SimpleNamespace(
+            model=SimpleNamespace(model_id_for_api_call="gpt-4.1-mini"),
+            model_id=uuid4(),
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_cost=0.0001,
+            latency_ms=0,
+            status="success",
+        )
+
+        row = workflow_endpoint._baseline_row_from_records(
+            workflow=workflow,
+            run=run,
+            node_run=node_run,
+            usage=usage,
+        )
+
+        assert row["latency_ms"] == 2395
+        assert row["usage"]["latency_ms"] == 2395
 
     def test_fr2_baseline_query_filters_failed_node_runs_at_db_boundary(self):
         db = MagicMock()

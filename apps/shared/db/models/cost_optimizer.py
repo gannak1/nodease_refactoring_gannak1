@@ -79,6 +79,9 @@ class CostOptimizerExperiment(Base):
     baseline_trace_summary: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict
     )
+    baseline_downstream_snapshot: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
     usage_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String, nullable=False, default="completed")
     created_by: Mapped[uuid.UUID] = mapped_column(
