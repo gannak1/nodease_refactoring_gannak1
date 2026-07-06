@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, Integer, cast, func
+from sqlalchemy import Date, Integer, cast, func, or_
 from sqlalchemy.orm import Session, noload, selectinload
 
 # from sqlalchemy.orm import Session, noload, selectinload
@@ -1000,6 +1000,9 @@ def _cost_optimizer_baseline_rows(
             WorkflowNodeRun.node_type == "llmNode",
             WorkflowNodeRun.status == NodeRunStatus.SUCCESS,
             LLMUsageLog.status == "success",
+            LLMUsageLog.cost_optimizer_candidate_id.is_(None),
+            ~_cost_optimizer_candidate_run_exists(db),
+            _not_cost_optimizer_trace_run(),
         )
         .all()
     )
@@ -1013,6 +1016,21 @@ def _cost_optimizer_baseline_rows(
         )
         for node_run, run, usage in rows
     ]
+
+
+def _cost_optimizer_candidate_run_exists(db: Session):
+    return (
+        db.query(CostOptimizerCandidate.id)
+        .filter(CostOptimizerCandidate.candidate_workflow_run_id == WorkflowRun.id)
+        .exists()
+    )
+
+
+def _not_cost_optimizer_trace_run():
+    return or_(
+        WorkflowRun.trace_metadata.is_(None),
+        ~WorkflowRun.trace_metadata.has_key("cost_optimizer"),  # noqa: W601
+    )
 
 
 def _has_cost_optimizer_baseline_result(row: dict[str, Any]) -> bool:
@@ -1217,12 +1235,15 @@ def _cost_optimizer_total_tokens(usage: dict[str, Any] | None) -> int | None:
 
 def _normalize_cost_optimizer_candidate_usage(
     usage: dict[str, Any] | None,
+    output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(usage, dict):
         return {}
 
     normalized = dict(usage)
     cost = _cost_optimizer_usage_number(normalized, "cost", "total_cost")
+    if cost is None and isinstance(output, dict):
+        cost = _cost_optimizer_usage_number(output, "cost", "total_cost")
     if cost is None:
         normalized["cost"] = None
         normalized["cost_unavailable"] = True
@@ -1470,6 +1491,43 @@ def _create_cost_optimizer_comparison(
     return experiment, candidate_row
 
 
+def _link_cost_optimizer_candidate_run(
+    db: Session,
+    *,
+    experiment: CostOptimizerExperiment,
+    candidate_row: CostOptimizerCandidate,
+    workflow_run_id: UUID | None,
+) -> None:
+    if workflow_run_id is None:
+        return
+
+    candidate_row.candidate_workflow_run_id = workflow_run_id
+    candidate_node_run = (
+        db.query(WorkflowNodeRun)
+        .filter(
+            WorkflowNodeRun.workflow_run_id == workflow_run_id,
+            WorkflowNodeRun.node_id == experiment.node_id,
+        )
+        .order_by(WorkflowNodeRun.started_at.desc())
+        .first()
+    )
+    if candidate_node_run:
+        candidate_row.candidate_node_run_id = candidate_node_run.id
+
+    (
+        db.query(LLMUsageLog)
+        .filter(
+            LLMUsageLog.workflow_run_id == workflow_run_id,
+            LLMUsageLog.node_id == experiment.node_id,
+            LLMUsageLog.cost_optimizer_candidate_id.is_(None),
+        )
+        .update(
+            {LLMUsageLog.cost_optimizer_candidate_id: candidate_row.id},
+            synchronize_session=False,
+        )
+    )
+
+
 def _persist_cost_optimizer_comparison(
     *,
     db: Session,
@@ -1493,6 +1551,9 @@ def _persist_cost_optimizer_comparison(
         latency_ms = candidate_result.get("latency_ms")
     downstream_state = downstream_compatibility.get("state")
     status = str(candidate_result.get("status") or "failed")
+    candidate_workflow_run_id = _uuid_or_none(
+        candidate_result.get("candidate_workflow_run_id")
+    )
 
     experiment.usage_summary = usage
     experiment.status = "failed" if status == "failed" else "completed"
@@ -1512,6 +1573,12 @@ def _persist_cost_optimizer_comparison(
     candidate_row.schema_validation = schema_validation
     candidate_row.retrieval_summary = (
         retrieval_summary if isinstance(retrieval_summary, dict) else None
+    )
+    _link_cost_optimizer_candidate_run(
+        db,
+        experiment=experiment,
+        candidate_row=candidate_row,
+        workflow_run_id=candidate_workflow_run_id,
     )
     candidate_row.downstream_compatibility = downstream_compatibility
     candidate_row.diff_summary = diff
@@ -1737,6 +1804,45 @@ def list_cost_optimizer_experiments(
     }
 
 
+def _cost_optimizer_candidate_execution_context(
+    *,
+    workflow: Workflow,
+    node_id: str,
+    baseline: dict[str, Any],
+    candidate: CostOptimizerCandidateRequest,
+    candidate_id: UUID,
+    workflow_run_id: UUID,
+    current_user: User,
+    request: Request,
+) -> dict[str, Any]:
+    return {
+        "user_id": str(current_user.id),
+        "workflow_id": str(workflow.id),
+        "workflow_run_id": str(workflow_run_id),
+        "organization_id": (
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
+        "app_id": str(workflow.app_id) if getattr(workflow, "app_id", None) else None,
+        "trigger_mode": "cost_optimizer_compare",
+        "cost_optimizer_candidate_id": str(candidate_id),
+        "request_id": request.headers.get("x-request-id"),
+        "correlation_id": request.headers.get("x-correlation-id"),
+        "trace_metadata": {
+            "cost_optimizer": {
+                "node_id": node_id,
+                "baseline_id": baseline["baseline_id"],
+                "candidate_id": str(candidate_id),
+            },
+        },
+        "cost_optimizer": {
+            "node_id": node_id,
+            "baseline_id": baseline["baseline_id"],
+            "candidate_id": str(candidate_id),
+            "candidate_label": candidate.label,
+        },
+    }
+
+
 def _run_cost_optimizer_candidate(
     *,
     workflow: Workflow,
@@ -1748,24 +1854,17 @@ def _run_cost_optimizer_candidate(
     request: Request,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    context = {
-        "user_id": str(current_user.id),
-        "workflow_id": str(workflow.id),
-        "organization_id": (
-            str(workflow.organization_id) if workflow.organization_id else None
-        ),
-        "app_id": str(workflow.app_id) if getattr(workflow, "app_id", None) else None,
-        "trigger_mode": "cost_optimizer_compare",
-        "cost_optimizer_candidate_id": str(cost_optimizer_candidate_id),
-        "request_id": request.headers.get("x-request-id"),
-        "correlation_id": request.headers.get("x-correlation-id"),
-        "cost_optimizer": {
-            "node_id": node_id,
-            "baseline_id": baseline["baseline_id"],
-            "candidate_id": str(cost_optimizer_candidate_id),
-            "candidate_label": candidate.label,
-        },
-    }
+    candidate_workflow_run_id = uuid4()
+    context = _cost_optimizer_candidate_execution_context(
+        workflow=workflow,
+        node_id=node_id,
+        baseline=baseline,
+        candidate=candidate,
+        candidate_id=cost_optimizer_candidate_id,
+        workflow_run_id=candidate_workflow_run_id,
+        current_user=current_user,
+        request=request,
+    )
     patched_graph = _patch_cost_optimizer_candidate_graph(
         workflow.graph,
         node_id,
@@ -1784,6 +1883,7 @@ def _run_cost_optimizer_candidate(
         return {
             "label": candidate.label,
             "settings": candidate.model_dump(mode="json"),
+            "candidate_workflow_run_id": str(candidate_workflow_run_id),
             "status": "failed",
             "output": {},
             "usage": {},
@@ -1800,7 +1900,8 @@ def _run_cost_optimizer_candidate(
         safe_output = _safe_cost_optimizer_value(output)
         usage = safe_output.get("usage", {}) if isinstance(safe_output, dict) else {}
         usage = _normalize_cost_optimizer_candidate_usage(
-            usage if isinstance(usage, dict) else {}
+            usage if isinstance(usage, dict) else {},
+            safe_output if isinstance(safe_output, dict) else None,
         )
         schema_validation = (
             _validate_cost_optimizer_candidate_output_schema(safe_output, candidate)
@@ -1817,6 +1918,7 @@ def _run_cost_optimizer_candidate(
         return {
             "label": candidate.label,
             "settings": candidate.model_dump(mode="json"),
+            "candidate_workflow_run_id": str(candidate_workflow_run_id),
             "status": candidate_status,
             "output": safe_output,
             "usage": usage,
@@ -1834,6 +1936,7 @@ def _run_cost_optimizer_candidate(
     return {
         "label": candidate.label,
         "settings": candidate.model_dump(mode="json"),
+        "candidate_workflow_run_id": str(candidate_workflow_run_id),
         "status": "failed",
         "output": failed_output,
         "usage": {},

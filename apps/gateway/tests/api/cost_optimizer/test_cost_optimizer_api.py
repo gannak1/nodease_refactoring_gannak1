@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -1021,6 +1021,7 @@ class TestCostOptimizerCompareApi:
         assert len(sent_tasks) == 1
         assert sent_tasks[0]["name"] == "workflow.execute"
         assert sent_tasks[0]["args"][1] == {"message": "baseline input only"}
+        assert UUID(sent_tasks[0]["args"][2]["workflow_run_id"])
         patched_graph = sent_tasks[0]["args"][0]
         patched_node = patched_graph["nodes"][0]
         assert patched_node["data"]["model_id"] == "gpt-4.1-mini"
@@ -1034,6 +1035,7 @@ class TestCostOptimizerCompareApi:
         payload = response.json()
         assert payload["baseline"]["input"] == {"message": "baseline input only"}
         assert payload["candidate"]["status"] == "success"
+        assert UUID(payload["candidate"]["candidate_workflow_run_id"])
         assert payload["candidate"]["output"] == {
             "text": "candidate output",
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
@@ -1443,6 +1445,99 @@ class TestCostOptimizerCompareApi:
         assert usage["cost"] is None
         assert usage["cost_unavailable"] is True
         assert usage["total_tokens"] == 240
+
+    def test_fr9_compare_reads_cost_from_node_output_when_usage_has_only_tokens(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        app_id = uuid4()
+        user_id = uuid4()
+        baseline_id = uuid4()
+        db = MagicMock()
+        workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            graph={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "position": {"x": 100, "y": 120},
+                        "data": {"model_id": "gpt-4.1-mini"},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        baseline = _baseline_row(
+            baseline_id=baseline_id,
+            workflow_run_id=uuid4(),
+            input_available=True,
+            compare_available=True,
+        )
+        baseline["input"] = {"message": "baseline input only"}
+
+        class FakeTask:
+            def get(self, timeout):
+                return {
+                    "status": "success",
+                    "result": {
+                        "llm-triage": {
+                            "text": "candidate output",
+                            "cost": 0.00012,
+                            "usage": {
+                                "model": "gpt-4.1-mini",
+                                "prompt_tokens": 116,
+                                "completion_tokens": 46,
+                                "total_tokens": 162,
+                            },
+                        }
+                    },
+                }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.get_cost_optimizer_baseline_by_id",
+                return_value=baseline,
+                create=True,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-4.1-mini"),
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
+                return_value=FakeTask(),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/compare",
+                json={
+                    "baseline_id": str(baseline_id),
+                    "candidate": {
+                        "label": "B",
+                        "model_id": "gpt-4.1-mini",
+                        "parameters": {
+                            "max_tokens": 800,
+                            "temperature": 0.1,
+                        },
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        usage = response.json()["candidate"]["usage"]
+        assert usage["cost"] == 0.00012
+        assert usage["cost_unavailable"] is False
+        assert usage["total_tokens"] == 162
 
     def test_fr9_compare_persists_experiment_and_candidate_summary(self):
         workflow_id = uuid4()
@@ -3162,6 +3257,23 @@ class TestCostOptimizerBaselineHelpers:
         assert not any(
             "workflow_node_runs.outputs IS NOT NULL" in str(arg)
             for arg in filter_args
+        )
+
+    def test_fr2_baseline_query_excludes_cost_optimizer_candidate_runs(self):
+        db = MagicMock()
+        query = db.query.return_value
+        workflow = SimpleNamespace(id=uuid4())
+
+        workflow_endpoint._cost_optimizer_baseline_rows(db, workflow, "llm-triage")
+
+        filter_args = query.join.return_value.join.return_value.filter.call_args.args
+        assert any(
+            "llm_usage_logs.cost_optimizer_candidate_id IS NULL" in str(arg)
+            for arg in filter_args
+        )
+        assert any(
+            len(call.args) == 1 and call.args[0] is CostOptimizerCandidate.id
+            for call in db.query.call_args_list
         )
 
     def test_fr2_trace_payload_redacted_input_should_drive_preview_and_availability(self):
