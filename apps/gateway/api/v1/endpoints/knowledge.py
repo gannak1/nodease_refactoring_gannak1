@@ -15,6 +15,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Query,
     Request,
     Response,
     status,
@@ -36,6 +37,10 @@ from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.knowledge_collection_service import (
+    KnowledgeCollectionService,
+    KnowledgeCollectionServiceError,
+)
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
@@ -49,6 +54,18 @@ from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
     KnowledgeCandidateResolveRequest,
+    KnowledgeCollectionCreateRequest,
+    KnowledgeCollectionItemLinkRequest,
+    KnowledgeCollectionItemReorderRequest,
+    KnowledgeCollectionItemsResponse,
+    KnowledgeCollectionLinkCandidatesResponse,
+    KnowledgeCollectionListResponse,
+    KnowledgeCollectionPermissionGrantRequest,
+    KnowledgeCollectionPermissionsResponse,
+    KnowledgeCollectionResponse,
+    KnowledgeCollectionUpdateRequest,
+    KnowledgeCollectionVisibilityRequest,
+    KnowledgeCollectionVisibilityResponse,
     KnowledgeRAGRecommendationRequest,
     KnowledgeRAGRecommendationResponse,
 )
@@ -93,6 +110,38 @@ def _content_disposition_type_for_document(filename: str, media_type: str) -> st
     if ext in SAFE_INLINE_FILE_EXTENSIONS and media_type in SAFE_INLINE_MEDIA_TYPES:
         return "inline"
     return "attachment"
+
+
+def _knowledge_collection_service(
+    db: Session,
+    request: Request,
+    raw_organization_id: str | None,
+    current_user: User,
+) -> KnowledgeCollectionService:
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        raw_organization_id,
+        current_user.id,
+    )
+    return KnowledgeCollectionService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+
+
+def _raise_collection_service_error(
+    request: Request,
+    exc: KnowledgeCollectionServiceError,
+) -> None:
+    raise_api_error(
+        request,
+        exc.status_code,
+        exc.code,
+        exc.message,
+        exc.details,
+    )
 
 
 @router.post(
@@ -299,6 +348,275 @@ async def recommend_rag_options(
         organization_id=organization_id,
     )
     return service.recommend_for_builder(recommendation_request)
+
+
+@router.get("/collections", response_model=KnowledgeCollectionListResponse)
+def list_knowledge_collections(
+    request: Request,
+    lifecycle_state: str = Query(default="active"),
+    visibility: str | None = Query(default=None),
+    system_managed: bool | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        collections = service.list_collections(
+            lifecycle_state=lifecycle_state,
+            visibility=visibility,
+            system_managed=system_managed,
+            limit=limit,
+        )
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+    return KnowledgeCollectionListResponse(collections=collections)
+
+
+@router.post(
+    "/collections",
+    response_model=KnowledgeCollectionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_knowledge_collection(
+    collection_request: KnowledgeCollectionCreateRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.create_collection(collection_request)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.get("/collections/{collection_id}", response_model=KnowledgeCollectionResponse)
+def get_knowledge_collection(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.get_collection(collection_id)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.patch("/collections/{collection_id}", response_model=KnowledgeCollectionResponse)
+def update_knowledge_collection(
+    collection_id: UUID,
+    collection_request: KnowledgeCollectionUpdateRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.update_collection(collection_id, collection_request)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_knowledge_collection(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        service.archive_collection(collection_id)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/collections/{collection_id}/items",
+    response_model=KnowledgeCollectionItemsResponse,
+)
+def list_knowledge_collection_items(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return KnowledgeCollectionItemsResponse(items=service.list_items(collection_id))
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.post(
+    "/collections/{collection_id}/items",
+    response_model=KnowledgeCollectionItemsResponse,
+)
+def link_knowledge_collection_item(
+    collection_id: UUID,
+    item_request: KnowledgeCollectionItemLinkRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        item = service.link_item(collection_id, item_request)
+        return KnowledgeCollectionItemsResponse(items=[item])
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.patch(
+    "/collections/{collection_id}/items/reorder",
+    response_model=KnowledgeCollectionItemsResponse,
+)
+def reorder_knowledge_collection_items(
+    collection_id: UUID,
+    reorder_request: KnowledgeCollectionItemReorderRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return KnowledgeCollectionItemsResponse(
+            items=service.reorder_items(collection_id, reorder_request)
+        )
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.delete(
+    "/collections/{collection_id}/items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def unlink_knowledge_collection_item(
+    collection_id: UUID,
+    item_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        service.unlink_item(collection_id, item_id)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/collections/{collection_id}/link-candidates",
+    response_model=KnowledgeCollectionLinkCandidatesResponse,
+)
+def list_knowledge_collection_link_candidates(
+    collection_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return KnowledgeCollectionLinkCandidatesResponse(
+            candidates=service.list_link_candidates(collection_id, limit=limit)
+        )
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.get(
+    "/collections/{collection_id}/permissions",
+    response_model=KnowledgeCollectionPermissionsResponse,
+)
+def list_knowledge_collection_permissions(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return KnowledgeCollectionPermissionsResponse(
+            permissions=service.list_permissions(collection_id)
+        )
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.post(
+    "/collections/{collection_id}/permissions",
+    response_model=KnowledgeCollectionPermissionsResponse,
+)
+def grant_knowledge_collection_permission(
+    collection_id: UUID,
+    permission_request: KnowledgeCollectionPermissionGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        permission = service.grant_permission(collection_id, permission_request)
+        return KnowledgeCollectionPermissionsResponse(permissions=[permission])
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.delete(
+    "/collections/{collection_id}/permissions/{permission_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def revoke_knowledge_collection_permission(
+    collection_id: UUID,
+    permission_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        service.revoke_permission(collection_id, permission_id)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/collections/{collection_id}/visibility",
+    response_model=KnowledgeCollectionVisibilityResponse,
+)
+def update_knowledge_collection_visibility(
+    collection_id: UUID,
+    visibility_request: KnowledgeCollectionVisibilityRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.update_visibility(collection_id, visibility_request)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseDetailResponse)
