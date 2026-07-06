@@ -64,6 +64,15 @@ export const organizationApi = {
     return response.data;
   },
 
+  declineInvitation: async (
+    organizationId: string,
+  ): Promise<OrganizationMember> => {
+    const response = await publicApiClient.post(
+      `/organizations/${organizationId}/members/me/decline`,
+    );
+    return response.data;
+  },
+
   updateMember: async (
     organizationId: string,
     userId: string,

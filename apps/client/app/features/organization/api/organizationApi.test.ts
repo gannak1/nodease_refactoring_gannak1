@@ -19,9 +19,11 @@ vi.mock('@/lib/apiClient', () => ({
 }));
 
 import { apiClient } from '@/lib/apiClient';
+import { publicApiClient } from '@/lib/apiClient';
 import { organizationApi } from './organizationApi';
 
 const mockedPost = vi.mocked(apiClient.post);
+const mockedPublicPost = vi.mocked(publicApiClient.post);
 
 afterEach(() => {
   vi.resetAllMocks();
@@ -45,6 +47,25 @@ describe('organizationApi.submitPermissionRequest', () => {
       requested_permission: 'app.create',
       reason: 'workflow 생성이 필요합니다.',
     });
+    expect(result).toEqual(response);
+  });
+});
+
+describe('organizationApi.declineInvitation', () => {
+  it('현재 사용자의 초대 거절 endpoint를 호출한다', async () => {
+    const response = {
+      id: 'membership-1',
+      organization_id: 'org-1',
+      user_id: 'user-1',
+      membership_state: 'removed',
+    };
+    mockedPublicPost.mockResolvedValueOnce({ data: response });
+
+    const result = await organizationApi.declineInvitation('org-1');
+
+    expect(mockedPublicPost).toHaveBeenCalledWith(
+      '/organizations/org-1/members/me/decline',
+    );
     expect(result).toEqual(response);
   });
 });
