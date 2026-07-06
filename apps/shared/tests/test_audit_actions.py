@@ -19,5 +19,6 @@ def test_mba_44_canonical_audit_actions_are_defined():
 def test_organization_membership_audit_actions_are_defined():
     assert AuditAction.ORGANIZATION_INVITE == "organization.invite"
     assert AuditAction.ORGANIZATION_MEMBER_ACCEPT == "organization.member.accept"
+    assert AuditAction.ORGANIZATION_MEMBER_DECLINE == "organization.member.decline"
     assert AuditAction.ORGANIZATION_MEMBER_UPDATE == "organization.member.update"
     assert AuditAction.ORGANIZATION_MEMBER_REMOVE == "organization.member.remove"
