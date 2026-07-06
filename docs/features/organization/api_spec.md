@@ -42,8 +42,16 @@ Status: Draft
 | GET | `/organizations/{organization_id}/members` | organization member 목록을 반환한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
 | POST | `/organizations/{organization_id}/members/invitations` | 가입된 user id를 organization member로 초대한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
 | POST | `/organizations/{organization_id}/members/me/accept` | 현재 로그인한 사용자가 해당 organization에서 자신에게 온 초대를 수락한다. | `auth_token` cookie |
+| POST | `/organizations/{organization_id}/members/me/decline` | 현재 로그인한 사용자가 해당 organization에서 자신에게 온 초대를 거절한다. | `auth_token` cookie |
 | PATCH | `/organizations/{organization_id}/members/{user_id}` | member 상태 또는 organization auth state를 변경한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
 | DELETE | `/organizations/{organization_id}/members/{user_id}` | member를 removed 상태로 바꾸고 team/user direct permission 및 App 생성 권한 row를 정리한다. | `auth_token` cookie, manager, matching `X-Organization-Id` |
+
+### Notifications
+
+| 메서드 | 경로 | 설명 | 인증 |
+| --- | --- | --- | --- |
+| GET | `/notifications` | 현재 사용자의 organization 초대 알림 목록을 반환한다. | `auth_token` cookie |
+| GET | `/notifications/stream` | 현재 사용자의 notification SSE stream을 연다. | `auth_token` cookie |
 
 ### Permission Requests
 
@@ -204,6 +212,50 @@ Query parameter:
 성공 응답: `200 OK`, `OrganizationMemberResponse`.
 
 이 endpoint는 초대받은 현재 사용자 본인의 수락 경로이며 manager 권한을 요구하지 않는다.
+
+### `POST /organizations/{organization_id}/members/me/decline`
+
+요청 본문: 없음.
+
+성공 응답: `200 OK`, `OrganizationMemberResponse`.
+
+이 endpoint는 초대받은 현재 사용자 본인의 거절 경로이며 manager 권한을 요구하지 않는다. 성공 시 membership은 `removed`가 되고 `organization.member.decline` audit을 기록한다. invitation이 없으면 `404`, 현재 상태가 `invited`가 아니면 `409`를 반환한다.
+
+### `GET /notifications`
+
+요청 본문: 없음.
+
+성공 응답: `200 OK`.
+
+```json
+{
+  "items": [
+    {
+      "id": "organization_invitation:<membership_id>",
+      "type": "organization.invitation",
+      "organization_id": "<uuid>",
+      "organization_name": "Acme",
+      "organization_auth_state": "member",
+      "created_at": "<datetime>"
+    }
+  ]
+}
+```
+
+현재 구현은 별도 notification table을 만들지 않고, 현재 user의 `invited` organization membership을 알림으로 파생한다. active/suspended/removed membership은 포함하지 않는다.
+
+### `GET /notifications/stream`
+
+SSE 응답: `text/event-stream`.
+
+현재 구현 event:
+
+```text
+event: notifications.changed
+data: {}
+```
+
+초대 생성/수락/거절 이후 현재 사용자 channel에 발행된다. 클라이언트는 event payload를 source of truth로 사용하지 않고 `GET /notifications`를 재조회한다.
 
 ### `PATCH /organizations/{organization_id}/members/{user_id}`
 
