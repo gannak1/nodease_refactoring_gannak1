@@ -294,7 +294,7 @@ class OpenAIClient(BaseLLMClient):
                 responses_data = responses_resp.json()
             except ValueError:
                 responses_data = {}
-            if isinstance(responses_data, dict) and "error" in responses_data:
+            if self._has_error_response(responses_data):
                 self._raise_error_response(responses_data, responses_resp.status_code)
             snippet = responses_resp.text[:200] if responses_resp.text else ""
             raise ValueError(
@@ -308,7 +308,7 @@ class OpenAIClient(BaseLLMClient):
                 f"{self.provider_name} 응답을 JSON으로 파싱할 수 없습니다."
             ) from exc
 
-        if isinstance(responses_data, dict) and "error" in responses_data:
+        if self._has_error_response(responses_data):
             self._raise_error_response(responses_data, responses_resp.status_code)
 
         return self._convert_responses_response(responses_data)
@@ -402,6 +402,9 @@ class OpenAIClient(BaseLLMClient):
             "param": error_info.get("param"),
             "code": error_info.get("code"),
         }
+
+    def _has_error_response(self, data: Any) -> bool:
+        return isinstance(data, dict) and isinstance(data.get("error"), dict)
 
     async def _handle_not_chat_model(
         self,
@@ -659,7 +662,7 @@ class OpenAIClient(BaseLLMClient):
             except ValueError as exc:
                 raise ValueError(f"{self.provider_name} 응답을 JSON으로 파싱할 수 없습니다.") from exc
 
-            if isinstance(data, dict) and "error" in data:
+            if self._has_error_response(data):
                 error_text = str(data.get("error", {}).get("message", "")).lower()
                 if "not a chat model" in error_text:
                     handled = await self._handle_not_chat_model(

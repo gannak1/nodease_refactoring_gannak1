@@ -67,6 +67,7 @@ async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
 
         def json(self):
             return {
+                "error": None,
                 "output_text": "hello",
                 "usage": {"input_tokens": 2, "output_tokens": 3},
             }
