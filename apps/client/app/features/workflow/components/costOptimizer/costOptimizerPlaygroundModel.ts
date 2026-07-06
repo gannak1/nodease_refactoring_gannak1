@@ -4,11 +4,7 @@ import type { AppNode, LLMNodeData } from '@/app/features/workflow/types/Nodes';
 
 export type KnowledgeBaseSelection = { id: string; name: string };
 export type JsonSchemaFieldType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'object'
-  | 'array';
+  'string' | 'number' | 'boolean' | 'object' | 'array';
 export type JsonSchemaField = {
   key: string;
   type: JsonSchemaFieldType;
@@ -74,6 +70,35 @@ export const findTargetNode = (
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isUsableKnowledgeBaseId = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  !value.includes('[REDACTED]');
+
+const safeKnowledgeBaseSelections = (
+  value: unknown,
+): KnowledgeBaseSelection[] =>
+  Array.isArray(value)
+    ? value
+        .filter(
+          (knowledgeBase): knowledgeBase is KnowledgeBaseSelection =>
+            isRecord(knowledgeBase) &&
+            isUsableKnowledgeBaseId(knowledgeBase.id) &&
+            typeof knowledgeBase.name === 'string',
+        )
+        .map((knowledgeBase) => ({
+          id: knowledgeBase.id.trim(),
+          name: knowledgeBase.name,
+        }))
+    : [];
+
+const knowledgeBaseIdsFromSelections = (
+  knowledgeBases: KnowledgeBaseSelection[],
+) =>
+  knowledgeBases
+    .map((knowledgeBase) => knowledgeBase.id)
+    .filter(isUsableKnowledgeBaseId);
 
 const parseJsonPreview = (value: string): unknown => {
   const trimmed = value.trim();
@@ -178,7 +203,9 @@ const collectDirectSelectors = (
   }
 
   if (Array.isArray(value)) {
-    value.forEach((item) => collectDirectSelectors(item, nodeId, chips, source));
+    value.forEach((item) =>
+      collectDirectSelectors(item, nodeId, chips, source),
+    );
     return;
   }
 
@@ -264,7 +291,8 @@ const schemaFieldsFromOutputFormat = (
     return {
       key,
       type:
-        typeof type === 'string' && jsonSchemaFieldTypes.has(type as JsonSchemaFieldType)
+        typeof type === 'string' &&
+        jsonSchemaFieldTypes.has(type as JsonSchemaFieldType)
           ? (type as JsonSchemaFieldType)
           : 'string',
       required: required.includes(key),
@@ -320,9 +348,7 @@ export const candidateFromOptions = (
       typeof params.temperature === 'number' ? params.temperature : 0.7,
     top_p: typeof params.top_p === 'number' ? params.top_p : 1,
     presence_penalty:
-      typeof params.presence_penalty === 'number'
-        ? params.presence_penalty
-        : 0,
+      typeof params.presence_penalty === 'number' ? params.presence_penalty : 0,
     frequency_penalty:
       typeof params.frequency_penalty === 'number'
         ? params.frequency_penalty
@@ -332,7 +358,7 @@ export const candidateFromOptions = (
       : [],
     output_format: outputFormat === 'json' ? 'json' : 'text',
     json_schema_fields: schemaFieldsFromOutputFormat(data.output_format),
-    knowledgeBases: data.knowledgeBases || [],
+    knowledgeBases: safeKnowledgeBaseSelections(data.knowledgeBases),
     topK: typeof data.topK === 'number' ? data.topK : 3,
     scoreThreshold:
       typeof data.scoreThreshold === 'number' ? data.scoreThreshold : 0.5,
@@ -429,8 +455,8 @@ export const compareRequestCandidateFromDraft = (
         : undefined,
   },
   knowledge: {
-    knowledge_base_ids: candidate.knowledgeBases.map((knowledgeBase) =>
-      knowledgeBase.id,
+    knowledge_base_ids: knowledgeBaseIdsFromSelections(
+      candidate.knowledgeBases,
     ),
     top_k: candidate.topK,
     score_threshold: candidate.scoreThreshold,

@@ -8,12 +8,17 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getNodeDefinition } from '../../config/nodeRegistry';
+import { NodeSettingsComparisonPanel } from '../../components/costOptimizer/NodeSettingsComparisonPanel';
 import { LLMReferenceSidePanel } from '../../components/nodes/llm/components/LLMReferenceSidePanel';
+import { fetchEligibleKnowledgeBases } from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
+import type { CandidateDraft } from '../../components/costOptimizer/costOptimizerPlaygroundModel';
 import type { LLMNodeData } from '../../types/Nodes';
+
+const updateNodeDataMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/app/features/workflow/store/useWorkflowStore', () => ({
   useWorkflowStore: () => ({
-    updateNodeData: vi.fn(),
+    updateNodeData: updateNodeDataMock,
   }),
 }));
 
@@ -44,6 +49,31 @@ const baseData: LLMNodeData = {
   knowledgeBases: [],
   topK: 3,
   scoreThreshold: 0.5,
+};
+
+const baseDraft: CandidateDraft = {
+  model_id: 'gpt-4.1',
+  fallback_model_id: '',
+  task_type: 'generate',
+  system_prompt: 'system',
+  user_prompt: 'user',
+  assistant_prompt: '',
+  referenced_variables: [],
+  max_tokens: 1024,
+  temperature: 0.3,
+  top_p: 1,
+  presence_penalty: 0,
+  frequency_penalty: 0,
+  stop: [],
+  output_format: 'text',
+  json_schema_fields: [],
+  knowledgeBases: [],
+  topK: 3,
+  scoreThreshold: 0.5,
+  dedupeRetrievedContext: false,
+  retrievedContextMaxChars: null,
+  retrievedContextCompression: 'off',
+  answerGroundingCheck: 'off',
 };
 
 describe('FR-003 RAG cost optimization options', () => {
@@ -78,11 +108,11 @@ describe('FR-003 RAG cost optimization options', () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText('비용 최적화')).toBeInTheDocument());
-
-    fireEvent.click(
-      screen.getByRole('checkbox', { name: /중복 근거 제거/ }),
+    await waitFor(() =>
+      expect(screen.getByText('비용 최적화')).toBeInTheDocument(),
     );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /중복 근거 제거/ }));
     expect(onDataChange).toHaveBeenCalledWith({
       dedupeRetrievedContext: true,
     });
@@ -106,6 +136,61 @@ describe('FR-003 RAG cost optimization options', () => {
     });
     expect(onDataChange).toHaveBeenCalledWith({
       answerGroundingCheck: 'basic',
+    });
+  });
+
+  it('A/B 후보 지식 베이스 탭에서 지식 베이스를 선택한다', async () => {
+    const onNodeDataChange = vi.fn();
+    vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
+      bases: [
+        {
+          id: 'kb-1',
+          name: 'HR 정책',
+          description: '사내 HR 정책 문서',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+        },
+      ],
+      detailsById: {
+        'kb-1': {
+          id: 'kb-1',
+          name: 'HR 정책',
+          description: '사내 HR 정책 문서',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+          documents: [
+            {
+              id: 'doc-1',
+              filename: 'hr-policy.md',
+              status: 'completed',
+              created_at: '2026-07-01T00:00:00Z',
+              updated_at: '2026-07-01T00:00:00Z',
+              chunk_count: 3,
+              token_count: 240,
+            },
+          ],
+        },
+      },
+    });
+
+    render(
+      <NodeSettingsComparisonPanel
+        title="B Candidate"
+        nodeId="llm-1"
+        tab="knowledge"
+        onTabChange={vi.fn()}
+        draft={baseDraft}
+        onChange={vi.fn()}
+        onNodeDataChange={onNodeDataChange}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /HR 정책/ }));
+
+    expect(onNodeDataChange).toHaveBeenCalledWith({
+      knowledgeBases: [{ id: 'kb-1', name: 'HR 정책' }],
     });
   });
 });

@@ -1,9 +1,16 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeSettingsComparisonPanel } from '../../components/costOptimizer/NodeSettingsComparisonPanel';
 import {
+  candidateFromOptions,
   compareRequestCandidateFromDraft,
   downstreamOutputContractChipsFromNodes,
   inputContractChipsFromBaseline,
@@ -53,89 +60,86 @@ vi.mock('../../components/modals/PromptWizardModal', () => ({
   PromptWizardModal: () => null,
 }));
 
-vi.mock(
-  '../../components/nodes/llm/components/LLMParameterSidePanel',
-  () => ({
-    LLMParameterSidePanel: () => null,
-  }),
-);
+vi.mock('../../components/nodes/llm/components/LLMParameterSidePanel', () => ({
+  LLMParameterSidePanel: () => null,
+}));
+
+vi.mock('../../components/nodes/llm/components/LLMReferenceSidePanel', () => ({
+  LLMReferenceSidePanel: () => null,
+}));
 
 vi.mock(
-  '../../components/nodes/llm/components/LLMReferenceSidePanel',
+  '@/app/features/workflow/components/nodes/ui/VariableTokenEditor',
   () => ({
-    LLMReferenceSidePanel: () => null,
-  }),
-);
-
-vi.mock('@/app/features/workflow/components/nodes/ui/VariableTokenEditor', () => ({
-  VariableTokenEditor: ({
-    ariaLabel,
-    value,
-    onChange,
-    onDropOutput,
-    insertOutputRequest,
-    tokenLabels,
-  }: {
-    ariaLabel?: string;
-    value: string;
-    onChange: (value: string) => void;
-    onDropOutput?: (output: {
-      key: string;
-      label: string;
-      dataType: 'string';
-      sourceNodeId: string;
-      sourceTitle: string;
-    }) => string | void;
-    insertOutputRequest?: {
-      id: string;
-      output: {
+    VariableTokenEditor: ({
+      ariaLabel,
+      value,
+      onChange,
+      onDropOutput,
+      insertOutputRequest,
+      tokenLabels,
+    }: {
+      ariaLabel?: string;
+      value: string;
+      onChange: (value: string) => void;
+      onDropOutput?: (output: {
         key: string;
         label: string;
         dataType: 'string';
         sourceNodeId: string;
         sourceTitle: string;
-      };
-    } | null;
-    tokenLabels?: Record<string, string>;
-  }) => {
-    useEffect(() => {
-      if (!insertOutputRequest) return;
-      const name =
-        onDropOutput?.(insertOutputRequest.output) ||
-        insertOutputRequest.output.key;
-      onChange(`${value}{{${name}}}`);
-    }, [insertOutputRequest, onChange, onDropOutput, value]);
+      }) => string | void;
+      insertOutputRequest?: {
+        id: string;
+        output: {
+          key: string;
+          label: string;
+          dataType: 'string';
+          sourceNodeId: string;
+          sourceTitle: string;
+        };
+      } | null;
+      tokenLabels?: Record<string, string>;
+    }) => {
+      useEffect(() => {
+        if (!insertOutputRequest) return;
+        const name =
+          onDropOutput?.(insertOutputRequest.output) ||
+          insertOutputRequest.output.key;
+        onChange(`${value}{{${name}}}`);
+      }, [insertOutputRequest, onChange, onDropOutput, value]);
 
-    return (
-      <div>
-        <textarea
-          aria-label={ariaLabel}
-          data-testid={`variable-token-editor-${ariaLabel}`}
-          data-token-labels={JSON.stringify(tokenLabels || {})}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-        {onDropOutput ? (
-          <button
-            type="button"
-            onClick={() => {
-              const name = onDropOutput({
-                key: 'message',
-                label: 'message',
-                dataType: 'string',
-                sourceNodeId: 'start-1',
-                sourceTitle: '고객 티켓 수신',
-              });
-              onChange(`${value}{{${name || 'message'}}}`);
-            }}
-          >
-            {ariaLabel}에 변수 삽입
-          </button>
-        ) : null}
-      </div>
-    );
-  },
-}));
+      return (
+        <div>
+          <textarea
+            aria-label={ariaLabel}
+            data-testid={`variable-token-editor-${ariaLabel}`}
+            data-token-labels={JSON.stringify(tokenLabels || {})}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          {onDropOutput ? (
+            <button
+              type="button"
+              onClick={() => {
+                const name = onDropOutput({
+                  key: 'message',
+                  label: 'message',
+                  dataType: 'string',
+                  sourceNodeId: 'start-1',
+                  sourceTitle: '고객 티켓 수신',
+                });
+                onChange(`${value}{{${name || 'message'}}}`);
+              }}
+            >
+              {ariaLabel}에 변수 삽입
+            </button>
+          ) : null}
+        </div>
+      );
+    },
+  }),
+);
 
 const baseDraft: CandidateDraft = {
   model_id: '',
@@ -295,7 +299,11 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
               source: 'webhook-ticket',
               value: '정산 파일을 다시 생성하는 방법을 안내해 주세요.',
             },
-            { key: 'customerTier', source: 'webhook-ticket', value: 'enterprise' },
+            {
+              key: 'customerTier',
+              source: 'webhook-ticket',
+              value: 'enterprise',
+            },
           ],
           outputs: [
             {
@@ -354,10 +362,9 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
       },
     ] as unknown as AppNode[];
 
-    expect(inputContractChipsFromBaseline(baseline).map((chip) => chip.key)).toEqual([
-      'message',
-      'customerTier',
-    ]);
+    expect(
+      inputContractChipsFromBaseline(baseline).map((chip) => chip.key),
+    ).toEqual(['message', 'customerTier']);
     expect(
       downstreamOutputContractChipsFromNodes(nodes, 'llm-triage').map(
         (chip) => chip.key,
@@ -461,6 +468,27 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
     });
   });
 
+  it('redacted 지식 베이스 id는 baseline 복사와 compare request에서 제외한다', () => {
+    const draft = candidateFromOptions({
+      model_id: 'gpt-4.1',
+      parameters: { max_tokens: 800, temperature: 0.2 },
+      knowledgeBases: [
+        { id: '[REDACTED]-[REDACTED]', name: 'redacted KB' },
+        { id: 'kb-1', name: '제품 정책' },
+      ],
+    });
+    const request = compareRequestCandidateFromDraft({
+      ...draft,
+      knowledgeBases: [
+        ...draft.knowledgeBases,
+        { id: '[REDACTED]', name: 'redacted KB 2' },
+      ],
+    });
+
+    expect(draft.knowledgeBases).toEqual([{ id: 'kb-1', name: '제품 정책' }]);
+    expect(request.knowledge?.knowledge_base_ids).toEqual(['kb-1']);
+  });
+
   it('task type은 원본 LLM node data 변환에서도 보존된다', () => {
     const nodeData = llmDataFromCandidate({
       ...baseDraft,
@@ -507,9 +535,12 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
       />,
     );
 
-    fireEvent.change(screen.getByTestId('variable-token-editor-사용자 프롬프트'), {
-      target: { value: '티켓 내용: {{message}}' },
-    });
+    fireEvent.change(
+      screen.getByTestId('variable-token-editor-사용자 프롬프트'),
+      {
+        target: { value: '티켓 내용: {{message}}' },
+      },
+    );
 
     expect(onChange).toHaveBeenCalledWith(
       'user_prompt',

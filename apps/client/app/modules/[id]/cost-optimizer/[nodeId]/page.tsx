@@ -209,6 +209,41 @@ const costOptimizerUnavailableMessage = (
   return '비용 비교를 시작할 수 없습니다.';
 };
 
+const responseDetailOf = (error: unknown): string | null => {
+  if (typeof error !== 'object' || error === null) return null;
+  const response = (error as { response?: unknown }).response;
+  if (typeof response !== 'object' || response === null) return null;
+  const data = (response as { data?: unknown }).data;
+  if (typeof data === 'object' && data !== null) {
+    const detail = (data as { detail?: unknown }).detail;
+    if (typeof detail === 'string') return detail;
+    const code = (data as { error?: { code?: unknown } }).error?.code;
+    if (typeof code === 'string') return code;
+  }
+  return null;
+};
+
+const compareCandidateErrorMessages: Record<string, string> = {
+  'cost_optimizer.knowledge_unavailable':
+    '선택한 지식 베이스를 사용할 수 없습니다. 지식 베이스 권한이나 선택 상태를 확인해 주세요.',
+  'cost_optimizer.model_unavailable':
+    '선택한 모델을 현재 계정에서 사용할 수 없습니다. LLM Credentials 또는 모델 권한을 확인해 주세요.',
+  'cost_optimizer.baseline_input_unavailable':
+    '선택한 기준 실행의 입력값을 사용할 수 없습니다. 다른 성공 로그를 선택해 주세요.',
+  'cost_optimizer.invalid_candidate':
+    '후보 설정 값이 유효하지 않습니다. 모델, 프롬프트, 출력 형식, 파라미터를 확인해 주세요.',
+  'permission.denied':
+    'B 후보 실행 권한이 없습니다. builder 이상 권한이 필요합니다.',
+};
+
+const compareCandidateErrorMessage = (error: unknown) => {
+  const detail = responseDetailOf(error);
+  if (detail && compareCandidateErrorMessages[detail]) {
+    return compareCandidateErrorMessages[detail];
+  }
+  return 'B 후보 실행에 실패했습니다.';
+};
+
 const formatKnowledgeSummary = (candidate: CandidateDraft) =>
   [
     `Knowledge Base ${candidate.knowledgeBases.length}개`,
@@ -225,7 +260,10 @@ const formatKnowledgeSummary = (candidate: CandidateDraft) =>
   ].join('\n');
 
 const formatOutputFormatValue = (
-  value: BaselineNodeOptions['output_format'] | CandidateDraft['output_format'] | undefined,
+  value:
+    | BaselineNodeOptions['output_format']
+    | CandidateDraft['output_format']
+    | undefined,
 ) => {
   if (!value) return 'TEXT';
   if (typeof value === 'string') return value.toUpperCase();
@@ -251,7 +289,8 @@ const formatParameterDiffSummary = (
   candidate: CandidateDraft,
 ) => {
   const parameters =
-    baselineOptions?.parameters && typeof baselineOptions.parameters === 'object'
+    baselineOptions?.parameters &&
+    typeof baselineOptions.parameters === 'object'
       ? baselineOptions.parameters
       : {};
   const baselineStop = Array.isArray(parameters.stop)
@@ -328,7 +367,8 @@ type PreviewRow = {
   value: string;
 };
 
-const normalizePreviewValue = (value: string) => value.replace(/\s+/g, ' ').trim();
+const normalizePreviewValue = (value: string) =>
+  value.replace(/\s+/g, ' ').trim();
 
 const parseJsonPreview = (value: string): unknown => {
   const trimmed = value.trim();
@@ -364,11 +404,10 @@ const collectPreviewRows = (
     return rows;
   }
 
-  Object.entries(value as Record<string, unknown>)
-    .forEach(([key, item]) => {
-      const nextPrefix = prefix ? `${prefix}.${key}` : key;
-      collectPreviewRows(item, nextPrefix, rows);
-    });
+  Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+    const nextPrefix = prefix ? `${prefix}.${key}` : key;
+    collectPreviewRows(item, nextPrefix, rows);
+  });
   return rows;
 };
 
@@ -377,13 +416,7 @@ const getPreviewRows = (value: string) => {
   return collectPreviewRows(parseJsonPreview(value));
 };
 
-const PreviewSection = ({
-  title,
-  value,
-}: {
-  title: string;
-  value: string;
-}) => {
+const PreviewSection = ({ title, value }: { title: string; value: string }) => {
   const rows = getPreviewRows(value);
 
   return (
@@ -582,9 +615,7 @@ export default function CostOptimizerPlaygroundPage() {
             candidate_status: historyCandidateStatus || undefined,
             model: historyModel.trim() || undefined,
             is_applied:
-              historyIsApplied === ''
-                ? undefined
-                : historyIsApplied === 'true',
+              historyIsApplied === '' ? undefined : historyIsApplied === 'true',
             schema_status: historySchemaStatus || undefined,
             downstream_state: historyDownstreamState || undefined,
             limit: 20,
@@ -681,8 +712,7 @@ export default function CostOptimizerPlaygroundPage() {
     setCandidate((current) => ({
       ...current,
       model_id: updates.model_id ?? current.model_id,
-      fallback_model_id:
-        updates.fallback_model_id ?? current.fallback_model_id,
+      fallback_model_id: updates.fallback_model_id ?? current.fallback_model_id,
       system_prompt: updates.system_prompt ?? current.system_prompt,
       user_prompt: updates.user_prompt ?? current.user_prompt,
       assistant_prompt: updates.assistant_prompt ?? current.assistant_prompt,
@@ -707,7 +737,9 @@ export default function CostOptimizerPlaygroundPage() {
           : current.frequency_penalty,
       stop: Object.prototype.hasOwnProperty.call(params, 'stop')
         ? Array.isArray(params.stop)
-          ? params.stop.filter((item): item is string => typeof item === 'string')
+          ? params.stop.filter(
+              (item): item is string => typeof item === 'string',
+            )
           : []
         : current.stop,
       knowledgeBases: updates.knowledgeBases ?? current.knowledgeBases,
@@ -729,7 +761,8 @@ export default function CostOptimizerPlaygroundPage() {
           : null
         : current.retrievedContextMaxChars,
       retrievedContextCompression:
-        updates.retrievedContextCompression ?? current.retrievedContextCompression,
+        updates.retrievedContextCompression ??
+        current.retrievedContextCompression,
       answerGroundingCheck:
         updates.answerGroundingCheck ?? current.answerGroundingCheck,
     }));
@@ -765,15 +798,19 @@ export default function CostOptimizerPlaygroundPage() {
       );
       setIsStale(false);
       setActiveMode('report');
-    } catch {
-      setCandidateError('B 후보 실행에 실패했습니다.');
+    } catch (error) {
+      setCandidateError(compareCandidateErrorMessage(error));
     } finally {
       setIsRunningCandidate(false);
     }
   };
 
   const handleApplyCandidate = () => {
-    if (!compareResult || !candidateResult || candidateResult.status !== 'success') {
+    if (
+      !compareResult ||
+      !candidateResult ||
+      candidateResult.status !== 'success'
+    ) {
       return;
     }
     setApplyError('');
@@ -782,7 +819,11 @@ export default function CostOptimizerPlaygroundPage() {
   };
 
   const confirmApplyCandidate = async () => {
-    if (!compareResult || !candidateResult || candidateResult.status !== 'success') {
+    if (
+      !compareResult ||
+      !candidateResult ||
+      candidateResult.status !== 'success'
+    ) {
       return;
     }
     setIsApplyingCandidate(true);
@@ -854,8 +895,12 @@ export default function CostOptimizerPlaygroundPage() {
     'completionTokens',
   ]);
   const candidateSchemaValidation = candidateResult?.schema_validation;
-  const candidateSchemaErrors = schemaErrorsOf(candidateSchemaValidation?.errors);
-  const baselineRetrievalSummary = retrievalSummaryOf(compareResult?.baseline?.trace);
+  const candidateSchemaErrors = schemaErrorsOf(
+    candidateSchemaValidation?.errors,
+  );
+  const baselineRetrievalSummary = retrievalSummaryOf(
+    compareResult?.baseline?.trace,
+  );
   const candidateRetrievalSummary = retrievalSummaryOf(candidateResult?.trace);
   const downstreamCompatibility =
     compareResult?.downstream_compatibility ??
@@ -908,10 +953,7 @@ export default function CostOptimizerPlaygroundPage() {
   );
 
   const handleHorizontalResizeKeyDown = useCallback(
-    (
-      handle: HorizontalResizeHandle,
-      event: KeyboardEvent<HTMLDivElement>,
-    ) => {
+    (handle: HorizontalResizeHandle, event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       event.preventDefault();
       const direction = event.key === 'ArrowLeft' ? -1 : 1;
@@ -1063,251 +1105,261 @@ export default function CostOptimizerPlaygroundPage() {
                 : undefined
             }
           >
-        <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Clock3 className="h-4 w-4 text-emerald-600" />
-              <h2 className="text-sm font-bold">A 실행 시점 옵션</h2>
-            </div>
-            {baseline ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setBaseline(null);
-                  setActiveMode('setup');
-                  setIsStale(false);
-                  setCompareResult(null);
-                  setCandidateError('');
-                  setApplyError('');
-                  setApplySuccess(false);
-                }}
-                className="shrink-0 rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-              >
-                다시 선택
-              </button>
+            <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Clock3 className="h-4 w-4 text-emerald-600" />
+                  <h2 className="text-sm font-bold">A 실행 시점 옵션</h2>
+                </div>
+                {baseline ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBaseline(null);
+                      setActiveMode('setup');
+                      setIsStale(false);
+                      setCompareResult(null);
+                      setCandidateError('');
+                      setApplyError('');
+                      setApplySuccess(false);
+                    }}
+                    className="shrink-0 rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    다시 선택
+                  </button>
+                ) : null}
+              </div>
+              {baseline ? (
+                <div className="space-y-4">
+                  {baselineNodeOptions ? (
+                    <NodeSettingsComparisonPanel
+                      title="실행 시점 옵션"
+                      nodeId={`${nodeId}-baseline`}
+                      tab={baselineSettingsTab}
+                      onTabChange={setBaselineSettingsTab}
+                      draft={candidateFromOptions(baselineNodeOptions)}
+                      readOnly
+                    />
+                  ) : (
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+                      이 baseline에는 실행 시점 노드 옵션 스냅샷이 없습니다. B
+                      후보는 현재 노드 설정을 기준으로 유지됩니다.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <CostOptimizerBaselineSelection
+                  workflowId={workflowId}
+                  nodeId={nodeId}
+                  onBaselineSelected={(selectedBaseline) => {
+                    setBaseline(selectedBaseline);
+                    setCandidate(
+                      candidateFromOptions(
+                        baselineOptionsOf(selectedBaseline) ||
+                          ((targetNode?.data || {}) as BaselineNodeOptions),
+                      ),
+                    );
+                    setIsStale(false);
+                    setCompareResult(null);
+                    setCandidateError('');
+                    setApplyError('');
+                    setApplySuccess(false);
+                  }}
+                  onClose={() => router.push(targetNodeDetailPath)}
+                />
+              )}
+            </aside>
+
+            {isResizableLayout ? (
+              <PanelResizeHandle
+                label="baseline 패널과 candidate 패널 사이 폭 조절"
+                onPointerDown={(event) =>
+                  handleHorizontalResizeStart('left-center', event)
+                }
+                onKeyDown={(event) =>
+                  handleHorizontalResizeKeyDown('left-center', event)
+                }
+              />
             ) : null}
-          </div>
-          {baseline ? (
-            <div className="space-y-4">
-              {baselineNodeOptions ? (
-                <NodeSettingsComparisonPanel
-                  title="실행 시점 옵션"
-                  nodeId={`${nodeId}-baseline`}
-                  tab={baselineSettingsTab}
-                  onTabChange={setBaselineSettingsTab}
-                  draft={candidateFromOptions(baselineNodeOptions)}
-                  readOnly
-                />
-              ) : (
-                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
-                  이 baseline에는 실행 시점 노드 옵션 스냅샷이 없습니다. B 후보는
-                  현재 노드 설정을 기준으로 유지됩니다.
+
+            <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+              <div className="sticky top-0 z-[1] flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-sm font-bold">
+                    <FlaskConical className="h-4 w-4 text-emerald-600" />B
+                    candidate
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    현재 LLM 노드 설정 복사본을 기준으로 후보 옵션을 조정합니다.
+                  </p>
+                  <label className="mt-3 grid max-w-md gap-1 text-xs font-semibold text-slate-600">
+                    <span>테스트명</span>
+                    <input
+                      value={testName}
+                      onChange={(event) => setTestName(event.target.value)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                      placeholder="예: gpt-4.1-mini 비용 절감 테스트"
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  disabled={!candidate.model_id || isRunningCandidate}
+                  onClick={handleRunCandidate}
+                  aria-label={isRunningCandidate ? 'B 실행 중' : 'B 후보 실행'}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                  title={
+                    candidate.model_id
+                      ? 'A baseline 입력으로 B 후보만 실행합니다.'
+                      : 'B 후보 모델을 먼저 선택하세요.'
+                  }
+                >
+                  {isRunningCandidate ? (
+                    <span
+                      role="status"
+                      className="inline-flex items-center gap-1.5"
+                    >
+                      <span
+                        aria-hidden="true"
+                        data-testid="cost-optimizer-running-spinner"
+                        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400 border-t-slate-700"
+                      />
+                      <span>B 실행 중</span>
+                    </span>
+                  ) : (
+                    <>
+                      <Play className="h-3.5 w-3.5" />B 후보 실행
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {loadError ? (
+                <p className="m-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {loadError}
                 </p>
-              )}
-            </div>
-          ) : (
-            <CostOptimizerBaselineSelection
-              workflowId={workflowId}
-              nodeId={nodeId}
-              onBaselineSelected={(selectedBaseline) => {
-                setBaseline(selectedBaseline);
-                setCandidate(
-                  candidateFromOptions(
-                    baselineOptionsOf(selectedBaseline) ||
-                      ((targetNode?.data || {}) as BaselineNodeOptions),
-                  ),
-                );
-                setIsStale(false);
-                setCompareResult(null);
-                setCandidateError('');
-                setApplyError('');
-                setApplySuccess(false);
-              }}
-              onClose={() => router.push(targetNodeDetailPath)}
-            />
-          )}
-        </aside>
+              ) : null}
+              {candidateError ? (
+                <p className="m-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {candidateError}
+                </p>
+              ) : null}
 
-        {isResizableLayout ? (
-          <PanelResizeHandle
-            label="baseline 패널과 candidate 패널 사이 폭 조절"
-            onPointerDown={(event) =>
-              handleHorizontalResizeStart('left-center', event)
-            }
-            onKeyDown={(event) =>
-              handleHorizontalResizeKeyDown('left-center', event)
-            }
-          />
-        ) : null}
+              {isStale ? (
+                <p className="mx-5 mt-5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                  후보 설정이 마지막 B 실행 이후 변경되었습니다. 현재 설정으로
+                  다시 실행해야 합니다.
+                </p>
+              ) : null}
 
-        <section className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="sticky top-0 z-[1] flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-sm font-bold">
-                <FlaskConical className="h-4 w-4 text-emerald-600" />
-                B candidate
-              </div>
-              <p className="mt-1 text-xs text-slate-500">
-                현재 LLM 노드 설정 복사본을 기준으로 후보 옵션을 조정합니다.
-              </p>
-              <label className="mt-3 grid max-w-md gap-1 text-xs font-semibold text-slate-600">
-                <span>테스트명</span>
-                <input
-                  value={testName}
-                  onChange={(event) => setTestName(event.target.value)}
-                  className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
-                  placeholder="예: gpt-4.1-mini 비용 절감 테스트"
+              <div className="p-5">
+                <NodeSettingsComparisonPanel
+                  title="후보 옵션"
+                  hideTitle
+                  nodeId={`${nodeId}-candidate`}
+                  tab={candidateSettingsTab}
+                  onTabChange={setCandidateSettingsTab}
+                  draft={candidate}
+                  onChange={updateCandidate}
+                  onNodeDataChange={updateCandidateNodeData}
+                  ioContract={candidateIoContract}
                 />
-              </label>
-            </div>
-            <button
-              type="button"
-              disabled={!candidate.model_id || isRunningCandidate}
-              onClick={handleRunCandidate}
-              aria-label={isRunningCandidate ? 'B 실행 중' : 'B 후보 실행'}
-              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-              title={
-                candidate.model_id
-                  ? 'A baseline 입력으로 B 후보만 실행합니다.'
-                  : 'B 후보 모델을 먼저 선택하세요.'
-              }
-            >
-              {isRunningCandidate ? (
-                <span role="status" className="inline-flex items-center gap-1.5">
-                  <span
-                    aria-hidden="true"
-                    data-testid="cost-optimizer-running-spinner"
-                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400 border-t-slate-700"
-                  />
-                  <span>B 실행 중</span>
-                </span>
-              ) : (
-                <>
-                  <Play className="h-3.5 w-3.5" />
-                  B 후보 실행
-                </>
-              )}
-            </button>
-          </div>
-
-          {loadError ? (
-            <p className="m-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {loadError}
-            </p>
-          ) : null}
-          {candidateError ? (
-            <p className="m-5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {candidateError}
-            </p>
-          ) : null}
-
-          {isStale ? (
-            <p className="mx-5 mt-5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
-              후보 설정이 마지막 B 실행 이후 변경되었습니다. 현재 설정으로
-              다시 실행해야 합니다.
-            </p>
-          ) : null}
-
-          <div className="p-5">
-            <NodeSettingsComparisonPanel
-              title="후보 옵션"
-              hideTitle
-              nodeId={`${nodeId}-candidate`}
-              tab={candidateSettingsTab}
-              onTabChange={setCandidateSettingsTab}
-              draft={candidate}
-              onChange={updateCandidate}
-              onNodeDataChange={updateCandidateNodeData}
-              ioContract={candidateIoContract}
-            />
-          </div>
-        </section>
-
-        {isResizableLayout ? (
-          <PanelResizeHandle
-            label="candidate 패널과 inspector 패널 사이 폭 조절"
-            onPointerDown={(event) =>
-              handleHorizontalResizeStart('center-right', event)
-            }
-            onKeyDown={(event) =>
-              handleHorizontalResizeKeyDown('center-right', event)
-            }
-          />
-        ) : null}
-
-        <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <BarChart3 className="h-4 w-4 text-emerald-600" />
-            <h2 className="text-sm font-bold">기준 실행 정보</h2>
-          </div>
-          <div className="space-y-3">
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-              <div className="text-xs font-semibold text-emerald-700">
-                선택된 기준 실행
               </div>
-              <div className="mt-1 text-sm font-bold text-emerald-950">
-                {baseline.model}
+            </section>
+
+            {isResizableLayout ? (
+              <PanelResizeHandle
+                label="candidate 패널과 inspector 패널 사이 폭 조절"
+                onPointerDown={(event) =>
+                  handleHorizontalResizeStart('center-right', event)
+                }
+                onKeyDown={(event) =>
+                  handleHorizontalResizeKeyDown('center-right', event)
+                }
+              />
+            ) : null}
+
+            <aside className="min-h-0 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-4 flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-emerald-600" />
+                <h2 className="text-sm font-bold">기준 실행 정보</h2>
               </div>
-              <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                <div className="rounded-md bg-white/70 p-2">
-                  <dt className="text-emerald-700">비용</dt>
-                  <dd className="font-bold">{formatCost(baseline.cost)}</dd>
+              <div className="space-y-3">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                  <div className="text-xs font-semibold text-emerald-700">
+                    선택된 기준 실행
+                  </div>
+                  <div className="mt-1 text-sm font-bold text-emerald-950">
+                    {baseline.model}
+                  </div>
+                  <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                    <div className="rounded-md bg-white/70 p-2">
+                      <dt className="text-emerald-700">비용</dt>
+                      <dd className="font-bold">{formatCost(baseline.cost)}</dd>
+                    </div>
+                    <div className="rounded-md bg-white/70 p-2">
+                      <dt className="text-emerald-700">토큰</dt>
+                      <dd className="font-bold">
+                        {formatMetric(baseline.total_tokens)}
+                      </dd>
+                    </div>
+                    <div className="rounded-md bg-white/70 p-2">
+                      <dt className="text-emerald-700">시간</dt>
+                      <dd className="font-bold">
+                        {formatLatency(baseline.latency_ms)}
+                      </dd>
+                    </div>
+                  </dl>
                 </div>
-                <div className="rounded-md bg-white/70 p-2">
-                  <dt className="text-emerald-700">토큰</dt>
-                  <dd className="font-bold">
-                    {formatMetric(baseline.total_tokens)}
-                  </dd>
+                <PreviewSection
+                  title="기준 입력"
+                  value={baseline.input_preview}
+                />
+                <PreviewSection
+                  title="기준 출력"
+                  value={baseline.output_preview}
+                />
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <div className="text-xs font-bold text-slate-500">
+                    B 후보 비교 컨텍스트
+                  </div>
+                  <dl className="mt-2 space-y-2 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">B 모델</dt>
+                      <dd className="font-semibold">
+                        {candidate.model_id || '-'}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">B 출력</dt>
+                      <dd className="font-semibold">
+                        {candidate.output_format.toUpperCase()}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">B 지식 베이스</dt>
+                      <dd className="font-semibold">
+                        {candidate.knowledgeBases.length}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">B Threshold</dt>
+                      <dd className="font-semibold">
+                        {candidate.scoreThreshold.toFixed(2)}
+                      </dd>
+                    </div>
+                  </dl>
                 </div>
-                <div className="rounded-md bg-white/70 p-2">
-                  <dt className="text-emerald-700">시간</dt>
-                  <dd className="font-bold">
-                    {formatLatency(baseline.latency_ms)}
-                  </dd>
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <div className="text-xs font-bold text-slate-500">상태</div>
+                  <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                    {baseline
+                      ? 'A baseline이 고정되었습니다. B 옵션을 조정하면서 실행 결과를 비교할 수 있습니다.'
+                      : '먼저 왼쪽에서 A baseline을 선택하세요.'}
+                  </p>
                 </div>
-              </dl>
-            </div>
-            <PreviewSection title="기준 입력" value={baseline.input_preview} />
-            <PreviewSection title="기준 출력" value={baseline.output_preview} />
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs font-bold text-slate-500">
-                B 후보 비교 컨텍스트
               </div>
-              <dl className="mt-2 space-y-2 text-xs">
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">B 모델</dt>
-                  <dd className="font-semibold">{candidate.model_id || '-'}</dd>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">B 출력</dt>
-                  <dd className="font-semibold">
-                    {candidate.output_format.toUpperCase()}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">B 지식 베이스</dt>
-                  <dd className="font-semibold">
-                    {candidate.knowledgeBases.length}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <dt className="text-slate-500">B Threshold</dt>
-                  <dd className="font-semibold">
-                    {candidate.scoreThreshold.toFixed(2)}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-            <div className="rounded-lg border border-slate-200 p-3">
-              <div className="text-xs font-bold text-slate-500">상태</div>
-              <p className="mt-2 text-xs leading-relaxed text-slate-500">
-                {baseline
-                  ? 'A baseline이 고정되었습니다. B 옵션을 조정하면서 실행 결과를 비교할 수 있습니다.'
-                  : '먼저 왼쪽에서 A baseline을 선택하세요.'}
-              </p>
-            </div>
-          </div>
-        </aside>
+            </aside>
           </div>
         ) : (
           <div className="flex h-full min-h-0 w-full max-w-[90vw] flex-col gap-4 overflow-y-auto">
@@ -1419,7 +1471,9 @@ export default function CostOptimizerPlaygroundPage() {
                     <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
                       <div className="rounded-md bg-slate-50 p-2">
                         <div className="text-slate-500">모델</div>
-                        <div className="truncate font-bold">{baseline.model}</div>
+                        <div className="truncate font-bold">
+                          {baseline.model}
+                        </div>
                       </div>
                       <div className="rounded-md bg-slate-50 p-2">
                         <div className="text-slate-500">비용</div>
@@ -1482,7 +1536,9 @@ export default function CostOptimizerPlaygroundPage() {
                     <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-6">
                       <div className="rounded-md bg-slate-50 p-2">
                         <div className="text-slate-500">상태</div>
-                        <div className="font-bold">{candidateResult.status}</div>
+                        <div className="font-bold">
+                          {candidateResult.status}
+                        </div>
                       </div>
                       <div className="rounded-md bg-slate-50 p-2">
                         <div className="text-slate-500">비용</div>
@@ -1589,7 +1645,9 @@ export default function CostOptimizerPlaygroundPage() {
                         <div className="flex justify-between gap-3">
                           <dt className="text-slate-500">토큰</dt>
                           <dd className="font-semibold">
-                            {baseline ? formatMetric(baseline.total_tokens) : '-'}
+                            {baseline
+                              ? formatMetric(baseline.total_tokens)
+                              : '-'}
                           </dd>
                         </div>
                         <div className="flex justify-between gap-3">
@@ -1642,168 +1700,199 @@ export default function CostOptimizerPlaygroundPage() {
 
                   {activeInspectorTab === 'diff' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="text-xs font-bold text-slate-500">Diff</div>
-                    <dl className="mt-2 space-y-2 text-xs">
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">모델 차이</dt>
-                        <dd className="font-semibold">
-                          {baseline?.model || '-'} → {candidate.model_id || '-'}
-                        </dd>
+                      <div className="text-xs font-bold text-slate-500">
+                        Diff
                       </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">prompt 차이</dt>
-                        <dd className="whitespace-pre-wrap font-semibold">
-                          {formatPromptDiffSummary(baselineNodeOptions, candidate)}
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">parameter 차이</dt>
-                        <dd className="whitespace-pre-wrap font-semibold">
-                          {formatParameterDiffSummary(baselineNodeOptions, candidate)}
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">출력 형식 차이</dt>
-                        <dd className="font-semibold">
-                          {formatOutputFormatValue(baselineNodeOptions?.output_format)} →{' '}
-                          {candidate.output_format.toUpperCase()}
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">비용 차이</dt>
-                        <dd className="font-semibold">
-                          {formatMetricDiff(
-                            baseline?.cost,
-                            candidateTotalCost,
-                            formatCost,
-                          )}
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">토큰 차이</dt>
-                        <dd className="font-semibold">
-                          {formatMetricDiff(
-                            baseline?.total_tokens,
-                            candidateTotalTokens,
-                            (value) => formatMetric(value),
-                          )}
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">latency 차이</dt>
-                        <dd className="font-semibold">
-                          {formatMetricDiff(
-                            baselineLatency,
-                            candidateLatency,
-                            formatLatency,
-                          )}
-                        </dd>
-                      </div>
-                    </dl>
+                      <dl className="mt-2 space-y-2 text-xs">
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            모델 차이
+                          </dt>
+                          <dd className="font-semibold">
+                            {baseline?.model || '-'} →{' '}
+                            {candidate.model_id || '-'}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            prompt 차이
+                          </dt>
+                          <dd className="whitespace-pre-wrap font-semibold">
+                            {formatPromptDiffSummary(
+                              baselineNodeOptions,
+                              candidate,
+                            )}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            parameter 차이
+                          </dt>
+                          <dd className="whitespace-pre-wrap font-semibold">
+                            {formatParameterDiffSummary(
+                              baselineNodeOptions,
+                              candidate,
+                            )}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            출력 형식 차이
+                          </dt>
+                          <dd className="font-semibold">
+                            {formatOutputFormatValue(
+                              baselineNodeOptions?.output_format,
+                            )}{' '}
+                            → {candidate.output_format.toUpperCase()}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            비용 차이
+                          </dt>
+                          <dd className="font-semibold">
+                            {formatMetricDiff(
+                              baseline?.cost,
+                              candidateTotalCost,
+                              formatCost,
+                            )}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            토큰 차이
+                          </dt>
+                          <dd className="font-semibold">
+                            {formatMetricDiff(
+                              baseline?.total_tokens,
+                              candidateTotalTokens,
+                              (value) => formatMetric(value),
+                            )}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            latency 차이
+                          </dt>
+                          <dd className="font-semibold">
+                            {formatMetricDiff(
+                              baselineLatency,
+                              candidateLatency,
+                              formatLatency,
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
                   ) : null}
 
                   {activeInspectorTab === 'diff' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="text-xs font-bold text-slate-500">
-                      RAG
-                    </div>
-                    <dl className="mt-2 space-y-3 text-xs">
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-slate-500">A 지식 베이스</dt>
-                        <dd className="font-semibold">
-                          {baselineNodeOptions?.knowledgeBases?.length ?? '-'}
-                        </dd>
+                      <div className="text-xs font-bold text-slate-500">
+                        RAG
                       </div>
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-slate-500">B 지식 베이스</dt>
-                        <dd className="font-semibold">
-                          {candidate.knowledgeBases.length}
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">Schema 검증</dt>
-                        <dd className="font-semibold">
-                          {schemaStatusLabelOf(candidateSchemaValidation?.status)}
-                        </dd>
-                        {candidateSchemaErrors.length > 0 ? (
-                          <ul className="space-y-1 text-[11px] leading-relaxed text-red-700">
-                            {candidateSchemaErrors.map((error) => (
-                              <li key={error}>- {error}</li>
-                            ))}
-                          </ul>
-                        ) : null}
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">
-                          A retrieval summary
-                        </dt>
-                        <dd>
-                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 p-2 text-[11px] text-slate-700">
-                            {formatRetrievalSummary(baselineRetrievalSummary)}
-                          </pre>
-                        </dd>
-                      </div>
-                      <div className="grid gap-1">
-                        <dt className="font-bold text-slate-500">
-                          B retrieval summary
-                        </dt>
-                        <dd>
-                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 p-2 text-[11px] text-slate-700">
-                            {formatRetrievalSummary(candidateRetrievalSummary)}
-                          </pre>
-                        </dd>
-                      </div>
-                    </dl>
+                      <dl className="mt-2 space-y-3 text-xs">
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">A 지식 베이스</dt>
+                          <dd className="font-semibold">
+                            {baselineNodeOptions?.knowledgeBases?.length ?? '-'}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">B 지식 베이스</dt>
+                          <dd className="font-semibold">
+                            {candidate.knowledgeBases.length}
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            Schema 검증
+                          </dt>
+                          <dd className="font-semibold">
+                            {schemaStatusLabelOf(
+                              candidateSchemaValidation?.status,
+                            )}
+                          </dd>
+                          {candidateSchemaErrors.length > 0 ? (
+                            <ul className="space-y-1 text-[11px] leading-relaxed text-red-700">
+                              {candidateSchemaErrors.map((error) => (
+                                <li key={error}>- {error}</li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            A retrieval summary
+                          </dt>
+                          <dd>
+                            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 p-2 text-[11px] text-slate-700">
+                              {formatRetrievalSummary(baselineRetrievalSummary)}
+                            </pre>
+                          </dd>
+                        </div>
+                        <div className="grid gap-1">
+                          <dt className="font-bold text-slate-500">
+                            B retrieval summary
+                          </dt>
+                          <dd>
+                            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-50 p-2 text-[11px] text-slate-700">
+                              {formatRetrievalSummary(
+                                candidateRetrievalSummary,
+                              )}
+                            </pre>
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
                   ) : null}
 
                   {activeInspectorTab === 'downstream' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="text-xs font-bold text-slate-500">
-                      Downstream
-                    </div>
-                    <div
-                      className={`mt-2 rounded-md border px-3 py-2 text-xs ${downstreamToneOf(
-                        downstreamCompatibility,
-                      )}`}
-                    >
-                      <div className="font-bold">
-                        {downstreamLabelOf(downstreamCompatibility)}
+                      <div className="text-xs font-bold text-slate-500">
+                        Downstream
                       </div>
-                      <p className="mt-1 leading-relaxed">
-                        {downstreamMessageOf(downstreamCompatibility)}
+                      <div
+                        className={`mt-2 rounded-md border px-3 py-2 text-xs ${downstreamToneOf(
+                          downstreamCompatibility,
+                        )}`}
+                      >
+                        <div className="font-bold">
+                          {downstreamLabelOf(downstreamCompatibility)}
+                        </div>
+                        <p className="mt-1 leading-relaxed">
+                          {downstreamMessageOf(downstreamCompatibility)}
+                        </p>
+                      </div>
+                      <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+                        외부 전송이나 쓰기 작업이 있는 downstream 노드는 자동
+                        실행하지 않습니다. Slack 전송, HTTP 요청, DB write는
+                        전체 workflow 테스트에서 별도 확인하세요.
                       </p>
-                    </div>
-                    <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
-                      외부 전송이나 쓰기 작업이 있는 downstream 노드는 자동
-                      실행하지 않습니다. Slack 전송, HTTP 요청, DB write는 전체
-                      workflow 테스트에서 별도 확인하세요.
-                    </p>
-                    {downstreamCheckedNodeIds.length > 0 ? (
-                      <div className="mt-3">
-                        <div className="text-[11px] font-bold text-slate-500">
-                          검사 노드
+                      {downstreamCheckedNodeIds.length > 0 ? (
+                        <div className="mt-3">
+                          <div className="text-[11px] font-bold text-slate-500">
+                            검사 노드
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {downstreamCheckedNodeIds.map((checkedNodeId) => (
+                              <span
+                                key={checkedNodeId}
+                                className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                              >
+                                {checkedNodeId}
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {downstreamCheckedNodeIds.map((checkedNodeId) => (
-                            <span
-                              key={checkedNodeId}
-                              className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-700"
-                            >
-                              {checkedNodeId}
-                            </span>
+                      ) : null}
+                      {downstreamWarnings.length > 0 ? (
+                        <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-amber-700">
+                          {downstreamWarnings.map((warning) => (
+                            <li key={warning}>- {warning}</li>
                           ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {downstreamWarnings.length > 0 ? (
-                      <ul className="mt-3 space-y-1 text-[11px] leading-relaxed text-amber-700">
-                        {downstreamWarnings.map((warning) => (
-                          <li key={warning}>- {warning}</li>
-                        ))}
-                      </ul>
-                    ) : null}
+                        </ul>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -1857,7 +1946,9 @@ export default function CostOptimizerPlaygroundPage() {
                               </dd>
                             </div>
                             <div className="flex justify-between gap-3">
-                              <dt className="text-slate-500">presence_penalty</dt>
+                              <dt className="text-slate-500">
+                                presence_penalty
+                              </dt>
                               <dd className="font-semibold">
                                 {candidate.presence_penalty}
                               </dd>
@@ -1892,7 +1983,9 @@ export default function CostOptimizerPlaygroundPage() {
                             </div>
                             <div className="flex justify-between gap-3">
                               <dt className="text-slate-500">topK</dt>
-                              <dd className="font-semibold">{candidate.topK}</dd>
+                              <dd className="font-semibold">
+                                {candidate.topK}
+                              </dd>
                             </div>
                             <div className="flex justify-between gap-3">
                               <dt className="text-slate-500">scoreThreshold</dt>
@@ -1903,7 +1996,9 @@ export default function CostOptimizerPlaygroundPage() {
                             <div className="flex justify-between gap-3">
                               <dt className="text-slate-500">중복 근거 제거</dt>
                               <dd className="font-semibold">
-                                {candidate.dedupeRetrievedContext ? '켜짐' : '꺼짐'}
+                                {candidate.dedupeRetrievedContext
+                                  ? '켜짐'
+                                  : '꺼짐'}
                               </dd>
                             </div>
                             <div className="flex justify-between gap-3">
@@ -1929,7 +2024,9 @@ export default function CostOptimizerPlaygroundPage() {
                             <div className="flex justify-between gap-3">
                               <dt className="text-slate-500">답변 근거 확인</dt>
                               <dd className="font-semibold">
-                                {groundingLabelOf(candidate.answerGroundingCheck)}
+                                {groundingLabelOf(
+                                  candidate.answerGroundingCheck,
+                                )}
                               </dd>
                             </div>
                           </dl>
@@ -2168,17 +2265,13 @@ export default function CostOptimizerPlaygroundPage() {
                 </dd>
               </div>
               <div className="grid grid-cols-[140px_1fr] gap-3 rounded-md bg-slate-50 px-3 py-2">
-                <dt className="font-bold text-slate-500">
-                  변경되는 parameter
-                </dt>
+                <dt className="font-bold text-slate-500">변경되는 parameter</dt>
                 <dd className="whitespace-pre-wrap font-semibold text-slate-900">
                   {formatParameterDiffSummary(baselineNodeOptions, candidate)}
                 </dd>
               </div>
               <div className="grid grid-cols-[140px_1fr] gap-3 rounded-md bg-slate-50 px-3 py-2">
-                <dt className="font-bold text-slate-500">
-                  변경되는 출력 형식
-                </dt>
+                <dt className="font-bold text-slate-500">변경되는 출력 형식</dt>
                 <dd className="font-semibold text-slate-900">
                   {candidate.output_format.toUpperCase()}
                 </dd>

@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const routerMock = vi.hoisted(() => ({
@@ -20,73 +26,77 @@ vi.mock('../../api/workflowApi', () => ({
   workflowApi: workflowApiMock,
 }));
 
-vi.mock('../../components/costOptimizer/CostOptimizerBaselineSelection', () => ({
-  CostOptimizerBaselineSelection: ({
-    onBaselineSelected,
-    onClose,
-  }: {
-    onBaselineSelected: (baseline: Record<string, unknown>) => void;
-    onClose: () => void;
-  }) => (
-    <div>
-      <button
-        type="button"
-        onClick={() =>
-          onBaselineSelected({
-            baseline_id: 'baseline-1',
-            run_started_at: '2026-07-05T01:30:00Z',
-            model: 'gpt-4.1',
-            cost: 0.0012,
-            total_tokens: 249,
-            latency_ms: 1600,
-            input_preview: JSON.stringify({
-              message:
-                'baseline input '.repeat(20) + '끝까지 보여야 하는 입력 문장',
-              customerTier: 'enterprise',
-              product: 'workflow',
-              severity: 'high',
-              region: 'ap-northeast-2',
-              owner: 'support',
-              escalationReason: '일곱 번째 입력 필드도 보여야 함',
-              requestedAction: '여덟 번째 입력 필드도 보여야 함',
-            }),
-            output_preview: JSON.stringify({
-              answer:
-                'baseline output '.repeat(20) + '끝까지 보여야 하는 출력 문장',
-              approvalRequired: false,
-              urgency: 'normal',
-              routedTeam: 'support',
-              category: 'billing',
-              confidence: 0.91,
-              followUp: '일곱 번째 출력 필드도 보여야 함',
-              auditNote: '여덟 번째 출력 필드도 보여야 함',
-            }),
-            has_trace: true,
-            downstream_compatibility: {
-              state: 'compatible',
-              label: '검증 가능',
-              message: 'downstream compatible',
-            },
-            node_options: {
-              model_id: 'gpt-4.1',
-              provider: 'openai',
-              system_prompt: 'baseline system',
-              user_prompt: 'baseline user',
-              assistant_prompt: '',
-              parameters: { max_tokens: 800, temperature: 0.2 },
-              knowledgeBases: [],
-            },
-          })
-        }
-      >
-        테스트 baseline 선택
-      </button>
-      <button type="button" onClick={onClose}>
-        닫기
-      </button>
-    </div>
-  ),
-}));
+vi.mock(
+  '../../components/costOptimizer/CostOptimizerBaselineSelection',
+  () => ({
+    CostOptimizerBaselineSelection: ({
+      onBaselineSelected,
+      onClose,
+    }: {
+      onBaselineSelected: (baseline: Record<string, unknown>) => void;
+      onClose: () => void;
+    }) => (
+      <div>
+        <button
+          type="button"
+          onClick={() =>
+            onBaselineSelected({
+              baseline_id: 'baseline-1',
+              run_started_at: '2026-07-05T01:30:00Z',
+              model: 'gpt-4.1',
+              cost: 0.0012,
+              total_tokens: 249,
+              latency_ms: 1600,
+              input_preview: JSON.stringify({
+                message:
+                  'baseline input '.repeat(20) + '끝까지 보여야 하는 입력 문장',
+                customerTier: 'enterprise',
+                product: 'workflow',
+                severity: 'high',
+                region: 'ap-northeast-2',
+                owner: 'support',
+                escalationReason: '일곱 번째 입력 필드도 보여야 함',
+                requestedAction: '여덟 번째 입력 필드도 보여야 함',
+              }),
+              output_preview: JSON.stringify({
+                answer:
+                  'baseline output '.repeat(20) +
+                  '끝까지 보여야 하는 출력 문장',
+                approvalRequired: false,
+                urgency: 'normal',
+                routedTeam: 'support',
+                category: 'billing',
+                confidence: 0.91,
+                followUp: '일곱 번째 출력 필드도 보여야 함',
+                auditNote: '여덟 번째 출력 필드도 보여야 함',
+              }),
+              has_trace: true,
+              downstream_compatibility: {
+                state: 'compatible',
+                label: '검증 가능',
+                message: 'downstream compatible',
+              },
+              node_options: {
+                model_id: 'gpt-4.1',
+                provider: 'openai',
+                system_prompt: 'baseline system',
+                user_prompt: 'baseline user',
+                assistant_prompt: '',
+                parameters: { max_tokens: 800, temperature: 0.2 },
+                knowledgeBases: [],
+              },
+            })
+          }
+        >
+          테스트 baseline 선택
+        </button>
+        <button type="button" onClick={onClose}>
+          닫기
+        </button>
+      </div>
+    ),
+  }),
+);
 
 vi.mock('../../components/costOptimizer/NodeSettingsComparisonPanel', () => ({
   NodeSettingsComparisonPanel: ({
@@ -132,9 +142,8 @@ vi.mock('../../components/costOptimizer/NodeSettingsComparisonPanel', () => ({
 }));
 
 const loadPlaygroundPage = async () => {
-  const module = await import(
-    '@/app/modules/[id]/cost-optimizer/[nodeId]/page'
-  );
+  const module =
+    await import('@/app/modules/[id]/cost-optimizer/[nodeId]/page');
   return module.default;
 };
 
@@ -247,8 +256,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    expect(screen.getByRole('button', { name: '테스트 baseline 선택' }))
-      .toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    ).toBeInTheDocument();
     expect(screen.queryByText('B candidate')).not.toBeInTheDocument();
     expect(screen.queryByText('Inspector')).not.toBeInTheDocument();
     expect(
@@ -291,22 +301,29 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
 
-    expect(
-      screen.getByRole('button', { name: '실험 설정' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '실험 설정' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     expect(screen.getByText('B candidate')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '기준 실행 정보' }))
-      .toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '기준 실행 정보' }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '결과 분석' }));
 
-    expect(
-      screen.getByRole('button', { name: '결과 분석' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '결과 분석' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     expect(screen.getByText('비교 리포트')).toBeInTheDocument();
-    expect(screen.getByText(/B 실행 후 결과 분석이 표시됩니다/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/B 실행 후 결과 분석이 표시됩니다/),
+    ).toBeInTheDocument();
   });
 
   it('상단 context bar는 workflow, target node, baseline 실행 시각, 입력 기준, downstream 상태를 표시한다', async () => {
@@ -320,11 +337,14 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
 
     expect(screen.getByText('고객 티켓 처리 워크플로우')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '티켓 처리 판단' }))
-      .toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '티켓 처리 판단' }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText(/기준 실행/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/2026/).length).toBeGreaterThan(0);
     expect(screen.getByText('같은 입력 기준')).toBeInTheDocument();
@@ -342,7 +362,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: '결과 분석' }));
     fireEvent.click(screen.getByRole('button', { name: 'B Trace' }));
 
@@ -362,7 +384,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
 
     const testNameInput = screen.getByLabelText('테스트명');
     expect(testNameInput).toBeInTheDocument();
@@ -386,11 +410,14 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
 
     expect(screen.getByLabelText('실행 시점 옵션')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '기준 실행 정보' }))
-      .toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '기준 실행 정보' }),
+    ).toBeInTheDocument();
     expect(screen.getByText('선택된 기준 실행')).toBeInTheDocument();
     expect(screen.getByText(/baseline input/)).toBeInTheDocument();
     expect(screen.getByText(/baseline output/)).toBeInTheDocument();
@@ -425,17 +452,22 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     await waitFor(() => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
-    expect(
-      screen.getByRole('button', { name: '결과 분석' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '결과 분석' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: '실험 설정으로 돌아가기' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '실험 설정으로 돌아가기' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: '후보 모델 변경' }));
     fireEvent.click(screen.getByRole('button', { name: '결과 분석' }));
 
@@ -458,14 +490,18 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     await waitFor(() => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '실험 설정으로 돌아가기' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '실험 설정으로 돌아가기' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'RAG 비용 옵션 변경' }));
     fireEvent.click(screen.getByRole('button', { name: '결과 분석' }));
 
@@ -491,7 +527,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     expect(
@@ -500,6 +538,32 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.getByRole('status')).toHaveTextContent('B 실행 중');
     expect(
       screen.getByTestId('cost-optimizer-running-spinner'),
+    ).toBeInTheDocument();
+  });
+
+  it('B 후보 실행 API가 지식 베이스 권한 오류를 반환하면 원인 메시지를 표시한다', async () => {
+    workflowApiMock.compareCostOptimizerCandidate.mockRejectedValueOnce({
+      response: {
+        data: { detail: 'cost_optimizer.knowledge_unavailable' },
+      },
+    });
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    expect(
+      await screen.findByText(/선택한 지식 베이스를 사용할 수 없습니다/),
     ).toBeInTheDocument();
   });
 
@@ -514,19 +578,17 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     await waitFor(() => {
       expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
     });
 
-    expect(
-      screen.getByRole('button', { name: 'A Trace' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'B Trace' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'A Trace' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'B Trace' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Diff' })).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Downstream' }),
@@ -547,7 +609,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     await waitFor(() => {
@@ -619,7 +683,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     await waitFor(() => {
@@ -650,7 +716,9 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
 
     await waitFor(() => {
