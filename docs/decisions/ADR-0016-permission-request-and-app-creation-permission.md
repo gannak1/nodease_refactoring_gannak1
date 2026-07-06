@@ -39,7 +39,7 @@ PRD FR-041/FR-014는 workflow 생성/배포 권한이 없는 사용자가 권한
 | flags | BIGINT | NOT NULL, 기본 0 |
 
 - UNIQUE (grantee_organization_id, user_id).
-- 회수는 row 삭제로 표현한다. 회수 UI는 이번 범위가 아니다.
+- 회수는 row 삭제로 표현한다. 회수 UI는 이번 범위가 아니다. (후속: 관리자 회수 API/UI가 admin-dashboard feature의 FR-014 확장으로 추가되었다. 회수 메커니즘은 이 ADR의 row 삭제 + `user_app_creation_permission.deleted` audit 그대로다.)
 
 ### 3. 신규 테이블 `permission_requests`
 

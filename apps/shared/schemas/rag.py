@@ -10,6 +10,7 @@ SOURCE_TYPE_VALUES = {"FILE", "API", "DB"}
 TAG_FILTER_MODES = {"contains_any", "contains_all"}
 HierarchyMode = Literal["auto", "flat", "parent_child"]
 ChunkingMode = Literal["flat", "hierarchical"]
+EvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
 CORRELATION_ID_SECRET_PATTERNS = (
     re.compile(r"(?:^|[-_:])(?:sk|pk|rk|api)[-_][A-Za-z0-9_-]{8,}", re.IGNORECASE),
@@ -231,6 +232,10 @@ class RAGRetrievalSummary(BaseModel):
     score_summary: Dict[str, Any] = Field(default_factory=dict)
     latency_ms: int = 0
     raw_content_returned: bool = False
+    evidence_sufficient: bool = True
+    insufficiency_reason: Optional[str] = None
+    partial_result: bool = False
+    source_tier_used: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RAGUsageSummary(BaseModel):
@@ -270,6 +275,7 @@ class RAGAgentAnswerRequest(BaseModel):
     generation_model_id: UUID
     credential_id: UUID
     correlation_id: Optional[str] = None
+    evidence_sufficiency_policy: EvidenceSufficiencyPolicy = "minimum_evidence"
 
     @field_validator("classification_filter")
     @classmethod

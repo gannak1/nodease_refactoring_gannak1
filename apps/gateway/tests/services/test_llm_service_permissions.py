@@ -767,7 +767,7 @@ def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
     anthropic_model = SimpleNamespace(
         id=uuid.uuid4(),
         provider_id=anthropic_provider.id,
-        model_id_for_api_call="claude-3-haiku-20240307",
+        model_id_for_api_call="claude-haiku-4-5-20251001",
         is_active=True,
     )
     db = FakeWizardRuntimeDb(
@@ -807,7 +807,7 @@ def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
         user_id,
         {
             "openai": "gpt-4o-mini",
-            "anthropic": "claude-3-haiku-20240307",
+            "anthropic": "claude-haiku-4-5-20251001",
         },
         organization_id=organization_id,
         audit_on_failure=False,

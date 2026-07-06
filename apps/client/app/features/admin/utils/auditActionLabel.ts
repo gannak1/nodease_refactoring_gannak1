@@ -11,6 +11,7 @@ const ACTION_LABELS: Record<string, string> = {
   'user_app_creation_permission.deleted': 'App 생성 권한 회수',
   'organization.invite': '멤버 초대',
   'organization.member.accept': '초대 수락',
+  'organization.member.decline': '초대 거절',
   'organization.member.update': '멤버 정보 변경',
   'organization.member.remove': '멤버 제거',
   'workflow.execute': 'Workflow 실행',

@@ -24,7 +24,7 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 
 (루트 폴더 문서 내 미반영된 3개 항)
 - 빌더로서, 배포 전에 필요한 credential과 권한 누락을 확인하고 싶다.
-- 운영자로서, schedule/webhook/API trigger로 실행된 workflow가 어떤 주체 권한으로 외부 호출과 RAG retrieval을 수행했는지 추적하고 싶다.
+- 운영자로서, schedule/webhook/API trigger로 실행된 workflow가 명시 실행 주체 권한 또는 anonymous public-only 경계 중 무엇으로 RAG retrieval을 수행했는지 추적하고 싶다.
 - 감사자로서, workflow owner와 실제 execution subject를 구분해 audit/trace에서 확인하고 싶다.
 
 ### 2. 노드 조작 편의성
@@ -45,11 +45,12 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 (밑에 fr이거 다 루트 폴더 문서에 미반영)
 - FR-001: Workflow run context는 organization, workflow, workflow version, run id, node id, trigger mode, actor 또는 service account 정보를 전달한다.
 - FR-002: Interactive 실행은 요청 사용자를 execution subject로 사용할 수 있다.
-- FR-003: Schedule, webhook, API trigger처럼 요청 사용자가 명확하지 않은 실행은 배포 시 승인된 service account, assigned operator, 또는 별도 정책으로 확정된 execution subject를 사용한다.
-- FR-004: Agent/LLM node 또는 RAG 옵션이 켜진 LLM node가 Knowledge retrieval을 호출할 때 workflow runtime은 명시적으로 resolve한 `execution_subject`와 sanitized `subject_resolution_reason`을 Knowledge service에 전달한다.
-- FR-005: `execution_subject`가 없거나 모호하면 Knowledge retrieval preflight를 fail-closed로 처리한다. Workflow owner 권한으로 조용히 fallback하지 않는다.
+- FR-003: Schedule, webhook, API trigger처럼 요청 사용자가 명확하지 않은 실행은 MVP에서 `execution_subject` 없이 anonymous public-only RAG로 실행한다. Private KB access가 필요한 자동 실행은 후속 service account, assigned operator, 또는 별도 정책으로 확정된 execution subject 기능이 필요하다.
+- FR-004: RAG 옵션이 켜진 LLM node가 Knowledge retrieval을 호출할 때 workflow runtime은 로그인 interactive 실행에서는 `execution_subject=current_user`를 전달한다. 비로그인/자동 실행처럼 `execution_subject`가 없으면 anonymous public-only로 처리한다.
+- FR-005: `execution_subject`가 없을 때 Workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 조용히 fallback하지 않는다. Subject 부재는 private retrieval 실패가 아니라 public collection/KB 후보만 허용하는 anonymous public-only 실행이다. 모호하거나 지원하지 않는 subject는 private retrieval fail-closed로 처리한다.
 - FR-006: Workflow owner, deployment owner, execution subject는 audit/trace에서 구분할 수 있어야 한다. Owner는 소유권과 관리 표시에는 사용할 수 있지만, 명시 정책 없이 실행 시점 data access 권한으로 사용하지 않는다.
-- FR-007: 후속 gate에서 Workflow runtime의 Knowledge Skill 사용을 허용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
+- FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
+- FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포에서 private KB access가 필요하면 후속 intended execution subject/audience 기준 runtime availability preflight를 수행해야 한다. MVP에서는 subject 없는 배포 실행을 public-only로 낮춘다.
 
 
 ### 1. 실행 편의성
@@ -141,11 +142,12 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
 - Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
-- RAG를 포함한 workflow 비교 실행이나 A/B 실행도 동일한 execution subject와 Knowledge permission/source ACL gate를 사용한다.
+- RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
+- 별도 RAG node를 만들지 않는다. Knowledge retrieval은 LLM node의 RAG option/runtime path로 연결한다 ([ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)).
 - Skill이 workflow generation이나 실행 시점 RAG procedure를 안내하더라도, skill은 data access 권한을 부여하지 않는다. 실제 evidence retrieval은 Knowledge permission helper 결과로만 수행한다.
 - Code-bearing skill은 별도 sandbox/approval/egress/resource-cap gate 전까지 workflow runtime에서 실행하지 않는다.
 - Workflow Playground가 별도 실험 공간인지 canvas와 통합되는지, draft/unpublished skill을 테스트 실행에 사용할 수 있는지는 아직 확정하지 않는다.
-- Missing/ambiguous execution subject, suspended/removed membership, inactive service account는 fail-closed로 처리한다.
+- Missing execution subject는 anonymous public-only로 처리한다. Ambiguous execution subject, suspended/removed membership, inactive service account는 private retrieval fail-closed로 처리한다.
 
 
 ## Open Questions
@@ -168,7 +170,7 @@ Open Question 중요도는 다음 3단계로 나눈다.
 
 (미반영 open question들)
 - Service account의 데이터 접근 범위와 승인 절차를 Auth/RBAC에서 어떤 table과 helper로 표현할지.
-- Schedule/webhook/API trigger의 `execution_subject` resolution reason enum과 audit action 이름.
+- Schedule/webhook/API trigger에서 private KB access가 필요할 때 `execution_subject` resolution reason enum과 audit action 이름을 어떻게 둘지.
 - Workflow runtime outbound egress guard를 Knowledge source egress guard와 통합할지 별도 runtime ADR로 둘지.
 - Skill execution을 runtime node로 허용할지, 허용한다면 sandbox와 approval 경계를 어디에 둘지.
 - Workflow Playground, canvas 작업 공간/사용 공간, 배포 승인 요청에서 skill binding을 어떻게 표현하고 검토할지.

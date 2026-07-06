@@ -16,16 +16,16 @@ describe('isWorkflowChatModelOption', () => {
     expect(
       isWorkflowChatModelOption(
         model({
-          model_id_for_api_call: 'o1-pro',
-          name: 'o1-pro',
+          model_id_for_api_call: 'gpt-5.5',
+          name: 'GPT-5.5',
         }),
       ),
     ).toBe(true);
     expect(
       isWorkflowChatModelOption(
         model({
-          model_id_for_api_call: 'claude-sonnet-4-5',
-          name: 'Claude Sonnet 4.5',
+          model_id_for_api_call: 'claude-sonnet-5',
+          name: 'Claude Sonnet 5',
           provider_name: 'Anthropic',
         }),
       ),
@@ -33,8 +33,8 @@ describe('isWorkflowChatModelOption', () => {
     expect(
       isWorkflowChatModelOption(
         model({
-          model_id_for_api_call: 'models/gemini-3-pro',
-          name: 'Gemini 3 Pro',
+          model_id_for_api_call: 'models/gemini-3.5-flash',
+          name: 'Gemini 3.5 Flash',
           provider_name: 'Google',
         }),
       ),

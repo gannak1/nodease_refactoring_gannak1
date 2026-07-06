@@ -5,7 +5,7 @@ Related Features: auth, workflow, knowledge, llm-credentials, audit-tracing, adm
 
 ## Purpose
 
-Organization 기능은 Nodease의 tenant-like 작업 경계와 RBAC 운영 기반을 담당한다. 현재 구현 범위는 기본 organization foundation 생성, active organization context 조회/선택, organization 이름/options 수정, organization membership 초대/수락/상태 변경/제거, team 생성/수정/멤버 배정/비활성화, workflow 및 LLM credential에 대한 team/user direct permission 조회/부여/회수, App 생성 권한 검사와 권한 신청 제출이다.
+Organization 기능은 Nodease의 tenant-like 작업 경계와 RBAC 운영 기반을 담당한다. 현재 구현 범위는 기본 organization foundation 생성, active organization context 조회/선택, organization 이름/options 수정, organization membership 초대/수락/거절/상태 변경/제거, team 생성/수정/멤버 배정/비활성화, workflow 및 LLM credential에 대한 team/user direct permission 조회/부여/회수, App 생성 권한 검사와 권한 신청 제출이다.
 
 Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organization foundation 생성을 호출한다. Organization은 생성된 organization, membership, team, resource permission의 scope와 운영 변경을 소유한다. Workflow, Knowledge, LLM credential, Audit feature의 리소스별 동작 의미는 각 feature 문서가 소유하며, Organization 문서는 공통 scope/RBAC 경계와 현재 구현된 권한 관리 API만 정의한다.
 
@@ -17,7 +17,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - 사용자는 접근 가능한 active organization 목록을 보고 현재 작업할 organization을 선택할 수 있다.
 - organization manager는 organization 이름과 options를 수정할 수 있다.
 - organization manager는 가입된 user id를 기준으로 멤버를 초대하고, 멤버 상태와 organization 권한을 변경하거나 제거할 수 있다.
-- 초대받은 사용자는 본인의 organization 초대를 수락할 수 있다.
+- 초대받은 사용자는 Sidebar 사용자 메뉴의 알림 overlay에서 본인의 organization 초대를 수락하거나 거절할 수 있다.
 - organization manager는 team을 만들고 수정하며, active organization member를 team에 배정하거나 team에서 제거할 수 있다.
 - organization manager는 더 이상 운영에 쓰지 않는 team을 비활성화할 수 있다.
 - organization manager 또는 대상 resource manager는 workflow/LLM credential 권한을 team 또는 user direct permission으로 부여하거나 회수할 수 있다.
@@ -45,6 +45,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-018: 초대 수락은 초대받은 본인만 수행할 수 있으며 manager 권한을 요구하지 않아야 한다.
 - ORG-REQ-019: active 초대를 다시 수락하면 현재 membership을 반환해야 하고, suspended/removed 초대 수락은 거부해야 한다.
 - ORG-REQ-020: 초대 수락 성공은 `organization.member.accept` audit을 기록해야 한다.
+- ORG-REQ-056: 초대 거절은 초대받은 본인만 수행할 수 있으며 manager 권한을 요구하지 않아야 한다. 거절 성공은 membership을 `removed`로 전환하고 `organization.member.decline` audit을 기록해야 한다.
 - ORG-REQ-021: organization manager는 active member를 suspended로 변경하거나 suspended member를 active로 되돌릴 수 있어야 한다.
 - ORG-REQ-022: organization manager는 active member의 `organization_auth_state`를 `member` 또는 `manager`로 변경할 수 있어야 한다.
 - ORG-REQ-023: member update는 invited member의 강제 active/suspended 전환, removed member update, 자기 자신의 상태/권한 변경, 마지막 active manager 제거/강등을 거부해야 한다.
@@ -78,6 +79,8 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-051: 거절된 App 생성 권한 신청자는 재신청할 수 있어야 한다.
 - ORG-REQ-052: App 생성 권한 신청 제출/승인/거절은 `permission_request.created/approved/rejected`, 승인에 따른 실제 권한 부여는 `user_app_creation_permission.created` audit으로 기록해야 한다 ([ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - ORG-REQ-053: App 생성 후 배포 권한은 생성자에게 자동 부여되는 workflow manager permission으로 따라오므로, 별도 배포 권한 신청 항목을 두지 않아야 한다.
+- ORG-REQ-054: `GET /notifications`는 현재 로그인한 사용자의 invited organization membership을 `organization.invitation` 알림으로 파생해 반환해야 한다. 별도 notification table, 읽음 상태, 히스토리는 현재 구현 범위가 아니다.
+- ORG-REQ-055: `GET /notifications/stream`은 현재 로그인한 사용자 기준 SSE stream을 제공하고, organization 초대 생성/수락/거절 후 `notifications.changed` 이벤트를 발행해야 한다. 클라이언트는 이벤트 수신 시 `GET /notifications`를 재조회한다.
 
 ## Policies And Edge Cases
 
@@ -86,6 +89,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - Organization membership 권한은 `member`와 `manager`만 사용한다. Resource permission `auth_state`(`none/viewer/operator/builder/manager`, audit용 `auditor/raw_auditor`)와 혼동하지 않는다.
 - user direct permission은 additive allow 전용이다. team 권한을 낮추지 못하고 explicit deny는 없다.
 - 멤버 제거 시 해당 user의 permission cleanup은 aggregate audit(`permission.revoke` + `reason='organization.member.remove'`)으로 기록한다. cleanup 대상에는 `user_app_creation_permissions`도 포함한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md) — 승인과 멤버 제거가 경합해도 최종 상태가 정리되는 안전망).
+- App 생성 권한의 개별 회수(보유 목록 조회, row 삭제, `user_app_creation_permission.deleted` audit)는 [admin-dashboard](../admin-dashboard/requirements.md) feature(FR-014 회수 확장)가 소유한다. 회수된 사용자는 보유 권한과 pending 신청이 없는 상태로 돌아가므로 ORG-REQ-050 조건에 따라 재신청할 수 있다.
 - 이미 inactive인 팀의 비활성화 요청은 같은 조직 manager라면 idempotent success로 처리한다 ([ADR-0011](../../decisions/ADR-0011-team-router-rbac-service-boundary.md)).
 - permission grant 요청은 canonical auth_state 값만 받는다. legacy 값(`read/write/execute/admin`)은 기존 row 해석에만 사용하고 신규 요청에서는 거부한다.
 - 서버는 active organization을 session/cookie에 저장하지 않는다. header가 없는 legacy 경로만 제한적 primary organization fallback을 사용한다.
@@ -96,6 +100,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - Team knowledge permission model은 존재하지만 organization permission 관리 API/UI는 현재 knowledge permission grant/revoke를 제공하지 않는다.
 - 기본 organization foundation은 `Default` team 하나를 만든다. data model의 Admin/Builder/Operator/Viewer/Auditor team template preset 자동 생성은 현재 구현 범위가 아니다.
 - 멤버 초대 API는 email invitation이 아니라 가입된 user UUID 기반 초대다. email 검색/초대 UX는 현재 구현 범위가 아니다.
+- Sidebar 알림 overlay MVP는 이미 `/dashboard`에 진입해 Sidebar를 볼 수 있는 사용자를 대상으로 한다. active organization 없이 invited membership만 가진 신규 user flow는 현재 구현 범위가 아니다.
 - Admin console은 organization 관리의 주 UI다. Settings page에는 일부 access-management 코드가 남아 있지만 현재 보이는 탭에서는 노출되지 않는다.
 - 클라이언트의 manager-only 메뉴 숨김은 UX 차단이다. 최종 보안 판단은 Gateway endpoint와 shared permission helper가 수행한다.
 - Audit metadata에는 actor snapshot, request metadata, permission cleanup count, resource id가 포함될 수 있다. secret value, raw credential, token 원문은 기록하지 않는다.

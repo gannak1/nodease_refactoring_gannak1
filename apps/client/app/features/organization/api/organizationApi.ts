@@ -9,6 +9,8 @@ import type {
   OrganizationMemberUpdateRequest,
   OrganizationResponse,
   OrganizationSummary,
+  PermissionRequestCreateRequest,
+  PermissionRequestResponse,
 } from '../types/Organization';
 
 export const organizationApi = {
@@ -62,6 +64,15 @@ export const organizationApi = {
     return response.data;
   },
 
+  declineInvitation: async (
+    organizationId: string,
+  ): Promise<OrganizationMember> => {
+    const response = await publicApiClient.post(
+      `/organizations/${organizationId}/members/me/decline`,
+    );
+    return response.data;
+  },
+
   updateMember: async (
     organizationId: string,
     userId: string,
@@ -83,6 +94,16 @@ export const organizationApi = {
       `/organizations/${organizationId}/members/${userId}`,
       { headers: activeOrganizationHeaders(organizationId) },
     );
+    return response.data;
+  },
+
+  submitPermissionRequest: async (
+    payload: PermissionRequestCreateRequest,
+  ): Promise<PermissionRequestResponse> => {
+    const response = await apiClient.post('/permission-requests', {
+      requested_permission: 'app.create',
+      ...payload,
+    });
     return response.data;
   },
 };

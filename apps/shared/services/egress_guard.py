@@ -1,0 +1,598 @@
+import ipaddress
+import json
+import re
+import socket
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
+
+import requests
+
+
+SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "x-auth-token",
+}
+
+HOP_BY_HOP_HEADER_NAMES = {
+    "connection",
+    "content-length",
+    "expect",
+    "host",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+API_RESPONSE_CONTENT_TYPES = frozenset(
+    {
+        "application/json",
+        "application/x-ndjson",
+        "application/xml",
+        "text/csv",
+        "text/markdown",
+        "text/plain",
+        "text/xml",
+    }
+)
+
+DOCUMENT_RESPONSE_CONTENT_TYPES = frozenset(
+    {
+        "application/msword",
+        "application/octet-stream",
+        "application/pdf",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/csv",
+        "text/markdown",
+        "text/plain",
+    }
+)
+
+MAX_DB_FETCH_BATCH_SIZE = 1000
+
+
+class EgressGuardError(Exception):
+    """Outbound guard failure with a sanitized reason code."""
+
+    def __init__(self, reason_code: str, message: str = "Outbound target denied."):
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.safe_message = message
+
+
+@dataclass(frozen=True)
+class EgressGuardPolicy:
+    allowed_schemes: frozenset[str] = frozenset({"http", "https"})
+    allowed_methods: frozenset[str] = frozenset({"GET", "POST"})
+    allowed_ports: frozenset[int] | None = frozenset({80, 443})
+    deny_private_networks: bool = True
+    deny_url_credentials: bool = True
+    deny_https_downgrade: bool = True
+    max_redirects: int = 5
+    timeout_seconds: float = 30.0
+    max_header_count: int = 50
+    max_header_name_bytes: int = 128
+    max_header_value_bytes: int = 8192
+    max_header_total_bytes: int = 16 * 1024
+    max_request_bytes: int = 1024 * 1024
+    max_response_bytes: int = 10 * 1024 * 1024
+    allowed_content_types: frozenset[str] | None = None
+    force_identity_encoding: bool = True
+    allow_compressed_response: bool = False
+    validate_peer_ip: bool = True
+
+
+@dataclass(frozen=True)
+class SafeHTTPResponse:
+    status_code: int
+    headers: dict[str, str]
+    content: bytes
+    final_url: str
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8", errors="replace")
+
+    def json(self) -> Any:
+        return json.loads(self.text)
+
+
+class OutboundEgressGuard:
+    """Knowledge/RAG server-side outbound access를 검증하는 중앙 guard."""
+
+    def __init__(self, policy: EgressGuardPolicy | None = None) -> None:
+        self.policy = policy or EgressGuardPolicy()
+
+    def validate_url(self, url: str) -> str:
+        parts = urlsplit(str(url or "").strip())
+        scheme = parts.scheme.lower()
+        if not scheme or scheme not in self.policy.allowed_schemes:
+            raise EgressGuardError("egress.unsupported_scheme")
+        if not parts.hostname:
+            raise EgressGuardError("egress.invalid_url")
+        if self.policy.deny_url_credentials and (parts.username or parts.password):
+            raise EgressGuardError("egress.url_credentials_not_allowed")
+
+        host = self._canonical_host(parts.hostname)
+        try:
+            port = parts.port
+        except ValueError as exc:
+            raise EgressGuardError("egress.invalid_port") from exc
+        if port is not None and (port < 1 or port > 65535):
+            raise EgressGuardError("egress.invalid_port")
+        self._validate_allowed_port(scheme, port)
+
+        self._validate_resolved_addresses(host)
+        netloc = host
+        if port is not None:
+            netloc = f"{host}:{port}"
+        return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
+
+    def validate_redirect(self, from_url: str, to_url: str) -> str:
+        from_scheme = urlsplit(from_url).scheme.lower()
+        to_scheme = urlsplit(to_url).scheme.lower()
+        if (
+            self.policy.deny_https_downgrade
+            and from_scheme == "https"
+            and to_scheme == "http"
+        ):
+            raise EgressGuardError("egress.https_downgrade")
+        return self.validate_url(to_url)
+
+    def validate_host_port(
+        self,
+        host: str,
+        port: int,
+        *,
+        allowed_ports: frozenset[int] | None = None,
+    ) -> tuple[str, int, str]:
+        canonical_host = self._canonical_host(str(host or ""))
+        if not canonical_host:
+            raise EgressGuardError("egress.invalid_host")
+        try:
+            safe_port = int(port)
+        except (TypeError, ValueError) as exc:
+            raise EgressGuardError("egress.invalid_port") from exc
+        if safe_port < 1 or safe_port > 65535:
+            raise EgressGuardError("egress.invalid_port")
+        port_policy = self.policy.allowed_ports if allowed_ports is None else allowed_ports
+        if port_policy is not None and safe_port not in port_policy:
+            raise EgressGuardError("egress.disallowed_port")
+        addresses = self._validate_resolved_addresses(
+            canonical_host,
+            port=safe_port,
+        )
+        return canonical_host, safe_port, addresses[0]
+
+    def validate_method(self, method: str) -> str:
+        safe_method = str(method or "GET").upper()
+        if safe_method not in self.policy.allowed_methods:
+            raise EgressGuardError("egress.unsupported_method")
+        return safe_method
+
+    def validate_request_body(self, *, json_body: Any | None, data: Any | None) -> None:
+        size = 0
+        if json_body is not None:
+            try:
+                body = json.dumps(
+                    json_body,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError) as exc:
+                raise EgressGuardError("egress.unsupported_request_body") from exc
+            size += len(body.encode("utf-8"))
+        if data is not None:
+            if isinstance(data, bytes):
+                size += len(data)
+            elif isinstance(data, str):
+                size += len(data.encode("utf-8"))
+            else:
+                raise EgressGuardError("egress.unsupported_request_body")
+        if size > self.policy.max_request_bytes:
+            raise EgressGuardError("egress.request_too_large")
+
+    def sanitize_request_headers(
+        self,
+        headers: Mapping[str, Any] | None,
+        *,
+        strip_sensitive: bool = False,
+    ) -> dict[str, str]:
+        safe_headers: dict[str, str] = {}
+        total_bytes = 0
+        for key, value in (headers or {}).items():
+            if len(safe_headers) >= self.policy.max_header_count:
+                raise EgressGuardError("egress.headers_too_large")
+            name = str(key).strip()
+            if not name:
+                continue
+            if ":" in name or "\r" in name or "\n" in name:
+                raise EgressGuardError("egress.invalid_header")
+            value_text = str(value)
+            if "\r" in value_text or "\n" in value_text:
+                raise EgressGuardError("egress.invalid_header")
+            name_bytes = len(name.encode("utf-8"))
+            value_bytes = len(value_text.encode("utf-8"))
+            if name_bytes > self.policy.max_header_name_bytes:
+                raise EgressGuardError("egress.headers_too_large")
+            if value_bytes > self.policy.max_header_value_bytes:
+                raise EgressGuardError("egress.headers_too_large")
+            total_bytes += name_bytes + value_bytes
+            if total_bytes > self.policy.max_header_total_bytes:
+                raise EgressGuardError("egress.headers_too_large")
+            lower_name = name.lower()
+            if lower_name in HOP_BY_HOP_HEADER_NAMES:
+                continue
+            if strip_sensitive and lower_name in SENSITIVE_HEADER_NAMES:
+                continue
+            safe_headers[name] = value_text
+        return safe_headers
+
+    def sanitize_response_headers(self, headers: Mapping[str, Any]) -> dict[str, str]:
+        safe_headers: dict[str, str] = {}
+        for key, value in headers.items():
+            lower_name = str(key).lower()
+            if lower_name in SENSITIVE_HEADER_NAMES or lower_name == "set-cookie":
+                continue
+            safe_headers[str(key)] = str(value)
+        return safe_headers
+
+    def validate_response_headers(self, headers: Mapping[str, Any]) -> None:
+        content_encoding = str(headers.get("content-encoding", "")).strip().lower()
+        if content_encoding and content_encoding != "identity":
+            if not self.policy.allow_compressed_response:
+                raise EgressGuardError("egress.compressed_response_not_allowed")
+
+        content_length = str(headers.get("content-length", "")).strip()
+        if content_length:
+            try:
+                if int(content_length) > self.policy.max_response_bytes:
+                    raise EgressGuardError("egress.response_too_large")
+            except ValueError as exc:
+                raise EgressGuardError("egress.invalid_content_length") from exc
+
+        if self.policy.allowed_content_types is None:
+            return
+        content_type = str(headers.get("content-type", "")).split(";")[0].lower()
+        if not _content_type_allowed(content_type, self.policy.allowed_content_types):
+            raise EgressGuardError("egress.unsupported_content_type")
+
+    def validate_response_peer(self, response: requests.Response) -> None:
+        if not self.policy.validate_peer_ip:
+            return
+        peer_ip = _extract_response_peer_ip(response)
+        if not peer_ip:
+            raise EgressGuardError("egress.peer_unverified")
+        try:
+            ip = ipaddress.ip_address(peer_ip)
+        except ValueError as exc:
+            raise EgressGuardError("egress.invalid_peer") from exc
+        if self._is_denied_ip(ip):
+            raise EgressGuardError("egress.private_target")
+
+    def _canonical_host(self, host: str) -> str:
+        host = host.strip().rstrip(".").lower()
+        try:
+            return host.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise EgressGuardError("egress.invalid_host") from exc
+
+    def _validate_resolved_addresses(
+        self,
+        host: str,
+        *,
+        port: int | None = None,
+    ) -> tuple[str, ...]:
+        try:
+            addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise EgressGuardError("egress.dns_resolution_failed") from exc
+        if not addresses:
+            raise EgressGuardError("egress.dns_resolution_failed")
+
+        safe_addresses: list[str] = []
+        for address in addresses:
+            ip_text = address[4][0]
+            ip = ipaddress.ip_address(ip_text)
+            if self._is_denied_ip(ip):
+                raise EgressGuardError("egress.private_target")
+            safe_addresses.append(ip_text)
+        return tuple(safe_addresses)
+
+    def _is_denied_ip(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        if not self.policy.deny_private_networks:
+            return False
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True
+        denied_ranges = [
+            ipaddress.ip_network("100.64.0.0/10"),
+            ipaddress.ip_network("169.254.169.254/32"),
+            ipaddress.ip_network("fd00::/8"),
+        ]
+        return any(ip in network for network in denied_ranges)
+
+    def _validate_allowed_port(self, scheme: str, port: int | None) -> None:
+        if self.policy.allowed_ports is None:
+            return
+        effective_port = port
+        if effective_port is None:
+            effective_port = 443 if scheme == "https" else 80
+        if effective_port not in self.policy.allowed_ports:
+            raise EgressGuardError("egress.disallowed_port")
+
+
+def safe_http_request(
+    method: str,
+    url: str,
+    *,
+    headers: Mapping[str, Any] | None = None,
+    json_body: Any | None = None,
+    data: Any | None = None,
+    policy: EgressGuardPolicy | None = None,
+) -> SafeHTTPResponse:
+    guard = OutboundEgressGuard(policy)
+    current_url = guard.validate_url(url)
+    current_headers = guard.sanitize_request_headers(headers)
+    method = guard.validate_method(method)
+    if method == "GET":
+        json_body = None
+        data = None
+    guard.validate_request_body(json_body=json_body, data=data)
+    if guard.policy.force_identity_encoding:
+        current_headers["Accept-Encoding"] = "identity"
+
+    with requests.Session() as session:
+        # 환경 변수 기반 proxy는 connector별 승인 proxy 정책을 우회할 수 있으므로 기본 차단한다.
+        session.trust_env = False
+        for redirect_index in range(guard.policy.max_redirects + 1):
+            try:
+                response = session.request(
+                    method=method,
+                    url=current_url,
+                    headers=current_headers,
+                    json=json_body if method != "GET" else None,
+                    data=data,
+                    timeout=guard.policy.timeout_seconds,
+                    stream=True,
+                    allow_redirects=False,
+                    verify=True,
+                )
+            except requests.Timeout as exc:
+                raise EgressGuardError("egress.timeout") from exc
+            except requests.RequestException as exc:
+                raise EgressGuardError("egress.connection_failed") from exc
+
+            if response.is_redirect:
+                if redirect_index >= guard.policy.max_redirects:
+                    response.close()
+                    raise EgressGuardError("egress.too_many_redirects")
+                location = response.headers.get("location")
+                response.close()
+                if not location:
+                    raise EgressGuardError("egress.invalid_redirect")
+                next_url = requests.compat.urljoin(current_url, location)
+                next_url = guard.validate_redirect(current_url, next_url)
+                if _origin(current_url) != _origin(next_url):
+                    current_headers = guard.sanitize_request_headers(
+                        current_headers,
+                        strip_sensitive=True,
+                    )
+                current_url = next_url
+                continue
+
+            try:
+                guard.validate_response_headers(response.headers)
+                guard.validate_response_peer(response)
+                content = _read_capped_response(
+                    response,
+                    guard.policy.max_response_bytes,
+                )
+            except Exception:
+                response.close()
+                raise
+            return SafeHTTPResponse(
+                status_code=response.status_code,
+                headers=guard.sanitize_response_headers(response.headers),
+                content=content,
+                final_url=current_url,
+            )
+
+    raise EgressGuardError("egress.connection_failed")
+
+
+def download_url_to_temp_file(
+    url: str,
+    *,
+    suffix: str = ".tmp",
+    policy: EgressGuardPolicy | None = None,
+) -> str:
+    response = safe_http_request("GET", url, policy=policy)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(response.content)
+        return tmp.name
+
+
+def ensure_db_probe_allowed(query: str) -> None:
+    # Knowledge DB source는 장기적으로 query builder/allowlist로 좁혀야 한다.
+    # 그 전까지는 free-form SELECT가 side effect, 파일 접근, 지연 함수를 호출하지 못하게 막는다.
+    normalized = " ".join(str(query or "").strip().split()).lower()
+    if not normalized.startswith("select "):
+        raise EgressGuardError("adapter.sql_not_allowed")
+    blocked_tokens = [";", "--", "/*", "*/"]
+    if any(token in normalized for token in blocked_tokens):
+        raise EgressGuardError("adapter.sql_not_allowed")
+
+    blocked_keywords = [
+        "alter",
+        "analyze",
+        "call",
+        "copy",
+        "create",
+        "delete",
+        "do",
+        "drop",
+        "execute",
+        "grant",
+        "insert",
+        "listen",
+        "notify",
+        "reset",
+        "revoke",
+        "set",
+        "truncate",
+        "update",
+        "vacuum",
+    ]
+    keyword_pattern = r"\b(" + "|".join(blocked_keywords) + r")\b"
+    if re.search(keyword_pattern, normalized):
+        raise EgressGuardError("adapter.sql_not_allowed")
+
+    blocked_functions = [
+        "database_to_xml",
+        "dblink",
+        "file_fdw",
+        "generate_series",
+        "lo_export",
+        "lo_import",
+        "pg_advisory_lock",
+        "pg_advisory_xact_lock",
+        "pg_ls_dir",
+        "pg_notify",
+        "pg_read_binary_file",
+        "pg_read_file",
+        "pg_sleep",
+        "pg_stat_file",
+        "postgres_fdw",
+        "query_to_xml",
+        "schema_to_xml",
+        "set_config",
+        "table_to_xml",
+    ]
+    if any(re.search(rf"\b{function}\s*\(", normalized) for function in blocked_functions):
+        raise EgressGuardError("adapter.sql_not_allowed")
+
+
+def safe_db_fetch_batch_size(batch_size: int | None) -> int:
+    try:
+        parsed = MAX_DB_FETCH_BATCH_SIZE if batch_size is None else int(batch_size)
+    except (TypeError, ValueError):
+        parsed = MAX_DB_FETCH_BATCH_SIZE
+    return max(1, min(parsed, MAX_DB_FETCH_BATCH_SIZE))
+
+
+def ensure_network_target_allowed(
+    host: str,
+    port: int,
+    *,
+    allowed_ports: frozenset[int] | None,
+) -> tuple[str, int, str]:
+    guard = OutboundEgressGuard(
+        EgressGuardPolicy(
+            allowed_ports=allowed_ports,
+            allowed_methods=frozenset({"GET"}),
+            validate_peer_ip=False,
+        )
+    )
+    return guard.validate_host_port(host, port, allowed_ports=allowed_ports)
+
+
+def ensure_ssh_tunnel_allowed(enabled: bool, *, allow_tunnel: bool = False) -> None:
+    if enabled and not allow_tunnel:
+        raise EgressGuardError("adapter.ssh_tunnel_not_allowed")
+
+
+def ensure_ssh_command_allowed(command: str | None = None) -> None:
+    if command:
+        raise EgressGuardError("adapter.ssh_command_not_allowed")
+
+
+def ensure_object_listing_allowed(
+    *,
+    bucket: str,
+    prefix: str | None,
+    recursive: bool,
+    max_keys: int,
+    max_allowed_keys: int = 1000,
+) -> None:
+    if not bucket:
+        raise EgressGuardError("adapter.object_listing_too_broad")
+    normalized_prefix = str(prefix or "").strip("/")
+    if recursive and not normalized_prefix:
+        raise EgressGuardError("adapter.object_listing_too_broad")
+    if max_keys > max_allowed_keys:
+        raise EgressGuardError("adapter.object_listing_too_broad")
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    port = parts.port
+    if port is None and parts.scheme.lower() in {"http", "https"}:
+        port = 443 if parts.scheme.lower() == "https" else 80
+    return (parts.scheme.lower(), parts.hostname or "", port)
+
+
+def _read_capped_response(response: requests.Response, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in response.iter_content(chunk_size=8192):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise EgressGuardError("egress.response_too_large")
+            chunks.append(chunk)
+    finally:
+        response.close()
+    return b"".join(chunks)
+
+
+def _content_type_allowed(
+    content_type: str,
+    allowed_content_types: frozenset[str],
+) -> bool:
+    if content_type in allowed_content_types:
+        return True
+    if content_type.endswith("+json") and "application/json" in allowed_content_types:
+        return True
+    if content_type.endswith("+xml") and "application/xml" in allowed_content_types:
+        return True
+    return False
+
+
+def _extract_response_peer_ip(response: requests.Response) -> str | None:
+    raw = getattr(response, "raw", None)
+    connection = getattr(raw, "_connection", None)
+    sock = getattr(connection, "sock", None)
+    if sock is None:
+        original_response = getattr(raw, "_original_response", None)
+        fp = getattr(original_response, "fp", None)
+        raw_fp = getattr(fp, "raw", None)
+        sock = getattr(raw_fp, "_sock", None)
+    if sock is None or not hasattr(sock, "getpeername"):
+        return None
+    peer = sock.getpeername()
+    if not peer:
+        return None
+    return str(peer[0])
+
+
+def safe_quote_filename(filename: str) -> str:
+    return quote(filename)

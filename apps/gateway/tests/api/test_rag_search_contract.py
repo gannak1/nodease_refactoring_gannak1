@@ -87,11 +87,20 @@ def test_authorize_rag_use_requires_use_permission(monkeypatch):
     )
     audit_calls = []
     monkeypatch.setattr(rag, "has_organization_scope_access", lambda *args: True)
-    monkeypatch.setattr(
-        rag,
-        "get_effective_knowledge_base_auth_state",
-        lambda *args, **kwargs: "viewer",
-    )
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=False,
+                external_reason_code="permission.denied",
+                effective_auth_state="viewer",
+                reason_code="kb_use_denied",
+            )
+
+    monkeypatch.setattr(rag, "KnowledgePermissionHelper", FakeKnowledgePermissionHelper)
     monkeypatch.setattr(
         rag,
         "record_resource_permission_denied",
@@ -121,9 +130,55 @@ def test_authorize_rag_use_requires_use_permission(monkeypatch):
             "metadata": {
                 "request_id": "test-request-id",
                 "path": "/",
+                "reason_code": "kb_use_denied",
             },
         }
     ]
+
+
+def test_authorize_rag_use_hides_source_acl_denial(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    kb = KnowledgeBase(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="Source managed KB",
+        user_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(rag, "has_organization_scope_access", lambda *args: True)
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            return SimpleNamespace(
+                allowed=False,
+                external_reason_code="resource.hidden",
+                effective_auth_state="operator",
+                reason_code="source_authorization.denied",
+            )
+
+    monkeypatch.setattr(rag, "KnowledgePermissionHelper", FakeKnowledgePermissionHelper)
+    monkeypatch.setattr(
+        rag,
+        "record_resource_permission_denied",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("hidden source ACL denial must not emit permission audit")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        rag._authorize_rag_use(
+            _request(),
+            FakeDb(kb),
+            SimpleNamespace(id=user_id),
+            organization_id,
+            kb.id,
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail["error"]["code"] == "resource.hidden"
 
 
 def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
@@ -189,6 +244,44 @@ def test_search_test_chat_passes_top_k_and_organization_id(monkeypatch):
 
     assert captured["top_k"] == 7
     assert captured["init"]["organization_id"] == organization_id
+
+
+def test_get_or_create_knowledge_base_uses_active_organization(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    added = {}
+
+    class FakeDb:
+        def add(self, value):
+            added["kb"] = value
+
+        def commit(self):
+            added["committed"] = True
+
+        def refresh(self, value):
+            value.id = uuid.uuid4()
+
+    monkeypatch.setattr(rag, "has_organization_scope_access", lambda *args: True)
+
+    kb_id, model = rag._get_or_create_knowledge_base(
+        _request(),
+        FakeDb(),
+        SimpleNamespace(id=user_id),
+        organization_id,
+        None,
+        "KB",
+        "desc",
+        "text-embedding-3-small",
+        5,
+        0.7,
+        None,
+    )
+
+    assert kb_id == added["kb"].id
+    assert model == "text-embedding-3-small"
+    assert added["kb"].organization_id == organization_id
+    assert added["kb"].user_id == user_id
+    assert added["committed"] is True
 
 
 def _agent_answer_payload() -> RAGAgentAnswerRequest:

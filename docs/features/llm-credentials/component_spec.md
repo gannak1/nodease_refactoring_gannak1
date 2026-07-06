@@ -1,8 +1,6 @@
 # LLM Credentials Component Spec
 
 Status: Draft
-Verified Against: current implementation baseline plus Knowledge target model ADR-0014
-
 ## 화면
 
 - Credential management/listing surface는 active organization의 credential 상태를 표시한다. 개인 사용자 credential 등록 화면을 제공하지 않는다.

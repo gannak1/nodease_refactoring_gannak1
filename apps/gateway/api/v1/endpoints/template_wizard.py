@@ -96,8 +96,8 @@ WIZARD_SYSTEM_PROMPT_TEMPLATE = """당신은 Jinja2 템플릿 최적화 전문�
 # === Provider별 효율적인 모델 매핑 ===
 PROVIDER_EFFICIENT_MODELS = {
     "openai": "gpt-4o-mini",
-    "google": "gemini-1.5-flash",
-    "anthropic": "claude-3-haiku-20240307",
+    "google": "gemini-3.1-flash-lite",
+    "anthropic": "claude-haiku-4-5-20251001",
 }
 
 

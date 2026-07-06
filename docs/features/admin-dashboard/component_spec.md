@@ -1,7 +1,7 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: feature/mba-103 @ 11a35a0
+Verified Against: feature/mba-129 @ 4cceb58
 
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
@@ -60,6 +60,15 @@ Verified Against: feature/mba-103 @ 11a35a0
 - 확정 시 `POST /admin/permission-requests/{id}/approve|reject` 호출. 성공하면 toast(기존 sonner)로 알리고 목록을 갱신한다.
 - 데이터 원천: `GET /admin/permission-requests`.
 
+같은 탭 하단에 `보유 권한` 섹션을 둔다 (FR-014 회수 확장).
+
+- 테이블 컬럼: 보유자(이름/이메일), 부여자, 부여일. 행별 `회수` 버튼을 인라인으로 둔다.
+- organization owner/manager는 row 없이 허용되므로 이 목록에 나타나지 않는다. 섹션 설명에 이 사실을 안내하고, 빈 목록은 "부여된 App 생성 권한이 없습니다" empty state로 표시한다.
+- `회수` 클릭 → `ConfirmDialog`: 보유자와 권한 라벨(`app.create`의 사용자 친화 라벨)을 재표시하고 확정을 받는다. 되돌릴 수 없는 액션이므로 즉시 처리하지 않는다.
+- 확정 시 `DELETE /admin/app-creation-permissions/{permission_id}` 호출. 성공하면 toast로 알리고 보유 목록을 갱신한다. 회수된 사용자는 재신청할 수 있으므로 신청 목록도 함께 갱신한다.
+- `404` 응답(이미 회수됐거나 없는 row)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
+- 데이터 원천: `GET /admin/app-creation-permissions`.
+
 ### UsageTab (FR-012)
 
 - 기간 필터: 기본 이번 달(KST), `startAt`/`endAt` 지정 가능.
@@ -73,6 +82,7 @@ Verified Against: feature/mba-103 @ 11a35a0
 - 각 탭 공통: 로딩(스켈레톤 또는 스피너), 빈 목록(안내 문구 포함 empty state), 오류(재시도 버튼).
 - 검색 결과 없음은 오류가 아니라 빈 목록 상태다 (`{total: 0}`).
 - 권한 신청 처리 중: 해당 행 버튼 비활성화(중복 클릭 방지). 409 응답(이미 처리된 신청)은 "이미 처리된 신청입니다" toast 후 목록 갱신.
+- 권한 회수 처리 중: 확인 다이얼로그의 버튼을 비활성화한다(중복 클릭 방지, modal이 행 버튼 접근을 막는다). 404 응답(이미 회수된 권한)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
 - 요약 카드의 `budget` null 상태: "예산 미설정" 표시 (오류 아님).
 - (후순위) auditor 전용 사용자: 감사 로그 탭 단독 노출 상태. auditor 전용 노출 제어와 함께 복원한다.
 - 403 응답: 접근 권한 안내 문구 (프론트 노출 제어를 우회한 접근 대비).

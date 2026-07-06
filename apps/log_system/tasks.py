@@ -709,3 +709,45 @@ def rag_answer_retention_purge(self, data: Dict[str, Any]):
         raise self.retry(exc=e, countdown=2**self.request.retries)
     finally:
         session.close()
+
+
+@celery_app.task(name="log.knowledge_ingestion_outbox_process", bind=True, max_retries=3)
+def knowledge_ingestion_outbox_process(self, data: Dict[str, Any]):
+    """Knowledge ingestion outbox의 cleanup/recovery event를 idempotent하게 처리한다."""
+    from apps.shared.services.knowledge_ingestion_outbox import (
+        DEFAULT_OUTBOX_PROCESS_LIMIT,
+        KnowledgeIngestionOutboxService,
+    )
+    from apps.shared.services.knowledge_ingestion_outbox_processor import (
+        KnowledgeIngestionOutboxProcessor,
+    )
+
+    session = SessionLocal()
+    owner_token = str(uuid.uuid4())
+    try:
+        processor = KnowledgeIngestionOutboxProcessor(session)
+        result = processor.process_due_events(
+            owner_token=owner_token,
+            limit=KnowledgeIngestionOutboxService.validate_limit(
+                data.get("limit") or DEFAULT_OUTBOX_PROCESS_LIMIT
+            ),
+        )
+        session.commit()
+        return {
+            "status": "success",
+            "processed_count": result.processed_count,
+            "recovered_count": result.recovered_count,
+        }
+    except ValueError:
+        session.rollback()
+        logger.warning("[Log-System] knowledge_ingestion_outbox invalid request")
+        return {"status": "failed", "error": "invalid_knowledge_outbox_request"}
+    except Exception as e:
+        session.rollback()
+        logger.error(
+            "[Log-System] knowledge_ingestion_outbox_process 실패: error_type=%s",
+            type(e).__name__,
+        )
+        raise self.retry(exc=e, countdown=2**self.request.retries)
+    finally:
+        session.close()

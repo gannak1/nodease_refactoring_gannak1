@@ -1,7 +1,6 @@
 # Organization Test Cases
 
 Status: Draft
-Verified Against: feature/mba-119 @ 7aefa84
 
 ## Minimum Failure Rule
 
@@ -20,7 +19,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 
 현재 backend coverage는 `apps/gateway/tests/api/test_organizations_api.py`, `apps/gateway/tests/api/test_teams_api.py`, `apps/gateway/tests/api/test_permissions_api.py`, `apps/gateway/tests/services/test_organization_member_service.py`, `apps/gateway/tests/services/test_team_service_permissions.py`, `apps/shared/tests/services/test_permissions.py`, `apps/shared/tests/services/test_permission_enforcement.py`, `tests/db/test_organization_user_schema.py`, `tests/db/test_team_permission_constraints.py`, `tests/test_permission_schema.py`, `apps/shared/tests/test_organization_membership_schema.py`에 분산되어 있다.
 
-현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트가 있으나, AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다.
+현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트와 권한 신청 제출 wrapper(`organizationApi.test.ts`), Sidebar notification overlay 테스트를 포함한다. AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다. App 생성 권한 신청 UI(ORG-TC-E009~E013)는 `apps/client/app/features/app/components/create-app-modal/index.test.tsx`가 담당한다.
 
 ## Unit Tests
 
@@ -34,6 +33,8 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-U006 | organization auth state는 `member` 또는 `manager`만 허용해야 한다. | `owner`, `admin`, `viewer`가 organization auth state로 통과한다. | 테스트 실패. |
 | ORG-TC-U007 | member invitation은 자기 자신 초대와 잘못된 재초대 상태 전이를 거부해야 한다. | self invite가 성공하거나 suspended member가 invitation으로 invited가 된다. | `400` 또는 `409`. |
 | ORG-TC-U008 | removed member 재초대는 기존 membership을 invited로 되살려야 한다. | 새 duplicate membership을 만들거나 removed 상태가 유지된다. | 기존 row의 state가 invited로 변경된다. |
+| ORG-TC-U008a | invited member의 초대 거절은 membership을 removed로 바꾸고 audit을 기록해야 한다. | 거절 후 invited가 유지되거나 `organization.member.decline` audit이 없다. | state `removed`, audit 기록. |
+| ORG-TC-U008b | notification service는 invited membership만 organization invitation 알림으로 파생해야 한다. | active/suspended/removed membership이 알림으로 표시된다. | invited organization만 `organization.invitation` 반환. |
 | ORG-TC-U009 | invited/removed member는 PATCH로 active/suspended 전환할 수 없어야 한다. | invited 또는 removed member update가 성공한다. | `409`. |
 | ORG-TC-U010 | member update는 빈 update와 no-op audit을 구분해야 한다. | 빈 body가 성공하거나 no-op PATCH가 audit row를 만든다. | 빈 body는 `400`, no-op은 audit 없음. |
 | ORG-TC-U011 | 자기 자신 또는 마지막 active manager의 상태/권한 변경은 거부해야 한다. | self update 또는 마지막 manager 강등/제거가 성공한다. | `400` 또는 `409`. |
@@ -57,6 +58,7 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-A007 | member list는 invalid state filter를 거부해야 한다. | `?state=unknown`. | `400`, `Invalid membership state.` |
 | ORG-TC-A008 | member invite/update request는 unknown body field를 거부해야 한다. | body에 정의되지 않은 field를 추가한다. | `422` validation envelope. |
 | ORG-TC-A009 | `/members/me/accept`는 literal `me` route로 처리되어야 한다. | `/members/me/accept`가 `{user_id}` route로 해석된다. | 테스트 실패. |
+| ORG-TC-A009a | `/members/me/decline`은 literal `me` route로 처리되어야 한다. | `/members/me/decline`이 `{user_id}` route로 해석된다. | 테스트 실패. |
 | ORG-TC-A010 | member removal response는 cleanup summary를 포함해야 한다. | 성공 응답에서 `removed_team_memberships` 또는 `revoked_user_permissions`가 빠진다. | 테스트 실패. |
 | ORG-TC-A011 | team list는 invalid limit을 거부해야 한다. | `limit=0`, `limit=101`, 또는 non-integer. | `422`, `validation.failed`. |
 | ORG-TC-A012 | team create/update는 duplicate name과 blank name을 거부해야 한다. | duplicate create 또는 blank name patch가 성공한다. | `409` 또는 `400`. |
@@ -65,6 +67,8 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-A015 | permission PUT은 organization manager 또는 target resource manager만 허용해야 한다. | manage 권한 없는 active member가 permission을 저장한다. | `403`, `permission.denied`. |
 | ORG-TC-A016 | permission PUT은 canonical auth_state만 허용해야 한다. | `{ "auth_state": "admin" }` 또는 audit-only value가 통과한다. | `422`, `validation.failed`. |
 | ORG-TC-A017 | permission DELETE는 missing row를 숨기고, existing direct row는 target user active 여부와 무관하게 회수해야 한다. | missing row가 success거나 deactivated/removed user의 existing direct row 삭제가 실패한다. | `404` 또는 permission row 삭제. |
+| ORG-TC-A018 | 권한 신청 제출 wrapper는 `app.create`와 신청 사유를 보내야 한다. | `requested_permission`이 빠지거나 `reason`이 변형되어 전송된다. | `POST /permission-requests` payload가 `{ requested_permission: "app.create", reason }`이다. |
+| ORG-TC-A019 | `GET /notifications`는 현재 user의 초대 알림 목록을 반환해야 한다. | 다른 user 또는 non-invited membership이 포함된다. | `{ items: [...] }` 안에 현재 user invited만 포함. |
 
 ## E2E Tests
 
@@ -74,10 +78,22 @@ Verified Against: feature/mba-119 @ 7aefa84
 | ORG-TC-E002 | active organization 선택 후 API 요청은 organization header를 보내야 한다. | 선택 후 `/organizations/current` 요청에 header가 없다. | 테스트 실패. |
 | ORG-TC-E003 | Sidebar와 AdminConsolePage는 non-manager에게 관리 표면을 숨겨야 한다. | `is_manager=false`인데 관리 nav 또는 관리 테이블이 보인다. | 관리 nav 숨김, `관리 권한 없음` 표시. |
 | ORG-TC-E004 | member invite/update/remove UI는 필요한 payload와 confirm gate를 지켜야 한다. | invite payload가 비었거나 privilege/destructive action이 confirm 없이 호출된다. | API 미호출 또는 confirm 후 호출. |
-| ORG-TC-E005 | self 또는 마지막 manager action은 강등/제거를 막아야 한다. | 자기 자신 또는 마지막 manager row에서 강등/제거 button이 활성화된다. | disabled button. |
+| ORG-TC-E005 | self 또는 마지막 manager action은 정지/강등/제거를 막아야 한다. | 자기 자신 row의 `정지` button 또는 자기 자신/마지막 manager row의 강등/제거 button이 활성화된다. | disabled button이며 클릭해도 member update/remove API를 호출하지 않는다. |
 | ORG-TC-E006 | inactive team detail은 member add control을 숨겨야 한다. | inactive team에서 `추가` button이 활성화된다. | `비활성 팀에는 멤버를 추가할 수 없습니다.` 표시. |
 | ORG-TC-E007 | permission tab은 resource와 active grantee 없이는 grant를 막아야 한다. | workflow/credential id 없거나 inactive team/member로 PUT 요청이 나간다. | save disabled 또는 후보 제외. |
 | ORG-TC-E008 | active organization 변경 event 후 Sidebar는 organization name/manager flag를 새로 조회해야 한다. | event dispatch 후 이전 organization 이름이 유지된다. | `/organizations/current` 재호출. |
+| ORG-TC-E009 | App 생성 `403` 차단은 일반 실패 토스트 대신 권한 신청 UI로 전환해야 한다. | `POST /apps` `403`에서 `앱 생성에 실패했습니다.` 토스트가 뜨거나 권한 신청 폼이 보이지 않는다. | 권한 신청 폼 표시, 실패 토스트 없음. |
+| ORG-TC-E010 | 권한 신청 제출은 `app.create` 고정과 blank 아닌 신청 사유를 보내야 한다. | blank 사유로 API가 호출되거나 `requested_permission`이 `app.create`가 아니다. | blank 사유는 미호출 + 안내, 제출 body `{ requested_permission: 'app.create', reason }`. |
+| ORG-TC-E011 | 권한 신청 `201` 성공은 신청 완료 안내를 표시해야 한다. | 성공 후 완료 안내 없이 form이 유지된다. | 신청 완료 안내 표시. |
+| ORG-TC-E012 | 권한 신청 `409`는 detail에 따라 이미 권한 보유와 pending 중복 안내를 구분해야 한다. | 두 `409` detail이 같은 일반 오류 메시지로 표시된다. | `App creation permission already granted`는 보유 안내, `Pending permission request already exists`는 대기 안내. |
+| ORG-TC-E013 | `403`이 아닌 App 생성 실패는 기존 실패 처리를 유지해야 한다. | duplicate name `400` 또는 일반 오류에서 권한 신청 UI로 전환된다. | 기존 실패 토스트 유지, 권한 신청 폼 없음. |
+| ORG-TC-E014 | Sidebar 사용자 프로필 드롭다운은 알림 overlay를 열 수 있어야 한다. | `알림` item이 없거나 클릭해도 overlay가 열리지 않는다. | notification overlay 표시. |
+| ORG-TC-E015 | 초대 알림 overlay는 organization 초대 수락/거절을 처리해야 한다. | `수락`/`거절` 클릭 시 해당 API가 호출되지 않거나 목록을 갱신하지 않는다. | accept/decline 호출 후 `GET /notifications` 재조회. |
+| ORG-TC-E016 | `notifications.changed` SSE event는 알림 목록 재조회를 트리거해야 한다. | event 수신 후 기존 알림 목록이 유지된다. | `GET /notifications` 재호출. |
+| ORG-TC-E017 | notification SSE 응답은 no-buffer header를 내려야 한다. | `X-Accel-Buffering: no` 또는 `Cache-Control: no-transform`이 없다. | `text/event-stream`과 no-buffer header 반환. |
+| ORG-TC-E018 | Sidebar organization switcher는 현재 organization과 소속 구분을 표시해야 한다. | 현재 organization 이름 또는 `내 조직`/`멤버 조직` badge가 없다. | 현재 organization 이름과 구분 badge 표시. |
+| ORG-TC-E019 | Sidebar organization switcher는 active organization 목록을 dropdown으로 전환할 수 있어야 한다. | organization이 2개 이상인데 dropdown이 열리지 않거나 선택 시 active organization이 저장되지 않는다. | dropdown 표시, 선택 item 저장, `/dashboard` 이동. |
+| ORG-TC-E020 | Dashboard home은 active organization 변경 event를 받으면 데이터를 재조회해야 한다. | organization 전환 후 dashboard home이 이전 organization 데이터를 유지한다. | `nodease-active-organization-changed` 수신 후 dashboard home 재조회. |
 
 ## Permission Tests
 
