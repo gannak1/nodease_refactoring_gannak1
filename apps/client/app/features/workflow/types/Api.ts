@@ -250,12 +250,34 @@ export interface CostOptimizerCandidateSummary {
   fallback_model_id?: string | null;
   task_type?: string | null;
   total_cost?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
   total_tokens?: number | null;
   latency_ms?: number | null;
+  output_available?: boolean;
+  output?: unknown;
+  output_preview?: string | null;
   schema_status?: string | null;
   downstream_state?: string | null;
   is_applied?: boolean;
   created_at?: string | null;
+}
+
+export interface CostOptimizerExperimentBaselineSummary {
+  baseline_id?: string | null;
+  workflow_run_id?: string | null;
+  model?: string | null;
+  cost?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  latency_ms?: number | null;
+  output_available?: boolean;
+  output?: unknown;
+  output_preview?: string | null;
+  output_format?: unknown;
+  max_tokens?: number | null;
+  temperature?: number | null;
 }
 
 export interface CostOptimizerExperimentSummary {
@@ -268,6 +290,7 @@ export interface CostOptimizerExperimentSummary {
   status?: string | null;
   created_by?: string | null;
   created_at?: string | null;
+  baseline_summary?: CostOptimizerExperimentBaselineSummary;
   usage_summary?: CostOptimizerUsageSummary;
   candidates: CostOptimizerCandidateSummary[];
 }

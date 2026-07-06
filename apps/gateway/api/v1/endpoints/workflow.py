@@ -1591,6 +1591,7 @@ def _create_cost_optimizer_comparison(
     current_user: User,
 ) -> tuple[CostOptimizerExperiment, CostOptimizerCandidate]:
     candidate_settings = _safe_cost_optimizer_candidate_settings(candidate)
+    baseline_usage_summary = _cost_optimizer_baseline_usage_summary(baseline)
     created_at = datetime.now(timezone.utc)
     retention_expires_at = CostOptimizerRetentionService.expires_at(
         db,
@@ -1609,7 +1610,7 @@ def _create_cost_optimizer_comparison(
         ),
         baseline_workflow_run_id=_uuid_or_none(baseline.get("workflow_run_id")),
         baseline_node_options=baseline.get("node_options") or {},
-        baseline_usage_summary=baseline.get("usage") or {},
+        baseline_usage_summary=baseline_usage_summary,
         baseline_trace_summary=baseline.get("trace") or {},
         baseline_downstream_snapshot=baseline.get("downstream_snapshot") or {},
         usage_summary={},
@@ -1827,8 +1828,118 @@ def _cost_optimizer_float(value: Any) -> float | None:
         return None
 
 
-def _cost_optimizer_candidate_summary(row: Any) -> dict[str, Any]:
+def _cost_optimizer_summary_value(
+    summary: dict[str, Any],
+    *keys: str,
+) -> Any:
+    for key in keys:
+        value = summary.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _cost_optimizer_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cost_optimizer_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _cost_optimizer_baseline_usage_summary(baseline: dict[str, Any]) -> dict[str, Any]:
+    usage_summary = dict(_cost_optimizer_dict(baseline.get("usage")))
+    for source_key, summary_key in (
+        ("model", "model"),
+        ("cost", "cost"),
+        ("total_tokens", "total_tokens"),
+        ("latency_ms", "latency_ms"),
+    ):
+        if (
+            usage_summary.get(summary_key) is None
+            and baseline.get(source_key) is not None
+        ):
+            usage_summary[summary_key] = baseline.get(source_key)
+    return usage_summary
+
+
+def _cost_optimizer_summary_missing_any(
+    summary: dict[str, Any],
+    key_groups: tuple[tuple[str, ...], ...],
+) -> bool:
+    return any(
+        _cost_optimizer_summary_value(summary, *keys) is None for keys in key_groups
+    )
+
+
+def _cost_optimizer_node_run_output_summary(node_run: WorkflowNodeRun) -> dict[str, Any]:
+    has_trace_output, trace_output_available, trace_output = _trace_payload_value(
+        node_run,
+        "output",
+    )
+    output_payload = trace_output if has_trace_output else node_run.outputs
+    output_available = (
+        trace_output_available if has_trace_output else node_run.outputs is not None
+    )
+    if not output_available:
+        return {"output_available": False}
+
     return {
+        "output_available": True,
+        "output": _redact_baseline_value(output_payload),
+        "output_preview": _preview_baseline_payload(output_payload),
+    }
+
+
+def _cost_optimizer_node_run_output_summary_from_source(
+    db: Session,
+    *,
+    node_run_id: Any = None,
+    workflow_run_id: Any = None,
+    node_id: str | None = None,
+) -> dict[str, Any]:
+    if node_run_id is None and (workflow_run_id is None or node_id is None):
+        return {}
+
+    query = db.query(WorkflowNodeRun)
+    if node_run_id is not None:
+        query = query.filter(WorkflowNodeRun.id == node_run_id)
+    else:
+        query = query.filter(
+            WorkflowNodeRun.workflow_run_id == workflow_run_id,
+            WorkflowNodeRun.node_id == node_id,
+        ).order_by(WorkflowNodeRun.started_at.desc())
+
+    if not hasattr(query, "first"):
+        return {}
+    node_run = query.first()
+    if node_run is None:
+        return {}
+    return _cost_optimizer_node_run_output_summary(node_run)
+
+
+def _cost_optimizer_candidate_summary(
+    db: Session,
+    row: Any,
+    node_id: str,
+) -> dict[str, Any]:
+    usage_summary = _cost_optimizer_dict(getattr(row, "usage_summary", None))
+    prompt_tokens = _cost_optimizer_usage_number(
+        usage_summary,
+        "prompt_tokens",
+        "promptTokens",
+    )
+    completion_tokens = _cost_optimizer_usage_number(
+        usage_summary,
+        "completion_tokens",
+        "completionTokens",
+    )
+    summary = {
         "candidate_id": str(row.id),
         "name": getattr(row, "name", None),
         "status": getattr(row, "status", None),
@@ -1843,9 +1954,129 @@ def _cost_optimizer_candidate_summary(row: Any) -> dict[str, Any]:
         "is_applied": bool(getattr(row, "is_applied", False)),
         "created_at": _cost_optimizer_datetime(getattr(row, "created_at", None)),
     }
+    if prompt_tokens is not None:
+        summary["prompt_tokens"] = int(prompt_tokens)
+    if completion_tokens is not None:
+        summary["completion_tokens"] = int(completion_tokens)
+    output_summary = _cost_optimizer_node_run_output_summary_from_source(
+        db,
+        node_run_id=getattr(row, "candidate_node_run_id", None),
+        workflow_run_id=getattr(row, "candidate_workflow_run_id", None),
+        node_id=node_id,
+    )
+    if output_summary.get("output_available"):
+        summary.update(output_summary)
+    return summary
 
 
-def _cost_optimizer_experiment_summary(row: Any) -> dict[str, Any]:
+def _cost_optimizer_source_baseline_usage_summary(
+    db: Session,
+    row: Any,
+) -> dict[str, Any]:
+    baseline_node_run_id = getattr(row, "baseline_node_run_id", None)
+    if baseline_node_run_id is None:
+        return {}
+
+    node_run_query = db.query(WorkflowNodeRun).filter(
+        WorkflowNodeRun.id == baseline_node_run_id
+    )
+    if not hasattr(node_run_query, "first"):
+        return {}
+    node_run = node_run_query.first()
+    if node_run is None:
+        return {}
+
+    usage_query = (
+        db.query(LLMUsageLog)
+        .filter(
+            LLMUsageLog.workflow_run_id == node_run.workflow_run_id,
+            LLMUsageLog.node_id == node_run.node_id,
+            LLMUsageLog.cost_optimizer_candidate_id.is_(None),
+        )
+        .order_by(LLMUsageLog.created_at.desc())
+    )
+    if not hasattr(usage_query, "first"):
+        return {}
+    usage = usage_query.first()
+    if usage is None:
+        return {}
+
+    prompt_tokens = int(usage.prompt_tokens or 0)
+    completion_tokens = int(usage.completion_tokens or 0)
+    return {
+        "model": _usage_model_name(usage),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "cost": _decimal_to_float(usage.total_cost),
+        "latency_ms": _cost_optimizer_baseline_latency_ms(node_run, usage),
+    }
+
+
+def _cost_optimizer_baseline_summary(db: Session, row: Any) -> dict[str, Any]:
+    usage_summary = _cost_optimizer_dict(getattr(row, "baseline_usage_summary", None))
+    fallback_key_groups = (
+        ("model", "model_id"),
+        ("cost", "total_cost"),
+        ("prompt_tokens", "promptTokens"),
+        ("completion_tokens", "completionTokens"),
+        ("total_tokens", "totalTokens"),
+        ("latency_ms", "latencyMs"),
+    )
+    source_usage_summary = (
+        _cost_optimizer_source_baseline_usage_summary(db, row)
+        if _cost_optimizer_summary_missing_any(usage_summary, fallback_key_groups)
+        else {}
+    )
+    node_options = _cost_optimizer_dict(getattr(row, "baseline_node_options", None))
+    parameters = (
+        node_options.get("parameters")
+        if isinstance(node_options.get("parameters"), dict)
+        else {}
+    )
+
+    def summary_value(*keys: str) -> Any:
+        primary = _cost_optimizer_summary_value(usage_summary, *keys)
+        if primary is not None:
+            return primary
+        return _cost_optimizer_summary_value(source_usage_summary, *keys)
+
+    model = summary_value("model", "model_id") or node_options.get("model_id")
+    prompt_tokens = summary_value("prompt_tokens", "promptTokens")
+    completion_tokens = summary_value("completion_tokens", "completionTokens")
+    total_tokens = summary_value("total_tokens", "totalTokens")
+    cost = summary_value("total_cost", "cost")
+    latency_ms = summary_value("latency_ms", "latencyMs")
+
+    summary = {
+        "baseline_id": str(row.baseline_node_run_id)
+        if getattr(row, "baseline_node_run_id", None)
+        else None,
+        "workflow_run_id": str(row.baseline_workflow_run_id)
+        if getattr(row, "baseline_workflow_run_id", None)
+        else None,
+        "model": model,
+        "cost": _cost_optimizer_float(cost),
+        "prompt_tokens": _cost_optimizer_int(prompt_tokens),
+        "completion_tokens": _cost_optimizer_int(completion_tokens),
+        "total_tokens": _cost_optimizer_int(total_tokens),
+        "latency_ms": latency_ms,
+        "output_format": node_options.get("output_format"),
+        "max_tokens": parameters.get("max_tokens"),
+        "temperature": parameters.get("temperature"),
+    }
+    output_summary = _cost_optimizer_node_run_output_summary_from_source(
+        db,
+        node_run_id=getattr(row, "baseline_node_run_id", None),
+        workflow_run_id=getattr(row, "baseline_workflow_run_id", None),
+        node_id=getattr(row, "node_id", None),
+    )
+    if output_summary.get("output_available"):
+        summary.update(output_summary)
+    return summary
+
+
+def _cost_optimizer_experiment_summary(db: Session, row: Any) -> dict[str, Any]:
     candidates = getattr(row, "candidates", None) or []
     return {
         "experiment_id": str(row.id),
@@ -1861,8 +2092,12 @@ def _cost_optimizer_experiment_summary(row: Any) -> dict[str, Any]:
         "status": getattr(row, "status", None),
         "created_by": str(row.created_by) if getattr(row, "created_by", None) else None,
         "created_at": _cost_optimizer_datetime(getattr(row, "created_at", None)),
+        "baseline_summary": _cost_optimizer_baseline_summary(db, row),
         "usage_summary": getattr(row, "usage_summary", None) or {},
-        "candidates": [_cost_optimizer_candidate_summary(candidate) for candidate in candidates],
+        "candidates": [
+            _cost_optimizer_candidate_summary(db, candidate, row.node_id)
+            for candidate in candidates
+        ],
     }
 
 
@@ -1950,7 +2185,7 @@ def list_cost_optimizer_experiments(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "items": [_cost_optimizer_experiment_summary(row) for row in rows],
+        "items": [_cost_optimizer_experiment_summary(db, row) for row in rows],
     }
 
 
