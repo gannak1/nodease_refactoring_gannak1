@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeInlinePanel } from '../../components/nodes/NodeInlinePanel';
@@ -99,7 +99,7 @@ const createLlmNode = (data: Partial<LLMNodeData> = {}): AppNode =>
     },
   }) as AppNode;
 
-describe('FR-003 LLM node model routing option', () => {
+describe('FR-003 LLM node model routing optimization entry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     global.fetch = vi.fn(async () => ({
@@ -150,7 +150,7 @@ describe('FR-003 LLM node model routing option', () => {
     vi.restoreAllMocks();
   });
 
-  it('자동 라우팅 OFF에서는 모델 선택을 보여주고 작업 유형 입력은 숨긴다', async () => {
+  it('모델 선택을 보여주고 작업 유형 입력은 숨긴다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
@@ -160,33 +160,18 @@ describe('FR-003 LLM node model routing option', () => {
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 
-  it('자동 라우팅 토글을 켜면 node data에 저장된다', async () => {
+  it('운영 로그 기반 모델 라우팅 최적화 진입 버튼을 보여준다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
 
-    fireEvent.click(
-      await screen.findByRole('checkbox', { name: /자동 라우팅/ }),
-    );
-
-    expect(useWorkflowStore.getState().nodes[0]?.data).toEqual(
-      expect.objectContaining({
-        auto_model_routing: true,
-      }),
-    );
-  });
-
-  it('자동 라우팅 ON에서는 모델 선택을 숨기고 로그 단계별 라우팅 정책을 보여준다', () => {
-    const node = createLlmNode({ auto_model_routing: true });
-
-    render(<NodeInlinePanel node={node} />);
-
-    expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
-    expect(screen.getByText('Cold start')).toBeInTheDocument();
-    expect(screen.getByText('Warming up')).toBeInTheDocument();
-    expect(screen.getByText('Optimized')).toBeInTheDocument();
-    expect(screen.queryByText('기본 모델')).not.toBeInTheDocument();
-    expect(screen.queryByText('대체 모델')).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: /모델 라우팅 최적화/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/배포 후 운영 로그를 기준으로 추천 모델/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /자동 라우팅/ })).toBeNull();
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 });

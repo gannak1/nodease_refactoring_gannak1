@@ -5,8 +5,8 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-010까지를 API 계약 관점에서 정리한다.
-FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이며, 현재 API 계약에는 포함하지 않는다.
+이 문서는 `requirements.md`의 FR-001부터 FR-011까지를 API 계약 관점에서 정리한다.
+FR-011 모델 라우팅 최적화는 실행 시점 자동 라우팅이 아니라 사용자 클릭 기반 추천 분석으로 다룬다. 추천 분석 endpoint는 후속 API이며, 현재 workflow runtime은 저장된 `model_id`와 `fallback_model_id`만 사용한다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
 
@@ -24,7 +24,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | 후속 기능이다. 현재 Cost Optimizer API는 모델 라우팅/최적화 에이전트 endpoint를 제공하지 않는다. 다만 자동 모델 라우터 service 계약은 본 문서의 Planned Model Router Contract를 따른다. |
+| FR-011 | 현재 Cost Optimizer API는 모델 라우팅 추천 endpoint를 제공하지 않는다. 후속 API는 배포 후 운영 로그를 분석해 추천 모델, 예상 절감, 품질 근거를 반환하고, 적용은 기존 apply 흐름처럼 사용자의 명시 액션으로만 수행한다. |
 
 ## Endpoints
 
@@ -54,19 +54,17 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 
-## Planned Model Router Contract
+## Model Routing Recommendation Contract
 
-이 섹션은 FR-011 후속 구현을 위한 service/API 계약이다. 현재 Cost Optimizer API는 이 계약을 아직 호출하지 않는다.
+이 섹션은 FR-011 사용자 클릭 기반 모델 라우팅 최적화의 후속 API 계약이다. 이 계약은 LLM 노드 실행 중 자동으로 호출되지 않는다. 사용자가 LLM 노드 상세 화면에서 `모델 라우팅 최적화`를 눌렀을 때만 최근 배포 후 운영 로그를 분석하고 추천 결과를 반환한다.
 
-자동 라우팅은 LLM 노드 실행 시점에 모델을 고르는 runtime decision이다. 따라서 첫 구현 단위는 별도 UI endpoint보다 service 함수가 적합하다.
-
-예상 service entrypoint:
+예상 service/API entrypoint:
 
 ```python
-ModelRouter.resolve(context: ModelRouterContext) -> ModelRouterDecision
+ModelRouter.recommend(context: ModelRoutingRecommendationContext) -> ModelRoutingRecommendation
 ```
 
-`ModelRouterContext`는 다음 정보를 포함한다.
+`ModelRoutingRecommendationContext`는 다음 정보를 포함한다.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -74,41 +72,64 @@ ModelRouter.resolve(context: ModelRouterContext) -> ModelRouterDecision
 | `user_id` | UUID string nullable | yes | 실행 주체. private Knowledge Base와 credential 사용 가능성 판단에 필요하다. |
 | `workflow_id` | UUID string | yes | 대상 workflow |
 | `node_id` | string | yes | 대상 LLM node |
-| `auto_model_routing` | boolean | yes | false이면 router를 호출하지 않고 저장된 `model_id`를 사용한다. |
-| `current_model_id` | string nullable | yes | 자동 라우팅 실패 시 내부 fallback으로 사용할 수 있는 현재 저장 모델 |
-| `current_fallback_model_id` | string nullable | no | 자동 라우팅 OFF 상태의 수동 fallback 모델. 자동 라우팅 ON에서는 router가 fallback을 새로 결정한다. |
-| `candidate_models` | array | yes | 현재 organization credential로 실제 실행 가능한 chat model 후보 |
+| `current_model_id` | string nullable | yes | 현재 target LLM node에 저장된 기본 모델 |
+| `current_fallback_model_id` | string nullable | no | 현재 target LLM node에 저장된 fallback 모델 |
+| `candidate_models` | array | yes | 현재 organization credential로 실제 실행 가능하고 workflow LLM node 후보 필터를 통과한 chat model 후보 |
 | `input_summary` | object nullable | no | 입력 길이, 변수 수, RAG query 여부 같은 safe summary |
 | `output_contract` | object nullable | no | text/json/schema, downstream variable contract, required key summary |
 | `knowledge_summary` | object nullable | no | Knowledge/RAG 사용 여부, 선택 KB 수, context budget 같은 safe summary |
 | `node_profile` | object nullable | no | 최근 target node run 기반 성공률, 비용, latency, fallback/retry 지표 |
 
-`ModelRouterDecision`은 다음 정보를 반환한다.
+`ModelRoutingRecommendation`은 다음 정보를 반환한다.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `routing_stage` | `cold_start` \| `warming_up` \| `optimized` | 로그 축적 정도로 결정한 라우팅 단계 |
-| `selected_model_id` | string | 이번 실행에 사용할 모델 |
-| `fallback_model_id` | string nullable | selected model 실패 또는 confidence 부족 시 사용할 모델 |
-| `confidence` | number nullable | 라우터 판단 신뢰도. 규칙 기반 cold start에서는 없을 수 있다. |
-| `reason` | string | 사용자와 운영자가 이해할 수 있는 선택 사유 |
-| `policy_version` | string | 라우팅 정책 버전 |
-| `metrics_snapshot` | object | 판단에 사용한 node-level safe metric summary |
+| `analysis_stage` | `insufficient_logs` \| `reviewable` \| `high_confidence` | 운영 로그 축적 정도로 결정한 추천 신뢰 단계 |
+| `recommended_model_id` | string nullable | 사용자가 적용할 수 있는 추천 모델. 품질 gate를 통과하지 못하면 null일 수 있다. |
+| `recommended_fallback_model_id` | string nullable | 추천 fallback 모델 |
+| `estimated_cost_reduction_rate` | number nullable | judge 비용과 예상 fallback 비용을 반영한 순절감률 |
+| `quality_basis` | object | schema pass, downstream success, fallback/retry, latency, token 변화 같은 safe metric summary |
+| `judge_policy` | `not_required` \| `sampled_async` \| `required_before_apply` | judge 호출 필요 여부 |
+| `warnings` | array | 추천 보류 또는 적용 주의 사유 |
+| `reason` | string | 사용자가 이해할 수 있는 추천 사유 |
+| `policy_version` | string | 추천 정책 버전 |
 
-라우터는 다음 순서로 동작한다.
+추천 분석은 다음 순서로 동작한다.
 
-1. `auto_model_routing=false`이면 호출하지 않는다.
-2. 현재 organization에서 실행 가능한 chat model 후보만 남긴다.
-3. 후보가 없으면 실행하지 않고 명확한 error를 반환한다.
-4. target LLM node의 node-level profile을 조회한다.
-5. 사용 가능한 실행 로그가 10회 미만이면 `cold_start` 정책을 적용한다.
-6. 사용 가능한 실행 로그가 10회 이상 50회 미만이면 `warming_up` 정책을 적용한다.
-7. 사용 가능한 실행 로그가 50회 이상이면 `optimized` 정책을 적용한다.
-8. 선택 결과와 판단 근거를 workflow run trace 또는 LLM usage metadata에 safe summary로 남긴다.
+1. 현재 organization에서 실행 가능한 chat model 중 workflow LLM node 후보 필터를 통과한 모델만 남긴다. 날짜 suffix 모델, embedding/image/audio/realtime/moderation/tts/transcribe/sora/search 전용 모델은 제외한다.
+2. 후보가 없으면 provider 호출 없이 명확한 error를 반환한다.
+3. target LLM node의 배포 후 운영 node-level profile을 조회한다.
+4. `deployment_id IS NULL`인 테스트 실행, 배포 전 수동 실행, `cost_optimizer_compare` 실행은 추천 프로파일에서 제외한다.
+5. 사용 가능한 운영 로그가 부족하면 추천 모델을 null로 두고 `insufficient_logs`와 필요한 추가 로그 조건을 반환한다.
+6. 품질 gate를 통과한 후보만 추천한다. 비용 절감만으로 더 약한 모델을 추천하지 않는다.
+7. confidence가 낮거나 schema/downstream 근거가 부족하면 judge를 즉시 모든 run에 붙이지 않고 `sampled_async` 또는 `required_before_apply`로 표시한다.
+8. 사용자가 추천을 적용하면 기존 `PATCH /cost-optimizer/apply`와 동일하게 current draft의 target LLM node 설정을 명시적으로 갱신한다.
 
-라우터가 사용하는 node-level profile은 workflow 전체 run이 아니라 target LLM node 기준으로 계산한다. usage/output/schema/downstream summary가 없는 run은 profile sample에서 제외한다. 실패 run은 sample count에는 제외할 수 있지만 fallback rate, retry rate, failure trend 계산에는 포함할 수 있다.
+라우터가 사용하는 node-level profile은 workflow 전체 run이 아니라 target LLM node 기준으로 계산한다. `workflow_runs.deployment_id IS NOT NULL`인 배포 후 운영 실행만 stage count와 품질 gate에 포함한다. 배포 전 테스트 실행과 Cost Optimizer 비교 실행은 profile sample에서 제외한다. usage/output이 없는 run은 profile sample에서 제외한다. 명시적인 downstream summary가 없으면 배포 후 workflow run 성공 여부를 downstream 통과 근거로 사용할 수 있다. 실패 run은 sample count에는 제외할 수 있지만 fallback rate, retry rate, failure trend 계산에는 포함할 수 있다.
 
-자동 라우팅 ON 상태에서도 기존 `model_id`는 완전히 삭제하지 않는다. 라우터 API/engine 연동이 실패하거나 candidate model이 없을 때 사용자에게 명확한 실패를 반환하거나 내부 fallback으로 사용할 수 있도록 저장 호환성을 유지한다.
+workflow runtime은 이 추천 결과를 자동으로 사용하지 않는다. 추천 적용 전까지 기존 `model_id`와 `fallback_model_id`가 그대로 실행된다. 과거 `auto_model_routing` 저장 필드가 남아 있더라도 런타임 모델 선택에는 영향을 주지 않는다.
+
+### Actual Provider Verification Contract
+
+`scripts/verify_model_router_actual.py`는 제품 HTTP API가 아니라 FR-011 라우터 정책을 실제 provider 호출로 검증하는 운영/개발용 스크립트다. 이 스크립트는 다음 계약을 따른다.
+
+| Option | Description |
+| --- | --- |
+| `--provider auto` | 현재 organization/user가 실행 가능한 provider preset을 OpenAI, Anthropic, Google 순서로 탐색한다. |
+| `--provider openai\|anthropic\|google` | 지정 provider preset만 사용한다. 해당 credential/model relation/use 권한이 없으면 provider 호출 전에 실패한다. |
+| `--cheap-model`, `--mid-model`, `--high-model` | preset의 실행 대상 모델을 명시적으로 덮어쓴다. 세 모델은 같은 provider여야 한다. |
+| `--judge-model` | LLM judge에 사용할 모델을 덮어쓴다. 실행 가능하면 실행 대상 provider와 달라도 허용한다. |
+| `--dry-run` | provider 호출 없이 credential/model relation/use 권한과 모델 해석만 검증한다. |
+
+기본 provider preset은 다음 의미를 가진다.
+
+| Provider | Cheap | Mid | High | Judge |
+| --- | --- | --- | --- | --- |
+| OpenAI | `gpt-4o-mini` | `gpt-4.1-mini` | `gpt-4.1` | `gpt-4.1-mini` |
+| Anthropic | `claude-haiku-4-5-20251001` | `claude-sonnet-4-5-20250929` | `claude-opus-4-5-20251101` | `claude-sonnet-4-5-20250929` |
+| Google | `gemini-2.5-flash-lite` | `gemini-2.5-flash` | `gemini-2.5-pro` | `gemini-2.5-flash` |
+
+Judge 호출은 OpenAI `response_format`에 의존하지 않는다. provider 공통 prompt로 compact JSON을 요청하고, 응답 text에서 JSON object를 파싱한다. 이 방식은 Anthropic/Google만 쓰는 organization에서도 API key와 model relation이 있으면 같은 품질 gate 검증을 수행하기 위한 최소 공통 계약이다.
 
 ## Common Path Parameters
 

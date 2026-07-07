@@ -17,11 +17,9 @@ export const LLMNode = memo(
     const hasNoModel = !data.model_id;
     const hasValidationIssue = hasNoPrompts || hasNoModel;
 
-    const displayModelId = data.auto_model_routing
-      ? '자동 라우팅'
-      : data.model_id
-        ? data.model_id.replace(/^models\//, '')
-        : '';
+    const displayModelId = data.model_id
+      ? data.model_id.replace(/^models\//, '')
+      : '';
     const observability = data.observability as
       | {
           status?: string;

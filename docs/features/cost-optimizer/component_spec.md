@@ -6,7 +6,7 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-011까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011 모델 라우팅은 현재 LLM 노드 상세 화면의 자동 라우팅 토글과 정책 안내까지만 포함한다. 실제 실행 시점 라우터 API와 workflow engine 연동, 최적화 에이전트 UI는 후속 기능이다.
+FR-011 모델 라우팅은 현재 LLM 노드 상세 화면의 `모델 라우팅 최적화` 진입 액션으로 다룬다. 실행 시점 자동 라우팅 토글은 제공하지 않고, 후속 추천 분석 API가 연결되면 사용자가 추천 근거를 확인한 뒤 직접 적용한다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
@@ -24,7 +24,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Automatic model routing control | LLM 노드 상세 화면에서 자동 라우팅 토글과 cold start/warming up/optimized 정책 안내를 제공한다. 실제 라우터 실행 결과 UI와 최적화 에이전트 패널은 후속 기능이다. |
+| FR-011 | Model routing recommendation screen | LLM 노드 상세 화면에서 `모델 라우팅 최적화` 진입 액션을 제공하고, 전용 화면에서 전략 선택, 분석 불가, 후보 검증 필요, 적용 검토 가능 상태를 보여준다. 추천 모델은 자동 적용하지 않고 사용자가 근거를 확인한 뒤 직접 적용한다. |
 
 ## Implementation Tracking
 
@@ -42,6 +42,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
 | FR-009 | Cost/usage metric display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
+| FR-011 | Model routing recommendation screen | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-model-routing-recommendation.test.tsx` | 통과 |
 
 ## Screens
 
@@ -49,21 +50,21 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 
 관련 FR: FR-001, FR-010
 
-LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
+LLM 노드 상세 화면에는 `모델 라우팅 최적화` 액션을 제공한다.
 
 - 이 액션은 `llmNode`에서만 표시한다.
 - builder 이상 권한이 없는 사용자는 액션을 비활성화한다.
 - 비활성화 상태에는 권한 부족 사유를 표시한다.
 - LLM 노드 설정이 저장되지 않았거나 draft가 오래된 경우, 비교 시작 전에 현재 draft 저장 또는 저장 필요 안내를 표시한다.
 
-#### A/B Test Button Placement
+#### Model Routing Optimization Button Placement
 
-`A/B 테스트` 버튼은 LLM 노드 상세 패널의 상단 헤더 우측 보조 액션 영역에 배치한다.
+`모델 라우팅 최적화` 버튼은 LLM 노드 상세 패널의 상단 헤더 우측 보조 액션 영역에 배치한다.
 
 - 위치: 노드 제목, 노드 타입, 상태 badge가 표시되는 헤더 영역의 우측
-- 라벨: `A/B 테스트`
-- 아이콘: `GitCompare` 또는 기존 icon set에서 비교 의미가 명확한 아이콘
-- Tooltip: `이 LLM 노드의 실행 로그를 기준으로 후보 설정을 비교합니다.`
+- 라벨: `모델 라우팅 최적화`
+- 아이콘: 비용/분석 의미가 명확한 기존 icon set 아이콘
+- Tooltip: `운영 로그를 기준으로 이 LLM 노드의 모델 최적화를 시작합니다.`
 - 액션 위계: 저장, 삭제 같은 기본 편집 액션보다 낮은 보조 액션으로 표시한다.
 
 버튼 상태는 다음과 같이 처리한다.
@@ -71,18 +72,18 @@ LLM 노드 상세 화면에는 `A/B 테스트하기` 액션을 제공한다.
 | 상태 | 표시 | 동작 |
 | --- | --- | --- |
 | target node가 `llmNode`가 아님 | 미노출 | Cost Optimizer 진입 불가 |
-| builder 이상 권한 있음 | 활성화 | baseline 선택 단계로 이동 |
+| builder 이상 권한 있음 | 활성화 | baseline 선택 또는 추천 분석 단계로 이동 |
 | builder 이상 권한 없음 | disabled | `Builder 권한이 필요합니다.` 안내 |
 | baseline 실행 로그 없음 | 활성화 또는 disabled | 클릭 시 `비교할 실행 로그가 없습니다. 먼저 테스트 실행을 완료해 주세요.` 안내 |
 | 저장되지 않은 draft 있음 | 활성화 | 클릭 시 `현재 노드 설정을 저장한 뒤 비교를 시작할 수 있습니다.` 안내 |
 
-버튼 클릭 후에는 바로 비교 화면을 열지 않고 baseline 선택 단계를 먼저 연다. baseline 선택이 완료된 뒤 A/B compare workspace로 이동한다.
+버튼 클릭 후에는 바로 적용하지 않는다. 운영 로그 기반 baseline 선택과 B 후보 비교 단계를 거쳐 추천 근거를 확인한 뒤에만 현재 노드 설정에 적용할 수 있다.
 
 ### Baseline Selection
 
 관련 FR: FR-002, FR-004, FR-005
 
-`A/B 테스트하기`를 누르면 A baseline 선택 화면을 먼저 연다.
+`후보 실험 만들기`를 누르면 A baseline 선택 화면을 먼저 연다. `모델 라우팅 최적화` 버튼 자체는 모델 추천 전용 화면으로 이동한다.
 
 화면은 두 가지 선택지를 제공한다.
 
@@ -155,7 +156,7 @@ output preview 또는 usage summary가 없는 baseline row는 목록에 표시�
 
 관련 FR: FR-003, FR-004, FR-005, FR-006, FR-009
 
-A/B compare workspace는 특정 workflow의 특정 LLM node에 종속된 전용 작업 화면이다. 사용자는 workflow 편집 화면에서 target LLM node의 `A/B 테스트하기` 액션으로 이 workspace에 진입한다.
+A/B compare workspace는 특정 workflow의 특정 LLM node에 종속된 전용 작업 화면이다. 사용자는 모델 라우팅 추천 화면의 `후보 실험 만들기` 보조 액션으로 이 workspace에 진입한다.
 
 현재 프론트 구현은 A/B compare workspace를 workflow editor 안의 중첩 패널이 아니라 전용 route로 둔다.
 
@@ -207,6 +208,29 @@ workspace는 B 후보 실험 루프를 같은 화면 안에서 지원한다.
 
 B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 닫게 해서는 안 된다.
 
+### Model Routing Optimization Workspace
+
+관련 FR: FR-011
+
+`모델 라우팅 최적화` 버튼은 기존 A/B compare workspace로 바로 이동하지 않는다. 버튼은 사용자 클릭 기반 모델 추천 전용 route로 이동한다.
+
+- Route: `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx`
+- 기본 목적: 최근 배포 후 운영 로그와 기존 후보 실험 이력을 분석해 추천 모델, 예상 절감, 품질 근거를 보여준다.
+- 보조 액션: `후보 실험 만들기`를 누를 때만 기존 Cost Optimizer A/B workspace로 이동한다.
+- 적용 원칙: 추천 결과는 자동 적용하지 않는다. 사용자는 추천 근거를 확인한 뒤 명시적으로 후보 실험 또는 적용 흐름을 선택해야 한다.
+- API 제약: 전용 추천 API가 연결되기 전까지 프론트는 최신 baseline과 experiment history API로 표시 가능한 근거만 계산한다.
+
+모델 라우팅 최적화 화면은 다음 정보를 첫 화면에 보여준다.
+
+- 현재 운영 기준 모델
+- 최근 운영 로그의 비용, 토큰, latency
+- 추천 후보 모델
+- 예상 비용 절감률
+- 토큰/latency 변화
+- schema/downstream 기반 품질 근거
+- judge 필요 여부
+- 분석에 사용한 이전 후보 실험 이력
+
 왼쪽 A 실행 시점 옵션 영역은 읽기 전용이다.
 
 - baseline 실행 시점의 기본 설정
@@ -244,7 +268,6 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 
 - 모델 선택
 - fallback 모델 선택
-- 자동 라우팅 상태 표시와 정책 안내
 - system prompt 편집
 - user prompt 편집
 - assistant prompt 편집
@@ -255,12 +278,12 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 
 원본 LLM 노드 상세 편집 화면과 B 후보 설정 화면은 task type 선택 UI를 제공하지 않는다. 작업 유형은 사용자가 직접 고르는 값이 아니라 라우터/노드 실행 맥락의 내부 판단값으로 후속 처리한다. 기존 저장 데이터와 compare request 호환성을 위해 `data.task_type` 또는 `candidate.task_type` 기본값은 유지할 수 있다.
 
-원본 LLM 노드 상세 편집 화면은 자동 라우팅 토글을 제공한다.
+원본 LLM 노드 상세 편집 화면은 자동 라우팅 토글을 제공하지 않는다.
 
-- ON: 기본 모델 선택과 fallback 모델 선택 UI를 숨기고 `자동 라우팅 사용 중` 상태를 보여준다.
-- ON: cold start, warming up, optimized 3단계 라우팅 정책과 예상 선택 기준을 보여준다.
-- OFF: 기존처럼 기본 모델과 fallback 모델을 직접 선택한다.
-- OFF: task type 선택 UI는 계속 숨긴다.
+- 기본 모델과 fallback 모델 선택 UI는 항상 표시한다.
+- 런타임은 저장된 기본 모델과 fallback 모델을 사용한다.
+- 모델 라우팅 최적화는 별도 버튼으로 시작하는 사용자 클릭 기반 흐름이다.
+- task type 선택 UI는 계속 숨긴다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
@@ -488,7 +511,7 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | --- | --- | --- | --- | --- |
 | `model_id` | `data.model_id` | `candidate.model_id` | `candidate_settings.model_id` | 기존 모델 선택 목록을 재사용한다. |
 | `fallback_model_id` | `data.fallback_model_id` | `candidate.fallback_model_id` | `candidate_settings.fallback_model_id` | 기본 모델과 같으면 validation 대상이다. |
-| `auto_model_routing` | `data.auto_model_routing` | 후속 candidate field | 후속 candidate field | 원본 LLM 노드의 자동 라우팅 UI 상태다. 실제 실행 라우터 API 연결은 후속이다. |
+| `auto_model_routing` | legacy 저장 필드 | 사용하지 않음 | 사용하지 않음 | 과거 저장 그래프 호환용 필드다. UI에 노출하지 않고 런타임 모델 선택에도 사용하지 않는다. |
 | `task_type` | 내부 기본값 | 내부 기본값 | `candidate_settings.task_type` | 사용자 입력으로 노출하지 않는다. 후속 라우터/분석 내부 판단값으로만 사용한다. |
 | `system_prompt` | `data.system_prompt` | `candidate.system_prompt` | `candidate_settings.system_prompt` | 변수 삽입 지원. |
 | `user_prompt` | `data.user_prompt` | `candidate.user_prompt` | `candidate_settings.user_prompt` | 변수 삽입 지원. |
@@ -525,7 +548,6 @@ Inspector는 탭 구조를 사용한다.
 
 - 모델 차이
 - fallback 모델 차이
-- 자동 라우팅 상태 차이
 - prompt 차이
 - parameter 차이
 - 출력 형식 차이
@@ -622,7 +644,7 @@ Inspector는 탭 구조를 사용한다.
 
 관련 FR: FR-001, FR-002, FR-010
 
-1. 사용자가 LLM 노드 상세 화면에서 `A/B 테스트하기`를 누른다.
+1. 사용자가 LLM 노드 상세 화면에서 `모델 라우팅 최적화`를 누른다.
 2. builder 이상 권한이 아니면 진입을 막는다.
 3. baseline 선택 화면을 연다.
 4. 사용자가 최신 로그 또는 이전 로그를 선택한다.
