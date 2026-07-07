@@ -50,6 +50,8 @@ export const ConditionNode = memo(
         showSourceHandle={false}
         icon={<GitFork className="text-white" />}
         iconColor="#f97316" // orange-500
+        showBodyContent
+        sizeMode="auto"
       >
         <div className="p-4 text-sm text-gray-500 text-center">
           {/* Output Handles - Flexbox Refactor */}

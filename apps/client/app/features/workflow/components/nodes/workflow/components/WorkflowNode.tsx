@@ -8,6 +8,7 @@ import { workflowApi } from '../../../../api/workflowApi';
 import { useWorkflowStore } from '../../../../store/useWorkflowStore';
 import { toast } from 'sonner';
 import { ValidationBadge } from '../../../ui/ValidationBadge';
+import { WORKFLOW_NODE_SIZE } from '../../../../utils/workflowCanvasGeometry';
 
 // **워크플로우 모듈 노드 컴포넌트**
 // 다른 워크플로우(App)를 하나의 노드처럼 가져와서 실행할 수 있게 해줍니다.
@@ -145,10 +146,14 @@ export const WorkflowNode = memo(
           const x = node.position.x;
           const y = node.position.y;
           // ReactFlow 노드의 대략적인 크기
-          const w =
-            (node.measured?.width as number) || (node.width as number) || 300;
-          const h =
-            (node.measured?.height as number) || (node.height as number) || 150;
+            const w =
+              (node.measured?.width as number) ||
+              (node.width as number) ||
+              WORKFLOW_NODE_SIZE.width;
+            const h =
+              (node.measured?.height as number) ||
+              (node.height as number) ||
+              WORKFLOW_NODE_SIZE.height;
 
           return {
             minX: Math.min(acc.minX, x),
@@ -224,7 +229,7 @@ export const WorkflowNode = memo(
         // 1. 이미 펼쳐져 있으면 닫기
         if (currentExpanded) {
           // 크기 변화 계산 (펼친 상태 → 접힌 상태)
-          const collapsedWidth = 300;
+            const collapsedWidth = WORKFLOW_NODE_SIZE.width;
           const expandedWidth = containerSize?.width || 600;
           const widthDelta = collapsedWidth - expandedWidth; // 음수 (왼쪽으로 이동)
 
@@ -286,7 +291,7 @@ export const WorkflowNode = memo(
         // 2. 이미 데이터가 있으면 그냥 펼치기
         if (data.graph_snapshot) {
           // 크기 변화 계산 (접힌 상태 → 펼친 상태)
-          const collapsedWidth = 300;
+            const collapsedWidth = WORKFLOW_NODE_SIZE.width;
           const expandedWidth = containerSize?.width || 600;
           const widthDelta = expandedWidth - collapsedWidth; // 양수 (오른쪽으로 이동)
 
@@ -414,6 +419,8 @@ export const WorkflowNode = memo(
           isExpanded ? { top: '56px', right: '-12px' } : undefined
         }
         titleClassName={isExpanded ? '' : undefined}
+        showBodyContent
+        sizeMode={isExpanded ? 'auto' : 'fixed'}
       >
         {/* 토글 버튼: 우측 상단 절대 위치 */}
         <button

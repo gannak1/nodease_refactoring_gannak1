@@ -55,13 +55,10 @@ import { TestSidebar } from './TestSidebar';
 import { NodeFullscreenEditor } from './NodeFullscreenEditor';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
+import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
-const DEFAULT_NODE_SIZE = {
-  width: 420,
-  height: 150,
-};
 
 export default function NodeCanvas() {
   const {
@@ -559,11 +556,11 @@ export default function NodeCanvas() {
       const nodeWidth =
         measuredNode.measured?.width ??
         measuredNode.width ??
-        DEFAULT_NODE_SIZE.width;
+        WORKFLOW_NODE_SIZE.width;
       const nodeHeight =
         measuredNode.measured?.height ??
         measuredNode.height ??
-        DEFAULT_NODE_SIZE.height;
+        WORKFLOW_NODE_SIZE.height;
       const nodeCenter = {
         x: hoveredNode.position.x + nodeWidth / 2,
         y: hoveredNode.position.y + nodeHeight / 2,
