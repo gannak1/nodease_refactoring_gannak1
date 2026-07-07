@@ -247,6 +247,54 @@ class OpenAIClient(BaseLLMClient):
         payload["input"] = input_items if input_items else ""
         return payload
 
+    def _response_format_requires_json_input(self, response_format: Any) -> bool:
+        if not isinstance(response_format, dict):
+            return False
+        return response_format.get("type") in {"json_object", "json_schema"}
+
+    def _input_contains_json_word(self, input_value: Any) -> bool:
+        if isinstance(input_value, str):
+            return "json" in input_value.casefold()
+        if not isinstance(input_value, list):
+            return False
+        for item in input_value:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            blocks = self._content_to_input_blocks(content)
+            if any("json" in str(block.get("text", "")).casefold() for block in blocks):
+                return True
+        return False
+
+    def _ensure_json_instruction_in_responses_input(
+        self,
+        responses_payload: Dict[str, Any],
+    ) -> None:
+        text_options = responses_payload.get("text")
+        if not isinstance(text_options, dict):
+            return
+        response_format = text_options.get("format")
+        if not self._response_format_requires_json_input(response_format):
+            return
+
+        input_value = responses_payload.get("input")
+        if self._input_contains_json_word(input_value):
+            return
+
+        json_instruction = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Return the response as a json object.",
+                }
+            ],
+        }
+        if isinstance(input_value, list):
+            input_value.append(json_instruction)
+        else:
+            responses_payload["input"] = [json_instruction]
+
     def _build_responses_request_payload(
         self,
         payload: Dict[str, Any],
@@ -273,6 +321,8 @@ class OpenAIClient(BaseLLMClient):
                 text_options = {}
             text_options.setdefault("format", response_format)
             responses_payload["text"] = text_options
+
+        self._ensure_json_instruction_in_responses_input(responses_payload)
 
         return responses_payload
 

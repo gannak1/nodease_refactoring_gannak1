@@ -428,6 +428,113 @@ def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):
     assert resp["usage"]["total_tokens"] == 5
 
 
+def test_openai_responses_json_format_adds_json_word_to_input(monkeypatch):
+    """Responses JSON mode는 OpenAI 검증을 위해 input message에도 json 단어를 포함한다."""
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "output_text": "{}",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, _url, **kwargs):
+            requested["payload"] = kwargs["json"]
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5-mini",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    client.invoke_sync(
+        [
+            {"role": "system", "content": "응답은 규칙을 따라 작성하세요."},
+            {"role": "user", "content": "SLA 위반 여부를 판단해 주세요."},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    input_text = "\n".join(
+        block["text"]
+        for item in requested["payload"]["input"]
+        for block in item["content"]
+        if block.get("type") == "input_text"
+    )
+    assert "json" in input_text.casefold()
+    assert requested["payload"]["text"]["format"] == {"type": "json_object"}
+
+
+def test_openai_responses_json_format_does_not_duplicate_json_instruction(monkeypatch):
+    """기존 input에 json 지시가 있으면 보강 user block을 중복 추가하지 않는다."""
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "output_text": "{}",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, _url, **kwargs):
+            requested["payload"] = kwargs["json"]
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5-mini",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    client.invoke_sync(
+        [{"role": "user", "content": "Return a json object."}],
+        response_format={"type": "json_object"},
+    )
+
+    assert len(requested["payload"]["input"]) == 1
+    assert requested["payload"]["input"][0]["content"][0]["text"] == (
+        "Return a json object."
+    )
+
+
 def test_openai_invoke_sync_responses_error_body_is_wrapped(monkeypatch):
     """GPT-5.x sync Responses 오류는 legacy completions로 fallback하지 않고 그대로 실패한다."""
     requested_urls = []
