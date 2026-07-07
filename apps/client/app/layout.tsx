@@ -3,8 +3,8 @@ import { Toaster } from 'sonner';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Moduly',
-  description: 'Create your LLM Application with Moduly!',
+  title: 'Nodease',
+  description: 'Create your LLM Application with Nodease!',
 };
 
 export default function RootLayout({
