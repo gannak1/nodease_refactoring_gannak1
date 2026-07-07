@@ -137,14 +137,18 @@ ${authHeader}  -d '{
       </div>
 
       <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto">
-        {/* Web App Share Link */}
+        {/* Web App / Chatbot Share Link */}
         {result.webAppUrl && (
           <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
             <label className="block text-sm font-semibold text-blue-900 mb-2">
-              웹 앱 공유 링크
+              {deploymentType === 'chatbot'
+                ? '챗봇 공유 링크'
+                : '웹 앱 공유 링크'}
             </label>
             <p className="text-xs text-blue-700 mb-3">
-              이 링크를 공유하면 누구나 워크플로우를 사용할 수 있습니다!
+              {deploymentType === 'chatbot'
+                ? '이 링크를 공유하면 누구나 대화 맥락을 기억하는 챗봇과 대화할 수 있습니다!'
+                : '이 링크를 공유하면 누구나 워크플로우를 사용할 수 있습니다!'}
             </p>
             <div className="flex gap-2">
               <code className="flex-1 p-3 bg-white border border-blue-300 rounded text-sm text-blue-800 font-mono break-all leading-relaxed">
