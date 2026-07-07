@@ -49,12 +49,15 @@ def _exceeded_db(workflow_id, organization_id):
     return db
 
 
-def _request(path, *, body=None):
+def _request(path, *, body=None, headers=None):
     scope = {
         "type": "http",
         "method": "POST",
         "path": path,
-        "headers": [],
+        "headers": [
+            (name.lower().encode("latin-1"), value.encode("latin-1"))
+            for name, value in (headers or {}).items()
+        ],
         "query_string": b"",
     }
     if body is None:
@@ -139,6 +142,186 @@ def test_stream_blocks_exceeded_budget_before_celery_dispatch(monkeypatch):
     assert [audit.action for audit in db.added_of(AuditLog)] == [
         AuditAction.POLICY_BLOCK
     ]
+
+
+def test_stream_rejects_active_organization_mismatch_before_dispatch(monkeypatch):
+    workflow_id = uuid4()
+    workflow_organization_id = uuid4()
+    active_organization_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4())
+    workflow = SimpleNamespace(
+        id=str(workflow_id),
+        app_id=uuid4(),
+        organization_id=workflow_organization_id,
+    )
+    db = _Db()
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "resolve_active_organization_id",
+        lambda _db, _request, raw, _user_id: active_organization_id,
+    )
+    monkeypatch.setattr(workflow_endpoint, "celery_app", _DispatchGuard())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            workflow_endpoint.stream_workflow(
+                str(workflow_id),
+                _request(
+                    f"/api/v1/workflows/{workflow_id}/stream",
+                    body=b"{}",
+                    headers={"X-Organization-Id": str(active_organization_id)},
+                ),
+                x_organization_id=str(active_organization_id),
+                db=db,
+                current_user=current_user,
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert db.added == []
+
+
+def test_execute_rejects_active_organization_mismatch_before_dispatch(monkeypatch):
+    workflow_id = uuid4()
+    workflow_organization_id = uuid4()
+    active_organization_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4())
+    workflow = SimpleNamespace(
+        id=str(workflow_id),
+        app_id=uuid4(),
+        organization_id=workflow_organization_id,
+    )
+    db = _Db()
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "resolve_active_organization_id",
+        lambda _db, _request, raw, _user_id: active_organization_id,
+    )
+    monkeypatch.setattr(workflow_endpoint, "celery_app", _DispatchGuard())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            workflow_endpoint.execute_workflow(
+                str(workflow_id),
+                _request(
+                    f"/api/v1/workflows/{workflow_id}/execute",
+                    headers={"X-Organization-Id": str(active_organization_id)},
+                ),
+                user_input={},
+                x_organization_id=str(active_organization_id),
+                db=db,
+                current_user=current_user,
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert db.added == []
+
+
+def test_execute_allows_matching_active_organization_before_dispatch(monkeypatch):
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4())
+    workflow = SimpleNamespace(
+        id=str(workflow_id),
+        app_id=uuid4(),
+        organization_id=organization_id,
+    )
+    db = _Db()
+    celery = _DispatchRecorder()
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "resolve_active_organization_id",
+        lambda _db, _request, raw, _user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "get_draft",
+        lambda *args, **kwargs: {"nodes": [], "edges": []},
+    )
+    monkeypatch.setattr(workflow_endpoint, "celery_app", celery)
+
+    asyncio.run(
+        workflow_endpoint.execute_workflow(
+            str(workflow_id),
+            _request(
+                f"/api/v1/workflows/{workflow_id}/execute",
+                headers={"X-Organization-Id": str(organization_id)},
+            ),
+            user_input={},
+            x_organization_id=str(organization_id),
+            db=db,
+            current_user=current_user,
+        )
+    )
+
+    assert len(celery.calls) == 1
+    execution_context = celery.calls[0]["args"][2]
+    assert execution_context["organization_id"] == str(organization_id)
+
+
+def test_execute_draft_not_found_preserves_404(monkeypatch):
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4())
+    workflow = SimpleNamespace(
+        id=str(workflow_id),
+        app_id=uuid4(),
+        organization_id=organization_id,
+    )
+    db = _Db()
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "get_draft",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(workflow_endpoint, "celery_app", _DispatchGuard())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            workflow_endpoint.execute_workflow(
+                str(workflow_id),
+                _request(f"/api/v1/workflows/{workflow_id}/execute"),
+                user_input={},
+                db=db,
+                current_user=current_user,
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "draft not found" in exc_info.value.detail
+    assert db.added == []
+
+
+def test_stream_request_id_prefers_middleware_state_over_header():
+    request = _request(
+        "/api/v1/workflows/workflow-1/stream",
+        body=b"{}",
+        headers={"X-Request-Id": "header-request-id"},
+    )
+    request.state.request_id = "state-request-id"
+
+    assert workflow_endpoint._request_id_from_request(request) == "state-request-id"
 
 
 def test_execute_permission_check_precedes_budget_block(monkeypatch):
@@ -337,7 +520,25 @@ class _Db:
 class _DispatchGuard:
     """차단됐어야 할 실행이 Celery로 넘어가면 즉시 실패시킨다 (SSE/폴링 hang 방지)."""
 
+    backend = SimpleNamespace(TimeoutError=TimeoutError)
+
     def send_task(self, *args, **kwargs):
         raise AssertionError(
             "budget-blocked run must not be dispatched to Celery"
         )
+
+
+class _SuccessfulTask:
+    def get(self, timeout=None):
+        return {"status": "success", "result": {}}
+
+
+class _DispatchRecorder:
+    backend = SimpleNamespace(TimeoutError=TimeoutError)
+
+    def __init__(self):
+        self.calls = []
+
+    def send_task(self, name, args=None, kwargs=None):
+        self.calls.append({"name": name, "args": args or [], "kwargs": kwargs or {}})
+        return _SuccessfulTask()
