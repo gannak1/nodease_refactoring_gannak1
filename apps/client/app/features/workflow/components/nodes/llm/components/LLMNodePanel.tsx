@@ -155,6 +155,75 @@ const outputSchemaFromFields = (
   };
 };
 
+const applyRecommendationPatchesToNodeData = (
+  data: LLMNodeData,
+  patches: Record<string, unknown>[],
+): Partial<LLMNodeData> => {
+  const nextData: Record<string, unknown> = {};
+  let nextParameters: Record<string, unknown> | null = null;
+
+  const ensureParameters = () => {
+    if (!nextParameters) {
+      nextParameters = {
+        ...(typeof data.parameters === 'object' && data.parameters
+          ? data.parameters
+          : {}),
+      };
+    }
+    return nextParameters;
+  };
+
+  patches.forEach((patch) => {
+    const parameters = patch.parameters;
+    if (
+      parameters &&
+      typeof parameters === 'object' &&
+      !Array.isArray(parameters)
+    ) {
+      const currentParameters = ensureParameters();
+      Object.entries(parameters).forEach(([key, value]) => {
+        if (value === null) {
+          delete currentParameters[key];
+        } else {
+          currentParameters[key] = value;
+        }
+      });
+    }
+
+    const knowledge = patch.knowledge;
+    if (knowledge && typeof knowledge === 'object' && !Array.isArray(knowledge)) {
+      if (Array.isArray(knowledge.knowledge_base_ids)) {
+        nextData.knowledgeBases = knowledge.knowledge_base_ids
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .map((id) => ({ id, name: '' }));
+      }
+      if ('top_k' in knowledge) nextData.topK = knowledge.top_k;
+      if ('score_threshold' in knowledge) {
+        nextData.scoreThreshold = knowledge.score_threshold;
+      }
+      if ('dedupe_retrieved_context' in knowledge) {
+        nextData.dedupeRetrievedContext = knowledge.dedupe_retrieved_context;
+      }
+      if ('retrieved_context_max_chars' in knowledge) {
+        nextData.retrievedContextMaxChars = knowledge.retrieved_context_max_chars;
+      }
+      if ('retrieved_context_compression' in knowledge) {
+        nextData.retrievedContextCompression =
+          knowledge.retrieved_context_compression;
+      }
+      if ('answer_grounding_check' in knowledge) {
+        nextData.answerGroundingCheck = knowledge.answer_grounding_check;
+      }
+    }
+  });
+
+  if (nextParameters) {
+    nextData.parameters = nextParameters;
+  }
+
+  return nextData as Partial<LLMNodeData>;
+};
+
 const HelpPopover = ({
   id,
   activeHelp,
@@ -273,6 +342,15 @@ export function LLMNodePanel({
   const toggleHelp = useCallback((id: PromptHelpId) => {
     setActiveHelp((current) => (current === id ? null : id));
   }, []);
+
+  const applyRecommendationPatches = useCallback(
+    (patches: Record<string, unknown>[]) => {
+      const nextData = applyRecommendationPatchesToNodeData(data, patches);
+      if (Object.keys(nextData).length === 0) return;
+      updateNodeData(nodeId, nextData);
+    },
+    [data, nodeId, updateNodeData],
+  );
 
   // 마법사에서 적용된 프롬프트 처리
   const handleApplyImproved = (improvedPrompt: string) => {
@@ -1400,6 +1478,7 @@ export function LLMNodePanel({
           appliedIds={appliedRecommendationIds}
           onClose={() => setIsOptimizationModalOpen(false)}
           onMarkForReview={setAppliedRecommendationIds}
+          onApplyPatches={applyRecommendationPatches}
         />
       ) : null}
 
