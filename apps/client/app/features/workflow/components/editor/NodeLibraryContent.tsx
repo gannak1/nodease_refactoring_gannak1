@@ -1,9 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { Search } from 'lucide-react';
+import { Plus, Search } from 'lucide-react';
 import { nodeRegistry, NodeDefinition } from '../../config/nodeRegistry';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
+import { canAddNodeDefinitionAfterTarget } from '../../hooks/useNodeCreation';
+import type { AppNode } from '../../types/Nodes';
 
 interface NodeLibraryContentProps {
   onDragStart?: (
@@ -12,6 +14,7 @@ interface NodeLibraryContentProps {
     nodeDef: NodeDefinition,
   ) => void;
   onSelect?: (nodeType: string, nodeDef: NodeDefinition) => void;
+  onAddAfterSelected?: (nodeType: string, nodeDef: NodeDefinition) => void;
   hoveredNode?: string | null;
   onHoverNode?: (
     nodeId: string | null,
@@ -31,6 +34,7 @@ const TABS = [
 export const NodeLibraryContent = ({
   onDragStart,
   onSelect,
+  onAddAfterSelected,
   hoveredNode,
   onHoverNode,
   disabledNodeTypes = [],
@@ -39,6 +43,7 @@ export const NodeLibraryContent = ({
   // 처음 생성 시: 시작 노드 1개만 존재 -> 'start' 탭
   // 이후: 노드가 2개 이상이거나 시작 노드가 아닌 경우 -> 'nodes' 탭
   const nodes = useWorkflowStore((state) => state.nodes);
+  const edges = useWorkflowStore((state) => state.edges);
   const isInitialState =
     nodes.length === 1 &&
     (nodes[0].type === 'startNode' ||
@@ -126,53 +131,86 @@ export const NodeLibraryContent = ({
           </div>
         ) : (
           <div className="space-y-4">
-            {filteredNodes.map((node) => (
-              <div
-                key={node.id}
-                draggable={
-                  !!onDragStart &&
-                  !isNodeDisabled(node.type) &&
-                  node.category !== 'workflow'
-                }
-                onDragStart={(e) => {
-                  if (
-                    !isNodeDisabled(node.type) &&
-                    node.category !== 'workflow'
-                  ) {
-                    onDragStart?.(e, node.type, node);
-                  }
-                }}
-                onClick={() => {
-                  if (!isNodeDisabled(node.type)) {
-                    onSelect?.(node.type, node);
-                  }
-                }}
-                onMouseEnter={(e) => onHoverNode?.(node.id, node, e)}
-                onMouseLeave={(e) => onHoverNode?.(null, null, e)}
-                className={`group flex items-center gap-3 rounded-lg p-2 transition-all ${
-                  isNodeDisabled(node.type)
-                    ? 'opacity-50 cursor-not-allowed'
-                    : 'cursor-pointer hover:bg-slate-100 active:scale-[0.98]'
-                } ${
-                  hoveredNode === node.id && !isNodeDisabled(node.type)
-                    ? 'bg-slate-100'
-                    : ''
-                }`}
-              >
+            {filteredNodes.map((node) => {
+              const disabled = isNodeDisabled(node.type);
+              const canAddAfter =
+                !disabled &&
+                !!onAddAfterSelected &&
+                canAddNodeDefinitionAfterTarget(
+                  node,
+                  nodes as AppNode[],
+                  edges,
+                );
+
+              return (
                 <div
-                  className="w-8 h-8 rounded-lg flex items-center justify-center shadow-sm text-white transition-transform group-hover:scale-105"
-                  style={{ backgroundColor: node.color }}
+                  key={node.id}
+                  draggable={
+                    !!onDragStart && !disabled && node.category !== 'workflow'
+                  }
+                  onDragStart={(e) => {
+                    if (!disabled && node.category !== 'workflow') {
+                      onDragStart?.(e, node.type, node);
+                    }
+                  }}
+                  onClick={() => {
+                    if (!disabled) {
+                      onSelect?.(node.type, node);
+                    }
+                  }}
+                  onMouseEnter={(e) => onHoverNode?.(node.id, node, e)}
+                  onMouseLeave={(e) => onHoverNode?.(null, null, e)}
+                  className={`group flex items-center gap-3 rounded-lg p-2 transition-all ${
+                    disabled
+                      ? 'opacity-50 cursor-not-allowed'
+                      : 'cursor-pointer hover:bg-slate-100 active:scale-[0.98]'
+                  } ${
+                    hoveredNode === node.id && !disabled ? 'bg-slate-100' : ''
+                  }`}
                 >
-                  {node.icon}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate text-sm font-semibold text-slate-950">
-                    {node.name}
+                  <div
+                    className="w-8 h-8 rounded-lg flex items-center justify-center shadow-sm text-white transition-transform group-hover:scale-105"
+                    style={{ backgroundColor: node.color }}
+                  >
+                    {node.icon}
                   </div>
-                  {/* Description is hidden in list, shown in hover card usually */}
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate text-sm font-semibold text-slate-950">
+                      {node.name}
+                    </div>
+                    {/* Description is hidden in list, shown in hover card usually */}
+                  </div>
+                  {onAddAfterSelected && (
+                    <button
+                      type="button"
+                      draggable={false}
+                      disabled={!canAddAfter}
+                      title={
+                        canAddAfter
+                          ? '기준 노드 뒤에 추가'
+                          : '노드 하나를 선택하거나 단일 말단 노드가 있을 때 추가할 수 있습니다'
+                      }
+                      aria-label={`${node.name} 기준 노드 뒤에 추가`}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (canAddAfter) {
+                          onAddAfterSelected?.(node.type, node);
+                        }
+                      }}
+                      className={`ml-auto flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition-colors ${
+                        canAddAfter
+                          ? 'border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100'
+                          : 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300'
+                      }`}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>뒤에 추가</span>
+                    </button>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

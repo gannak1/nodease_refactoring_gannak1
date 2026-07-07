@@ -8,6 +8,101 @@ import {
 } from '../utils/conditionNodeHelpers';
 import { arrangeConditionNodeChildren } from '../utils/arrangeConditionNodes';
 import { useWorkflowStore } from '../store/useWorkflowStore';
+import type { NodeDefinition } from '../config/nodeRegistry';
+import {
+  WORKFLOW_NODE_GAP,
+  snapCanvasPosition,
+} from '../utils/workflowCanvasGeometry';
+
+const OVERLAP_THRESHOLD_X = 90;
+const OVERLAP_THRESHOLD_Y = 90;
+const SOURCE_AMBIGUOUS_NODE_TYPES = new Set(['conditionNode']);
+const SOURCE_BLOCKED_NODE_TYPES = new Set(['answerNode']);
+const NON_WORKFLOW_NODE_TYPES = new Set(['note']);
+
+export const getLastNodes = (nodes: AppNode[], edges: Edge[]) => {
+  const workflowNodeIds = new Set(
+    nodes
+      .filter((node) => !NON_WORKFLOW_NODE_TYPES.has(node.type || ''))
+      .map((node) => node.id),
+  );
+  const nodesWithOutgoingEdge = new Set(
+    edges
+      .filter(
+        (edge) =>
+          workflowNodeIds.has(edge.source) && workflowNodeIds.has(edge.target),
+      )
+      .map((edge) => edge.source),
+  );
+  return nodes.filter(
+    (node) =>
+      workflowNodeIds.has(node.id) && !nodesWithOutgoingEdge.has(node.id),
+  );
+};
+
+export const findAddAfterTarget = (nodes: AppNode[], edges: Edge[]) => {
+  const selectedNodes = nodes.filter((node) => node.selected);
+  if (selectedNodes.length === 1) return selectedNodes[0];
+  if (selectedNodes.length > 1) return null;
+
+  const terminalCandidates = getLastNodes(nodes, edges);
+
+  if (terminalCandidates.length !== 1) return null;
+  const terminalNode = terminalCandidates[0];
+  if (SOURCE_BLOCKED_NODE_TYPES.has(terminalNode.type || '')) return null;
+  return terminalNode;
+};
+
+const canUseNodeAsAddAfterSource = (node?: AppNode | null) => {
+  if (!node) return false;
+  const nodeType = node.type || '';
+  return (
+    !SOURCE_BLOCKED_NODE_TYPES.has(nodeType) &&
+    !SOURCE_AMBIGUOUS_NODE_TYPES.has(nodeType)
+  );
+};
+
+const canUseDefinitionAsAddAfterTarget = (nodeDef?: NodeDefinition | null) => {
+  if (!nodeDef) return false;
+  return nodeDef.category !== 'trigger' && nodeDef.type !== 'workflowNode';
+};
+
+export const canAddNodeDefinitionAfterTarget = (
+  nodeDef: NodeDefinition,
+  nodes: AppNode[],
+  edges: Edge[],
+) => {
+  const targetNode = findAddAfterTarget(nodes, edges);
+  return (
+    canUseNodeAsAddAfterSource(targetNode) &&
+    canUseDefinitionAsAddAfterTarget(nodeDef)
+  );
+};
+
+const getNonOverlappingPosition = (
+  nodes: AppNode[],
+  basePosition: { x: number; y: number },
+) => {
+  let nextPosition = snapCanvasPosition(basePosition);
+  let attempts = 0;
+
+  while (
+    attempts < 12 &&
+    nodes.some(
+      (node) =>
+        Math.abs(node.position.x - nextPosition.x) < OVERLAP_THRESHOLD_X &&
+        Math.abs(node.position.y - nextPosition.y) < OVERLAP_THRESHOLD_Y,
+    )
+  ) {
+    attempts += 1;
+    nextPosition = snapCanvasPosition({
+      x: basePosition.x,
+      y: basePosition.y + WORKFLOW_NODE_GAP.addAfterY * attempts,
+    });
+  }
+
+  return nextPosition;
+};
 
 interface UseNodeCreationProps {
   edges: Edge[];
@@ -33,6 +128,8 @@ export function useNodeCreation({
 }: UseNodeCreationProps) {
   const { screenToFlowPosition } = useReactFlow();
   const addNode = useWorkflowStore((state) => state.addNode);
+  const addNodeWithEdge = useWorkflowStore((state) => state.addNodeWithEdge);
+  const nodes = useWorkflowStore((state) => state.nodes) as AppNode[];
 
   // Handle node drop from library
   const onDrop = useCallback(
@@ -186,8 +283,54 @@ export function useNodeCreation({
     [screenToFlowPosition, addNode],
   );
 
+  const handleAddNodeAfterSelected = useCallback(
+    (nodeDefId: string) => {
+      const nodeDef = getNodeDefinition(nodeDefId);
+      const targetNode = findAddAfterTarget(nodes, edges);
+      if (
+        !nodeDef ||
+        !canUseNodeAsAddAfterSource(targetNode) ||
+        !canUseDefinitionAsAddAfterTarget(nodeDef)
+      ) {
+        return;
+      }
+
+      const position = getNonOverlappingPosition(nodes, {
+        x: targetNode!.position.x + WORKFLOW_NODE_GAP.addAfterX,
+        y: targetNode!.position.y,
+      });
+      const baseNode = {
+        id: `${nodeDef.id}-${Date.now()}`,
+        type: nodeDef.type,
+        data: nodeDef.defaultData(),
+        position,
+      } as unknown as AppNode;
+
+      addNodeWithEdge(
+        baseNode,
+        {
+          id: `e-${targetNode!.id}-${nodeDef.id}-${Date.now()}`,
+          source: targetNode!.id,
+          type: 'puzzle',
+        },
+        (currentNodes, numberedNode) => [
+          ...currentNodes.map((node) => ({
+            ...node,
+            selected: false,
+          })),
+          {
+            ...numberedNode,
+            selected: true,
+          },
+        ],
+      );
+    },
+    [addNodeWithEdge, edges, nodes],
+  );
+
   return {
     onDrop,
     handleAddNodeFromLibrary,
+    handleAddNodeAfterSelected,
   };
 }

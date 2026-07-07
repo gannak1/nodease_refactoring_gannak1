@@ -150,6 +150,11 @@ type WorkflowState = {
     node: T,
     buildNodes?: (nodes: Node[], node: T) => Node[],
   ) => T;
+  addNodeWithEdge: <T extends Node>(
+    node: T,
+    edge: Omit<Edge, 'target'>,
+    buildNodes?: (nodes: Node[], node: T) => Node[],
+  ) => T | null;
   undo: () => void;
   redo: () => void;
   copySelectedNodes: () => void;
@@ -651,6 +656,62 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       features: nextFeatures,
       workflows: updatedWorkflows,
     });
+
+    return numberedNode;
+  },
+
+  addNodeWithEdge: (node, edge, buildNodes) => {
+    const { nodes, edges, features, workflows, activeWorkflowId } = get();
+    const { node: numberedNode, nextNodeDisplayNumber } = createNumberedNode(
+      node,
+      nodes,
+    );
+    const nextFeatures = {
+      ...features,
+      [NODE_NUMBER_FEATURE_KEY]: nextNodeDisplayNumber,
+    };
+    const nextNodes = buildNodes
+      ? buildNodes(nodes, numberedNode)
+      : [...nodes, numberedNode];
+    const nextEdge: Edge = {
+      ...edge,
+      target: numberedNode.id,
+    };
+    const validation = validateConnection(
+      nextNodes as AppNode[],
+      edges,
+      {
+        source: nextEdge.source,
+        sourceHandle: nextEdge.sourceHandle ?? null,
+        target: nextEdge.target,
+        targetHandle: nextEdge.targetHandle ?? null,
+      },
+    );
+
+    if (!validation.ok) {
+      return null;
+    }
+
+    const nextEdges = [...edges, nextEdge];
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      nextNodes,
+      nextEdges,
+      nextFeatures,
+    );
+
+    set((state) => ({
+      nodes: nextNodes,
+      edges: nextEdges,
+      features: nextFeatures,
+      workflows: updatedWorkflows,
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(nodes, edges),
+      ],
+      redoStack: [],
+    }));
 
     return numberedNode;
   },

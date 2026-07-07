@@ -303,7 +303,11 @@ export default function NodeCanvas() {
   });
 
   // Node creation hook
-  const { onDrop, handleAddNodeFromLibrary } = useNodeCreation({
+  const {
+    onDrop,
+    handleAddNodeFromLibrary,
+    handleAddNodeAfterSelected,
+  } = useNodeCreation({
     edges,
     setEdges,
     previewState,
@@ -1108,6 +1112,7 @@ export default function NodeCanvas() {
                   isOpen={isNodeLibraryOpen}
                   onToggle={() => setIsNodeLibraryOpen(!isNodeLibraryOpen)}
                   onAddNode={handleAddNodeFromLibrary}
+                  onAddNodeAfterSelected={handleAddNodeAfterSelected}
                   onOpenAppSearch={() =>
                     setSearchModalContext({ isOpen: true })
                   }
