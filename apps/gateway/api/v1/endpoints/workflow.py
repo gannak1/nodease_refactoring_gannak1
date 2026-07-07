@@ -119,6 +119,8 @@ class CostOptimizerCandidateRequest(BaseModel):
     label: str = "B"
     model_id: str
     fallback_model_id: str | None = None
+    auto_model_routing: bool | None = None
+    model_routing_policy: dict[str, Any] | None = None
     task_type: str | None = None
     system_prompt: str | None = None
     user_prompt: str | None = None
@@ -1219,6 +1221,19 @@ def _public_cost_optimizer_baseline_row(row: dict[str, Any]) -> dict[str, Any]:
     return public_row
 
 
+def _deep_merge_dict(
+    base: dict[str, Any],
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
 def _patch_cost_optimizer_candidate_graph(
     graph: dict[str, Any],
     node_id: str,
@@ -1236,6 +1251,15 @@ def _patch_cost_optimizer_candidate_graph(
 
     data["model_id"] = candidate.model_id
     data["fallback_model_id"] = candidate.fallback_model_id
+    if candidate.auto_model_routing is not None:
+        data["auto_model_routing"] = candidate.auto_model_routing
+    if candidate.model_routing_policy is not None:
+        current_policy = data.get("model_routing_policy")
+        current_policy = current_policy if isinstance(current_policy, dict) else {}
+        data["model_routing_policy"] = _deep_merge_dict(
+            current_policy,
+            candidate.model_routing_policy,
+        )
     if candidate.task_type is not None:
         data["task_type"] = candidate.task_type
     if candidate.system_prompt is not None:
@@ -1330,6 +1354,12 @@ def _cost_optimizer_candidate_data_from_node_data(
         "label": "추천 적용",
         "model_id": model_id,
         "fallback_model_id": fallback_model_id,
+        "auto_model_routing": node_data.get("auto_model_routing")
+        if isinstance(node_data.get("auto_model_routing"), bool)
+        else None,
+        "model_routing_policy": copy.deepcopy(node_data.get("model_routing_policy"))
+        if isinstance(node_data.get("model_routing_policy"), dict)
+        else None,
         "task_type": node_data.get("task_type") or "generate",
         "system_prompt": node_data.get("system_prompt") or None,
         "user_prompt": node_data.get("user_prompt") or None,
@@ -1386,6 +1416,20 @@ def _apply_cost_optimizer_recommendation_patch(
             next_candidate["knowledge"] = current_knowledge
         for key, value in knowledge.items():
             current_knowledge[key] = value
+
+    if "auto_model_routing" in patch:
+        next_candidate["auto_model_routing"] = bool(patch.get("auto_model_routing"))
+
+    model_routing_policy = (
+        patch.get("model_routing_policy") if isinstance(patch, dict) else None
+    )
+    if isinstance(model_routing_policy, dict):
+        current_policy = next_candidate.get("model_routing_policy")
+        current_policy = current_policy if isinstance(current_policy, dict) else {}
+        next_candidate["model_routing_policy"] = _deep_merge_dict(
+            current_policy,
+            model_routing_policy,
+        )
 
     return next_candidate
 

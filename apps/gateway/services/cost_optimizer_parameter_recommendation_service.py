@@ -18,6 +18,8 @@ from apps.shared.db.models.workflow_run import (
 
 POLICY_VERSION = "llm-parameter-recommendation-rules-v1"
 MIN_OPERATION_SAMPLES = 20
+MODEL_ROUTING_REFRESH_RECOMMENDED_MIN = 20
+MODEL_ROUTING_REFRESH_RECOMMENDED_MAX = 50
 OPERATION_TRIGGER_MODES = {"api", "webhook", "scheduler", "app"}
 OPERATION_TRIGGER_MODE_ENUMS = (
     RunTriggerMode.API,
@@ -65,12 +67,13 @@ class CostOptimizerParameterRecommendationService:
         node_data = node_data if isinstance(node_data, dict) else {}
         samples = cls._collect_samples(db, workflow.id, node_id)
         warnings: list[dict[str, str]] = []
+        routing_recommendations = cls._recommend_model_routing_controls(node_data)
 
         if len(samples) < MIN_OPERATION_SAMPLES:
             return {
                 "analysis_stage": "insufficient_logs",
                 "policy_version": POLICY_VERSION,
-                "recommendations": [],
+                "recommendations": routing_recommendations,
                 "warnings": [
                     {
                         "code": "operation_logs_insufficient",
@@ -84,7 +87,7 @@ class CostOptimizerParameterRecommendationService:
             }
 
         profile = _profile(samples)
-        recommendations: list[dict[str, Any]] = []
+        recommendations: list[dict[str, Any]] = [*routing_recommendations]
         max_tokens = cls._recommend_max_tokens(node_data, profile, warnings)
         if max_tokens:
             recommendations.append(max_tokens)
@@ -128,6 +131,96 @@ class CostOptimizerParameterRecommendationService:
                 "truncation_rate": profile["truncation_rate"],
             },
         }
+
+    @staticmethod
+    def _recommend_model_routing_controls(
+        node_data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        recommendations: list[dict[str, Any]] = []
+        auto_model_routing = bool(node_data.get("auto_model_routing"))
+        if not auto_model_routing:
+            recommendations.append(
+                _recommendation(
+                    recommendation_type="model_routing_policy",
+                    parameter_key="model_routing.enable",
+                    current_value=False,
+                    suggested_value=True,
+                    confidence="high",
+                    risk="low",
+                    reason=(
+                        "수동 모델 고정 상태입니다. 자동 모델 라우팅을 켜면 "
+                        "저장된 정책이 실행 입력과 운영 로그를 기준으로 모델을 "
+                        "선택할 수 있습니다."
+                    ),
+                    evidence={"current_auto_model_routing": False},
+                    apply_mode="direct_policy_update",
+                    candidate_patch={"auto_model_routing": True},
+                )
+            )
+
+        refresh = _model_routing_refresh(node_data)
+        current_refresh_every_runs = _int_or_none(refresh.get("refresh_every_runs"))
+        if current_refresh_every_runs is None:
+            return recommendations
+
+        if current_refresh_every_runs > MODEL_ROUTING_REFRESH_RECOMMENDED_MAX:
+            recommendations.append(
+                _recommendation(
+                    recommendation_type="model_routing_policy",
+                    parameter_key="model_routing.refresh_interval_shorten",
+                    current_value=current_refresh_every_runs,
+                    suggested_value=MODEL_ROUTING_REFRESH_RECOMMENDED_MIN,
+                    confidence="medium",
+                    risk="medium",
+                    reason=(
+                        "정책 점검 주기가 길어 운영 패턴 변화가 늦게 반영될 수 "
+                        "있습니다. 권장 범위 안에서 더 자주 점검하는 후보입니다."
+                    ),
+                    evidence={
+                        "current_refresh_every_runs": current_refresh_every_runs,
+                        "recommended_min": MODEL_ROUTING_REFRESH_RECOMMENDED_MIN,
+                        "recommended_max": MODEL_ROUTING_REFRESH_RECOMMENDED_MAX,
+                    },
+                    apply_mode="direct_policy_update",
+                    candidate_patch={
+                        "model_routing_policy": {
+                            "refresh": {
+                                "refresh_every_runs": MODEL_ROUTING_REFRESH_RECOMMENDED_MIN
+                            }
+                        }
+                    },
+                )
+            )
+        elif current_refresh_every_runs < MODEL_ROUTING_REFRESH_RECOMMENDED_MIN:
+            recommendations.append(
+                _recommendation(
+                    recommendation_type="model_routing_policy",
+                    parameter_key="model_routing.refresh_interval_relax",
+                    current_value=current_refresh_every_runs,
+                    suggested_value=MODEL_ROUTING_REFRESH_RECOMMENDED_MIN,
+                    confidence="medium",
+                    risk="low",
+                    reason=(
+                        "정책 점검 주기가 너무 짧으면 운영 로그가 충분히 쌓이기 "
+                        "전에 재평가가 반복될 수 있습니다. 최소 권장 주기로 "
+                        "완화하는 후보입니다."
+                    ),
+                    evidence={
+                        "current_refresh_every_runs": current_refresh_every_runs,
+                        "recommended_min": MODEL_ROUTING_REFRESH_RECOMMENDED_MIN,
+                        "recommended_max": MODEL_ROUTING_REFRESH_RECOMMENDED_MAX,
+                    },
+                    apply_mode="direct_policy_update",
+                    candidate_patch={
+                        "model_routing_policy": {
+                            "refresh": {
+                                "refresh_every_runs": MODEL_ROUTING_REFRESH_RECOMMENDED_MIN
+                            }
+                        }
+                    },
+                )
+            )
+        return recommendations
 
     @staticmethod
     def _collect_samples(db: Session, workflow_id: Any, node_id: str) -> list[_NodeRunSample]:
@@ -553,6 +646,7 @@ def _profile(samples: list[_NodeRunSample]) -> dict[str, Any]:
 
 def _recommendation(
     *,
+    recommendation_type: str = "llm_parameter",
     parameter_key: str,
     current_value: Any,
     suggested_value: Any,
@@ -561,9 +655,10 @@ def _recommendation(
     reason: str,
     evidence: dict[str, Any],
     candidate_patch: dict[str, Any],
+    apply_mode: str = "experiment_required",
 ) -> dict[str, Any]:
     return {
-        "recommendation_type": "llm_parameter",
+        "recommendation_type": recommendation_type,
         "parameter_key": parameter_key,
         "current_value": current_value,
         "suggested_value": suggested_value,
@@ -571,7 +666,7 @@ def _recommendation(
         "risk": risk,
         "reason": reason,
         "evidence": _safe_evidence(evidence),
-        "apply_mode": "experiment_required",
+        "apply_mode": apply_mode,
         "candidate_patch": candidate_patch,
     }
 
@@ -587,6 +682,13 @@ def _find_node(graph: dict[str, Any], node_id: str) -> dict[str, Any] | None:
 def _parameters(node_data: dict[str, Any]) -> dict[str, Any]:
     parameters = node_data.get("parameters")
     return parameters if isinstance(parameters, dict) else {}
+
+
+def _model_routing_refresh(node_data: dict[str, Any]) -> dict[str, Any]:
+    policy = node_data.get("model_routing_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    refresh = policy.get("refresh")
+    return refresh if isinstance(refresh, dict) else {}
 
 
 def _is_schema_or_structured_node(node_data: dict[str, Any]) -> bool:

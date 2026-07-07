@@ -436,6 +436,94 @@ class TestCostOptimizerAvailabilityApi:
         assert workflow.graph["nodes"][0]["data"]["fallback_model_id"] is None
         db.commit.assert_called_once()
 
+    def test_fr12_apply_recommendations_updates_model_routing_policy_controls(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "fallback_model_id": "gpt-4.1",
+                        "auto_model_routing": False,
+                        "model_routing_policy": {
+                            "status": "collecting",
+                            "refresh": {"refresh_every_runs": 100},
+                        },
+                        "parameters": {"max_tokens": 2000, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        service_payload = {
+            "analysis_stage": "recommendations_available",
+            "policy_version": "llm-parameter-recommendation-rules-v1",
+            "recommendations": [
+                {
+                    "recommendation_type": "model_routing_policy",
+                    "parameter_key": "model_routing.enable",
+                    "current_value": False,
+                    "suggested_value": True,
+                    "candidate_patch": {"auto_model_routing": True},
+                },
+                {
+                    "recommendation_type": "model_routing_policy",
+                    "parameter_key": "model_routing.refresh_interval_shorten",
+                    "current_value": 100,
+                    "suggested_value": 20,
+                    "candidate_patch": {
+                        "model_routing_policy": {
+                            "refresh": {"refresh_every_runs": 20}
+                        }
+                    },
+                },
+            ],
+            "warnings": [],
+            "profile": {"sample_count": 20},
+        }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "CostOptimizerParameterRecommendationService.recommend",
+            return_value=service_payload,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+            return_value=_available_model_options("gpt-4.1-mini", "gpt-4.1"),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply-recommendations",
+                json={
+                    "recommendation_ids": [
+                        "model_routing.enable",
+                        "model_routing.refresh_interval_shorten",
+                    ]
+                },
+            )
+
+        assert response.status_code == 200
+        node_data = workflow.graph["nodes"][0]["data"]
+        assert node_data["auto_model_routing"] is True
+        assert (
+            node_data["model_routing_policy"]["refresh"]["refresh_every_runs"] == 20
+        )
+        assert node_data["model_routing_policy"]["status"] == "collecting"
+        assert node_data["model_id"] == "gpt-4.1-mini"
+        assert node_data["fallback_model_id"] == "gpt-4.1"
+        db.commit.assert_called_once()
+
 
 def _baseline_row(
     baseline_id=None,

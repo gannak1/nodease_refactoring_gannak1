@@ -202,10 +202,17 @@ const parameterRecommendationLabelOf = (parameterKey: string) =>
     'rag.top_k': '검색 문서 개수 줄이기',
     'rag.retrieved_context_max_chars': '검색 문서 길이 제한하기',
     'rag.retrieved_context_compression': '검색 문서 압축 켜기',
+    'model_routing.enable': '자동 모델 라우팅 켜기',
+    'model_routing.refresh_interval_shorten': '정책 점검 주기 단축',
+    'model_routing.refresh_interval_relax': '정책 점검 주기 완화',
   })[parameterKey] || parameterKey;
 
 const parameterRecommendationTargetOf = (parameterKey: string) =>
-  parameterKey.startsWith('rag.') ? '지식 베이스' : '고급 설정';
+  parameterKey.startsWith('rag.')
+    ? '지식 베이스'
+    : parameterKey.startsWith('model_routing.')
+      ? '모델 라우팅'
+      : '고급 설정';
 
 const formatRecommendationValue = (
   value: unknown,
@@ -243,6 +250,10 @@ const evidenceLabelOf = (key: string) =>
     repetition_rate: '반복률',
     model_family: '모델 계열',
     compatibility: '호환성',
+    current_auto_model_routing: '현재 자동 라우팅',
+    current_refresh_every_runs: '현재 점검 주기',
+    recommended_min: '권장 최소 주기',
+    recommended_max: '권장 최대 주기',
   })[key] || key;
 
 const formatEvidenceValue = (key: string, value: unknown) => {
