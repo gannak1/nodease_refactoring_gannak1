@@ -247,6 +247,9 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   const nodeTypeLabel = definition?.name || 'Node';
   const description = data.description || definition?.description;
   const titleText = String(data.title || 'Untitled Node');
+  const hasVisibleProperties =
+    Array.isArray(data.visibleProperties) && data.visibleProperties.length > 0;
+  const resolvedSizeMode = hasVisibleProperties ? 'auto' : sizeMode;
   const nodeDisplayNumber = data.displayNumber;
   const nodeDisplayNumberText =
     typeof nodeDisplayNumber === 'number' ? String(nodeDisplayNumber) : '';
@@ -549,7 +552,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
         isolation: 'isolate',
         overflow: 'visible',
         width: WORKFLOW_NODE_SIZE.width,
-        ...(sizeMode === 'fixed'
+        ...(resolvedSizeMode === 'fixed'
           ? { height: WORKFLOW_NODE_SIZE.height }
           : { minHeight: WORKFLOW_NODE_SIZE.height }),
       }}
