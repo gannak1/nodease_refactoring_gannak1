@@ -48,7 +48,7 @@ Status: Draft
 | 용어 | 정의 |
 | --- | --- |
 | Agent | 제품 문맥에서는 사용자의 자연어 요청을 받아 workflow 생성을 돕거나 특정 workflow/node 안에서 제한된 작업을 수행하는 AI 실행 주체를 뜻한다. 현재 문서 범위에서 전역 Q&A 에이전트나 독립 DB 엔티티로 확정된 용어는 아니다. |
-| Agent Builder | 자연어 프롬프트로 실행 가능한 Workflow 초안을 생성하는 기능. 기존 node 단위 wizard와 구분되는 신규 목표 기능이다. |
+| Agent Builder | 자연어 프롬프트로 실행 가능한 Workflow 초안을 만들고, 사용자가 Preview Mode에서 검토한 뒤 `적용 및 저장`으로 저장할 수 있게 돕는 기능. 기존 node 단위 wizard와 구분되며, workflow 실행은 별도 실행 flow를 따른다. |
 | Agent Skill | 특정 provider 기능이 아니라 Nodease 내부에서 재사용할 수 있는 일반적인 절차/context/routing artifact 개념. Workflow 생성, LLM node의 RAG 옵션 구성, 검증 checklist를 안내할 수 있지만 권한을 부여하거나 source of truth가 되지는 않는다. 현재 Knowledge 설계의 구체 구현 단위는 `Knowledge Skill`이며, Agent Skill은 전역 Q&A 에이전트나 독립 실행 권한을 뜻하지 않는다. |
 | Wizard | Prompt/code/template 같은 특정 node 설정을 개선하거나 생성하는 보조 기능. 현재 코드에는 node 단위 wizard가 존재한다. |
 
@@ -62,7 +62,7 @@ Status: Draft
 | Knowledge Source Connector | Source item과 source ACL을 열거, 가져오기, 동기화하는 adapter 계층. Connector는 mbased permission을 직접 결정하지 않고 Outbound Egress Guard와 protocol adapter policy를 통과해야 한다. |
 | Knowledge Base | 목표 KB 통합 모델에서 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom. DB에서는 `knowledge_bases` table을 사용한다. 현재 구현에는 여러 문서를 포함하는 legacy 의미가 남아 있으며, MBA-105 target baseline은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)와 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다. |
 | Knowledge Collection | 여러 document-level Knowledge Base를 묶는 grouping, routing, UX, operations 단위. Collection 권한은 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
-| Knowledge Skill | Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 어떤 source-of-truth tier를 먼저 볼지, 어떤 collection/KB 후보를 고려할지, 어떤 query template과 검증 절차를 쓸지 정의하는 Knowledge 도메인의 provider-neutral 절차 지식 artifact. Skill metadata/body/resource도 권한과 redaction-safe boundary 안에 있으며, 실제 근거는 KB/document version/citation에서 가져온다. |
+| Knowledge Skill | Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 어떤 source-of-truth tier를 먼저 볼지, 어떤 collection/KB 후보를 고려할지, 어떤 query template과 검증 절차를 쓸지 정의하는 Knowledge 도메인의 provider-neutral 절차 지식 artifact. Skill metadata/body/resource도 권한과 redaction-safe boundary 안에 있으며, 실제 근거는 KB/document version/citation에서 가져온다. MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않는다. |
 | Skill Metadata | Skill 선택에 필요한 name, description, tag, owner, source tier, freshness 같은 요약 정보. 이 값 자체도 민감 metadata일 수 있어 organization/permission/display policy와 redaction/cap을 거친 safe field만 Workflow Builder, router, 실행 시점 RAG 경로에 제공한다. |
 | Skill Freshness | Skill이 참조하는 source-of-truth version, 업무 절차, eval 결과가 아직 유효한지를 나타내는 상태. 예: `fresh`, `stale`, `review_required`, `deprecated`. |
 | Skill Provenance | workflow draft, LLM node의 RAG 옵션, workflow test run, RAG strategy 비교가 어떤 skill id/version/freshness/eval 상태와 safe source reference를 사용했는지 남기는 redaction-safe summary. Raw skill body나 hidden source reference는 포함하지 않는다. |

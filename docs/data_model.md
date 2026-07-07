@@ -453,6 +453,19 @@ canonical 감사 로그. action 값은 [ADR-0008](decisions/ADR-0008-audit-actio
 
 - 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`.
 
+### Agent Builder
+
+Agent Builder는 Workflow Editor 안에서 server-issued chat session, pending request, draft preview, apply/save 상태를 복구하고 audit해야 한다. 아래 항목은 논리 데이터 모델이며, 물리 저장소는 기존 session/audit 저장소 재사용 또는 신규 테이블 중 구현 단계에서 결정할 수 있다. 단, `draft_id`로 원 draft metadata를 조회하고, refresh 이후 최근 대화와 pending request를 복구하며, apply/save 결과를 audit-safe metadata로 추적할 수 있어야 한다.
+
+| 논리 모델 | 저장/보존해야 하는 상태 | 금지 데이터 |
+| --- | --- | --- |
+| `AgentBuilderSession` | server-issued session id, authenticated user, active organization, workflow/app scope, agent panel lifecycle, 최근 메시지 보존 범위, pending request pointer, expires_at | client-generated session id를 권한/scope/audit 판단 근거로 사용 금지, credential/token/API key 원문 저장 금지 |
+| `AgentBuilderRequest` | request id, session id, request status, safe structured request summary, pending/canceled/completed state, created_at/updated_at/expires_at | raw provider response, hidden KB/source detail, secret-like user input 원문 저장 금지 |
+| `AgentBuilderDraft` | draft id, source request id, draft mode, workflow_id 또는 새 workflow 생성 scope, app_id, preview graph hash, base graph hash, workflow version/updated_at snapshot, validation state, resolved knowledge recommendation handles 또는 node별 KB binding 목록, expires_at | raw KB document/chunk content, raw source path/url/title, hidden/denied resource list, credential 원문 저장 금지 |
+| `AgentBuilderApplyEvent` | apply id, draft id, apply/save outcome, saved workflow id, latest graph hash/version/updated_at, block reason, failure reason, permission recheck outcome, stale state, validation state, audit timestamp. `outcome=saved`는 ADR-0019에 따라 apply/save audit event가 canonical audit store에 기록되었거나 workflow graph 저장과 같은 transaction 또는 동등한 내구성 경계의 outbox/durable queue에 enqueue된 경우에만 허용 | workflow execution output, Slack delivery result, KB retrieval evidence, external system mutation payload 저장 금지 |
+
+Agent Builder message history를 사용자 경험 복구 목적으로 보존할 때도 보존 개수와 TTL을 제한하고, secret-like value는 redaction policy를 거쳐야 한다. Agent Builder audit metadata는 사용자가 검토한 preview와 저장 여부를 추적하기 위한 값만 담고, workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경 또는 외부 시스템 변경의 성공을 의미하지 않는다.
+
 ### Knowledge/RAG
 
 #### `knowledge_bases`
@@ -583,7 +596,7 @@ Target retrieval에서 `document_chunks.content`, embedding input, retrieval-vis
 
 Target ingestion은 processed identity와 retrieval artifact visibility를 분리하지 않는다. `content_hash`나 fingerprint가 새 값이면 그 값에 대응하는 redacted canonical text, chunks, embeddings, index namespace, active version이 모두 committed 상태여야 한다. 현재 구현의 조기 `content_hash` commit이나 delete-then-insert chunk replacement pattern은 목표 모델의 finalization baseline을 통과하기 전까지 target-safe한 것으로 보지 않는다. Active version finalization은 fencing token, transactional outbox insert, outbox retry/dead-letter, recovery scanner, pre-finalized artifact visibility 차단, external index/DB finalize mismatch 복구 계약을 구현한다. Vector/keyword retrieval-visible artifact는 `organization_id + knowledge_base_id + active_document_version_id` filter 또는 이와 동등한 version-scoped tenant namespace를 기본 invariant로 사용해야 한다.
 
-Target Knowledge Skill은 Workflow Builder가 LLM node의 RAG 옵션을 구성하는 데 필요한 context/routing/procedure metadata를 제공하지만 source of truth나 permission source가 아니다. Skill metadata/body/resource도 organization, skill visibility, display policy, freshness/eval gate를 통과한 safe field만 Builder에 제공한다. 빌더 단계 skill selection은 실행 시점 data access 권한으로 전파되지 않고, 생성된 LLM node의 RAG 옵션은 execution subject 기준 Knowledge permission helper를 다시 통과해야 한다. Skill code execution은 별도 sandbox/approval/egress/resource-cap gate가 닫히기 전까지 target model에 포함하지 않는다 ([ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)).
+Target Knowledge Skill은 Workflow Builder가 LLM node의 RAG 옵션을 구성하는 데 필요한 context/routing/procedure metadata를 제공하지만 source of truth나 permission source가 아니다. MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않고 ADR-0017 기본 RAG option 후보와 KB safe metadata만 사용한다. 후속 기능에서 Skill metadata/body/resource를 Builder에 제공하더라도 organization, skill visibility, display policy, freshness/eval gate를 통과한 safe field만 사용할 수 있다. 빌더 단계 skill selection은 실행 시점 data access 권한으로 전파되지 않고, 생성된 LLM node의 RAG 옵션은 execution subject 기준 Knowledge permission helper를 다시 통과해야 한다. Skill code execution은 별도 sandbox/approval/egress/resource-cap gate가 닫히기 전까지 target model에 포함하지 않는다 ([ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)).
 
 ### LLM
 
