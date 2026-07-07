@@ -4,7 +4,8 @@ export type DeploymentType =
   | 'webapp'
   | 'workflow_node'
   | 'schedule'
-  | 'webhook';
+  | 'webhook'
+  | 'chatbot';
 
 // 입력 변수 스키마 타입
 export interface InputVariable {

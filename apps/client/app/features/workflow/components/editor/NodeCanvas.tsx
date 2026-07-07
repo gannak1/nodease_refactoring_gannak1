@@ -254,6 +254,7 @@ export default function NodeCanvas() {
     handlePublishAsRestAPI,
     handlePublishAsWebApp,
     handlePublishAsWidget,
+    handlePublishAsChatbot,
     handlePublishAsWorkflowNode,
     handlePublishAsSchedule,
     handlePublishAsWebhook,
@@ -1016,6 +1017,18 @@ export default function NodeCanvas() {
                       </div>
                       <div className="mt-1 text-sm text-gray-500">
                         설치 없이 바로 쓸 수 있는 페이지 제공
+                      </div>
+                    </button>
+                    <div className="my-1 border-t border-gray-100" />
+                    <button
+                      onClick={handlePublishAsChatbot}
+                      className="w-full px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                    >
+                      <div className="font-medium text-gray-900">
+                        챗봇 배포
+                      </div>
+                      <div className="mt-1 text-sm text-gray-500">
+                        대화 맥락을 기억하는 공개 채팅 페이지 제공
                       </div>
                     </button>
                     <div className="my-1 border-t border-gray-100" />
