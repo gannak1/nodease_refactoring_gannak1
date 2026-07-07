@@ -50,7 +50,13 @@ from apps.shared.services.permission_audit import record_resource_permission_den
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
-MVP_SUPPORTED_NODE_TYPES = {"startNode", "llmNode", "answerNode", "slackPostNode"}
+MVP_SUPPORTED_NODE_TYPES = {
+    "startNode",
+    "webhookTrigger",
+    "llmNode",
+    "answerNode",
+    "slackPostNode",
+}
 SAFE_SIDE_EFFECT_NOTICE = (
     "초안 생성, 미리보기, 적용 및 저장 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않습니다."
@@ -164,7 +170,8 @@ SIMPLE_INPUT_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 APPROVED_DRAFT_MODEL_ENV = "AGENT_BUILDER_DRAFT_MODEL_ID"
-SAFE_TRIGGER_TYPES = {"manual", "schedule", "api"}
+SAFE_TRIGGER_TYPES = {"manual", "schedule", "api", "webhook"}
+WEBHOOK_TRIGGER_RE = re.compile(r"(webhook|web\s*hook|웹훅)", re.IGNORECASE)
 
 
 def _safe_display_label(value: Any, *, fallback: str = "Knowledge Base") -> str:
@@ -212,6 +219,10 @@ def _message_looks_like_workflow_request(message: str) -> bool:
 
 def _message_requests_simple_input_output(message: str) -> bool:
     return bool(SIMPLE_INPUT_OUTPUT_RE.search(message or ""))
+
+
+def _message_requests_webhook_trigger(message: str) -> bool:
+    return bool(WEBHOOK_TRIGGER_RE.search(message or ""))
 
 
 def _redact_kb_refs(value: Any) -> list[dict[str, Any]]:
@@ -286,6 +297,7 @@ def _safe_preview_node_data(node: dict[str, Any]) -> dict[str, Any]:
     data = node.get("data") if isinstance(node.get("data"), dict) else {}
     title_by_type = {
         "startNode": "Start node",
+        "webhookTrigger": "Webhook trigger",
         "llmNode": "LLM node",
         "answerNode": "Answer node",
     }
@@ -299,6 +311,10 @@ def _safe_preview_node_data(node: dict[str, Any]) -> dict[str, Any]:
             safe_data["triggerType"] = trigger_type
         variables = data.get("variables") if isinstance(data.get("variables"), list) else []
         safe_data["variable_count"] = len(variables)
+    elif node_type == "webhookTrigger":
+        mappings = data.get("variable_mappings")
+        safe_data["provider"] = "custom"
+        safe_data["variable_count"] = len(mappings) if isinstance(mappings, list) else 0
     elif node_type == "llmNode":
         safe_data.update(
             {
@@ -328,7 +344,8 @@ def _redact_graph_for_preview(graph: dict[str, Any] | None) -> dict[str, Any]:
         {
             "id": node.get("id"),
             "type": node.get("type")
-            if node.get("type") in {"startNode", "llmNode", "answerNode", "note"}
+            if node.get("type")
+            in {"startNode", "webhookTrigger", "llmNode", "answerNode", "note"}
             else "agentBuilderPreviewNode",
             "position": node.get("position") or {"x": 0, "y": 0},
             "selected": False,
@@ -1639,6 +1656,21 @@ class AgentBuilderService:
             for token in ["정책", "규정", "내규", "문서", "자료", "근거", "찾아", "검색", "Knowledge", "KB"]
         )
         wants_slack = "slack" in text or "슬랙" in request.message
+        if not needs_kb:
+            needs_kb = any(
+                token in text
+                for token in [
+                    "knowledge base",
+                    "kb",
+                    "rag",
+                    "policy",
+                    "document",
+                    "docs",
+                    "internal doc",
+                    "company doc",
+                ]
+            )
+        wants_webhook = _message_requests_webhook_trigger(request.message)
         simple_input_output = _message_requests_simple_input_output(request.message)
         knowledge_requirements: list[AgentBuilderKnowledgeRequirement] = []
         pending_resolution: list[AgentBuilderPendingResolution] = []
@@ -1690,12 +1722,15 @@ class AgentBuilderService:
         planned_steps = [
             AgentBuilderPlannedStep(
                 step_id="step_input",
-                capability="start_input",
+                capability="webhook_trigger" if wants_webhook else "start_input",
                 purpose="사용자 입력을 받습니다.",
             )
         ]
         answer_depends_on = ["step_input"]
-        required_capabilities = ["start_input", "answer"]
+        required_capabilities = [
+            "webhook_trigger" if wants_webhook else "start_input",
+            "answer",
+        ]
         risk_flags: list[str] = []
         if not simple_input_output:
             planned_steps.append(
@@ -2232,7 +2267,14 @@ class AgentBuilderService:
             graph = _empty_graph()
         existing_ids = _graph_node_ids(graph)
         suffix = uuid.uuid4().hex[:8]
-        input_id = self._unique_node_id("agent-input", existing_ids, suffix)
+        wants_webhook = "webhook_trigger" in structured.required_capabilities or any(
+            step.capability == "webhook_trigger" for step in structured.planned_steps
+        )
+        input_id = self._unique_node_id(
+            "agent-webhook" if wants_webhook else "agent-input",
+            existing_ids,
+            suffix,
+        )
         uses_llm = "llm" in structured.required_capabilities or any(
             step.capability in {"llm", "knowledge_backed_llm"}
             for step in structured.planned_steps
@@ -2267,6 +2309,7 @@ class AgentBuilderService:
             }
             for item in kb_bindings
         ] if llm_id else []
+        input_output_key = "payload" if wants_webhook else "question"
         generated_nodes = [
             {
                 "id": input_id,
@@ -2287,6 +2330,20 @@ class AgentBuilderService:
                 },
             },
         ]
+        if wants_webhook:
+            generated_nodes[0] = {
+                "id": input_id,
+                "type": "webhookTrigger",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "Webhook",
+                    "provider": "custom",
+                    "variable_mappings": [
+                        {"variable_name": "payload", "json_path": "$"},
+                        {"variable_name": "question", "json_path": "$.question"},
+                    ],
+                },
+            }
         if llm_id:
             generated_nodes.append(
                 {
@@ -2299,11 +2356,11 @@ class AgentBuilderService:
                         "model_id": model_id,
                         "task_type": "answer",
                         "system_prompt": "사용자 질문에 안전하게 답변합니다.",
-                        "user_prompt": "{{question}}",
+                        "user_prompt": f"{{{{{input_output_key}}}}}",
                         "referenced_variables": [
                             {
-                                "name": "question",
-                                "value_selector": [input_id, "question"],
+                                "name": input_output_key,
+                                "value_selector": [input_id, input_output_key],
                             }
                         ],
                         "parameters": {},
@@ -2326,7 +2383,7 @@ class AgentBuilderService:
                             "variable": "answer",
                             "value_selector": [llm_id, "text"]
                             if llm_id
-                            else [input_id, "question"],
+                            else [input_id, input_output_key],
                         }
                     ],
                 },

@@ -17,6 +17,7 @@ Status: Draft
 ## API Tests
 
 - (FR-001) 생성 요청 성공 시 MVP 허용 capability 안에서 노드 그래프를 반환한다. 대표 프롬프트: "사내 휴가 정책을 바탕으로 직원 질문에 답하고 결과를 Slack으로 보내줘" → Start/Input, Knowledge Base-backed LLM, Slack send, Answer 계열 노드 포함. 이 케이스는 capability coverage test이며, PRD demo happy path는 Slack을 제외한 Knowledge Base-backed LLM flow로 검증한다. Slack channel 또는 KB 후보가 모호하면 draft를 확정하지 않고 clarification을 반환한다.
+- (FR-001) "웹훅으로 받는 사내 문서 챗봇 workflow를 만들어줘"처럼 webhook 입력을 명시한 요청은 Webhook trigger, Knowledge Base-backed LLM, Answer 계열 노드로 draft를 생성해야 하며, Start/Input node로 silent fallback하지 않는다.
 - (FR-003) 사용 가능한 credential이 없는 상태에서 생성 요청 → 부족한 credential/모델을 명시한 사전 안내 응답.
 - 유효하지 않은 `X-Organization-Id` header → 실행 전 검증 오류로 거부.
 - 해석 불가능한 프롬프트(예: 빈 문자열, 자동화와 무관한 요청) → 빈 workflow나 `입력 -> LLM -> 출력` 기본 draft를 만들지 않고 `unsupported` 또는 동등한 명시적 실패 응답과 한국어 사용 힌트를 반환한다.
@@ -26,6 +27,7 @@ Status: Draft
 - Agent Builder의 RAG 옵션 추천은 Knowledge RAG Recommendation Adapter를 통해서만 수행하며, Agent Builder가 Knowledge permission row, source ACL row, hidden KB 목록을 직접 읽지 않는다.
 - Recommendation 결과는 초기 구현에서 KB 단위로 materialize되고, Collection은 safe `source_collection_summary`로만 표시된다. Builder draft에는 현재 LLM node schema의 `knowledgeBases` 중심으로 저장된다.
 - Recommendation 후보가 0개이면 Builder는 권한 확인된 KB 후보가 없다는 경고를 표시하고, Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있다.
+- KnowledgeCandidateResolver가 active document version이 없는 legacy KB라도 `document_chunks.document_version_id IS NULL` retrieval-visible chunk를 확인하면 권한 확인된 후보로 유지하고, Agent Builder recommendation은 이를 safe candidate로 사용할 수 있다.
 - 후보가 source ACL stale/unmapped/ambiguous/unverified/revoked 또는 scope 밖 resource 때문에 제외된 경우 Builder 응답은 safe reason class와 required action만 표시하고 세부 source ACL state나 raw source path/title/url을 노출하지 않는다.
 - `X-Organization-Id`가 없으면 Agent Builder request가 거부된다.
 - Request body에 `organization_id`가 있어도 권한/scope 판단에는 사용되지 않는다.

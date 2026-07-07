@@ -178,16 +178,16 @@ export function LLMReferenceSidePanel({
     <div
       className={
         embedded
-          ? 'flex h-full min-h-0 flex-col bg-white'
-          : 'absolute right-[400px] top-14 bottom-0 w-[360px] bg-white shadow-xl z-40 flex flex-col border-l border-gray-200'
+          ? 'flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-white'
+          : 'absolute right-[400px] top-14 bottom-0 z-40 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden border-l border-gray-200 bg-white shadow-xl'
       }
       style={{ transition: 'transform 0.3s ease-in-out' }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-indigo-50/50">
-        <div className="flex items-center gap-2">
-          <BookOpen className="w-4 h-4 text-indigo-600" />
-          <div>
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 bg-indigo-50/50">
+        <div className="flex min-w-0 items-center gap-2">
+          <BookOpen className="w-4 h-4 shrink-0 text-indigo-600" />
+          <div className="min-w-0">
             <h3 className="font-semibold text-gray-800 text-sm">지식 베이스</h3>
             <p className="text-[10px] text-gray-500 mt-0.5">
               LLM이 참조할 지식 베이스를 선택합니다
@@ -205,7 +205,7 @@ export function LLMReferenceSidePanel({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      <div className="min-w-0 flex-1 overflow-y-auto p-4 space-y-6">
         {/* Knowledge Base Selection */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -227,7 +227,7 @@ export function LLMReferenceSidePanel({
           )}
           {error && <div className="text-xs text-red-500">{error}</div>}
 
-          <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
+          <div className="flex min-w-0 flex-col gap-2 max-h-72 overflow-y-auto pr-1">
             {(knowledgeBases || []).map((kb) => {
               const isSelected = selectedIds.has(kb.id);
               const isExpanded = expandedIds.has(kb.id);
@@ -235,13 +235,14 @@ export function LLMReferenceSidePanel({
               const kbDetailLoading = detailLoading[kb.id];
               const completedDocs =
                 kbDetail?.documents?.filter(
-                  (doc) => doc.status === 'completed',
+                  (doc) =>
+                    doc.status === 'completed' || (doc.chunk_count ?? 0) > 0,
                 ) || [];
 
               return (
                 <div
                   key={kb.id}
-                  className={`rounded-lg border p-3 transition-colors ${
+                  className={`min-w-0 overflow-hidden rounded-lg border p-3 transition-colors ${
                     isSelected
                       ? 'border-indigo-500 bg-indigo-50'
                       : 'border-gray-200 hover:border-indigo-200 hover:bg-gray-50'
@@ -269,7 +270,7 @@ export function LLMReferenceSidePanel({
                         </span>
                       </div>
                       {kb.description && (
-                        <p className="text-xs text-gray-600 mt-1 line-clamp-2">
+                        <p className="text-xs text-gray-600 mt-1 line-clamp-2 break-words">
                           {kb.description}
                         </p>
                       )}
@@ -307,9 +308,9 @@ export function LLMReferenceSidePanel({
                           {completedDocs.slice(0, 5).map((doc, index) => (
                             <div
                               key={doc.id || `${kb.id}-doc-${index}`}
-                              className="px-3 py-1.5 text-xs text-gray-900 flex items-center justify-between"
+                              className="px-3 py-1.5 text-xs text-gray-900 flex min-w-0 items-center justify-between"
                             >
-                              <span className="truncate flex-1">
+                              <span className="min-w-0 truncate flex-1">
                                 {(() => {
                                   const filename = doc.filename;
                                   // API source: URL이면 도메인만 추출

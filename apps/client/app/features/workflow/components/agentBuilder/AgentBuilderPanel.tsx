@@ -16,6 +16,7 @@ import {
 import { workflowApi } from '../../api/workflowApi';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { Node } from '../../types/Workflow';
+import { calculateAutoLayout } from '../../utils/layoutHelpers';
 
 type Props = {
   workflowId: string;
@@ -114,15 +115,6 @@ const canonicalEditorGraph = (nodes: Node[], edges: Edge[]) => {
   );
   return { nodes: realNodes, edges: realEdges };
 };
-
-const assistantItemsFromResponses = (
-  responses: AgentBuilderMessageResponse[],
-): ConversationItem[] =>
-  responses.map((response) => ({
-    kind: 'assistant',
-    id: `assistant-${response.request_id}`,
-    response,
-  }));
 
 const isAgentBuilderMessageResponse = (
   value: unknown,
@@ -551,9 +543,16 @@ export function AgentBuilderPanel({
           workflowApi.getWorkflow(savedWorkflowId),
         ]);
         const isSameWorkflow = savedWorkflowId === workflowId;
+        const layoutedSavedWorkflow = {
+          ...savedWorkflow,
+          nodes: calculateAutoLayout(
+            (savedWorkflow.nodes ?? []) as Node[],
+            (savedWorkflow.edges ?? []) as Edge[],
+          ) as Node[],
+        };
         setWorkflowData(
           {
-            ...savedWorkflow,
+            ...layoutedSavedWorkflow,
             appId: savedWorkflowMeta.app_id,
             envVariables: isSameWorkflow ? envVariables : [],
             runtimeVariables: isSameWorkflow ? runtimeVariables : [],

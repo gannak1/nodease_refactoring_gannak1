@@ -214,7 +214,7 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
             return (
               <div
                 key={index}
-                className={`group flex flex-col gap-2 rounded-lg border bg-white p-3 shadow-sm transition-all hover:shadow-md ${
+                className={`group flex min-w-0 flex-col gap-2 overflow-hidden rounded-lg border bg-white p-3 shadow-sm transition-all hover:shadow-md ${
                   returnKeyError
                     ? 'border-red-200 hover:border-red-300'
                     : 'border-gray-200 hover:border-gray-300'
@@ -238,9 +238,9 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
                   </button>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <div
-                    className="flex-[4]"
+                    className="min-w-0 flex-[4]"
                     title="좌측 입력 변수를 클릭해서 소스를 연결하거나 교체"
                   >
                     <VariableSelectorSlot
@@ -262,7 +262,7 @@ export function AnswerNodePanel({ nodeId, data }: AnswerNodePanelProps) {
                     </div>
                   </div>
 
-                  <div className="flex-[3]">
+                  <div className="min-w-0 flex-[3]">
                     <input
                       type="text"
                       className={`w-full rounded-md border px-2.5 py-1.5 text-xs font-semibold placeholder:font-normal placeholder:text-gray-500 focus:outline-none focus:ring-1 ${

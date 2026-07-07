@@ -28,8 +28,9 @@ type SanitizeSelectedKnowledgeBasesOptions = {
 
 // LLM 노드에서 실제로 사용할 수 있는지 판단하기 위해 완료된 문서 수만 계산합니다.
 const getCompletedCount = (detail: KnowledgeBaseDetailResponse) => {
-  return (detail.documents || []).filter((doc) => doc.status === 'completed')
-    .length;
+  return (detail.documents || []).filter(
+    (doc) => doc.status === 'completed' || (doc.chunk_count ?? 0) > 0,
+  ).length;
 };
 
 const shouldPreserveSelectionOnDetailFailure = (status?: number) => {
