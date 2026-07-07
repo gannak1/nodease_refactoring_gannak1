@@ -41,20 +41,15 @@ from apps.shared.services.permissions import (
     has_knowledge_base_permission,
     has_organization_manager_permission,
 )
+from apps.gateway.services.knowledge_collection_policy import (
+    bucket_count,
+    collection_visibility,
+    normalize_optional_text,
+    normalize_required_text,
+    safe_metadata_key_is_forbidden,
+    sanitize_safe_metadata_value,
+)
 
-
-COLLECTION_SAFE_METADATA_FORBIDDEN_KEYS = {
-    "raw",
-    "raw_source_url",
-    "raw_source_path",
-    "raw_source_title",
-    "raw_source_id",
-    "raw_principal",
-    "source_principal",
-    "credential",
-    "secret",
-    "token",
-}
 LINK_CANDIDATE_SCAN_LIMIT = 5000
 
 
@@ -64,20 +59,6 @@ class KnowledgeCollectionServiceError(Exception):
     code: str
     message: str
     details: dict[str, Any] | None = None
-
-
-def _bucket_count(count: int) -> str:
-    if count <= 0:
-        return "0"
-    if count == 1:
-        return "1"
-    if count <= 10:
-        return "2-10"
-    if count <= 100:
-        return "11-100"
-    if count <= 1000:
-        return "101-1000"
-    return "1000+"
 
 
 class KnowledgeCollectionService:
@@ -674,8 +655,8 @@ class KnowledgeCollectionService:
             sync_state=collection.sync_state,
             lifecycle_state=collection.lifecycle_state,
             visibility=self._visibility(collection),
-            linked_kb_count_bucket=_bucket_count(linked_count),
-            active_kb_count_bucket=_bucket_count(active_count),
+            linked_kb_count_bucket=bucket_count(linked_count),
+            active_kb_count_bucket=bucket_count(active_count),
             can_read=permissions["read"],
             can_route=permissions["route"],
             can_manage=permissions["manage"],
@@ -847,9 +828,7 @@ class KnowledgeCollectionService:
         )
 
     def _visibility(self, collection: KnowledgeCollection) -> str:
-        if (collection.safe_metadata or {}).get("visibility") == "public":
-            return "public"
-        return "private"
+        return collection_visibility(collection)
 
     def _sanitize_safe_metadata(
         self,
@@ -863,43 +842,33 @@ class KnowledgeCollectionService:
             sanitized = {}
             for key, value in metadata.items():
                 key_text = str(key)
-                lowered = key_text.lower()
                 if key_text == "visibility":
                     continue
-                if any(forbidden in lowered for forbidden in COLLECTION_SAFE_METADATA_FORBIDDEN_KEYS):
+                if safe_metadata_key_is_forbidden(key_text):
                     raise KnowledgeCollectionServiceError(
                         400,
                         "validation.failed",
                         "safe_metadata contains a forbidden key.",
                         {"field": "safe_metadata"},
                     )
-                sanitized[key_text[:64]] = self._sanitize_metadata_value(value)
+                try:
+                    sanitized[key_text[:64]] = sanitize_safe_metadata_value(value)
+                except TypeError as exc:
+                    raise KnowledgeCollectionServiceError(
+                        400,
+                        "validation.failed",
+                        "safe_metadata supports only primitive values and primitive lists.",
+                        {"field": "safe_metadata"},
+                    ) from exc
         if preserve_visibility in {"public", "private"}:
             sanitized["visibility"] = preserve_visibility
         return sanitized
 
-    def _sanitize_metadata_value(self, value: Any) -> Any:
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        if isinstance(value, str):
-            return value[:512]
-        if isinstance(value, list):
-            return [self._sanitize_metadata_value(item) for item in value[:50]]
-        raise KnowledgeCollectionServiceError(
-            400,
-            "validation.failed",
-            "safe_metadata supports only primitive values and primitive lists.",
-            {"field": "safe_metadata"},
-        )
-
     def _normalize_optional_text(self, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = " ".join(value.split())
-        return normalized or None
+        return normalize_optional_text(value)
 
     def _normalize_required_text(self, value: str, field: str) -> str:
-        normalized = " ".join(value.split())
+        normalized = normalize_required_text(value)
         if not normalized:
             raise KnowledgeCollectionServiceError(
                 400,
