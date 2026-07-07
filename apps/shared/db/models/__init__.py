@@ -72,6 +72,7 @@ from apps.shared.db.models.user import User
 from apps.shared.db.models.user_app_creation_permission import (
     UserAppCreationPermission,
 )
+from apps.shared.db.models.budget_alert import BudgetAlert, BudgetAlertState
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -139,6 +140,8 @@ __all__ = [
     "REQUESTED_PERMISSION_APP_CREATE",
     "Workflow",
     "WorkflowBudget",
+    "BudgetAlert",
+    "BudgetAlertState",
     "WorkflowDeployment",
     "WorkflowNodeRun",
     "WorkflowRun",
