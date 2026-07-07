@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
+import gzip
 import json
+import os
+import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,8 +32,14 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
-from apps.shared.db.models.knowledge import KnowledgeBase, SourceType
-from apps.shared.db.models.knowledge import Document
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    KnowledgeBase,
+    KnowledgeCollection,
+    KnowledgeCollectionItem,
+    SourceType,
+)
 from apps.shared.db.models.llm import (
     LLMCredential,
     LLMModel,
@@ -58,6 +68,7 @@ from apps.shared.db.models.organization_membership import (
 from apps.shared.db.models.team import (
     Team,
     TeamAuditPermission,
+    TeamKnowledgeCollectionPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMembership,
@@ -80,11 +91,27 @@ from apps.shared.db.models.workflow_run import (
 
 DEMO_SEED_VERSION = "final-demo-2026-07"
 DEMO_PASSWORD = "123123"
+DEMO_CHAT_MODEL = "gpt-5.4"
+DEMO_CHAT_MINI_MODEL = "gpt-5.4-mini"
+DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
+DEMO_EMBEDDING_DIMENSION = 1536
+DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
+DEMO_INTERNAL_DOCS_DIR = (
+    DEMO_REPO_ROOT / "local" / "demo-scenario-2026-07-08" / "internal-docs"
+)
+DEMO_KNOWLEDGE_FIXTURE_PATH = (
+    DEMO_REPO_ROOT / "apps" / "shared" / "db" / "fixtures" / "demo_knowledge_chunks.jsonl.gz"
+)
+DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV = "NODEASE_DEMO_REGENERATE_KNOWLEDGE_FIXTURE"
+DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV = (
+    "NODEASE_DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL"
+)
 # Docker gateway 컨테이너 경로를 우선하고, 로컬 venv 실행에서는 repo 루트의
 # gitignore된 uploads/ 아래로 폴백한다 (docs/demo/local-demo-db.md 실행 방식 참고).
 DEMO_UPLOAD_DIRS = (
     Path("/app/uploads/demo_seed"),
-    Path(__file__).resolve().parents[3] / "uploads" / "demo_seed",
+    DEMO_REPO_ROOT / "uploads" / "demo_seed",
 )
 
 
@@ -119,6 +146,28 @@ TEAM_IDS = {
 KB_IDS = {
     "hr": _uuid(300),
     "finance": _uuid(301),
+    "legal_labor_standards": _uuid(320),
+    "legal_equal_employment": _uuid(321),
+    "legal_equal_employment_enforcement_decree": _uuid(322),
+    "legal_privacy": _uuid(323),
+    "legal_occupational_safety": _uuid(324),
+    "legal_retirement_benefits": _uuid(325),
+    "legal_fair_hiring": _uuid(326),
+    "internal_onboarding": _uuid(327),
+    "internal_leave_attendance": _uuid(328),
+    "internal_benefits": _uuid(329),
+    "internal_privacy_hr_records": _uuid(330),
+    "internal_budget_alert_runbook": _uuid(331),
+    "internal_cost_optimization_playbook": _uuid(332),
+    "internal_developer_onboarding_rules": _uuid(333),
+    "internal_developer_commit_convention": _uuid(334),
+    "internal_developer_compensation_band": _uuid(335),
+    "internal_compensation_access_policy": _uuid(336),
+}
+
+COLLECTION_IDS = {
+    "legal_public": _uuid(360),
+    "internal_onboarding": _uuid(361),
 }
 
 # author의 승인된 App 생성 권한 신청 이력 (ADR-0016).
@@ -141,14 +190,63 @@ LLM_CREDENTIAL_IDS = {
 }
 
 CREDENTIAL_MODEL_REL_IDS = {
-    "gpt-4.1": _uuid(921),
-    "gpt-4.1-mini": _uuid(922),
+    DEMO_CHAT_MODEL: _uuid(921),
+    DEMO_CHAT_MINI_MODEL: _uuid(922),
+    DEMO_EMBEDDING_MODEL: _uuid(923),
+}
+
+TEAM_LLM_PERMISSION_IDS = {
+    "platform_admin": _uuid(930),
+    "ai_builder_onboarding": _uuid(931),
+    "hr_knowledge_users": _uuid(932),
+    "customer_support_ops": _uuid(933),
+}
+
+USER_LLM_PERMISSION_IDS = {
+    "author": _uuid(940),
 }
 
 DOCUMENT_IDS = {
     "hr_leave": _uuid(310),
     "hr_welfare": _uuid(311),
     "finance_sensitive": _uuid(312),
+    "legal_labor_standards": _uuid(340),
+    "legal_equal_employment": _uuid(341),
+    "legal_equal_employment_enforcement_decree": _uuid(342),
+    "legal_privacy": _uuid(343),
+    "legal_occupational_safety": _uuid(344),
+    "legal_retirement_benefits": _uuid(345),
+    "legal_fair_hiring": _uuid(346),
+    "internal_onboarding": _uuid(347),
+    "internal_leave_attendance": _uuid(348),
+    "internal_benefits": _uuid(349),
+    "internal_privacy_hr_records": _uuid(350),
+    "internal_budget_alert_runbook": _uuid(351),
+    "internal_cost_optimization_playbook": _uuid(352),
+    "internal_developer_onboarding_rules": _uuid(353),
+    "internal_developer_commit_convention": _uuid(354),
+    "internal_developer_compensation_band": _uuid(355),
+    "internal_compensation_access_policy": _uuid(356),
+}
+
+COLLECTION_ITEM_IDS = {
+    "legal_labor_standards": _uuid(370),
+    "legal_equal_employment": _uuid(371),
+    "legal_equal_employment_enforcement_decree": _uuid(372),
+    "legal_privacy": _uuid(373),
+    "legal_occupational_safety": _uuid(374),
+    "legal_retirement_benefits": _uuid(375),
+    "legal_fair_hiring": _uuid(376),
+    "internal_onboarding": _uuid(377),
+    "internal_leave_attendance": _uuid(378),
+    "internal_benefits": _uuid(379),
+    "internal_privacy_hr_records": _uuid(380),
+    "internal_budget_alert_runbook": _uuid(381),
+    "internal_cost_optimization_playbook": _uuid(382),
+    "internal_developer_onboarding_rules": _uuid(383),
+    "internal_developer_commit_convention": _uuid(384),
+    "internal_developer_compensation_band": _uuid(385),
+    "internal_compensation_access_policy": _uuid(386),
 }
 
 APP_IDS = {
@@ -188,6 +286,25 @@ class DemoUserSpec:
     membership_state: str
     organization_auth_state: str
     teams: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DemoKnowledgeSeedSpec:
+    key: str
+    name: str
+    description: str
+    filename: str
+    summary: str
+    source_tier: str
+    classification: str
+    tags: tuple[str, ...]
+    keywords: tuple[str, ...]
+    collection_key: str | None
+    content: str | None = None
+    legal_filename_pattern: str | None = None
+    legal_required_tokens: tuple[str, ...] = ()
+    chunk_size: int = 1000
+    chunk_overlap: int = 150
 
 
 USER_SPECS = [
@@ -358,6 +475,451 @@ TEST_TEAM_SPECS = {
     "qa_member": ("QA 일반팀", "테스트 viewer 권한 확인용 팀"),
 }
 
+INTERNAL_DOCUMENT_CONTENT = {
+    "internal_onboarding": """# 신입사원 온보딩 안내
+
+## 첫 주 진행 순서
+
+신입사원은 입사 첫날 관리자 대시보드에서 조직 초대와 기본 권한을 확인한다.
+AI 빌더 사용이 필요한 경우 App 생성 권한 신청을 제출하고, 관리자가 승인한 뒤 온보딩 워크플로우를 만들 수 있다.
+
+## 필수 확인 항목
+
+1. 회사 계정 로그인과 2단계 인증 등록
+2. 인사 포털 프로필 확인
+3. 보안 서약과 개인정보 처리 안내 확인
+4. 사내 문서 질문 응답 봇 테스트 실행
+
+## RAG 사용 안내
+
+사내 문서 질문 응답 봇은 인사, 복지, 휴가, 법령 공개 자료를 검색해 답변한다.
+개인별 병가 기록, 인사평가, 급여 원장처럼 개인 식별 정보가 포함된 자료는 일반 RAG 후보에 포함하지 않는다.
+""",
+    "internal_leave_attendance": """# 휴가·근태·가족돌봄휴가 운영 정책
+
+## 가족돌봄휴가
+
+가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있다.
+사내 기준상 가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 긴급하지 않은 경우 사용 예정일 전까지 팀 리더 승인을 받아야 한다.
+
+## 신청 경로
+
+휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청한다.
+신청자는 휴가 종류, 사용 기간, 사유, 대체 업무 담당자를 입력한다.
+
+## 검색 제한
+
+동료의 병가 기록, 휴직 사유, 개인 인사평가 결과는 일반 사용자에게 공개되지 않는다.
+LLM 답변은 제도 설명과 신청 절차 안내로 제한한다.
+""",
+    "internal_benefits": """# 복지·교육비 지원 정책
+
+## 복지 포인트
+
+복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급된다.
+사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분한다.
+
+## 교육비 지원
+
+업무 관련 교육, 자격증, 컨퍼런스 참가비는 팀 리더 승인 후 지원할 수 있다.
+교육비 지원 신청에는 교육명, 목적, 예상 비용, 업무 관련성을 기재한다.
+
+## 경조사 지원
+
+경조사 지원은 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내 제출한다.
+""",
+    "internal_privacy_hr_records": """# 개인정보 및 인사기록 접근 정책
+
+## 기본 원칙
+
+인사기록, 병가 기록, 평가 결과, 급여 정보는 최소 권한 원칙에 따라 접근한다.
+일반 RAG 검색은 제도 문서와 절차 문서만 노출하며, 개인별 원장이나 민감 원문은 후보에서 제외한다.
+
+## 허용되는 답변 범위
+
+LLM은 개인정보 처리 기준, 접근 신청 절차, 보존 기간 같은 정책 설명을 제공할 수 있다.
+특정 구성원의 건강 정보, 징계 정보, 급여, 평가 등 개인 식별 가능한 내용은 답변하지 않는다.
+
+## 운영자 조치
+
+민감 정보 접근 요청이 탐지되면 audit trace에 정책 차단 이벤트를 남기고 관리자 검토 대상으로 분류한다.
+""",
+    "internal_budget_alert_runbook": """# 워크플로우 예산 90% 알림 운영 Runbook
+
+## 알림 기준
+
+관리자 운영 콘솔은 월 예산 사용률이 90% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
+관리자는 대상 워크플로우를 일괄 선택해 운영자에게 비용 점검 알림을 보낼 수 있다.
+
+## 알림 내용
+
+알림에는 워크플로우 이름, 최근 실행 비용, LLM 노드 비용 비중, 최근 7일 실패율, 권장 점검 항목을 포함한다.
+운영자는 알림에서 바로 워크플로우 분석 화면으로 이동한다.
+
+## 후속 조치
+
+운영자는 LLM 노드별 token 사용량, RAG 검색 건수, 모델별 비용을 비교하고 필요하면 모델 변경 또는 top_k 조정을 검토한다.
+""",
+    "internal_cost_optimization_playbook": """# Workflow LLM 비용 최적화 Playbook
+
+## 분석 순서
+
+운영자는 워크플로우 분석 화면에서 노드별 비용 비중을 먼저 확인한다.
+LLM 노드 비용이 높으면 prompt 길이, RAG evidence 수, 모델 단가, 재시도 횟수를 순서대로 점검한다.
+
+## 권장 조치
+
+반복 질의는 캐시 후보로 분류하고, 단순 분류 노드는 더 작은 모델을 검토한다.
+RAG 노드는 관련성이 낮은 문서가 많이 들어오면 top_k를 낮추거나 metadata filter를 적용한다.
+근거 문서는 trace에서 요약과 참조 ID만 남기고 원문을 durable trace에 중복 저장하지 않는다.
+
+## 승인 필요 조건
+
+고객 보상, 법무 검토, 개인정보 포함 답변은 자동 발송하지 않고 승인 노드로 넘긴다.
+""",
+    "internal_developer_onboarding_rules": """# 개발팀 신입 온보딩 및 업무 내규
+
+## 적용 대상
+
+이 문서는 개발팀에 입사한 신입사원이 첫 달에 따라야 할 업무 내규와 온보딩 절차를 설명한다.
+개발팀 신입사원은 입사 첫 주에 개발 환경 세팅, 보안 교육, 코드 저장소 접근 권한, PR 리뷰 흐름을 확인한다.
+
+## 첫 주 체크리스트
+
+1. 회사 계정, VPN, 2단계 인증을 등록한다.
+2. GitHub 조직 초대와 개발팀 repository 접근 권한을 확인한다.
+3. 기본 브랜치 정책, commit convention, PR template, 리뷰 승인 기준을 읽는다.
+4. 사내 문서 질문 응답 봇에서 온보딩 문서와 개발팀 내규를 검색해 확인한다.
+5. 운영 데이터, 고객 데이터, 개인 인사정보는 승인된 시스템에서만 접근한다.
+
+## 개발 업무 원칙
+
+신입 개발자는 첫 달 동안 production 직접 배포를 수행하지 않는다.
+모든 변경은 feature branch에서 작업하고, PR 리뷰와 CI 통과 후 merge한다.
+긴급 장애 대응 참여는 멘토 또는 운영 담당자와 함께 진행한다.
+
+## 질문 채널
+
+개발 환경, 브랜치, 커밋 메시지, PR 리뷰 질문은 개발팀 온보딩 채널에 남긴다.
+보상, 평가, 개인 인사정보 관련 질문은 인사 포털의 공개 정책 범위 안에서만 안내받을 수 있다.
+""",
+    "internal_developer_commit_convention": """# 개발팀 커밋·브랜치·PR 컨벤션
+
+## 브랜치 이름
+
+Linear 이슈가 있는 기능 작업은 `feature/mba-번호` 형식의 브랜치를 사용한다.
+버그 수정은 같은 이슈 번호를 기준으로 `fix/mba-번호`를 사용할 수 있다.
+실험성 작업이나 개인 임시 브랜치는 PR 대상 브랜치로 사용하지 않는다.
+
+## 커밋 메시지
+
+커밋 메시지는 `type: 한국어 설명` 형식을 따른다.
+type은 영어 소문자로 작성하며 대표 값은 `feat`, `fix`, `docs`, `test`, `refactor`, `chore`다.
+예시는 다음과 같다.
+
+- `feat: 개발팀 온보딩 RAG 문서 추가`
+- `fix: Knowledge 목록 legacy schema 오류 방어`
+- `docs: 데모 DB 재생성 절차 보강`
+- `test: Workflow RAG 권한 경계 회귀 테스트 추가`
+
+## PR 작성 기준
+
+PR 본문에는 변경 사항, 관련 이슈, 테스트 결과, UI 변경 여부를 적는다.
+권한, credential, RAG, audit, trace, 비용 최적화 경계를 건드린 경우 관련 문서와 테스트를 함께 갱신한다.
+리뷰 요청 전에는 `git diff --check`와 변경 범위에 맞는 테스트를 실행한다.
+
+## 금지 사항
+
+secret, API key, token, `.env` 내용, 암호화 전 credential 원문을 커밋 메시지, PR 본문, 로그, fixture에 남기지 않는다.
+민감 원문을 trace나 demo fixture에 넣어야 하는 경우 별도 승인 없이 진행하지 않는다.
+""",
+    "internal_developer_compensation_band": """# 개발 직군 신입 보상 밴드 및 공개 가능 범위
+
+## 공개 가능한 안내 범위
+
+이 문서는 개발팀 신입사원이 질문할 수 있는 보상 기준의 공개 가능 범위를 설명한다.
+사내 문서 질문 응답 봇은 개인별 실제 연봉이 아니라 직군·레벨별 보상 밴드, 산정 요소, 문의 경로만 답변할 수 있다.
+
+## 신입 개발자 보상 밴드
+
+2026년 데모 기준 개발 직군 신입 레벨은 `DEV-L1`로 분류한다.
+`DEV-L1` 기준 연간 기본급 밴드는 4,800만 원에서 5,600만 원 사이로 안내한다.
+최종 제안 금액은 경력 인정, 직무 적합도, 채용 평가, 근무 지역, 입사 시점의 내부 보상 정책에 따라 달라질 수 있다.
+
+## 보상 구성
+
+기본급 외 항목은 성과급, 복지 포인트, 교육비 지원, 장비 지원으로 구분한다.
+성과급은 회사 성과와 개인 평가에 따라 달라지므로 사전 확정 금액으로 안내하지 않는다.
+복지 포인트와 교육비 지원은 복지·교육비 지원 정책 문서를 함께 참조한다.
+
+## 답변 제한
+
+동료, 특정 팀원, 특정 후보자, 특정 사번의 실제 연봉·성과급·평가등급은 답변하지 않는다.
+개인별 보상정보가 필요한 경우 인사 포털의 권한 승인 절차를 통해 HR 담당자에게 문의한다.
+""",
+    "internal_compensation_access_policy": """# 개인 보상정보 및 인사기록 조회 제한 정책
+
+## 정책 목적
+
+개인 보상정보는 급여, 연봉, 성과급, 스톡옵션, 평가등급, 보상 조정 이력을 포함한다.
+이 정보는 개인정보 및 인사기록 접근 정책에 따라 최소 권한 원칙으로 보호한다.
+
+## RAG 답변 허용 범위
+
+RAG 기반 사내 문서 질문 응답 봇은 공개 가능한 보상 밴드, 보상 산정 원칙, 문의 경로만 답변할 수 있다.
+특정 임직원, 동료, 팀원, 후보자, 사번, 실명과 연결된 실제 보상정보는 답변하지 않는다.
+질문자가 본인이라고 주장해도 본인 확인과 HR 권한 확인이 없는 채팅 경로에서는 개인별 금액을 제공하지 않는다.
+
+## 차단해야 하는 질문 예시
+
+- `개발팀 동료 김OO의 연봉을 알려줘`
+- `우리 팀 백엔드 개발자들의 실제 연봉 리스트를 보여줘`
+- `박OO의 성과급과 평가등급을 알려줘`
+- `내 옆자리 개발자의 보상 조정 이력을 알려줘`
+
+## 안내 문구
+
+개인별 연봉이나 평가 정보 요청을 받으면 다음과 같이 안내한다.
+`개인 보상정보는 접근 권한이 필요한 민감 정보라 이 채팅에서 제공할 수 없습니다. 공개 가능한 보상 밴드나 문의 경로는 안내할 수 있습니다.`
+
+## 운영자 처리
+
+개인 보상정보 조회 시도는 audit log에 정책 차단 이벤트로 남긴다.
+반복적인 민감정보 요청은 관리자 검토 대상으로 분류한다.
+""",
+}
+
+LEGAL_DOCUMENT_SPECS = (
+    DemoKnowledgeSeedSpec(
+        key="legal_labor_standards",
+        name="공개 법령: 근로기준법",
+        description="휴가, 근로시간, 임금 등 온보딩 질의에 참조하는 공개 법령 KB",
+        filename="근로기준법.pdf",
+        summary="근로기준법 공개 법령 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "labor", "onboarding"),
+        keywords=("근로기준법", "연차", "휴가", "근로시간", "임금", "가족돌봄"),
+        collection_key="legal_public",
+        legal_filename_pattern="근로기준법",
+    ),
+    DemoKnowledgeSeedSpec(
+        key="legal_equal_employment",
+        name="공개 법령: 남녀고용평등법",
+        description="일·가정 양립, 가족돌봄 제도 질의에 참조하는 공개 법령 KB",
+        filename="남녀고용평등과 일가정 양립 지원에 관한 법률.pdf",
+        summary="남녀고용평등과 일·가정 양립 지원에 관한 법률 공개 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "labor", "family-care"),
+        keywords=("남녀고용평등", "일가정", "가족돌봄휴가", "육아휴직", "배우자 출산휴가"),
+        collection_key="legal_public",
+        legal_filename_pattern="지원에 관한 법률(",
+        legal_required_tokens=("남녀고용평등",),
+    ),
+    DemoKnowledgeSeedSpec(
+        key="legal_equal_employment_enforcement_decree",
+        name="공개 법령: 남녀고용평등법 시행령",
+        description="일·가정 양립 제도 세부 기준 질의에 참조하는 공개 시행령 KB",
+        filename="남녀고용평등과 일가정 양립 지원에 관한 법률 시행령.pdf",
+        summary="남녀고용평등과 일·가정 양립 지원에 관한 법률 시행령 공개 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "labor", "family-care", "decree"),
+        keywords=("시행령", "가족돌봄", "육아기", "근로시간 단축", "일가정"),
+        collection_key="legal_public",
+        legal_filename_pattern="지원에 관한 법률 시행령",
+        legal_required_tokens=("남녀고용평등",),
+    ),
+    DemoKnowledgeSeedSpec(
+        key="legal_privacy",
+        name="공개 법령: 개인정보 보호법",
+        description="인사기록과 개인정보 처리 기준 질의에 참조하는 공개 법령 KB",
+        filename="개인정보 보호법.pdf",
+        summary="개인정보 보호법 공개 법령 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "privacy", "hr-records"),
+        keywords=("개인정보", "민감정보", "처리", "보존", "접근권한", "동의"),
+        collection_key="legal_public",
+        legal_filename_pattern="개인정보 보호법",
+    ),
+    DemoKnowledgeSeedSpec(
+        key="legal_occupational_safety",
+        name="공개 법령: 산업안전보건법",
+        description="안전보건 교육과 작업장 안전 질의에 참조하는 공개 법령 KB",
+        filename="산업안전보건법.pdf",
+        summary="산업안전보건법 공개 법령 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "safety", "onboarding"),
+        keywords=("산업안전보건", "안전교육", "보건", "위험성", "근로자"),
+        collection_key="legal_public",
+        legal_filename_pattern="산업안전보건법",
+    ),
+    DemoKnowledgeSeedSpec(
+        key="legal_retirement_benefits",
+        name="공개 법령: 근로자퇴직급여 보장법",
+        description="퇴직급여 제도 질의에 참조하는 공개 법령 KB",
+        filename="근로자퇴직급여 보장법.pdf",
+        summary="근로자퇴직급여 보장법 공개 법령 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "retirement", "benefits"),
+        keywords=("퇴직급여", "퇴직연금", "근로자", "급여", "보장"),
+        collection_key="legal_public",
+        legal_filename_pattern="근로자퇴직급여 보장법",
+    ),
+    DemoKnowledgeSeedSpec(
+        key="legal_fair_hiring",
+        name="공개 법령: 채용절차의 공정화에 관한 법률",
+        description="채용 절차와 입사 서류 질의에 참조하는 공개 법령 KB",
+        filename="채용절차의 공정화에 관한 법률.pdf",
+        summary="채용절차의 공정화에 관한 법률 공개 PDF",
+        source_tier="public",
+        classification="public_law",
+        tags=("law", "hiring", "onboarding"),
+        keywords=("채용절차", "공정화", "입사지원", "채용서류", "구직자"),
+        collection_key="legal_public",
+        legal_filename_pattern="채용절차의 공정화에 관한 법률",
+    ),
+)
+
+INTERNAL_DOCUMENT_SPECS = (
+    DemoKnowledgeSeedSpec(
+        key="internal_onboarding",
+        name="사내문서: 신입사원 온보딩 안내",
+        description="신입사원 권한 승인과 AI 빌더 사용 절차를 안내하는 사내문서 KB",
+        filename="신입사원 온보딩 안내.md",
+        summary="입사 첫 주 절차, 권한 신청, RAG 사용 범위를 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "onboarding", "ai-builder"),
+        keywords=("신입사원", "온보딩", "권한 신청", "AI 빌더", "사내 문서 질문 응답 봇"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_onboarding"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_leave_attendance",
+        name="사내문서: 휴가·근태·가족돌봄휴가 운영 정책",
+        description="휴가 신청 절차와 가족돌봄휴가 운영 기준을 안내하는 사내문서 KB",
+        filename="휴가 근태 가족돌봄휴가 운영 정책.md",
+        summary="가족돌봄휴가, 연차 연계 사용, 신청 경로를 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "hr", "leave"),
+        keywords=("가족돌봄휴가", "연차", "휴가 신청", "근태", "팀 리더 승인"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_leave_attendance"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_benefits",
+        name="사내문서: 복지·교육비 지원 정책",
+        description="복지 포인트, 교육비, 경조사 지원을 설명하는 사내문서 KB",
+        filename="복지 교육비 지원 정책.md",
+        summary="복지 포인트, 교육비 지원, 경조사 지원 기준을 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "hr", "benefits"),
+        keywords=("복지 포인트", "교육비", "경조사", "자기계발", "복지 포털"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_benefits"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_privacy_hr_records",
+        name="사내문서: 개인정보 및 인사기록 접근 정책",
+        description="인사기록과 민감정보 접근 제한을 설명하는 사내문서 KB",
+        filename="개인정보 및 인사기록 접근 정책.md",
+        summary="개인정보, 병가 기록, 평가 정보의 RAG 노출 제한을 안내합니다.",
+        source_tier="restricted_internal",
+        classification="restricted_policy",
+        tags=("internal", "privacy", "hr-records"),
+        keywords=("개인정보", "인사기록", "병가 기록", "인사평가", "정책 차단", "최소 권한"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_privacy_hr_records"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_budget_alert_runbook",
+        name="사내문서: 워크플로우 예산 90% 알림 Runbook",
+        description="관리자 예산 알림과 운영자 후속 분석 절차를 설명하는 운영문서 KB",
+        filename="워크플로우 예산 90퍼센트 알림 Runbook.md",
+        summary="예산 90% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
+        source_tier="internal_ops",
+        classification="internal_runbook",
+        tags=("internal", "llmops", "budget"),
+        keywords=("예산 90%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_budget_alert_runbook"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_cost_optimization_playbook",
+        name="사내문서: Workflow LLM 비용 최적화 Playbook",
+        description="LLM 노드 비용 분석과 RAG 비용 최적화 절차를 설명하는 운영문서 KB",
+        filename="Workflow LLM 비용 최적화 Playbook.md",
+        summary="노드별 비용, RAG evidence 수, 모델 단가를 점검하는 절차를 안내합니다.",
+        source_tier="internal_ops",
+        classification="internal_runbook",
+        tags=("internal", "llmops", "cost-optimization"),
+        keywords=("비용 최적화", "LLM 노드", "top_k", "RAG evidence", "모델 변경", "trace"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_cost_optimization_playbook"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_developer_onboarding_rules",
+        name="사내문서: 개발팀 신입 온보딩 및 업무 내규",
+        description="개발팀 신입사원의 첫 달 업무 내규, 권한, PR 흐름을 안내하는 사내문서 KB",
+        filename="개발팀 신입 온보딩 및 업무 내규.md",
+        summary="개발팀 신입 온보딩, repository 접근, PR 리뷰 흐름을 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "developer", "onboarding"),
+        keywords=("개발팀", "신입", "온보딩", "내규", "repository", "PR", "멘토"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_onboarding_rules"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_developer_commit_convention",
+        name="사내문서: 개발팀 커밋·브랜치·PR 컨벤션",
+        description="개발팀 commit convention, branch naming, PR 작성 기준을 안내하는 사내문서 KB",
+        filename="개발팀 커밋 브랜치 PR 컨벤션.md",
+        summary="feature/mba-번호 브랜치와 type: 한국어 설명 커밋 규칙을 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "developer", "git", "commit", "pr"),
+        keywords=("커밋", "commit convention", "브랜치", "feature/mba", "PR", "type", "한국어 설명"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_commit_convention"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_developer_compensation_band",
+        name="사내문서: 개발 직군 신입 보상 밴드 및 공개 가능 범위",
+        description="개발 직군 신입 보상 밴드와 공개 가능한 답변 범위를 안내하는 사내문서 KB",
+        filename="개발 직군 신입 보상 밴드 및 공개 가능 범위.md",
+        summary="DEV-L1 신입 개발자 보상 밴드와 공개 가능 범위를 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "developer", "compensation", "onboarding"),
+        keywords=("개발자", "신입", "연봉", "보상 밴드", "DEV-L1", "기본급", "공개 가능 범위"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_compensation_band"],
+    ),
+    DemoKnowledgeSeedSpec(
+        key="internal_compensation_access_policy",
+        name="사내문서: 개인 보상정보 및 인사기록 조회 제한 정책",
+        description="개인별 연봉, 성과급, 평가정보 질의 차단 기준을 설명하는 사내문서 KB",
+        filename="개인 보상정보 및 인사기록 조회 제한 정책.md",
+        summary="개인별 보상정보 조회 제한과 민감 질문 차단 문구를 안내합니다.",
+        source_tier="restricted_internal",
+        classification="restricted_policy",
+        tags=("internal", "privacy", "compensation", "policy-block"),
+        keywords=("개인 보상정보", "동료 연봉", "성과급", "평가등급", "정책 차단", "민감정보"),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_compensation_access_policy"],
+    ),
+)
+
+DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS + INTERNAL_DOCUMENT_SPECS
+
 
 def demo_summary(profile: str = "demo") -> dict[str, Any]:
     """Return a lightweight summary for --dry-run output."""
@@ -371,6 +933,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
             "apps": ["테스트용 기능 검증 워크플로우"],
             "reset_scope": "test profile fixed UUID rows only",
             "credentials": "not seeded",
+            "knowledge_documents": "not seeded",
         }
     return {
         "profile": "demo",
@@ -384,7 +947,17 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
             "테스트용 문의 응답 워크플로우",
         ],
         "reset_scope": "demo seed fixed UUID rows only",
-        "credentials": "not seeded",
+        "credentials": (
+            "non-secret demo metadata row by default; pass "
+            "--enable-runtime-openai-credential to seed the local .env "
+            "OPENAI_API_KEY as a runtime credential"
+        ),
+        "knowledge_documents": {
+            "public_law_pdfs": len(LEGAL_DOCUMENT_SPECS),
+            "internal_markdown_docs": len(INTERNAL_DOCUMENT_SPECS),
+            "embedding_model": DEMO_EMBEDDING_MODEL,
+            "fixture": DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
+        },
     }
 
 
@@ -417,6 +990,463 @@ def _write_demo_document(filename: str, content: str) -> str:
     raise RuntimeError(
         f"demo 문서를 저장할 수 있는 upload 경로가 없습니다: {DEMO_UPLOAD_DIRS}"
     ) from last_error
+
+
+def _copy_demo_source_file(source_path: Path, target_filename: str) -> str:
+    last_error: OSError | None = None
+    for base_dir in DEMO_UPLOAD_DIRS:
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            target_path = base_dir / target_filename
+            shutil.copyfile(source_path, target_path)
+            return target_path.as_posix()
+        except OSError as error:
+            last_error = error
+    raise RuntimeError(
+        f"demo 원본 파일을 저장할 수 있는 upload 경로가 없습니다: {DEMO_UPLOAD_DIRS}"
+    ) from last_error
+
+
+def _resolve_legal_pdf(spec: DemoKnowledgeSeedSpec) -> Path:
+    if not DEMO_LEGAL_DOCS_LABOR_DIR.exists():
+        raise FileNotFoundError(
+            "법령 PDF 디렉터리가 없습니다: "
+            f"{DEMO_LEGAL_DOCS_LABOR_DIR.as_posix()}"
+        )
+    pattern = spec.legal_filename_pattern or spec.name
+    candidates = []
+    for candidate in sorted(DEMO_LEGAL_DOCS_LABOR_DIR.glob("*.pdf")):
+        name = candidate.name
+        if pattern not in name:
+            continue
+        if all(token in name for token in spec.legal_required_tokens):
+            candidates.append(candidate)
+    if candidates:
+        return max(candidates, key=lambda candidate: (_legal_pdf_date(candidate), candidate.name))
+    available = ", ".join(candidate.name for candidate in DEMO_LEGAL_DOCS_LABOR_DIR.glob("*.pdf")) or "none"
+    raise FileNotFoundError(
+        f"{spec.name} PDF를 찾지 못했습니다. pattern={pattern!r}, available={available}"
+    )
+
+
+def _legal_pdf_date(path: Path) -> str:
+    matches = re.findall(r"\((\d{8})\)", path.name)
+    return matches[-1] if matches else "00000000"
+
+
+def _regenerate_knowledge_fixture_requested() -> bool:
+    return os.getenv(DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV) == "1"
+
+
+def _runtime_openai_credential_requested() -> bool:
+    return os.getenv(DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV) == "1"
+
+
+def _demo_knowledge_fixture_exists() -> bool:
+    return DEMO_KNOWLEDGE_FIXTURE_PATH.exists()
+
+
+def _read_demo_knowledge_fixture() -> dict[str, Any]:
+    if not _demo_knowledge_fixture_exists():
+        raise FileNotFoundError(
+            f"demo Knowledge fixture가 없습니다: {DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix()}"
+        )
+
+    header: dict[str, Any] | None = None
+    documents: dict[str, dict[str, Any]] = {}
+    chunks_by_document: dict[str, list[dict[str, Any]]] = {}
+
+    with gzip.open(DEMO_KNOWLEDGE_FIXTURE_PATH, "rt", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            record_type = record.get("record_type")
+            if record_type == "header":
+                header = record
+            elif record_type == "document":
+                key = str(record["key"])
+                documents[key] = record
+            elif record_type == "chunk":
+                key = str(record["document_key"])
+                chunks_by_document.setdefault(key, []).append(record)
+            else:
+                raise ValueError(
+                    f"Unknown demo Knowledge fixture record at line {line_number}: {record_type}"
+                )
+
+    if header is None:
+        raise ValueError("demo Knowledge fixture header가 없습니다.")
+    if header.get("embedding_model") != DEMO_EMBEDDING_MODEL:
+        raise ValueError(
+            "demo Knowledge fixture embedding_model이 seed 설정과 다릅니다: "
+            f"{header.get('embedding_model')}"
+        )
+    if header.get("embedding_dimension") != DEMO_EMBEDDING_DIMENSION:
+        raise ValueError(
+            "demo Knowledge fixture embedding_dimension이 seed 설정과 다릅니다: "
+            f"{header.get('embedding_dimension')}"
+        )
+
+    expected_keys = {spec.key for spec in DEMO_DOCUMENT_SPECS}
+    missing_documents = sorted(expected_keys - set(documents))
+    if missing_documents:
+        raise ValueError(
+            f"demo Knowledge fixture document 누락: {', '.join(missing_documents)}"
+        )
+    missing_chunks = sorted(
+        key for key in expected_keys if not chunks_by_document.get(key)
+    )
+    if missing_chunks:
+        raise ValueError(
+            f"demo Knowledge fixture chunk 누락: {', '.join(missing_chunks)}"
+        )
+
+    for key, chunks in chunks_by_document.items():
+        chunks.sort(key=lambda item: int(item.get("chunk_index", 0)))
+        for chunk in chunks:
+            embedding = chunk.get("embedding")
+            if not isinstance(embedding, list) or len(embedding) != DEMO_EMBEDDING_DIMENSION:
+                raise ValueError(
+                    f"demo Knowledge fixture embedding 차원 오류: {key}#{chunk.get('chunk_index')}"
+                )
+
+    return {
+        "header": header,
+        "documents": documents,
+        "chunks_by_document": chunks_by_document,
+    }
+
+
+def _demo_knowledge_fixture_or_none() -> dict[str, Any] | None:
+    if _regenerate_knowledge_fixture_requested():
+        return None
+    if not _demo_knowledge_fixture_exists():
+        return None
+    return _read_demo_knowledge_fixture()
+
+
+def _write_demo_knowledge_fixture(records: list[dict[str, Any]]) -> None:
+    DEMO_KNOWLEDGE_FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    header = {
+        "record_type": "header",
+        "fixture_version": DEMO_SEED_VERSION,
+        "embedding_model": DEMO_EMBEDDING_MODEL,
+        "embedding_dimension": DEMO_EMBEDDING_DIMENSION,
+        "document_keys": [spec.key for spec in DEMO_DOCUMENT_SPECS],
+        "storage": "plaintext_chunks_with_precomputed_embeddings",
+    }
+    with gzip.open(DEMO_KNOWLEDGE_FIXTURE_PATH, "wt", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(header, ensure_ascii=False, separators=(",", ":")))
+        handle.write("\n")
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            handle.write("\n")
+
+
+def _load_seed_env() -> None:
+    env_path = DEMO_REPO_ROOT / ".env"
+    if env_path.exists():
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(dotenv_path=env_path, override=False)
+        except ImportError:
+            pass
+
+
+def _require_seed_env(name: str) -> str:
+    _load_seed_env()
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} 환경변수가 필요합니다. repo root .env 또는 실행 환경에 설정하세요."
+        )
+    return value
+
+
+def _mask_demo_api_key(api_key: str) -> str:
+    if len(api_key) <= 10:
+        return "****"
+    return f"{api_key[:3]}****{api_key[-4:]}"
+
+
+def _embed_text_batches(texts: list[str]) -> list[list[float]]:
+    api_key = _require_seed_env("OPENAI_API_KEY")
+    try:
+        import openai
+    except ImportError as error:
+        raise RuntimeError("openai 패키지가 설치되어 있어야 demo seed embedding을 만들 수 있습니다.") from error
+
+    client = openai.OpenAI(api_key=api_key, timeout=60.0)
+    embeddings: list[list[float]] = []
+    batch_size = 64
+    for start in range(0, len(texts), batch_size):
+        batch = [text if text and text.strip() else " " for text in texts[start : start + batch_size]]
+        response = client.embeddings.create(input=batch, model=DEMO_EMBEDDING_MODEL)
+        ordered = sorted(response.data, key=lambda item: item.index)
+        for item in ordered:
+            vector = list(item.embedding)
+            if len(vector) != DEMO_EMBEDDING_DIMENSION:
+                raise RuntimeError(
+                    f"{DEMO_EMBEDDING_MODEL} embedding 차원이 {DEMO_EMBEDDING_DIMENSION}이 아닙니다: {len(vector)}"
+                )
+            embeddings.append(vector)
+    if len(embeddings) != len(texts):
+        raise RuntimeError(
+            f"embedding 응답 개수가 입력과 다릅니다: expected={len(texts)}, actual={len(embeddings)}"
+        )
+    return embeddings
+
+
+def _document_meta_base(
+    spec: DemoKnowledgeSeedSpec,
+    source_path: str,
+    *,
+    source_available: bool = True,
+) -> dict[str, Any]:
+    legal_effective_date = None
+    if spec.source_tier == "public":
+        match = re.search(r"\((\d{8})\)", Path(source_path).name)
+        legal_effective_date = match.group(1) if match else None
+    return {
+        **_demo_options(f"document-{spec.key}"),
+        "summary": spec.summary,
+        "classification": spec.classification,
+        "tags": list(spec.tags),
+        "source_tier": spec.source_tier,
+        "source_type": "FILE",
+        "source_filename": Path(source_path).name,
+        "source_available": source_available,
+        "legal_effective_date": legal_effective_date,
+        "remove_whitespace": True,
+        "selection_mode": "all",
+    }
+
+
+def _preserve_indexing_meta(
+    existing: Document | None,
+    base_meta: dict[str, Any],
+) -> dict[str, Any]:
+    if existing is None or not isinstance(existing.meta_info, dict):
+        return base_meta
+    preserved = {
+        key: existing.meta_info[key]
+        for key in ("chunking_mode", "chunking_fingerprint_hash", "hierarchy_version")
+        if key in existing.meta_info
+    }
+    return {**base_meta, **preserved}
+
+
+def _extract_raw_blocks(db: Session, doc: Document) -> list[dict[str, Any]]:
+    from apps.gateway.services.ingestion.processors.file_processor import FileProcessor
+
+    processor = FileProcessor(db, USER_IDS["admin"])
+    result = processor.process({"document_id": str(doc.id), "file_path": doc.file_path})
+    if result.metadata.get("error"):
+        raise RuntimeError(f"{doc.filename} 파싱 실패: {result.metadata['error']}")
+    if not result.chunks:
+        raise RuntimeError(f"{doc.filename}에서 추출 가능한 텍스트가 없습니다.")
+    return result.chunks
+
+
+def _insert_demo_chunks_from_fixture(
+    db: Session,
+    specs: tuple[DemoKnowledgeSeedSpec, ...],
+    fixture: dict[str, Any],
+) -> None:
+    _require_seed_env("ENCRYPTION_KEY")
+
+    from apps.shared.utils.encryption import encryption_manager
+
+    documents = fixture["documents"]
+    chunks_by_document = fixture["chunks_by_document"]
+    for spec in specs:
+        doc = db.get(Document, DOCUMENT_IDS[spec.key])
+        if doc is None:
+            raise RuntimeError(f"demo 문서 row가 없습니다: {spec.key}")
+        fixture_doc = documents[spec.key]
+        chunks = chunks_by_document[spec.key]
+
+        existing_chunk_count = (
+            db.query(DocumentChunk)
+            .filter(DocumentChunk.document_id == doc.id)
+            .count()
+        )
+        if (
+            existing_chunk_count > 0
+            and doc.status == "completed"
+            and doc.content_hash == fixture_doc["content_hash"]
+            and doc.embedding_model == DEMO_EMBEDDING_MODEL
+            and (doc.meta_info or {}).get("chunking_fingerprint_hash")
+            == fixture_doc["chunking_fingerprint_hash"]
+        ):
+            continue
+
+        db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete(
+            synchronize_session=False
+        )
+        for chunk in chunks:
+            content = str(chunk["content"])
+            metadata = dict(chunk.get("metadata") or {})
+            db.add(
+                DocumentChunk(
+                    document_id=doc.id,
+                    knowledge_base_id=doc.knowledge_base_id,
+                    content=encryption_manager.encrypt(content),
+                    embedding=chunk["embedding"],
+                    chunk_index=int(chunk["chunk_index"]),
+                    chunk_level=chunk.get("chunk_level") or "flat",
+                    section_path=chunk.get("section_path"),
+                    heading=chunk.get("heading"),
+                    token_count=int(chunk.get("token_count") or 0),
+                    metadata_=metadata,
+                )
+            )
+
+        doc.status = "completed"
+        doc.error_message = None
+        doc.content_hash = fixture_doc["content_hash"]
+        doc.embedding_model = DEMO_EMBEDDING_MODEL
+        doc.updated_at = _now()
+        meta = dict(doc.meta_info or {})
+        meta["chunking_mode"] = fixture_doc["chunking_mode"]
+        meta["chunking_fingerprint_hash"] = fixture_doc["chunking_fingerprint_hash"]
+        meta["fixture_source"] = DEMO_KNOWLEDGE_FIXTURE_PATH.name
+        doc.meta_info = meta
+        db.add(doc)
+        db.flush()
+
+
+def _index_demo_documents_from_sources(
+    db: Session,
+    specs: tuple[DemoKnowledgeSeedSpec, ...],
+) -> None:
+    _require_seed_env("ENCRYPTION_KEY")
+
+    from apps.gateway.services.ingestion.service import IngestionOrchestrator
+    from apps.shared.utils.encryption import encryption_manager
+    from apps.shared.utils.template_utils import count_tokens
+
+    fixture_records: list[dict[str, Any]] = []
+    for spec in specs:
+        doc = db.get(Document, DOCUMENT_IDS[spec.key])
+        if doc is None:
+            raise RuntimeError(f"demo 문서 row가 없습니다: {spec.key}")
+
+        orchestrator = IngestionOrchestrator(
+            db,
+            user_id=USER_IDS["admin"],
+            chunk_size=doc.chunk_size,
+            chunk_overlap=doc.chunk_overlap,
+            ai_model=DEMO_EMBEDDING_MODEL,
+        )
+        raw_blocks = _extract_raw_blocks(db, doc)
+        chunking_result = orchestrator._build_document_chunks(doc, raw_blocks)
+        texts = [chunk["content"] for chunk in chunking_result.chunks]
+        embeddings = _embed_text_batches(texts)
+
+        db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete(
+            synchronize_session=False
+        )
+        fixture_records.append(
+            {
+                "record_type": "document",
+                "key": spec.key,
+                "filename": doc.filename,
+                "content_hash": chunking_result.content_hash,
+                "chunking_mode": chunking_result.chunking_mode,
+                "chunking_fingerprint_hash": chunking_result.chunking_fingerprint,
+                "chunk_size": doc.chunk_size,
+                "chunk_overlap": doc.chunk_overlap,
+                "source_filename": (doc.meta_info or {}).get("source_filename"),
+                "source_available": bool((doc.meta_info or {}).get("source_available")),
+                "legal_effective_date": (doc.meta_info or {}).get("legal_effective_date"),
+            }
+        )
+        for index, (chunk, embedding) in enumerate(
+            zip(chunking_result.chunks, embeddings)
+        ):
+            content = chunk["content"]
+            metadata = dict(chunk.get("metadata") or {})
+            metadata.update(
+                {
+                    "classification": spec.classification,
+                    "tags": list(spec.tags),
+                    "keywords": list(dict.fromkeys((*spec.keywords, spec.name))),
+                    "source_type": "FILE",
+                    "source_tier": spec.source_tier,
+                    "source_hash": chunking_result.content_hash,
+                    "chunk_level": chunk.get("chunk_level") or "flat",
+                }
+            )
+            token_count = chunk.get("token_count") or count_tokens(content)
+            db.add(
+                DocumentChunk(
+                    document_id=doc.id,
+                    knowledge_base_id=doc.knowledge_base_id,
+                    content=encryption_manager.encrypt(content),
+                    embedding=embedding,
+                    chunk_index=index,
+                    chunk_level=chunk.get("chunk_level") or "flat",
+                    section_path=chunk.get("section_path"),
+                    heading=chunk.get("heading"),
+                    token_count=token_count,
+                    metadata_=metadata,
+                )
+            )
+            fixture_records.append(
+                {
+                    "record_type": "chunk",
+                    "document_key": spec.key,
+                    "chunk_index": index,
+                    "content": content,
+                    "embedding": embedding,
+                    "token_count": token_count,
+                    "metadata": metadata,
+                    "chunk_level": chunk.get("chunk_level") or "flat",
+                    "section_path": chunk.get("section_path"),
+                    "heading": chunk.get("heading"),
+                }
+            )
+
+        doc.status = "completed"
+        doc.error_message = None
+        doc.content_hash = chunking_result.content_hash
+        doc.embedding_model = DEMO_EMBEDDING_MODEL
+        doc.updated_at = _now()
+        meta = dict(doc.meta_info or {})
+        meta["chunking_mode"] = chunking_result.chunking_mode
+        meta["chunking_fingerprint_hash"] = chunking_result.chunking_fingerprint
+        meta["fixture_source"] = DEMO_KNOWLEDGE_FIXTURE_PATH.name
+        doc.meta_info = meta
+        db.add(doc)
+        db.flush()
+
+    _write_demo_knowledge_fixture(fixture_records)
+
+
+def _index_demo_documents(
+    db: Session,
+    specs: tuple[DemoKnowledgeSeedSpec, ...],
+    fixture: dict[str, Any] | None,
+) -> None:
+    if fixture is not None:
+        _insert_demo_chunks_from_fixture(db, specs, fixture)
+        return
+    _index_demo_documents_from_sources(db, specs)
+
+
+def validate_demo_seed_prerequisites() -> None:
+    _require_seed_env("ENCRYPTION_KEY")
+    if _runtime_openai_credential_requested():
+        _require_seed_env("OPENAI_API_KEY")
+    if _demo_knowledge_fixture_or_none() is not None:
+        return
+    _require_seed_env("OPENAI_API_KEY")
+    for spec in LEGAL_DOCUMENT_SPECS:
+        _resolve_legal_pdf(spec)
 
 
 def _now() -> datetime:
@@ -488,6 +1518,36 @@ def _edge(
     return edge
 
 
+def _knowledge_base_ref(key: str) -> dict[str, str]:
+    if key == "hr":
+        return {"id": str(KB_IDS[key]), "name": "사내 인사·복지 지식베이스"}
+    spec = next((item for item in DEMO_DOCUMENT_SPECS if item.key == key), None)
+    if spec is None:
+        raise KeyError(f"Unknown demo knowledge base key: {key}")
+    return {"id": str(KB_IDS[key]), "name": spec.name}
+
+
+def _hr_bot_knowledge_base_refs() -> list[dict[str, str]]:
+    return [
+        _knowledge_base_ref(key)
+        for key in (
+            "internal_onboarding",
+            "internal_leave_attendance",
+            "internal_benefits",
+            "internal_privacy_hr_records",
+            "internal_developer_onboarding_rules",
+            "internal_developer_commit_convention",
+            "internal_developer_compensation_band",
+            "internal_compensation_access_policy",
+            "legal_labor_standards",
+            "legal_equal_employment",
+            "legal_equal_employment_enforcement_decree",
+            "legal_privacy",
+            "hr",
+        )
+    ]
+
+
 def _hr_bot_graph() -> dict[str, Any]:
     return {
         "nodes": [
@@ -526,7 +1586,7 @@ def _hr_bot_graph() -> dict[str, Any]:
                         ["model_id", "knowledgeBases", "user_prompt"],
                     ),
                     "provider": "openai",
-                    "model_id": "gpt-4.1-mini",
+                    "model_id": DEMO_CHAT_MINI_MODEL,
                     "system_prompt": "사내 복지, 휴가, 인사 정책 문서를 근거로 간결하게 답변합니다.",
                     "user_prompt": "질문: {{ question }}",
                     "referenced_variables": [
@@ -535,12 +1595,9 @@ def _hr_bot_graph() -> dict[str, Any]:
                             "value_selector": ["start-question", "question"],
                         }
                     ],
-                    "knowledgeBases": [
-                        {
-                            "id": str(KB_IDS["hr"]),
-                            "name": "사내 인사·복지 지식베이스",
-                        }
-                    ],
+                    "knowledgeBases": _hr_bot_knowledge_base_refs(),
+                    "scoreThreshold": 0.3,
+                    "topK": 4,
                     "parameters": {"temperature": 0.2, "max_tokens": 800},
                 },
             ),
@@ -593,7 +1650,7 @@ def _ticket_ops_graph() -> dict[str, Any]:
                 {
                     **_base_node_data("티켓 처리 판단", "티켓 유형, 심각도, 승인 필요 여부를 판단합니다.", 2),
                     "provider": "openai",
-                    "model_id": "gpt-4.1",
+                    "model_id": DEMO_CHAT_MODEL,
                     "system_prompt": (
                         "고객지원 티켓을 처리하는 AI로서, 각 티켓의 긴급도를 true/false로 판별하고 "
                         "정책에 기반하여 다음 정보를 JSON 형식으로 분류합니다: 긴급도, 답변 초안."
@@ -945,7 +2002,77 @@ def _seed_teams_and_memberships(db: Session) -> None:
             membership_index += 1
 
 
+def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
+    knowledge_permission_specs: list[tuple[str, str, str]] = []
+    for kb_key in (
+        "legal_labor_standards",
+        "legal_equal_employment",
+        "legal_equal_employment_enforcement_decree",
+        "legal_privacy",
+        "legal_occupational_safety",
+        "legal_retirement_benefits",
+        "legal_fair_hiring",
+    ):
+        knowledge_permission_specs.extend(
+            [
+                (kb_key, "platform_admin", "manager"),
+                (kb_key, "hr_knowledge_users", "operator"),
+                (kb_key, "ai_builder_onboarding", "operator"),
+                (kb_key, "customer_support_ops", "operator"),
+            ]
+        )
+    for kb_key in (
+        "internal_onboarding",
+        "internal_leave_attendance",
+        "internal_benefits",
+        "internal_developer_onboarding_rules",
+        "internal_developer_commit_convention",
+        "internal_developer_compensation_band",
+    ):
+        knowledge_permission_specs.extend(
+            [
+                (kb_key, "platform_admin", "manager"),
+                (kb_key, "hr_knowledge_users", "operator"),
+                (kb_key, "ai_builder_onboarding", "operator"),
+            ]
+        )
+    knowledge_permission_specs.extend(
+        [
+            ("internal_privacy_hr_records", "platform_admin", "manager"),
+            ("internal_privacy_hr_records", "hr_knowledge_users", "operator"),
+            ("internal_privacy_hr_records", "ai_builder_onboarding", "operator"),
+            ("internal_compensation_access_policy", "platform_admin", "manager"),
+            ("internal_compensation_access_policy", "hr_knowledge_users", "operator"),
+            ("internal_compensation_access_policy", "ai_builder_onboarding", "operator"),
+            ("internal_budget_alert_runbook", "platform_admin", "manager"),
+            ("internal_budget_alert_runbook", "customer_support_ops", "operator"),
+            ("internal_cost_optimization_playbook", "platform_admin", "manager"),
+            ("internal_cost_optimization_playbook", "customer_support_ops", "operator"),
+        ]
+    )
+    return knowledge_permission_specs
+
+
+def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, str]]:
+    collection_permission_specs: list[tuple[str, str, str]] = []
+    for collection_key in ("legal_public", "internal_onboarding"):
+        for team_key in (
+            "platform_admin",
+            "hr_knowledge_users",
+            "ai_builder_onboarding",
+            "customer_support_ops",
+        ):
+            for action in ("read", "route"):
+                collection_permission_specs.append((collection_key, team_key, action))
+    return collection_permission_specs
+
+
 def _seed_knowledge(db: Session) -> None:
+    knowledge_fixture = _demo_knowledge_fixture_or_none()
+    fixture_documents = (
+        knowledge_fixture["documents"] if knowledge_fixture is not None else {}
+    )
+
     _upsert_by_id(
         db,
         KnowledgeBase,
@@ -974,7 +2101,90 @@ def _seed_knowledge(db: Session) -> None:
             "user_id": USER_IDS["admin"],
         },
     )
+    for spec in DEMO_DOCUMENT_SPECS:
+        _upsert_by_id(
+            db,
+            KnowledgeBase,
+            KB_IDS[spec.key],
+            {
+                "organization_id": ORG_ID,
+                "name": spec.name,
+                "description": spec.description,
+                "embedding_model": DEMO_EMBEDDING_MODEL,
+                "top_k": 5,
+                "similarity_threshold": 0.7,
+                "sync_state": "manual",
+                "lifecycle_state": "active",
+                "user_id": USER_IDS["admin"],
+            },
+        )
     db.flush()
+
+    _upsert_by_id(
+        db,
+        KnowledgeCollection,
+        COLLECTION_IDS["legal_public"],
+        {
+            "organization_id": ORG_ID,
+            "name": "공개 노동·온보딩 법령 컬렉션",
+            "description": "익명 public-only 후보로 노출 가능한 국가법령정보센터 PDF 모음",
+            "source_identity_id": None,
+            "source_connector_ref": "local.legal-docs-labor",
+            "is_system_managed": True,
+            "sync_state": "manual",
+            "lifecycle_state": "active",
+            "safe_metadata": {
+                **_demo_options("collection-legal-public"),
+                "visibility": "public",
+                "approved_by": str(USER_IDS["admin"]),
+                "approved_source": "demo_seed",
+                "revocation_behavior": "remove_from_public_collection",
+            },
+            "created_by": USER_IDS["admin"],
+        },
+    )
+    _upsert_by_id(
+        db,
+        KnowledgeCollection,
+        COLLECTION_IDS["internal_onboarding"],
+        {
+            "organization_id": ORG_ID,
+            "name": "사내 온보딩·운영 문서 컬렉션",
+            "description": "온보딩, HR 정책, LLMOps 운영 절차를 묶은 private 데모 컬렉션",
+            "source_identity_id": None,
+            "source_connector_ref": "local.demo-scenario-2026-07-08.internal-docs",
+            "is_system_managed": True,
+            "sync_state": "manual",
+            "lifecycle_state": "active",
+            "safe_metadata": {
+                **_demo_options("collection-internal-onboarding"),
+                "visibility": "private",
+            },
+            "created_by": USER_IDS["admin"],
+        },
+    )
+    db.flush()
+
+    for rank, spec in enumerate(DEMO_DOCUMENT_SPECS):
+        if spec.collection_key is None:
+            continue
+        _upsert_by_id(
+            db,
+            KnowledgeCollectionItem,
+            COLLECTION_ITEM_IDS[spec.key],
+            {
+                "organization_id": ORG_ID,
+                "collection_id": COLLECTION_IDS[spec.collection_key],
+                "knowledge_base_id": KB_IDS[spec.key],
+                "safe_source_path_ref": spec.filename,
+                "rank": rank,
+                "safe_metadata": {
+                    **_demo_options(f"collection-item-{spec.key}"),
+                    "classification": spec.classification,
+                    "source_tier": spec.source_tier,
+                },
+            },
+        )
 
     document_specs = {
         "hr_leave": (
@@ -1053,9 +2263,59 @@ def _seed_knowledge(db: Session) -> None:
                     **_demo_options(f"document-{key}"),
                     "summary": summary,
                 },
-                "embedding_model": "text-embedding-3-small",
+                "embedding_model": DEMO_EMBEDDING_MODEL,
             },
         )
+
+    for spec in DEMO_DOCUMENT_SPECS:
+        existing = db.get(Document, DOCUMENT_IDS[spec.key])
+        if spec.content is not None:
+            file_path = _write_demo_document(spec.filename, spec.content)
+            document_filename = spec.filename
+            source_path_for_meta = file_path
+            source_available = True
+        elif knowledge_fixture is not None:
+            fixture_doc = fixture_documents[spec.key]
+            file_path = None
+            document_filename = fixture_doc["filename"]
+            source_path_for_meta = fixture_doc.get("source_filename") or document_filename
+            source_available = False
+        else:
+            legal_source_path = _resolve_legal_pdf(spec)
+            file_path = _copy_demo_source_file(legal_source_path, legal_source_path.name)
+            document_filename = legal_source_path.name
+            source_path_for_meta = legal_source_path.as_posix()
+            source_available = True
+        _upsert_by_id(
+            db,
+            Document,
+            DOCUMENT_IDS[spec.key],
+            {
+                "knowledge_base_id": KB_IDS[spec.key],
+                "filename": document_filename,
+                "file_path": file_path,
+                "source_type": SourceType.FILE,
+                "content_hash": existing.content_hash if existing else None,
+                "status": "completed",
+                "error_message": None,
+                "chunk_size": spec.chunk_size,
+                "chunk_overlap": spec.chunk_overlap,
+                "meta_info": _preserve_indexing_meta(
+                    existing,
+                    _document_meta_base(
+                        spec,
+                        source_path_for_meta,
+                        source_available=source_available,
+                    ),
+                ),
+                "embedding_model": existing.embedding_model
+                if existing and existing.embedding_model
+                else DEMO_EMBEDDING_MODEL,
+            },
+        )
+
+    db.flush()
+    _index_demo_documents(db, DEMO_DOCUMENT_SPECS, knowledge_fixture)
 
 
 def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[str, LLMModel]]:
@@ -1073,11 +2333,27 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
         db.flush()
 
     model_specs = {
-        "gpt-4.1": (Decimal("0.002000"), Decimal("0.008000"), 128000),
-        "gpt-4.1-mini": (Decimal("0.000400"), Decimal("0.001600"), 128000),
+        DEMO_CHAT_MODEL: ("chat", Decimal("0.002500"), Decimal("0.015000"), 400000),
+        DEMO_CHAT_MINI_MODEL: (
+            "chat",
+            Decimal("0.000750"),
+            Decimal("0.004500"),
+            400000,
+        ),
+        DEMO_EMBEDDING_MODEL: (
+            "embedding",
+            Decimal("0.000020"),
+            Decimal("0.000000"),
+            8191,
+        ),
     }
     models: dict[str, LLMModel] = {}
-    for model_id, (input_price, output_price, context_window) in model_specs.items():
+    for model_id, (
+        model_type,
+        input_price,
+        output_price,
+        context_window,
+    ) in model_specs.items():
         model = (
             db.query(LLMModel)
             .filter(
@@ -1091,7 +2367,7 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
                 provider_id=provider.id,
                 model_id_for_api_call=model_id,
                 name=model_id,
-                type="chat",
+                type=model_type,
                 context_window=context_window,
                 input_price_1k=input_price,
                 output_price_1k=output_price,
@@ -1102,7 +2378,7 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             db.flush()
         else:
             model.name = model_id
-            model.type = "chat"
+            model.type = model_type
             model.context_window = context_window
             model.input_price_1k = input_price
             model.output_price_1k = output_price
@@ -1348,6 +2624,44 @@ def _seed_permissions(db: Session) -> None:
         },
     )
 
+    for index, (kb_key, team_key, auth_state) in enumerate(
+        _demo_team_knowledge_permission_specs()
+    ):
+        _upsert_by_id(
+            db,
+            TeamKnowledgePermission,
+            _uuid(853 + index),
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS[team_key],
+                "knowledge_base_id": KB_IDS[kb_key],
+                "auth_state": auth_state,
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(f"knowledge-permission-{kb_key}-{team_key}"),
+                "flags": 0,
+            },
+        )
+
+    for index, (collection_key, team_key, action) in enumerate(
+        _demo_team_knowledge_collection_permission_specs()
+    ):
+        _upsert_by_id(
+            db,
+            TeamKnowledgeCollectionPermission,
+            _uuid(880 + index),
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS[team_key],
+                "knowledge_collection_id": COLLECTION_IDS[collection_key],
+                "permission_action": action,
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(
+                    f"collection-permission-{collection_key}-{team_key}-{action}"
+                ),
+                "flags": 0,
+            },
+        )
+
     _upsert_by_id(
         db,
         TeamAuditPermission,
@@ -1377,7 +2691,7 @@ def _seed_run(
     total_cost: Decimal,
     output_text: str | None,
     error_message: str | None = None,
-    model_name: str = "gpt-4.1",
+    model_name: str = DEMO_CHAT_MODEL,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     latency_ms: int = 0,
@@ -1488,6 +2802,12 @@ def _seed_llm_credential(
 ) -> LLMCredential:
     """데모 조직 공용 credential과 verified model relation (FR-012 비용 집계용)."""
     # 현재 구현은 encrypted_config에 config JSON을 평문 저장한다 (data_model.md 알려진 한계).
+    runtime_credential_enabled = _runtime_openai_credential_requested()
+    api_key = (
+        _require_seed_env("OPENAI_API_KEY")
+        if runtime_credential_enabled
+        else "sk-demo-not-a-real-key"
+    )
     credential = _upsert_by_id(
         db,
         LLMCredential,
@@ -1496,22 +2816,39 @@ def _seed_llm_credential(
             "provider_id": provider.id,
             "user_id": USER_IDS["admin"],
             "organization_id": ORG_ID,
-            "credential_name": "데모 OpenAI Credential",
-            "encrypted_config": json.dumps(
-                {"apiKey": "sk-demo-not-a-real-key", "baseUrl": provider.base_url}
+            "credential_name": (
+                "시연 OpenAI Runtime Credential"
+                if runtime_credential_enabled
+                else "데모 OpenAI Credential"
             ),
-            "config_preview": "sk-****demo",
+            "encrypted_config": json.dumps(
+                {"apiKey": api_key, "baseUrl": provider.base_url}
+            ),
+            "config_preview": (
+                _mask_demo_api_key(api_key)
+                if runtime_credential_enabled
+                else "sk-****demo"
+            ),
             "is_valid": True,
             "quota_type": "unlimited",
             "quota_limit": 0,
             "quota_used": 0,
         },
     )
-    for model_name, rel_id in CREDENTIAL_MODEL_REL_IDS.items():
+    relation_model_names = [DEMO_CHAT_MODEL, DEMO_CHAT_MINI_MODEL]
+    if runtime_credential_enabled:
+        relation_model_names.append(DEMO_EMBEDDING_MODEL)
+    else:
+        db.query(LLMRelCredentialModel).filter(
+            LLMRelCredentialModel.id == CREDENTIAL_MODEL_REL_IDS[DEMO_EMBEDDING_MODEL]
+        ).delete(synchronize_session=False)
+        _delete_demo_runtime_llm_permissions(db)
+
+    for model_name in relation_model_names:
         _upsert_by_id(
             db,
             LLMRelCredentialModel,
-            rel_id,
+            CREDENTIAL_MODEL_REL_IDS[model_name],
             {
                 "credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
                 "model_id": models[model_name].id,
@@ -1519,22 +2856,66 @@ def _seed_llm_credential(
                 "priority": 0,
             },
         )
+    if runtime_credential_enabled:
+        _seed_runtime_llm_permissions(db)
     return credential
+
+
+def _delete_demo_runtime_llm_permissions(db: Session) -> None:
+    db.query(TeamLLMPermission).filter(
+        TeamLLMPermission.id.in_(list(TEAM_LLM_PERMISSION_IDS.values()))
+    ).delete(synchronize_session=False)
+    db.query(UserLLMPermission).filter(
+        UserLLMPermission.id.in_(list(USER_LLM_PERMISSION_IDS.values()))
+    ).delete(synchronize_session=False)
+
+
+def _seed_runtime_llm_permissions(db: Session) -> None:
+    for team_key, permission_id in TEAM_LLM_PERMISSION_IDS.items():
+        _upsert_by_id(
+            db,
+            TeamLLMPermission,
+            permission_id,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS[team_key],
+                "llm_credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
+                "auth_state": "manager" if team_key == "platform_admin" else "operator",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(f"llm-permission-{team_key}"),
+                "flags": 0,
+            },
+        )
+
+    _upsert_by_id(
+        db,
+        UserLLMPermission,
+        USER_LLM_PERMISSION_IDS["author"],
+        {
+            "grantee_organization_id": ORG_ID,
+            "user_id": USER_IDS["author"],
+            "llm_credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
+            "auth_state": "operator",
+            "assigned_by": USER_IDS["admin"],
+            "options": _demo_options("llm-permission-author"),
+            "flags": 0,
+        },
+    )
 
 
 def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
     now = _now()
     run_specs = [
-        ("ticket_ops", "author", RunStatus.SUCCESS, 4.8, 10120, Decimal("0.0820"), "CS 리드 승인 요청이 필요합니다.", "gpt-4.1", 8200, 1920, 4800),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 4.1, 9800, Decimal("0.0780"), "Enterprise 고객 장애 티켓으로 우선 처리합니다.", "gpt-4.1", 7900, 1900, 4100),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 1.9, 3280, Decimal("0.0220"), "권한 기반 RAG와 중간 모델로 처리했습니다.", "gpt-4.1-mini", 2600, 680, 1900),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.2, 3410, Decimal("0.0240"), "승인 필요 여부를 판단했습니다.", "gpt-4.1-mini", 2700, 710, 2200),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.4, 3650, Decimal("0.0260"), "고객 답변 초안을 생성했습니다.", "gpt-4.1-mini", 2890, 760, 2400),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.1, 3400, Decimal("0.0230"), "SLA 기준에 따라 기술지원팀으로 배정했습니다.", "gpt-4.1-mini", 2720, 680, 2100),
-        ("ticket_ops", "author", RunStatus.FAILED, 1.3, 1200, Decimal("0.0060"), None, "gpt-4.1-mini", 1000, 200, 1300),
-        ("ticket_ops_warning", "author", RunStatus.SUCCESS, 5.2, 11200, Decimal("0.0910"), "비용 위험 workflow 실행입니다.", "gpt-4.1", 9100, 2100, 5200),
-        ("ticket_ops_risk", "author", RunStatus.SUCCESS, 4.9, 10800, Decimal("0.0880"), "비용 위험 workflow 실행입니다.", "gpt-4.1", 8700, 2100, 4900),
-        ("ticket_ops_paused", "author", RunStatus.FAILED, 0.4, 0, Decimal("0.0000"), None, "gpt-4.1", 0, 0, 0),
+        ("ticket_ops", "author", RunStatus.SUCCESS, 4.8, 10120, Decimal("0.0820"), "CS 리드 승인 요청이 필요합니다.", DEMO_CHAT_MODEL, 8200, 1920, 4800),
+        ("ticket_ops", "author", RunStatus.SUCCESS, 4.1, 9800, Decimal("0.0780"), "Enterprise 고객 장애 티켓으로 우선 처리합니다.", DEMO_CHAT_MODEL, 7900, 1900, 4100),
+        ("ticket_ops", "author", RunStatus.SUCCESS, 1.9, 3280, Decimal("0.0220"), "권한 기반 RAG와 중간 모델로 처리했습니다.", DEMO_CHAT_MINI_MODEL, 2600, 680, 1900),
+        ("ticket_ops", "author", RunStatus.SUCCESS, 2.2, 3410, Decimal("0.0240"), "승인 필요 여부를 판단했습니다.", DEMO_CHAT_MINI_MODEL, 2700, 710, 2200),
+        ("ticket_ops", "author", RunStatus.SUCCESS, 2.4, 3650, Decimal("0.0260"), "고객 답변 초안을 생성했습니다.", DEMO_CHAT_MINI_MODEL, 2890, 760, 2400),
+        ("ticket_ops", "author", RunStatus.SUCCESS, 2.1, 3400, Decimal("0.0230"), "SLA 기준에 따라 기술지원팀으로 배정했습니다.", DEMO_CHAT_MINI_MODEL, 2720, 680, 2100),
+        ("ticket_ops", "author", RunStatus.FAILED, 1.3, 1200, Decimal("0.0060"), None, DEMO_CHAT_MINI_MODEL, 1000, 200, 1300),
+        ("ticket_ops_warning", "author", RunStatus.SUCCESS, 5.2, 11200, Decimal("0.0910"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 9100, 2100, 5200),
+        ("ticket_ops_risk", "author", RunStatus.SUCCESS, 4.9, 10800, Decimal("0.0880"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 8700, 2100, 4900),
+        ("ticket_ops_paused", "author", RunStatus.FAILED, 0.4, 0, Decimal("0.0000"), None, DEMO_CHAT_MODEL, 0, 0, 0),
     ]
 
     for index, spec in enumerate(run_specs):
@@ -2001,6 +3382,7 @@ def reset_test_data(db: Session) -> None:
 
 def seed_demo_data(db: Session) -> None:
     """Upsert final demo data without deleting unrelated local data."""
+    validate_demo_seed_prerequisites()
     _seed_users_and_org(db)
     _seed_teams_and_memberships(db)
     _seed_knowledge(db)
@@ -2018,6 +3400,7 @@ def seed_demo_data(db: Session) -> None:
 
 def reset_demo_data(db: Session) -> None:
     """Delete fixed demo rows, then recreate the final demo state."""
+    validate_demo_seed_prerequisites()
     _adopt_existing_demo_user_ids(db)
     app_ids = list(APP_IDS.values())
     workflow_ids = list(WORKFLOW_IDS.values())
@@ -2069,6 +3452,7 @@ def reset_demo_data(db: Session) -> None:
         TeamWorkflowPermission,
         UserWorkflowPermission,
         TeamKnowledgePermission,
+        TeamKnowledgeCollectionPermission,
         TeamLLMPermission,
         TeamAuditPermission,
         UserLLMPermission,
@@ -2140,6 +3524,15 @@ def reset_demo_data(db: Session) -> None:
         LLMCredential.id == LEGACY_DEMO_LLM_CREDENTIAL_ID
     ).delete(synchronize_session=False)
 
+    db.query(KnowledgeCollectionItem).filter(
+        KnowledgeCollectionItem.collection_id.in_(list(COLLECTION_IDS.values()))
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeCollection).filter(
+        KnowledgeCollection.id.in_(list(COLLECTION_IDS.values()))
+    ).delete(synchronize_session=False)
+    db.query(DocumentChunk).filter(DocumentChunk.knowledge_base_id.in_(kb_ids)).delete(
+        synchronize_session=False
+    )
     db.query(Document).filter(Document.knowledge_base_id.in_(kb_ids)).delete(
         synchronize_session=False
     )
