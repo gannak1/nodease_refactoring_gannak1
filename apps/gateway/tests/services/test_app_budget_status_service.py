@@ -200,10 +200,51 @@ def test_app_budget_status_uses_grouped_cost_lookup(monkeypatch):
     assert statuses[workflow_ids[1]]["status"] == "at_risk"
 
 
+def test_attach_budget_status_uses_workflow_app_relation_when_app_pointer_is_missing():
+    organization_id = uuid4()
+    app_id = uuid4()
+    workflow_id = uuid4()
+    app = SimpleNamespace(
+        id=app_id,
+        organization_id=organization_id,
+        workflow_id=None,
+    )
+    db = _BudgetStatusDb(
+        budgets=[_budget_row(organization_id, workflow_id, Decimal("100.00"))],
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("95.00"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+            )
+        ],
+        workflows=[
+            SimpleNamespace(
+                id=workflow_id,
+                app_id=app_id,
+                organization_id=organization_id,
+            )
+        ],
+    )
+
+    AppService._attach_budget_statuses(
+        db,
+        [app],
+        organization_id=organization_id,
+    )
+
+    assert app.budget_status == {
+        "usage_ratio": pytest.approx(0.95),
+        "status": "at_risk",
+    }
+
+
 class _BudgetStatusDb:
-    def __init__(self, *, budgets, usage_logs):
+    def __init__(self, *, budgets, usage_logs, workflows=None):
         self.budgets = budgets
         self.usage_logs = usage_logs
+        self.workflows = workflows or []
 
 
 def _budget_row(organization_id, workflow_id, monthly_budget_usd, *, is_enabled=True):

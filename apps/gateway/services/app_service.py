@@ -705,7 +705,16 @@ class AppService:
         apps: list[App],
         organization_id: Any,
     ) -> None:
-        workflow_ids = _workflow_ids_from_apps(apps)
+        workflow_ids_by_app_key = _workflow_id_candidates_by_app_key(
+            db,
+            apps,
+            organization_id=organization_id,
+        )
+        workflow_ids = _unique_workflow_ids(
+            workflow_id
+            for app_workflow_ids in workflow_ids_by_app_key.values()
+            for workflow_id in app_workflow_ids
+        )
         statuses = {}
         if workflow_ids:
             try:
@@ -719,7 +728,14 @@ class AppService:
                 statuses = {}
 
         for app in apps:
-            setattr(app, "budget_status", statuses.get(app.workflow_id))
+            setattr(
+                app,
+                "budget_status",
+                _first_budget_status(
+                    statuses,
+                    workflow_ids_by_app_key.get(id(app), []),
+                ),
+            )
 
     @staticmethod
     def _budget_status_by_workflow_id(
@@ -997,8 +1013,68 @@ class AppService:
                 return slug
 
 
-def _workflow_ids_from_apps(apps: list[App]) -> list[Any]:
-    return _unique_workflow_ids(app.workflow_id for app in apps)
+def _workflow_id_candidates_by_app_key(
+    db: Session,
+    apps: list[App],
+    *,
+    organization_id: Any,
+) -> dict[Any, list[Any]]:
+    workflow_ids_by_app_key = {
+        id(app): _unique_workflow_ids([app.workflow_id]) for app in apps
+    }
+    app_keys_by_app_id: dict[Any, list[int]] = {}
+    for app in apps:
+        app_id = getattr(app, "id", None)
+        if app_id:
+            app_keys_by_app_id.setdefault(app_id, []).append(id(app))
+
+    for workflow in _workflow_rows_for_apps(
+        db,
+        app_ids=list(app_keys_by_app_id),
+        organization_id=organization_id,
+    ):
+        for app_key in app_keys_by_app_id.get(workflow.app_id, []):
+            workflow_ids_by_app_key[app_key] = _unique_workflow_ids(
+                [*workflow_ids_by_app_key[app_key], workflow.id]
+            )
+    return workflow_ids_by_app_key
+
+
+def _workflow_rows_for_apps(
+    db: Session,
+    *,
+    app_ids: list[Any],
+    organization_id: Any,
+) -> list[Any]:
+    if not app_ids:
+        return []
+    app_id_set = set(app_ids)
+    if hasattr(db, "workflows"):
+        return [
+            workflow
+            for workflow in db.workflows
+            if workflow.app_id in app_id_set
+            and (
+                organization_id is None
+                or workflow.organization_id == organization_id
+            )
+        ]
+
+    query = db.query(Workflow).filter(Workflow.app_id.in_(app_id_set))
+    if organization_id is not None:
+        query = query.filter(Workflow.organization_id == organization_id)
+    return [workflow for workflow in query.all() if hasattr(workflow, "app_id")]
+
+
+def _first_budget_status(
+    statuses: dict[Any, dict[str, Any] | None],
+    workflow_ids: list[Any],
+) -> dict[str, Any] | None:
+    for workflow_id in workflow_ids:
+        status = statuses.get(workflow_id)
+        if status is not None:
+            return status
+    return None
 
 
 def _unique_workflow_ids(workflow_ids) -> list[Any]:
