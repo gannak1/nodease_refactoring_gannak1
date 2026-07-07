@@ -67,6 +67,8 @@ Agent Builder는 사용자 자연어를 바로 workflow graph로 변환하지 �
 
 LLM은 의미 후보 추출에 사용될 수 있지만, 최종 schema 정규화, unsupported 판정, pending/missing 분리, blocking 여부, safe policy 적용은 deterministic normalization과 product policy를 따라야 한다.
 
+`StructuredRequestBuilder`는 KB 후보 목록이나 KB safe metadata 목록을 입력으로 받지 않고, KB 후보를 선택하지도 않는다. 이 단계는 사용자 요청에서 어떤 지식이 필요한지(`knowledge_requirements`)와 어떤 값이 resolver로 해결되어야 하는지(`pending_resolution`)만 구조화한다.
+
 ### AB-FR-004: Pending Resolution
 
 Knowledge Base, workflow target, supported capability처럼 다른 resolver가 해결할 수 있는 값은 즉시 `missing_information`으로 확정하지 않고 `pending_resolution`으로 둔다. Resolver가 해결하면 draft generation에 반영하고, 후보가 여러 개이거나 모호하면 clarification으로 승격한다.
@@ -83,7 +85,7 @@ Knowledge Base가 필요한 요청은 draft 생성 시점에 실제 retrieval을
 
 Agent Builder는 Knowledge Base 권한을 직접 판단하지 않는다. Knowledge 도메인이 제공한 authorized safe candidate set과 safe metadata만 사용한다. Raw document/chunk content, raw source path/url/title, raw source ACL, hidden resource list, exact hidden/denied count, credential 원문은 Agent Builder prompt, response, preview, trace, audit에 포함하지 않는다.
 
-Workflow Builder 또는 생성된 LLM node가 사내 지식을 사용할 때는 Knowledge feature의 collection routing, KB permission, source ACL helper 결과만 사용한다. Builder와 LLM planner는 raw permission row, raw source ACL, hidden KB 목록을 직접 해석하지 않는다.
+Agent Builder가 draft에 포함한 LLM node가 사내 지식을 사용할 때는 Knowledge feature의 collection routing, KB permission, source ACL helper 결과만 사용한다. Builder와 LLM planner는 raw permission row, raw source ACL, hidden KB 목록을 직접 해석하지 않는다.
 
 Workflow runtime에서 LLM node가 RAG를 호출할 때 run context에 명시적인 execution subject가 있으면 이를 Knowledge service에 전달한다. Execution subject가 없으면 workflow owner 권한으로 fallback하지 않고 anonymous public-only로 낮추며, 모호한 subject는 private retrieval fail-closed로 처리한다.
 
@@ -92,6 +94,8 @@ Agent Builder가 KB/Collection picker 또는 workflow generation proposal을 표
 ### AB-FR-007: KB Recommendation Adapter
 
 Agent Builder는 `StructuredRequest`의 `knowledge_requirements`와 관련 `pending_resolution`을 기반으로 KB Recommendation Adapter를 호출한다.
+
+KB Recommendation Adapter는 `StructuredRequestBuilder`가 만든 지식 요구와 pending slot, 그리고 Knowledge side의 `KnowledgeCandidateResolver`가 만든 authorized safe candidate set을 매칭한다. Authorized safe candidate set은 client request body나 `StructuredRequestBuilder` 입력에서 오지 않는다.
 
 Adapter는 raw user input 전체가 아니라 다음 안전 요약을 사용해야 한다.
 
@@ -105,6 +109,8 @@ Adapter는 raw user input 전체가 아니라 다음 안전 요약을 사용해�
 MVP adapter는 keyword/metadata 기반 deterministic ranking만 사용한다. RAG retrieval signal과 LLM-assisted reranking은 후속 확장이다.
 
 Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
+
+Recommendation candidate 식별자는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이어야 한다. Draft preview와 clarification에는 safe metadata만 표시한다. Agent Builder가 draft를 생성하거나 저장할 때는 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석해야 하며, handle이 만료되었거나 권한 확인을 통과하지 못하면 validation failure 또는 재선택 질문으로 닫아야 한다.
 
 초기 recommendation 결과는 KB 단위로 materialize된다. Builder UI는 Collection 맥락을 safe `source_collection_summary`로 설명할 수 있지만, 현재 LLM node draft에는 `knowledgeBases` 중심으로 저장한다.
 
@@ -145,7 +151,7 @@ Validation은 최소한 다음을 확인해야 한다.
 
 ### AB-FR-011: Draft Preview Mode And Apply Save
 
-Agent Builder는 validation을 통과한 draft에 대해 사용자가 저장 전 확인할 수 있는 Draft Preview를 제공해야 한다. Chatbot panel은 요약과 `도안 보기` 진입점을 제공하고, 상세 검토는 Workflow Editor의 Preview Mode에서 수행한다.
+Agent Builder는 validation을 통과한 draft에 대해 사용자가 저장 전 확인할 수 있는 Draft Preview를 제공해야 한다. 이 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따른다. Chatbot panel은 요약과 `도안 보기` 진입점을 제공하고, 상세 검토는 Workflow Editor의 Preview Mode에서 수행한다.
 
 Preview Mode는 현재 editor graph를 덮어쓰지 않고, agent가 생성한 `previewGraph`를 실제 editor graph와 분리된 읽기 전용 graph로 렌더링해야 한다. 사용자는 preview graph의 node와 edge를 확인하고, node를 선택해 Node Detail Panel에서 node type, 주요 설정, Knowledge Base binding, Slack channel binding, credential 참조 상태, input/output mapping, validation 상태를 확인할 수 있어야 한다.
 
@@ -173,7 +179,9 @@ MVP에서는 editor에 저장되지 않은 변경이 있으면 Agent Builder dra
 
 ### AB-FR-012: Conversation Session
 
-Agent Builder chatbot session은 refresh 이후에도 최근 대화와 pending request 상태를 복구할 수 있어야 한다. Pending request가 있으면 중복 submit을 막고 cancel을 제공한다. Cancel된 request의 late result는 draft preview, Preview Mode 진입, apply/save로 이어질 수 없다.
+Agent Builder chatbot session은 refresh 이후에도 최근 대화와 pending request 상태를 복구할 수 있어야 한다. Session identifier는 server-issued 값이어야 하며, 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶여야 한다. Client가 임의로 생성한 session id는 권한, scope, audit, stale 판단의 근거로 사용할 수 없다.
+
+Pending request가 있으면 중복 submit을 막고 cancel을 제공한다. Cancel된 request의 late result는 draft preview, Preview Mode 진입, apply/save로 이어질 수 없다.
 
 ## Success Criteria
 
@@ -181,7 +189,7 @@ Agent Builder chatbot session은 refresh 이후에도 최근 대화와 pending r
 - KB가 필요한 요청은 draft 생성 시점 retrieval 없이 Knowledge Base-backed LLM step으로 표현된다.
 - KB 후보가 권한 확인된 safe metadata 안에서만 추천된다.
 - 후보가 모호하면 임의 선택하지 않고 질문한다.
-- `적용 및 저장` 전에는 workflow 저장, 실행, KB 검색, Slack 전송, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
+- `적용 및 저장` 전에는 workflow 저장, workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
 - Demo happy path에서 draft preview, Preview Mode, 읽기 전용 Node Detail 확인, backend 재검사, workflow graph 저장, Preview Mode 종료, 저장된 최신 graph 표시, audit 기록을 확인할 수 있다.
 
 ## Edge Cases

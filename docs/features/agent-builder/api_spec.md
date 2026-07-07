@@ -4,7 +4,7 @@ Status: Draft
 
 ## API Boundary
 
-Agent Builder API는 workflow draft 생성, clarification, validation, draft preview, Preview Mode, 그리고 사용자가 `적용 및 저장`을 선택한 draft의 workflow graph 저장을 지원한다. 이 API는 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
+Agent Builder API는 workflow draft 생성, clarification, validation, draft preview, Preview Mode, 그리고 사용자가 `적용 및 저장`을 선택한 draft의 workflow graph 저장을 지원한다. Preview apply/save 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따른다. 이 API는 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
 
 모든 endpoint는 인증 사용자와 `X-Organization-Id` 기반 active organization membership을 먼저 검증한다. Request body의 `organization_id`는 권한 또는 scope 판단에 사용하지 않는다.
 
@@ -17,6 +17,8 @@ Agent Builder API는 workflow draft 생성, clarification, validation, draft pre
 | `POST` | `/api/v1/agent-builder/sessions/{session_id}/messages` | 사용자 자연어 요청 제출 |
 | `POST` | `/api/v1/agent-builder/requests/{request_id}/cancel` | pending 또는 processing request 취소 |
 | `POST` | `/api/v1/agent-builder/drafts/{draft_id}/apply` | 사용자가 Preview Mode에서 확인한 draft를 재검사 후 workflow graph로 저장 |
+
+`session_id`는 server-issued identifier다. Server는 session을 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶어 관리한다. Client-generated session id는 권한, scope, organization, audit 판단에 사용하지 않는다.
 
 ## Message Request
 
@@ -74,9 +76,10 @@ Adapter는 public client endpoint가 아니라 Agent Builder backend에서 호�
 | `knowledge_requirement` | `requirement_id`, `query_topics`, `expected_evidence_type`, `required` |
 | `pending_resolution_ref` | `resolution_id`, `slot_type=knowledge_base`, `slot_key`, `blocking` |
 | `candidate_scope` | `auto_collection` 또는 `explicit_kb` |
+| `authorized_safe_candidate_set` | Knowledge side의 `KnowledgeCandidateResolver`가 만든 권한 확인된 safe 후보 집합. Client body나 `StructuredRequestBuilder` 입력에서 오지 않음 |
 | `constraints` | max recommendations, high risk domain, query rewrite policy |
 
-Actor, organization, workflow/app scope는 request body가 아니라 server-resolved context에서 전달한다.
+Actor, organization, workflow/app scope는 request body가 아니라 server-resolved context에서 전달한다. Adapter는 `knowledge_requirement`와 `pending_resolution_ref`로 "무엇을 찾아야 하는지"를 알고, `authorized_safe_candidate_set`으로 "어디에서 찾을 수 있는지"를 제한한다.
 
 ### Adapter Output
 
@@ -90,7 +93,7 @@ Actor, organization, workflow/app scope는 request body가 아니라 server-reso
 | `user_safe_warning` | partial access, runtime availability 등 사용자 표시 경고 |
 | `fallback_reason` | unavailable 또는 no candidate 이유 |
 
-Recommendation item은 `candidate_type=knowledge_base`를 사용한다. Collection은 `source_collection_summary`로만 반환한다.
+Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder가 draft를 생성하거나 apply/save를 수행할 때 backend가 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
 
 ### Adapter Prohibited Data
 
@@ -119,7 +122,7 @@ Draft preview response는 chatbot panel 요약과 Preview Mode 렌더링에 필�
 | `draft_mode` | `new_workflow`, `modify_workflow`, `replace_workflow` |
 | `node_detail_previews` | Node Detail Panel에 표시할 read-only safe node configuration |
 | `validation_result` | preview 표시 기준 validation 결과 |
-| `safety_notices` | 저장 전 실행/KB retrieval/Slack 전송/credential 사용 없음 등 안내 |
+| `safety_notices` | 저장 전 실행/Knowledge Base retrieval/Slack 전송/credential 사용 없음 등 안내 |
 
 `preview_graph`와 `node_detail_previews`에는 credential 원문, raw KB content, raw source path/url/title, hidden resource detail이 포함되지 않는다. Client는 `preview_graph`를 actual editor graph에 merge하지 않고 Preview Mode 전용 state로 렌더링한다.
 

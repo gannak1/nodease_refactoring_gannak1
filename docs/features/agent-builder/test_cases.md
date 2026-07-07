@@ -5,6 +5,7 @@ Status: Draft
 ## Unit Tests
 
 - `StructuredRequestBuilder`는 자연어 요청을 `request_type`, `intent_summary`, `planned_steps`, `knowledge_requirements`, `pending_resolution`, `missing_information`으로 분리한다.
+- `StructuredRequestBuilder`는 KB 후보 목록이나 KB safe metadata 목록 없이도 KB가 필요한 요청에서 `knowledge_requirements`와 `pending_resolution(slot_type=knowledge_base)`을 생성한다.
 - Knowledge Base처럼 resolver가 해결할 수 있는 값은 즉시 `missing_information`으로 올리지 않고 `pending_resolution`으로 둔다.
 - `blocking` 최종값은 LLM hint가 아니라 product policy와 slot type 규칙으로 확정된다.
 - `TargetResolver`는 자연어 target이 selected node보다 우선한다.
@@ -13,18 +14,19 @@ Status: Draft
 
 ## API Tests
 
-- (FR-001) 생성 요청 성공 시 노드 그래프를 반환한다. 대표 프롬프트: "고객 문의 이메일을 받아서 자동으로 분류하고 답변해줘" → Webhook/LLM/Condition/Mail 계열 노드 포함.
+- (FR-001) 생성 요청 성공 시 MVP 허용 capability 안에서 노드 그래프를 반환한다. 대표 프롬프트: "사내 휴가 정책을 바탕으로 직원 질문에 답하고 결과를 Slack으로 보내줘" → Start/Input, Knowledge Base-backed LLM, Slack send, Answer 계열 노드 포함. Slack channel 또는 KB 후보가 모호하면 draft를 확정하지 않고 clarification을 반환한다.
 - (FR-003) 사용 가능한 credential이 없는 상태에서 생성 요청 → 부족한 credential/모델을 명시한 사전 안내 응답.
 - 유효하지 않은 `X-Organization-Id` header → 실행 전 검증 오류로 거부.
 - 해석 불가능한 프롬프트(예: 빈 문자열, 자동화와 무관한 요청) → 빈 workflow를 만들지 않고 명시적 실패 응답.
 - 사내 지식 검색 workflow 생성 요청에서 Builder는 safe skill metadata와 safe collection/KB display metadata만 사용하고 raw skill body, hidden source reference, raw source title/path/url을 prompt나 응답에 포함하지 않는다.
 - LLM node RAG 옵션 후보 resolver는 intended execution subject/audience 기준 `available`, `warning`, `unavailable`, `unknown` runtime availability를 반환하고, hidden KB id/name, exact denied count, hidden source distribution을 반환하지 않는다.
-- Workflow Builder의 RAG 옵션 추천은 Knowledge RAG Recommendation Adapter를 통해서만 수행하며, Agent Builder가 Knowledge permission row, source ACL row, hidden KB 목록을 직접 읽지 않는다.
+- Agent Builder의 RAG 옵션 추천은 Knowledge RAG Recommendation Adapter를 통해서만 수행하며, Agent Builder가 Knowledge permission row, source ACL row, hidden KB 목록을 직접 읽지 않는다.
 - Recommendation 결과는 초기 구현에서 KB 단위로 materialize되고, Collection은 safe `source_collection_summary`로만 표시된다. Builder draft에는 현재 LLM node schema의 `knowledgeBases` 중심으로 저장된다.
 - Recommendation이 없으면 Builder는 사용자 확인 필요 상태를 표시하고, 별도 정책 gate 없이 자동으로 RAG 없는 LLM node를 생성하지 않는다.
 - 후보가 source ACL stale/unmapped/ambiguous/unverified/revoked 또는 scope 밖 resource 때문에 제외된 경우 Builder 응답은 safe reason class와 required action만 표시하고 세부 source ACL state나 raw source path/title/url을 노출하지 않는다.
 - `X-Organization-Id`가 없으면 Agent Builder request가 거부된다.
 - Request body에 `organization_id`가 있어도 권한/scope 판단에는 사용되지 않는다.
+- Agent Builder session id는 server-issued 값이어야 하며, client-generated session id는 권한/scope/audit 판단에 사용되지 않는다.
 - 기존 workflow 수정 요청은 workflow read/write 권한이 없으면 `WORKFLOW_PERMISSION_REQUIRED`를 반환한다.
 - 새 workflow draft 요청은 app 또는 workflow 생성 scope 권한이 없으면 `APP_CREATE_PERMISSION_REQUIRED`를 반환한다.
 - Pending request 중복 submit은 거부되거나 기존 pending state를 반환한다.
@@ -34,7 +36,9 @@ Status: Draft
 
 - Agent Builder는 raw user input 전체가 아니라 `StructuredRequest`의 safe summary, `knowledge_requirement`, `pending_resolution_ref`로 adapter request를 만든다.
 - Adapter request에는 raw source ACL, raw source id/path/url/title, raw document/chunk content, hidden/denied list, exact hidden/denied count가 포함되지 않는다.
-- Adapter는 `KnowledgeCandidateResolver`가 반환한 safe candidate set 안에서만 추천한다.
+- Adapter는 `StructuredRequest`의 `knowledge_requirement`와 `pending_resolution_ref`를 Knowledge side의 `KnowledgeCandidateResolver`가 반환한 authorized safe candidate set 안에서만 매칭하고 추천한다.
+- Recommendation `candidate_id`는 raw source id/path/url/title이 아니라 server-issued safe handle이어야 한다.
+- Draft 생성 또는 apply/save 시 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다.
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
 - 후보 여러 개 또는 점수 근접이면 clarification option이 표시된다.
@@ -44,6 +48,17 @@ Status: Draft
 - 추천 결과는 LLM node의 `knowledgeBases`로 materialize 가능해야 한다.
 - Collection은 preview 설명용 safe summary로만 표시되고 workflow runtime field로 저장되지 않는다.
 - MVP에서 RAG retrieval signal과 LLM reranker는 비활성이다.
+
+## Runtime RAG Boundary Tests
+
+- 이 테스트는 draft 생성, preview, apply/save가 Knowledge Base retrieval을 수행한다는 뜻이 아니라, Agent Builder가 생성한 KB-backed LLM node가 별도 workflow 실행 시점에 ADR-0018 runtime RAG 경계를 지키는지 검증한다.
+- Interactive authenticated workflow execution에서는 run context의 `execution_subject=current_user`를 Knowledge service에 전달하고, runtime KB access는 해당 subject 기준 Knowledge permission path로 평가되어야 한다.
+- `execution_subject`가 있는 실행은 workflow owner, deployment owner, app creator, builder 권한으로 private KB 접근을 대체하지 않는다.
+- `execution_subject`가 없는 public app, webhook, schedule, API secret 실행은 workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 private KB를 조회하지 않는다.
+- `execution_subject`가 없는 실행은 anonymous public-only retrieval로 낮추고, `safe_metadata["visibility"] == "public"`인 active Knowledge Collection에 연결된 active KB만 검색 대상으로 삼는다.
+- visibility가 없거나 public이 아닌 collection, archived/deleted collection, archived/deleted KB는 anonymous runtime에서 private 또는 unavailable로 처리한다.
+- anonymous public-only filtering 이후 후보 KB 또는 evidence가 없으면 safe no-result를 반환한다. 단, node의 `ragFailurePolicy`가 node failure를 요구하면 실패로 처리한다.
+- Agent Builder preview, prompt, trace, audit, test fixture는 hidden KB id/name, exact denied count, raw source path/url/title, raw document/chunk content를 노출하지 않는다.
 
 ## Draft Preview Mode And Apply Save Tests
 

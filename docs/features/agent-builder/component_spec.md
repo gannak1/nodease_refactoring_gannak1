@@ -13,7 +13,7 @@ Agent Builder는 Workflow Editor 안에서 동작한다.
 - Preview Mode: Workflow Editor canvas에서 agent draft graph를 읽기 전용 preview graph로 렌더링
 - Node Detail Panel: Preview Mode에서 선택한 node의 내부 설정을 읽기 전용으로 표시
 
-Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 Preview Mode에서 `적용 및 저장`을 선택하면 backend 재검사를 통과한 경우에만 workflow graph 저장으로 이어진다.
+Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 Preview Mode에서 `적용 및 저장`을 선택하면 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)의 경계에 따라 backend 재검사를 통과한 경우에만 workflow graph 저장으로 이어진다.
 
 ## Frontend Components
 
@@ -39,7 +39,7 @@ Preview Mode component는 preview graph를 actual editor graph에 merge하지 �
 | Component | Responsibility |
 | --- | --- |
 | `RequestContextResolver` | 인증 사용자, active organization, workflow/app scope, 권한 context 확정 |
-| `ConversationSessionService` | chat session, 최근 메시지, pending request, cancel state 관리 |
+| `ConversationSessionService` | server-issued chat session, 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
 | `StructuredRequestBuilder` | 자연어 의미 후보를 안전한 `StructuredRequest`로 정규화 |
 | `WorkflowContextSnapshotBuilder` | graph, selected node, existing node/edge summary 생성 |
 | `TargetResolver` | 기존 workflow 수정 target 해석 |
@@ -59,10 +59,10 @@ Apply/save가 차단되거나 실패하면 Preview Mode를 유지하고 `actualE
 
 Agent Builder는 Knowledge DB를 직접 조회하지 않는다.
 
-1. `StructuredRequestBuilder`가 `knowledge_requirements`와 `pending_resolution`을 만든다.
+1. `StructuredRequestBuilder`가 KB 후보 목록 없이 `knowledge_requirements`와 `pending_resolution`을 만든다.
 2. `KnowledgeRecommendationAdapterClient`가 KB pending resolution 단위로 adapter request를 만든다.
 3. Knowledge side는 `KnowledgeCandidateResolver`를 통해 authorized safe candidate set을 만든다.
-4. Adapter는 MVP에서 keyword/metadata deterministic ranking을 수행한다.
+4. Adapter는 structured knowledge requirement와 authorized safe candidate set을 매칭하고, MVP에서 keyword/metadata deterministic ranking을 수행한다.
 5. Agent Builder는 결과를 resolved pending slot, clarification, validation failure 중 하나로 반영한다.
 
 ## UI States
