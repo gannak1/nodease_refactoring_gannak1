@@ -15,6 +15,7 @@ import {
   CostOptimizerExperimentListParams,
   CostOptimizerExperimentListResponse,
   CostOptimizerLatestBaselineResponse,
+  CostOptimizerParameterRecommendationsResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -320,6 +321,16 @@ export const workflowApi = {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments`,
       { params },
+    );
+    return response.data;
+  },
+
+  getCostOptimizerParameterRecommendations: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<CostOptimizerParameterRecommendationsResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/parameter-recommendations`,
     );
     return response.data;
   },
