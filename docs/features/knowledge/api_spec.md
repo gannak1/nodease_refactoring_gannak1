@@ -7,7 +7,9 @@ Status: Draft
 
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
-| GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner/permission filtering |
+| GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 `knowledge_bases.organization_id`로 범위를 좁힌다. Header가 없으면 기존 owner-only 동작을 유지한다 |
+| POST | `/api/v1/knowledge` | 빈 KB 생성 | `X-Organization-Id`가 있으면 active organization validation 후 해당 organization에 귀속한다. Header가 없으면 기존 primary organization fallback을 유지한다. 최신 Knowledge schema 필수 컬럼이 없으면 500 대신 `503 knowledge.schema_not_ready`로 실패한다 |
+| GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 같은 organization KB만 반환한다. Detail 응답은 최신 `KnowledgeBase` ORM 전체 로드에 의존하지 않아 stale local DB에서 신규 lifecycle/sync 컬럼 누락으로 500이 나지 않아야 한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
 | POST | `/api/v1/knowledge/rag-recommendations` | Workflow Builder용 LLM node RAG option 추천 | active organization, candidate resolver safe set, KB 단위 recommendation |
 | POST | `/api/v1/rag/upload` | KB 문서 업로드/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 일치하고 KB write/manage 권한을 통과해야 한다 |

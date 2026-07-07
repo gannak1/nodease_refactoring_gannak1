@@ -533,11 +533,13 @@ export function LLMNodePanel({
     let active = true;
     const syncKnowledgeBases = async () => {
       try {
-        const { bases } = await fetchEligibleKnowledgeBases();
+        const { bases, preserveSelectionIds = [] } =
+          await fetchEligibleKnowledgeBases();
         if (!active) return;
         const nextSelected = sanitizeSelectedKnowledgeBases(
           data.knowledgeBases || [],
           bases,
+          { preserveMissingIds: preserveSelectionIds },
         );
         if (
           !isSameKnowledgeSelection(nextSelected, data.knowledgeBases || [])

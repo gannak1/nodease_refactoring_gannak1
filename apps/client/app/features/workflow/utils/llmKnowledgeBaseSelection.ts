@@ -19,6 +19,11 @@ type KnowledgeBaseSelection = { id: string; name: string };
 type EligibleKnowledgeBasesResult = {
   bases: KnowledgeBaseResponse[];
   detailsById: Record<string, KnowledgeBaseDetailResponse>;
+  preserveSelectionIds?: string[];
+};
+
+type SanitizeSelectedKnowledgeBasesOptions = {
+  preserveMissingIds?: Iterable<string>;
 };
 
 // LLM 노드에서 실제로 사용할 수 있는지 판단하기 위해 완료된 문서 수만 계산합니다.
@@ -27,11 +32,16 @@ const getCompletedCount = (detail: KnowledgeBaseDetailResponse) => {
     .length;
 };
 
+const shouldPreserveSelectionOnDetailFailure = (status?: number) => {
+  return status === undefined || status === 408 || status === 429 || status >= 500;
+};
+
 /**
  * LLM 노드에서 표시 가능한 지식 베이스만 가져옵니다.
  * - 목록 응답에서 후보를 고른 뒤 상세를 조회해 완료 문서가 있는지 확인합니다.
- * - 상세가 404면 실제 삭제로 간주하고 목록에서 제외합니다.
- * - 그 외 오류는 일시적인 문제일 수 있으므로 목록에서 제거하지 않습니다.
+ * - 404/403 상세 실패는 삭제 또는 권한 상실로 보고 후보/선택 정리 대상에서 제외합니다.
+ * - 일시적 상세 실패는 후보 표시에서는 제외하되 기존 선택값은 보존할 수 있게 id를 반환합니다.
+ * - 로그에는 원본 오류 객체 대신 status와 KB id만 남겨 민감한 응답 payload 노출을 피합니다.
  */
 export const fetchEligibleKnowledgeBases =
   async (): Promise<EligibleKnowledgeBasesResult> => {
@@ -43,19 +53,19 @@ export const fetchEligibleKnowledgeBases =
 
     const detailsById: Record<string, KnowledgeBaseDetailResponse> = {};
     const eligibleBases: KnowledgeBaseResponse[] = [];
+    const preserveSelectionIds: string[] = [];
 
     detailResults.forEach((result, index) => {
       const base = candidates[index];
       if (result.status !== 'fulfilled') {
         const status = result.reason?.response?.status;
-        if (status === 404) {
-          return;
-        }
-        console.error(
+        console.warn(
           '[LLMReference] Failed to load knowledge base detail',
-          result.reason,
+          { knowledgeBaseId: base.id, status },
         );
-        eligibleBases.push(base);
+        if (shouldPreserveSelectionOnDetailFailure(status)) {
+          preserveSelectionIds.push(base.id);
+        }
         return;
       }
       const detail = result.value;
@@ -66,30 +76,34 @@ export const fetchEligibleKnowledgeBases =
       }
     });
 
-    return { bases: eligibleBases, detailsById };
+    return { bases: eligibleBases, detailsById, preserveSelectionIds };
   };
 
 /**
  * 기존 선택된 지식 베이스를 최신 상태로 정리합니다.
  * - 현재 목록에 없는 항목은 제거
+ * - 상세 조회가 일시 실패한 기존 선택 항목은 이름을 유지한 채 보존
  * - 중복 제거
  * - 이름은 최신 목록 기준으로 갱신
  */
 export const sanitizeSelectedKnowledgeBases = (
   selected: KnowledgeBaseSelection[],
   eligibleBases: KnowledgeBaseResponse[],
+  options: SanitizeSelectedKnowledgeBasesOptions = {},
 ) => {
   const nameById = new Map(
     eligibleBases.map((kb) => [kb.id, kb.name]),
   );
+  const preserveMissingIds = new Set(options.preserveMissingIds ?? []);
   const seen = new Set<string>();
   const next: KnowledgeBaseSelection[] = [];
 
   selected.forEach((kb) => {
     const name = nameById.get(kb.id);
-    if (!name || seen.has(kb.id)) return;
+    if (!name && !preserveMissingIds.has(kb.id)) return;
+    if (seen.has(kb.id)) return;
     seen.add(kb.id);
-    next.push({ id: kb.id, name });
+    next.push({ id: kb.id, name: name ?? kb.name });
   });
 
   return next;
