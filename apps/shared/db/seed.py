@@ -126,7 +126,7 @@ def seed_default_llm_providers(db: Session) -> None:
 def seed_default_llm_models(db: Session) -> None:
     """
     KNOWN_MODEL_PRICES를 기반으로 기본 LLM 모델을 시드합니다.
-    gpt-4.1, o3-mini와 같은 모델이 DB에 존재하도록 보장합니다.
+    gpt-5.4, o3-mini와 같은 모델이 DB에 존재하도록 보장합니다.
     또한, 해당 모델이 UI에 표시되도록 기존 Credential과 연결합니다.
     """
     from apps.gateway.services.llm_service import LLMService
@@ -427,8 +427,8 @@ def _llm_intent_graph() -> dict:
                     ["model_id", "user_prompt"],
                 ),
                 "provider": "openai",
-                "model_id": "gpt-4.1-mini",
-                "fallback_model_id": "gpt-4o-mini",
+                "model_id": "gpt-5.4-mini",
+                "fallback_model_id": "gpt-5.4",
                 "system_prompt": "고객센터 문의를 분류하는 상담 운영 도우미입니다.",
                 "user_prompt": (
                     "다음 고객 문의를 읽고 의도, 감정, 긴급도를 JSON으로 답하세요.\n"

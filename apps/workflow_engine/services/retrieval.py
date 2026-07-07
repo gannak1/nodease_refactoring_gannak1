@@ -436,6 +436,7 @@ class RetrievalService:
                     "chunk": chunk,
                     "doc": doc,
                     "vector_rank": rank,
+                    "similarity": 1 - distance,
                 }
             fused_scores[doc_id]["score"] += 1.0 / (k + rank + 1)
 
@@ -778,12 +779,21 @@ class RetrievalService:
                 thresholded_reranked = [
                     item
                     for item in reranked
-                    if float(item.get("rerank_score", 0.0)) >= threshold
+                    if float(
+                        item.get(
+                            "rerank_score",
+                            item.get("similarity", item.get("score", 0.0)),
+                        )
+                    )
+                    >= threshold
                 ]
                 for rank, item in enumerate(thresholded_reranked, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
-                    rerank_score = item.get("rerank_score", 0.0)
+                    rerank_score = item.get(
+                        "rerank_score",
+                        item.get("similarity", item.get("score", 0.0)),
+                    )
                     rrf_score = item.get("score", 0.0)  # 원본 RRF 점수
 
                     meta = self._chunk_metadata(chunk, doc)
@@ -1018,6 +1028,7 @@ class RetrievalService:
         metadata_filter: NormalizedMetadataFilter | None = None,
         hierarchy_mode: str = "auto",
         source_tier_policy: str = "tie_break",
+        query_vector: list[float] | None = None,
     ) -> list[ChunkPreview]:
         """
         [GEVENT] 동기 검색 API - gevent pool 호환성을 위해.
@@ -1058,15 +1069,16 @@ class RetrievalService:
                 and has_hierarchy
             )
 
-            embed_client = LLMService.get_client_for_user(
-                self.db,
-                self.user_id,
-                kb.embedding_model,
-                organization_id=self.organization_id,
-            )
+            if query_vector is None:
+                embed_client = LLMService.get_client_for_user(
+                    self.db,
+                    self.user_id,
+                    kb.embedding_model,
+                    organization_id=self.organization_id,
+                )
 
-            # [GEVENT] embed_sync 사용
-            query_vector = embed_client.embed_sync(query)
+                # [GEVENT] embed_sync 사용
+                query_vector = embed_client.embed_sync(query)
             if use_hierarchy:
                 parent_vector_results = self._vector_search(
                     query_vector,
@@ -1231,12 +1243,21 @@ class RetrievalService:
                 thresholded_reranked = [
                     item
                     for item in reranked
-                    if float(item.get("rerank_score", 0.0)) >= threshold
+                    if float(
+                        item.get(
+                            "rerank_score",
+                            item.get("similarity", item.get("score", 0.0)),
+                        )
+                    )
+                    >= threshold
                 ]
                 for rank, item in enumerate(thresholded_reranked, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
-                    rerank_score = item.get("rerank_score", 0.0)
+                    rerank_score = item.get(
+                        "rerank_score",
+                        item.get("similarity", item.get("score", 0.0)),
+                    )
                     rrf_score = item.get("score", 0.0)
 
                     meta = self._chunk_metadata(chunk, doc)

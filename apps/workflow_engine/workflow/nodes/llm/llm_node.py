@@ -60,7 +60,7 @@ RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 10.0
 MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
 QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
 SUMMARY_MODEL_PREFS = {
-    "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-3.5-turbo"],
+    "openai": ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o-mini"],
     "google": ["gemini-3.1-flash-lite", "gemini-2.5-flash"],
     "anthropic": ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
 }
@@ -1124,16 +1124,37 @@ class LLMNode(Node[LLMNodeData]):
             organization_id=organization_uuid,
             knowledge_base_ids=kb_ids,
         )
+        query_vectors_by_kb, embedding_failed_count, precomputed_vectors = (
+            self._precompute_rag_query_vectors_by_kb(
+                db_session,
+                query=search_query,
+                user_id=credential_user_id,
+                organization_id=organization_uuid,
+                knowledge_base_ids=authorized_kb_ids,
+            )
+        )
+        fanout_kb_ids = authorized_kb_ids
+        if precomputed_vectors:
+            fanout_kb_ids = [
+                kb_id for kb_id in authorized_kb_ids if kb_id in query_vectors_by_kb
+            ]
 
         fanout = self._run_rag_retrieval_fanout(
             query=search_query,
             fallback_db_session=db_session,
             user_id=credential_user_id,
             organization_id=organization_uuid,
-            knowledge_base_ids=authorized_kb_ids,
+            knowledge_base_ids=fanout_kb_ids,
             top_k=top_k,
             threshold=threshold,
+            query_vectors_by_kb=query_vectors_by_kb if precomputed_vectors else None,
         )
+        if embedding_failed_count:
+            fanout = WorkflowRAGFanoutResult(
+                results=fanout.results,
+                failed_count=fanout.failed_count + embedding_failed_count,
+                timeout_count=fanout.timeout_count,
+            )
 
         for kb_id, chunks in fanout.results:
             rag_result_counts.append((kb_id, len(chunks)))
@@ -1283,9 +1304,26 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_ids: List[str],
         top_k: int,
         threshold: float,
+        query_vectors_by_kb: Optional[Dict[str, List[float]]] = None,
     ) -> WorkflowRAGFanoutResult:
         if not knowledge_base_ids:
             return WorkflowRAGFanoutResult(results=[], failed_count=0)
+
+        if query_vectors_by_kb is not None:
+            logger.info(
+                "[LLMNode] RAG fanout uses precomputed query vectors: kb_count=%s",
+                len(knowledge_base_ids),
+            )
+            return self._run_rag_retrieval_fanout_sequential(
+                query=query,
+                db_session=fallback_db_session,
+                user_id=user_id,
+                organization_id=organization_id,
+                knowledge_base_ids=knowledge_base_ids,
+                top_k=top_k,
+                threshold=threshold,
+                query_vectors_by_kb=query_vectors_by_kb,
+            )
 
         gevent_modules = self._rag_gevent_modules()
         if gevent_modules is None:
@@ -1297,6 +1335,7 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_ids=knowledge_base_ids,
                 top_k=top_k,
                 threshold=threshold,
+                query_vectors_by_kb=query_vectors_by_kb,
             )
 
         gevent, pool_cls = gevent_modules
@@ -1310,6 +1349,9 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_id=kb_id,
                 top_k=top_k,
                 threshold=threshold,
+                query_vector=query_vectors_by_kb.get(kb_id)
+                if query_vectors_by_kb
+                else None,
             ): kb_id
             for kb_id in knowledge_base_ids
         }
@@ -1354,6 +1396,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_ids: List[str],
         top_k: int,
         threshold: float,
+        query_vectors_by_kb: Optional[Dict[str, List[float]]] = None,
     ) -> WorkflowRAGFanoutResult:
         retrieval = RetrievalService(
             db_session,
@@ -1371,6 +1414,9 @@ class LLMNode(Node[LLMNodeData]):
                     knowledge_base_id=kb_id,
                     top_k=top_k,
                     threshold=threshold,
+                    query_vector=query_vectors_by_kb.get(kb_id)
+                    if query_vectors_by_kb
+                    else None,
                 )
             except Exception as exc:
                 if self.data.ragFailurePolicy == "fail_node":
@@ -1395,6 +1441,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         top_k: int,
         threshold: float,
+        query_vector: Optional[List[float]] = None,
     ) -> List[ChunkPreview]:
         session = SessionLocal()
         try:
@@ -1409,6 +1456,7 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_id=knowledge_base_id,
                 top_k=top_k,
                 threshold=threshold,
+                query_vector=query_vector,
             )
         finally:
             session.close()
@@ -1421,6 +1469,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         top_k: int,
         threshold: float,
+        query_vector: Optional[List[float]] = None,
     ) -> List[ChunkPreview]:
         gevent_modules = self._rag_gevent_modules()
         if gevent_modules is None:
@@ -1437,6 +1486,7 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_id=knowledge_base_id,
                 top_k=top_k,
                 threshold=threshold,
+                query_vector=query_vector,
             )
         except gevent.Timeout as exc:
             if exc is timer:
@@ -1453,6 +1503,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         top_k: int,
         threshold: float,
+        query_vector: Optional[List[float]] = None,
     ) -> List[ChunkPreview]:
         return retrieval.search_documents_sync(
             query,
@@ -1461,7 +1512,89 @@ class LLMNode(Node[LLMNodeData]):
             threshold=threshold,
             hierarchy_mode="auto",
             source_tier_policy=getattr(self.data, "sourceTierPolicy", "tie_break"),
+            query_vector=query_vector,
         )
+
+    def _precompute_rag_query_vectors_by_kb(
+        self,
+        db_session,
+        *,
+        query: str,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        knowledge_base_ids: List[str],
+    ) -> tuple[Dict[str, List[float]], int, bool]:
+        if not knowledge_base_ids:
+            return {}, 0, False
+
+        try:
+            parsed_ids = [uuid.UUID(str(kb_id)) for kb_id in knowledge_base_ids]
+            rows = (
+                db_session.query(KnowledgeBase)
+                .filter(
+                    KnowledgeBase.id.in_(parsed_ids),
+                    KnowledgeBase.organization_id == organization_id,
+                    KnowledgeBase.lifecycle_state == "active",
+                )
+                .all()
+            )
+        except Exception as exc:
+            logger.warning(
+                "[LLMNode] RAG query vector precompute skipped: %s",
+                exc.__class__.__name__,
+            )
+            return {}, 0, False
+
+        if any(not hasattr(row, "embedding_model") for row in rows):
+            logger.info(
+                "[LLMNode] RAG query vector precompute skipped: missing embedding model attribute"
+            )
+            return {}, 0, False
+
+        kb_by_id = {str(row.id): row for row in rows}
+        model_to_kb_ids: Dict[str, List[str]] = {}
+        failed_count = 0
+        for kb_id in knowledge_base_ids:
+            kb = kb_by_id.get(str(kb_id))
+            if kb is None or not getattr(kb, "embedding_model", None):
+                failed_count += 1
+                continue
+            model_to_kb_ids.setdefault(kb.embedding_model, []).append(str(kb_id))
+
+        query_vectors_by_kb: Dict[str, List[float]] = {}
+        for embedding_model, grouped_kb_ids in model_to_kb_ids.items():
+            try:
+                model_info = (
+                    db_session.query(LLMModel)
+                    .filter(LLMModel.model_id_for_api_call == embedding_model)
+                    .first()
+                )
+                if model_info and model_info.type != "embedding":
+                    failed_count += len(grouped_kb_ids)
+                    continue
+                embed_client = LLMService.get_client_for_user(
+                    db_session,
+                    user_id,
+                    embedding_model,
+                    organization_id=organization_id,
+                )
+                query_vector = embed_client.embed_sync(query)
+            except Exception:
+                if self.data.ragFailurePolicy == "fail_node":
+                    raise
+                failed_count += len(grouped_kb_ids)
+                continue
+            for kb_id in grouped_kb_ids:
+                query_vectors_by_kb[kb_id] = query_vector
+
+        logger.info(
+            "[LLMNode] RAG query vector precompute completed: kb_count=%s model_count=%s vector_kb_count=%s failed_count=%s",
+            len(knowledge_base_ids),
+            len(model_to_kb_ids),
+            len(query_vectors_by_kb),
+            failed_count,
+        )
+        return query_vectors_by_kb, failed_count, True
 
     def _rewrite_rag_query(self, query: str) -> tuple[str, bool, str]:
         mode = getattr(self.data, "queryRewriteMode", "off")
