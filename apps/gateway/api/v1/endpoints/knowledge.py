@@ -92,6 +92,10 @@ KNOWLEDGE_BASE_MUTATION_COLUMNS = {
 }
 
 
+class KnowledgeSchemaIntrospectionError(Exception):
+    """Raised when schema readiness cannot be verified safely."""
+
+
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
     return HTTPException(
         status_code=exc.status_code,
@@ -153,19 +157,24 @@ def _knowledge_schema_missing_columns(
             "knowledge.schema.introspection_failed",
             exc_info=True,
         )
-        return {}
+        raise KnowledgeSchemaIntrospectionError
 
 
 def _raise_knowledge_schema_not_ready(
     request: Request,
     missing_columns: dict[str, list[str]],
+    *,
+    reason: str | None = None,
 ) -> None:
+    details: dict[str, object] = {"missing_columns": missing_columns}
+    if reason is not None:
+        details["reason"] = reason
     raise_api_error(
         request,
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "knowledge.schema_not_ready",
         "Knowledge database schema is not ready for this operation.",
-        {"missing_columns": missing_columns},
+        details,
     )
 
 
@@ -174,7 +183,14 @@ def _ensure_knowledge_schema_columns(
     request: Request,
     required_columns: dict[str, set[str]],
 ) -> None:
-    missing = _knowledge_schema_missing_columns(db, required_columns)
+    try:
+        missing = _knowledge_schema_missing_columns(db, required_columns)
+    except KnowledgeSchemaIntrospectionError:
+        _raise_knowledge_schema_not_ready(
+            request,
+            {},
+            reason="schema_introspection_failed",
+        )
     if missing:
         _raise_knowledge_schema_not_ready(request, missing)
 

@@ -481,6 +481,57 @@ def test_knowledge_create_reports_stale_schema_without_raw_500(monkeypatch):
     assert fake_db.added is None
 
 
+def test_knowledge_schema_missing_columns_raises_on_introspection_failure(monkeypatch):
+    def raise_introspection_error(*_args, **_kwargs):
+        raise RuntimeError("simulated introspection failure")
+
+    monkeypatch.setattr(knowledge_endpoint, "inspect", raise_introspection_error)
+
+    with pytest.raises(knowledge_endpoint.KnowledgeSchemaIntrospectionError):
+        knowledge_endpoint._knowledge_schema_missing_columns(
+            FakeCreateKnowledgeDb(),
+            {"knowledge_bases": {"sync_state"}},
+        )
+
+
+def test_knowledge_create_reports_schema_introspection_failure_without_insert(
+    monkeypatch,
+):
+    fake_db = FakeCreateKnowledgeDb()
+
+    def raise_schema_introspection_error(*_args, **_kwargs):
+        raise knowledge_endpoint.KnowledgeSchemaIntrospectionError
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        raise_schema_introspection_error,
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge",
+            json={
+                "name": "schema introspection failure KB",
+                "description": "테스트",
+                "embedding_model": "text-embedding-3-small",
+            },
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "knowledge.schema_not_ready"
+    assert body["error"]["details"] == {
+        "missing_columns": {},
+        "reason": "schema_introspection_failed",
+    }
+    assert fake_db.added is None
+    assert fake_db.committed is False
+
+
 def test_knowledge_detail_uses_scoped_safe_column_query(monkeypatch):
     knowledge_base_id = uuid.uuid4()
     organization_id = uuid.uuid4()
