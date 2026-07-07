@@ -70,5 +70,5 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 
 ## Open Questions
 
-- 예산 임박(at_risk) 알림/notification 발송은 이 feature 범위 밖이다. 필요해지면 후속 feature로 다룬다.
+- 예산 임박(at_risk)/초과(exceeded) 알림 발송은 이 feature 범위 밖이며 후속 feature [budget-alerts](../budget-alerts/requirements.md)에서 다룬다.
 - 조직 단위 총 예산, 팀/사용자 단위 예산은 1차 구현 범위 밖이다. 도입 시 requirements 갱신과 additive migration으로 확장한다.
