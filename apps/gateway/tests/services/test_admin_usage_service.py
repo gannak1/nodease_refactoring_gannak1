@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -148,9 +148,24 @@ def test_aggregate_workflow_usage_groups_sums_sorts_scopes_and_uses_app_name():
             _workflow(other_workflow_id, other_app_id, other_organization_id),
         ],
         apps=[
-            _app(expensive_app_id, "비싼 워크플로우"),
-            _app(cheap_app_id, "저렴한 워크플로우"),
-            _app(other_app_id, "다른 조직 워크플로우"),
+            _app(
+                expensive_app_id,
+                "비싼 워크플로우",
+                workflow_id=expensive_workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                cheap_app_id,
+                "저렴한 워크플로우",
+                workflow_id=cheap_workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                other_app_id,
+                "다른 조직 워크플로우",
+                workflow_id=other_workflow_id,
+                organization_id=other_organization_id,
+            ),
         ],
     )
 
@@ -202,6 +217,211 @@ def test_aggregate_workflow_usage_groups_sums_sorts_scopes_and_uses_app_name():
     assert [item.workflow_id for item in second_page.items] == [cheap_workflow_id]
 
 
+def test_aggregate_workflow_usage_includes_zero_usage_primary_workflows():
+    # 목록 기준은 usage row 존재 여부가 아니라 organization scope 안의
+    # App primary workflow(apps.workflow_id) 전체다 (FR-012, BGT-REQ-020).
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    used_workflow_id = uuid4()
+    idle_workflow_id = uuid4()
+    other_workflow_id = uuid4()
+    used_app_id = uuid4()
+    idle_app_id = uuid4()
+    other_app_id = uuid4()
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                used_workflow_id,
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_cost=Decimal("1.100000"),
+                created_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+        ],
+        workflows=[
+            _workflow(used_workflow_id, used_app_id, organization_id),
+            _workflow(idle_workflow_id, idle_app_id, organization_id),
+            _workflow(other_workflow_id, other_app_id, other_organization_id),
+        ],
+        apps=[
+            _app(
+                used_app_id,
+                "사용량 있는 워크플로우",
+                workflow_id=used_workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                idle_app_id,
+                "사용량 없는 워크플로우",
+                workflow_id=idle_workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                other_app_id,
+                "다른 조직 워크플로우",
+                workflow_id=other_workflow_id,
+                organization_id=other_organization_id,
+            ),
+        ],
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=AdminUsagePeriod(
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+            end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+        page=1,
+        limit=20,
+    )
+
+    # 기간 안에 usage row가 없는 primary workflow도 응답 item으로 포함한다.
+    assert result.total == 2
+    assert [item.workflow_id for item in result.items] == [
+        used_workflow_id,
+        idle_workflow_id,
+    ]
+    idle_item = result.items[1]
+    assert idle_item.workflow_name == "사용량 없는 워크플로우"
+    assert idle_item.prompt_tokens == 0
+    assert idle_item.completion_tokens == 0
+    assert idle_item.call_count == 0
+    assert idle_item.total_cost == 0
+    # 조직 B의 primary workflow는 usage 유무와 무관하게 포함하지 않는다.
+    assert other_workflow_id not in {item.workflow_id for item in result.items}
+
+
+def test_aggregate_workflow_usage_total_counts_primary_workflows_for_page_slice():
+    # total은 usage row 보유 workflow 수가 아니라 응답 대상
+    # App primary workflow 전체 건수이고 items는 page slice다.
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    workflow_ids = [uuid4() for _ in range(3)]
+    app_ids = [uuid4() for _ in range(3)]
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_ids[0],
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=Decimal("5.000000"),
+                created_at=datetime(2026, 7, 5, 0, 0, tzinfo=timezone.utc),
+            ),
+        ],
+        workflows=[
+            _workflow(workflow_id, app_id, organization_id)
+            for workflow_id, app_id in zip(workflow_ids, app_ids)
+        ],
+        apps=[
+            _app(
+                app_id,
+                f"워크플로우 {index}",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+            for index, (workflow_id, app_id) in enumerate(zip(workflow_ids, app_ids))
+        ],
+    )
+    period = AdminUsagePeriod(
+        start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+        end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+    )
+
+    first_page = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=period,
+        page=1,
+        limit=2,
+    )
+    second_page = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=period,
+        page=2,
+        limit=2,
+    )
+
+    assert first_page.total == 3
+    assert second_page.total == 3
+    assert len(first_page.items) == 2
+    assert len(second_page.items) == 1
+    assert {
+        item.workflow_id for item in first_page.items + second_page.items
+    } == set(workflow_ids)
+
+
+def test_aggregate_workflow_usage_sorts_cost_ties_by_name_then_id():
+    # 정렬은 total_cost 내림차순, 동률은 workflow 이름 오름차순,
+    # 같은 이름은 workflow_id 오름차순으로 안정 정렬한다 (FR-012).
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    top_workflow_id = UUID(int=4)
+    tie_name_second_id = UUID(int=2)
+    tie_name_first_id = UUID(int=1)
+    tie_later_name_id = UUID(int=3)
+    workflow_apps = [
+        # (workflow_id, app_id, app name)
+        (tie_later_name_id, UUID(int=13), "나 워크플로우"),
+        (tie_name_second_id, UUID(int=12), "가 워크플로우"),
+        (tie_name_first_id, UUID(int=11), "가 워크플로우"),
+        (top_workflow_id, UUID(int=14), "다 워크플로우"),
+    ]
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=total_cost,
+                created_at=datetime(2026, 7, 5, 0, 0, tzinfo=timezone.utc),
+            )
+            for workflow_id, total_cost in [
+                (tie_later_name_id, Decimal("1.000000")),
+                (tie_name_second_id, Decimal("1.000000")),
+                (tie_name_first_id, Decimal("1.000000")),
+                (top_workflow_id, Decimal("2.000000")),
+            ]
+        ],
+        workflows=[
+            _workflow(workflow_id, app_id, organization_id)
+            for workflow_id, app_id, _ in workflow_apps
+        ],
+        apps=[
+            _app(
+                app_id,
+                name,
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+            for workflow_id, app_id, name in workflow_apps
+        ],
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=AdminUsagePeriod(
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+            end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+        page=1,
+        limit=20,
+    )
+
+    assert [item.workflow_id for item in result.items] == [
+        top_workflow_id,
+        tie_name_first_id,
+        tie_name_second_id,
+        tie_later_name_id,
+    ]
+
+
 def test_get_organization_summary_sums_current_month_costs_with_null_as_zero():
     AdminUsageService, _ = _service()
     organization_id = uuid4()
@@ -250,8 +470,18 @@ def test_get_organization_summary_sums_current_month_costs_with_null_as_zero():
             _workflow(other_workflow_id, other_app_id, other_organization_id),
         ],
         apps=[
-            _app(app_id, "요약 워크플로우"),
-            _app(other_app_id, "다른 조직 워크플로우"),
+            _app(
+                app_id,
+                "요약 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                other_app_id,
+                "다른 조직 워크플로우",
+                workflow_id=other_workflow_id,
+                organization_id=other_organization_id,
+            ),
         ],
     )
 
@@ -303,7 +533,14 @@ def test_get_organization_summary_uses_kst_month_boundaries():
             ),
         ],
         workflows=[_workflow(workflow_id, app_id, organization_id)],
-        apps=[_app(app_id, "경계 워크플로우")],
+        apps=[
+            _app(
+                app_id,
+                "경계 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        ],
     )
 
     summary = AdminUsageService.get_organization_summary(
@@ -350,5 +587,10 @@ def _workflow(workflow_id, app_id, organization_id):
     )
 
 
-def _app(app_id, name):
-    return SimpleNamespace(id=app_id, name=name)
+def _app(app_id, name, *, workflow_id=None, organization_id=None):
+    return SimpleNamespace(
+        id=app_id,
+        name=name,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )

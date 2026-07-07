@@ -7,11 +7,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import and_, func
 
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
-from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.schemas.admin_usage import (
     AdminBudgetSummaryBlock,
@@ -77,49 +76,18 @@ class AdminUsageService:
         limit: int = 20,
         now: datetime | None = None,
     ) -> AdminWorkflowUsageResponse:
-        budget_now = now or datetime.now(KST)
-        if not hasattr(db, "usage_logs"):
-            return _aggregate_workflow_usage_query(
-                db,
-                organization_id=organization_id,
-                period=period,
-                page=page,
-                limit=limit,
-                budget_now=budget_now,
-            )
-
-        rows = _fake_usage_rows(db)
-        aggregates: dict[Any, dict[str, Any]] = {}
-        for usage, workflow, app in rows:
-            if not _is_usage_in_scope(usage, workflow, organization_id, period):
-                continue
-
-            aggregate = aggregates.setdefault(
-                usage.workflow_id,
-                _empty_usage_item(usage.workflow_id, app.name),
-            )
-            _add_usage(aggregate, usage)
-
-        sorted_items = sorted(
-            aggregates.values(),
-            key=lambda item: item["total_cost"],
-            reverse=True,
+        aggregate = (
+            _aggregate_workflow_usage_fake
+            if hasattr(db, "usage_logs")
+            else _aggregate_workflow_usage_query
         )
-        for item in sorted_items:
-            item["budget"] = _workflow_budget_block(
-                db,
-                organization_id=organization_id,
-                workflow_id=item["workflow_id"],
-                now=budget_now,
-            )
-        total = len(sorted_items)
-        return AdminWorkflowUsageResponse(
-            total=total,
-            period=AdminUsagePeriodResponse(
-                start_at=period.start_at,
-                end_at=period.end_at,
-            ),
-            items=_page_items(sorted_items, page, limit),
+        return aggregate(
+            db,
+            organization_id=organization_id,
+            period=period,
+            page=page,
+            limit=limit,
+            budget_now=now or datetime.now(KST),
         )
 
     @staticmethod
@@ -151,6 +119,70 @@ def _ensure_timezone(value: datetime) -> datetime:
     return value
 
 
+def _aggregate_workflow_usage_fake(
+    db,
+    organization_id: Any,
+    period: AdminUsagePeriod,
+    page: int,
+    limit: int,
+    budget_now: datetime,
+) -> AdminWorkflowUsageResponse:
+    aggregates = _primary_workflow_zero_items(db, organization_id)
+    for usage in db.usage_logs:
+        aggregate = aggregates.get(usage.workflow_id)
+        if aggregate is None or not _is_usage_in_scope(
+            usage, organization_id, period
+        ):
+            continue
+        _add_usage(aggregate, usage)
+
+    sorted_items = sorted(aggregates.values(), key=_usage_sort_key)
+    for item in sorted_items:
+        item["budget"] = _workflow_budget_block(
+            db,
+            organization_id=organization_id,
+            workflow_id=item["workflow_id"],
+            now=budget_now,
+        )
+    return _usage_response(
+        total=len(sorted_items),
+        period=period,
+        items=_page_items(sorted_items, page, limit),
+    )
+
+
+def _primary_workflow_zero_items(
+    db, organization_id: Any
+) -> dict[Any, dict[str, Any]]:
+    """목록 기준은 usage 유무가 아니라 organization scope 안의
+    App primary workflow(apps.workflow_id) 전체다 (FR-012, BGT-REQ-020)."""
+    return {
+        app.workflow_id: _empty_usage_item(app.workflow_id, app.name)
+        for app in db.apps
+        if app.organization_id == organization_id and app.workflow_id is not None
+    }
+
+
+def _usage_sort_key(item: dict[str, Any]) -> tuple:
+    # total_cost 내림차순, 동률은 workflow 이름/id 오름차순 안정 정렬.
+    return (-item["total_cost"], item["workflow_name"], item["workflow_id"])
+
+
+def _usage_response(
+    total: int,
+    period: AdminUsagePeriod,
+    items: list[AdminWorkflowUsageItem],
+) -> AdminWorkflowUsageResponse:
+    return AdminWorkflowUsageResponse(
+        total=total,
+        period=AdminUsagePeriodResponse(
+            start_at=period.start_at,
+            end_at=period.end_at,
+        ),
+        items=items,
+    )
+
+
 def _aggregate_workflow_usage_query(
     db,
     organization_id: Any,
@@ -170,26 +202,34 @@ def _aggregate_workflow_usage_query(
 
     query = (
         db.query(
-            LLMUsageLog.workflow_id.label("workflow_id"),
+            App.workflow_id.label("workflow_id"),
             App.name.label("workflow_name"),
             prompt_tokens,
             completion_tokens,
             call_count,
             total_cost,
         )
-        .join(Workflow, LLMUsageLog.workflow_id == Workflow.id)
-        .join(App, Workflow.app_id == App.id)
-        .filter(
-            LLMUsageLog.organization_id == organization_id,
-            Workflow.organization_id == organization_id,
-            App.organization_id == organization_id,
-            *_usage_in_period_conditions(period),
+        .outerjoin(
+            LLMUsageLog,
+            and_(
+                LLMUsageLog.workflow_id == App.workflow_id,
+                LLMUsageLog.organization_id == organization_id,
+                *_usage_in_period_conditions(period),
+            ),
         )
-        .group_by(LLMUsageLog.workflow_id, App.name)
+        .filter(
+            App.organization_id == organization_id,
+            App.workflow_id.isnot(None),
+        )
+        .group_by(App.workflow_id, App.name)
     )
     total = query.count()
     rows = (
-        query.order_by(total_cost.desc())
+        query.order_by(
+            total_cost.desc(),
+            App.name.asc(),
+            App.workflow_id.asc(),
+        )
         .offset((page - 1) * limit)
         .limit(limit)
         .all()
@@ -204,14 +244,7 @@ def _aggregate_workflow_usage_query(
             now=budget_now,
         )
         items.append(item)
-    return AdminWorkflowUsageResponse(
-        total=total,
-        period=AdminUsagePeriodResponse(
-            start_at=period.start_at,
-            end_at=period.end_at,
-        ),
-        items=items,
-    )
+    return _usage_response(total=total, period=period, items=items)
 
 
 def _total_cost_sum():
@@ -259,13 +292,11 @@ def _organization_period_cost_fake(
 
 def _is_usage_in_scope(
     usage: Any,
-    workflow: Any,
     organization_id: Any,
     period: AdminUsagePeriod,
 ) -> bool:
     return (
         usage.organization_id == organization_id
-        and workflow.organization_id == organization_id
         and period.start_at <= usage.created_at < period.end_at
     )
 
@@ -439,19 +470,4 @@ def _page_items(
     return [
         AdminWorkflowUsageItem(**item)
         for item in items[start_index : start_index + limit]
-    ]
-
-
-def _fake_usage_rows(db) -> list[tuple[Any, Any, Any]]:
-    workflows = {workflow.id: workflow for workflow in db.workflows}
-    apps = {app.id: app for app in db.apps}
-    return [
-        (
-            usage,
-            workflows[usage.workflow_id],
-            apps[workflows[usage.workflow_id].app_id],
-        )
-        for usage in db.usage_logs
-        if usage.workflow_id in workflows
-        and workflows[usage.workflow_id].app_id in apps
     ]
