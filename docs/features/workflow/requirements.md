@@ -1,7 +1,7 @@
 # Workflow Requirements
 
 Status: Draft
-Related Features: auth, organization, agent-builder, audit-tracing, knowledge
+Related Features: auth, organization, agent-builder, audit-tracing, knowledge, llm-node-provider-selection
 
 ## Purpose
 

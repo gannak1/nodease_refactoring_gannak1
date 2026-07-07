@@ -1,7 +1,7 @@
 # LLM Credentials Requirements
 
 Status: Draft
-Related Features: auth, organization, cost-optimizer, audit-tracing, knowledge, agent-builder
+Related Features: auth, organization, cost-optimizer, audit-tracing, knowledge, agent-builder, llm-node-provider-selection
 
 ## Purpose
 
