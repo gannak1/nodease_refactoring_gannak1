@@ -264,6 +264,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 - 요청 중에는 버튼을 disabled 처리한다.
 - 성공하면 새 policy version과 적용 결과를 표시한다.
+- `kept_current`이면 정책 재평가는 끝났지만 검증된 변경 후보가 없어 기존 active policy를 유지했다는 문구를 표시한다.
 - `pending_review`이면 새 정책이 운영에 반영되지 않았고 기존 active policy가 유지된다는 문구를 표시한다.
 - 실패하면 로그 부족, credential/model 사용 불가, judge 호출 실패 같은 safe reason을 표시한다.
 
@@ -550,7 +551,8 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | --- | --- | --- | --- | --- |
 | `model_id` | `data.model_id` | `candidate.model_id` | `candidate_settings.model_id` | 기존 모델 선택 목록을 재사용한다. |
 | `fallback_model_id` | `data.fallback_model_id` | `candidate.fallback_model_id` | `candidate_settings.fallback_model_id` | 기본 모델과 같으면 validation 대상이다. |
-| `auto_model_routing` | legacy 저장 필드 | 사용하지 않음 | 사용하지 않음 | 과거 저장 그래프 호환용 필드다. UI에 노출하지 않고 런타임 모델 선택에도 사용하지 않는다. |
+| `auto_model_routing` | `data.auto_model_routing` | 사용하지 않음 | 사용하지 않음 | LLM 노드 자동 모델 라우팅 ON/OFF 저장값이다. ON이면 런타임은 active policy를 우선 평가한다. Cost Optimizer A/B 후보 설정에는 포함하지 않는다. |
+| `model_routing_context` | `data.model_routing_context` | 사용하지 않음 | 사용하지 않음 | 런타임 policy rule 평가에 쓰는 명시적 일반 힌트다. 예: `customer_facing`, `node_task`. 도메인 키워드 목록은 여기에 넣지 않고 policy rule의 `when.keyword_any`에 저장한다. |
 | `task_type` | 내부 기본값 | 내부 기본값 | `candidate_settings.task_type` | 사용자 입력으로 노출하지 않는다. 후속 라우터/분석 내부 판단값으로만 사용한다. |
 | `system_prompt` | `data.system_prompt` | `candidate.system_prompt` | `candidate_settings.system_prompt` | 변수 삽입 지원. |
 | `user_prompt` | `data.user_prompt` | `candidate.user_prompt` | `candidate_settings.user_prompt` | 변수 삽입 지원. |

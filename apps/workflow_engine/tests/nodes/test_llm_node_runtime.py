@@ -432,6 +432,45 @@ def test_llm_node_passes_json_response_format_to_client():
     }
 
 
+def test_llm_node_adds_json_schema_instruction_to_system_message():
+    """JSON schema 출력 형식이면 내부 system 지시에 schema 계약을 함께 전달한다."""
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+        output_format={
+            "type": "json",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "urgent": {"type": "boolean"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["urgent", "summary"],
+            },
+        },
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute({})
+
+    system_message = dummy_client.calls[0]["messages"][0]["content"]
+    assert "JSON schema" in system_message
+    assert "응답은 반드시 아래 JSON schema를 만족" in system_message
+    assert '"urgent": {"type": "boolean"}' in system_message
+    assert '"summary": {"type": "string"}' in system_message
+    assert '"required": ["urgent", "summary"]' in system_message
+    assert "markdown" in system_message
+
+
 def test_llm_node_does_not_override_explicit_response_format():
     """사용자가 명시한 response_format은 출력 형식 기본 힌트로 덮어쓰지 않는다."""
     dummy_client = DummyClient()
@@ -2844,6 +2883,8 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
                 "rules": [
                     {
                         "id": "low-risk-json-triage",
+                        "priority": 10,
+                        "when": {"output_format": "text", "input_length_bucket": "short"},
                         "reason_code": "quality_gate_passed_cost_reduction",
                         "selected_model_id": "gpt-4.1-mini",
                     }
@@ -2877,6 +2918,20 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
         "decision_source": "active_policy",
         "matched_rule_id": "low-risk-json-triage",
         "reason_code": "quality_gate_passed_cost_reduction",
+        "runtime_context": {
+            "intent": "generate",
+            "risk_level": "medium",
+            "customer_facing": False,
+            "knowledge_enabled": False,
+            "output_format": "text",
+            "schema_required": False,
+            "has_file_input": False,
+            "input_length": 0,
+            "input_length_bucket": "short",
+            "prompt_length": 5,
+            "prompt_length_bucket": "short",
+            "node_task": "generate",
+        },
         "judge_called": False,
     }
 

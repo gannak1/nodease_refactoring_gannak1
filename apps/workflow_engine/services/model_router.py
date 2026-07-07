@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -214,11 +215,66 @@ class ModelRouterDecision:
         }
 
 
+@dataclass(frozen=True)
+class ModelRoutingRuntimeContext:
+    text: str
+    intent: str
+    risk_level: str
+    customer_facing: bool
+    knowledge_enabled: bool
+    output_format: str
+    schema_required: bool
+    has_file_input: bool
+    input_length: int
+    input_length_bucket: str
+    prompt_length: int
+    prompt_length_bucket: str
+    node_task: str
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "intent": self.intent,
+            "risk_level": self.risk_level,
+            "customer_facing": self.customer_facing,
+            "knowledge_enabled": self.knowledge_enabled,
+            "output_format": self.output_format,
+            "schema_required": self.schema_required,
+            "has_file_input": self.has_file_input,
+            "input_length": self.input_length,
+            "input_length_bucket": self.input_length_bucket,
+            "prompt_length": self.prompt_length,
+            "prompt_length_bucket": self.prompt_length_bucket,
+            "node_task": self.node_task,
+        }
+
+
+@dataclass(frozen=True)
+class ModelRoutingPolicyDecision:
+    selected_model_id: str
+    fallback_model_id: Optional[str]
+    matched_rule_id: Optional[str]
+    reason_code: str
+    runtime_context: ModelRoutingRuntimeContext
+    decision_source: str = "active_policy"
+
+
 class ModelRoutingUnavailableError(ValueError):
     pass
 
 
 class ModelRouter:
+    POLICY_CONDITION_KEYS = {
+        "intent",
+        "customer_facing",
+        "knowledge_enabled",
+        "output_format",
+        "schema_required",
+        "has_file_input",
+        "input_length_bucket",
+        "prompt_length_bucket",
+        "node_task",
+        "keyword_any",
+    }
     COLD_START_MAX_USABLE_RUNS = 20
     OPTIMIZED_MIN_USABLE_RUNS = 90
     SCHEMA_PASS_RATE_MIN = 0.98
@@ -248,8 +304,6 @@ class ModelRouter:
 
         stage = cls._stage_for(profile)
         high = cls._current_or_highest_candidate(candidates, context.current_model_id)
-        mid = cls._middle_cost_candidate(candidates, context.current_model_id)
-        risk_high = bool(context.customer_facing or context.knowledge_enabled)
 
         if stage == "cold_start":
             return cls._decision(
@@ -275,20 +329,6 @@ class ModelRouter:
                 confidence=0.8 if stage == "warming_up" else 0.9,
             )
 
-        if stage == "warming_up" and not risk_high:
-            exploration = cls._warming_exploration_candidate(
-                candidates, context.current_model_id
-            )
-            if exploration is not None:
-                return cls._decision(
-                    stage=stage,
-                    selected=exploration,
-                    fallback=high,
-                    reason="저비용 후보 검증 샘플을 만들기 위해 fallback을 둔 탐색 모델을 선택합니다.",
-                    profile=profile,
-                    confidence=0.55,
-                )
-
         if passing:
             selected = passing[0]
             return cls._decision(
@@ -300,16 +340,6 @@ class ModelRouter:
                 confidence=0.75,
             )
 
-        if stage == "warming_up" and not risk_high:
-            return cls._decision(
-                stage=stage,
-                selected=mid,
-                fallback=high,
-                reason="품질 gate를 통과한 후보가 없어 중간 비용 모델로 탐색합니다.",
-                profile=profile,
-                confidence=0.55,
-            )
-
         return cls._decision(
             stage=stage,
             selected=high,
@@ -317,6 +347,134 @@ class ModelRouter:
             reason="저비용 후보가 품질 gate를 통과하지 못해 상위 모델을 사용합니다.",
             profile=profile,
             confidence=0.7,
+        )
+
+    @classmethod
+    def resolve_policy(
+        cls,
+        policy: dict[str, Any],
+        *,
+        inputs: dict[str, Any],
+        node_data: Any,
+        available_model_ids: Optional[Iterable[str]] = None,
+    ) -> ModelRoutingPolicyDecision:
+        active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
+        active_policy = active_policy if isinstance(active_policy, dict) else {}
+        default_model_id = cls._first_non_empty(
+            active_policy.get("default_model_id"),
+            getattr(node_data, "model_id", None),
+        )
+        fallback_model_id = cls._first_non_empty(
+            active_policy.get("fallback_model_id"),
+            getattr(node_data, "fallback_model_id", None),
+        )
+        if not default_model_id:
+            raise ModelRoutingUnavailableError("default model is required.")
+
+        allowed_models = (
+            {cls.normalize_model_id(model_id) for model_id in available_model_ids}
+            if available_model_ids is not None
+            else None
+        )
+        runtime_context = cls.infer_runtime_context(inputs, node_data)
+        rules = active_policy.get("rules")
+        normalized_rules = [
+            rule
+            for rule in (rules if isinstance(rules, list) else [])
+            if isinstance(rule, dict)
+        ]
+        normalized_rules.sort(key=cls._rule_sort_key)
+
+        for rule in normalized_rules:
+            if not cls._matches_rule(rule.get("when"), runtime_context):
+                continue
+            selected_model = cls._first_non_empty(rule.get("selected_model_id"))
+            rule_fallback_model = cls._first_non_empty(rule.get("fallback_model_id"))
+            selected_model = cls._first_available_model(
+                [selected_model],
+                allowed_models,
+            )
+            if not selected_model:
+                continue
+            resolved_fallback = cls._first_available_model(
+                [rule_fallback_model, fallback_model_id],
+                allowed_models,
+                exclude=selected_model,
+            )
+            return ModelRoutingPolicyDecision(
+                selected_model_id=selected_model,
+                fallback_model_id=resolved_fallback,
+                matched_rule_id=cls._first_non_empty(rule.get("id")),
+                reason_code=cls._first_non_empty(rule.get("reason_code"))
+                or "policy_rule_matched",
+                runtime_context=runtime_context,
+            )
+
+        selected_model = cls._first_available_model([default_model_id], allowed_models)
+        if not selected_model:
+            selected_model = default_model_id
+        resolved_fallback = cls._first_available_model(
+            [fallback_model_id],
+            allowed_models,
+            exclude=selected_model,
+        )
+        return ModelRoutingPolicyDecision(
+            selected_model_id=selected_model,
+            fallback_model_id=resolved_fallback,
+            matched_rule_id=None,
+            reason_code="policy_default",
+            runtime_context=runtime_context,
+        )
+
+    @classmethod
+    def infer_runtime_context(
+        cls, inputs: dict[str, Any], node_data: Any
+    ) -> ModelRoutingRuntimeContext:
+        text = cls._flatten_text(inputs)
+        prompts = " ".join(
+            prompt
+            for prompt in (
+                str(value or "").strip()
+                for value in (
+                    getattr(node_data, "system_prompt", None),
+                    getattr(node_data, "user_prompt", None),
+                    getattr(node_data, "assistant_prompt", None),
+                )
+            )
+            if prompt
+        )
+        routing_context = getattr(node_data, "model_routing_context", None)
+        routing_context = routing_context if isinstance(routing_context, dict) else {}
+        knowledge_enabled = bool(getattr(node_data, "knowledgeBases", None))
+        output_format = cls._output_format_name(
+            getattr(node_data, "output_format", None)
+        )
+        schema_required = cls._schema_required(getattr(node_data, "output_format", None))
+        customer_facing = bool(routing_context.get("customer_facing", False))
+        node_task = cls._first_non_empty(
+            routing_context.get("node_task"),
+            routing_context.get("category"),
+            getattr(node_data, "task_type", None),
+        ) or "generate"
+        risk_level = cls._first_non_empty(routing_context.get("risk_level")) or "medium"
+        intent = cls._first_non_empty(routing_context.get("intent"), node_task) or "generate"
+        input_length = len(text)
+        prompt_length = len(prompts)
+
+        return ModelRoutingRuntimeContext(
+            text=text,
+            intent=intent,
+            risk_level=risk_level,
+            customer_facing=customer_facing,
+            knowledge_enabled=knowledge_enabled,
+            output_format=output_format,
+            schema_required=schema_required,
+            has_file_input=cls._has_file_input(inputs),
+            input_length=input_length,
+            input_length_bucket=cls._length_bucket(input_length),
+            prompt_length=prompt_length,
+            prompt_length_bucket=cls._length_bucket(prompt_length),
+            node_task=node_task,
         )
 
     @classmethod
@@ -445,6 +603,144 @@ class ModelRouter:
         return str(model_id or "").lower().removeprefix("models/")
 
     @classmethod
+    def _matches_rule(
+        cls, when: Any, runtime_context: ModelRoutingRuntimeContext
+    ) -> bool:
+        if when in (None, {}, []):
+            return True
+        if not isinstance(when, dict):
+            return False
+        if any(key not in cls.POLICY_CONDITION_KEYS for key in when):
+            return False
+        context = runtime_context.as_metadata()
+        for key in (
+            "intent",
+            "customer_facing",
+            "knowledge_enabled",
+            "output_format",
+            "schema_required",
+            "has_file_input",
+            "input_length_bucket",
+            "prompt_length_bucket",
+            "node_task",
+        ):
+            if key not in when:
+                continue
+            if not cls._condition_value_matches(context.get(key), when[key]):
+                return False
+        keywords = when.get("keyword_any")
+        if keywords is not None:
+            if not isinstance(keywords, list):
+                return False
+            text = runtime_context.text.casefold()
+            if not any(str(keyword).casefold() in text for keyword in keywords):
+                return False
+        return True
+
+    @staticmethod
+    def _rule_sort_key(rule: dict[str, Any]) -> tuple[int, int, int]:
+        when = rule.get("when") if isinstance(rule.get("when"), dict) else {}
+        keyword_weight = 0 if when.get("keyword_any") else 1
+        specificity = -len(when)
+        return (keyword_weight, int(rule.get("priority") or 1000), specificity)
+
+    @staticmethod
+    def _condition_value_matches(value: Any, condition: Any) -> bool:
+        if isinstance(condition, list):
+            return value in condition
+        return value == condition
+
+    @staticmethod
+    def _length_bucket(length: int) -> str:
+        if length <= 500:
+            return "short"
+        if length <= 2_000:
+            return "medium"
+        return "long"
+
+    @classmethod
+    def _schema_required(cls, output_format: Any) -> bool:
+        if not isinstance(output_format, dict):
+            return False
+        if str(output_format.get("type") or "").lower() != "json":
+            return False
+        schema = output_format.get("schema")
+        return isinstance(schema, dict) and bool(schema)
+
+    @classmethod
+    def _has_file_input(cls, value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_text = str(key).casefold()
+                if key_text in {"file", "files", "filename", "attachment", "attachments"}:
+                    return True
+                if cls._has_file_input(item):
+                    return True
+            return False
+        if isinstance(value, list):
+            return any(cls._has_file_input(item) for item in value)
+        return False
+
+    @classmethod
+    def _first_available_model(
+        cls,
+        model_ids: Iterable[Any],
+        allowed_models: Optional[set[str]],
+        *,
+        exclude: Optional[str] = None,
+    ) -> Optional[str]:
+        normalized_exclude = cls.normalize_model_id(exclude or "")
+        for model_id in model_ids:
+            candidate = cls._first_non_empty(model_id)
+            if not candidate:
+                continue
+            normalized_candidate = cls.normalize_model_id(candidate)
+            if normalized_exclude and normalized_candidate == normalized_exclude:
+                continue
+            if allowed_models is not None and normalized_candidate not in allowed_models:
+                continue
+            return candidate
+        return None
+
+    @staticmethod
+    def _first_non_empty(*values: Any) -> Optional[str]:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return None
+
+    @classmethod
+    def _flatten_text(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, dict):
+            parts: list[str] = []
+            for key, child in value.items():
+                child_text = cls._flatten_text(child)
+                if child_text:
+                    parts.append(f"{key}: {child_text}")
+            return " ".join(parts)
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(cls._flatten_text(item) for item in value)
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            return str(value)
+
+    @staticmethod
+    def _output_format_name(output_format: Any) -> str:
+        if isinstance(output_format, dict):
+            return str(output_format.get("type") or "text").lower()
+        if isinstance(output_format, str):
+            return output_format.lower()
+        return "text"
+
+    @classmethod
     def _normalize_candidates(
         cls, context: ModelRouterContext
     ) -> list[ModelCandidate]:
@@ -519,23 +815,6 @@ class ModelRouter:
         ]
 
     @classmethod
-    def _warming_exploration_candidate(
-        cls, candidates: list[ModelCandidate], current_model_id: Optional[str]
-    ) -> Optional[ModelCandidate]:
-        lower_cost = cls._lower_cost_candidates(candidates, current_model_id)
-        finite = [
-            candidate
-            for candidate in lower_cost
-            if candidate.price_score != float("inf")
-        ]
-        if finite:
-            # cold start 직후에는 가장 싼 모델보다 현재 모델에 가까운 저비용 후보가 안전합니다.
-            return sorted(finite, key=lambda candidate: candidate.price_score)[-1]
-        if lower_cost:
-            return lower_cost[0]
-        return None
-
-    @classmethod
     def _passes_quality_gate(
         cls, performance: Optional[ModelPerformance], min_samples: int
     ) -> bool:
@@ -581,15 +860,6 @@ class ModelRouter:
             confidence=confidence,
             metrics_snapshot=profile.as_snapshot(),
         )
-
-    @staticmethod
-    def _middle_cost_candidate(
-        candidates: list[ModelCandidate], current_model_id: Optional[str]
-    ) -> ModelCandidate:
-        priced = sorted(candidates, key=lambda candidate: candidate.price_score)
-        if not priced:
-            raise ModelRoutingUnavailableError("No executable model candidate.")
-        return priced[len(priced) // 2]
 
     @staticmethod
     def _highest_cost_candidate(

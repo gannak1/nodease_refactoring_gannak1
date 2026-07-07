@@ -396,6 +396,8 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 
 모델 라우팅은 매 실행마다 LLM judge를 호출해 판단하는 기능이 아니다. 실행 시점에는 이미 저장된 active policy를 읽고, 그 정책의 rule에 따라 사용할 기본 모델과 fallback 모델을 선택한다. Judge LLM은 정책 생성 또는 정책 갱신 시점에만 호출한다.
 
+정책 갱신은 모델 변경과 같은 의미가 아니다. 배포 후 운영 실행이 20회 쌓이면 시스템은 기존 active policy를 재평가하지만, 충분한 운영 샘플과 품질 gate를 통과한 저비용 후보가 없으면 기존 active policy를 유지한다. 검증 샘플을 만들기 위해 자동으로 더 싼 모델로 하향하는 동작은 하지 않는다. 저비용 모델 탐색은 A/B 테스트나 별도 실험 기능에서 수행한다.
+
 사용자 시나리오는 다음 흐름을 따른다.
 
 1. 빌더가 LLM 노드 상세 화면에서 `자동 모델 라우팅`을 켠다.
@@ -405,8 +407,9 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 5. 배포 후 운영 실행이 20회 쌓이면 정책 갱신 job이 실행된다.
 6. 사용자는 `자동 정책 갱신하기` 버튼으로 즉시 갱신을 요청할 수 있다.
 7. judge가 새 정책을 만들면 품질 gate 통과 시 active policy로 반영한다.
-8. 품질 근거가 부족하면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
-9. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 fallback 정책을 사용한다.
+8. 품질 근거가 부족하거나 검증된 저비용 후보가 없으면 기존 active policy를 유지하고 갱신 결과를 `kept_current`로 기록한다.
+9. 새 정책안이 만들어졌지만 불확실성이 높으면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
+10. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 fallback 정책을 사용한다.
 
 정책 상태는 다음 값만 사용한다. `cold_start`, `warming_up`, `optimized` 같은 데이터 성숙도 단계는 사용자-facing 상태와 API 계약에서 사용하지 않는다.
 
@@ -429,6 +432,12 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 4. 선택된 모델을 사용할 수 없으면 policy fallback을 사용한다.
 5. fallback도 사용할 수 없으면 저장된 안정 모델 또는 상위 안정 모델로 보수적으로 실행한다.
 6. 실행 metadata에 policy id, policy version, selected model, fallback model, reason code를 남긴다.
+
+런타임 rule evaluator는 도메인 키워드 목록을 코드 상수로 가지지 않는다. 실행 시점에는 입력 길이 bucket, prompt 길이 bucket, 출력 형식, schema 필요 여부, RAG 사용 여부, 파일 입력 여부, 명시적 `customer_facing`, 명시적 `node_task` 같은 일반 feature만 계산한다. SLA, 보상, 장애, 다운로드 같은 도메인 키워드가 필요하면 judge policy refresh가 active policy rule의 `when.keyword_any`에 저장해야 한다.
+
+rule 평가는 구체적인 도메인 rule이 일반 fallback rule에 가려지지 않도록 수행한다. `keyword_any` 같은 judge 생성 도메인 rule은 동일 입력에서 generic `short-json` rule과 함께 매칭될 수 있으므로 우선 평가한다. 그 외 generic rule은 policy의 `priority` 순서를 따른다. 기본 bootstrap policy는 customer-facing 입력을 short JSON 비용 절감 rule보다 보수적으로 우선한다.
+
+허용되지 않은 `when` condition key가 들어온 rule은 저장하거나 평가하지 않는다. 런타임이 모르는 key를 무시하면 judge가 잘못 만든 rule이 너무 넓게 매칭될 수 있기 때문이다. 예를 들어 `customer_support_ticket_triage: true` 같은 임의 key는 사용할 수 없고, 노드 작업 분류는 `node_task: "customer_support_ticket_triage"`로 표현해야 한다.
 
 정책 갱신 샘플은 workflow 전체가 아니라 target LLM node 기준으로 계산한다. 자동 갱신 기준은 배포 후 운영 실행 20회다.
 
@@ -454,7 +463,7 @@ Judge LLM 호출은 정책 갱신 작업에서만 발생한다. 자동 라우팅
 
 | Trigger | 설명 |
 | --- | --- |
-| `auto_20_runs` | active policy 기준 마지막 갱신 이후 배포 후 운영 실행 20회가 누적되면 자동 실행 |
+| `auto_20_runs` | active policy 기준 마지막 갱신 이후 배포 후 운영 실행 20회가 누적되면 자동 실행. 이 trigger는 정책 재평가를 뜻하며 모델 변경을 보장하지 않는다. |
 | `manual_refresh` | 사용자가 `자동 정책 갱신하기` 버튼을 눌러 즉시 실행 |
 
 Judge LLM에 전달하는 입력은 safe summary만 허용한다. raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content는 전달하거나 저장하지 않는다.
@@ -473,7 +482,7 @@ Judge 입력 safe summary는 다음 정보를 포함할 수 있다.
 - 현재 active policy version
 - candidate model 목록과 가격/credential 사용 가능 여부 summary
 
-Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 통과한 경우에만 active policy로 조건부 자동 반영한다.
+Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 통과한 경우에만 active policy로 조건부 자동 반영한다. gate를 통과한 변경안이 없으면 정책 갱신은 성공했더라도 active policy는 유지하며 결과를 `kept_current`로 남긴다.
 
 - 사용할 수 있는 credential/model만 포함한다.
 - 비용 또는 latency 개선 근거가 있다.
@@ -482,7 +491,7 @@ Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 �
 - judge 결과 confidence가 정책 기준 이상이다.
 - raw payload 또는 secret을 포함하지 않는다.
 
-gate를 통과하지 못하면 새 정책안은 `pending_review`로 저장하고 기존 active policy를 유지한다. `pending_review` 정책은 운영 실행에 영향을 주지 않는다.
+gate를 통과하지 못하면 새 정책안은 `pending_review`로 저장하고 기존 active policy를 유지한다. 검증된 변경안 자체가 없으면 `kept_current`로 기록하고 보류 정책을 만들지 않는다. `pending_review` 정책은 운영 실행에 영향을 주지 않는다.
 
 정책 갱신 metadata는 추적 가능해야 한다. 최소한 다음 정보를 저장한다.
 
@@ -646,6 +655,10 @@ RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 
 - 비교 리포트에는 context token estimate, retrieved chunk count, citation count, cost, latency, policy result, query rewrite 적용 여부, evidence sufficiency 결과, source tier summary 같은 safe summary만 표시한다. 권한 없는 문서명/ID, raw source metadata, raw rewritten query, raw prompt/completion, raw chunk content는 표시하지 않는다.
 - Skill 기반 비교 리포트에도 raw skill body, hidden source refs, raw source title/path/url, restricted document list, raw eval fixture를 표시하지 않는다.
 - `llm_assisted` query rewrite는 별도 승인 전까지 비교 변수로 사용하지 않는다. 승인 후 비교 변수로 삼으면 rewrite LLM call의 usage/cost도 비교 비용에 포함해야 한다.
+- 모든 RAG 검색 모드는 권한 검사를 통과한 문서만 검색 후보로 사용한다. A/B의 차이는 권한 적용 여부가 아니라 권한 범위 안에서 근거를 얼마나 정밀하게 선택하느냐다.
+- 가격 정보가 없는 모델은 자동 추천 후보에서 제외하고, 수동 비교 시에는 비용 비교 불가 상태를 명시한다.
+- 한쪽 variant 실행이 실패하면 성공한 variant의 부분 결과와 실패 원인을 구분해 표시하고, 절감률은 계산하지 않는다.
+- 더 저렴한 후보가 없으면 빈 리포트 대신 "절감 가능 없음"을 명시한다.
 
 ## Open Questions
 

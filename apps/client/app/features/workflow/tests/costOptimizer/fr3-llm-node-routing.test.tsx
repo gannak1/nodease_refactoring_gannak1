@@ -201,6 +201,56 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByText('대체 모델')).not.toBeInTheDocument();
   });
 
+  it('자동 모델 라우팅의 자동 정책 점검 주기를 슬라이더로 조정한다', async () => {
+    const node = createLlmNode({
+      auto_model_routing: true,
+      model_routing_policy: {
+        status: 'active',
+        policy_id: 'policy-1',
+        policy_version: 'router-policy-v4',
+        active_policy: {
+          default_model_id: 'gpt-4.1-mini',
+          fallback_model_id: 'gpt-4.1',
+          rules: [
+            {
+              id: 'low-risk-json-triage',
+              selected_model_id: 'gpt-4.1-mini',
+              fallback_model_id: 'gpt-4.1',
+              reason_code: 'quality_gate_passed_cost_reduction',
+            },
+          ],
+        },
+        refresh: {
+          runs_since_last_refresh: 12,
+          refresh_every_runs: 20,
+        },
+      },
+    });
+    useWorkflowStore.setState(
+      {
+        ...useWorkflowStore.getState(),
+        nodes: [node],
+      },
+      true,
+    );
+
+    render(<NodeInlinePanel node={node} />);
+
+    const slider = await screen.findByRole('slider', {
+      name: /자동 정책 점검 주기/,
+    });
+    expect(slider).toHaveValue('20');
+
+    fireEvent.change(slider, { target: { value: '45' } });
+
+    const nextData = useWorkflowStore.getState().nodes[0]
+      .data as LLMNodeData;
+    expect(nextData.model_routing_policy?.refresh?.refresh_every_runs).toBe(45);
+    expect(
+      screen.getByText(/권장: 20~50회/),
+    ).toBeInTheDocument();
+  });
+
   it('자동 모델 라우팅 토글 변경을 노드 데이터에 반영한다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 

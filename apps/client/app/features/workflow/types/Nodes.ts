@@ -144,6 +144,8 @@ export interface LLMNodeData extends BaseNodeData {
       fallback_model_id?: string;
       rules?: Array<{
         id?: string;
+        priority?: number;
+        when?: Record<string, unknown>;
         selected_model_id?: string;
         fallback_model_id?: string;
         reason_code?: string;
@@ -154,6 +156,13 @@ export interface LLMNodeData extends BaseNodeData {
       refresh_every_runs?: number;
       last_refresh_result?: string;
     };
+  };
+  model_routing_context?: {
+    customer_facing?: boolean;
+    node_task?: string;
+    category?: string;
+    intent?: string;
+    risk_level?: 'low' | 'medium' | 'high';
   };
   task_type?: string;
   system_prompt?: string;

@@ -23,6 +23,9 @@ from apps.gateway.auth.permissions import ensure_workflow_permission
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
+from apps.gateway.services.cost_optimizer_parameter_recommendation_service import (
+    CostOptimizerParameterRecommendationService,
+)
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
@@ -137,6 +140,10 @@ class CostOptimizerApplyRequest(BaseModel):
     acknowledge_downstream_warning: bool = False
 
 
+class CostOptimizerRecommendationApplyRequest(BaseModel):
+    recommendation_ids: list[str] = Field(default_factory=list)
+
+
 def _raise_invalid_cost_optimizer_candidate() -> None:
     raise HTTPException(status_code=400, detail="cost_optimizer.invalid_candidate")
 
@@ -210,17 +217,23 @@ def _validate_cost_optimizer_candidate_shape(
     temperature = parameters.get("temperature")
     _validate_number_range(temperature, minimum=0, maximum=2)
 
-    if "top_p" in parameters:
+    if "top_p" in parameters and parameters.get("top_p") is not None:
         _validate_number_range(parameters.get("top_p"), minimum=0, maximum=1)
-    if "presence_penalty" in parameters:
+    if (
+        "presence_penalty" in parameters
+        and parameters.get("presence_penalty") is not None
+    ):
         _validate_number_range(
             parameters.get("presence_penalty"), minimum=-2, maximum=2
         )
-    if "frequency_penalty" in parameters:
+    if (
+        "frequency_penalty" in parameters
+        and parameters.get("frequency_penalty") is not None
+    ):
         _validate_number_range(
             parameters.get("frequency_penalty"), minimum=-2, maximum=2
         )
-    if "stop" in parameters:
+    if "stop" in parameters and parameters.get("stop") is not None:
         stop = parameters.get("stop")
         if (
             not isinstance(stop, list)
@@ -1235,7 +1248,13 @@ def _patch_cost_optimizer_candidate_graph(
         data["referenced_variables"] = candidate.referenced_variables
     if candidate.parameters:
         current_parameters = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
-        data["parameters"] = {**current_parameters, **candidate.parameters}
+        next_parameters = {**current_parameters}
+        for key, value in candidate.parameters.items():
+            if value is None:
+                next_parameters.pop(key, None)
+            else:
+                next_parameters[key] = value
+        data["parameters"] = next_parameters
     if candidate.output_format is not None:
         data["output_format"] = candidate.output_format
 
@@ -1264,6 +1283,161 @@ def _patch_cost_optimizer_candidate_graph(
             data["answerGroundingCheck"] = knowledge.get("answer_grounding_check")
 
     return patched_graph
+
+
+def _cost_optimizer_candidate_data_from_node_data(
+    node_data: dict[str, Any],
+) -> dict[str, Any]:
+    parameters = (
+        copy.deepcopy(node_data.get("parameters"))
+        if isinstance(node_data.get("parameters"), dict)
+        else {}
+    )
+    parameters.setdefault("max_tokens", 4096)
+    parameters.setdefault("temperature", 0.7)
+
+    knowledge_bases = node_data.get("knowledgeBases")
+    knowledge_base_ids = []
+    if isinstance(knowledge_bases, list):
+        knowledge_base_ids = [
+            str(item.get("id")).strip()
+            for item in knowledge_bases
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item.get("id").strip()
+        ]
+
+    output_format = node_data.get("output_format")
+    if isinstance(output_format, str):
+        output_format = {"type": output_format}
+    elif not isinstance(output_format, dict):
+        output_format = {"type": "text"}
+
+    referenced_variables = node_data.get("referenced_variables")
+    if not isinstance(referenced_variables, list):
+        referenced_variables = []
+
+    model_id = str(node_data.get("model_id") or "").strip()
+    fallback_model_id = (
+        str(node_data.get("fallback_model_id")).strip()
+        if node_data.get("fallback_model_id") is not None
+        else None
+    )
+    if fallback_model_id == model_id:
+        fallback_model_id = None
+
+    return {
+        "label": "추천 적용",
+        "model_id": model_id,
+        "fallback_model_id": fallback_model_id,
+        "task_type": node_data.get("task_type") or "generate",
+        "system_prompt": node_data.get("system_prompt") or None,
+        "user_prompt": node_data.get("user_prompt") or None,
+        "assistant_prompt": node_data.get("assistant_prompt") or None,
+        "referenced_variables": copy.deepcopy(referenced_variables),
+        "parameters": parameters,
+        "output_format": copy.deepcopy(output_format),
+        "knowledge": {
+            "knowledge_base_ids": knowledge_base_ids,
+            "top_k": (
+                node_data.get("topK") if node_data.get("topK") is not None else 3
+            ),
+            "score_threshold": node_data.get("scoreThreshold")
+            if node_data.get("scoreThreshold") is not None
+            else 0.5,
+            "dedupe_retrieved_context": bool(
+                node_data.get("dedupeRetrievedContext")
+            ),
+            "retrieved_context_max_chars": node_data.get(
+                "retrievedContextMaxChars"
+            ),
+            "retrieved_context_compression": node_data.get(
+                "retrievedContextCompression"
+            )
+            or "off",
+            "answer_grounding_check": node_data.get("answerGroundingCheck")
+            or "off",
+        },
+    }
+
+
+def _apply_cost_optimizer_recommendation_patch(
+    candidate_data: dict[str, Any],
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    next_candidate = copy.deepcopy(candidate_data)
+    parameters = patch.get("parameters") if isinstance(patch, dict) else None
+    if isinstance(parameters, dict):
+        current_parameters = next_candidate.setdefault("parameters", {})
+        if not isinstance(current_parameters, dict):
+            current_parameters = {}
+            next_candidate["parameters"] = current_parameters
+        for key, value in parameters.items():
+            if value is None:
+                current_parameters.pop(key, None)
+            else:
+                current_parameters[key] = value
+
+    knowledge = patch.get("knowledge") if isinstance(patch, dict) else None
+    if isinstance(knowledge, dict):
+        current_knowledge = next_candidate.setdefault("knowledge", {})
+        if not isinstance(current_knowledge, dict):
+            current_knowledge = {}
+            next_candidate["knowledge"] = current_knowledge
+        for key, value in knowledge.items():
+            current_knowledge[key] = value
+
+    return next_candidate
+
+
+def _cost_optimizer_candidate_from_recommendations(
+    workflow: Workflow,
+    node_id: str,
+    recommendations_payload: dict[str, Any],
+    recommendation_ids: list[str],
+) -> tuple[CostOptimizerCandidateRequest, list[str]]:
+    selected_ids = [
+        item for item in recommendation_ids if isinstance(item, str) and item
+    ]
+    if not selected_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="cost_optimizer.recommendation_required",
+        )
+
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    candidate_data = _cost_optimizer_candidate_data_from_node_data(node_data)
+
+    recommendations = recommendations_payload.get("recommendations")
+    recommendations = recommendations if isinstance(recommendations, list) else []
+    recommendation_by_id = {
+        recommendation.get("parameter_key"): recommendation
+        for recommendation in recommendations
+        if isinstance(recommendation, dict)
+        and isinstance(recommendation.get("parameter_key"), str)
+    }
+
+    applied_ids: list[str] = []
+    for recommendation_id in selected_ids:
+        recommendation = recommendation_by_id.get(recommendation_id)
+        patch = (
+            recommendation.get("candidate_patch")
+            if isinstance(recommendation, dict)
+            else None
+        )
+        if not isinstance(patch, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="cost_optimizer.recommendation_not_found",
+            )
+        candidate_data = _apply_cost_optimizer_recommendation_patch(
+            candidate_data,
+            patch,
+        )
+        applied_ids.append(recommendation_id)
+
+    return CostOptimizerCandidateRequest(**candidate_data), applied_ids
 
 
 def _cost_optimizer_baseline_input_variables(
@@ -2617,6 +2791,105 @@ def list_cost_optimizer_experiments_endpoint(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations")
+def get_cost_optimizer_parameter_recommendations_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    배포 후 운영 로그를 기준으로 LLM 노드 파라미터 추천 후보를 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    return CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=workflow,
+        node_id=node_id,
+    )
+
+
+@router.patch(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations"
+)
+def apply_cost_optimizer_recommendations(
+    workflow_id: str,
+    node_id: str,
+    request_body: CostOptimizerRecommendationApplyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    서버가 다시 계산한 파라미터 추천 중 선택된 항목만 현재 draft LLM node에 적용합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    recommendations_payload = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=workflow,
+        node_id=node_id,
+    )
+    candidate_settings, applied_recommendation_ids = (
+        _cost_optimizer_candidate_from_recommendations(
+            workflow,
+            node_id,
+            recommendations_payload,
+            request_body.recommendation_ids,
+        )
+    )
+    _validate_cost_optimizer_candidate_shape(candidate_settings)
+    _ensure_cost_optimizer_candidate_knowledge_available(
+        db,
+        current_user,
+        workflow,
+        candidate_settings,
+    )
+    _ensure_cost_optimizer_candidate_models_available(
+        db,
+        current_user,
+        candidate_settings,
+    )
+
+    current_graph = copy.deepcopy(workflow.graph or {})
+    _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=current_graph),
+        node_id,
+    )
+    workflow.graph = _patch_cost_optimizer_candidate_graph(
+        current_graph,
+        node_id,
+        candidate_settings,
+    )
+    db.commit()
+    try:
+        db.refresh(workflow)
+    except Exception:
+        logger.debug("Cost Optimizer recommendation apply refresh skipped", exc_info=True)
+
+    updated_at = getattr(workflow, "updated_at", None)
+    updated_revision = (
+        updated_at.isoformat()
+        if hasattr(updated_at, "isoformat")
+        else str(updated_at)
+        if updated_at is not None
+        else None
+    )
+
+    return {
+        "workflow_id": str(workflow.id),
+        "node_id": node_id,
+        "applied": True,
+        "applied_recommendation_ids": applied_recommendation_ids,
+        "downstream_compatibility": {
+            "state": "unknown",
+            "label": "판정 전",
+            "message": "추천 설정이 적용되었습니다. 현재 workflow 테스트 실행으로 downstream 결과를 확인하세요.",
+        },
+        "updated_draft_revision": updated_revision,
+    }
 
 
 @router.post("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare")

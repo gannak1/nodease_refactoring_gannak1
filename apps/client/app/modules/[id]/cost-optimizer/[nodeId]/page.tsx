@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowLeft,
   BarChart3,
@@ -23,6 +23,7 @@ import { CostOptimizerBaselineSelection } from '@/app/features/workflow/componen
 import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
 import {
+  applyCandidatePatchesToDraft,
   baselineOptionsOf,
   candidateFromNode,
   candidateFromOptions,
@@ -233,6 +234,26 @@ const compareCandidateErrorMessage = (error: unknown) => {
     return compareCandidateErrorMessages[detail];
   }
   return 'B 후보 실행에 실패했습니다.';
+};
+
+const readRecommendationPresetPatches = (
+  presetKey: string | null,
+): Array<Record<string, unknown>> => {
+  if (!presetKey || typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.sessionStorage.getItem(presetKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter(
+      (item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null && !Array.isArray(item),
+    );
+  } catch {
+    return [];
+  }
 };
 
 const formatKnowledgeSummary = (candidate: CandidateDraft) =>
@@ -568,8 +589,11 @@ const PanelResizeHandle = ({
 export default function CostOptimizerPlaygroundPage() {
   const router = useRouter();
   const params = useParams<{ id: string; nodeId: string }>();
+  const searchParams = useSearchParams();
   const workflowId = params.id;
   const nodeId = params.nodeId;
+  const shouldUseLatestBaseline = searchParams.get('baseline') === 'latest';
+  const recommendationPresetKey = searchParams.get('recommendationPresetKey');
 
   const [targetNode, setTargetNode] = useState<AppNode | null>(null);
   const [workflowNodes, setWorkflowNodes] = useState<AppNode[]>([]);
@@ -670,6 +694,33 @@ export default function CostOptimizerPlaygroundPage() {
         setWorkflowNodes(nodesFromDraft(draft));
         setWorkflowTitle(nextWorkflowTitle?.trim() || workflowId);
         setTargetNode(node);
+        if (shouldUseLatestBaseline) {
+          try {
+            const latest = await workflowApi.getCostOptimizerLatestBaseline(
+              workflowId,
+              nodeId,
+            );
+            if (!active) return;
+            const latestBaseline = latest.baseline;
+            const baseCandidate = candidateFromOptions(
+              baselineOptionsOf(latestBaseline) ||
+                ((node?.data || {}) as BaselineNodeOptions),
+            );
+            const patches =
+              readRecommendationPresetPatches(recommendationPresetKey);
+            setBaseline(latestBaseline);
+            setCandidate(applyCandidatePatchesToDraft(baseCandidate, patches));
+            setActiveMode('setup');
+            setTestName('추천 설정 검증');
+            setCandidateError('');
+            return;
+          } catch {
+            if (!active) return;
+            setCandidateError(
+              '최신 실행 로그를 자동으로 선택하지 못했습니다. 이전 실행 로그를 선택해 주세요.',
+            );
+          }
+        }
         setCandidate(candidateFromNode(node));
       } catch {
         if (!active) return;
@@ -686,7 +737,7 @@ export default function CostOptimizerPlaygroundPage() {
     return () => {
       active = false;
     };
-  }, [nodeId, workflowId]);
+  }, [nodeId, recommendationPresetKey, shouldUseLatestBaseline, workflowId]);
 
   useEffect(() => {
     if (!baseline || activeMode !== 'report') return;

@@ -66,4 +66,28 @@ describe('FR-008 Cost Optimizer apply API client', () => {
       },
     );
   });
+
+  it('추천 적용 API client는 선택한 추천 ID를 전송한다', async () => {
+    axiosPatchMock.mockResolvedValue({
+      data: {
+        workflow_id: 'workflow-1',
+        node_id: 'llm-triage',
+        applied: true,
+        downstream_compatibility: { state: 'unknown', label: '판정 전' },
+        updated_draft_revision: null,
+      },
+    });
+    const { workflowApi } = await import('../../api/workflowApi');
+
+    await workflowApi.applyCostOptimizerRecommendations(
+      'workflow-1',
+      'llm-triage',
+      { recommendation_ids: ['max_tokens', 'rag.top_k'] },
+    );
+
+    expect(axiosPatchMock).toHaveBeenCalledWith(
+      '/workflows/workflow-1/llm-nodes/llm-triage/cost-optimizer/apply-recommendations',
+      { recommendation_ids: ['max_tokens', 'rag.top_k'] },
+    );
+  });
 });
