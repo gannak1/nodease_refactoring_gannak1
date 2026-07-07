@@ -403,6 +403,7 @@ class AppService:
             candidate_apps,
             candidate_apps[0].organization_id if candidate_apps else None,
         )
+        AppService._attach_operation_metrics(db, candidate_apps)
         permission_sources_by_workflow_id = (
             get_workflow_permission_sources_by_workflow_ids(
                 db,
@@ -511,6 +512,7 @@ class AppService:
                 workflow_id=app.workflow_id,
                 owner_name=owner_names.get(app.created_by),
                 budget_status=getattr(app, "budget_status", None),
+                operation_metrics=getattr(app, "operation_metrics", None),
                 created_at=app.created_at,
                 updated_at=app.updated_at,
             ),
@@ -735,6 +737,98 @@ class AppService:
                     workflow_ids_by_app_key.get(id(app), []),
                 ),
             )
+
+    @staticmethod
+    def _attach_operation_metrics(
+        db: Session,
+        apps: list[App],
+    ) -> None:
+        workflow_ids_by_app_key = _workflow_id_candidates_by_app_key(apps)
+        workflow_ids = _unique_workflow_ids(
+            workflow_id
+            for app_workflow_ids in workflow_ids_by_app_key.values()
+            for workflow_id in app_workflow_ids
+        )
+        metrics = {}
+        if workflow_ids:
+            try:
+                metrics = AppService._operation_metrics_by_workflow_id(
+                    db,
+                    workflow_ids,
+                    now=datetime.now(KST),
+                )
+            except Exception:
+                metrics = {}
+
+        for app in apps:
+            setattr(
+                app,
+                "operation_metrics",
+                _first_operation_metrics(
+                    metrics,
+                    workflow_ids_by_app_key.get(id(app), []),
+                ),
+            )
+
+    @staticmethod
+    def _operation_metrics_by_workflow_id(
+        db: Session,
+        workflow_ids: list[Any],
+        *,
+        now: datetime | None = None,
+    ) -> dict[Any, dict[str, Any] | None]:
+        target_ids = _unique_workflow_ids(workflow_ids)
+        metrics = _empty_operation_metrics(target_ids)
+        if not target_ids:
+            return metrics
+
+        kst_now = (now or datetime.now(KST)).astimezone(KST)
+        current_period = AdminUsageService.resolve_month_period_kst(kst_now)
+        previous_period = _previous_month_period_kst(current_period.start_at)
+        current_costs = _budget_status_costs(
+            db,
+            workflow_ids=target_ids,
+            period=current_period,
+        )
+        previous_costs = _budget_status_costs(
+            db,
+            workflow_ids=target_ids,
+            period=previous_period,
+        )
+
+        total_seconds = Decimal(
+            str((current_period.end_at - current_period.start_at).total_seconds())
+        )
+        elapsed_seconds = Decimal(
+            str(
+                max(
+                    (kst_now - current_period.start_at).total_seconds(),
+                    1,
+                )
+            )
+        )
+        projection_multiplier = total_seconds / elapsed_seconds
+
+        for workflow_id in target_ids:
+            current_cost = current_costs.get(workflow_id, Decimal("0"))
+            previous_cost = previous_costs.get(workflow_id, Decimal("0"))
+            projected_cost = (
+                current_cost * projection_multiplier
+                if current_cost > 0
+                else Decimal("0")
+            )
+            trend_percent = None
+            if previous_cost > 0:
+                trend_percent = float(
+                    ((projected_cost - previous_cost) / previous_cost) * 100
+                )
+            metrics[workflow_id] = {
+                "current_month_cost": float(current_cost),
+                "projected_month_cost": float(projected_cost),
+                "previous_month_cost": float(previous_cost),
+                "trend_percent": trend_percent,
+            }
+        return metrics
 
     @staticmethod
     def _budget_status_by_workflow_id(
@@ -1036,6 +1130,17 @@ def _first_budget_status(
     return None
 
 
+def _first_operation_metrics(
+    metrics: dict[Any, dict[str, Any] | None],
+    workflow_ids: list[Any],
+) -> dict[str, Any] | None:
+    for workflow_id in workflow_ids:
+        metric = metrics.get(workflow_id)
+        if metric is not None:
+            return metric
+    return None
+
+
 def _unique_workflow_ids(workflow_ids) -> list[Any]:
     return list(
         dict.fromkeys(workflow_id for workflow_id in workflow_ids if workflow_id)
@@ -1044,6 +1149,23 @@ def _unique_workflow_ids(workflow_ids) -> list[Any]:
 
 def _empty_budget_statuses(workflow_ids: list[Any]) -> dict[Any, dict[str, Any] | None]:
     return {workflow_id: None for workflow_id in workflow_ids}
+
+
+def _empty_operation_metrics(
+    workflow_ids: list[Any],
+) -> dict[Any, dict[str, Any] | None]:
+    return {workflow_id: None for workflow_id in workflow_ids}
+
+
+def _previous_month_period_kst(month_start: datetime):
+    if month_start.month == 1:
+        previous_start = month_start.replace(year=month_start.year - 1, month=12)
+    else:
+        previous_start = month_start.replace(month=month_start.month - 1)
+    return AdminUsageService.resolve_period(
+        start_at=previous_start,
+        end_at=month_start,
+    )
 
 
 def _active_budget_rows(

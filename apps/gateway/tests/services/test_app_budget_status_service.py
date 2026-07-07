@@ -156,6 +156,41 @@ def test_app_budget_status_uses_kst_month_window():
     }
 
 
+def test_app_operation_metrics_uses_real_monthly_usage_and_trend():
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    db = _BudgetStatusDb(
+        budgets=[],
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("10.00"),
+                created_at=datetime(2026, 6, 20, 0, 0, tzinfo=KST),
+            ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("15.00"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=KST),
+            ),
+        ],
+    )
+
+    metrics = AppService._operation_metrics_by_workflow_id(
+        db,
+        [workflow_id],
+        now=datetime(2026, 7, 16, 0, 0, tzinfo=KST),
+    )
+
+    assert metrics[workflow_id] == {
+        "current_month_cost": pytest.approx(15.0),
+        "projected_month_cost": pytest.approx(31.0),
+        "previous_month_cost": pytest.approx(10.0),
+        "trend_percent": pytest.approx(210.0),
+    }
+
+
 def test_app_budget_status_uses_grouped_cost_lookup(monkeypatch):
     organization_id = uuid4()
     workflow_ids = [uuid4(), uuid4()]

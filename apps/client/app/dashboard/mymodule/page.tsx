@@ -83,19 +83,22 @@ const formatDate = (value?: string) => {
   });
 };
 
-const formatCurrency = (value: number) =>
-  `$${value.toLocaleString('en-US', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  })}`;
+const formatCurrency = (value?: number | null) => {
+  if (value == null) return '-';
+  const absoluteValue = Math.abs(value);
+  const fractionDigits =
+    absoluteValue >= 100 ? 0 : absoluteValue >= 1 ? 2 : 6;
 
-const stableHash = (value: string) =>
-  Array.from(value).reduce((hash, char) => hash + char.charCodeAt(0), 0);
+  return `$${value.toLocaleString('en-US', {
+    minimumFractionDigits: absoluteValue >= 1 ? 2 : 0,
+    maximumFractionDigits: fractionDigits,
+  })}`;
+};
 
 type CostOptimizationSignal = {
-  monthlyCost: number;
-  trendPercent: number;
-  budgetUsageRatio: number;
+  monthlyCost: number | null;
+  trendPercent: number | null;
+  budgetUsageRatio: number | null;
   recommended: boolean;
   reason: string;
 };
@@ -104,33 +107,37 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
   if (row.deploymentState !== 'active') {
     return {
       monthlyCost: 0,
-      trendPercent: 0,
-      budgetUsageRatio: row.app.budget_status?.usage_ratio ?? 0,
+      trendPercent: null,
+      budgetUsageRatio: row.app.budget_status?.usage_ratio ?? null,
       recommended: false,
       reason: '배포 중인 워크플로우가 아닙니다.',
     };
   }
 
-  const hash = stableHash(`${row.app.id}:${row.app.name}`);
-  const budgetUsageRatio =
-    row.app.budget_status?.usage_ratio ?? (45 + (hash % 48)) / 100;
-  const monthlyCost = 180 + (hash % 760) + Math.round(budgetUsageRatio * 120);
-  const trendPercent =
-    row.latestRun.state === 'failed'
-      ? 24 + (hash % 12)
-      : row.latestRun.state === 'running'
-        ? 18 + (hash % 10)
-        : 4 + (hash % 22);
-  const recommended =
-    monthlyCost >= 720 || trendPercent >= 24 || budgetUsageRatio >= 0.82;
+  const metrics = row.app.operation_metrics;
+  const monthlyCost =
+    metrics?.projected_month_cost ?? metrics?.current_month_cost ?? null;
+  const trendPercent = metrics?.trend_percent ?? null;
+  const budgetUsageRatio = row.app.budget_status?.usage_ratio ?? null;
+  const budgetStatus = row.app.budget_status?.status;
+  const hasCostData =
+    metrics != null &&
+    ((metrics.current_month_cost ?? 0) > 0 || (monthlyCost ?? 0) > 0);
+  const budgetAtRisk = budgetStatus === 'at_risk' || budgetStatus === 'exceeded';
+  const trendAtRisk = trendPercent != null && trendPercent >= 20;
+  const recommended = budgetAtRisk || trendAtRisk;
 
   const reason = recommended
-    ? budgetUsageRatio >= 0.82
-      ? '예산 초과 위험'
-      : trendPercent >= 24
-        ? '비용 증가 추세'
-        : 'LLM 비용 집중'
-    : '안정 범위';
+    ? budgetAtRisk
+      ? budgetStatus === 'exceeded'
+        ? '예산 초과'
+        : '예산 초과 위험'
+      : '전월 대비 비용 증가'
+    : !hasCostData
+      ? '운영 비용 데이터 없음'
+      : trendPercent == null
+        ? '전월 비교 데이터 없음'
+        : '안정 범위';
 
   return {
     monthlyCost,
@@ -283,22 +290,26 @@ export default function MyModulePage() {
       const activeRows = rows.filter((row) => row.deploymentState === 'active');
       const costSignals = activeRows.map(costSignalOf);
       const monthlyCost = costSignals.reduce(
-        (total, signal) => total + signal.monthlyCost,
+        (total, signal) => total + (signal.monthlyCost ?? 0),
         0,
+      );
+      const trendSignals = costSignals.filter(
+        (signal) => signal.trendPercent != null,
       );
       const recommended = costSignals.filter((signal) => signal.recommended);
       const atRiskBudget = costSignals.filter(
-        (signal) => signal.budgetUsageRatio >= 0.8,
+        (signal) =>
+          signal.budgetUsageRatio != null && signal.budgetUsageRatio >= 0.8,
       );
       const averageTrend =
-        costSignals.length > 0
+        trendSignals.length > 0
           ? Math.round(
-              costSignals.reduce(
-                (total, signal) => total + signal.trendPercent,
+              trendSignals.reduce(
+                (total, signal) => total + (signal.trendPercent ?? 0),
                 0,
-              ) / costSignals.length,
+              ) / trendSignals.length,
             )
-          : 0;
+          : null;
 
       return {
         active: activeRows.length,
@@ -311,6 +322,7 @@ export default function MyModulePage() {
         recommendedCount: recommended.length,
         atRiskBudgetCount: atRiskBudget.length,
         averageTrend,
+        trendSampleCount: trendSignals.length,
       };
     },
     [rows],
@@ -390,14 +402,18 @@ export default function MyModulePage() {
             value={formatCurrency(summary.monthlyCost)}
             icon={DollarSign}
             iconClassName="text-emerald-600"
-            description={`${summary.active}개 배포 workflow 기준`}
+            description={`${summary.active}개 배포 workflow의 당월 사용량 기준`}
           />
           <DashboardSummaryCard
             label="평균 증가 추세"
-            value={`+${summary.averageTrend}%`}
+            value={
+              summary.averageTrend == null
+                ? '-'
+                : `${summary.averageTrend > 0 ? '+' : ''}${summary.averageTrend}%`
+            }
             icon={TrendingUp}
             iconClassName="text-amber-600"
-            description="최근 운영 신호 기반 화면 추정"
+            description={`${summary.trendSampleCount}개 workflow 전월 비용 비교`}
           />
           <DashboardSummaryCard
             label="예산 위험"
@@ -618,7 +634,11 @@ function ModuleOperationTableRow({
   const canToggle = canToggleDeployment(row);
   const runBlockMessage = budgetRunBlockMessage(row.app.budget_status);
   const costSignal = costSignalOf(row);
-  const budgetPercent = Math.round(costSignal.budgetUsageRatio * 100);
+  const budgetPercent =
+    costSignal.budgetUsageRatio == null
+      ? null
+      : Math.round(costSignal.budgetUsageRatio * 100);
+  const trendPercent = costSignal.trendPercent;
 
   return (
     <tr className="text-sm text-slate-700 hover:bg-slate-50">
@@ -661,7 +681,9 @@ function ModuleOperationTableRow({
               {formatCurrency(costSignal.monthlyCost)}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              운영 로그 기반 추정
+              {costSignal.monthlyCost == null || costSignal.monthlyCost === 0
+                ? '운영 비용 없음'
+                : '이번 달 사용량 기반 예상'}
             </p>
           </div>
         ) : (
@@ -671,24 +693,29 @@ function ModuleOperationTableRow({
         )}
       </td>
       <td className="px-4 py-4 align-top">
-        {row.deploymentState === 'active' ? (
+        {row.deploymentState === 'active' && trendPercent != null ? (
           <Badge
             className={
-              costSignal.trendPercent >= 24
+              trendPercent >= 20
                 ? 'border-red-200 bg-red-50 text-red-700'
-                : costSignal.trendPercent >= 16
+                : trendPercent >= 10
                   ? 'border-amber-200 bg-amber-50 text-amber-700'
                   : 'border-emerald-200 bg-emerald-50 text-emerald-700'
             }
           >
-            +{costSignal.trendPercent}%
+            {trendPercent > 0 ? '+' : ''}
+            {Math.round(trendPercent)}%
           </Badge>
+        ) : row.deploymentState === 'active' ? (
+          <span className="text-xs font-medium text-slate-400">
+            비교 데이터 없음
+          </span>
         ) : (
           <span className="text-xs font-medium text-slate-400">-</span>
         )}
       </td>
       <td className="px-4 py-4 align-top">
-        {row.deploymentState === 'active' ? (
+        {row.deploymentState === 'active' && budgetPercent != null ? (
           <div className="min-w-28">
             <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-700">
               <span>{budgetPercent}%</span>
@@ -721,6 +748,8 @@ function ModuleOperationTableRow({
               />
             </div>
           </div>
+        ) : row.deploymentState === 'active' ? (
+          <span className="text-xs font-medium text-slate-400">예산 없음</span>
         ) : (
           <span className="text-xs font-medium text-slate-400">-</span>
         )}

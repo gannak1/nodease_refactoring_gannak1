@@ -51,12 +51,25 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
     "budget_status": {
       "usage_ratio": 0.923457,
       "status": "at_risk"
+    },
+    "operation_metrics": {
+      "current_month_cost": 12.34,
+      "projected_month_cost": 24.68,
+      "previous_month_cost": 10.0,
+      "trend_percent": 146.8
     }
   },
   "deployment": { "...": "..." },
   "latest_run": { "...": "..." }
 }
 ```
+
+- `operation_metrics`는 `/dashboard/mymodule` 비용/추세 UI 전용 요약이다.
+- `current_month_cost`: 현재 KST 월의 `llm_usage_logs.total_cost` 합계.
+- `projected_month_cost`: 현재 월 경과 비율을 기준으로 단순 projection한 월 예상 비용. 계산할 수 없으면 null이다.
+- `previous_month_cost`: 직전 KST 월의 `llm_usage_logs.total_cost` 합계.
+- `trend_percent`: `projected_month_cost`와 `previous_month_cost`의 증감률. 직전 월 비용이 0이면 null이다.
+- `operation_metrics`는 `budget_status`와 별도 필드이며 `GET /apps` 응답에는 포함하지 않는다.
 
 ## Errors
 
@@ -67,4 +80,4 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 ## Permissions
 
 - App 목록과 운영 현황은 active organization context를 기준으로 사용자가 접근 가능한 App/Workflow만 반환한다.
-- `budget_status`는 사용률과 상태만 노출하며, 예산 금액/비용 원문은 관리자 API에만 노출한다.
+- `budget_status`는 사용률과 상태만 노출한다. `/apps/operations`의 `operation_metrics`는 사용자가 접근 가능한 workflow row의 운영 비용 요약으로만 사용한다.
