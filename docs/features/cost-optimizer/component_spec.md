@@ -5,8 +5,8 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-010까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이며, 현재 화면/컴포넌트 구현 범위에는 포함하지 않는다.
+이 문서는 `requirements.md`의 FR-001부터 FR-011까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
+FR-011 모델 라우팅은 현재 LLM 노드 상세 화면의 자동 라우팅 토글과 정책 안내까지만 포함한다. 실제 실행 시점 라우터 API와 workflow engine 연동, 최적화 에이전트 UI는 후속 기능이다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
@@ -24,7 +24,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Deferred model routing/optimizer agent | 후속 기능이다. 현재 UI는 모델 라우팅 또는 최적화 에이전트 패널을 제공하지 않는다. |
+| FR-011 | Automatic model routing control | LLM 노드 상세 화면에서 자동 라우팅 토글과 cold start/warming up/optimized 정책 안내를 제공한다. 실제 라우터 실행 결과 UI와 최적화 에이전트 패널은 후속 기능이다. |
 
 ## Implementation Tracking
 
@@ -34,7 +34,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM node detail action | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx` | 통과 |
 | FR-002 | Baseline selection, baseline log picker | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
-| FR-003 | Candidate editor, LLM node setting | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMReferenceSidePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-task-type.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | 통과 |
+| FR-003 | Candidate editor, LLM node setting | `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMReferenceSidePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | 통과 |
 | FR-004 | Baseline input lock display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | 통과 |
 | FR-005 | Hybrid compare flow state | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | 통과 |
 | FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
@@ -244,7 +244,7 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 
 - 모델 선택
 - fallback 모델 선택
-- task type 선택
+- 자동 라우팅 상태 표시와 정책 안내
 - system prompt 편집
 - user prompt 편집
 - assistant prompt 편집
@@ -253,7 +253,14 @@ A baseline과 B candidate는 서로 다른 JSX 구조를 가지면 안 된다. �
 
 모델 선택 UI는 기존 LLM 노드 상세 편집의 모델 조회/선택 기준을 따른다.
 
-원본 LLM 노드 상세 편집 화면도 task type 선택을 제공해야 한다. B 후보는 현재 LLM 노드 설정 복사본에서 시작하므로, 원본 화면에서 저장된 `data.task_type`과 Cost Optimizer 후보의 `candidate.task_type` 값 체계가 같아야 한다.
+원본 LLM 노드 상세 편집 화면과 B 후보 설정 화면은 task type 선택 UI를 제공하지 않는다. 작업 유형은 사용자가 직접 고르는 값이 아니라 라우터/노드 실행 맥락의 내부 판단값으로 후속 처리한다. 기존 저장 데이터와 compare request 호환성을 위해 `data.task_type` 또는 `candidate.task_type` 기본값은 유지할 수 있다.
+
+원본 LLM 노드 상세 편집 화면은 자동 라우팅 토글을 제공한다.
+
+- ON: 기본 모델 선택과 fallback 모델 선택 UI를 숨기고 `자동 라우팅 사용 중` 상태를 보여준다.
+- ON: cold start, warming up, optimized 3단계 라우팅 정책과 예상 선택 기준을 보여준다.
+- OFF: 기존처럼 기본 모델과 fallback 모델을 직접 선택한다.
+- OFF: task type 선택 UI는 계속 숨긴다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
@@ -359,7 +366,7 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 
 - model
 - fallback model
-- task type
+- auto routing state
 - system/user/assistant prompt
 - output format
 - JSON schema
@@ -481,7 +488,8 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | --- | --- | --- | --- | --- |
 | `model_id` | `data.model_id` | `candidate.model_id` | `candidate_settings.model_id` | 기존 모델 선택 목록을 재사용한다. |
 | `fallback_model_id` | `data.fallback_model_id` | `candidate.fallback_model_id` | `candidate_settings.fallback_model_id` | 기본 모델과 같으면 validation 대상이다. |
-| `task_type` | `data.task_type` 또는 node option | `candidate.task_type` | `candidate_settings.task_type` | 비용/품질 분석 라벨과 후속 라우팅 기준으로 사용한다. |
+| `auto_model_routing` | `data.auto_model_routing` | 후속 candidate field | 후속 candidate field | 원본 LLM 노드의 자동 라우팅 UI 상태다. 실제 실행 라우터 API 연결은 후속이다. |
+| `task_type` | 내부 기본값 | 내부 기본값 | `candidate_settings.task_type` | 사용자 입력으로 노출하지 않는다. 후속 라우터/분석 내부 판단값으로만 사용한다. |
 | `system_prompt` | `data.system_prompt` | `candidate.system_prompt` | `candidate_settings.system_prompt` | 변수 삽입 지원. |
 | `user_prompt` | `data.user_prompt` | `candidate.user_prompt` | `candidate_settings.user_prompt` | 변수 삽입 지원. |
 | `assistant_prompt` | `data.assistant_prompt` | `candidate.assistant_prompt` | `candidate_settings.assistant_prompt` | 변수 삽입 지원. |
@@ -517,7 +525,7 @@ Inspector는 탭 구조를 사용한다.
 
 - 모델 차이
 - fallback 모델 차이
-- task type 차이
+- 자동 라우팅 상태 차이
 - prompt 차이
 - parameter 차이
 - 출력 형식 차이
