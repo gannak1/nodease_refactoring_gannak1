@@ -2,7 +2,7 @@
 
 Status: Draft
 
-이 문서는 MBA-105 Knowledge 통합 구현자가 따라야 할 임시 구현 baseline을 한곳에 모은다. [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 기능별 구현 기준으로 풀어 쓴 문서이며, Workflow RAG의 `execution_subject` 부재 처리는 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. ADR과 충돌하면 ADR이 우선한다. 관련 기능은 auth, workflow, agent-builder, connectors, audit-tracing, llm-credentials, cost-optimizer다. API path, migration column, UI copy의 최종 상세는 각 구현 PR의 `api_spec.md`, `data_model.md`, component/test 문서에서 고정한다.
+이 문서는 MBA-105 Knowledge 통합 구현자가 따라야 할 임시 구현 baseline을 한곳에 모은다. [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 기능별 구현 기준으로 풀어 쓴 문서이며, Workflow RAG의 `execution_subject` 부재 처리는 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API connector 기반 incremental sync와 Live-linked/public exposure 보완 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다. ADR과 충돌하면 ADR이 우선한다. 관련 기능은 auth, workflow, agent-builder, connectors, audit-tracing, llm-credentials, cost-optimizer다. API path, migration column, UI copy의 최종 상세는 각 구현 PR의 `api_spec.md`, `data_model.md`, component/test 문서에서 고정한다.
 
 이 문서는 내부 planning inventory의 전체 내용을 복사한 것이 아니다. MBA-105 구현에 필요한 정책 기본값, 보안 gate, error matrix, recovery 기준만 공식 docs 구조에 맞게 승격한다.
 
@@ -18,6 +18,7 @@ MBA-105에서 baseline으로 삼는 범위:
 - Source ACL facts는 authorization provenance와 freshness evidence이며 KB `use` 자체가 아니다.
 - Chunk content, embedding input, retrieval-visible artifact, prompt context는 redacted canonical text를 기본 원천으로 사용한다.
 - Router, Builder, runtime은 Knowledge Permission Helper가 만든 authorized safe candidate set만 소비한다.
+- MCP/API source connector는 LLM 자유 tool-use가 아니라 Knowledge Source Connector 뒤의 allowlist adapter로 사용한다.
 
 MBA-105에서 구현하지 않는 범위:
 
@@ -46,6 +47,10 @@ MBA-105에서 구현하지 않는 범위:
 | Candidate caps | `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`. Collection/KB candidate cap은 임의 row를 먼저 자른 뒤 authorization하는 방식이 아니라, route/use/source ACL helper를 통과한 authorized subset에 적용한다 |
 | Fanout | 단일 filtered vector/keyword query 우선, 불가하면 concurrency 5 bounded fanout |
 | Retrieval timeout | 호출당 5-10s, aggregate interactive path 15-30s |
+| Runtime authorization batch | `check_access_batch` 50-200 source item 후보. Batch 미지원 source는 bounded single check fallback만 허용 |
+| Runtime authorization fallback | per-source concurrency 3-5, per-call timeout 3-5s, aggregate timeout 10-20s 후보. Timeout/unknown은 private evidence fail-closed |
+| Runtime access cache | `allowed`/`denied` 1-5m, `unknown`/timeout 30-60s 후보. Source ACL/mapping epoch 변경 시 즉시 무효화 |
+| Content safety scan | 지원 file type/content type allowlist, archive cap, active content detection, scan timeout/unknown fail-closed 후보. Binary/Office/archive는 scan hook 없으면 production indexing-visible 대상에서 제외 |
 | Recovery scanner | local/non-prod 5m, production 후보 5-15m |
 | Tombstone retention | 30-90 days, legal hold가 있으면 연장 가능 |
 | Sync event retention | safe metadata only, 30-90 days 후보 |
@@ -65,6 +70,8 @@ ADR-0014는 목표 구조와 gate 목록을 정의한다. ADR-0017은 MBA-105 �
 | Active version finalization | Active pointer swap, previous version `superseded`, processed state commit, cleanup/finalization outbox insert를 같은 DB transaction에서 수행한다. |
 | Resource hiding API matrix | 이 문서의 safe hidden/no-result/partial-result matrix를 따른다. Hidden path의 external reason은 `resource.hidden`으로 일반화한다. |
 | Retry/dead-letter vocabulary | Outbox/recovery row는 status, lease/fencing, attempt, next retry, dead-letter, re-drive contract를 가진다. |
+| MCP incremental sync boundary | MCP/API source connector는 approved operation allowlist만 호출한다. Runtime source authorization은 batch 우선 primitive와 bounded fallback을 사용하고, Live-linked search는 requester-scoped 또는 opaque-ref-only flow만 허용한다. |
+| Content safety and parser isolation | External source content는 egress guard 이후에도 untrusted다. File type allowlist, active content 차단, archive cap, parser sandbox, scan timeout/unknown fail-closed를 redacted canonical text 생성 전에 적용한다. |
 
 ## Permission Helper 기준
 
@@ -126,6 +133,80 @@ Source ACL fact만으로는 KB `use`가 충족되지 않는다. Auto-ingested KB
 
 Policy expiry, connector revocation, source ACL revocation, policy disable은 source-policy-provisioned grant만 inactive 처리하고 `freshness_epoch`와 candidate cache를 갱신해야 한다. Manual team/user/admin grant row는 저장상 유지될 수 있지만, source-managed KB에서는 fresh source ACL/requester authorization gate가 fail-closed이면 retrieval 후보가 될 수 없다.
 
+## MCP/API source connector 기준
+
+MCP 서버는 Knowledge Source Connector 뒤의 제한된 data access provider다. LLM runtime이 MCP tool을 자유 선택해 source raw data를 prompt/context에 직접 넣는 구조는 구현하지 않는다.
+
+허용 operation baseline:
+
+- `list_sources`
+- `list_changed_items(cursor)`
+- `fetch_item_content(source_item_ref)`
+- `list_acl_changes(acl_cursor)`
+- `check_access_batch(subject_ref, source_item_refs[])`
+- bounded single `check_access(subject_ref, source_item_ref)`
+- `get_tombstones(cursor)`
+- 명시적 capture signal source에서만 `list_capture_events(cursor)` 또는 webhook event normalization
+
+새 operation을 추가하려면 목적, source별 필요성, input/output field allowlist, timeout/page/size/retry/rate-limit cap, raw field 저장 금지, audit/trace safe reason code, negative test를 먼저 정의한다.
+
+MCP/API adapter input에는 protected source ref, safe connector/source type, cursor/page token/event id, Nodease subject safe ref 또는 mapped source subject ref, operation별 allowlist parameter만 전달한다. Raw credential, token, API key, raw private URL/path/title, user-facing prompt 전문, LLM completion, raw source payload를 uncontrolled query parameter로 전달하지 않는다.
+
+MCP/API adapter output은 Knowledge가 소비할 safe normalized shape로 변환한다. Protected source identity, source type, safe display label, content updated timestamp, tombstone state, source authorization state, requester authorization result, freshness epoch, redacted canonical content 또는 redaction 전 ephemeral content handle만 허용 후보로 둔다. Raw source id/url/path/title, raw principal/email, raw ACL row, raw tool error, token, credential, secret, hidden resource name/id, exact denied count는 다음 계층으로 전달하지 않는다.
+
+Redaction 전 ephemeral content handle은 redaction pipeline 내부에서만 재해석할 수 있는 process/run-scoped short TTL handle이어야 한다. Handle value나 raw content는 durable DB, retry/dead-letter payload, audit, trace, log, user-facing response에 저장하지 않는다.
+
+## Content safety 및 parser isolation 기준
+
+OutboundEgressGuard는 네트워크와 protocol access 위험을 줄이는 gate이며, 가져온 content 자체를 신뢰 가능하게 만들지 않는다. Source content는 redacted canonical text로 변환되기 전에 content safety gate를 통과해야 한다.
+
+기본 기준:
+
+- 지원 file type/content type allowlist를 source policy별로 둔다. Allowlist 밖 file은 indexing-visible artifact를 만들지 않고 remediation 또는 safe unsupported 상태로 둔다.
+- Parser/extractor는 macro, script, embedded object, external reference, executable payload를 실행하지 않는 least-privilege 또는 sandboxed worker에서 수행한다.
+- Office, PDF, HTML, archive, rich document parser는 network access와 filesystem write 범위를 제한한다. Parser가 외부 URL을 따라가거나 document 내부 script를 실행하면 안 된다.
+- Archive는 nested depth, expanded size, contained file count, nested archive count cap을 적용한다. Cap 초과, archive bomb, executable/script/macro-enabled child file은 기본 fail-closed 또는 quarantine/remediation이다.
+- Malware/content scan hook은 provider-neutral interface로 둔다. Hook이 없거나 scan result가 `unknown`, `timeout`, `error`이면 high-risk binary/Office/archive는 ready/indexing-visible 상태로 진행하지 않는다.
+- Scan pass는 source ACL, KB `use`, redaction, prompt-injection guard를 대체하지 않는다.
+- Content safety failure는 raw file bytes, active content marker, parser exception raw detail을 durable DB, retry/dead-letter payload, audit, trace, log, user-facing response에 저장하지 않는다. Safe reason code, scanner/parser family, retryability, remediation action만 저장한다.
+
+## Source mode 기준
+
+| Mode | 저장/검색 기준 |
+| --- | --- |
+| `indexed_cache` | MVP 기본 mode다. Redacted canonical chunk, embedding, safe metadata, protected source identity를 저장하고, runtime source authorization과 final evidence policy를 통과한 evidence만 prompt/citation에 사용한다. |
+| `live_linked` | 내부 chunk/embedding이 없으므로 일반 vector retrieval 후보가 아니다. Requester-scoped source-side search API가 있거나, source-side search 결과가 opaque source ref만 반환되고 runtime source authorization 이후에만 metadata가 노출될 때만 검색 후보가 된다. Broad service account search 결과의 title/snippet/count/score를 authorization 전에 받는 구조는 금지한다. |
+| `archived_copy` | 기본 비활성이다. Protected raw artifact는 opt-in raw/compliance policy, encryption, retention/legal hold/purge, access audit, fresh source ACL gate가 닫힌 뒤에만 보존할 수 있다. Raw artifact는 RAG, embedding, prompt, answer stream, citation summary input으로 사용하지 않는다. |
+
+## Runtime source authorization 기준
+
+Runtime source authorization은 final evidence gate 전에 끝나야 한다.
+
+- `check_access_batch(subject_ref, source_item_refs[])`를 우선 사용한다.
+- Batch 미지원 source는 bounded concurrency, per-call timeout, aggregate timeout을 적용한 single `check_access` fallback만 허용한다.
+- Runtime authorization primitive 자체가 없는 source는 private source-managed KB retrieval을 fail-closed 처리한다.
+- Source subject mapping 상태 `unmapped`, `ambiguous`, `stale` revalidate 실패, `revoked`는 private source-managed retrieval에서 fail-closed다.
+- Batch 일부 item timeout이나 실패는 해당 item만 `unknown` 또는 safe operational failure로 낮춘다.
+- Runtime access cache key는 organization, connector, protected source identity, source item 또는 document version, execution subject, mapping epoch, source ACL freshness epoch, operation을 포함한다. Subject-level `allowed`를 다른 source item에 재사용하지 않는다.
+- Cached `allowed`는 KB `use`, source ACL freshness, final evidence policy를 대체하지 않는다.
+- Raw source id/title/path/url/principal, raw ACL row, raw tool response/error는 cache key/value, audit, trace, log에 저장하지 않는다.
+
+## Public exposure approval 기준
+
+`KnowledgeCollection.safe_metadata["visibility"] == "public"`은 anonymous public-only candidate inclusion flag일 뿐 source-managed KB public exposure approval이 아니다.
+
+Source-managed KB를 anonymous public-only 후보에 포함하려면 다음을 모두 만족해야 한다.
+
+- Collection active 상태와 collection public visibility approval.
+- KB active 상태와 public collection link.
+- Source/connector public exposure approval.
+- Public exposure `approval_scope`와 target field consistency.
+- Final evidence policy와 redaction/prompt-injection guard.
+
+`approval_scope`는 `connector`, `source_identity`, `collection`, `knowledge_base` 같은 bounded enum으로 둔다. `approval_scope=connector`는 broad approval이므로 organization manager approval, explicit acknowledgement, `expires_at`, reverification cadence, revocation behavior가 모두 필요하다. `approval_scope=source_identity`는 `source_identity_id`, `approval_scope=collection`은 `collection_id`, `approval_scope=knowledge_base`는 `knowledge_base_id`가 있어야 한다. Target field가 없거나 scope와 target field가 맞지 않는 row는 invalid policy로 보고 public-only 후보에서 제외한다.
+
+Public exposure expiry, connector revocation, source identity tombstone, source ACL public status 변경, redaction/display policy failure는 public-only candidate cache invalidation을 유발해야 한다. Source public ACL만으로 organization-wide read/use 또는 anonymous public exposure를 만들지 않는다.
+
 ## Source Identity와 표시 정책
 
 Protected source identity는 user-facing resource가 아니다. Raw source id, URL, path, title, principal, raw ACL fact, connector exception string은 router, Builder, audit, trace, log, user-facing summary로 전달하지 않는다.
@@ -146,13 +227,14 @@ Target ingestion은 partial artifact를 retrieval-visible하게 만들면 안 �
 
 1. Source item 또는 document-level KB 단위 owner-token lock, fencing token, 또는 동등한 advisory lock을 획득한다.
 2. 승인된 egress guard와 protocol adapter를 통해 fetch/probe/sync를 수행한다.
-3. Source content를 redacted canonical text와 safe metadata로 정규화한다.
-4. `document_versions` row를 `staging` 또는 `indexing` 상태로 만든다.
-5. Chunk, embedding, keyword/vector index artifact를 non-visible namespace 또는 non-visible status로 만든다.
-6. 모든 artifact와 metadata가 준비됐는지 검증한다.
-7. 짧은 DB transaction에서 `document_versions.status=ready`를 설정하고 `knowledge_bases.active_document_version_id`를 교체하며 이전 active version을 `superseded`로 표시하고, `content_hash`, chunking fingerprint, embedding model reference, processing policy version, cleanup/finalization idempotent outbox event를 함께 commit한다.
-8. Transaction commit 이후 worker가 outbox event를 실행하거나 background worker가 가져가도록 둔다.
-9. Recovery scanner는 만료된 finalizing run, orphan index namespace, 실패한 outbox event, stale cleanup task를 복구한다.
+3. Source content safety gate가 file type allowlist, archive cap, active content 차단, parser isolation, scan hook 결과를 평가한다.
+4. Content safety gate를 통과한 source content만 redacted canonical text와 safe metadata로 정규화한다.
+5. `document_versions` row를 `staging` 또는 `indexing` 상태로 만든다.
+6. Chunk, embedding, keyword/vector index artifact를 non-visible namespace 또는 non-visible status로 만든다.
+7. 모든 artifact와 metadata가 준비됐는지 검증한다.
+8. 짧은 DB transaction에서 `document_versions.status=ready`를 설정하고 `knowledge_bases.active_document_version_id`를 교체하며 이전 active version을 `superseded`로 표시하고, `content_hash`, chunking fingerprint, embedding model reference, processing policy version, cleanup/finalization idempotent outbox event를 함께 commit한다.
+9. Transaction commit 이후 worker가 outbox event를 실행하거나 background worker가 가져가도록 둔다.
+10. Recovery scanner는 만료된 finalizing run, orphan index namespace, 실패한 outbox event, stale cleanup task를 복구한다.
 
 불변 조건은 다음과 같다.
 

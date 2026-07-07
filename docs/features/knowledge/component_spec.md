@@ -1,18 +1,23 @@
 # Knowledge Component Spec
 
 Status: Draft
-MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다.
+MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다.
 
 ## Domain Components
 
 | Component | 책임 | 경계 |
 | --- | --- | --- |
-| Knowledge Source Connector | Adapter policy를 통해 source item과 source ACL을 열거하고 가져온다 | mbased permission을 직접 결정하지 않는다 |
+| Knowledge Source Connector | Adapter policy를 통해 source item과 source ACL을 열거하고 가져온다. MCP/API source는 server-side allowlist operation으로만 호출한다 | mbased permission을 직접 결정하지 않고, LLM 임의 tool-use나 raw source direct fetch surface가 아니다 |
 | OutboundEgressGuard | Knowledge/RAG source collection server-side outbound access 전에 network policy를 검증한다 | SQL/SSH/SaaS 의미를 구현하지 않으며, 별도 ADR 없이 모든 workflow runtime outbound를 포괄하지 않는다 |
 | Protocol Adapter | Read-only probe, SQL/command deny, listing cap 같은 protocol-specific safe behavior를 수행한다 | 승인된 guard/client/dialer를 사용해야 한다 |
 | Sync Scheduler / Worker | Lease, cursor, retry/backoff, dead-letter, tombstone, sync run state를 관리한다 | Raw source metadata를 노출하지 않고 safe state/reason summary만 낸다 |
 | Source Identity Store | Protected/HMAC source identity reference와 tombstone matching을 관리한다 | User-facing document resource가 아니다 |
+| Source Subject Mapping Store | Nodease execution subject와 source subject의 mapping state와 epoch를 관리한다 | `unmapped`, `ambiguous`, `stale`, `revoked` 상태는 private retrieval에서 fail-closed이며 raw principal을 user-facing surface에 노출하지 않는다 |
 | Source Authorization Provenance Store | Source ACL fact를 requester authorization provenance와 freshness evidence로 materialize한다 | KB `use` grant 자체가 아니며 retrieval permission은 Knowledge Permission Helper가 two-gate로 평가한다 |
+| Runtime Source Authorization Client | `check_access_batch` 또는 bounded `check_access` fallback으로 retrieval 실행 시 source 접근을 재확인한다 | Short-lived cache는 optimization일 뿐 권한 원천이 아니며, item/version별 key 없이 subject-level allow를 재사용하지 않는다 |
+| Public Exposure Policy Store | Source-managed KB의 anonymous public-only 노출 승인, 만료, 회수, 재검증 상태를 관리한다 | Collection visibility flag만으로 source-managed KB를 public candidate로 만들지 않는다 |
+| Content Safety Scanner | Source artifact의 file type allowlist, active content, archive cap, malware/content scan 결과를 평가한다 | Scan pass는 source ACL, KB permission, redaction, prompt-injection guard를 대체하지 않는다 |
+| Parser Isolation Worker | PDF/Office/HTML/archive 같은 rich content를 least-privilege 또는 sandboxed 환경에서 text로 추출한다 | Macro, script, embedded object, executable payload, external reference를 실행하지 않는다 |
 | Privacy/Redaction Service | PII/secret hard baseline과 output-target redaction을 위한 shared detector/masking engine을 제공한다 | Trace storage나 Knowledge lifecycle을 소유하지 않는다 |
 | Canonical Normalizer | Source content를 추출, redaction, normalization해 canonical text/metadata를 만든다 | Chunk/embedding 생성 전에 Privacy/Redaction Service를 사용한다 |
 | Raw Artifact Store | Compliance view용 optional protected raw source content store | RAG, embedding, prompt, router input, Agent answer stream에서 사용하지 않는다 |
@@ -73,7 +78,7 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 | KB lifecycle | `active`, `archived`, `deleted` |
 | KB sync state | `synced`, `syncing`, `sync_failed`, `sync_disabled`, `source_deleted` |
 | DocumentVersion | `staging`, `indexing`, `ready`, `failed`, `superseded` |
-| Source ACL freshness | `fresh`, `stale`, `unmapped`, `ambiguous`, `unverified`, `revoked` |
+| Source ACL freshness / mapping | `fresh`, `stale`, `unmapped`, `ambiguous`, `unverified`, `revoked` |
 | Sync run | `queued`, `leased`, `running`, `succeeded`, `failed`, `dead_lettered`, `cancelled` |
 | Skill freshness | `fresh`, `stale`, `review_required`, `deprecated` |
 
@@ -130,12 +135,21 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 ### Source Sync And Version Activation
 
 1. Scheduler가 connector sync lease를 획득한다.
-2. Connector worker가 guard/adapter를 통해 source item과 source ACL을 가져온다. Slack 계열 초기 baseline은 channel을 collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑한다. DM/raw audio/raw transcript는 기본 수집하지 않는다.
-3. Normalizer가 shared privacy/redaction policy를 호출해 redacted canonical text와 safe metadata를 만든다.
-4. Ingestion concurrency guard가 source item 또는 document-level KB 단위 owner-token/fencing lock을 확보한다.
-5. Ingestion이 새 document version, chunk, embedding, external index artifact를 staging 상태로 생성한다.
-6. Finalizer는 모든 artifact가 준비된 뒤 짧은 transaction에서 active version, `content_hash`, chunking fingerprint, embedding model을 함께 확정한다.
-7. Outbox/recovery scanner가 orphan cleanup, stale worker finalization 차단, crash recovery를 처리한다.
+2. Connector worker가 guard/adapter를 통해 source item과 source ACL을 가져온다. MCP/API source는 allowlist operation만 사용한다. Slack 계열 초기 baseline은 channel을 collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑한다. DM/raw audio/raw transcript는 기본 수집하지 않는다.
+3. Content Safety Scanner와 Parser Isolation Worker가 file type allowlist, active content 차단, archive cap, scan timeout/unknown, parser isolation을 적용한다.
+4. Normalizer가 content safety gate를 통과한 content에만 shared privacy/redaction policy를 호출해 redacted canonical text와 safe metadata를 만든다.
+5. Ingestion concurrency guard가 source item 또는 document-level KB 단위 owner-token/fencing lock을 확보한다.
+6. Ingestion이 새 document version, chunk, embedding, external index artifact를 staging 상태로 생성한다.
+7. Finalizer는 모든 artifact가 준비된 뒤 짧은 transaction에서 active version, `content_hash`, chunking fingerprint, embedding model을 함께 확정한다.
+8. Outbox/recovery scanner가 orphan cleanup, stale worker finalization 차단, crash recovery를 처리한다.
+
+### Live-linked Retrieval
+
+1. Runtime이 execution subject와 source subject mapping state를 확인한다.
+2. Source-side search가 requester-scoped이면 해당 subject 기준으로 검색한다.
+3. Requester-scoped search가 없고 opaque source ref-only search만 있으면 ref 후보를 받은 뒤 `check_access_batch` 또는 bounded `check_access` fallback으로 재확인한다.
+4. Broad service-account search가 authorization 전 title, snippet, count, score를 반환하는 source는 Live-linked 일반 retrieval 후보에서 제외한다.
+5. Metadata, citation, audit/trace summary는 runtime authorization과 display policy를 통과한 safe field만 사용한다.
 
 ### Raw Content View
 
@@ -160,7 +174,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 ## Implementation Phases
 
-- Phase 1: egress negative paths, protected source identity, basic sync, redaction, active version swap, transactional outbox insert, fencing token, recovery scanner smoke.
+- Phase 1: egress negative paths, protected source identity, basic sync, content safety/parser isolation, redaction, active version swap, transactional outbox insert, fencing token, recovery scanner smoke.
 - Phase 2: source ACL freshness, content cursor와 ACL/permission watermark 분리, Knowledge Permission Helper, KB `use` + source ACL two-gate, source-policy grant inactive lifecycle.
 - Phase 3: multi-KB caps, final evidence recheck, resource hiding matrix, retry/dead-letter transition, partial result behavior.
 - Later: golden questions, source tier tuning, LLM-assisted rewrite, advanced rerank.

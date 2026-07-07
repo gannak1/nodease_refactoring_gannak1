@@ -72,19 +72,25 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 
 ### Knowledge Source Connector Target Requirements
 
-- CONN-KNOW-REQ-001: 목표 Knowledge source connector와 KB source collection으로 승격되는 server-side test, preview, fetch, probe는 중앙 `OutboundEgressGuard` 또는 승인된 client/dialer factory를 통과해야 한다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)). 이 요구사항은 기존 workflow DB connector API 전체가 이미 같은 보호를 받는다는 뜻이 아니다.
+- CONN-KNOW-REQ-001: 목표 Knowledge source connector와 KB source collection으로 승격되는 server-side test, preview, fetch, probe는 중앙 `OutboundEgressGuard` 또는 승인된 client/dialer factory를 통과해야 한다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)). 이 요구사항은 기존 workflow DB connector API 전체가 이미 같은 보호를 받는다는 뜻이 아니다.
 - CONN-KNOW-REQ-002: HTTP/URL 계열 Knowledge connector는 DNS resolve 후 IP 재검증, IDNA/punycode/CNAME/IPv4 obfuscation canonicalization, redirect마다 재검증, private/link-local/metadata IP 차단, scheme allowlist, HTTPS downgrade 금지, `verify=false` 금지, sensitive header redirect stripping, timeout/size/content-type cap, compression bomb 방지, rate limit을 적용해야 한다.
 - CONN-KNOW-REQ-003: DB/SSH connector는 arbitrary SQL/command를 connector test, preview, sync 경로에서 허용하지 않아야 한다. 필요한 경우 read-only probe, schema introspection cap, credential scope 제한, tunnel/proxy 정책을 adapter별로 문서화해야 한다.
 - CONN-KNOW-REQ-004: Knowledge Slack/meeting connector의 초기 baseline은 channel을 Knowledge Collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑한다.
 - CONN-KNOW-REQ-005: Slack/meeting artifact-level ACL이 있으면 artifact ACL과 containing channel/workspace ACL의 교집합을 requester authorization으로 사용하고, artifact ACL을 확인할 수 없으면 fail-closed 또는 remediation 상태로 둔다. Channel membership만으로 huddle recap, canvas, meeting summary를 자동 공개하지 않는다.
 - CONN-KNOW-REQ-006: Slack/meeting DM, raw audio, raw transcript는 별도 opt-in policy 없이 수집하지 않는다.
 - CONN-KNOW-REQ-007: Source ACL sync는 source authorization provenance와 freshness evidence를 만든다. Source ACL fact만으로 mbased KB `use`를 부여하지 않으며, auto-ingested KB retrieval에는 admin/team/user grant 또는 organization-approved connector/source policy가 provision한 explicit KB `use`가 필요하다.
+- CONN-KNOW-REQ-008: MCP/API 기반 Knowledge source connector는 LLM 자유 tool-use surface가 아니라 server-side adapter allowlist로 동작해야 한다. Allowlist 밖 operation, raw source data direct fetch, LLM prompt/completion을 source query parameter로 사용하는 flow는 허용하지 않는다.
+- CONN-KNOW-REQ-009: Knowledge source connector는 runtime authorization primitive로 `check_access_batch(subject_ref, source_item_refs[])`를 우선 제공해야 한다. Batch 미지원 source는 bounded single `check_access(subject_ref, source_item_ref)` fallback을 제공할 수 있지만, 둘 다 없으면 private source-managed KB retrieval은 fail-closed 대상이다.
+- CONN-KNOW-REQ-010: Connector는 source별 raw payload를 Knowledge가 소비할 safe normalized shape로 변환해야 하며, 변환 전 raw payload는 connector debug/error log, retry/dead-letter payload, audit, trace에 남기지 않아야 한다.
+- CONN-KNOW-REQ-011: Connector가 source-side search를 Live-linked mode에 제공하려면 requester-scoped search이거나 opaque source ref-only result여야 한다. Broad service-account search가 authorization 전 title, snippet, count, score를 반환하는 flow는 기본 구현으로 허용하지 않는다.
+- CONN-KNOW-REQ-012: File/page artifact를 가져오는 Knowledge source connector는 egress guard 이후에도 content를 untrusted로 취급해야 한다. Connector 또는 ingestion boundary는 지원 file type/content type allowlist, archive depth/expanded-size/file-count cap, macro/script/embedded object/executable 차단, parser sandbox/least-privilege 실행, malware/content scan hook을 redacted canonical text 생성 전에 적용해야 한다. Scan failure, timeout, unsupported type, active content detection은 indexing-visible artifact를 만들지 않고 fail-closed 또는 remediation으로 처리한다.
 
 ## Knowledge Source Connector Policies
 
 - 현재 `connections` 테이블은 user 소유이며 `organization_id`가 없다. 조직 경계 판정이 다른 리소스와 다르므로, target Knowledge source connector에서 workflow/KB 권한만으로 connection use가 자동 허용된다고 해석하지 않는다.
 - connection `use`는 별도 permission table 없이 소비하는 workflow/knowledge base 권한으로 허용하는 방향을 검토하되, 현재 user-owned `connections`에서는 connection owner/organization scope 확인이 선행돼야 한다. Secret 조회/관리(manage)는 connection owner 또는 organization owner/manager로 제한한다 ([data_model.md](../../data_model.md) "만들지 않는 테이블" 참조).
 - Internal DB/API/private-network targets are denied by default for Knowledge source collection unless a future connector/egress ADR defines an explicit organization policy, approved network segment, audit-safe reason code, and operational owner.
+- Bot/webhook/app installation visibility는 capture signal 또는 event detection에 사용할 수 있지만 requester authorization으로 취급하지 않는다. Private source-managed retrieval은 delegated OAuth, source subject mapping, or runtime authorization primitive를 통해 별도 확인해야 한다.
 
 ## Open Questions
 

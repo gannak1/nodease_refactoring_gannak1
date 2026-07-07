@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
@@ -25,7 +25,7 @@ Status: Draft
 | Collections | `/api/v1/knowledge/collections`, `/api/v1/knowledge/collections/{collection_id}` | Collection 목록, safe metadata, route/manage/sync operation |
 | Collection items | `/api/v1/knowledge/collections/{collection_id}/items` | Document-level KB link/unlink. KB content permission을 부여하지 않음 |
 | Collection permissions | `/api/v1/knowledge/collections/{collection_id}/permissions` | Collection `read`/`route`/`manage`/`sync` grant/revoke. Additive allow만 제공 |
-| Collection visibility | `/api/v1/knowledge/collections/{collection_id}/visibility` | Anonymous public-only runtime 후보 여부를 safe metadata flag로 전환 |
+| Collection visibility | `/api/v1/knowledge/collections/{collection_id}/visibility` | Anonymous public-only runtime 후보 여부를 safe metadata flag로 전환. Source-managed KB public exposure approval은 별도 정책 row로 검증 |
 | Document-level KBs | `/api/v1/knowledge/kbs/{kb_id}` | KB detail, active version, sync state, remediation summary |
 | Document versions | `/api/v1/knowledge/kbs/{kb_id}/versions/*` | Version history, active version, re-index state |
 | Raw/compliance view | `/api/v1/knowledge/kbs/{kb_id}/raw-artifacts/*` | Raw/compliance gate 이후 선택적 protected raw content access. RAG answer API에서 사용하지 않음 |
@@ -220,7 +220,9 @@ Request:
 
 MVP에서 public/private visibility 전환은 organization manager만 허용한다. Public 전환에는 explicit acknowledgement가 필요하다. 전환 전 summary는 linked KB count bucket, active KB count bucket, safe sensitive-content warning, anonymous public-only runtime 영향 요약만 포함한다. Raw KB title/path/url, hidden KB id/name, exact denied count는 포함하지 않는다.
 
-`safe_metadata["visibility"] == "public"`은 anonymous public-only runtime의 candidate inclusion flag다. 인증 사용자 KB `use`, source ACL requester authorization, final evidence policy를 대체하지 않는다.
+`safe_metadata["visibility"] == "public"`은 anonymous public-only runtime의 collection candidate inclusion flag다. 인증 사용자 KB `use`, source ACL requester authorization, final evidence policy를 대체하지 않는다.
+
+Source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
 
 ### Workflow Runtime RAG Execution Subject
 
@@ -341,7 +343,7 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Explicit KB mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, KB visibility/resource hiding, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | 빌더 단계 Knowledge Skill mode | active organization, skill visibility, skill safe metadata display, skill freshness/eval gate. Skill visibility는 collection route, KB permission, source ACL gate를 대체하지 않는다 |
 | 실행 시점 LLM node의 RAG 옵션 | execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate와 final evidence policy. execution subject가 없으면 anonymous public-only gate와 final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate 또는 anonymous public-only gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
-| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
+| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, source-managed KB의 valid public exposure approval, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
 | Collection management | `collection.manage`; 기존 KB linking에는 `kb.manage`도 필요 |
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |

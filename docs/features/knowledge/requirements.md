@@ -9,7 +9,7 @@ Related Features: auth, organization, workflow, agent-builder, connectors, audit
 
 Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Knowledge retrieval, query rewrite, evidence sufficiency, source tier policy는 LLM node의 RAG 옵션으로 제공한다.
 
-현재 구현은 manual Knowledge Base 생성, 문서 업로드/색인, metadata-aware retrieval, hierarchical RAG, standalone RAG Agent answer 기반을 제공한다. 목표 KB 통합 모델은 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)에 따라 Knowledge Base를 document/source item 단위 permission/retrieval/sync/lifecycle atom으로 재정의하고, Knowledge Collection을 grouping/routing/UX/ops 단위로 둔다. Knowledge Skill 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다. MBA-105 구현 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [implementation_baseline.md](implementation_baseline.md)를 따른다.
+현재 구현은 manual Knowledge Base 생성, 문서 업로드/색인, metadata-aware retrieval, hierarchical RAG, standalone RAG Agent answer 기반을 제공한다. 목표 KB 통합 모델은 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)에 따라 Knowledge Base를 document/source item 단위 permission/retrieval/sync/lifecycle atom으로 재정의하고, Knowledge Collection을 grouping/routing/UX/ops 단위로 둔다. Knowledge Skill 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다. MBA-105 구현 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), [implementation_baseline.md](implementation_baseline.md)를 따른다.
 
 ## Current Baseline
 
@@ -30,6 +30,9 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - `Redacted canonical text`: target chunk content, embedding input, retrieval-visible text artifact의 기본 원천.
 - `Knowledge Skill`: Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 source-of-truth tier 선택, collection/KB routing hint, query template, metadata filter, validation checklist를 제공하는 재사용 artifact. Skill은 권한 source나 최종 근거가 아니다.
 - `Source-of-Truth Tier`: 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 근거 계층. Skill은 이 tier를 선택하는 절차를 제공할 뿐 source of truth가 되지 않는다.
+- `Indexed cache`: source item의 redacted canonical chunk, embedding, safe metadata를 저장하고 runtime source authorization을 final evidence gate 전에 다시 확인하는 MVP 기본 mode.
+- `Live-linked`: Nodease 내부 chunk/embedding 없이 source ref와 safe metadata만 저장하는 mode. Requester-scoped source-side search 또는 opaque-ref-only search를 통과한 source만 검색 후보가 될 수 있다.
+- `Archived copy`: protected raw artifact를 opt-in 보존할 수 있는 mode. Raw artifact는 RAG/embedding/prompt input이 아니며 redacted canonical text만 retrieval-visible하다.
 
 ## User Stories
 
@@ -83,6 +86,13 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-068: Collection permission grant/revoke는 additive allow만 제공하고 action은 `read`, `route`, `manage`, `sync`로 제한한다. Explicit deny, inheritance, role table 기반 권한 모델은 이번 Knowledge Collection 관리 MVP 범위가 아니다.
 - FR-069: Public visibility 전환은 MVP에서 organization manager와 explicit acknowledgement를 요구한다. `safe_metadata["visibility"] == "public"`은 anonymous public-only runtime candidate inclusion flag이며, 인증 사용자 KB `use` 권한이나 source ACL requester authorization을 대체하지 않는다.
 - FR-070: System-managed Collection은 connector/sync pipeline이 소유하는 Collection으로 취급한다. Manual 관리 UI는 기본적으로 읽기 전용 또는 safe override만 허용하고, connector-driven system-managed Collection 자동 생성과 remediation action은 별도 source sync phase로 분리한다.
+- FR-071: MCP/API 기반 source connector는 LLM이 임의 tool을 직접 선택하는 경로가 아니다. Knowledge Source Connector 뒤의 server-side adapter만 operation allowlist를 호출하고, raw MCP response/tool error/source id/url/principal/token을 router, prompt, audit, trace, log, user-facing response에 전달하지 않는다 ([ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)).
+- FR-072: Source connector operation allowlist는 source listing, changed item listing, content fetch, ACL change listing, tombstone listing, capture event normalization, runtime source authorization primitive로 제한한다. 새 operation은 input/output field allowlist, timeout, page size, response size, retry, rate limit, safe reason code, raw field 저장 금지 테스트가 정의된 뒤에만 추가한다.
+- FR-073: Runtime source authorization은 `check_access_batch(subject_ref, source_item_refs[])`를 우선 사용해야 한다. Batch 미지원 source는 bounded concurrency, per-call timeout, aggregate timeout을 적용한 single `check_access` fallback만 허용하고, runtime authorization primitive가 없으면 private source-managed KB retrieval은 fail-closed다.
+- FR-074: Runtime access cache는 short-lived여야 하며 organization, connector, protected source identity, source item 또는 document version, execution subject, mapping epoch, source ACL freshness epoch, operation을 key에 포함해야 한다. Subject-level `allowed` 결과를 다른 source item에 재사용해서는 안 된다.
+- FR-075: Live-linked mode는 requester-scoped source-side search API가 있거나 source-side search 결과가 opaque source ref만 반환되고 runtime source authorization 이후에만 title/snippet/count/score 같은 metadata가 노출될 때만 검색 후보가 된다. Broad service account search 결과를 먼저 받고 unauthorized metadata를 사후 제거하는 방식은 기본 구현으로 금지한다.
+- FR-076: Source-managed KB를 anonymous public-only 후보로 포함하려면 collection public visibility approval과 별도 source/connector public exposure approval을 모두 통과해야 한다. Public exposure approval은 bounded `approval_scope`와 target field consistency를 검증하고, invalid scope/target row는 public-only 후보에서 제외해야 한다.
+- FR-077: 외부 source artifact는 egress guard를 통과해도 trusted content가 아니다. Knowledge ingestion은 지원 file type/content type allowlist, macro/script/embedded object/executable 차단, archive depth/expanded-size/file-count cap, parser sandbox 또는 least-privilege worker, malware/content scan hook을 redacted canonical text 생성 전에 적용해야 한다. Scan failure, timeout, unsupported type, active content detection은 indexing-visible artifact를 만들지 않고 fail-closed 또는 remediation으로 처리한다.
 
 ## Policies And Edge Cases
 
@@ -91,6 +101,10 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - Manual Collection 관리 UI/API는 Collection 권한과 KB content 권한을 분리해 표시해야 한다. `can_manage_collection=true`가 `can_use_kb=true`를 뜻하지 않으며, item list에 보이는 KB도 실행 시점 retrieval 가능성을 보장하지 않는다.
 - MVP anonymous public-only runtime에서 public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. 이 visibility는 인증된 subject 기반 retrieval의 KB `use` 권한을 부여하지 않고, execution subject가 없는 public-only runtime의 candidate inclusion gate로만 사용한다.
 - Source public ACL은 organization-wide read/use로 자동 materialize하지 않는다. Connector policy와 organization policy가 명시적으로 opt-in하고 approver, expiry/reverification, revocation behavior, audit-safe metadata가 확정된 경우에만 `source_policy_kb_use_grants` provisioning 후보가 된다. 이 경우에도 Source Authorization Provenance와 requester authorization freshness gate는 별도로 필요하다.
+- Source-managed KB public exposure는 collection public flag만으로 허용되지 않는다. `approval_scope=connector`는 broad exposure이므로 organization manager approval, explicit acknowledgement, expiry, reverification cadence, revocation behavior가 모두 있어야 한다.
+- Source-side search result의 title, snippet, count, score는 content가 아니더라도 resource existence side-channel이 될 수 있다. Authorization 전에는 requester-scoped result 또는 opaque source ref만 취급한다.
+- Redaction 전 ephemeral content handle은 process/run-scoped short TTL handle이어야 하며 durable DB, retry/dead-letter payload, audit, trace, log, user-facing response에 handle value나 raw content를 저장하지 않는다.
+- Content safety 실패, unsupported file type, parser exception, malware scan timeout/unknown은 raw file bytes, active content marker, parser raw error를 audit, trace, log, retry/dead-letter payload, user-facing response에 남기지 않고 safe reason code와 remediation state만 남긴다.
 - Source-derived collection name/description/title/path/url은 민감 metadata일 수 있으므로 redacted, capped, display-policy-approved field로만 user-facing 저장/표시한다.
 - Raw source content 조회는 Agent answer나 SSE stream과 분리된 raw/compliance flow로만 허용한다. 요청은 active organization, KB visibility, raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal hold/purge policy, raw access audit 선기록을 모두 통과해야 한다.
 - PII/secret redaction policy는 output target별로 다르게 적용한다. Chunk/embedding/retrieval-visible text는 redacted canonical text, citation preview는 redacted+capped preview, audit/trace/log는 allowlist summary, raw/compliance view는 별도 권한 flow를 사용한다.
