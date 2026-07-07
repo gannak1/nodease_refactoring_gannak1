@@ -279,6 +279,52 @@ describe('AgentBuilderPanel', () => {
     });
   });
 
+  it('전송한 사용자 입력을 대화 영역에 남긴다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-user-message',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+      draft_preview: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-user-message',
+      status: 'clarification_required',
+      structured_request: null,
+      clarification_questions: ['추가 정보를 알려주세요.'],
+      draft_preview: null,
+      validation_result: null,
+      preview_prompt: null,
+      warnings: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Summarize input and send to Slack' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: 'Enter',
+      code: 'Enter',
+    });
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalled();
+    });
+    expect(screen.getByText('Summarize input and send to Slack')).toBeTruthy();
+  });
+
   it('validation을 통과하지 못한 draft에는 도안 보기 버튼을 노출하지 않는다', async () => {
     window.localStorage.setItem(
       'agent-builder:workflow-old:app-1',

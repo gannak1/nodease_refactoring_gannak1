@@ -50,10 +50,14 @@ from apps.shared.services.permission_audit import record_resource_permission_den
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
-MVP_SUPPORTED_NODE_TYPES = {"startNode", "llmNode", "answerNode"}
+MVP_SUPPORTED_NODE_TYPES = {"startNode", "llmNode", "answerNode", "slackPostNode"}
 SAFE_SIDE_EFFECT_NOTICE = (
     "초안 생성, 미리보기, 적용 및 저장 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않습니다."
+)
+SLACK_CHANNEL_UNRESOLVED_WARNING = (
+    "Slack 채널이 아직 선택되지 않아 Slack node는 채널 미정 상태로 생성됩니다. "
+    "저장 후 실행 전에 Slack 채널과 credential 참조를 확인해야 합니다."
 )
 _SECRET_LIKE_RE = re.compile(
     r"(sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|"
@@ -628,6 +632,7 @@ class AgentBuilderService:
             recommendations = self._resolve_knowledge_requirements(structured)
         except Exception:
             return self._fail_processing_request(request_row)
+        structured_warnings = self._structured_request_warnings(structured)
         if recommendations["status"] == "clarification_required":
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
@@ -635,7 +640,7 @@ class AgentBuilderService:
                 structured_request=structured,
                 clarification_questions=recommendations["questions"],
                 validation_result=validation,
-                warnings=recommendations["warnings"],
+                warnings=[*structured_warnings, *recommendations["warnings"]],
             )
             self._finish_request(request_row, response)
             self.db.commit()
@@ -652,7 +657,7 @@ class AgentBuilderService:
                 status="validation_failed",
                 structured_request=structured,
                 validation_result=validation,
-                warnings=recommendations["warnings"],
+                warnings=[*structured_warnings, *recommendations["warnings"]],
             )
             self._finish_request(request_row, response)
             self.db.commit()
@@ -666,7 +671,7 @@ class AgentBuilderService:
                 structured_request=structured,
                 clarification_questions=list(structured.missing_information),
                 validation_result=validation,
-                warnings=[SAFE_SIDE_EFFECT_NOTICE],
+                warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
             self._finish_request(request_row, response)
             self.db.commit()
@@ -677,7 +682,7 @@ class AgentBuilderService:
                 status="validation_failed",
                 structured_request=structured,
                 validation_result=validation,
-                warnings=[SAFE_SIDE_EFFECT_NOTICE],
+                warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
             self._finish_request(request_row, response)
             self.db.commit()
@@ -713,7 +718,10 @@ class AgentBuilderService:
                             )
                         ],
                     ),
-                    warnings=["모델 route가 구성되지 않아 초안을 확정하지 않았습니다."],
+                    warnings=[
+                        "모델 route가 구성되지 않아 초안을 확정하지 않았습니다.",
+                        *structured_warnings,
+                    ],
                 )
                 self._finish_request(request_row, response)
                 self.db.commit()
@@ -748,7 +756,7 @@ class AgentBuilderService:
                 status="validation_failed",
                 structured_request=structured,
                 validation_result=draft_validation,
-                warnings=[SAFE_SIDE_EFFECT_NOTICE],
+                warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
             self._finish_request(request_row, response)
             self.db.commit()
@@ -810,7 +818,7 @@ class AgentBuilderService:
             draft_preview=preview,
             validation_result=draft_validation,
             preview_prompt="도안 보기",
-            warnings=[SAFE_SIDE_EFFECT_NOTICE],
+            warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
         )
         if self._finish_request(request_row, response) is not False:
             add_action_audit(
@@ -1503,40 +1511,67 @@ class AgentBuilderService:
             )
         missing_information = []
         if wants_slack:
-            missing_information.append("Slack 채널을 선택해야 합니다.")
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_slack_channel_1",
+                    slot_type="other",
+                    slot_key="slack.channel",
+                    blocking=False,
+                    target_step_ref="step_slack",
+                )
+            )
         explicit_new_workflow = _message_requests_new_workflow(request.message)
         draft_mode = (
             "new_workflow" if explicit_new_workflow or workflow is None else "modify_workflow"
+        )
+        planned_steps = [
+            AgentBuilderPlannedStep(
+                step_id="step_input",
+                capability="start_input",
+                purpose="사용자 입력을 받습니다.",
+            ),
+            AgentBuilderPlannedStep(
+                step_id="step_llm",
+                capability="knowledge_backed_llm" if needs_kb else "llm",
+                purpose="입력을 분석하고 답변을 생성합니다.",
+                depends_on=["step_input"],
+            ),
+        ]
+        answer_depends_on = ["step_llm"]
+        required_capabilities = ["start_input", "llm", "answer"]
+        risk_flags: list[str] = []
+        if needs_kb:
+            required_capabilities.append("knowledge_base")
+        if wants_slack:
+            planned_steps.append(
+                AgentBuilderPlannedStep(
+                    step_id="step_slack",
+                    capability="slack_send",
+                    purpose="LLM 결과를 Slack 메시지로 전송하도록 설정합니다.",
+                    depends_on=["step_llm"],
+                )
+            )
+            answer_depends_on = ["step_slack"]
+            required_capabilities.append("slack_send")
+            risk_flags.extend(["external_action_requested", "slack_channel_unresolved"])
+        planned_steps.append(
+            AgentBuilderPlannedStep(
+                step_id="step_answer",
+                capability="answer",
+                purpose="결과를 사용자에게 반환합니다.",
+                depends_on=answer_depends_on,
+            )
         )
         return AgentBuilderStructuredRequest(
             request_type=draft_mode,
             draft_mode=draft_mode,
             intent_summary=_safe_summary(request.message),
-            planned_steps=[
-                AgentBuilderPlannedStep(
-                    step_id="step_input",
-                    capability="start_input",
-                    purpose="사용자 입력을 받습니다.",
-                ),
-                AgentBuilderPlannedStep(
-                    step_id="step_llm",
-                    capability="knowledge_backed_llm" if needs_kb else "llm",
-                    purpose="입력을 분석하고 답변을 생성합니다.",
-                    depends_on=["step_input"],
-                ),
-                AgentBuilderPlannedStep(
-                    step_id="step_answer",
-                    capability="answer",
-                    purpose="결과를 사용자에게 반환합니다.",
-                    depends_on=["step_llm"],
-                ),
-            ],
+            planned_steps=planned_steps,
             knowledge_requirements=knowledge_requirements,
-            required_capabilities=["start_input", "llm", "answer"]
-            + (["knowledge_base"] if needs_kb else []),
+            required_capabilities=required_capabilities,
             pending_resolution=pending_resolution,
             missing_information=missing_information,
-            risk_flags=["external_action_requested"] if wants_slack else [],
+            risk_flags=risk_flags,
         )
 
     def _selected_edge_id_for_message(
@@ -1582,6 +1617,14 @@ class AgentBuilderService:
                 )
             )
         return AgentBuilderValidationResult(valid=not issues, issues=issues)
+
+    def _structured_request_warnings(
+        self, structured: AgentBuilderStructuredRequest
+    ) -> list[str]:
+        warnings: list[str] = []
+        if "slack_channel_unresolved" in structured.risk_flags:
+            warnings.append(SLACK_CHANNEL_UNRESOLVED_WARNING)
+        return warnings
 
     def _resolve_knowledge_requirements(
         self,
@@ -1830,8 +1873,19 @@ class AgentBuilderService:
         suffix = uuid.uuid4().hex[:8]
         input_id = self._unique_node_id("agent-input", existing_ids, suffix)
         llm_id = self._unique_node_id("agent-llm", existing_ids | {input_id}, suffix)
+        wants_slack = "slack_send" in structured.required_capabilities or any(
+            step.capability == "slack_send" for step in structured.planned_steps
+        )
+        reserved_ids = existing_ids | {input_id, llm_id}
+        slack_id = (
+            self._unique_node_id("agent-slack", reserved_ids, suffix)
+            if wants_slack
+            else None
+        )
+        if slack_id:
+            reserved_ids = reserved_ids | {slack_id}
         answer_id = self._unique_node_id(
-            "agent-answer", existing_ids | {input_id, llm_id}, suffix
+            "agent-answer", reserved_ids, suffix
         )
         model_id = self._default_model_id()
         kb_refs = [
@@ -1894,18 +1948,67 @@ class AgentBuilderService:
                 },
             },
         ]
+        generated_node_ids_for_layout = [input_id, llm_id, answer_id]
+        if slack_id:
+            generated_nodes.insert(
+                2,
+                {
+                    "id": slack_id,
+                    "type": "slackPostNode",
+                    "position": {"x": 720, "y": 0},
+                    "data": {
+                        "title": "Slack 전송",
+                        "method": "POST",
+                        "url": "https://slack.com/api/chat.postMessage",
+                        "headers": [{"key": "Content-Type", "value": "application/json"}],
+                        "body": json.dumps({"text": "{{answer}}"}, ensure_ascii=False),
+                        "timeout": 5000,
+                        "authType": "bearer",
+                        "authConfig": {},
+                        "referenced_variables": [
+                            {"name": "answer", "value_selector": [llm_id, "text"]}
+                        ],
+                        "message": "{{answer}}",
+                        "channel": "",
+                        "blocks": "",
+                        "slackMode": "api",
+                        "channel_resolution_state": "unresolved",
+                    },
+                },
+            )
+            generated_nodes[-1]["position"] = {"x": 1080, "y": 0}
+            generated_node_ids_for_layout = [input_id, llm_id, slack_id, answer_id]
+
         generated_edges = [
             {
                 "id": f"edge-{input_id}-{llm_id}",
                 "source": input_id,
                 "target": llm_id,
-            },
-            {
-                "id": f"edge-{llm_id}-{answer_id}",
-                "source": llm_id,
-                "target": answer_id,
-            },
+            }
         ]
+        if slack_id:
+            generated_edges.extend(
+                [
+                    {
+                        "id": f"edge-{llm_id}-{slack_id}",
+                        "source": llm_id,
+                        "target": slack_id,
+                    },
+                    {
+                        "id": f"edge-{slack_id}-{answer_id}",
+                        "source": slack_id,
+                        "target": answer_id,
+                    },
+                ]
+            )
+        else:
+            generated_edges.append(
+                {
+                    "id": f"edge-{llm_id}-{answer_id}",
+                    "source": llm_id,
+                    "target": answer_id,
+                }
+            )
         layout_anchor_node_id = None
         if structured.draft_mode == "modify_workflow":
             selected_edge = next(
@@ -1957,7 +2060,7 @@ class AgentBuilderService:
         graph["edges"] = (graph.get("edges") or []) + generated_edges
         graph = _layout_generated_preview_nodes(
             graph,
-            [input_id, llm_id, answer_id],
+            generated_node_ids_for_layout,
             anchor_node_id=layout_anchor_node_id,
         )
         graph.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})

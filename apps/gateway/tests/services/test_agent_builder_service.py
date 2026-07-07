@@ -424,6 +424,31 @@ def test_structured_request_respects_explicit_new_workflow_intent_with_workflow_
     assert structured.draft_mode == "new_workflow"
 
 
+def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warning():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Analyze the input and send it to Slack"),
+        workflow=None,
+    )
+
+    assert structured.missing_information == []
+    assert "slack_send" in structured.required_capabilities
+    assert "slack_channel_unresolved" in structured.risk_flags
+    slack_resolution = next(
+        item
+        for item in structured.pending_resolution
+        if item.slot_key == "slack.channel"
+    )
+    assert slack_resolution.slot_type == "other"
+    assert slack_resolution.blocking is False
+    assert slack_resolution.target_step_ref == "step_slack"
+
+
 def test_session_message_payload_rehydrates_ready_draft_preview():
     graph = {"nodes": [], "edges": []}
     request_id = uuid.uuid4()
@@ -1113,6 +1138,39 @@ def test_agent_builder_preview_auto_layouts_new_workflow_chain(monkeypatch):
 
     assert start_position["x"] < llm_position["x"] < answer_position["x"]
     assert start_position["y"] == llm_position["y"] == answer_position["y"]
+
+
+def test_agent_builder_preview_generates_valid_slack_node_when_requested(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="send to Slack",
+        required_capabilities=["start_input", "llm", "slack_send", "answer"],
+    )
+
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    nodes_by_type = {node["type"]: node for node in preview["nodes"]}
+    assert "slackPostNode" in nodes_by_type
+    slack_node = nodes_by_type["slackPostNode"]
+    assert slack_node["data"]["channel"] == ""
+    assert slack_node["data"]["authConfig"] == {}
+    assert any(
+        edge.get("source") == nodes_by_type["llmNode"]["id"]
+        and edge.get("target") == slack_node["id"]
+        for edge in preview["edges"]
+    )
+    assert svc.validate_preview_graph(preview).valid is True
 
 
 def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypatch):

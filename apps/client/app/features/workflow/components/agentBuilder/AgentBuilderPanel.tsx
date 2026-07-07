@@ -21,6 +21,10 @@ type Props = {
   selectedEdgeId?: string | null;
 };
 
+type ConversationItem =
+  | { kind: 'user'; id: string; content: string }
+  | { kind: 'assistant'; id: string; response: AgentBuilderMessageResponse };
+
 const UI_ONLY_NODE_DATA_KEYS = new Set([
   'selected',
   'dragging',
@@ -105,6 +109,22 @@ const canonicalEditorGraph = (nodes: Node[], edges: Edge[]) => {
   return { nodes: realNodes, edges: realEdges };
 };
 
+const assistantItemsFromResponses = (
+  responses: AgentBuilderMessageResponse[],
+): ConversationItem[] =>
+  responses.map((response) => ({
+    kind: 'assistant',
+    id: `assistant-${response.request_id}`,
+    response,
+  }));
+
+const createLocalUserMessageId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `user-${crypto.randomUUID()}`;
+  }
+  return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+};
+
 export function AgentBuilderPanel({
   workflowId,
   appId,
@@ -121,6 +141,7 @@ export function AgentBuilderPanel({
   const [isApplying, setIsApplying] = useState(false);
   const [applyNotice, setApplyNotice] = useState<string | null>(null);
   const [responses, setResponses] = useState<AgentBuilderMessageResponse[]>([]);
+  const [conversationItems, setConversationItems] = useState<ConversationItem[]>([]);
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
   const [prePreviewViewport, setPrePreviewViewport] = useState<Viewport | null>(null);
   const router = useRouter();
@@ -146,6 +167,22 @@ export function AgentBuilderPanel({
         ? items
         : [...items, response],
     );
+    setConversationItems((items) =>
+      items.some(
+        (item) =>
+          item.kind === 'assistant' &&
+          item.response.request_id === response.request_id,
+      )
+        ? items
+        : [
+            ...items,
+            {
+              kind: 'assistant',
+              id: `assistant-${response.request_id}`,
+              response,
+            },
+          ],
+    );
   };
 
   useEffect(() => {
@@ -157,6 +194,7 @@ export function AgentBuilderPanel({
     setIsApplying(false);
     setApplyNotice(null);
     setResponses([]);
+    setConversationItems([]);
     setPendingRequestId(null);
     setPrePreviewViewport(null);
     clearAgentBuilderPreview();
@@ -172,7 +210,9 @@ export function AgentBuilderPanel({
       .then((session) => {
         if (isCanceled) return;
         setSessionId(session.session_id);
-        setResponses(session.messages as AgentBuilderMessageResponse[]);
+        const restoredResponses = session.messages as AgentBuilderMessageResponse[];
+        setResponses(restoredResponses);
+        setConversationItems(assistantItemsFromResponses(restoredResponses));
         const requestId = session.pending_request?.request_id;
         setPendingRequestId(typeof requestId === 'string' ? requestId : null);
       })
@@ -202,6 +242,10 @@ export function AgentBuilderPanel({
       return;
     }
     setIsSubmitting(true);
+    setConversationItems((items) => [
+      ...items,
+      { kind: 'user', id: createLocalUserMessageId(), content: message },
+    ]);
     try {
       const nextSessionId = await ensureSession();
       setPendingRequestId('submitting');
@@ -237,7 +281,9 @@ export function AgentBuilderPanel({
     }
     if (!sessionId) return null;
     const session = await agentBuilderApi.getSession(sessionId);
-    setResponses(session.messages as AgentBuilderMessageResponse[]);
+    const restoredResponses = session.messages as AgentBuilderMessageResponse[];
+    setResponses(restoredResponses);
+    setConversationItems(assistantItemsFromResponses(restoredResponses));
     const requestId = session.pending_request?.request_id;
     if (typeof requestId === 'string') {
       setPendingRequestId(requestId);
@@ -413,7 +459,7 @@ export function AgentBuilderPanel({
                 </span>
               </div>
             )}
-            {responses.length === 0 && (
+            {conversationItems.length === 0 && (
               <p className="text-slate-500">
                 만들고 싶은 workflow를 한국어로 입력하세요.
               </p>
@@ -430,37 +476,49 @@ export function AgentBuilderPanel({
                 </button>
               </div>
             )}
-            {responses.map((response) => (
-              <div
-                key={response.request_id}
-                className="rounded-md border border-slate-200 bg-slate-50 p-3"
-              >
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  {response.status}
+            {conversationItems.map((item) => {
+              if (item.kind === 'user') {
+                return (
+                  <div key={item.id} className="flex justify-end">
+                    <div className="max-w-[85%] whitespace-pre-wrap rounded-md bg-slate-900 px-3 py-2 text-sm text-white">
+                      {item.content}
+                    </div>
+                  </div>
+                );
+              }
+              const response = item.response;
+              return (
+                <div
+                  key={item.id}
+                  className="rounded-md border border-slate-200 bg-slate-50 p-3"
+                >
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {response.status}
+                  </div>
+                  {response.draft_preview ? (
+                    <p className="mt-2 text-slate-700">
+                      workflow 초안이 생성되었습니다. 도안 보기에서 실제 editor graph와
+                      분리된 preview를 확인할 수 있습니다.
+                    </p>
+                  ) : null}
+                  {response.clarification_questions?.map((question) => (
+                    <p key={question} className="mt-2 text-slate-700">
+                      {question}
+                    </p>
+                  ))}
+                  {response.validation_result?.issues?.map((issue) => (
+                    <p key={`${issue.code}-${issue.path}`} className="mt-2 text-red-700">
+                      {issue.message}
+                    </p>
+                  ))}
+                  {response.warnings?.map((warning) => (
+                    <p key={warning} className="mt-2 text-xs text-slate-500">
+                      {warning}
+                    </p>
+                  ))}
                 </div>
-                {response.draft_preview ? (
-                  <p className="mt-2 text-slate-700">
-                    workflow 초안이 생성되었습니다. 도안 보기에서 실제 editor graph와
-                    분리된 preview를 확인할 수 있습니다.
-                  </p>
-                ) : null}
-                {response.clarification_questions?.map((question) => (
-                  <p key={question} className="mt-2 text-slate-700">
-                    {question}
-                  </p>
-                ))}
-                {response.validation_result?.issues?.map((issue) => (
-                  <p key={`${issue.code}-${issue.path}`} className="mt-2 text-red-700">
-                    {issue.message}
-                  </p>
-                ))}
-                {response.warnings?.map((warning) => (
-                  <p key={warning} className="mt-2 text-xs text-slate-500">
-                    {warning}
-                  </p>
-                ))}
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="border-t border-slate-200 p-3">
