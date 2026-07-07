@@ -24,6 +24,7 @@ from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa
 from apps.workflow_engine.services import llm_service as workflow_llm_service  # noqa: E402
 from apps.workflow_engine.services.llm_service import (  # noqa: E402
     LLMCredentialNotAvailableError,
+    LLMRuntimeSelection,
     LLMService,
 )
 from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
@@ -273,6 +274,56 @@ def test_llm_node_runs_with_override_client():
         "role": "assistant",
         "content": "assistant [UNTRUSTED_INPUT:var]",
     }
+
+
+def test_llm_node_auto_model_routing_flag_does_not_change_runtime_model(monkeypatch):
+    """모델 라우팅 최적화는 사용자 클릭 기반이므로 런타임은 저장된 모델을 사용한다."""
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    captured_model_ids = []
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1",
+        auto_model_routing=True,
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt="assistant",
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-router",
+        data,
+        execution_context={
+            "db": object(),
+            "user_id": str(user_id),
+            "workflow_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+        },
+    )
+
+    def fake_runtime_client(db, *, user_id, model_id, organization_id):
+        captured_model_ids.append(model_id)
+        return LLMRuntimeSelection(
+            client=DummyClient(),
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", fake_runtime_client)
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(LLMService, "log_usage", lambda *args, **kwargs: None)
+
+    result = node.execute({})
+
+    assert captured_model_ids[0] == "gpt-4.1"
+    assert result["model"] == "gpt-4.1"
+    assert "model_routing" not in result["metadata"]
 
     # 응답 파싱 검증
     assert result["text"] == "hello world"

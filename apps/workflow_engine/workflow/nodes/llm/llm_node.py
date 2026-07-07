@@ -319,6 +319,7 @@ class LLMNode(Node[LLMNodeData]):
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
         selected_model_id = self.data.model_id
+        fallback_model_id = self.data.fallback_model_id
 
         if not client_override or self.data.knowledgeBases:
             db_session, should_close_session = self._borrow_db_session()
@@ -350,7 +351,7 @@ class LLMNode(Node[LLMNodeData]):
                     runtime_selection = LLMService.get_runtime_client_for_user(
                         db_session,
                         user_id=user_id,
-                        model_id=self.data.model_id,
+                        model_id=selected_model_id,
                         organization_id=organization_id,
                     )
                     client = runtime_selection.client
@@ -365,14 +366,13 @@ class LLMNode(Node[LLMNodeData]):
                     ):
                         self._record_llm_runtime_permission_denied(
                             user_id=user_id,
-                            model_id=self.data.model_id,
+                            model_id=selected_model_id,
                             organization_id=None,
                             error=primary_client_error,
                         )
                         raise
 
                     # [FIX] API 키 조회 실패 시 fallback 모델로 시도
-                    fallback_model_id = self.data.fallback_model_id
                     if fallback_model_id:
                         logger.warning(
                             f"[LLMNode] Primary model client failed: {primary_client_error}. "
@@ -405,7 +405,7 @@ class LLMNode(Node[LLMNodeData]):
                         )
                         self._record_llm_runtime_permission_denied(
                             user_id=user_id,
-                            model_id=self.data.model_id,
+                            model_id=selected_model_id,
                             organization_id=organization_id,
                             error=primary_client_error,
                         )
@@ -564,7 +564,6 @@ class LLMNode(Node[LLMNodeData]):
                 # [GEVENT] invoke_sync 사용
                 response = client.invoke_sync(messages=messages, **llm_params)
             except Exception as primary_error:
-                fallback_model_id = self.data.fallback_model_id
                 if not fallback_model_id:
                     raise
                 logger.error(
