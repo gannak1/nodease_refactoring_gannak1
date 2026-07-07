@@ -219,6 +219,12 @@ class TestCostOptimizerAvailabilityApi:
                 None,
             ),
             (
+                "GET",
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/parameter-recommendations",
+                None,
+            ),
+            (
                 "POST",
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/compare",
@@ -248,6 +254,55 @@ class TestCostOptimizerAvailabilityApi:
 
         assert ensure_builder.call_count == len(requests)
         assert all(call.args[3] == "write" for call in ensure_builder.call_args_list)
+
+    def test_fr12_parameter_recommendations_calls_rule_service_for_llm_node(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "parameters": {"max_tokens": 2048, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        service_payload = {
+            "analysis_stage": "insufficient_logs",
+            "policy_version": "llm-parameter-recommendation-rules-v1",
+            "recommendations": [],
+            "warnings": [{"code": "operation_logs_insufficient"}],
+            "profile": {"sample_count": 0},
+        }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_builder, patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "CostOptimizerParameterRecommendationService.recommend",
+            return_value=service_payload,
+        ) as recommend:
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/parameter-recommendations"
+            )
+
+        assert response.status_code == 200
+        assert response.json() == service_payload
+        ensure_builder.assert_called_once()
+        assert ensure_builder.call_args.args[3] == "write"
+        recommend.assert_called_once_with(db, workflow=workflow, node_id="llm-triage")
 
 
 def _baseline_row(

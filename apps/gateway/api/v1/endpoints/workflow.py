@@ -23,6 +23,9 @@ from apps.gateway.auth.permissions import ensure_workflow_permission
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
+from apps.gateway.services.cost_optimizer_parameter_recommendation_service import (
+    CostOptimizerParameterRecommendationService,
+)
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
@@ -2616,6 +2619,25 @@ def list_cost_optimizer_experiments_endpoint(
         downstream_state=downstream_state,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations")
+def get_cost_optimizer_parameter_recommendations_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    배포 후 운영 로그를 기준으로 LLM 노드 파라미터 추천 후보를 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    return CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=workflow,
+        node_id=node_id,
     )
 
 
