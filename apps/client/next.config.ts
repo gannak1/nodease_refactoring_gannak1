@@ -43,14 +43,14 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
-    // 환경변수로 백엔드 URL 설정 (기본값: Docker nginx 경유 로컬 API)
-    const backendUrl = process.env.API_URL || 'http://localhost';
+    // 환경변수로 백엔드 URL 설정 (기본값: 로컬 Gateway 직접 실행)
+    const backendUrl = process.env.API_URL || 'http://localhost:8000';
 
     return [
       {
         source: '/api/:path*',
-        // 로컬 Docker 개발: localhost
-        // Gateway 직접 실행: .env.local에 API_URL=http://localhost:8000 설정
+        // 공식 로컬 개발: Gateway 직접 실행(http://localhost:8000)
+        // Docker nginx 경유: API_URL=http://localhost 주입
         // 배포 테스트: .env.local에 API_URL 설정
         destination: `${backendUrl}/api/:path*`,
       },
