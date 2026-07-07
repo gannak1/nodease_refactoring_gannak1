@@ -155,6 +155,81 @@ const outputSchemaFromFields = (
   };
 };
 
+const outputFormatSignatureOf = (outputFormat: LLMNodeData['output_format']) =>
+  JSON.stringify(outputFormat ?? null);
+
+const applyRecommendationPatchesToNodeData = (
+  data: LLMNodeData,
+  patches: Record<string, unknown>[],
+): Partial<LLMNodeData> => {
+  const nextData: Record<string, unknown> = {};
+  let nextParameters: Record<string, unknown> | null = null;
+
+  const ensureParameters = () => {
+    if (!nextParameters) {
+      nextParameters = {
+        ...(typeof data.parameters === 'object' && data.parameters
+          ? data.parameters
+          : {}),
+      };
+    }
+    return nextParameters;
+  };
+
+  patches.forEach((patch) => {
+    const parameters = patch.parameters;
+    if (
+      parameters &&
+      typeof parameters === 'object' &&
+      !Array.isArray(parameters)
+    ) {
+      const currentParameters = ensureParameters();
+      Object.entries(parameters).forEach(([key, value]) => {
+        if (value === null) {
+          delete currentParameters[key];
+        } else {
+          currentParameters[key] = value;
+        }
+      });
+    }
+
+    const knowledge = patch.knowledge;
+    if (knowledge && typeof knowledge === 'object' && !Array.isArray(knowledge)) {
+      const knowledgePatch = knowledge as Record<string, unknown>;
+      if (Array.isArray(knowledgePatch.knowledge_base_ids)) {
+        nextData.knowledgeBases = knowledgePatch.knowledge_base_ids
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .map((id) => ({ id, name: '' }));
+      }
+      if ('top_k' in knowledgePatch) nextData.topK = knowledgePatch.top_k;
+      if ('score_threshold' in knowledgePatch) {
+        nextData.scoreThreshold = knowledgePatch.score_threshold;
+      }
+      if ('dedupe_retrieved_context' in knowledgePatch) {
+        nextData.dedupeRetrievedContext =
+          knowledgePatch.dedupe_retrieved_context;
+      }
+      if ('retrieved_context_max_chars' in knowledgePatch) {
+        nextData.retrievedContextMaxChars =
+          knowledgePatch.retrieved_context_max_chars;
+      }
+      if ('retrieved_context_compression' in knowledgePatch) {
+        nextData.retrievedContextCompression =
+          knowledgePatch.retrieved_context_compression;
+      }
+      if ('answer_grounding_check' in knowledgePatch) {
+        nextData.answerGroundingCheck = knowledgePatch.answer_grounding_check;
+      }
+    }
+  });
+
+  if (nextParameters) {
+    nextData.parameters = nextParameters;
+  }
+
+  return nextData as Partial<LLMNodeData>;
+};
+
 const HelpPopover = ({
   id,
   activeHelp,
@@ -244,6 +319,10 @@ export function LLMNodePanel({
   const pendingPromptReferencesRef = useRef<
     LLMNodeData['referenced_variables']
   >([]);
+  const lastSyncedOutputFormatRef = useRef(
+    outputFormatSignatureOf(data.output_format),
+  );
+  const lastSyncedOutputFormatNodeRef = useRef(nodeId);
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
   const [activeSettingsTab, setActiveSettingsTab] = useState<
@@ -253,6 +332,9 @@ export function LLMNodePanel({
   const [appliedRecommendationIds, setAppliedRecommendationIds] = useState<
     string[]
   >([]);
+  const [draftJsonSchemaFields, setDraftJsonSchemaFields] = useState<
+    JsonSchemaField[]
+  >(() => schemaFieldsFromOutputFormat(data.output_format));
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -273,6 +355,15 @@ export function LLMNodePanel({
   const toggleHelp = useCallback((id: PromptHelpId) => {
     setActiveHelp((current) => (current === id ? null : id));
   }, []);
+
+  const applyRecommendationPatches = useCallback(
+    (patches: Record<string, unknown>[]) => {
+      const nextData = applyRecommendationPatchesToNodeData(data, patches);
+      if (Object.keys(nextData).length === 0) return;
+      updateNodeData(nodeId, nextData);
+    },
+    [data, nodeId, updateNodeData],
+  );
 
   // 마법사에서 적용된 프롬프트 처리
   const handleApplyImproved = (improvedPrompt: string) => {
@@ -366,10 +457,22 @@ export function LLMNodePanel({
     [data.referenced_variables, upstreamNodes],
   );
   const outputFormatType = outputFormatTypeOf(data.output_format);
-  const jsonSchemaFields = useMemo(
-    () => schemaFieldsFromOutputFormat(data.output_format),
+  const outputFormatSignature = useMemo(
+    () => outputFormatSignatureOf(data.output_format),
     [data.output_format],
   );
+
+  useEffect(() => {
+    const nodeChanged = lastSyncedOutputFormatNodeRef.current !== nodeId;
+    const outputFormatChanged =
+      lastSyncedOutputFormatRef.current !== outputFormatSignature;
+
+    if (nodeChanged || outputFormatChanged) {
+      setDraftJsonSchemaFields(schemaFieldsFromOutputFormat(data.output_format));
+      lastSyncedOutputFormatRef.current = outputFormatSignature;
+      lastSyncedOutputFormatNodeRef.current = nodeId;
+    }
+  }, [data.output_format, nodeId, outputFormatSignature]);
 
   const validationErrors = useMemo(() => {
     const allPrompts =
@@ -414,52 +517,60 @@ export function LLMNodePanel({
   );
   const updateOutputFormat = useCallback(
     (format: OutputFormatType) => {
+      const nextOutputFormat =
+        format === 'json'
+          ? {
+              type: 'json' as const,
+              schema: outputSchemaFromFields(draftJsonSchemaFields),
+            }
+          : { type: 'text' as const };
+      lastSyncedOutputFormatRef.current = outputFormatSignatureOf(nextOutputFormat);
+      lastSyncedOutputFormatNodeRef.current = nodeId;
       updateNodeData(nodeId, {
-        output_format:
-          format === 'json'
-            ? {
-                type: 'json',
-                schema: outputSchemaFromFields(jsonSchemaFields),
-              }
-            : { type: 'text' },
+        output_format: nextOutputFormat,
       });
     },
-    [jsonSchemaFields, nodeId, updateNodeData],
+    [draftJsonSchemaFields, nodeId, updateNodeData],
   );
   const updateJsonSchemaFields = useCallback(
     (fields: JsonSchemaField[]) => {
+      setDraftJsonSchemaFields(fields);
+      const nextOutputFormat = {
+        type: 'json' as const,
+        schema: outputSchemaFromFields(fields),
+      };
+      lastSyncedOutputFormatRef.current =
+        outputFormatSignatureOf(nextOutputFormat);
+      lastSyncedOutputFormatNodeRef.current = nodeId;
       updateNodeData(nodeId, {
-        output_format: {
-          type: 'json',
-          schema: outputSchemaFromFields(fields),
-        },
+        output_format: nextOutputFormat,
       });
     },
     [nodeId, updateNodeData],
   );
   const addJsonSchemaField = useCallback(() => {
     updateJsonSchemaFields([
-      ...jsonSchemaFields,
+      ...draftJsonSchemaFields,
       { key: '', type: 'string', required: false },
     ]);
-  }, [jsonSchemaFields, updateJsonSchemaFields]);
+  }, [draftJsonSchemaFields, updateJsonSchemaFields]);
   const updateJsonSchemaField = useCallback(
     (index: number, updates: Partial<JsonSchemaField>) => {
       updateJsonSchemaFields(
-        jsonSchemaFields.map((field, fieldIndex) =>
+        draftJsonSchemaFields.map((field, fieldIndex) =>
           fieldIndex === index ? { ...field, ...updates } : field,
         ),
       );
     },
-    [jsonSchemaFields, updateJsonSchemaFields],
+    [draftJsonSchemaFields, updateJsonSchemaFields],
   );
   const removeJsonSchemaField = useCallback(
     (index: number) => {
       updateJsonSchemaFields(
-        jsonSchemaFields.filter((_, fieldIndex) => fieldIndex !== index),
+        draftJsonSchemaFields.filter((_, fieldIndex) => fieldIndex !== index),
       );
     },
-    [jsonSchemaFields, updateJsonSchemaFields],
+    [draftJsonSchemaFields, updateJsonSchemaFields],
   );
   const handleRoutingRefreshEveryRunsChange = useCallback(
     (value: number) => {
@@ -1097,13 +1208,13 @@ export function LLMNodePanel({
                 </button>
               </div>
 
-              {jsonSchemaFields.length === 0 ? (
+              {draftJsonSchemaFields.length === 0 ? (
                 <div className="rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
                   정의된 필드가 없습니다.
                 </div>
               ) : (
                 <div className="grid gap-2">
-                  {jsonSchemaFields.map((field, index) => (
+                  {draftJsonSchemaFields.map((field, index) => (
                     <div
                       key={`${field.key}-${index}`}
                       className="grid grid-cols-[minmax(120px,1fr)_minmax(110px,140px)_auto_auto] items-center gap-2 rounded-md border border-gray-200 bg-white p-2"
@@ -1400,6 +1511,7 @@ export function LLMNodePanel({
           appliedIds={appliedRecommendationIds}
           onClose={() => setIsOptimizationModalOpen(false)}
           onMarkForReview={setAppliedRecommendationIds}
+          onApplyPatches={applyRecommendationPatches}
         />
       ) : null}
 

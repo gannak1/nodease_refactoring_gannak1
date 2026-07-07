@@ -23,6 +23,7 @@ interface OptimizationRecommendationModalProps {
   appliedIds?: string[];
   onClose: () => void;
   onMarkForReview?: (recommendationIds: string[]) => void;
+  onApplyPatches?: (patches: Record<string, unknown>[]) => void;
 }
 
 const parameterRecommendationLabelOf = (parameterKey: string) =>
@@ -122,6 +123,7 @@ export function OptimizationRecommendationModal({
   appliedIds = EMPTY_APPLIED_IDS,
   onClose,
   onMarkForReview,
+  onApplyPatches,
 }: OptimizationRecommendationModalProps) {
   const router = useRouter();
   const [selectedNodeId, setSelectedNodeId] = useState(
@@ -211,12 +213,14 @@ export function OptimizationRecommendationModal({
     if (!workflowId || !selectedNodeId) return;
     setActionError('');
     setIsApplyingRecommendations(true);
+    const patches = collectCandidatePatches(selectedRecommendations);
     try {
       await workflowApi.applyCostOptimizerRecommendations(
         workflowId,
         selectedNodeId,
         { recommendation_ids: selectedIds },
       );
+      onApplyPatches?.(patches);
       onMarkForReview?.(selectedIds);
     } catch {
       setActionError(
