@@ -1516,6 +1516,7 @@ class LLMNode(Node[LLMNodeData]):
             .filter(
                 KnowledgeBase.id.in_(parsed_ids),
                 KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
             )
             .all()
         )
@@ -1575,8 +1576,11 @@ class LLMNode(Node[LLMNodeData]):
             .all()
         )
         public_kb_ids: set[uuid.UUID] = set()
-        for item, collection, _kb in rows:
+        for item, collection, kb in rows:
             safe_metadata = getattr(collection, "safe_metadata", None) or {}
+            # Public Exposure Policy Store가 연결되기 전까지 source-managed KB는 fail-closed다.
+            if getattr(kb, "source_identity_id", None) is not None:
+                continue
             if safe_metadata.get("visibility") == "public":
                 public_kb_ids.add(item.knowledge_base_id)
 

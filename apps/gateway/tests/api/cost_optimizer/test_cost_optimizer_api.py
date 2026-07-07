@@ -2318,6 +2318,115 @@ class TestCostOptimizerApplyApi:
         assert db.commit.called
         assert response.json()["applied"] is True
 
+    def test_fr8_apply_candidate_without_knowledge_preserves_existing_rag_selection(
+        self,
+    ):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        app_id = uuid4()
+        user_id = uuid4()
+        knowledge_base_id = uuid4()
+        comparison_id = uuid4()
+        db = MagicMock()
+        candidate_settings = {
+            "label": "B",
+            "model_id": "gpt-4.1-mini",
+            "parameters": {"max_tokens": 800, "temperature": 0.2},
+        }
+        request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
+            **candidate_settings
+        )
+        _configure_cost_optimizer_experiment_query(
+            db,
+            SimpleNamespace(
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            request_candidate
+                        ),
+                        status="success",
+                        schema_status="pass",
+                        downstream_compatibility={"state": "compatible"},
+                    )
+                ],
+            ),
+        )
+        workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            graph={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "position": {"x": 100, "y": 120},
+                        "data": {
+                            "title": "티켓 처리 판단",
+                            "model_id": "gpt-4.1",
+                            "parameters": {"temperature": 0.7, "max_tokens": 1200},
+                            "knowledgeBases": [
+                                {"id": str(knowledge_base_id), "name": "제품 정책"}
+                            ],
+                            "topK": 4,
+                            "scoreThreshold": 0.6,
+                            "dedupeRetrievedContext": True,
+                            "retrievedContextMaxChars": 4000,
+                            "retrievedContextCompression": "light",
+                            "answerGroundingCheck": "basic",
+                        },
+                    }
+                ],
+                "edges": [],
+                "viewport": {"x": 0, "y": 0, "zoom": 1},
+            },
+        )
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-4.1-mini"),
+            ),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply",
+                json={
+                    "comparison_id": str(comparison_id),
+                    "candidate_settings": candidate_settings,
+                },
+            )
+
+        assert response.status_code == 200, response.json()
+        target_data = workflow.graph["nodes"][0]["data"]
+        assert target_data["model_id"] == "gpt-4.1-mini"
+        assert target_data["parameters"] == {
+            "temperature": 0.2,
+            "max_tokens": 800,
+        }
+        assert target_data["knowledgeBases"] == [
+            {"id": str(knowledge_base_id), "name": "제품 정책"}
+        ]
+        assert target_data["topK"] == 4
+        assert target_data["scoreThreshold"] == 0.6
+        assert target_data["dedupeRetrievedContext"] is True
+        assert target_data["retrievedContextMaxChars"] == 4000
+        assert target_data["retrievedContextCompression"] == "light"
+        assert target_data["answerGroundingCheck"] == "basic"
+        assert db.commit.called
+
     def test_fr8_fr9_apply_marks_matching_candidate_as_applied(self):
         workflow_id = uuid4()
         organization_id = uuid4()

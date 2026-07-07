@@ -934,13 +934,39 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
         )
         assert create_response.status_code == 200
         workflow_id = uuid.UUID(create_response.json()["workflow_id"])
+        knowledge_base_id = str(uuid.uuid4())
+        llm_node = {
+            "id": "llm-1",
+            "type": "llmNode",
+            "position": {"x": 100, "y": 200},
+            "data": {
+                "title": "LLM",
+                "provider": "openai",
+                "model_id": "gpt-4o",
+                "user_prompt": "정책을 요약해줘",
+                "knowledgeBases": [{"id": knowledge_base_id, "name": "제품 정책"}],
+            },
+        }
 
         draft_response = TestClient(app).post(
             f"/api/v1/workflows/{workflow_id}/draft",
-            json={"nodes": [], "edges": []},
+            json={"nodes": [llm_node], "edges": []},
         )
         assert draft_response.status_code == 200
         assert draft_response.json()["status"] == "success"
+
+        saved_workflow = next(
+            workflow for workflow in session.workflows if workflow.id == workflow_id
+        )
+        assert saved_workflow.graph["nodes"][0]["data"]["knowledgeBases"] == [
+            {"id": knowledge_base_id, "name": "제품 정책"}
+        ]
+
+        get_response = TestClient(app).get(f"/api/v1/workflows/{workflow_id}/draft")
+        assert get_response.status_code == 200
+        assert get_response.json()["nodes"][0]["data"]["knowledgeBases"] == [
+            {"id": knowledge_base_id, "name": "제품 정책"}
+        ]
     finally:
         app.dependency_overrides = {}
 
