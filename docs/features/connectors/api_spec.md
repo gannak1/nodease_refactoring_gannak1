@@ -196,3 +196,7 @@ HTTP 예외는 Gateway 공통 `detail` 응답을 사용하고, 검증 오류는 
 - 현재 `connections`에는 `organization_id`가 없으므로 workflow/KB 권한이 connection 사용 권한을 자동으로 대체하지 않는다.
 - Connection 생성은 `connection.create` audit action으로 기록된다. 연결 테스트, 상세 조회, schema 조회는 현재 endpoint-level audit action을 기록하지 않는다.
 - Knowledge source connector와 KB retrieval 권한은 Knowledge feature 책임이다.
+
+## Target Knowledge Connector API Boundary
+
+현재 `/connectors/*` DB endpoint는 목표 Knowledge Source Connector API 계약이 아니다. Knowledge source connector endpoint가 추가될 경우 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)의 allowlist operation, runtime authorization primitive, raw payload 비저장, safe reason code, source subject mapping fail-closed 규칙을 따라 별도 API/test 계약으로 고정한다.

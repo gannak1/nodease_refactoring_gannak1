@@ -21,6 +21,8 @@ Status: Draft
 - Source ACL provenance storage는 raw source permission, source permission action/provenance, source authorization state, KB permission `auth_state`를 섞어 저장하지 않는다.
 - Source ACL authorization만으로 KB `use`가 충족됐다고 판정하지 않는다.
 - Auto-ingested KB는 admin/team/user grant 또는 organization-approved connector/source policy가 명시 KB `use`를 provision하지 않으면 retrieval 후보가 되지 않는다.
+- Runtime access cache key는 source item 또는 document version 단위를 포함한다. Subject-level `allowed` cache가 다른 source item에 재사용되면 테스트 실패다.
+- Redaction 전 ephemeral content handle은 process/run scope와 short TTL을 가지며 durable DB, retry/dead-letter payload, audit, trace, log, user-facing response에 handle value나 raw content가 남으면 테스트 실패다.
 - Ingestion lock release는 owner token을 비교한다. TTL 만료 뒤 다른 worker가 lock을 획득한 경우 stale worker는 새 worker의 lock을 삭제하지 못한다.
 - Fencing token 또는 동등한 guard가 없는 stale worker는 active version, `content_hash`, chunking fingerprint, external index namespace를 finalize하지 못한다.
 
@@ -46,6 +48,12 @@ Status: Draft
 - `/api/v1/rag/upload` 신규 KB 생성은 `X-Organization-Id` active organization을 사용하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 다르면 hidden/not-found로 닫는다.
 - DNS rebinding, private IP redirect, link-local/metadata IP, private network target, unsupported scheme, HTTPS downgrade, `verify=false`, oversized response, timeout을 거부한다.
 - IPv4 obfuscation, IDNA/punycode/CNAME trick, open redirect chain, redirect 시 sensitive header forwarding, compression/zip bomb payload, unapproved proxy/CA configuration, rate-limit bypass를 거부하거나 safe cap으로 제한한다.
+- File/page artifact content는 egress guard 이후에도 untrusted로 처리한다. 지원 file type/content type allowlist 밖이면 document version, chunk, embedding, prompt-visible artifact가 생성되지 않는다.
+- Macro-enabled Office document, embedded object/script, executable payload, active HTML/script, external reference를 포함한 artifact는 별도 opt-in policy 없이는 fail-closed 또는 remediation 상태가 된다.
+- Archive ingestion은 nested depth, expanded size, contained file count, nested archive count cap을 적용하고, cap 초과 또는 archive 내부 executable/script/macro-enabled file을 indexing-visible artifact로 만들지 않는다.
+- Malware/content scan result가 `unknown`, timeout, error이면 high-risk binary/Office/archive는 ready/indexing-visible 상태로 진행하지 않는다.
+- Parser/extractor는 sandbox 또는 least-privilege worker에서 실행되고, parser가 document 내부 script/macro/external URL을 실행하거나 따라가면 테스트 실패다.
+- Content safety failure, unsupported type, parser exception은 raw file bytes, active content marker, parser raw error를 audit, trace, log, retry/dead-letter payload, user-facing response에 남기지 않고 safe reason code와 remediation state만 남긴다.
 - DB adapter는 arbitrary SQL을 거부하고 승인된 read-only probe/schema introspection만 cap 안에서 허용한다.
 - SSH adapter는 arbitrary command execution과 승인되지 않은 tunnel/proxy behavior를 거부한다.
 - Object storage adapter는 policy가 bounded listing을 명시적으로 허용하지 않는 한 과도한 bucket/listing operation을 거부한다.
@@ -54,6 +62,10 @@ Status: Draft
 - Slack/meeting artifact-level ACL이 있으면 artifact ACL과 containing channel/workspace ACL의 교집합을 통과한 requester만 retrieval 후보를 얻는다.
 - Slack/meeting artifact ACL을 확인할 수 없으면 fail-closed 또는 remediation 상태가 되고 channel membership만으로 공개되지 않는다.
 - Slack/meeting DM, raw audio, raw transcript ingestion은 별도 opt-in policy 없이 실행되지 않는다.
+- MCP/API source connector는 allowlist 밖 operation을 호출하지 않는다. 임의 MCP tool selection 또는 LLM-directed source raw data fetch가 가능하면 테스트 실패다.
+- MCP/API source connector response size cap 초과, timeout, raw tool exception은 raw body/error 없이 safe reason code로 닫힌다.
+- Runtime authorization primitive(`check_access_batch` 또는 bounded single `check_access`)가 없는 source는 private source-managed KB retrieval을 fail-closed 처리한다.
+- Raw payload normalization 전 connector failure에서도 connector log, retry/dead-letter payload, audit, trace에 변환 전 raw payload가 남지 않는다.
 
 ## Sync And Ingestion Tests
 
@@ -102,6 +114,8 @@ Status: Draft
 - Skill source-of-truth tier는 LLM node의 RAG 옵션 구성과 routing/procedure hint로만 사용되고, citation/evidence는 KB/document version/chunk/decision record를 가리킨다.
 - Workflow 실행 시점 RAG는 명시적으로 resolve된 execution subject가 있으면 해당 subject 기준으로 KB permission/source ACL을 평가한다. Subject가 없으면 workflow owner fallback 없이 anonymous public-only로 낮추고, 모호한 subject는 private retrieval fail-closed로 처리한다.
 - `subject_type="organization"` source-policy KB use grant는 active organization member에게만 적용되고 removed/suspended/invited/non-member user에게는 적용되지 않는다.
+- Runtime source authorization은 `check_access_batch`를 우선 사용하고, batch 미지원 source의 single `check_access` fallback은 bounded concurrency, per-call timeout, aggregate timeout을 강제한다.
+- `check_access_batch`가 일부 `denied`, `unknown`, timeout을 반환하면 해당 evidence만 fail-closed 제외되고 raw source error나 denied item title/path는 응답/trace/log에 남지 않는다.
 - 운영 `general RAG`도 KB permission/source ACL/final evidence gate를 통과한다. Test fixture에서 권한 없는 문서는 `general`, `permission_scoped`, `task_aware` 모든 mode의 prompt/citation/trace에 들어가지 않는다.
 - `general RAG`는 authorized resource 안의 broad retrieval로 동작하고, `task_aware` 또는 `permission_scoped` mode는 같은 authorized resource 안에서 더 작은 evidence set을 선택한다.
 - Query rewrite가 켜져도 user query와 safe skill/template만 입력으로 사용하며, 권한 없는 KB/문서를 candidate로 만들지 못한다.
@@ -123,6 +137,9 @@ Status: Draft
 - Hidden/resource-hidden path의 external JSON/SSE `reason_code`는 `resource.hidden`으로 일반화되며 `source_authorization.denied` 또는 `source_acl.stale/unmapped/ambiguous/unverified/revoked` 세부 reason을 반환하지 않는다.
 - PII/final evidence policy block은 answer delta나 citation content preview가 emit되기 전에 발생한다.
 - Workflow LLM node RAG path도 `classification=pii` chunk를 외부 LLM context에 넣기 전에 차단하고, safe no-result 또는 fail-node 정책에 따라 닫는다.
+- Live-linked mode에서 requester-scoped source-side search API가 없는 source는 일반 RAG 후보가 아니다.
+- Live-linked broad service-account source-side search가 title, snippet, count, score를 authorization 전에 반환하면 기본 구현은 실패해야 한다. Opaque source ref만 후보로 전달하고 runtime source authorization 이후에 metadata를 노출하는 flow만 허용한다.
+- Live-linked source-side search가 unauthorized item을 반환해도 prompt, citation, trace, response에는 해당 item의 title/snippet/count/score가 나타나지 않는다.
 - 현재 standalone single-KB Agent answer lifecycle과 same-scope blocked 처리 테스트는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 기준으로 유지하고, ADR-0017/implementation baseline matrix 테스트는 target cutover/source-managed/auto/multi-KB mode에 추가한다.
 
 ## Audit, Trace, And Privacy Tests
@@ -159,6 +176,8 @@ Status: Draft
 - Collection permission revoke는 자기 자신의 마지막 `manage` grant 제거 edge case를 safe denial 또는 organization manager 전용 동작으로 처리한다.
 - Public visibility 전환은 organization manager와 explicit acknowledgement를 요구하고, 전환 audit에는 raw KB title/path/url, hidden KB id/name, exact denied count가 들어가지 않는다.
 - Public visibility가 켜져도 인증 사용자 KB `use` 권한이나 source ACL requester authorization이 생기지 않는다.
+- Source-managed KB는 collection public flag만으로 anonymous public-only 후보가 되지 않는다. Source/connector public exposure approval이 없거나 `approval_scope`와 target field가 맞지 않는 approval row만 있으면 후보에서 제외된다.
+- Connector-wide public exposure approval은 expiry, reverification cadence, revocation behavior, explicit acknowledgement가 없으면 invalid policy로 처리된다.
 - Knowledge Collection 관리 UI는 Workflow Builder와 분리되어 있고, Builder 화면에서 Collection 생성/삭제/권한관리를 주 기능으로 제공하지 않는다.
 - Collection 관리 UI는 `can_manage_collection`, `can_manage_kb`, `can_use_kb`를 혼동하지 않고, item list에 보이는 KB가 runtime retrieval 가능성을 보장하지 않는다는 상태를 표현한다.
 - Collection 관리 UI는 raw source title/path/url/principal, hidden KB name/id, exact denied count를 표시하지 않는다.
@@ -178,6 +197,7 @@ Status: Draft
 - Bulk permission helper는 per-KB database query 없이 user-candidate lookup과 KB-centric lookup을 처리한다.
 - Candidate cap은 stable ordering으로 큰 candidate set을 deterministic하게 잘라낸다.
 - Candidate cache key는 permission/freshness epoch를 포함하고 ACL revocation 시 invalidation된다.
+- Runtime access cache key는 mapping epoch와 source ACL freshness epoch를 포함하고, source item/document version 단위로 분리된다.
 - Skill candidate cache key는 skill version, freshness state, eval state, source version reference를 포함하고 stale skill/source-tier 변경 시 invalidation된다.
 - 단일 filtered vector/keyword query를 우선한다. Bounded fanout을 사용하면 concurrency와 timeout cap을 강제한다.
 - Query rewrite cache key는 rewrite mode, safe template id, skill version, permission/freshness epoch를 포함하고 raw rewritten query를 durable key로 사용하지 않는다.
@@ -187,7 +207,9 @@ Status: Draft
 
 ## Phase Acceptance Tests
 
-- Phase 1 acceptance에는 egress negative paths, protected source identity, basic sync, redaction, active version swap, transactional outbox insert, fencing token, recovery scanner smoke 테스트가 포함된다.
+- Phase 1 acceptance에는 egress negative paths, content safety/parser isolation, protected source identity, basic sync, redaction, active version swap, transactional outbox insert, fencing token, recovery scanner smoke 테스트가 포함된다.
 - Phase 2 acceptance에는 source ACL freshness, content cursor와 ACL/permission watermark 분리, Knowledge Permission Helper, KB `use` + source ACL two-gate, source-policy grant inactive lifecycle 테스트가 포함된다.
-- Phase 3 acceptance에는 multi-KB caps, final evidence recheck, resource hiding matrix, retry/dead-letter transition, partial result behavior 테스트가 포함된다.
+- Phase 3 acceptance에는 multi-KB caps, final evidence recheck, resource hiding matrix, retry/dead-letter transition, partial result behavior, runtime authorization batch/fallback 테스트가 포함된다.
+- Live-linked mode를 구현하는 phase는 requester-scoped/opaque-ref-only side-channel 테스트를 포함한다.
+- Source-managed public exposure를 구현하는 phase는 approval scope/target validation과 revocation propagation 테스트를 포함한다.
 - Golden questions, source tier tuning, LLM-assisted rewrite, advanced rerank는 core safety phases 이후 별도 acceptance로 확장한다.

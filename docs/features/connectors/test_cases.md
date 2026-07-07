@@ -102,7 +102,7 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 
 ## Knowledge Source Connector Target Tests
 
-이 섹션은 현재 workflow DB connector 테스트를 대체하지 않고, 목표 Knowledge source connector가 따라야 할 보안 경계를 추가로 검증한다. Knowledge source connector target case는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 egress/adapter baseline을 따른다.
+이 섹션은 현재 workflow DB connector 테스트를 대체하지 않고, 목표 Knowledge source connector가 따라야 할 보안 경계를 추가로 검증한다. Knowledge source connector target case는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 egress/adapter baseline과 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)의 MCP/API adapter boundary를 따른다.
 
 | ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
 | --- | --- | --- | --- |
@@ -113,3 +113,12 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | CONN-KNOW-TC-005 | Slack/meeting artifact-level ACL이 있으면 artifact ACL과 containing channel/workspace ACL의 교집합만 source authorization provenance를 얻어야 한다. | channel membership만으로 artifact ACL 없는 requester가 통과한다. | fail-closed 또는 remediation. |
 | CONN-KNOW-TC-006 | Slack/meeting DM, raw audio, raw transcript는 별도 opt-in policy 없이 수집되지 않아야 한다. | opt-in 없이 raw transcript가 ingestion 대상에 포함된다. | 테스트 실패. |
 | CONN-KNOW-TC-007 | Slack/meeting ACL sync 실패나 partial ACL response는 raw channel/source title/path/url, raw principal, raw exception을 UI, audit, trace, log에 남기지 않아야 한다. | 실패 응답 또는 로그에 raw source metadata가 포함된다. | safe reason code만 남김. |
+| CONN-KNOW-TC-008 | MCP/API Knowledge source connector는 allowlist operation만 호출해야 한다. | LLM이 임의 MCP tool을 선택하거나 adapter가 allowlist 밖 operation, raw source data direct fetch, prompt/completion 기반 source query를 실행한다. | 요청 거부, safe reason code, raw tool response 비노출. |
+| CONN-KNOW-TC-009 | Private source-managed KB retrieval은 runtime authorization primitive가 없으면 fail-closed되어야 한다. | Source connector가 `check_access_batch`와 bounded `check_access` fallback을 모두 제공하지 않는데 retrieval 후보가 된다. | 후보 제외 또는 remediation, raw source metadata 비노출. |
+| CONN-KNOW-TC-010 | Runtime authorization fallback은 bounded concurrency와 timeout을 적용해야 한다. | Batch 미지원 source에서 candidate 수만큼 unbounded `check_access` 호출을 실행하거나 aggregate timeout 없이 대기한다. | safe partial/fail-closed, rate-limit-safe retry policy. |
+| CONN-KNOW-TC-011 | Pre-normalization raw payload는 connector 실패 경로에 남지 않아야 한다. | Normalization 전 예외가 발생했을 때 raw payload가 connector debug/error log, retry/dead-letter payload, audit, trace 중 하나에 남는다. | 테스트 실패, safe reason code만 저장. |
+| CONN-KNOW-TC-012 | Live-linked source-side search는 requester-scoped 또는 opaque-ref-only여야 한다. | Broad service-account search가 authorization 전 title, snippet, count, score를 반환한다. | 검색 후보 제외 또는 metadata suppression, side-channel 없음. |
+| CONN-KNOW-TC-013 | Bot/webhook/app installation visibility는 requester authorization으로 쓰면 안 된다. | Bot이 볼 수 있는 source item이라는 이유만으로 private retrieval evidence에 포함한다. | source subject mapping/runtime authorization gate를 통과하지 못하면 fail-closed. |
+| CONN-KNOW-TC-014 | File/page artifact connector는 content safety gate 전 raw artifact를 trusted normalized content로 취급하면 안 된다. | Macro-enabled document, embedded script/object, executable child file, unsupported content type 중 하나가 redacted canonical text/chunk/embedding으로 진행된다. | fail-closed 또는 remediation, safe reason code만 저장. |
+| CONN-KNOW-TC-015 | Archive connector ingestion은 expansion cap과 nested content policy를 적용해야 한다. | Zip bomb, nested archive cap 초과, archive 내부 executable/script/macro-enabled file이 indexing-visible artifact가 된다. | ingestion 제외 또는 quarantine/remediation. |
+| CONN-KNOW-TC-016 | Parser/scanner failure는 raw content leakage 없이 닫혀야 한다. | Parser exception, scan timeout, scan unknown/error가 raw bytes, active marker, parser raw stack detail을 response/log/audit/trace/dead-letter에 남긴다. | safe reason code와 retryability/remediation state만 남김. |
