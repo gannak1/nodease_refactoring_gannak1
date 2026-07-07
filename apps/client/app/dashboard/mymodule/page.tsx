@@ -11,6 +11,7 @@ import {
   Filter,
   Gauge,
   Layers3,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -976,7 +977,7 @@ function ModuleOperationTableRow({
           )}
           {appliedOptimizationCount > 0 && (
             <span className="w-fit rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
-              추천 {appliedOptimizationCount}개 검토 후보
+              추천 {appliedOptimizationCount}개 반영됨
             </span>
           )}
           <span className="text-xs text-slate-500">{costSignal.reason}</span>
@@ -1054,6 +1055,7 @@ function OptimizationRecommendationModal({
   onClose: () => void;
   onMarkForReview: (recommendationIds: string[]) => void;
 }) {
+  const router = useRouter();
   const [selectedNodeId, setSelectedNodeId] = useState(
     llmNodes[0]?.id || '',
   );
@@ -1065,6 +1067,9 @@ function OptimizationRecommendationModal({
   const [isLoadingRecommendations, setIsLoadingRecommendations] =
     useState(false);
   const [recommendationError, setRecommendationError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [isApplyingRecommendations, setIsApplyingRecommendations] =
+    useState(false);
   const recommendations = recommendationResponse?.recommendations || [];
   const [selectedIds, setSelectedIds] = useState<string[]>(
     appliedIds.length > 0
@@ -1108,11 +1113,59 @@ function OptimizationRecommendationModal({
   }, [appliedIds, row.app.workflow_id, selectedNodeId]);
 
   const toggleRecommendation = (id: string) => {
+    setActionError('');
     setSelectedIds((current) =>
       current.includes(id)
         ? current.filter((item) => item !== id)
         : [...current, id],
     );
+  };
+
+  const selectedRecommendations = recommendations.filter((recommendation) =>
+    selectedIds.includes(recommendation.parameter_key),
+  );
+  const canRunAction =
+    Boolean(row.app.workflow_id && selectedNodeId) &&
+    selectedRecommendations.length > 0 &&
+    !isLoadingRecommendations &&
+    !isApplyingRecommendations;
+
+  const handleTestRecommendations = () => {
+    if (!row.app.workflow_id || !selectedNodeId) return;
+    setActionError('');
+    const patches = selectedRecommendations
+      .map((recommendation) => recommendation.candidate_patch)
+      .filter(
+        (patch): patch is Record<string, unknown> =>
+          typeof patch === 'object' && patch !== null && !Array.isArray(patch),
+      );
+    const presetKey = `cost-optimizer-recommendations:${row.app.workflow_id}:${selectedNodeId}:${Date.now()}`;
+    window.sessionStorage.setItem(presetKey, JSON.stringify(patches));
+    router.push(
+      `/modules/${row.app.workflow_id}/cost-optimizer/${selectedNodeId}?baseline=latest&recommendationPresetKey=${encodeURIComponent(
+        presetKey,
+      )}`,
+    );
+  };
+
+  const handleApplyRecommendations = async () => {
+    if (!row.app.workflow_id || !selectedNodeId) return;
+    setActionError('');
+    setIsApplyingRecommendations(true);
+    try {
+      await workflowApi.applyCostOptimizerRecommendations(
+        row.app.workflow_id,
+        selectedNodeId,
+        { recommendation_ids: selectedIds },
+      );
+      onMarkForReview(selectedIds);
+    } catch {
+      setActionError(
+        '추천 설정을 적용하지 못했습니다. 모델 권한, 지식 베이스 권한, 최신 추천 상태를 확인해 주세요.',
+      );
+    } finally {
+      setIsApplyingRecommendations(false);
+    }
   };
 
   return (
@@ -1321,13 +1374,19 @@ function OptimizationRecommendationModal({
           </div>
 
           <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-            이 화면에서는 설정을 바로 바꾸지 않습니다. 선택한 추천은 검토
-            후보로만 표시되며, 실제 변경은 A/B 검증 화면에서 후보 실행 결과를
-            확인한 뒤 적용해야 합니다.
+            테스트하기는 최신 실행 로그를 A 기준으로 잡고 선택한 추천을 B
+            후보 설정에 넣어 A/B 화면으로 이동합니다. 적용하기는 선택한 추천을
+            현재 workflow draft의 해당 LLM 노드 설정에 바로 반영합니다.
           </div>
+
+          {actionError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+              {actionError}
+            </div>
+          )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-100 px-6 py-4">
+        <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 px-6 py-4">
           <button
             type="button"
             onClick={onClose}
@@ -1337,12 +1396,21 @@ function OptimizationRecommendationModal({
           </button>
           <button
             type="button"
-            disabled={selectedIds.length === 0}
-            onClick={() => onMarkForReview(selectedIds)}
+            disabled={!canRunAction}
+            onClick={handleTestRecommendations}
+            className="inline-flex items-center gap-2 rounded-md border border-violet-200 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+          >
+            <Play className="h-4 w-4" />
+            테스트하기
+          </button>
+          <button
+            type="button"
+            disabled={!canRunAction}
+            onClick={handleApplyRecommendations}
             className="inline-flex items-center gap-2 rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <Wand2 className="h-4 w-4" />
-            검토 후보로 표시
+            {isApplyingRecommendations ? '적용 중' : '적용하기'}
           </button>
         </div>
       </div>

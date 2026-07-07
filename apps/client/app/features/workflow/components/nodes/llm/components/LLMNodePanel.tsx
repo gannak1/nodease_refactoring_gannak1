@@ -11,7 +11,7 @@ import {
   BookOpen,
   MousePointerClick,
   Wand2,
-  SlidersHorizontal,
+  FileJson,
 } from 'lucide-react';
 import { PromptWizardModal } from '../../../modals/PromptWizardModal';
 import { ModelSelectDropdown } from './ModelSelectDropdown';
@@ -32,6 +32,7 @@ import { isWorkflowChatModelOption } from '@/app/features/workflow/utils/llmMode
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
+import { OptimizationRecommendationModal } from '../../../costOptimizer/OptimizationRecommendationModal';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -70,12 +71,89 @@ const selectorForOutput = (output: DraggedOutputVariable) => [
 interface LLMNodePanelProps {
   nodeId: string;
   data: LLMNodeData;
-  isAdvancedSettingsOpen?: boolean;
-  onOpenAdvancedSettings?: () => void;
   onOpenKnowledgeBaseSettings?: () => void;
 }
 
 type PromptHelpId = 'fallback' | 'system' | 'user' | 'assistant';
+type OutputFormatType = 'text' | 'json';
+type JsonSchemaFieldType = 'string' | 'number' | 'boolean' | 'object' | 'array';
+type JsonSchemaField = {
+  key: string;
+  type: JsonSchemaFieldType;
+  required: boolean;
+};
+
+const schemaFieldTypes: Array<{ value: JsonSchemaFieldType; label: string }> = [
+  { value: 'string', label: 'string' },
+  { value: 'number', label: 'number' },
+  { value: 'boolean', label: 'boolean' },
+  { value: 'object', label: 'object' },
+  { value: 'array', label: 'array' },
+];
+
+const jsonSchemaFieldTypes = new Set<JsonSchemaFieldType>(
+  schemaFieldTypes.map((fieldType) => fieldType.value),
+);
+
+const outputFormatTypeOf = (
+  outputFormat: LLMNodeData['output_format'],
+): OutputFormatType => (outputFormat?.type === 'json' ? 'json' : 'text');
+
+const schemaFieldsFromOutputFormat = (
+  outputFormat: LLMNodeData['output_format'],
+): JsonSchemaField[] => {
+  const schema = outputFormat?.schema;
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return [];
+
+  const properties = schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return [];
+  }
+
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((field): field is string => typeof field === 'string')
+    : [];
+
+  return Object.entries(properties).map(([key, propertySchema]) => {
+    const type =
+      propertySchema &&
+      typeof propertySchema === 'object' &&
+      !Array.isArray(propertySchema)
+        ? propertySchema.type
+        : null;
+    return {
+      key,
+      type:
+        typeof type === 'string' &&
+        jsonSchemaFieldTypes.has(type as JsonSchemaFieldType)
+          ? (type as JsonSchemaFieldType)
+          : 'string',
+      required: required.includes(key),
+    };
+  });
+};
+
+const outputSchemaFromFields = (
+  fields: JsonSchemaField[],
+): Record<string, unknown> => {
+  const normalizedFields = fields
+    .map((field) => ({
+      key: field.key.trim(),
+      type: jsonSchemaFieldTypes.has(field.type) ? field.type : 'string',
+      required: field.required,
+    }))
+    .filter((field) => field.key.length > 0);
+
+  return {
+    type: 'object',
+    properties: Object.fromEntries(
+      normalizedFields.map((field) => [field.key, { type: field.type }]),
+    ),
+    required: normalizedFields
+      .filter((field) => field.required)
+      .map((field) => field.key),
+  };
+};
 
 const HelpPopover = ({
   id,
@@ -146,8 +224,6 @@ const groupModelsByProvider = (models: ModelOption[]) => {
 export function LLMNodePanel({
   nodeId,
   data,
-  isAdvancedSettingsOpen,
-  onOpenAdvancedSettings,
   onOpenKnowledgeBaseSettings,
 }: LLMNodePanelProps) {
   const openSettingsTab = useCallback(() => {
@@ -170,12 +246,13 @@ export function LLMNodePanel({
   >([]);
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
-  const [isParameterPanelOpen, setIsParameterPanelOpen] = useState(false);
-  const isUsingExternalAdvancedPanel =
-    typeof onOpenAdvancedSettings === 'function';
-  const isAdvancedButtonActive = isUsingExternalAdvancedPanel
-    ? Boolean(isAdvancedSettingsOpen)
-    : isParameterPanelOpen;
+  const [activeSettingsTab, setActiveSettingsTab] = useState<
+    'basic' | 'advanced'
+  >('basic');
+  const [isOptimizationModalOpen, setIsOptimizationModalOpen] = useState(false);
+  const [appliedRecommendationIds, setAppliedRecommendationIds] = useState<
+    string[]
+  >([]);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -288,6 +365,11 @@ export function LLMNodePanel({
     () => getTokenLabelMap(data.referenced_variables, upstreamNodes),
     [data.referenced_variables, upstreamNodes],
   );
+  const outputFormatType = outputFormatTypeOf(data.output_format);
+  const jsonSchemaFields = useMemo(
+    () => schemaFieldsFromOutputFormat(data.output_format),
+    [data.output_format],
+  );
 
   const validationErrors = useMemo(() => {
     const allPrompts =
@@ -329,6 +411,55 @@ export function LLMNodePanel({
       updateNodeData(nodeId, { [key]: value });
     },
     [nodeId, updateNodeData],
+  );
+  const updateOutputFormat = useCallback(
+    (format: OutputFormatType) => {
+      updateNodeData(nodeId, {
+        output_format:
+          format === 'json'
+            ? {
+                type: 'json',
+                schema: outputSchemaFromFields(jsonSchemaFields),
+              }
+            : { type: 'text' },
+      });
+    },
+    [jsonSchemaFields, nodeId, updateNodeData],
+  );
+  const updateJsonSchemaFields = useCallback(
+    (fields: JsonSchemaField[]) => {
+      updateNodeData(nodeId, {
+        output_format: {
+          type: 'json',
+          schema: outputSchemaFromFields(fields),
+        },
+      });
+    },
+    [nodeId, updateNodeData],
+  );
+  const addJsonSchemaField = useCallback(() => {
+    updateJsonSchemaFields([
+      ...jsonSchemaFields,
+      { key: '', type: 'string', required: false },
+    ]);
+  }, [jsonSchemaFields, updateJsonSchemaFields]);
+  const updateJsonSchemaField = useCallback(
+    (index: number, updates: Partial<JsonSchemaField>) => {
+      updateJsonSchemaFields(
+        jsonSchemaFields.map((field, fieldIndex) =>
+          fieldIndex === index ? { ...field, ...updates } : field,
+        ),
+      );
+    },
+    [jsonSchemaFields, updateJsonSchemaFields],
+  );
+  const removeJsonSchemaField = useCallback(
+    (index: number) => {
+      updateJsonSchemaFields(
+        jsonSchemaFields.filter((_, fieldIndex) => fieldIndex !== index),
+      );
+    },
+    [jsonSchemaFields, updateJsonSchemaFields],
   );
   const handleRoutingRefreshEveryRunsChange = useCallback(
     (value: number) => {
@@ -617,16 +748,63 @@ export function LLMNodePanel({
 
   return (
     <div className="relative flex flex-col gap-2">
-      {!isUsingExternalAdvancedPanel && isParameterPanelOpen && (
-        <div className="absolute right-[calc(100%+56px)] top-0 z-50">
+      <div className="sticky top-0 z-10 rounded-lg border border-slate-200 bg-white p-2 shadow-sm">
+        <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-1">
+            {[
+              { id: 'basic' as const, label: '기본 설정' },
+              { id: 'advanced' as const, label: '고급 설정' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveSettingsTab(tab.id)}
+                className={`nodrag rounded-md px-3 py-2 text-xs font-bold transition-colors ${
+                  activeSettingsTab === tab.id
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                }`}
+                aria-pressed={activeSettingsTab === tab.id}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <CostOptimizerEntryAction
+              workflowId={activeWorkflowId}
+              nodeId={nodeId}
+              workflowAccess={workflowAccess}
+              hasUnsavedChanges={hasUnsavedChanges}
+              label="최적화"
+              destination="model-routing"
+              title="운영 로그 기반 LLM 노드 설정 추천을 검토합니다."
+              onOpen={() => setIsOptimizationModalOpen(true)}
+            />
+            <CostOptimizerEntryAction
+              workflowId={activeWorkflowId}
+              nodeId={nodeId}
+              workflowAccess={workflowAccess}
+              hasUnsavedChanges={hasUnsavedChanges}
+              label="비교 분석 테스트"
+              destination="cost-optimizer"
+              title="실행 로그를 기준으로 A/B 비교 분석 테스트 화면을 엽니다."
+            />
+          </div>
+        </div>
+      </div>
+
+      {activeSettingsTab === 'advanced' ? (
+        <div className="min-h-[560px] overflow-hidden rounded-xl border border-slate-200 bg-white">
           <LLMParameterSidePanel
+            embedded
             nodeId={nodeId}
             data={data}
-            onClose={() => setIsParameterPanelOpen(false)}
+            onClose={() => setActiveSettingsTab('basic')}
           />
         </div>
-      )}
-
+      ) : (
+        <>
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -637,35 +815,6 @@ export function LLMNodePanel({
               배포 후 운영 로그를 기준으로 추천 모델과 예상 절감 근거를
               확인한 뒤 직접 적용합니다.
             </p>
-          </div>
-          <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
-            <CostOptimizerEntryAction
-              workflowId={activeWorkflowId}
-              nodeId={nodeId}
-              workflowAccess={workflowAccess}
-              hasUnsavedChanges={hasUnsavedChanges}
-            />
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                if (onOpenAdvancedSettings) {
-                  onOpenAdvancedSettings();
-                  return;
-                }
-                setIsParameterPanelOpen((current) => !current);
-              }}
-              className={`nodrag inline-flex items-center justify-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-                isAdvancedButtonActive
-                  ? 'border-blue-200 bg-blue-50 text-blue-700'
-                  : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
-              }`}
-              aria-expanded={isAdvancedButtonActive}
-              aria-label="LLM 고급 설정 열기"
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              고급 설정
-            </button>
           </div>
         </div>
       </div>
@@ -905,6 +1054,119 @@ export function LLMNodePanel({
         </div>
       </CollapsibleSection>
 
+      <CollapsibleSection title="출력 형식">
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-bold text-gray-900">
+            <FileJson className="h-4 w-4 text-gray-600" />
+            출력 형식
+          </div>
+          <div className="inline-flex rounded-md border border-gray-200 bg-white p-1">
+            {(['text', 'json'] as const).map((format) => (
+              <button
+                key={format}
+                type="button"
+                onClick={() => updateOutputFormat(format)}
+                className={`rounded px-3 py-1.5 text-xs font-bold transition-colors ${
+                  outputFormatType === format
+                    ? 'bg-emerald-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {format === 'json' ? 'JSON' : 'TEXT'}
+              </button>
+            ))}
+          </div>
+
+          {outputFormatType === 'json' ? (
+            <div className="mt-3 grid gap-3 rounded-md border border-dashed border-gray-300 bg-white p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold text-gray-700">
+                    JSON schema
+                  </div>
+                  <div className="text-[11px] text-gray-500">
+                    flat key-type 행으로 출력 계약을 정의합니다.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={addJsonSchemaField}
+                  className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-50"
+                >
+                  스키마 필드 추가
+                </button>
+              </div>
+
+              {jsonSchemaFields.length === 0 ? (
+                <div className="rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
+                  정의된 필드가 없습니다.
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  {jsonSchemaFields.map((field, index) => (
+                    <div
+                      key={`${field.key}-${index}`}
+                      className="grid grid-cols-[minmax(120px,1fr)_minmax(110px,140px)_auto_auto] items-center gap-2 rounded-md border border-gray-200 bg-white p-2"
+                    >
+                      <label className="grid gap-1 text-[11px] font-semibold text-gray-500">
+                        <span>필드명</span>
+                        <input
+                          value={field.key}
+                          onChange={(event) =>
+                            updateJsonSchemaField(index, {
+                              key: event.target.value,
+                            })
+                          }
+                          className="min-w-0 rounded-md border border-gray-200 px-2 py-1.5 text-xs text-gray-800 outline-none focus:border-emerald-400"
+                          placeholder="예: summary"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-[11px] font-semibold text-gray-500">
+                        <span>타입</span>
+                        <select
+                          value={field.type}
+                          onChange={(event) =>
+                            updateJsonSchemaField(index, {
+                              type: event.target.value as JsonSchemaFieldType,
+                            })
+                          }
+                          className="min-w-0 rounded-md border border-gray-200 px-2 py-1.5 text-xs text-gray-800 outline-none focus:border-emerald-400"
+                        >
+                          {schemaFieldTypes.map((fieldType) => (
+                            <option key={fieldType.value} value={fieldType.value}>
+                              {fieldType.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1 pt-5 text-xs font-semibold text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={field.required}
+                          onChange={(event) =>
+                            updateJsonSchemaField(index, {
+                              required: event.target.checked,
+                            })
+                          }
+                        />
+                        필수
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => removeJsonSchemaField(index)}
+                        className="mt-5 rounded-md px-2 py-1 text-xs font-bold text-red-500 hover:bg-red-50"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </CollapsibleSection>
+
       {/* 2.5 지식 베이스 버튼 (지식 베이스 그룹 통합) */}
       <div className="my-2 group">
         <button
@@ -1120,6 +1382,26 @@ export function LLMNodePanel({
           )}
         </div>
       </CollapsibleSection>
+
+        </>
+      )}
+
+      {isOptimizationModalOpen ? (
+        <OptimizationRecommendationModal
+          workflowId={activeWorkflowId}
+          workflowName="현재 workflow"
+          llmNodes={[
+            {
+              id: nodeId,
+              title: String(data.title || 'LLM 노드'),
+            },
+          ]}
+          initialNodeId={nodeId}
+          appliedIds={appliedRecommendationIds}
+          onClose={() => setIsOptimizationModalOpen(false)}
+          onMarkForReview={setAppliedRecommendationIds}
+        />
+      ) : null}
 
       {/* 프롬프트 마법사 모달 */}
       <PromptWizardModal

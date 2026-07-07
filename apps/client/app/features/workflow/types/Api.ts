@@ -163,6 +163,10 @@ export interface CostOptimizerApplyRequest {
   acknowledge_downstream_warning?: boolean;
 }
 
+export interface CostOptimizerRecommendationApplyRequest {
+  recommendation_ids: string[];
+}
+
 export interface CostOptimizerDownstreamCompatibility {
   state: string;
   label?: string;

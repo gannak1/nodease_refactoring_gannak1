@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Route } from 'lucide-react';
+import { BarChart3, Route } from 'lucide-react';
 import { workflowApi } from '../../api/workflowApi';
 import type { WorkflowPermissionResponse } from '../../types/Api';
 
@@ -10,6 +10,9 @@ interface CostOptimizerEntryActionProps {
   workflowAccess?: WorkflowPermissionResponse | null;
   hasUnsavedChanges?: boolean;
   onOpen?: () => void;
+  label?: string;
+  destination?: 'model-routing' | 'cost-optimizer';
+  title?: string;
 }
 
 const canUseCostOptimizer = (workflowAccess?: WorkflowPermissionResponse | null) =>
@@ -21,6 +24,9 @@ export const CostOptimizerEntryAction = ({
   workflowAccess,
   hasUnsavedChanges = false,
   onOpen,
+  label = '모델 라우팅 최적화',
+  destination = 'model-routing',
+  title,
 }: CostOptimizerEntryActionProps) => {
   const router = useRouter();
   const hasBuilderPermission = canUseCostOptimizer(workflowAccess);
@@ -59,7 +65,7 @@ export const CostOptimizerEntryAction = ({
   const canUse = hasBuilderPermission && isAvailable;
 
   return (
-    <div className="flex flex-col items-start gap-1">
+    <div className="flex w-full flex-col items-stretch gap-1">
       <button
         type="button"
         disabled={!canUse}
@@ -75,20 +81,24 @@ export const CostOptimizerEntryAction = ({
             onOpen();
             return;
           }
-          router.push(`/modules/${workflowId}/model-routing/${nodeId}`);
+          router.push(`/modules/${workflowId}/${destination}/${nodeId}`);
         }}
-        className="nodrag inline-flex items-center justify-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:border-emerald-700 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:shadow-none"
+        className="nodrag inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:border-emerald-700 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:shadow-none"
         title={
           canUse
-            ? '운영 로그와 후보 실험 이력으로 모델 라우팅 추천을 확인합니다.'
+            ? title || '운영 로그와 후보 실험 이력으로 최적화 화면을 엽니다.'
             : '워크플로우 수정 권한이 필요합니다.'
         }
       >
-        <Route className="h-3.5 w-3.5" />
-        모델 라우팅 최적화
+        {destination === 'cost-optimizer' ? (
+          <BarChart3 className="h-3.5 w-3.5" />
+        ) : (
+          <Route className="h-3.5 w-3.5" />
+        )}
+        {label}
       </button>
       {message ? (
-        <p className="max-w-56 text-[11px] font-medium leading-relaxed text-amber-700">
+        <p className="text-[11px] font-medium leading-relaxed text-amber-700">
           {message}
         </p>
       ) : null}

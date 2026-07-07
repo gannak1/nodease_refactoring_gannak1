@@ -383,6 +383,78 @@ export const candidateFromOptions = (
 export const candidateFromNode = (node: AppNode | null): CandidateDraft =>
   candidateFromOptions((node?.data || {}) as BaselineNodeOptions);
 
+export const applyCandidatePatchToDraft = (
+  draft: CandidateDraft,
+  patch: Record<string, unknown>,
+): CandidateDraft => {
+  const next = { ...draft };
+  const parameters = isRecord(patch.parameters) ? patch.parameters : {};
+  const knowledge = isRecord(patch.knowledge) ? patch.knowledge : {};
+
+  if (typeof parameters.max_tokens === 'number') {
+    next.max_tokens = parameters.max_tokens;
+  }
+  if (typeof parameters.temperature === 'number') {
+    next.temperature = parameters.temperature;
+  }
+  if (typeof parameters.top_p === 'number') {
+    next.top_p = parameters.top_p;
+  }
+  if (typeof parameters.presence_penalty === 'number') {
+    next.presence_penalty = parameters.presence_penalty;
+  }
+  if (typeof parameters.frequency_penalty === 'number') {
+    next.frequency_penalty = parameters.frequency_penalty;
+  }
+  if (Array.isArray(parameters.stop)) {
+    next.stop = parameters.stop.filter(
+      (item): item is string => typeof item === 'string',
+    );
+  }
+
+  if (typeof knowledge.top_k === 'number') {
+    next.topK = knowledge.top_k;
+  }
+  if (typeof knowledge.score_threshold === 'number') {
+    next.scoreThreshold = knowledge.score_threshold;
+  }
+  if (typeof knowledge.dedupe_retrieved_context === 'boolean') {
+    next.dedupeRetrievedContext = knowledge.dedupe_retrieved_context;
+  }
+  if (
+    knowledge.retrieved_context_max_chars === null ||
+    typeof knowledge.retrieved_context_max_chars === 'number'
+  ) {
+    next.retrievedContextMaxChars = knowledge.retrieved_context_max_chars;
+  }
+  if (
+    knowledge.retrieved_context_compression === 'off' ||
+    knowledge.retrieved_context_compression === 'light' ||
+    knowledge.retrieved_context_compression === 'strong'
+  ) {
+    next.retrievedContextCompression =
+      knowledge.retrieved_context_compression;
+  }
+  if (
+    knowledge.answer_grounding_check === 'off' ||
+    knowledge.answer_grounding_check === 'basic' ||
+    knowledge.answer_grounding_check === 'strict'
+  ) {
+    next.answerGroundingCheck = knowledge.answer_grounding_check;
+  }
+
+  return next;
+};
+
+export const applyCandidatePatchesToDraft = (
+  draft: CandidateDraft,
+  patches: Array<Record<string, unknown>>,
+): CandidateDraft =>
+  patches.reduce<CandidateDraft>(
+    (currentDraft, patch) => applyCandidatePatchToDraft(currentDraft, patch),
+    draft,
+  );
+
 export const baselineOptionsOf = (
   baseline: CostOptimizerBaselineRow | null,
 ): BaselineNodeOptions | null =>

@@ -31,14 +31,16 @@ import {
   sumPanelWidths,
 } from '../../utils/nodeEditorPanelLayout';
 import { LLMNodeData } from '../../types/Nodes';
-import { LLMParameterSidePanel } from '../nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '../nodes/llm/components/LLMReferenceSidePanel';
-import { NodeInlinePanel } from '../nodes/NodeInlinePanel';
+import {
+  NodeInlinePanel,
+  NodeInlinePanelSidePanelId,
+} from '../nodes/NodeInlinePanel';
 import { NodeOutputsSection } from '../nodes/NodeOutputsSection';
 import { VariableInsertionProvider } from '../nodes/ui/VariableInsertionProvider';
 import { useVariableInsertion } from '../nodes/ui/useVariableInsertion';
 
-type RightPanelTabId = 'advanced' | 'knowledge';
+type RightPanelTabId = 'knowledge';
 
 type RightPanelTab = {
   id: RightPanelTabId;
@@ -46,7 +48,6 @@ type RightPanelTab = {
 };
 
 const RIGHT_PANEL_TAB_LABELS: Record<RightPanelTabId, string> = {
-  advanced: '고급 설정',
   knowledge: '지식 베이스',
 };
 
@@ -488,6 +489,15 @@ export function NodeFullscreenEditor() {
       });
     },
     [fullscreenNodeId],
+  );
+
+  const openNodeInlineSidePanel = useCallback(
+    (panelId: NodeInlinePanelSidePanelId) => {
+      if (panelId === 'knowledge') {
+        openRightPanelTab('knowledge');
+      }
+    },
+    [openRightPanelTab],
   );
 
   const navigateToNode = useCallback(
@@ -1010,8 +1020,7 @@ export function NodeFullscreenEditor() {
                 <NodeInlinePanel
                   node={node}
                   showFrame={false}
-                  activeSidePanel={activeRightTabId}
-                  onOpenSidePanel={openRightPanelTab}
+                  onOpenSidePanel={openNodeInlineSidePanel}
                 />
               </div>
             </div>
@@ -1074,15 +1083,7 @@ export function NodeFullscreenEditor() {
               )}
 
               <div className="min-h-0 flex-1 overflow-hidden bg-white">
-                {node.type === 'llmNode' && activeRightTabId === 'advanced' ? (
-                  <LLMParameterSidePanel
-                    embedded
-                    nodeId={node.id}
-                    data={node.data as LLMNodeData}
-                    onClose={() => closeRightPanelTab('advanced')}
-                  />
-                ) : node.type === 'llmNode' &&
-                  activeRightTabId === 'knowledge' ? (
+                {node.type === 'llmNode' && activeRightTabId === 'knowledge' ? (
                   <LLMReferenceSidePanel
                     embedded
                     nodeId={node.id}
@@ -1095,8 +1096,8 @@ export function NodeFullscreenEditor() {
                       열린 보조 패널 없음
                     </div>
                     <p>
-                      중앙 설정에서 고급 설정, 지식 베이스, 미리보기 같은 보조
-                      기능을 열면 이곳에 탭으로 추가됩니다.
+                      중앙 설정에서 지식 베이스 같은 보조 기능을 열면 이곳에
+                      탭으로 추가됩니다.
                     </p>
                   </div>
                 )}
