@@ -297,6 +297,76 @@ class LLMNode(Node[LLMNodeData]):
 
     node_type = "llmNode"
 
+    def _resolve_model_routing_policy(self) -> tuple[str, Optional[str], Optional[dict]]:
+        """저장된 active policy snapshot으로 실행 모델을 결정한다.
+
+        Judge LLM은 정책 갱신 단계에서만 호출되어야 하므로, 런타임은 이미
+        저장된 policy rule만 읽고 safe summary metadata를 남긴다.
+        """
+        selected_model_id = self.data.model_id
+        fallback_model_id = self.data.fallback_model_id
+        if not self.data.auto_model_routing:
+            return selected_model_id, fallback_model_id, None
+
+        policy = self.data.model_routing_policy or {}
+        if not isinstance(policy, dict):
+            return selected_model_id, fallback_model_id, {
+                "enabled": True,
+                "decision_source": "stored_model",
+                "reason_code": "policy_unavailable",
+                "judge_called": False,
+            }
+
+        active_policy = policy.get("active_policy")
+        if not isinstance(active_policy, dict):
+            return selected_model_id, fallback_model_id, {
+                "enabled": True,
+                "policy_id": policy.get("policy_id"),
+                "policy_version": policy.get("policy_version"),
+                "decision_source": "stored_model",
+                "reason_code": "active_policy_unavailable",
+                "judge_called": False,
+            }
+
+        selected_model_id = (
+            str(active_policy.get("default_model_id") or "").strip()
+            or selected_model_id
+        )
+        fallback_model_id = (
+            str(active_policy.get("fallback_model_id") or "").strip()
+            or fallback_model_id
+        )
+        matched_rule_id = None
+        reason_code = "active_policy"
+        rules = active_policy.get("rules")
+        if isinstance(rules, list) and rules:
+            first_rule = rules[0] if isinstance(rules[0], dict) else {}
+            selected_model_id = (
+                str(first_rule.get("selected_model_id") or "").strip()
+                or selected_model_id
+            )
+            fallback_model_id = (
+                str(first_rule.get("fallback_model_id") or "").strip()
+                or fallback_model_id
+            )
+            matched_rule_id = first_rule.get("id")
+            reason_code = first_rule.get("reason_code") or reason_code
+
+        if fallback_model_id == selected_model_id:
+            fallback_model_id = None
+
+        return selected_model_id, fallback_model_id, {
+            "enabled": True,
+            "policy_id": policy.get("policy_id"),
+            "policy_version": policy.get("policy_version"),
+            "selected_model": selected_model_id,
+            "fallback_model": fallback_model_id,
+            "decision_source": "active_policy",
+            "matched_rule_id": matched_rule_id,
+            "reason_code": reason_code,
+            "judge_called": False,
+        }
+
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
         LLM 노드의 실제 실행 로직 구현.
@@ -318,8 +388,9 @@ class LLMNode(Node[LLMNodeData]):
         temp_session = None
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
-        selected_model_id = self.data.model_id
-        fallback_model_id = self.data.fallback_model_id
+        selected_model_id, fallback_model_id, model_routing_metadata = (
+            self._resolve_model_routing_policy()
+        )
 
         if not client_override or self.data.knowledgeBases:
             db_session, should_close_session = self._borrow_db_session()
@@ -344,7 +415,7 @@ class LLMNode(Node[LLMNodeData]):
                         "LLM 노드 실행에 유효한 user_id가 필요합니다."
                     ) from exc
                 organization_id = self._require_runtime_organization_id(
-                    user_id, self.data.model_id
+                    user_id, selected_model_id
                 )
 
                 try:
@@ -730,6 +801,7 @@ class LLMNode(Node[LLMNodeData]):
                 "model": used_model_id,
                 "cost": cost,
                 "metadata": {
+                    "model_routing": model_routing_metadata,
                     "knowledge_search": knowledge_metadata
                     if knowledge_metadata
                     else None,

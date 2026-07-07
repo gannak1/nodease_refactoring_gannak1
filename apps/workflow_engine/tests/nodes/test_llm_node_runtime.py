@@ -2339,6 +2339,111 @@ def test_llm_runtime_permission_denied_uses_detailed_reason_and_unknown_target(
     assert audit_calls[0]["metadata"]["reason"] == "model_relation_not_verified"
 
 
+def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
+    """자동 라우팅 ON이면 실행 시점 judge 호출 없이 active policy 모델을 사용합니다."""
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    workflow_run_id = uuid.uuid4()
+    calls = []
+
+    class PolicyClient:
+        model_id = "gpt-4.1-mini"
+
+        def invoke_sync(self, messages, **kwargs):
+            calls.append({"kind": "invoke", "messages": messages, "kwargs": kwargs})
+            return {
+                "choices": [{"message": {"content": "policy ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            }
+
+    def fake_runtime_client(db, *, user_id, model_id, organization_id):
+        calls.append(
+            {
+                "kind": "client",
+                "model_id": model_id,
+                "organization_id": organization_id,
+            }
+        )
+        return LLMRuntimeSelection(
+            client=PolicyClient(),
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(
+        workflow_llm_service.LLMService,
+        "get_runtime_client_for_user",
+        fake_runtime_client,
+    )
+    monkeypatch.setattr(
+        LLMNode,
+        "_require_runtime_organization_id",
+        lambda self, _user_id, _model_id: organization_id,
+    )
+    monkeypatch.setattr(
+        workflow_llm_service.LLMService,
+        "calculate_cost",
+        lambda *args, **kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        workflow_llm_service.LLMService,
+        "log_usage",
+        lambda *args, **kwargs: None,
+    )
+
+    data = LLMNodeData(
+        title="policy routing",
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1",
+        auto_model_routing=True,
+        model_routing_policy={
+            "policy_id": "policy-1",
+            "policy_version": "router-policy-v4",
+            "active_policy": {
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "rules": [
+                    {
+                        "id": "low-risk-json-triage",
+                        "reason_code": "quality_gate_passed_cost_reduction",
+                        "selected_model_id": "gpt-4.1-mini",
+                    }
+                ],
+            },
+        },
+        user_prompt="hello",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node.execution_context = {
+        "user_id": str(user_id),
+        "organization_id": str(organization_id),
+        "workflow_id": str(workflow_id),
+        "workflow_run_id": str(workflow_run_id),
+    }
+
+    result = node.execute({})
+
+    assert result["text"] == "policy ok"
+    assert calls[0]["kind"] == "client"
+    assert calls[0]["model_id"] == "gpt-4.1-mini"
+    assert not any(call.get("kind") == "judge" for call in calls)
+    assert result["metadata"]["model_routing"] == {
+        "enabled": True,
+        "policy_id": "policy-1",
+        "policy_version": "router-policy-v4",
+        "selected_model": "gpt-4.1-mini",
+        "fallback_model": "gpt-4.1",
+        "decision_source": "active_policy",
+        "matched_rule_id": "low-risk-json-triage",
+        "reason_code": "quality_gate_passed_cost_reduction",
+        "judge_called": False,
+    }
+
+
 def test_workflow_llm_service_uses_relation_priority_before_credential_created_at(
     monkeypatch,
 ):
