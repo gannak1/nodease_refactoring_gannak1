@@ -157,9 +157,10 @@ Side effects:
 ```
 
 - App의 primary workflow(`apps.workflow_id`) 기준이다. 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
+- 같은 `app_id`에 연결된 과거/보조 Workflow row는 `budget_status` 후보가 아니다. `apps.workflow_id`가 null이거나 해당 workflow에 활성 예산이 없으면, 다른 Workflow row에 활성 예산이 있어도 `budget_status`는 null이다.
 - member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022~023).
 - `usage_ratio`와 `status`의 판정은 관리자 예산 블록과 동일하게 당월(KST) 비용 합계와 반올림 전 값을 사용한다.
-- 목록 전체의 사용률 계산은 현재 응답에 포함될 workflow id를 모아 workflow별 당월 비용을 grouped query로 조회한다 (N+1 금지).
+- 목록 전체의 사용률 계산은 현재 응답 App의 primary workflow id를 모아 workflow별 당월 비용을 grouped query로 조회한다 (N+1 금지). 누락 복구를 위해 `workflows.app_id`로 workflow 후보를 확장하지 않는다.
 - `GET /apps/operations`에서는 각 row의 `app.budget_status`에 포함한다. `GET /apps`에서는 각 `AppResponse.budget_status`에 포함한다.
 
 ## 실행 차단 응답

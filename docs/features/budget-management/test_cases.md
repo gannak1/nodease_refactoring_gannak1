@@ -41,7 +41,9 @@ Verified Against: TBD
 - Given 활성 예산이 있는 App, When member가 `GET /apps`를 호출하면, Then 항목의 `budget_status`에 `usage_ratio`, `status`만 포함되고 예산 금액/비용 원문은 포함되지 않는다.
 - Given 활성 예산이 있는 App, When member가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
 - Given 예산 미설정 App 또는 `workflow_id`가 null인 App, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status`는 null이고 기존 응답 필드는 변하지 않는다.
-- Given `GET /apps` 또는 `GET /apps/operations` 응답 대상에 여러 workflow가 포함된다, When `budget_status`를 계산하면, Then workflow별 당월 비용은 grouped query로 계산하고 App row마다 개별 집계를 반복하지 않는다.
+- Given App의 primary workflow에는 활성 예산이 없고 같은 `app_id`의 과거/보조 workflow에는 활성 예산과 초과 비용이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이고 보조 workflow의 `exceeded` 상태를 대신 표시하지 않는다.
+- Given `workflow_id=null`인 App과 같은 `app_id`를 가진 과거/보조 workflow에 활성 예산이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이다.
+- Given `GET /apps` 또는 `GET /apps/operations` 응답 대상에 여러 App의 primary workflow가 포함된다, When `budget_status`를 계산하면, Then primary workflow별 당월 비용은 grouped query로 계산하고 App row마다 개별 집계를 반복하지 않는다.
 - Given 예산 100 USD와 당월 비용 89.99/90.00/100.00/100.000001 USD인 App들이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status.status`는 각각 `normal`/`at_risk`/`at_risk`/`exceeded`다.
 - Given KST 월 경계 row가 App의 primary workflow에 기록되어 있다, When `budget_status`를 계산하면, Then KST 당월 `[start, end)` 경계 기준으로 포함/제외한다.
 
@@ -132,8 +134,8 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - admin summary budget 블록 — at_risk/exceeded 카운트, `ratio` 계산, 분모 = 활성 예산 workflow 수, 활성 예산 0개 → null, 비활성 예산 workflow는 분모/분자 모두 제외.
 - `GET /admin/usage/workflows` budget 블록 — 기간 필터와 무관하게 당월 기준, 미설정 null.
 - `GET /admin/workflow-budgets` 목록 — 조직 scope 필터, `updated_at` 내림차순, pagination.
-- `GET /apps` budget_status — 목록 전체가 grouped query 1회로 계산 (N+1 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null.
-- `GET /apps/operations` app budget_status — operations page/batch의 workflow id 기준으로 grouped query 1회 계산, `row.app.budget_status` shape는 `GET /apps`와 동일, 권한 없는 row에는 예산 상태를 노출하지 않음.
+- `GET /apps` budget_status — 목록 전체가 primary workflow id 기준 grouped query 1회로 계산 (N+1 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null, 같은 `app_id`의 과거/보조 workflow 예산은 무시.
+- `GET /apps/operations` app budget_status — operations page/batch의 primary workflow id 기준으로 grouped query 1회 계산, `row.app.budget_status` shape는 `GET /apps`와 동일, 권한 없는 row에는 예산 상태를 노출하지 않음, `workflows.app_id` 역참조로 후보를 확장하지 않음.
 - App budget_status 경계값 — 89.99/90.00/100.00/100.000001(예산 100)에서 `normal`/`at_risk`/`at_risk`/`exceeded`, `total_cost` NULL은 0, 비활성/0 이하 예산은 null.
 - App budget_status 월 경계 — KST 월초 정각 포함, 다음 달 월초 정각 제외, 기준 시각은 timezone-aware KST now 사용.
 - 모든 예산 응답에 secret/credential/raw payload 계열 필드 부재.

@@ -200,7 +200,7 @@ def test_app_budget_status_uses_grouped_cost_lookup(monkeypatch):
     assert statuses[workflow_ids[1]]["status"] == "at_risk"
 
 
-def test_attach_budget_status_uses_workflow_app_relation_when_app_pointer_is_missing():
+def test_attach_budget_status_ignores_workflow_app_relation_when_app_pointer_is_missing():
     organization_id = uuid4()
     app_id = uuid4()
     workflow_id = uuid4()
@@ -234,10 +234,56 @@ def test_attach_budget_status_uses_workflow_app_relation_when_app_pointer_is_mis
         organization_id=organization_id,
     )
 
-    assert app.budget_status == {
-        "usage_ratio": pytest.approx(0.95),
-        "status": "at_risk",
-    }
+    assert app.budget_status is None
+
+
+def test_attach_budget_status_ignores_secondary_workflow_when_primary_has_no_budget():
+    organization_id = uuid4()
+    app_id = uuid4()
+    primary_workflow_id = uuid4()
+    secondary_workflow_id = uuid4()
+    app = SimpleNamespace(
+        id=app_id,
+        organization_id=organization_id,
+        workflow_id=primary_workflow_id,
+    )
+    db = _BudgetStatusDb(
+        budgets=[
+            _budget_row(
+                organization_id,
+                secondary_workflow_id,
+                Decimal("100.00"),
+            )
+        ],
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                secondary_workflow_id,
+                total_cost=Decimal("100.000001"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+            )
+        ],
+        workflows=[
+            SimpleNamespace(
+                id=primary_workflow_id,
+                app_id=app_id,
+                organization_id=organization_id,
+            ),
+            SimpleNamespace(
+                id=secondary_workflow_id,
+                app_id=app_id,
+                organization_id=organization_id,
+            ),
+        ],
+    )
+
+    AppService._attach_budget_statuses(
+        db,
+        [app],
+        organization_id=organization_id,
+    )
+
+    assert app.budget_status is None
 
 
 class _BudgetStatusDb:

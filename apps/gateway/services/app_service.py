@@ -706,9 +706,7 @@ class AppService:
         organization_id: Any,
     ) -> None:
         workflow_ids_by_app_key = _workflow_id_candidates_by_app_key(
-            db,
             apps,
-            organization_id=organization_id,
         )
         workflow_ids = _unique_workflow_ids(
             workflow_id
@@ -1015,62 +1013,17 @@ class AppService:
 
 
 def _workflow_id_candidates_by_app_key(
-    db: Session,
     apps: list[App],
-    *,
-    organization_id: Any,
 ) -> dict[Any, list[Any]]:
-    workflow_ids_by_app_key = {
+    return {
         id(app): _unique_workflow_ids([app.workflow_id]) for app in apps
     }
-    app_keys_by_app_id: dict[Any, list[int]] = {}
-    for app in apps:
-        app_id = getattr(app, "id", None)
-        if app_id:
-            app_keys_by_app_id.setdefault(app_id, []).append(id(app))
-
-    for workflow in _workflow_rows_for_apps(
-        db,
-        app_ids=list(app_keys_by_app_id),
-        organization_id=organization_id,
-    ):
-        for app_key in app_keys_by_app_id.get(workflow.app_id, []):
-            workflow_ids_by_app_key[app_key] = _unique_workflow_ids(
-                [*workflow_ids_by_app_key[app_key], workflow.id]
-            )
-    return workflow_ids_by_app_key
 
 
 def _rollback_budget_status_lookup(db: Session) -> None:
     rollback = getattr(db, "rollback", None)
     if callable(rollback):
         rollback()
-
-
-def _workflow_rows_for_apps(
-    db: Session,
-    *,
-    app_ids: list[Any],
-    organization_id: Any,
-) -> list[Any]:
-    if not app_ids:
-        return []
-    app_id_set = set(app_ids)
-    if hasattr(db, "workflows"):
-        return [
-            workflow
-            for workflow in db.workflows
-            if workflow.app_id in app_id_set
-            and (
-                organization_id is None
-                or workflow.organization_id == organization_id
-            )
-        ]
-
-    query = db.query(Workflow).filter(Workflow.app_id.in_(app_id_set))
-    if organization_id is not None:
-        query = query.filter(Workflow.organization_id == organization_id)
-    return [workflow for workflow in query.all() if hasattr(workflow, "app_id")]
 
 
 def _first_budget_status(

@@ -32,6 +32,7 @@ Budget Management 확장 계약은 [budget-management api_spec](../budget-manage
 
 - `budget_status`는 member 표면용 요약이다. 예산 금액과 당월 비용 원문은 포함하지 않는다.
 - 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
+- 같은 `app_id`에 과거/보조 Workflow row가 남아 있어도 App의 primary workflow(`apps.workflow_id`)가 아니면 `budget_status` 후보로 사용하지 않는다.
 - `budget_status` 계산 규칙과 N+1 금지는 [budget-management api_spec](../budget-management/api_spec.md)의 `GET /apps, GET /apps/operations (확장)`을 따른다.
 
 ### GET /apps/operations
