@@ -15,7 +15,6 @@ export type FinalResponsePreview =
     }
   | {
       kind: 'json';
-      title?: string;
       items: Array<{ label: string; value: string }>;
       text: string;
       isEmpty: boolean;
@@ -193,7 +192,6 @@ export const buildFinalResponsePreview = (
     const items = buildJsonPreviewItems(jsonValue);
     return {
       kind: 'json',
-      title: 'JSON 응답',
       items,
       text: items.map((item) => `${item.label}: ${item.value}`).join('\n'),
       isEmpty: items.length === 0,

@@ -31,7 +31,6 @@ describe('TestSidebar final response card', () => {
   it('JSON 응답은 raw dump 대신 필드 preview로 표시한다', () => {
     const preview: FinalResponsePreview = {
       kind: 'json',
-      title: 'JSON 응답',
       items: [
         { label: 'summary', value: '온보딩 절차 안내' },
         { label: 'next_steps', value: '2개 항목' },
