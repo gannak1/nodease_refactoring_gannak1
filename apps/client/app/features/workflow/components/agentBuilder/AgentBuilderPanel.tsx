@@ -158,6 +158,10 @@ export function AgentBuilderPanel({
   const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
 
   const latestResponse = responses[responses.length - 1];
+  const latestDraftPreview = latestResponse?.draft_preview;
+  const canShowDraftPreviewAction = Boolean(
+    latestDraftPreview?.validation_result.valid,
+  );
   const storageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
   const scopeRef = useRef(storageKey);
 
@@ -310,8 +314,9 @@ export function AgentBuilderPanel({
   };
 
   const openPreview = async () => {
-    const preview = latestResponse?.draft_preview;
+    const preview = latestDraftPreview;
     if (!preview) return;
+    if (agentBuilderPreview) return;
     if (hasUnsavedChanges) {
       toast.warning('저장되지 않은 변경이 있어 도안 보기를 열 수 없습니다.');
       return;
@@ -409,23 +414,16 @@ export function AgentBuilderPanel({
   };
 
   const cancelPreview = async () => {
-    const draftId = agentBuilderPreview?.draftId;
     setApplyNotice(null);
     clearAgentBuilderPreview();
     if (prePreviewViewport) {
       setViewport(prePreviewViewport);
       setPrePreviewViewport(null);
     }
-    if (!draftId) return;
-    try {
-      await agentBuilderApi.cancelDraft(draftId);
-    } catch {
-      toast.warning('초안 취소 audit 기록에 실패했습니다.');
-    }
   };
 
   return (
-    <div className="fixed bottom-24 right-5 z-50 flex flex-col items-end gap-3">
+    <div className="fixed bottom-[72px] right-5 z-50 flex flex-col items-end gap-3">
       {isOpen && (
         <section className="flex h-[520px] w-[380px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
           <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -522,12 +520,11 @@ export function AgentBuilderPanel({
           </div>
 
           <div className="border-t border-slate-200 p-3">
-            {latestResponse?.draft_preview?.validation_result.valid &&
-              !agentBuilderPreview && (
+            {canShowDraftPreviewAction && (
               <button
                 type="button"
                 onClick={openPreview}
-                disabled={hasUnsavedChanges}
+                disabled={hasUnsavedChanges || Boolean(agentBuilderPreview)}
                 className="mb-2 flex w-full items-center justify-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 <Eye className="h-4 w-4" />

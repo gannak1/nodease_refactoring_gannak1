@@ -424,6 +424,94 @@ def test_structured_request_respects_explicit_new_workflow_intent_with_workflow_
     assert structured.draft_mode == "new_workflow"
 
 
+def test_structured_request_defaults_to_new_workflow_without_targeted_insert():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    workflow = SimpleNamespace(id=uuid.uuid4(), graph={"nodes": [], "edges": []})
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력값을 분석해서 답변하는 로직을 만들어줘"),
+        workflow=workflow,
+    )
+
+    assert structured.request_type == "new_workflow"
+    assert structured.draft_mode == "new_workflow"
+
+
+def test_structured_request_modifies_existing_workflow_only_for_targeted_insert():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    workflow = SimpleNamespace(id=uuid.uuid4(), graph={"nodes": [], "edges": []})
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="이 연결 사이에 입력값을 분석하는 노드를 넣어줘",
+            selected_edge_id="edge-1",
+        ),
+        workflow=workflow,
+    )
+
+    assert structured.request_type == "modify_workflow"
+    assert structured.draft_mode == "modify_workflow"
+
+
+def test_structured_request_rejects_non_workflow_message_with_hints():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="h"),
+        workflow=None,
+    )
+    validation = svc._validate_structured_request(  # noqa: SLF001
+        structured,
+        app_id=uuid.uuid4(),
+    )
+
+    assert structured.request_type == "unsupported"
+    assert structured.planned_steps == []
+    assert structured.unsupported_requests
+    assert validation.valid is False
+    assert validation.issues[0].code == "UNSUPPORTED_REQUEST"
+
+
+def test_input_output_request_builds_without_llm_model_route(monkeypatch):
+    monkeypatch.delenv(service_module.APPROVED_DRAFT_MODEL_ENV, raising=False)
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력 - 출력 노드를 만들어줘"),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    assert structured.request_type == "new_workflow"
+    assert "llm" not in structured.required_capabilities
+    assert [node["type"] for node in preview_graph["nodes"]] == [
+        "startNode",
+        "answerNode",
+    ]
+    assert preview_graph["edges"][0]["source"].startswith("agent-input")
+    assert preview_graph["edges"][0]["target"].startswith("agent-answer")
+
+
 def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warning():
     svc = AgentBuilderService(
         FakeDb(),

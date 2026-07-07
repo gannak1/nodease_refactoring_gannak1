@@ -75,7 +75,7 @@ Knowledge Base, workflow target, supported capability처럼 다른 resolver가 �
 
 ### AB-FR-005: Existing Workflow Target Resolution
 
-기존 workflow 수정 요청에서는 자연어 target이 selected node보다 우선한다. 자연어가 특정 node type 또는 role을 지칭하고 후보가 하나이면 그 후보를 기준으로 한다. 후보가 여러 개이면 selected node가 후보 안에 있을 때만 selected node를 기준으로 하고, 그렇지 않으면 clarification을 반환한다.
+기존 workflow 편집 화면에서 Agent Builder를 열었더라도 사용자가 "이 연결 사이에", "선택한 노드 뒤에", "현재 workflow에"처럼 기존 graph 안의 삽입 위치나 수정 대상을 명시하지 않으면 새 workflow draft 생성을 기본값으로 본다. 기존 workflow 수정 요청에서는 자연어 target이 selected node/edge보다 우선한다. 자연어가 특정 node type 또는 role을 지칭하고 후보가 하나이면 그 후보를 기준으로 한다. 후보가 여러 개이면 selected node가 후보 안에 있을 때만 selected node를 기준으로 하고, 그렇지 않으면 clarification을 반환한다.
 
 사용자가 canvas edge를 선택했고 자연어가 `여기 사이에`, `이 연결에`처럼 edge 문맥을 지칭하면 `selected_edge_id`를 target resolution hint로 사용할 수 있다. `selected_edge_id`는 위치 해석 보조 정보일 뿐이며 권한, scope, organization 판단에 사용하지 않는다.
 
@@ -162,7 +162,7 @@ Preview Mode는 현재 editor graph를 덮어쓰지 않고, agent가 생성한 `
 
 Preview Mode의 Node Detail Panel은 편집을 허용하지 않는다. 사용자가 draft 내용을 바꾸려면 채팅 후속 요청으로 수정해야 한다. Preview Mode에는 이 graph가 아직 저장되지 않은 도안이라는 안내와 `적용 및 저장`, `취소` action을 항상 접근 가능한 위치에 표시해야 한다. MVP에서는 이 action을 canvas banner/action bar 또는 Preview Mode 동안 닫을 수 없는 Agent Builder panel에 둘 수 있지만, 사용자가 panel을 닫아 적용/취소 경로를 잃게 해서는 안 된다.
 
-`취소`를 선택하면 preview graph를 폐기하고 기존 editor state로 돌아간다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
+`취소`를 선택하면 현재 Preview Mode를 종료하고 기존 editor state로 돌아간다. 이는 draft metadata 자체를 폐기한다는 뜻이 아니며, validation을 통과한 직전 draft는 만료되거나 새 draft로 대체되기 전까지 다시 `도안 보기`로 열 수 있다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
 
 `적용 및 저장`을 선택하면 backend는 원 draft metadata 조회, 요청 유형별 권한 재확인, stale check, validation 재확인을 통과한 경우에만 workflow graph를 저장한다. 기존 workflow 수정 draft는 workflow read/write 권한을 재확인하고, 새 workflow draft는 app 또는 workflow 생성 scope 권한을 재확인한다. 전체 교체 draft는 기존 workflow read/write 권한과 교체 validation을 모두 만족해야 한다.
 

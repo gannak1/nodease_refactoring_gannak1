@@ -137,9 +137,30 @@ EDGE_CONTEXT_RE = re.compile(
     r"(여기\s*사이|이\s*연결|연결\s*사이|엣지|edge|connection|between)",
     re.IGNORECASE,
 )
+TARGETED_MODIFY_INTENT_RE = re.compile(
+    r"(여기|이\s*노드|선택한\s*노드|현재\s*workflow|현재\s*워크플로우|기존\s*workflow|"
+    r"기존\s*워크플로우|뒤에|앞에|사이에|이\s*연결|연결\s*사이|insert|"
+    r"between|after|before|modify\s+this|update\s+current)",
+    re.IGNORECASE,
+)
 NEW_WORKFLOW_INTENT_RE = re.compile(
     r"(새\s*workflow|새\s*워크플로우|새로\s*(?:만들|생성)|"
     r"처음부터|new\s+workflow|create\s+(?:a\s+)?new\s+workflow)",
+    re.IGNORECASE,
+)
+WORKFLOW_REQUEST_INTENT_RE = re.compile(
+    r"(workflow|워크플로우|플로우|로직|자동화|노드|node|입력|출력|input|output|"
+    r"llm|slack|슬랙|knowledge|kb|rag|전송|보내|요약|분석|답변|찾아|검색)",
+    re.IGNORECASE,
+)
+WORKFLOW_BUILD_ACTION_RE = re.compile(
+    r"(만들|생성|작성|구성|설계|추가|연결|붙여|자동|보내|전송|요약|분석|답변|"
+    r"찾아|검색|create|build|make|generate|add|connect|send|summari[sz]e|analy[sz]e)",
+    re.IGNORECASE,
+)
+SIMPLE_INPUT_OUTPUT_RE = re.compile(
+    r"((입력|input)\s*(?:-|→|->|에서|을|를)?\s*(출력|output))|"
+    r"((출력|output)\s*(?:-|←|<-)?\s*(입력|input))",
     re.IGNORECASE,
 )
 APPROVED_DRAFT_MODEL_ENV = "AGENT_BUILDER_DRAFT_MODEL_ID"
@@ -175,6 +196,22 @@ def _message_mentions_edge_context(message: str) -> bool:
 
 def _message_requests_new_workflow(message: str) -> bool:
     return bool(NEW_WORKFLOW_INTENT_RE.search(message or ""))
+
+
+def _message_requests_targeted_modify(message: str) -> bool:
+    return bool(TARGETED_MODIFY_INTENT_RE.search(message or ""))
+
+
+def _message_looks_like_workflow_request(message: str) -> bool:
+    text = message or ""
+    return bool(
+        WORKFLOW_REQUEST_INTENT_RE.search(text)
+        and WORKFLOW_BUILD_ACTION_RE.search(text)
+    )
+
+
+def _message_requests_simple_input_output(message: str) -> bool:
+    return bool(SIMPLE_INPUT_OUTPUT_RE.search(message or ""))
 
 
 def _redact_kb_refs(value: Any) -> list[dict[str, Any]]:
@@ -633,6 +670,22 @@ class AgentBuilderService:
         except Exception:
             return self._fail_processing_request(request_row)
         structured_warnings = self._structured_request_warnings(structured)
+        if structured.request_type == "unsupported":
+            response = AgentBuilderMessageResponse(
+                request_id=request_row.id,
+                status="unsupported",
+                structured_request=structured,
+                clarification_questions=[
+                    "워크플로우로 만들 작업을 설명해주세요. 예: '입력값을 LLM으로 요약해 응답하는 workflow를 만들어줘'",
+                    "기존 workflow에 추가하려면 '선택한 노드 뒤에' 또는 '이 연결 사이에'처럼 위치를 함께 알려주세요.",
+                    "간단한 구조만 원하면 '입력 - 출력 노드를 만들어줘'처럼 노드 흐름을 적어주세요.",
+                ],
+                validation_result=validation,
+                warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
+            )
+            self._finish_request(request_row, response)
+            self.db.commit()
+            return response
         if recommendations["status"] == "clarification_required":
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
@@ -1482,12 +1535,29 @@ class AgentBuilderService:
         request: AgentBuilderMessageRequest,
         workflow: Workflow | None,
     ) -> AgentBuilderStructuredRequest:
+        if not _message_looks_like_workflow_request(request.message):
+            return AgentBuilderStructuredRequest(
+                request_type="unsupported",
+                draft_mode="new_workflow",
+                intent_summary=_safe_summary(request.message),
+                planned_steps=[],
+                knowledge_requirements=[],
+                required_capabilities=[],
+                pending_resolution=[],
+                missing_information=[],
+                unsupported_requests=[
+                    "워크플로우 생성 또는 수정 의도가 충분히 명확하지 않습니다."
+                ],
+                risk_flags=[],
+            )
+
         text = request.message.lower()
         needs_kb = any(
             token in request.message
             for token in ["정책", "규정", "내규", "문서", "자료", "근거", "찾아", "검색", "Knowledge", "KB"]
         )
         wants_slack = "slack" in text or "슬랙" in request.message
+        simple_input_output = _message_requests_simple_input_output(request.message)
         knowledge_requirements: list[AgentBuilderKnowledgeRequirement] = []
         pending_resolution: list[AgentBuilderPendingResolution] = []
         if needs_kb:
@@ -1521,28 +1591,44 @@ class AgentBuilderService:
                 )
             )
         explicit_new_workflow = _message_requests_new_workflow(request.message)
+        targeted_modify = (
+            workflow is not None
+            and not explicit_new_workflow
+            and (
+                _message_requests_targeted_modify(request.message)
+                or (
+                    request.selected_edge_id is not None
+                    and _message_mentions_edge_context(request.message)
+                )
+            )
+        )
         draft_mode = (
-            "new_workflow" if explicit_new_workflow or workflow is None else "modify_workflow"
+            "modify_workflow" if targeted_modify else "new_workflow"
         )
         planned_steps = [
             AgentBuilderPlannedStep(
                 step_id="step_input",
                 capability="start_input",
                 purpose="사용자 입력을 받습니다.",
-            ),
-            AgentBuilderPlannedStep(
-                step_id="step_llm",
-                capability="knowledge_backed_llm" if needs_kb else "llm",
-                purpose="입력을 분석하고 답변을 생성합니다.",
-                depends_on=["step_input"],
-            ),
+            )
         ]
-        answer_depends_on = ["step_llm"]
-        required_capabilities = ["start_input", "llm", "answer"]
+        answer_depends_on = ["step_input"]
+        required_capabilities = ["start_input", "answer"]
         risk_flags: list[str] = []
-        if needs_kb:
+        if not simple_input_output:
+            planned_steps.append(
+                AgentBuilderPlannedStep(
+                    step_id="step_llm",
+                    capability="knowledge_backed_llm" if needs_kb else "llm",
+                    purpose="입력을 분석하고 답변을 생성합니다.",
+                    depends_on=["step_input"],
+                )
+            )
+            answer_depends_on = ["step_llm"]
+            required_capabilities.append("llm")
+        if needs_kb and not simple_input_output:
             required_capabilities.append("knowledge_base")
-        if wants_slack:
+        if wants_slack and not simple_input_output:
             planned_steps.append(
                 AgentBuilderPlannedStep(
                     step_id="step_slack",
@@ -1600,6 +1686,15 @@ class AgentBuilderService:
         app_id: uuid.UUID | None,
     ) -> AgentBuilderValidationResult:
         issues: list[AgentBuilderValidationIssue] = []
+        if structured.request_type == "unsupported":
+            issues.append(
+                AgentBuilderValidationIssue(
+                    code="UNSUPPORTED_REQUEST",
+                    message="워크플로우 생성 또는 수정 요청으로 이해할 수 없습니다.",
+                    path="message",
+                )
+            )
+            return AgentBuilderValidationResult(valid=False, issues=issues)
         if structured.draft_mode == "new_workflow" and app_id is None:
             issues.append(
                 AgentBuilderValidationIssue(
@@ -1872,14 +1967,24 @@ class AgentBuilderService:
         existing_ids = _graph_node_ids(graph)
         suffix = uuid.uuid4().hex[:8]
         input_id = self._unique_node_id("agent-input", existing_ids, suffix)
-        llm_id = self._unique_node_id("agent-llm", existing_ids | {input_id}, suffix)
+        uses_llm = "llm" in structured.required_capabilities or any(
+            step.capability in {"llm", "knowledge_backed_llm"}
+            for step in structured.planned_steps
+        )
+        llm_id = (
+            self._unique_node_id("agent-llm", existing_ids | {input_id}, suffix)
+            if uses_llm
+            else None
+        )
         wants_slack = "slack_send" in structured.required_capabilities or any(
             step.capability == "slack_send" for step in structured.planned_steps
         )
-        reserved_ids = existing_ids | {input_id, llm_id}
+        reserved_ids = existing_ids | {input_id}
+        if llm_id:
+            reserved_ids.add(llm_id)
         slack_id = (
             self._unique_node_id("agent-slack", reserved_ids, suffix)
-            if wants_slack
+            if wants_slack and llm_id
             else None
         )
         if slack_id:
@@ -1887,7 +1992,7 @@ class AgentBuilderService:
         answer_id = self._unique_node_id(
             "agent-answer", reserved_ids, suffix
         )
-        model_id = self._default_model_id()
+        model_id = self._default_model_id() if llm_id else None
         kb_refs = [
             {
                 "id": item["safe_handle"],
@@ -1895,7 +2000,7 @@ class AgentBuilderService:
                 "reference_type": "safe_candidate_handle",
             }
             for item in kb_bindings
-        ]
+        ] if llm_id else []
         generated_nodes = [
             {
                 "id": input_id,
@@ -1915,40 +2020,55 @@ class AgentBuilderService:
                     ],
                 },
             },
-            {
-                "id": llm_id,
-                "type": "llmNode",
-                "position": {"x": 360, "y": 0},
-                "data": {
-                    "title": "Knowledge Base-backed LLM" if kb_refs else "LLM",
-                    "provider": "configured",
-                    "model_id": model_id,
-                    "task_type": "answer",
-                    "system_prompt": "사용자 질문에 안전하게 답변합니다.",
-                    "user_prompt": "{{question}}",
-                    "referenced_variables": [
-                        {"name": "question", "value_selector": [input_id, "question"]}
-                    ],
-                    "parameters": {},
-                    "output_format": {"type": "text"},
-                    "knowledgeBases": kb_refs,
-                    "scoreThreshold": 0.5,
-                    "topK": 3,
-                },
-            },
+        ]
+        if llm_id:
+            generated_nodes.append(
+                {
+                    "id": llm_id,
+                    "type": "llmNode",
+                    "position": {"x": 360, "y": 0},
+                    "data": {
+                        "title": "Knowledge Base-backed LLM" if kb_refs else "LLM",
+                        "provider": "configured",
+                        "model_id": model_id,
+                        "task_type": "answer",
+                        "system_prompt": "사용자 질문에 안전하게 답변합니다.",
+                        "user_prompt": "{{question}}",
+                        "referenced_variables": [
+                            {
+                                "name": "question",
+                                "value_selector": [input_id, "question"],
+                            }
+                        ],
+                        "parameters": {},
+                        "output_format": {"type": "text"},
+                        "knowledgeBases": kb_refs,
+                        "scoreThreshold": 0.5,
+                        "topK": 3,
+                    },
+                }
+            )
+        generated_nodes.append(
             {
                 "id": answer_id,
                 "type": "answerNode",
-                "position": {"x": 720, "y": 0},
+                "position": {"x": 720 if llm_id else 360, "y": 0},
                 "data": {
                     "title": "응답",
                     "outputs": [
-                        {"variable": "answer", "value_selector": [llm_id, "text"]}
+                        {
+                            "variable": "answer",
+                            "value_selector": [llm_id, "text"]
+                            if llm_id
+                            else [input_id, "question"],
+                        }
                     ],
                 },
             },
-        ]
-        generated_node_ids_for_layout = [input_id, llm_id, answer_id]
+        )
+        generated_node_ids_for_layout = (
+            [input_id, llm_id, answer_id] if llm_id else [input_id, answer_id]
+        )
         if slack_id:
             generated_nodes.insert(
                 2,
@@ -1979,14 +2099,23 @@ class AgentBuilderService:
             generated_nodes[-1]["position"] = {"x": 1080, "y": 0}
             generated_node_ids_for_layout = [input_id, llm_id, slack_id, answer_id]
 
-        generated_edges = [
-            {
-                "id": f"edge-{input_id}-{llm_id}",
-                "source": input_id,
-                "target": llm_id,
-            }
-        ]
-        if slack_id:
+        if llm_id:
+            generated_edges = [
+                {
+                    "id": f"edge-{input_id}-{llm_id}",
+                    "source": input_id,
+                    "target": llm_id,
+                }
+            ]
+        else:
+            generated_edges = [
+                {
+                    "id": f"edge-{input_id}-{answer_id}",
+                    "source": input_id,
+                    "target": answer_id,
+                }
+            ]
+        if slack_id and llm_id:
             generated_edges.extend(
                 [
                     {
@@ -2001,7 +2130,7 @@ class AgentBuilderService:
                     },
                 ]
             )
-        else:
+        elif llm_id:
             generated_edges.append(
                 {
                     "id": f"edge-{llm_id}-{answer_id}",

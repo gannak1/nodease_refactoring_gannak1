@@ -574,10 +574,20 @@ export default function NodeCanvas() {
   }, [activeWorkflowId, workflows, setViewport]);
 
   useEffect(() => {
-    if (agentBuilderPreview?.previewGraph.viewport) {
+    if (!agentBuilderPreview) return;
+    if (agentBuilderPreview.previewGraph.viewport) {
       setViewport(agentBuilderPreview.previewGraph.viewport);
     }
-  }, [agentBuilderPreview?.draftId, agentBuilderPreview?.previewGraph.viewport, setViewport]);
+    const fitTimer = window.setTimeout(() => {
+      fitView({ padding: 0.25, duration: 300, maxZoom: 1 });
+    }, 0);
+    return () => window.clearTimeout(fitTimer);
+  }, [
+    agentBuilderPreview?.draftId,
+    agentBuilderPreview?.previewGraph.viewport,
+    fitView,
+    setViewport,
+  ]);
 
   const handleMoveEnd = useCallback(
     (_event: unknown, viewport: Viewport) => {

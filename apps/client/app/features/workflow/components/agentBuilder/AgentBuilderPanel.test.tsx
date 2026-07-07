@@ -380,4 +380,76 @@ describe('AgentBuilderPanel', () => {
     });
     expect(screen.queryByRole('button', { name: '도안 보기' })).toBeNull();
   });
+
+  it('도안 보기 중에는 버튼을 비활성화하고 취소 후 같은 도안을 다시 열 수 있다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow-old:app-1',
+      'session-reopen',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-reopen',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [
+        {
+          request_id: 'request-reopen',
+          status: 'draft_ready',
+          clarification_questions: [],
+          warnings: [],
+          draft_preview: {
+            draft_id: 'draft-reopen',
+            preview_graph: {
+              nodes: [node('preview-node')],
+              edges: [],
+              viewport: { x: 0, y: 0, zoom: 1 },
+            },
+            base_graph_hash: 'base-hash',
+            draft_mode: 'new_workflow',
+            node_detail_previews: [],
+            validation_result: { valid: true, issues: [] },
+            safety_notices: [],
+          },
+        },
+      ],
+      pending_request: null,
+      draft_preview: null,
+    });
+    vi.mocked(agentBuilderApi.recordPreviewOpened).mockResolvedValue(undefined);
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    const previewButton = await screen.findByRole('button', {
+      name: '도안 보기',
+    });
+    fireEvent.click(previewButton);
+
+    await waitFor(() => {
+      expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByRole('button', { name: '도안 보기' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '도안 보기' })).not.toBeDisabled();
+    });
+    expect(agentBuilderApi.cancelDraft).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '도안 보기' }));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledTimes(2);
+    });
+  });
 });
