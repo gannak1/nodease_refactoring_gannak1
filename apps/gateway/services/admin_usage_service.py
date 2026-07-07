@@ -130,9 +130,7 @@ def _aggregate_workflow_usage_fake(
     aggregates = _primary_workflow_zero_items(db, organization_id)
     for usage in db.usage_logs:
         aggregate = aggregates.get(usage.workflow_id)
-        if aggregate is None or not _is_usage_in_scope(
-            usage, organization_id, period
-        ):
+        if aggregate is None or not _is_usage_in_period(usage, period):
             continue
         _add_usage(aggregate, usage)
 
@@ -213,7 +211,6 @@ def _aggregate_workflow_usage_query(
             LLMUsageLog,
             and_(
                 LLMUsageLog.workflow_id == App.workflow_id,
-                LLMUsageLog.organization_id == organization_id,
                 *_usage_in_period_conditions(period),
             ),
         )
@@ -290,15 +287,8 @@ def _organization_period_cost_fake(
     )
 
 
-def _is_usage_in_scope(
-    usage: Any,
-    organization_id: Any,
-    period: AdminUsagePeriod,
-) -> bool:
-    return (
-        usage.organization_id == organization_id
-        and period.start_at <= usage.created_at < period.end_at
-    )
+def _is_usage_in_period(usage: Any, period: AdminUsagePeriod) -> bool:
+    return period.start_at <= usage.created_at < period.end_at
 
 
 def _empty_usage_item(workflow_id: Any, workflow_name: str) -> dict[str, Any]:

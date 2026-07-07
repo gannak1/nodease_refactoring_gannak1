@@ -294,6 +294,55 @@ def test_aggregate_workflow_usage_includes_zero_usage_primary_workflows():
     assert other_workflow_id not in {item.workflow_id for item in result.items}
 
 
+def test_aggregate_workflow_usage_includes_null_organization_usage_for_primary_workflow():
+    # admin usage 목록은 App primary workflow로 organization scope를 제한하므로,
+    # legacy/migration usage처럼 organization_id가 NULL이어도 같은 workflow 비용은
+    # 예산 판정 경로와 동일하게 합산해야 한다.
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    app_id = uuid4()
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                None,
+                workflow_id,
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_cost=Decimal("1.250000"),
+                created_at=datetime(2026, 7, 5, 0, 0, tzinfo=timezone.utc),
+            )
+        ],
+        workflows=[_workflow(workflow_id, app_id, organization_id)],
+        apps=[
+            _app(
+                app_id,
+                "NULL organization usage 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        ],
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=AdminUsagePeriod(
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+            end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+        page=1,
+        limit=20,
+    )
+
+    item = result.items[0]
+    assert item.workflow_id == workflow_id
+    assert item.prompt_tokens == 100
+    assert item.completion_tokens == 20
+    assert item.call_count == 1
+    assert item.total_cost == pytest.approx(1.25)
+
+
 def test_aggregate_workflow_usage_total_counts_primary_workflows_for_page_slice():
     # total은 usage row 보유 workflow 수가 아니라 응답 대상
     # App primary workflow 전체 건수이고 items는 page slice다.
