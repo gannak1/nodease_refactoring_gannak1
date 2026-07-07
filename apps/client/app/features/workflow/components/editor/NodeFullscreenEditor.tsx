@@ -71,6 +71,17 @@ const getInputChipColor = (sourceNodeId: string) => {
   return INPUT_CHIP_COLORS[hash];
 };
 
+const getInitialNodeEditorLayoutWidth = () => {
+  if (typeof window === 'undefined') {
+    return (
+      sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.default) +
+      NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2
+    );
+  }
+
+  return getNodeEditorMaxLayoutWidth(window.innerWidth);
+};
+
 const PanelResizeHandle = ({
   label,
   onPointerDown,
@@ -326,12 +337,11 @@ export function NodeFullscreenEditor() {
   const [openNavigationPopover, setOpenNavigationPopover] = useState<
     'previous' | 'next' | null
   >(null);
-  const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(
-    NODE_EDITOR_PANEL_WIDTHS.default,
+  const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(() =>
+    getDefaultPanelWidthsForLayout(getInitialNodeEditorLayoutWidth()),
   );
   const [layoutWidth, setLayoutWidth] = useState<number>(
-    sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.default) +
-      NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2,
+    getInitialNodeEditorLayoutWidth,
   );
   const titleInputRef = useRef<HTMLInputElement>(null);
   const outputLabelInputRef = useRef<HTMLInputElement>(null);
@@ -369,12 +379,19 @@ export function NodeFullscreenEditor() {
   }, [editingOutputKey]);
 
   useEffect(() => {
+    if (!fullscreenNodeId) return;
+
     const layoutShell = layoutShellRef.current;
     if (!layoutShell) return;
 
     const updateLayoutWidth = () => {
+      const measuredWidth = layoutShell.getBoundingClientRect().width;
+      let shellWidth = measuredWidth;
+      if (shellWidth <= 0 && typeof window !== 'undefined') {
+        shellWidth = window.innerWidth;
+      }
       const nextLayoutWidth = getNodeEditorMaxLayoutWidth(
-        layoutShell.getBoundingClientRect().width,
+        shellWidth,
       );
       setLayoutWidth(nextLayoutWidth);
       if (!hasCustomPanelWidthsRef.current) {
@@ -383,11 +400,15 @@ export function NodeFullscreenEditor() {
     };
 
     updateLayoutWidth();
+    const animationFrame = window.requestAnimationFrame(updateLayoutWidth);
     const resizeObserver = new ResizeObserver(updateLayoutWidth);
     resizeObserver.observe(layoutShell);
 
-    return () => resizeObserver.disconnect();
-  }, []);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+    };
+  }, [fullscreenNodeId, node?.id]);
 
   const definition = getNodeDefinitionByType(node?.type || '');
   const nodeTypeLabel = definition?.name || 'Node';
