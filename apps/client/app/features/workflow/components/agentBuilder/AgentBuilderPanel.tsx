@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertCircle, Bot, Eye, Loader2, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -220,6 +221,14 @@ export function AgentBuilderPanel({
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    void submit();
   };
 
   const resolvePendingRequestId = async () => {
@@ -495,6 +504,7 @@ export function AgentBuilderPanel({
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleInputKeyDown}
                 disabled={Boolean(pendingRequestId) || isSubmitting}
                 className="min-h-16 flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
                 placeholder="예: 입력값을 분석해서 답변하는 workflow를 만들어줘"

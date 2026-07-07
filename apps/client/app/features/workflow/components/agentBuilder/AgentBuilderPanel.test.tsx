@@ -228,6 +228,57 @@ describe('AgentBuilderPanel', () => {
     });
   });
 
+  it('입력창에서 Enter를 누르면 Agent Builder 요청을 보낸다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-enter',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+      draft_preview: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-enter',
+      status: 'clarification_required',
+      structured_request: null,
+      clarification_questions: ['추가 정보를 알려주세요.'],
+      draft_preview: null,
+      validation_result: null,
+      preview_prompt: null,
+      warnings: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'LLM 가동' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: 'Enter',
+      code: 'Enter',
+    });
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledWith('session-enter', {
+        message: 'LLM 가동',
+        workflowId: 'workflow-old',
+        appId: 'app-1',
+        selectedNodeId: undefined,
+        selectedEdgeId: undefined,
+      });
+    });
+  });
+
   it('validation을 통과하지 못한 draft에는 도안 보기 버튼을 노출하지 않는다', async () => {
     window.localStorage.setItem(
       'agent-builder:workflow-old:app-1',
