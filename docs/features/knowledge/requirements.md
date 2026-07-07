@@ -18,7 +18,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - Standalone RAG Agent answer와 trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)를 따른다.
 - Knowledge Skill은 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)에 따른 provider-neutral target artifact이며, 현재 구현 완료 상태가 아니다.
 - 현재 `documents.meta_info`는 current metadata convention의 source of truth다.
-- Workflow LLM node RAG에서 `execution_subject`가 없으면 현재 MVP는 private KB retrieval을 실패시키는 대신 anonymous public-only로 낮춘다. Public-only 후보는 active Knowledge Collection의 `safe_metadata["visibility"] == "public"`에 연결된 active KB로 제한한다.
+- Workflow LLM node RAG에서 `execution_subject`가 없으면 현재 MVP는 private KB retrieval을 실패시키는 대신 anonymous public-only로 낮춘다. Public-only 후보는 active Knowledge Collection의 `safe_metadata["visibility"] == "public"`에 연결된 active KB로 제한하고, source-managed KB는 별도 source/connector public exposure approval도 통과해야 한다.
 - 목표 cutover 전까지 공식 문서는 현재 동작과 목표 모델을 분리해 읽어야 한다.
 
 ## Target Model
@@ -57,7 +57,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-039: Server-side URL fetch, connector preview/test, crawler/sitemap/API connector, DB/SSH/SaaS/object-storage probe는 중앙 outbound egress boundary와 protocol adapter safety policy를 통과해야 한다.
 - FR-040: Partial operational failure는 권한/source ACL failure와 구분한다. 일부 authorized KB retrieval 실패는 safe partial result로 표시할 수 있지만, permission/source ACL/final evidence failure는 evidence 제외 또는 resource-hidden response로 fail-closed한다.
 - FR-041: PII/secret redaction은 shared privacy/redaction service가 hard baseline을 제공하고, Knowledge ingestion은 이를 사용해 redacted canonical text를 생성한다. Admin policy는 baseline을 약화할 수 없고 organization/collection/source/KB 단위로 더 엄격하게 조정할 수 있다.
-- FR-042: Workflow runtime에서 RAG retrieval을 실행할 때 execution subject가 있으면 해당 subject 기준으로 KB permission과 source ACL을 평가한다. Execution subject가 없으면 workflow owner, deployment owner, builder, `user_id`로 조용히 fallback하지 않고 anonymous public-only로 낮춰 active public collection에 연결된 active KB만 후보로 사용한다. Private KB 접근이 필요한 자동 실행용 service account/operator/preflight는 후속 기능이다.
+- FR-042: Workflow runtime에서 RAG retrieval을 실행할 때 execution subject가 있으면 해당 subject 기준으로 KB permission과 source ACL을 평가한다. Execution subject가 없으면 workflow owner, deployment owner, builder, `user_id`로 조용히 fallback하지 않고 anonymous public-only로 낮춰 active public collection에 연결된 active KB만 후보로 사용한다. Source-managed KB는 valid source/connector public exposure approval도 필요하다. Private KB 접근이 필요한 자동 실행용 service account/operator/preflight는 후속 기능이다.
 - FR-043: 운영 RAG mode는 이름이 `general`, `permission_scoped`, `task_aware`, `metadata_aware`, `hierarchical` 중 무엇이든 KB permission/source ACL/final evidence gate를 우회할 수 없다. `general RAG`는 authorized resource 안에서 넓게 검색하는 broad retrieval이고, `task-aware` 또는 `permission-scoped RAG`는 authorized resource 안에서 더 정밀하게 후보를 줄이는 retrieval이다.
 - FR-044: RAG strategy 비교와 비용 최적화를 위해 retrieval summary는 `retrieval_strategy`, `rag_mode`, selected collection/KB count, retrieved chunk count, citation count, context token estimate, retrieval latency, permission filter 여부, policy result, partial result, safe exclusion summary를 redaction-safe 형태로 제공한다.
 - FR-045: Source-managed KB에서 source ACL authorization은 KB `use`를 자동 대체하지 않는다. Auto-ingested KB는 normal mbased permission path 또는 organization-approved connector/source policy가 명시 KB `use`를 provision한 경우에만 retrieval 후보가 된다. Source ACL sync가 생성하는 record는 source authorization provenance로 취급하고 freshness/revocation/audit-safe provenance를 helper가 별도 gate로 평가한다.

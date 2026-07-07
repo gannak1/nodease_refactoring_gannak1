@@ -89,7 +89,7 @@ Agent Builder는 Knowledge Base 권한을 직접 판단하지 않는다. Knowled
 
 Agent Builder가 draft에 포함한 LLM node가 사내 지식을 사용할 때는 Knowledge feature의 collection routing, KB permission, source ACL helper 결과만 사용한다. Builder와 LLM planner는 raw permission row, raw source ACL, hidden KB 목록을 직접 해석하지 않는다.
 
-Workflow runtime에서 LLM node가 RAG를 호출할 때 run context에 명시적인 execution subject가 있으면 이를 Knowledge service에 전달한다. Execution subject가 없으면 workflow owner 권한으로 fallback하지 않고 anonymous public-only로 낮추며, 모호한 subject는 private retrieval fail-closed로 처리한다.
+Workflow runtime에서 LLM node가 RAG를 호출할 때 run context에 명시적인 execution subject가 있으면 이를 Knowledge service에 전달한다. Execution subject가 없으면 workflow owner 권한으로 fallback하지 않고 anonymous public-only로 낮추며, source-managed KB는 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. 모호한 subject는 private retrieval fail-closed로 처리한다.
 
 Agent Builder가 KB/Collection picker 또는 workflow generation proposal을 표시할 때는 builder actor의 권한뿐 아니라 intended execution subject/audience의 runtime availability를 safe warning으로 표시해야 한다. Hidden KB id/name/exact denied count는 표시하지 않는다.
 

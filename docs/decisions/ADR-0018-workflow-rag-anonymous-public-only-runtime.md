@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Related ADRs: [ADR-0014](ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0017](ADR-0017-knowledge-integration-provisional-implementation-baseline.md)
+Related ADRs: [ADR-0014](ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0017](ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0020](ADR-0020-knowledge-mcp-incremental-sync-boundary.md)
 
 ## Context
 
@@ -19,20 +19,20 @@ MVP에서 Workflow LLM node RAG는 아래 runtime contract를 따른다.
 - Interactive authenticated workflow execution은 `execution_subject=current_user`를 전달한다.
 - `execution_subject`가 있으면 runtime KB access는 Knowledge permission path에서 해당 subject 기준으로 평가한다.
 - `execution_subject`가 없으면 runtime RAG는 그 이유만으로 실패하지 않는다. 대신 anonymous public-only retrieval로 낮춘다.
-- Anonymous public-only retrieval은 `safe_metadata["visibility"]`가 `"public"`인 active Knowledge Collection에 연결된 active KB만 검색할 수 있다.
+- Anonymous public-only retrieval은 `safe_metadata["visibility"]`가 `"public"`인 active Knowledge Collection에 연결된 active KB만 검색할 수 있다. Source-managed KB는 [ADR-0020](ADR-0020-knowledge-mcp-incremental-sync-boundary.md)의 source/connector public exposure approval도 통과해야 한다.
 - `visibility`가 없거나 `"public"`이 아닌 값, archived/deleted collection, archived/deleted KB는 anonymous runtime에서 private 또는 unavailable로 본다.
 - Anonymous public-only filtering 이후 candidate KB 또는 evidence가 없으면 node는 safe no-result를 반환한다. 단, 설정된 `ragFailurePolicy`가 node failure를 요구하면 실패로 처리한다.
 - Workflow owner, deployment owner, app creator, builder, `user_id`는 private KB retrieval의 data-access fallback이 아니다.
 
-`KnowledgeCollection.safe_metadata["visibility"] == "public"`은 Nodease MVP runtime flag다. Source ACL, raw content approval, authenticated subject-based retrieval의 child KB permission grant가 아니다. Operator는 anonymous use 대상으로 연결된 모든 KB가 organization policy상 공개 가능할 때만 collection을 public으로 표시해야 한다.
+`KnowledgeCollection.safe_metadata["visibility"] == "public"`은 Nodease MVP runtime flag다. Source ACL, raw content approval, authenticated subject-based retrieval의 child KB permission grant가 아니다. Operator는 anonymous use 대상으로 연결된 모든 KB가 organization policy상 공개 가능할 때만 collection을 public으로 표시해야 한다. Source-managed KB는 collection public flag만으로 anonymous 후보가 되지 않으며, 별도 source/connector public exposure approval, scope-target consistency, expiry/revocation policy를 통과해야 한다.
 
 ## Consequences
 
 - ADR-0017은 non-interactive run의 private RAG 목표 구조로 남지만 service account, assigned operator, deployment preflight는 후속 기능으로 분리한다.
-- Public app, webhook, schedule, API secret 실행은 private KB access 없이 public Knowledge Collection을 사용할 수 있다.
+- Public app, webhook, schedule, API secret 실행은 private KB access 없이 public Knowledge Collection을 사용할 수 있다. 단, source-managed KB는 ADR-0020의 public exposure approval을 함께 만족해야 한다.
 - Automatic/non-interactive run에서 private KB access가 필요하면 명시적 execution subject를 resolve하고 audit하는 후속 기능이 필요하다.
 - 문서와 테스트는 `execution_subject` 부재와 owner fallback을 구분해야 한다. 부재는 anonymous public-only이며 owner private access가 아니다.
-- MVP의 public/private 경계는 collection 단위다. 이 결정은 document/chunk-level ACL을 도입하지 않는다.
+- MVP의 기본 public/private 경계는 collection 단위다. Source-managed KB의 public exposure 보강 gate는 ADR-0020을 따르며, 이 결정은 document/chunk-level ACL을 도입하지 않는다.
 
 ## Non-Goals
 

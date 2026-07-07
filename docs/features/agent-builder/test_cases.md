@@ -59,7 +59,7 @@ Status: Draft
 - Interactive authenticated workflow execution에서는 run context의 `execution_subject=current_user`를 Knowledge service에 전달하고, runtime KB access는 해당 subject 기준 Knowledge permission path로 평가되어야 한다.
 - `execution_subject`가 있는 실행은 workflow owner, deployment owner, app creator, builder 권한으로 private KB 접근을 대체하지 않는다.
 - `execution_subject`가 없는 public app, webhook, schedule, API secret 실행은 workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 private KB를 조회하지 않는다.
-- `execution_subject`가 없는 실행은 anonymous public-only retrieval로 낮추고, `safe_metadata["visibility"] == "public"`인 active Knowledge Collection에 연결된 active KB만 검색 대상으로 삼는다.
+- `execution_subject`가 없는 실행은 anonymous public-only retrieval로 낮추고, `safe_metadata["visibility"] == "public"`인 active Knowledge Collection에 연결된 active KB만 검색 대상으로 삼는다. Source-managed KB는 valid source/connector public exposure approval도 통과해야 한다.
 - visibility가 없거나 public이 아닌 collection, archived/deleted collection, archived/deleted KB는 anonymous runtime에서 private 또는 unavailable로 처리한다.
 - anonymous public-only filtering 이후 후보 KB 또는 evidence가 없으면 safe no-result를 반환한다. 단, node의 `ragFailurePolicy`가 node failure를 요구하면 실패로 처리한다.
 - Agent Builder preview, prompt, trace, audit, test fixture는 hidden KB id/name, exact denied count, raw source path/url/title, raw document/chunk content를 노출하지 않는다.

@@ -348,7 +348,8 @@ Verified Against: feature/mba-102 @ 968c8df
 - 배포 중 draft가 추가로 수정되면 배포 완료 알림은 배포된 snapshot과 현재 draft가 다를 수 있음을 구분한다.
 
 
-(완전 미반영& 항목)
+## Runtime RAG Boundary Tests
+
 - Workflow run context resolver는 interactive user를 `execution_subject`로 만들고, approved service account 또는 assigned operator는 후속 private RAG 기능으로 구분한다.
 - Missing execution subject는 anonymous public-only 결과를 반환하고 workflow owner fallback을 만들지 않는다. Ambiguous execution subject는 private retrieval fail-closed로 처리한다.
 - LLM node의 RAG 옵션은 Builder-time skill selection과 runtime data access 권한을 분리한다.
@@ -356,7 +357,7 @@ Verified Against: feature/mba-102 @ 968c8df
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.
-- Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다.
+- Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
 - 배포 preflight는 private RAG 후속 기능에서 LLM node RAG 옵션의 KB/collection 후보가 intended execution subject/audience에게 사용 가능한지 검증하고, unavailable/unknown 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
