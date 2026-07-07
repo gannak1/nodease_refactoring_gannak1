@@ -1087,6 +1087,86 @@ def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkey
     assert any(edge.get("target") == "answer" for edge in preview["edges"])
 
 
+def test_agent_builder_preview_auto_layouts_new_workflow_chain(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="create",
+    )
+
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    nodes_by_type = {node["type"]: node for node in preview["nodes"]}
+    start_position = nodes_by_type["startNode"]["position"]
+    llm_position = nodes_by_type["llmNode"]["position"]
+    answer_position = nodes_by_type["answerNode"]["position"]
+
+    assert start_position["x"] < llm_position["x"] < answer_position["x"]
+    assert start_position["y"] == llm_position["y"] == answer_position["y"]
+
+
+def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypatch):
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {
+                    "id": "selected",
+                    "type": "startNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "occupied",
+                    "type": "answerNode",
+                    "position": {"x": 360, "y": 0},
+                    "data": {},
+                },
+            ],
+            "edges": [],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="modify_workflow",
+        draft_mode="modify_workflow",
+        intent_summary="append",
+    )
+
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        kb_bindings=[],
+        selected_node_id="selected",
+    )
+
+    generated_nodes = [
+        node for node in preview["nodes"] if str(node["id"]).startswith("agent-")
+    ]
+    generated_positions = [node["position"] for node in generated_nodes]
+
+    assert {position["y"] for position in generated_positions} == {220}
+    assert sorted(position["x"] for position in generated_positions) == [
+        360,
+        720,
+        1080,
+    ]
+
+
 def test_agent_builder_selected_edge_requires_edge_context_in_message():
     workflow = SimpleNamespace(
         graph={

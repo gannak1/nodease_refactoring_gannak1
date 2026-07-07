@@ -125,6 +125,10 @@ SAFE_CANDIDATE_HANDLE_RE = re.compile(
     r"^rec-[0-9a-fA-F-]{8,}-[0-9a-fA-F-]{4,}-"
     r"[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{12}$"
 )
+PREVIEW_LAYOUT_X_GAP = 360
+PREVIEW_LAYOUT_Y_GAP = 220
+PREVIEW_LAYOUT_NODE_WIDTH = 280
+PREVIEW_LAYOUT_NODE_HEIGHT = 140
 EDGE_CONTEXT_RE = re.compile(
     r"(여기\s*사이|이\s*연결|연결\s*사이|엣지|edge|connection|between)",
     re.IGNORECASE,
@@ -362,6 +366,100 @@ def _empty_graph() -> dict[str, Any]:
 
 def _graph_node_ids(graph: dict[str, Any]) -> set[str]:
     return {str(node.get("id")) for node in graph.get("nodes") or [] if node.get("id")}
+
+
+def _node_position(node: dict[str, Any]) -> dict[str, float]:
+    position = node.get("position") if isinstance(node.get("position"), dict) else {}
+    return {
+        "x": float(position.get("x") or 0),
+        "y": float(position.get("y") or 0),
+    }
+
+
+def _node_bounds(node: dict[str, Any]) -> tuple[float, float, float, float]:
+    position = _node_position(node)
+    width = float(node.get("width") or PREVIEW_LAYOUT_NODE_WIDTH)
+    height = float(node.get("height") or PREVIEW_LAYOUT_NODE_HEIGHT)
+    return (
+        position["x"],
+        position["y"],
+        position["x"] + width,
+        position["y"] + height,
+    )
+
+
+def _bounds_overlap(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> bool:
+    return not (
+        left[2] <= right[0]
+        or left[0] >= right[2]
+        or left[3] <= right[1]
+        or left[1] >= right[3]
+    )
+
+
+def _layout_generated_preview_nodes(
+    graph: dict[str, Any],
+    generated_node_ids: list[str],
+    *,
+    anchor_node_id: str | None,
+) -> dict[str, Any]:
+    nodes = graph.get("nodes") or []
+    generated_set = set(generated_node_ids)
+    node_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+    generated_nodes = [node_by_id[node_id] for node_id in generated_node_ids if node_id in node_by_id]
+    if not generated_nodes:
+        return graph
+
+    existing_nodes = [
+        node
+        for node in nodes
+        if str(node.get("id")) not in generated_set and node.get("type") != "note"
+    ]
+    anchor_node = node_by_id.get(str(anchor_node_id)) if anchor_node_id else None
+
+    if anchor_node and str(anchor_node.get("id")) not in generated_set:
+        anchor_position = _node_position(anchor_node)
+        base_x = anchor_position["x"] + PREVIEW_LAYOUT_X_GAP
+        base_y = anchor_position["y"]
+    elif existing_nodes:
+        existing_positions = [_node_position(node) for node in existing_nodes]
+        base_x = max(position["x"] for position in existing_positions) + PREVIEW_LAYOUT_X_GAP
+        base_y = min(position["y"] for position in existing_positions)
+    else:
+        base_x = 0
+        base_y = 0
+
+    occupied_bounds = [_node_bounds(node) for node in existing_nodes]
+    target_y = base_y
+    for _ in range(50):
+        candidate_bounds = [
+            (
+                base_x + index * PREVIEW_LAYOUT_X_GAP,
+                target_y,
+                base_x + index * PREVIEW_LAYOUT_X_GAP + PREVIEW_LAYOUT_NODE_WIDTH,
+                target_y + PREVIEW_LAYOUT_NODE_HEIGHT,
+            )
+            for index, _node in enumerate(generated_nodes)
+        ]
+        if not any(
+            _bounds_overlap(candidate, occupied)
+            for candidate in candidate_bounds
+            for occupied in occupied_bounds
+        ):
+            break
+        target_y += PREVIEW_LAYOUT_Y_GAP
+
+    for index, node in enumerate(generated_nodes):
+        node["position"] = {
+            "x": base_x + index * PREVIEW_LAYOUT_X_GAP,
+            "y": target_y,
+        }
+
+    graph["nodes"] = nodes
+    return graph
 
 
 class AgentBuilderService:
@@ -1808,6 +1906,7 @@ class AgentBuilderService:
                 "target": answer_id,
             },
         ]
+        layout_anchor_node_id = None
         if structured.draft_mode == "modify_workflow":
             selected_edge = next(
                 (
@@ -1827,6 +1926,7 @@ class AgentBuilderService:
                     for edge in graph.get("edges") or []
                     if str(edge.get("id")) != selected_edge_id
                 ]
+                layout_anchor_node_id = str(selected_edge.get("source") or "")
                 generated_edges = [
                     {
                         "id": f"edge-{selected_edge['source']}-{input_id}",
@@ -1843,6 +1943,7 @@ class AgentBuilderService:
                     },
                 ]
             elif selected_node_exists and selected_node_id:
+                layout_anchor_node_id = selected_node_id
                 generated_edges = [
                     {
                         "id": f"edge-{selected_node_id}-{input_id}",
@@ -1854,6 +1955,11 @@ class AgentBuilderService:
 
         graph["nodes"] = (graph.get("nodes") or []) + generated_nodes
         graph["edges"] = (graph.get("edges") or []) + generated_edges
+        graph = _layout_generated_preview_nodes(
+            graph,
+            [input_id, llm_id, answer_id],
+            anchor_node_id=layout_anchor_node_id,
+        )
         graph.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})
         return graph
 
