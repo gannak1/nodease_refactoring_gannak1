@@ -1,7 +1,7 @@
 # Budget Management Component Spec
 
 Status: Draft
-Verified Against: feature/mba-132 @ a843ec7
+Verified Against: feature/mba-147 @ e1a04e9
 
 새 화면을 만들지 않고 기존 화면 세 곳을 확장한다. 프론트의 예산 표시/차단은 UX 보조이며 최종 차단은 Gateway가 수행한다 (NFR-001).
 
@@ -17,6 +17,7 @@ Verified Against: feature/mba-132 @ a843ec7
 | 상단 요약 카드 | 기존 `AdminSummaryCards`의 예산 카드가 실제 `budget` 블록 데이터를 표시 | organization owner/manager |
 
 - 데이터 원천: `GET /admin/usage/workflows`의 `budget` 블록, `GET /admin/summary`.
+- 비용 탭 row 기준은 organization scope 안의 App primary workflow 전체다. 기간 안에 사용량이 없는 workflow도 표시하고 호출 수/tokens/비용은 0으로 보여준다.
 - 예산 컬럼: 활성 예산이 없으면(`budget` null) "미설정"과 예산 설정 버튼만 표시한다.
 - 예산 설정 버튼 → `BudgetEditModal` 열림.
 
@@ -53,11 +54,13 @@ Verified Against: feature/mba-132 @ a843ec7
 ### UsageTab 예산 컬럼 확장
 
 - 기존 비용 탭 테이블에 컬럼 추가: 예산(USD, 소수점 2자리), 사용률(%), 상태(`BudgetStatusBadge`), 예산 설정 버튼.
+- 기간 안에 사용량이 없는 workflow도 row로 남겨 예산 설정 버튼을 제공한다. 사용량 값은 0으로 표시한다.
 - `budget` null인 row는 "미설정" 텍스트와 설정 버튼만 표시한다.
 
 ## States And Error Handling
 
 - 로딩/빈 목록/오류 상태는 각 화면의 기존 패턴을 따른다.
+- 비용 탭의 빈 목록은 organization scope 안에 App primary workflow가 하나도 없을 때만 표시한다. usage row가 없는 workflow는 빈 목록이 아니라 사용량 0 row다.
 - `budget`/`budget_status` null은 오류가 아니라 "예산 미설정" 정상 상태다.
 - 예산 설정 API의 403(owner/manager 아님)은 안내 문구로 처리한다. UI 노출 제어(비용 탭 자체가 owner/manager 전용)가 선행하지만 서버 응답 처리도 유지한다.
 - 429 `budget.exceeded` 처리 후에도 다른 실행 오류 처리(기존 timeout/500 처리)는 그대로 유지한다.
