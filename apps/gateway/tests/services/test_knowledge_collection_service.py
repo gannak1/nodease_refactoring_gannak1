@@ -224,3 +224,32 @@ def test_link_item_requires_collection_manage_and_kb_manage(monkeypatch):
     assert calls == [(collection.id, "manage")]
     assert exc_info.value.status_code == 403
     assert exc_info.value.code == "permission.denied"
+
+
+def test_link_candidates_apply_limit_after_manage_filter(monkeypatch):
+    service = _service(monkeypatch)
+    collection = _collection()
+    denied_kbs = [
+        SimpleNamespace(id=uuid.uuid4(), name=f"Hidden {index}", lifecycle_state="active")
+        for index in range(100)
+    ]
+    allowed_kb = SimpleNamespace(id=uuid.uuid4(), name="Allowed", lifecycle_state="active")
+    pages = [denied_kbs, [allowed_kb]]
+    calls = []
+
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_require_collection_action", lambda collection, action: None)
+    monkeypatch.setattr(service, "_linked_kb_ids", lambda collection_id: set())
+    monkeypatch.setattr(
+        service,
+        "_link_candidate_kb_page",
+        lambda *, limit, offset: calls.append((limit, offset)) or pages.pop(0)
+        if pages
+        else [],
+    )
+    monkeypatch.setattr(service, "_kb_manage_allowed", lambda kb: kb.id == allowed_kb.id)
+
+    candidates = service.list_link_candidates(collection.id, limit=1)
+
+    assert [candidate.knowledge_base_id for candidate in candidates] == [allowed_kb.id]
+    assert len(calls) == 2

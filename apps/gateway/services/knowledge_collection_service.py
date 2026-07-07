@@ -55,6 +55,7 @@ COLLECTION_SAFE_METADATA_FORBIDDEN_KEYS = {
     "secret",
     "token",
 }
+LINK_CANDIDATE_SCAN_LIMIT = 5000
 
 
 @dataclass
@@ -151,6 +152,13 @@ class KnowledgeCollectionService:
             if len(responses) >= min(max(limit, 1), 500):
                 break
         return responses
+
+    def management_capabilities(self) -> dict[str, bool]:
+        can_manage_public_scope = self._is_org_manager()
+        return {
+            "can_create_collection": can_manage_public_scope,
+            "can_change_public_visibility": can_manage_public_scope,
+        }
 
     def get_collection(self, collection_id: uuid.UUID) -> KnowledgeCollectionResponse:
         collection = self._collection_or_hidden(collection_id)
@@ -359,35 +367,59 @@ class KnowledgeCollectionService:
     ) -> list[KnowledgeCollectionLinkCandidate]:
         collection = self._collection_or_hidden(collection_id)
         self._require_collection_action(collection, "manage")
-        linked_ids = {
-            row[0]
-            for row in self.db.query(KnowledgeCollectionItem.knowledge_base_id)
-            .filter(KnowledgeCollectionItem.collection_id == collection.id)
-            .all()
-        }
-        kbs = (
+        linked_ids = self._linked_kb_ids(collection.id)
+        requested_limit = min(max(limit, 1), 500)
+        batch_size = min(max(requested_limit * 2, 100), 500)
+        candidates: list[KnowledgeCollectionLinkCandidate] = []
+        scanned = 0
+        while len(candidates) < requested_limit and scanned < LINK_CANDIDATE_SCAN_LIMIT:
+            page = self._link_candidate_kb_page(
+                limit=min(batch_size, LINK_CANDIDATE_SCAN_LIMIT - scanned),
+                offset=scanned,
+            )
+            if not page:
+                break
+            scanned += len(page)
+            for kb in page:
+                if kb.id in linked_ids or not self._kb_manage_allowed(kb):
+                    continue
+                candidates.append(
+                    KnowledgeCollectionLinkCandidate(
+                        knowledge_base_id=kb.id,
+                        safe_label=kb.name,
+                        disabled=False,
+                        safe_reason_code=None,
+                    )
+                )
+                if len(candidates) >= requested_limit:
+                    break
+            if len(page) < batch_size:
+                break
+        return candidates
+
+    def _link_candidate_kb_page(self, *, limit: int, offset: int) -> list[KnowledgeBase]:
+        return (
             self.db.query(KnowledgeBase)
             .filter(
                 KnowledgeBase.organization_id == self.organization_id,
                 KnowledgeBase.lifecycle_state == "active",
             )
-            .order_by(KnowledgeBase.created_at.desc())
-            .limit(min(max(limit, 1), 500))
+            .order_by(KnowledgeBase.created_at.desc(), KnowledgeBase.id.desc())
+            .offset(offset)
+            .limit(limit)
             .all()
         )
-        candidates: list[KnowledgeCollectionLinkCandidate] = []
-        for kb in kbs:
-            if kb.id in linked_ids or not self._kb_manage_allowed(kb):
-                continue
-            candidates.append(
-                KnowledgeCollectionLinkCandidate(
-                    knowledge_base_id=kb.id,
-                    safe_label=kb.name,
-                    disabled=False,
-                    safe_reason_code=None,
-                )
+
+    def _linked_kb_ids(self, collection_id: uuid.UUID) -> set[uuid.UUID]:
+        return {
+            row[0]
+            for row in self.db.query(KnowledgeCollectionItem.knowledge_base_id)
+            .filter(
+                KnowledgeCollectionItem.organization_id == self.organization_id,
+                KnowledgeCollectionItem.collection_id == collection_id,
             )
-        return candidates
+            .all()
+        }
 
     def list_permissions(
         self,

@@ -121,6 +121,8 @@ class KnowledgeCollectionResponse(BaseModel):
 
 class KnowledgeCollectionListResponse(BaseModel):
     collections: list[KnowledgeCollectionResponse] = Field(default_factory=list)
+    can_create_collection: bool = False
+    can_change_public_visibility: bool = False
 
 
 class KnowledgeCollectionItemLinkRequest(BaseModel):

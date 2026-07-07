@@ -78,6 +78,48 @@ def test_collection_create_route_uses_active_organization(monkeypatch):
     assert "raw_source_url" not in str(body)
 
 
+def test_collection_list_route_returns_management_capabilities(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    collection = _collection_response(organization_id=organization_id)
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakeService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def list_collections(self, **kwargs):
+            return [collection]
+
+        def management_capabilities(self):
+            return {
+                "can_create_collection": True,
+                "can_change_public_visibility": True,
+            }
+
+    monkeypatch.setattr(knowledge_endpoint, "KnowledgeCollectionService", FakeService)
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).get(
+            "/api/v1/knowledge/collections",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["collections"][0]["id"] == str(collection.id)
+    assert body["can_create_collection"] is True
+    assert body["can_change_public_visibility"] is True
+
+
 def test_collection_visibility_error_uses_safe_envelope(monkeypatch):
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()

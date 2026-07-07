@@ -270,6 +270,8 @@ describe('knowledgeApi collection management', () => {
             updated_at: '2026-07-07T00:00:00Z',
           },
         ],
+        can_create_collection: true,
+        can_change_public_visibility: true,
       },
     });
 
@@ -280,6 +282,22 @@ describe('knowledgeApi collection management', () => {
     });
     expect(collections).toHaveLength(1);
     expect(JSON.stringify(collections)).not.toContain('raw_source_url');
+  });
+
+  it('loads Knowledge Collection management capabilities', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      data: {
+        collections: [],
+        can_create_collection: false,
+        can_change_public_visibility: false,
+      },
+    });
+
+    const response = await knowledgeApi.getKnowledgeCollectionsResponse();
+
+    expect(response.collections).toEqual([]);
+    expect(response.can_create_collection).toBe(false);
+    expect(response.can_change_public_visibility).toBe(false);
   });
 
   it('updates public visibility with explicit acknowledgement', async () => {

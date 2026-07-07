@@ -57,6 +57,10 @@ export default function KnowledgeCollectionManager() {
   const [permissions, setPermissions] = useState<
     KnowledgeCollectionPermissionResponse[]
   >([]);
+  const [capabilities, setCapabilities] = useState({
+    can_create_collection: false,
+    can_change_public_visibility: false,
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -79,9 +83,13 @@ export default function KnowledgeCollectionManager() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const data = await knowledgeApi.getKnowledgeCollections();
-      setCollections(data);
-      setSelectedId((currentId) => currentId ?? data[0]?.id ?? null);
+      const data = await knowledgeApi.getKnowledgeCollectionsResponse();
+      setCollections(data.collections);
+      setCapabilities({
+        can_create_collection: data.can_create_collection,
+        can_change_public_visibility: data.can_change_public_visibility,
+      });
+      setSelectedId((currentId) => currentId ?? data.collections[0]?.id ?? null);
     } catch (error) {
       setErrorMessage(errorText(error));
     } finally {
@@ -89,18 +97,32 @@ export default function KnowledgeCollectionManager() {
     }
   }, []);
 
-  const loadCollectionDetail = useCallback(async (collectionId: string) => {
+  const loadCollectionDetail = useCallback(async (
+    collectionId: string,
+    canManage: boolean,
+  ) => {
     setIsDetailLoading(true);
     setErrorMessage(null);
     try {
-      const [itemData, candidateData, permissionData] = await Promise.all([
-        knowledgeApi.getKnowledgeCollectionItems(collectionId),
-        knowledgeApi.getKnowledgeCollectionLinkCandidates(collectionId),
-        knowledgeApi.getKnowledgeCollectionPermissions(collectionId),
-      ]);
+      const itemData = await knowledgeApi.getKnowledgeCollectionItems(collectionId);
       setItems(itemData.items);
-      setCandidates(candidateData.candidates);
-      setPermissions(permissionData.permissions);
+      if (!canManage) {
+        setCandidates([]);
+        setPermissions([]);
+        return;
+      }
+      try {
+        const [candidateData, permissionData] = await Promise.all([
+          knowledgeApi.getKnowledgeCollectionLinkCandidates(collectionId),
+          knowledgeApi.getKnowledgeCollectionPermissions(collectionId),
+        ]);
+        setCandidates(candidateData.candidates);
+        setPermissions(permissionData.permissions);
+      } catch (error) {
+        setCandidates([]);
+        setPermissions([]);
+        setErrorMessage(errorText(error));
+      }
     } catch (error) {
       setItems([]);
       setCandidates([]);
@@ -122,13 +144,13 @@ export default function KnowledgeCollectionManager() {
       description: selectedCollection.description ?? '',
     });
     setAcknowledgePublic(false);
-    loadCollectionDetail(selectedCollection.id);
+    loadCollectionDetail(selectedCollection.id, selectedCollection.can_manage);
   }, [loadCollectionDetail, selectedCollection]);
 
   const refreshSelected = async () => {
     await loadCollections();
     if (selectedId) {
-      await loadCollectionDetail(selectedId);
+      await loadCollectionDetail(selectedId, selectedCollection?.can_manage ?? false);
     }
   };
 
@@ -191,7 +213,10 @@ export default function KnowledgeCollectionManager() {
       await knowledgeApi.linkKnowledgeCollectionItem(selectedCollection.id, {
         knowledge_base_id: candidateId,
       });
-      await loadCollectionDetail(selectedCollection.id);
+      await loadCollectionDetail(
+        selectedCollection.id,
+        selectedCollection.can_manage,
+      );
       await loadCollections();
     } catch (error) {
       setErrorMessage(errorText(error));
@@ -209,7 +234,10 @@ export default function KnowledgeCollectionManager() {
         selectedCollection.id,
         itemId,
       );
-      await loadCollectionDetail(selectedCollection.id);
+      await loadCollectionDetail(
+        selectedCollection.id,
+        selectedCollection.can_manage,
+      );
       await loadCollections();
     } catch (error) {
       setErrorMessage(errorText(error));
@@ -235,7 +263,10 @@ export default function KnowledgeCollectionManager() {
         subject_id: '',
         permission_action: 'read',
       });
-      await loadCollectionDetail(selectedCollection.id);
+      await loadCollectionDetail(
+        selectedCollection.id,
+        selectedCollection.can_manage,
+      );
     } catch (error) {
       setErrorMessage(errorText(error));
     } finally {
@@ -252,7 +283,10 @@ export default function KnowledgeCollectionManager() {
         selectedCollection.id,
         permissionId,
       );
-      await loadCollectionDetail(selectedCollection.id);
+      await loadCollectionDetail(
+        selectedCollection.id,
+        selectedCollection.can_manage,
+      );
     } catch (error) {
       setErrorMessage(errorText(error));
     } finally {
@@ -289,52 +323,54 @@ export default function KnowledgeCollectionManager() {
 
       <section className="grid gap-4 lg:grid-cols-[360px_1fr]">
         <div className="space-y-4">
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <FolderPlus className="h-4 w-4 text-blue-600" />
-              <h2 className="text-sm font-bold text-slate-900">
-                Collection 생성
-              </h2>
+          {capabilities.can_create_collection && (
+            <div className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <FolderPlus className="h-4 w-4 text-blue-600" />
+                <h2 className="text-sm font-bold text-slate-900">
+                  Collection 생성
+                </h2>
+              </div>
+              <div className="space-y-3">
+                <input
+                  value={form.name}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="Collection 이름"
+                  className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                />
+                <textarea
+                  value={form.description}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      description: event.target.value,
+                    }))
+                  }
+                  placeholder="설명"
+                  rows={3}
+                  className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                />
+                <button
+                  type="button"
+                  onClick={createCollection}
+                  disabled={isSaving || !form.name.trim()}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {isSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plus className="h-4 w-4" />
+                  )}
+                  생성
+                </button>
+              </div>
             </div>
-            <div className="space-y-3">
-              <input
-                value={form.name}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    name: event.target.value,
-                  }))
-                }
-                placeholder="Collection 이름"
-                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-              />
-              <textarea
-                value={form.description}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    description: event.target.value,
-                  }))
-                }
-                placeholder="설명"
-                rows={3}
-                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-              />
-              <button
-                type="button"
-                onClick={createCollection}
-                disabled={isSaving || !form.name.trim()}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                {isSaving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                생성
-              </button>
-            </div>
-          </div>
+          )}
 
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <div className="border-b border-slate-200 px-4 py-3">
@@ -487,42 +523,53 @@ export default function KnowledgeCollectionManager() {
                       ? 'public'
                       : 'private'}
                   </p>
-                  <label className="mt-4 flex items-start gap-2 text-sm text-slate-600">
-                    <input
-                      type="checkbox"
-                      checked={acknowledgePublic}
-                      onChange={(event) =>
-                        setAcknowledgePublic(event.target.checked)
-                      }
-                      className="mt-1"
-                    />
-                    <span>
-                      public 전환 시 execution subject 없는 RAG 후보가 될 수
-                      있음을 확인했습니다.
-                    </span>
-                  </label>
-                  <div className="mt-4 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => updateVisibility('public')}
-                      disabled={
-                        isSaving ||
-                        !acknowledgePublic ||
-                        selectedCollection.visibility === 'public'
-                      }
-                      className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                    >
-                      public
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateVisibility('private')}
-                      disabled={isSaving || selectedCollection.visibility === 'private'}
-                      className="rounded-md border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300"
-                    >
-                      private
-                    </button>
-                  </div>
+                  {capabilities.can_change_public_visibility ? (
+                    <>
+                      <label className="mt-4 flex items-start gap-2 text-sm text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={acknowledgePublic}
+                          onChange={(event) =>
+                            setAcknowledgePublic(event.target.checked)
+                          }
+                          className="mt-1"
+                        />
+                        <span>
+                          public 전환 시 execution subject 없는 RAG 후보가 될 수
+                          있음을 확인했습니다.
+                        </span>
+                      </label>
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => updateVisibility('public')}
+                          disabled={
+                            isSaving ||
+                            !acknowledgePublic ||
+                            selectedCollection.visibility === 'public'
+                          }
+                          className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          public
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateVisibility('private')}
+                          disabled={
+                            isSaving ||
+                            selectedCollection.visibility === 'private'
+                          }
+                          className="rounded-md border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300"
+                        >
+                          private
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="mt-4 text-sm text-slate-500">
+                      공개 상태 전환은 organization manager만 수행할 수 있습니다.
+                    </p>
+                  )}
                 </div>
               </section>
 
@@ -556,7 +603,11 @@ export default function KnowledgeCollectionManager() {
                           <button
                             type="button"
                             onClick={() => unlinkItem(item.item_id)}
-                            disabled={isSaving || !item.can_manage_kb}
+                            disabled={
+                              isSaving ||
+                              !selectedCollection.can_manage ||
+                              !item.can_manage_kb
+                            }
                             className="rounded-md p-2 text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-slate-300"
                             aria-label="KB 연결 해제"
                           >
@@ -600,57 +651,63 @@ export default function KnowledgeCollectionManager() {
                   <Users className="h-4 w-4 text-slate-600" />
                   <h3 className="text-sm font-bold text-slate-900">권한</h3>
                 </div>
-                <div className="mb-4 grid gap-2 md:grid-cols-[120px_1fr_140px_auto]">
-                  <select
-                    value={grantForm.subject_type}
-                    onChange={(event) =>
-                      setGrantForm((current) => ({
-                        ...current,
-                        subject_type: event.target.value as 'team' | 'user',
-                      }))
-                    }
-                    className="rounded-md border border-slate-200 px-3 py-2 text-sm"
-                  >
-                    <option value="team">team</option>
-                    <option value="user">user</option>
-                  </select>
-                  <input
-                    value={grantForm.subject_id}
-                    onChange={(event) =>
-                      setGrantForm((current) => ({
-                        ...current,
-                        subject_id: event.target.value,
-                      }))
-                    }
-                    placeholder="subject id"
-                    className="rounded-md border border-slate-200 px-3 py-2 text-sm"
-                  />
-                  <select
-                    value={grantForm.permission_action}
-                    onChange={(event) =>
-                      setGrantForm((current) => ({
-                        ...current,
-                        permission_action: event.target
-                          .value as KnowledgeCollectionAction,
-                      }))
-                    }
-                    className="rounded-md border border-slate-200 px-3 py-2 text-sm"
-                  >
-                    {collectionActions.map((action) => (
-                      <option key={action} value={action}>
-                        {action}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={grantPermission}
-                    disabled={isSaving || !grantForm.subject_id.trim()}
-                    className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                  >
-                    부여
-                  </button>
-                </div>
+                {selectedCollection.can_manage ? (
+                  <div className="mb-4 grid gap-2 md:grid-cols-[120px_1fr_140px_auto]">
+                    <select
+                      value={grantForm.subject_type}
+                      onChange={(event) =>
+                        setGrantForm((current) => ({
+                          ...current,
+                          subject_type: event.target.value as 'team' | 'user',
+                        }))
+                      }
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    >
+                      <option value="team">team</option>
+                      <option value="user">user</option>
+                    </select>
+                    <input
+                      value={grantForm.subject_id}
+                      onChange={(event) =>
+                        setGrantForm((current) => ({
+                          ...current,
+                          subject_id: event.target.value,
+                        }))
+                      }
+                      placeholder="subject id"
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    />
+                    <select
+                      value={grantForm.permission_action}
+                      onChange={(event) =>
+                        setGrantForm((current) => ({
+                          ...current,
+                          permission_action: event.target
+                            .value as KnowledgeCollectionAction,
+                        }))
+                      }
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    >
+                      {collectionActions.map((action) => (
+                        <option key={action} value={action}>
+                          {action}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={grantPermission}
+                      disabled={isSaving || !grantForm.subject_id.trim()}
+                      className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      부여
+                    </button>
+                  </div>
+                ) : (
+                  <p className="mb-4 text-sm text-slate-500">
+                    권한 관리는 collection.manage 권한이 필요합니다.
+                  </p>
+                )}
                 {permissions.length === 0 ? (
                   <p className="text-sm text-slate-500">표시할 권한이 없습니다.</p>
                 ) : (
@@ -675,7 +732,7 @@ export default function KnowledgeCollectionManager() {
                           onClick={() =>
                             revokePermission(permission.permission_id)
                           }
-                          disabled={isSaving}
+                          disabled={isSaving || !selectedCollection.can_manage}
                           className="rounded-md p-2 text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-slate-300"
                           aria-label="권한 회수"
                         >

@@ -369,9 +369,10 @@ def list_knowledge_collections(
             system_managed=system_managed,
             limit=limit,
         )
+        capabilities = service.management_capabilities()
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
-    return KnowledgeCollectionListResponse(collections=collections)
+    return KnowledgeCollectionListResponse(collections=collections, **capabilities)
 
 
 @router.post(

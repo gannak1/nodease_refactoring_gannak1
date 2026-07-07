@@ -111,6 +111,8 @@ export interface KnowledgeCollectionResponse {
 
 export interface KnowledgeCollectionListResponse {
   collections: KnowledgeCollectionResponse[];
+  can_create_collection: boolean;
+  can_change_public_visibility: boolean;
 }
 
 export interface KnowledgeCollectionItemResponse {

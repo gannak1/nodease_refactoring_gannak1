@@ -333,17 +333,27 @@ export const knowledgeApi = {
     await api.delete(`/knowledge/${id}`);
   },
 
+  getKnowledgeCollectionsResponse: async (params?: {
+    lifecycle_state?: 'active' | 'archived' | 'deleted';
+    visibility?: KnowledgeCollectionVisibility;
+    system_managed?: boolean;
+    limit?: number;
+  }): Promise<KnowledgeCollectionListResponse> => {
+    const response = await api.get<KnowledgeCollectionListResponse>(
+      '/knowledge/collections',
+      { params },
+    );
+    return response.data;
+  },
+
   getKnowledgeCollections: async (params?: {
     lifecycle_state?: 'active' | 'archived' | 'deleted';
     visibility?: KnowledgeCollectionVisibility;
     system_managed?: boolean;
     limit?: number;
   }): Promise<KnowledgeCollectionResponse[]> => {
-    const response = await api.get<KnowledgeCollectionListResponse>(
-      '/knowledge/collections',
-      { params },
-    );
-    return response.data.collections;
+    const response = await knowledgeApi.getKnowledgeCollectionsResponse(params);
+    return response.collections;
   },
 
   createKnowledgeCollection: async (data: {
