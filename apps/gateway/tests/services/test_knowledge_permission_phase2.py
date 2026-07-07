@@ -35,7 +35,6 @@ def _kb(
     source_tier: str | None = None,
     version_status: str | None = "ready",
     sync_state: str = "synced",
-    has_legacy_retrieval_chunks: bool | None = None,
 ):
     return SimpleNamespace(
         id=kb_id or uuid.uuid4(),
@@ -51,7 +50,6 @@ def _kb(
             status=version_status,
             source_tier=source_tier,
         ),
-        has_legacy_retrieval_chunks=has_legacy_retrieval_chunks,
     )
 
 
@@ -328,10 +326,10 @@ def test_candidate_excludes_source_deleted_kb():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
-def test_candidate_includes_legacy_kb_without_active_document_version_when_chunks_exist():
+def test_candidate_excludes_kb_without_active_document_version():
     collection = _collection()
     active_kb = _kb()
-    legacy_kb = _kb(version_status=None, has_legacy_retrieval_chunks=True)
+    missing_version_kb = _kb(version_status=None)
     helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
     resolver = FakeResolver(
         helper=helper,
@@ -343,48 +341,10 @@ def test_candidate_includes_legacy_kb_without_active_document_version_when_chunk
             ),
             SimpleNamespace(
                 collection_id=collection.id,
-                knowledge_base_id=legacy_kb.id,
+                knowledge_base_id=missing_version_kb.id,
             ),
         ],
-        kbs=[active_kb, legacy_kb],
-    )
-
-    result = resolver.resolve_auto_collection_candidates()
-
-    assert [candidate.candidate_id for candidate in result.candidates] == [
-        active_kb.id,
-        legacy_kb.id,
-    ]
-    legacy_metadata = {
-        candidate.candidate_id: candidate.safe_metadata
-        for candidate in result.candidates
-    }[legacy_kb.id]
-    assert legacy_metadata["active_document_version_status"] == "legacy_unversioned"
-    assert result.unavailable_candidate_count_bucket == "0"
-
-
-def test_candidate_excludes_kb_without_active_document_version_or_legacy_chunks():
-    collection = _collection()
-    active_kb = _kb()
-    missing_artifact_kb = _kb(
-        version_status=None,
-        has_legacy_retrieval_chunks=False,
-    )
-    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
-    resolver = FakeResolver(
-        helper=helper,
-        collections=[collection],
-        items=[
-            SimpleNamespace(
-                collection_id=collection.id,
-                knowledge_base_id=active_kb.id,
-            ),
-            SimpleNamespace(
-                collection_id=collection.id,
-                knowledge_base_id=missing_artifact_kb.id,
-            ),
-        ],
-        kbs=[active_kb, missing_artifact_kb],
+        kbs=[active_kb, missing_version_kb],
     )
 
     result = resolver.resolve_auto_collection_candidates()

@@ -99,15 +99,7 @@ describe('AgentBuilderPanel', () => {
 
   it('새 workflow 저장 직후 현재 editor graph를 새 graph로 덮어쓰지 않는다', async () => {
     const oldNodes = [node('old-node')];
-    const newNodes = [
-      node('new-answer', 'answerNode'),
-      node('new-start', 'startNode'),
-      node('new-llm', 'llmNode'),
-    ];
-    const newEdges = [
-      { id: 'edge-start-llm', source: 'new-start', target: 'new-llm' },
-      { id: 'edge-llm-answer', source: 'new-llm', target: 'new-answer' },
-    ];
+    const newNodes = [node('new-node')];
 
     useWorkflowStore.setState({
       activeWorkflowId: 'workflow-old',
@@ -141,7 +133,7 @@ describe('AgentBuilderPanel', () => {
     });
     vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
       nodes: newNodes,
-      edges: newEdges,
+      edges: [],
       viewport: { x: 10, y: 10, zoom: 1 },
       features: { nextNodeDisplayNumber: 2 },
     });
@@ -177,18 +169,7 @@ describe('AgentBuilderPanel', () => {
     expect(
       state.workflows.find((workflow) => workflow.id === 'workflow-new')?.nodes[0]
         .id,
-    ).toBe('new-answer');
-    const savedNodesById = new Map(
-      state.workflows
-        .find((workflow) => workflow.id === 'workflow-new')
-        ?.nodes.map((savedNode) => [savedNode.id, savedNode]),
-    );
-    expect(savedNodesById.get('new-start')?.position.x).toBeLessThan(
-      savedNodesById.get('new-llm')?.position.x ?? 0,
-    );
-    expect(savedNodesById.get('new-llm')?.position.x).toBeLessThan(
-      savedNodesById.get('new-answer')?.position.x ?? 0,
-    );
+    ).toBe('new-node');
   });
 
   it('workflow scope가 바뀌면 기존 preview 상태를 제거한다', async () => {

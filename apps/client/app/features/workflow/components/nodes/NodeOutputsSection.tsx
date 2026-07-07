@@ -55,7 +55,7 @@ export const NodeOutputsSection = ({
         <div
           key={`${output.sourceNodeId}-${output.key}`}
           onDoubleClick={(event) => onStartOutputLabelEdit(event, output)}
-          className="group/output min-w-0 overflow-hidden rounded-md border border-gray-200 bg-white px-2.5 py-2 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/30"
+          className="group/output rounded-md border border-gray-200 bg-white px-2.5 py-2 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/30"
           title="라벨을 더블클릭해 수정하세요."
         >
           <div className="flex min-w-0 items-center gap-2">
@@ -87,7 +87,7 @@ export const NodeOutputsSection = ({
                 {output.label || output.key}
               </div>
             )}
-            <code className="max-w-[6rem] shrink-0 truncate rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-semibold text-gray-600">
+            <code className="shrink-0 rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-semibold text-gray-600">
               {output.key}
             </code>
             <span

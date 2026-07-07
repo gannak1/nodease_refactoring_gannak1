@@ -558,69 +558,6 @@ def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warnin
         if item.slot_key == "slack.channel"
     )
     assert slack_resolution.slot_type == "other"
-
-
-def test_structured_request_detects_webhook_trigger_and_document_kb_requirement():
-    svc = AgentBuilderService(
-        FakeDb(),
-        user=SimpleNamespace(id=uuid.uuid4()),
-        organization_id=uuid.uuid4(),
-    )
-
-    structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(
-            message=(
-                "Create a workflow that receives a webhook payload and answers "
-                "using internal document knowledge"
-            )
-        ),
-        workflow=None,
-    )
-
-    assert structured.request_type == "new_workflow"
-    assert "webhook_trigger" in structured.required_capabilities
-    assert "knowledge_base" in structured.required_capabilities
-    assert any(
-        item.slot_type == "knowledge_base"
-        for item in structured.pending_resolution
-    )
-
-
-def test_agent_builder_preview_generates_webhook_trigger_when_requested(monkeypatch):
-    svc = AgentBuilderService(
-        FakeDb(),
-        user=SimpleNamespace(id=uuid.uuid4()),
-        organization_id=uuid.uuid4(),
-    )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
-    structured = service_module.AgentBuilderStructuredRequest(
-        request_type="new_workflow",
-        draft_mode="new_workflow",
-        intent_summary="webhook document chatbot",
-        required_capabilities=["webhook_trigger", "llm", "answer"],
-    )
-
-    preview = svc._build_preview_graph(  # noqa: SLF001
-        structured,
-        workflow=None,
-        kb_bindings=[],
-    )
-
-    nodes_by_type = {node["type"]: node for node in preview["nodes"]}
-    assert "webhookTrigger" in nodes_by_type
-    assert "startNode" not in nodes_by_type
-    webhook_node = nodes_by_type["webhookTrigger"]
-    llm_node = nodes_by_type["llmNode"]
-    assert webhook_node["data"]["provider"] == "custom"
-    assert llm_node["data"]["referenced_variables"] == [
-        {"name": "payload", "value_selector": [webhook_node["id"], "payload"]}
-    ]
-    assert any(
-        edge.get("source") == webhook_node["id"]
-        and edge.get("target") == llm_node["id"]
-        for edge in preview["edges"]
-    )
-    assert svc.validate_preview_graph(preview).valid is True
     assert slack_resolution.blocking is False
     assert slack_resolution.target_step_ref == "step_slack"
 

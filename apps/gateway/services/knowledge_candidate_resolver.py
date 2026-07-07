@@ -5,7 +5,6 @@ from collections.abc import Iterable
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.db.models.knowledge import (
-    DocumentChunk,
     KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
@@ -331,11 +330,7 @@ class KnowledgeCandidateResolver:
         # Source tier는 권한이 통과된 KB의 active ready version에서만 safe ranking hint로 전달한다.
         # Adapter가 DocumentVersion을 직접 조회하지 않게 하여 permission/candidate 경계를 유지한다.
         version = getattr(kb, "active_document_version", None)
-        if version is None:
-            if self._has_legacy_retrieval_visible_chunks(kb):
-                return {"active_document_version_status": "legacy_unversioned"}
-            return {"active_document_version_status": "missing"}
-        if getattr(version, "status", None) != "ready":
+        if version is None or getattr(version, "status", None) != "ready":
             return {"active_document_version_status": "missing"}
         source_tier = getattr(version, "source_tier", None)
         metadata = {"active_document_version_status": "ready"}
@@ -348,32 +343,9 @@ class KnowledgeCandidateResolver:
         if sync_state == "source_deleted":
             return "source_deleted"
         version = getattr(kb, "active_document_version", None)
-        if version is None:
-            if self._has_legacy_retrieval_visible_chunks(kb):
-                return None
-            return "no_retrieval_visible_artifact"
-        if getattr(version, "status", None) != "ready":
+        if version is None or getattr(version, "status", None) != "ready":
             return "no_active_ready_version"
         return None
-
-    def _has_legacy_retrieval_visible_chunks(self, kb: KnowledgeBase) -> bool:
-        explicit = getattr(kb, "has_legacy_retrieval_chunks", None)
-        if explicit is not None:
-            return bool(explicit)
-        if self.db is None:
-            return False
-        try:
-            return (
-                self.db.query(DocumentChunk.id)
-                .filter(
-                    DocumentChunk.knowledge_base_id == kb.id,
-                    DocumentChunk.document_version_id.is_(None),
-                )
-                .first()
-                is not None
-            )
-        except Exception:
-            return False
 
     def _collection_context_by_kb_id(
         self,

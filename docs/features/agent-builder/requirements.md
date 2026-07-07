@@ -14,10 +14,9 @@ MVP는 다음을 포함한다.
 - Workflow Editor 우측 하단 고정 launcher와 chatbot panel
 - 자연어 요청을 `StructuredRequest`로 변환
 - 새 workflow draft 생성과 기존 workflow 수정 제안 구분
-- Start/Input, Webhook trigger, LLM, Knowledge Base-backed LLM, Answer, Slack send 같은 MVP 허용 capability 조합 제안
+- Start/Input, LLM, Knowledge Base-backed LLM, Answer, Slack send 같은 MVP 허용 capability 조합 제안
 - 기존 workflow context와 selected node를 고려한 target resolution
 - Knowledge Base 후보가 필요한 경우 safe candidate set 기반 추천
-- Knowledge Candidate Resolver가 권한 확인된 후보로 반환한 기존 legacy unversioned retrieval-visible KB도 safe candidate set 안에서 추천 대상으로 유지
 - draft preview, validation result, Preview Mode 기반 적용 및 저장 gating
 - Preview Mode에서 읽기 전용 draft graph와 node 내부 설정 확인
 - 사용자가 `적용 및 저장`을 선택한 경우에만 workflow graph 저장

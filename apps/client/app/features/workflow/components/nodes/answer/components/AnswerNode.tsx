@@ -37,12 +37,12 @@ export const AnswerNode = memo(
             return (
               <div
                 key={`${output.variable || 'output'}-${index}`}
-                className="flex min-w-0 flex-col gap-1 overflow-hidden rounded border border-gray-200 bg-gray-50 p-2"
+                className="flex flex-col gap-1 rounded border border-gray-200 p-2 bg-gray-50"
               >
-                <div className="truncate text-xs font-medium text-gray-700">
+                <div className="text-xs font-medium text-gray-700">
                   {output.variable || '(이름 없음)'}
                 </div>
-                <div className="truncate text-[10px] text-gray-500">
+                <div className="text-[10px] text-gray-500 truncate">
                   {sourceTitle} - {outputKey || '(키 없음)'}
                 </div>
               </div>

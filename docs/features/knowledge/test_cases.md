@@ -107,7 +107,7 @@ Status: Draft
 - Recommendation ranking은 `KnowledgeCandidateResolver`가 만든 server-issued reference 또는 같은 backend 내부 service call의 safe candidate set만 사용해야 하며, raw KB id나 raw source metadata로 권한 후보를 직접 만들지 않아야 한다. HTTP 또는 serialized boundary에서는 full candidate set 객체가 아니라 reference만 사용해야 한다.
 - Recommendation response item은 `score`, `confidence`, `reason_category`, `threshold_result`를 포함해야 하며 raw retrieval/provider score나 hidden resource identity를 노출하지 않아야 한다.
 - Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
-- Recommendation candidate set은 `source_deleted` KB, active version이 `ready`가 아닌 KB, active document version과 MBA-105 legacy unversioned retrieval-visible chunk가 모두 없는 KB를 제외해야 한다. `active_document_version_id`가 아직 없더라도 `document_chunks.document_version_id IS NULL` chunk가 retrieval-visible인 legacy KB는 candidate로 남을 수 있다.
+- Recommendation candidate set은 `source_deleted` KB, active document version이 없는 KB, active version이 `ready`가 아닌 KB를 제외해야 한다.
 - 기존 active ready version은 유지되지만 sync state가 `stale` 또는 `failed`인 KB는 후보로 남을 수 있으며, safe warning과 score penalty 또는 낮은 confidence가 함께 반환되어야 한다.
 - Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환해야 한다. Safe 후보 선택지도 없으면 `status=unavailable`과 safe fallback reason으로 닫아야 한다.
 - Recommendation provenance는 `recommendation_strategy`, `safe_reason_code`, `used_signals`, safe matched terms, bucketed counts 같은 allowlist만 포함하고 raw source title/path/url, hidden id/name, exact denied count를 포함하지 않는다.

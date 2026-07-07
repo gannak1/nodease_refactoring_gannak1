@@ -120,7 +120,7 @@ Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과�
 | `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
 
-KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active document version이 `ready`가 아닌 KB, active document version과 MBA-105 legacy unversioned retrieval-visible chunk가 모두 없는 KB는 recommendation candidate에서 제외한다. MBA-105 legacy compatibility에서는 `active_document_version_id`가 아직 없는 KB라도 `document_chunks.document_version_id IS NULL` chunk가 retrieval-visible이면 recommendation candidate가 될 수 있다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
+KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active document version이 없는 KB, active document version이 `ready`가 아닌 KB는 recommendation candidate에서 제외한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
 
 금지: raw workflow intent, raw node purpose, raw natural language 전체, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
 
