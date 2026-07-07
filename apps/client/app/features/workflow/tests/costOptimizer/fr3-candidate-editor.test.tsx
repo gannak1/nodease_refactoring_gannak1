@@ -242,8 +242,8 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
           },
           {
             id: 'model-2',
-            model_id_for_api_call: 'o1-pro',
-            name: 'o1-pro',
+            model_id_for_api_call: 'o3-pro',
+            name: 'o3-pro',
             type: 'chat',
             provider_name: 'OpenAI',
             is_active: true,
@@ -298,7 +298,7 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
     expect(
       await screen.findAllByRole('option', { name: 'GPT-4.1 mini' }),
     ).toHaveLength(2);
-    expect(screen.getAllByRole('option', { name: 'o1-pro' })).toHaveLength(2);
+    expect(screen.getAllByRole('option', { name: 'o3-pro' })).toHaveLength(2);
 
     expect(
       screen.queryByRole('option', { name: 'Text Embedding 3 Small' }),

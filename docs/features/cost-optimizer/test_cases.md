@@ -5,10 +5,10 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-010까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
-FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현재 구현 테스트 대상이 아니다.
+이 문서는 `requirements.md`의 FR-001부터 FR-011까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이다. 현재 테스트는 자동 라우팅 UI만 검증하고, 실제 실행 시점 라우터 service/API 테스트는 Planned Model Router Tests에 별도로 둔다.
 
-테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트, 자동 모델 라우팅, 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다.
+테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트와 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다. 자동 모델 라우팅은 UI 토글과 후속 라우터 정책을 분리해서 검증한다.
 
 ## Test Matrix
 
@@ -24,7 +24,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Deferred model routing/optimizer agent | 없음 | 후속 기능으로 분리되어 현재 테스트하지 않음 | 범위 제외 | 해당 없음 |
+| FR-011 | Model routing UI, planned router service | Planned Model Router Contract | 자동 라우팅 토글, 3단계 라우팅 정책, 후속 실행 시점 모델 선택 | UI 작성 완료, router 후속 | UI 통과, router 해당 없음 |
 
 ## Test Implementation Tracking
 
@@ -37,7 +37,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 | FR-002 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 최신/이전 baseline 선택, 최신 로그 요약, preview 전체 표시, 최신 비교 가능 로그 없음 CTA 차단, 필터/정렬 UI | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr2-baseline-selection.test.tsx` | 통과 |
 | FR-002 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | latest/list baseline query, 필터/정렬/pagination, secret redaction, trace payload availability | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 후보 모델/대체 모델 선택 UI, JSON schema key-type row 추가, prompt variable token editor 재사용, compare request schema 변환 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
-| FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-task-type.test.tsx` | 원본 LLM 노드 상세 설정의 task type 선택과 node data 저장 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-task-type.test.tsx` | 통과 |
+| FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 원본 LLM 노드 상세 설정의 자동 라우팅 토글, 모델 선택 UI 전환, task type 선택 미노출 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 통과 |
 | FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | RAG 비용 최적화 옵션 노출/변경 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | 통과 |
 | FR-003 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 통과 |
 | FR-003 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | candidate schema validation, Knowledge Base/model 사용 가능성 검증, schema_failed response/apply 차단 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
@@ -60,6 +60,26 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 | FR-009 | Shared service | `apps/shared/tests/services/test_cost_optimizer_retention.py` | trace metadata retention 기준 만료일 계산, expired experiment purge, dry run, limit validation | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | builder 미만 진입 액션 disabled, availability 기반 차단, 직접 URL 진입 시 draft 로드 차단 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-010 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | availability, baseline latest/list, experiment history, compare, apply가 builder/write 권한 경계를 사용하고 모델/Knowledge 후보 사용 가능성을 검증 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
+| FR-011 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 자동 라우팅 ON/OFF에 따른 모델 선택 UI 전환, task type 선택 미노출, cold start/warming up/optimized 정책 안내 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 통과 |
+| FR-011 | Gateway/service | `apps/gateway/tests/services/test_model_router.py` | `ModelRouter.resolve()`가 node-level profile 기준으로 cold_start/warming_up/optimized 정책을 선택 | 후속 작성 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/services/test_model_router.py` | 해당 없음 |
+| FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_model_routing.py` | 자동 라우팅 ON인 LLM node가 저장된 모델 대신 router decision의 selected model을 사용하고 fallback/metadata를 남김 | 후속 작성 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_model_routing.py` | 해당 없음 |
+
+## Planned Model Router Tests
+
+이 섹션은 FR-011 실제 라우터 구현 시 추가해야 하는 테스트다. 현재 자동 라우팅 UI 테스트와 별개로, 실행 시점 모델 선택 로직이 생기면 반드시 구현한다.
+
+| ID | 라우팅 상태 | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| FR-011-R01 | `cold_start` | target LLM node의 사용 가능한 node run이 10회 미만이고, 작업이 고객-facing 또는 SLA/보상/보안 판단으로 분류된다 | `ModelRouter.resolve()`를 호출한다 | cheap 모델을 선택하지 않고 mid/high 모델을 선택한다. decision reason에 `cold_start`와 보수적 선택 근거가 포함된다. |
+| FR-011-R02 | `cold_start` | 사용 가능한 node run이 10회 미만이고, 작업이 내부 JSON 추출이며 schema가 단순하다 | `ModelRouter.resolve()`를 호출한다 | 실행 가능한 mid 모델을 우선 선택하고 high 모델을 fallback으로 둔다. |
+| FR-011-R03 | `warming_up` | 사용 가능한 node run이 10회 이상 50회 미만이고, cheap/mid 후보의 schema pass rate와 downstream success rate가 기준 이상이며 비용 절감이 30% 이상이다 | `ModelRouter.resolve()`를 호출한다 | 규칙 기반 결과보다 해당 node의 성공 지표를 반영해 더 저렴한 후보를 선택할 수 있다. |
+| FR-011-R04 | `warming_up` | cheap 후보에서 schema 실패나 downstream 실패가 기준을 초과한다 | `ModelRouter.resolve()`를 호출한다 | cheap 후보를 제외하고 mid/high로 승격한다. reason에 실패 지표가 포함된다. |
+| FR-011-R05 | `optimized` | 사용 가능한 node run이 50회 이상이고 최근 window에서 mini 모델이 schema/downstream gate를 안정적으로 통과했다 | `ModelRouter.resolve()`를 호출한다 | node-specific performance profile을 우선해 mini 또는 mid 모델을 선택한다. |
+| FR-011-R06 | `optimized` | 최근 window에서 fallback/retry/schema 실패가 증가했다 | `ModelRouter.resolve()`를 호출한다 | 이전에 선택하던 저렴한 모델을 승격하거나 제외한다. |
+| FR-011-R07 | credential guard | 현재 organization/user가 사용할 수 있는 candidate model이 없다 | `ModelRouter.resolve()`를 호출한다 | LLM provider 호출을 하지 않고 명확한 실패 사유를 반환한다. credential 원문은 노출하지 않는다. |
+| FR-011-R08 | runtime integration | LLM node의 `auto_model_routing=true`이고 router가 selected/fallback model을 반환한다 | workflow engine이 해당 LLM node를 실행한다 | 저장된 `model_id`가 아니라 router의 `selected_model_id`로 LLM call을 수행하고 routing stage/reason/policy version을 trace 또는 usage metadata에 남긴다. |
+| FR-011-R09 | manual mode | LLM node의 `auto_model_routing=false`이다 | workflow engine이 해당 LLM node를 실행한다 | router를 호출하지 않고 기존 `model_id`와 `fallback_model_id`를 사용한다. |
+| FR-011-R10 | task type policy | 사용자가 task type을 직접 입력하지 않는다 | router가 context를 구성한다 | node 설정, output schema, prompt, RAG 사용 여부, downstream 계약, node profile로 내부 task 성격을 추론한다. |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
 ## Knowledge/RAG Compare Tests
@@ -141,12 +161,15 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 
 - B candidate 영역은 현재 LLM 노드 설정 복사본으로 초기화된다.
 - B candidate 영역은 `후보 옵션` 같은 중복 제목 대신 `테스트명` 입력을 제공한다.
-- 원본 LLM 노드 상세 설정은 task type 선택을 제공하고, 선택 값은 node data에 저장된다.
-- B candidate 영역은 모델, fallback 모델, task type, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
+- 원본 LLM 노드 상세 설정은 자동 라우팅 토글을 제공한다.
+- 자동 라우팅 ON이면 기본 모델과 fallback 모델 선택 UI를 숨기고 `자동 라우팅 사용 중` 상태와 cold start/warming up/optimized 정책 안내를 표시한다.
+- 자동 라우팅 OFF이면 기본 모델과 fallback 모델 선택 UI를 표시한다.
+- 원본 LLM 노드 상세 설정은 task type 선택 UI를 제공하지 않는다.
+- B candidate 영역은 모델, fallback 모델, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
 - 일반 LLM 노드 상세 화면과 B candidate 영역은 같은 workflow LLM 모델 필터를 사용한다.
 - 모델 후보 목록은 alias 계열 모델을 노출하고 날짜 suffix 모델은 숨긴다.
 - 모델 후보 목록은 embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열을 숨긴다.
-- B candidate의 task type은 Cost Optimizer local draft에서 원본 LLM node data 변환까지 보존된다.
+- B candidate의 task type은 사용자 입력 UI가 아니라 내부 기본값으로 Cost Optimizer local draft에서 원본 LLM node data 변환까지 보존된다.
 - B candidate prompt 입력은 upstream output 변수 삽입을 지원한다.
 - prompt 변수 삽입은 candidate `referenced_variables`를 함께 갱신하고 compare/apply request에 포함한다.
 - 출력 형식은 text와 JSON을 선택할 수 있다.
@@ -170,7 +193,7 @@ FR-011 모델 라우팅과 최적화 에이전트는 후속 기능이므로 현�
 
 ### API Tests
 
-- `POST /compare`는 `candidate.model_id`, task type, prompt, parameters, output_format, knowledge를 request로 받는다.
+- `POST /compare`는 `candidate.model_id`, 내부 task type 기본값, prompt, parameters, output_format, knowledge를 request로 받는다.
 - `POST /compare`는 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 후보 파라미터로 받을 수 있다.
 - 잘못된 task type, `max_tokens`, `temperature`, 고급 파라미터, output_format schema, `properties`에 없는 field를 `required`로 지정한 schema, 세 prompt를 모두 명시적으로 비운 후보는 `400 cost_optimizer.invalid_candidate`를 반환한다.
 - `candidate.knowledge.retrieved_context_max_chars=null`은 제한 없음으로 허용하고, `0` 이하 값은 `400 cost_optimizer.invalid_candidate`를 반환한다.

@@ -134,6 +134,7 @@ export interface LLMNodeData extends BaseNodeData {
   provider: string;
   model_id: string;
   fallback_model_id?: string;
+  auto_model_routing?: boolean;
   task_type?: string;
   system_prompt?: string;
   user_prompt?: string;

@@ -61,7 +61,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `구현 완료` | `테스트 통과` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트 진입 액션과 availability 검증을 제공한다. |
 | FR-002 | A baseline 실행 로그 선택 | P1 | `구현 완료` | `테스트 통과` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 선택하는 API/UI 경로를 제공한다. |
-| FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 통과` | 모델, fallback 모델, task type, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. |
+| FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 갱신 필요` | 모델, fallback 모델, 자동 라우팅 상태, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. 작업 유형은 사용자 선택값으로 노출하지 않는다. |
 | FR-004 | 동일 입력 기준 비교 | P1 | `구현 완료` | `테스트 통과` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
 | FR-005 | 하이브리드 비교 | P1 | `구현 완료` | `테스트 통과` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
 | FR-006 | A/B 비교 화면 | P1 | `구현 완료` | `테스트 통과` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교하고, 결과 분석 화면에서 B 후보를 현재 노드에 적용해도 되는지 판단 요약을 제공한다. |
@@ -69,7 +69,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | 모델 라우팅과 최적화 에이전트 후속 확장 | P3 | `미완료` | `후속 기능` | 모델 라우팅과 최적화 에이전트는 후속 기능으로 분리한다. |
+| FR-011 | 모델 라우팅과 최적화 에이전트 후속 확장 | P3 | `진행중` | `프론트 UI 기반 구현, 라우터 API 후속` | LLM 노드 상세 화면은 자동 라우팅 토글과 cold start/warming up/optimized 정책 안내를 제공한다. 실제 실행 시점 모델 라우터와 최적화 에이전트는 후속 기능으로 분리한다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
 
@@ -126,7 +126,7 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 
 - 모델
 - fallback 모델
-- task type
+- 자동 라우팅 사용 여부
 - system prompt
 - user prompt
 - assistant prompt
@@ -149,6 +149,22 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 - embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열은 일반 LLM 노드와 Cost Optimizer 후보에서 모두 숨긴다.
 - 최신 alias 모델은 provider와 무관하게 whitelist에 포함한다.
 - 가격 정보가 없는 모델은 선택 가능하더라도 결과 분석에서 비용 계산 불가 상태로 표시한다.
+
+LLM 노드 상세 화면과 Cost Optimizer B 후보 설정 화면은 `task type`을 사용자가 직접 고르는 입력으로 노출하지 않는다. 작업 유형은 라우터 또는 노드 실행 맥락에서 내부적으로 판단할 후속 정책값이며, 기존 저장/compare request 호환성을 위해 내부 데이터에는 기본값을 유지할 수 있다.
+
+LLM 노드 상세 화면의 자동 라우팅 UX는 다음을 따른다.
+
+- 자동 라우팅 ON: 기본 모델 선택 UI와 fallback 모델 선택 UI를 숨긴다.
+- 자동 라우팅 ON: `자동 라우팅 사용 중` 상태와 라우팅 정책/예상 선택 기준을 보여준다.
+- 자동 라우팅 ON: 라우터 API 연결 전까지 저장된 `model_id`는 실행 호환성을 위한 내부 fallback으로 유지할 수 있다.
+- 자동 라우팅 OFF: 기존처럼 기본 모델과 fallback 모델을 직접 선택한다.
+- 자동 라우팅 OFF: 작업 유형 입력은 표시하지 않는다.
+
+자동 라우팅 정책은 로그 축적 정도에 따라 세 단계로 설명한다.
+
+- `cold_start`: 해당 노드 실행 로그가 10회 미만이면 보수적 규칙 기반으로 mid/high 모델을 우선 고려하고 실패 시 상위 모델 fallback을 전제한다.
+- `warming_up`: 실행 로그가 10~49회이면 기본 규칙에 schema pass rate, downstream success rate, fallback rate, retry rate, 평균 비용/latency를 함께 반영한다.
+- `optimized`: 실행 로그가 50회 이상이면 노드별 실제 성공률, 비용, 품질 profile을 기준으로 cheap/mid/high 후보를 조정한다.
 
 프롬프트 편집은 기존 LLM 노드 상세 편집과 마찬가지로 변수 삽입을 지원해야 한다. 사용자는 upstream output 변수를 system/user/assistant prompt에 삽입할 수 있어야 하며, 등록되지 않은 변수는 실행 전에 validation으로 드러나야 한다.
 
@@ -382,15 +398,52 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 ### FR-011. 모델 라우팅과 최적화 에이전트 후속 확장
 
-Cost Optimizer는 후속 기능으로 모델 라우팅과 최적화 에이전트를 다룰 수 있어야 한다.
+Cost Optimizer는 LLM 노드의 모델 라우팅과 최적화 에이전트를 단계적으로 다룰 수 있어야 한다.
 
 모델 라우팅은 작업 난이도나 작업 유형에 따라 더 저렴한 모델 또는 더 강한 모델을 선택하는 기능이다.
+
+현재 프론트 구현은 LLM 노드 상세 화면에 자동 라우팅 토글과 정책 안내를 제공한다. 자동 라우팅을 켜면 사용자가 기본 모델과 fallback 모델을 직접 고르는 UI를 숨기고, 로그 축적 단계별 라우팅 기준을 보여준다. 단, 실제 실행 시점에 모델을 고르는 라우터 API와 workflow engine 연동은 후속 구현이다.
 
 가능한 모델 라우팅 방식은 다음과 같다.
 
 - 수동 라우팅: 사용자가 노드별 모델을 직접 선택한다.
 - 규칙 기반 라우팅: 분류, 요약, 단순 추출은 저렴한 모델을 쓰고 복잡한 추론이나 고위험 답변은 강한 모델을 쓴다.
 - LLM 기반 라우팅: 앞단에서 작은 모델 또는 별도 판단기가 요청 난이도를 분류해 적절한 모델을 선택한다.
+
+자동 모델 라우터는 처음부터 완성된 최적 라우터로 동작하지 않는다. 같은 LLM 노드에 쌓인 실행 로그 수와 품질 지표에 따라 `cold_start`, `warming_up`, `optimized` 3단계로 나누어 보수적으로 진화해야 한다.
+
+라우터가 보는 로그는 workflow 전체 실행 횟수가 아니라 target LLM node 기준 실행 이력이다. 라우팅 단계 판단에는 사용 가능한 node run 수, 성공/실패 상태, usage, output, schema 검증 결과, downstream 호환성 결과를 함께 사용한다. 보관 기간 만료나 redaction 때문에 usage/output을 복원할 수 없는 run은 라우팅 프로파일 계산에서 제외한다.
+
+| 라우팅 상태 | 진입 조건 | 목표 | 모델 선택 방식 | fallback 정책 |
+| --- | --- | --- | --- | --- |
+| `cold_start` | target LLM node의 사용 가능한 실행 로그가 10회 미만 | 품질을 망치지 않는 보수적 비용 절감 | 규칙 기반으로 시작한다. JSON 추출, 내부 triage, 짧은 분류처럼 위험이 낮고 schema가 단순한 작업은 mid 모델을 우선 검토한다. 고객에게 바로 나가는 답변, 장애/보상/보안/법무/SLA 판단, RAG 기반 정책 답변은 mid/high 이상을 우선한다. 애매하면 더 강한 모델을 고른다. | high 또는 현재 저장된 안정 모델을 fallback으로 둔다. 사용할 수 있는 credential/model이 없으면 실행하지 않고 명확한 실패 사유를 반환한다. |
+| `warming_up` | 사용 가능한 실행 로그가 10회 이상 50회 미만 | 규칙 기반 판단에 해당 노드의 실제 성공률을 반영 | 기본 규칙을 유지하되, 최근 실행의 schema pass rate, downstream success rate, fallback rate, retry rate, 평균 비용, latency를 반영한다. 저렴한 후보는 품질 gate를 통과할 때만 기본 선택으로 승격한다. | 저렴한 모델에서 schema/downstream 실패나 fallback이 늘면 해당 후보를 제외하고 mid/high로 승격한다. confidence가 낮으면 작은 모델 판단 결과를 참고만 하고 강한 모델로 보낸다. |
+| `optimized` | 사용 가능한 실행 로그가 50회 이상 | node별 실제 성능 프로파일 기반 비용 최적화 | 일반 task type보다 이 노드의 최근 성능 프로파일을 우선한다. 짧은 JSON triage처럼 안정적으로 성공한 노드는 cheap/mid 우선, 입력 난이도 편차가 큰 노드는 confidence 기반 라우팅, 실패 비용이 큰 노드는 high 고정 또는 매우 엄격한 downgrade를 적용한다. | 최근 window에서 schema 실패, downstream 실패, fallback, retry, human correction이 증가하면 즉시 더 강한 모델로 승격한다. |
+
+모델을 더 저렴한 후보로 낮추는 조건은 비용 절감만으로 판단하지 않는다. 최소 조건은 다음과 같다.
+
+- 최근 window의 schema pass rate가 기준 이상이다. 초기 기준은 98%로 둔다.
+- downstream success rate가 기준 이상이다. 초기 기준은 99%로 둔다.
+- fallback rate가 기준 이하이다. 초기 기준은 2% 이하로 둔다.
+- retry rate와 human correction rate가 증가하지 않는다. human correction rate는 지표가 수집되기 전까지 `unknown`으로 취급한다.
+- 평균 비용 절감이 의미 있는 수준이다. 초기 기준은 30% 이상으로 둔다.
+- latency가 서비스 UX나 downstream timeout을 악화시키지 않는다.
+
+라우터는 선택 결과를 설명 가능해야 한다. 실행 결과나 trace summary에는 최소한 다음 정보를 safe summary로 남긴다.
+
+```json
+{
+  "routing_stage": "optimized",
+  "selected_model": "gpt-4.1-mini",
+  "fallback_model": "gpt-4.1",
+  "reason": "최근 50회 실행에서 schema pass 98%, downstream success 100%, 평균 비용 76% 절감",
+  "policy_version": "model-router-v1"
+}
+```
+
+작업 유형은 사용자가 직접 고르는 입력값으로 두지 않는다. 라우터는 node 설정, output format/schema, prompt, RAG 사용 여부, downstream 계약, 과거 node run profile을 보고 내부적으로 판단한다.
+
+자동 라우팅이 켜져 있어도 품질 gate를 통과하지 못하면 비용이 더 싼 모델을 선택하지 않는다. 이 기능의 기본 원칙은 `품질 유지 후 비용 절감`이다.
 
 최적화 에이전트는 실행 로그와 A/B 비교 결과를 바탕으로 모델, 프롬프트, `max_tokens`, 출력 형식 같은 최적화 후보를 제안하는 기능이다.
 
@@ -417,7 +470,7 @@ Cost Optimizer는 후속 기능으로 모델 라우팅과 최적화 에이전트
 - 자동 품질 점수 산정
 - LLM judge 기반 평가
 - 자동 모델 추천
-- 모델 라우팅
+- 실행 시점 모델 라우터 API와 workflow engine 연동
 - 최적화 에이전트
 - LLM response cache
 - budget guardrail

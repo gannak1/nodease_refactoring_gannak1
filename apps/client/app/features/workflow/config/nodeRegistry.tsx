@@ -111,6 +111,7 @@ export const nodeRegistry: NodeDefinition[] = [
       provider: '',
       model_id: '',
       fallback_model_id: '',
+      auto_model_routing: false,
       task_type: 'generate',
       system_prompt: '',
       user_prompt: '',
