@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
@@ -15,7 +16,7 @@ from fastapi import (
     status,
 )
 from pydantic import ValidationError
-from sqlalchemy import func
+from sqlalchemy import func, inspect, literal
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
@@ -78,6 +79,7 @@ from apps.shared.services.knowledge_permission_service import KnowledgePermissio
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -104,6 +106,48 @@ def _knowledge_collection_service(
         user_id=current_user.id,
         organization_id=organization_id,
     )
+
+
+def _table_has_column(db: Session, table_name: str, column_name: str) -> bool:
+    try:
+        return any(
+            column["name"] == column_name
+            for column in inspect(db.get_bind()).get_columns(table_name)
+        )
+    except Exception:
+        logger.warning(
+            "knowledge.list.column_introspection_failed",
+            extra={"table": table_name, "column": column_name},
+            exc_info=True,
+        )
+        return False
+
+
+def _clean_source_types(source_types) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    if isinstance(source_types, str):
+        stripped = source_types.strip("{}")
+        source_types = [value.strip('"') for value in stripped.split(",") if value]
+    for source_type in source_types or []:
+        if source_type is None:
+            continue
+        value = getattr(source_type, "value", source_type)
+        if value is None:
+            continue
+        value = str(value)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+    return cleaned
+
+
+def _max_datetime_or_now(*values):
+    candidates = [value for value in values if value is not None]
+    if candidates:
+        return max(candidates)
+    return datetime.now(timezone.utc)
 
 
 def _raise_collection_service_error(
@@ -165,43 +209,75 @@ def list_knowledge_bases(
     사용자의 자료 목록을 조회합니다.
     각 지식 베이스 그룹에 포함된 문서 개수도 함께 반환합니다.
     """
+    has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
+    organization_id_column = (
+        KnowledgeBase.organization_id
+        if has_organization_id
+        else literal(None).label("organization_id")
+    )
+    group_by_columns = [
+        KnowledgeBase.id,
+        KnowledgeBase.name,
+        KnowledgeBase.description,
+        KnowledgeBase.embedding_model,
+        KnowledgeBase.created_at,
+        KnowledgeBase.updated_at,
+    ]
+    if has_organization_id:
+        group_by_columns.append(KnowledgeBase.organization_id)
 
     results = (
         db.query(
-            KnowledgeBase,
+            KnowledgeBase.id,
+            organization_id_column,
+            KnowledgeBase.name,
+            KnowledgeBase.description,
+            KnowledgeBase.embedding_model,
+            KnowledgeBase.created_at,
+            KnowledgeBase.updated_at,
             func.count(Document.id).label("document_count"),
             func.max(Document.updated_at).label("last_updated_at"),
             func.array_agg(Document.source_type).label("source_types"),
         )
+        .select_from(KnowledgeBase)
         .outerjoin(Document, KnowledgeBase.id == Document.knowledge_base_id)
         .filter(KnowledgeBase.user_id == current_user.id)
-        .group_by(KnowledgeBase.id)
+        .group_by(*group_by_columns)
         .order_by(KnowledgeBase.created_at.desc())
         .all()
     )
 
     response = []
-    for kb, doc_count, last_updated_at, source_types in results:
-        # source_types가 [None]인 경우 (문서가 없을 때) 빈 리스트로 처리
-        clean_source_types = [st for st in source_types if st is not None]
+    for (
+        kb_id,
+        organization_id,
+        name,
+        description,
+        embedding_model,
+        created_at,
+        updated_at,
+        doc_count,
+        last_updated_at,
+        source_types,
+    ) in results:
+        clean_source_types = _clean_source_types(source_types)
 
         # KB 업데이트 시간과 문서 최신 업데이트 시간 중 더 최신을 선택
         # 문서가 없으면 KB 업데이트 시간 사용
-        final_updated_at = (
-            max(kb.updated_at, last_updated_at) if last_updated_at else kb.updated_at
-        )
+        created_at = created_at or _max_datetime_or_now(updated_at, last_updated_at)
+        final_updated_at = _max_datetime_or_now(updated_at, last_updated_at, created_at)
 
         response.append(
             KnowledgeBaseResponse(
-                id=kb.id,
-                organization_id=kb.organization_id,
-                name=kb.name,
-                description=kb.description,
-                document_count=doc_count,
-                created_at=kb.created_at,
+                id=kb_id,
+                organization_id=organization_id,
+                name=name,
+                description=description,
+                document_count=int(doc_count or 0),
+                created_at=created_at,
                 updated_at=final_updated_at,
                 source_types=clean_source_types,
-                embedding_model=kb.embedding_model,
+                embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
             )
         )
     return response

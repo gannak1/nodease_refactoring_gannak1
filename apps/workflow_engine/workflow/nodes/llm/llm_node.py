@@ -773,7 +773,7 @@ class LLMNode(Node[LLMNodeData]):
             self._trace_payloads = [
                 {
                     "payload_kind": "prompt",
-                    "payload": {"messages": messages},
+                    "payload": self._prompt_trace_payload(messages),
                     "scope": "span",
                 },
                 {
@@ -817,6 +817,30 @@ class LLMNode(Node[LLMNodeData]):
             # [FIX] 세션은 메서드 종료 시 닫음 (기존: 클라이언트 생성 직후)
             if temp_session is not None:
                 temp_session.close()
+
+    def _prompt_trace_payload(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Durable prompt trace에서 RAG evidence 원문을 중복 저장하지 않는다."""
+        return {
+            "messages": [
+                {
+                    "role": message.get("role"),
+                    "content": self._trace_safe_prompt_content(
+                        str(message.get("content") or "")
+                    ),
+                }
+                for message in messages
+            ]
+        }
+
+    @staticmethod
+    def _trace_safe_prompt_content(content: str) -> str:
+        if "[BEGIN KNOWLEDGE - UNTRUSTED]" not in content:
+            return content
+        return (
+            "[BEGIN KNOWLEDGE - UNTRUSTED]\n"
+            "[REDACTED: knowledge context omitted from prompt trace]\n"
+            "[END KNOWLEDGE]"
+        )
 
     def _render_prompt(self, template: Optional[str], inputs: Dict[str, Any]) -> str:
         """
@@ -1587,6 +1611,7 @@ class LLMNode(Node[LLMNodeData]):
             .filter(
                 KnowledgeBase.id.in_(parsed_ids),
                 KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
             )
             .all()
         )
@@ -1646,8 +1671,11 @@ class LLMNode(Node[LLMNodeData]):
             .all()
         )
         public_kb_ids: set[uuid.UUID] = set()
-        for item, collection, _kb in rows:
+        for item, collection, kb in rows:
             safe_metadata = getattr(collection, "safe_metadata", None) or {}
+            # Public Exposure Policy Store가 연결되기 전까지 source-managed KB는 fail-closed다.
+            if getattr(kb, "source_identity_id", None) is not None:
+                continue
             if safe_metadata.get("visibility") == "public":
                 public_kb_ids.add(item.knowledge_base_id)
 
