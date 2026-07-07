@@ -31,6 +31,11 @@ class AppUpdateRequest(BaseModel):
     is_market: Optional[bool] = None
 
 
+class AppBudgetStatus(BaseModel):
+    usage_ratio: float
+    status: Literal["normal", "at_risk", "exceeded"]
+
+
 class AppResponse(BaseModel):
     """앱 응답 스키마"""
 
@@ -47,6 +52,7 @@ class AppResponse(BaseModel):
     active_deployment_type: Optional[str] = None
     active_deployment_is_active: Optional[bool] = None  # 활성 배포의 is_active 상태
     owner_name: Optional[str] = None  # UI 표시용 (생성자 이름)
+    budget_status: Optional[AppBudgetStatus] = None
     created_at: datetime
     updated_at: datetime
 
@@ -63,6 +69,7 @@ class AppOperationAppSummary(BaseModel):
     icon: Optional[AppIcon] = None
     workflow_id: Optional[UUID] = None
     owner_name: Optional[str] = None
+    budget_status: Optional[AppBudgetStatus] = None
     created_at: datetime
     updated_at: datetime
 

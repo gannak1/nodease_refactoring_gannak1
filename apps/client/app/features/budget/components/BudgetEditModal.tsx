@@ -2,6 +2,9 @@ import { type FormEvent, useEffect, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { budgetApi } from '../api/budgetApi';
 
+const MAX_MONTHLY_BUDGET_USD_LABEL = '9999999999.99';
+const MAX_MONTHLY_BUDGET_USD = Number(MAX_MONTHLY_BUDGET_USD_LABEL);
+
 type BudgetEditModalProps = {
   workflowId: string;
   workflowName: string;
@@ -54,6 +57,17 @@ export function BudgetEditModal({
       setError('0보다 큰 금액을 입력해주세요');
       return;
     }
+    if (amount > MAX_MONTHLY_BUDGET_USD) {
+      setError(
+        `월 예산은 ${MAX_MONTHLY_BUDGET_USD_LABEL} USD 이하로 입력해주세요`,
+      );
+      return;
+    }
+    const decimalPlaces = monthlyBudget.trim().split('.')[1]?.length ?? 0;
+    if (decimalPlaces > 2) {
+      setError('소수점은 최대 2자리까지 입력해주세요');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -65,6 +79,8 @@ export function BudgetEditModal({
     } catch (err) {
       if (isAxiosError(err) && err.response?.status === 403) {
         setError('예산을 관리할 권한이 없습니다');
+      } else if (isAxiosError(err) && err.response?.status === 422) {
+        setError('예산 입력값을 확인해주세요');
       } else {
         setError('예산 저장에 실패했습니다');
       }
@@ -79,6 +95,7 @@ export function BudgetEditModal({
         role="dialog"
         aria-modal="true"
         aria-label={`${workflowName} 예산 설정`}
+        noValidate
         onSubmit={submit}
         className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl"
       >
@@ -104,6 +121,7 @@ export function BudgetEditModal({
             <input
               type="number"
               min="0"
+              max={MAX_MONTHLY_BUDGET_USD_LABEL}
               step="0.01"
               value={monthlyBudget}
               onChange={(event) => setMonthlyBudget(event.target.value)}

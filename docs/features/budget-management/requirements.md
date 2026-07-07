@@ -21,7 +21,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 ### 예산 설정 (FR-051)
 
 - BGT-REQ-001: organization owner/manager는 workflow 단위 월간 USD 예산을 설정/수정/비활성화할 수 있어야 한다. workflow당 예산은 최대 1개다.
-- BGT-REQ-002: 예산 설정값은 `monthly_budget_usd`(양수, USD)와 `is_enabled`로 구성한다. 비활성화는 row 삭제가 아니라 `is_enabled=false` 갱신으로 표현하고, 설정값은 이력 없이 최신 상태만 유지한다.
+- BGT-REQ-002: 예산 설정값은 `monthly_budget_usd`(양수, USD)와 `is_enabled`로 구성한다. `monthly_budget_usd`는 소수점 2자리까지 허용하고 `NUMERIC(12,2)` 저장 범위(`9999999999.99` 이하)를 초과하면 거부한다. 요청 body의 unknown field는 오타를 숨기지 않도록 validation 오류로 거부한다. 비활성화는 row 삭제가 아니라 `is_enabled=false` 갱신으로 표현하고, 설정값은 이력 없이 최신 상태만 유지한다.
 - BGT-REQ-003: 예산 관리 API(조회/설정/수정/비활성화)는 organization owner/manager 전용이다. 그 외 조직 member의 접근은 `403 permission.denied`로 차단한다 (NFR-001, [ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
 - BGT-REQ-005: 같은 workflow에 대한 동시 예산 설정 요청은 DB unique 제약(`UNIQUE(workflow_id)`)과 upsert(ON CONFLICT 갱신 또는 IntegrityError 재시도)로 방어한다. 생성 경합에서 row는 정확히 1개만 만들어지고, 어느 요청도 5xx로 실패하지 않으며, 마지막 쓰기가 최종 상태가 된다. audit은 실제 발생한 사건대로 `workflow_budget.created` 1회와 이후 갱신 건수만큼 `workflow_budget.updated`를 기록한다.
 - BGT-REQ-004: 요청 organization scope([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)) 밖 workflow의 예산 접근은 `404 resource.not_found`로 숨긴다 (ADR-0010).
@@ -29,14 +29,15 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 ### 사용률 판정
 
 - BGT-REQ-010: 활성 예산은 `is_enabled=true`이고 `monthly_budget_usd > 0`인 예산이다. 예산 미설정, 비활성, 0 이하 예산 workflow는 위험/초과 판정과 실행 차단 대상에서 제외한다.
-- BGT-REQ-011: 사용률은 `당월 비용 합계 / monthly_budget_usd`로 계산한다. 당월 비용 합계는 해당 workflow의 `llm_usage_logs.total_cost`를 KST(Asia/Seoul) 달력 월 경계로 합산한 값이며, `total_cost`가 NULL인 row는 0으로 합산한다 (admin-dashboard 시간대/집계 규칙과 동일).
+- BGT-REQ-011: 사용률은 `당월 비용 합계 / monthly_budget_usd`로 계산한다. 당월 비용 합계는 해당 workflow의 `llm_usage_logs.total_cost`를 KST(Asia/Seoul) 달력 월 경계로 합산한 값이며, `total_cost`가 NULL인 row는 0으로 합산한다 (admin-dashboard 시간대/집계 규칙과 동일). 비용 합산 범위는 실행 차단 판정과 동일하게 `workflow_id`와 월 경계로 결정한다. 예산 row 조회와 접근 권한은 organization scope로 제한하지만, `llm_usage_logs.organization_id`는 nullable/denormalized 호환 컬럼이므로 비용 합산 필터로 요구하지 않는다. 따라서 `workflow_id`가 일치하는 기존/마이그레이션 로그는 `organization_id`가 NULL이어도 합산한다.
 - BGT-REQ-012: 상태는 반올림 전 사용률 값으로 판정한다: 90% 미만은 `normal`, 90% 이상 100% 이하는 `at_risk`, 100% 초과는 `exceeded`.
 
 ### 사용률 조회 (FR-052, FR-015)
 
 - BGT-REQ-020: 관리자 workflow 사용량 조회(`GET /admin/usage/workflows`) 응답 항목에 예산 블록(예산 금액, 당월 비용, 사용률, 상태)을 포함한다. 예산 블록은 조회 기간 필터와 무관하게 항상 당월(KST) 기준으로 계산한다. 활성 예산이 없는 workflow는 null이다.
 - BGT-REQ-021: admin summary(`GET /admin/summary`)의 `budget` 블록을 실제 예산 데이터 기준으로 반환한다. `at_risk_count`, `exceeded_count`, `ratio`를 포함하고, `ratio`의 분모는 조직의 활성 예산 workflow 수다 (admin-dashboard Open Question 확정). 활성 예산 workflow가 0개면 `budget`은 null이다 ("예산 미설정" 표시).
-- BGT-REQ-022: 내 워크플로우 목록/운영 현황 원천인 `GET /apps` 및 `GET /apps/operations`의 App summary에 additive 필드 `budget_status`(사용률, 상태)를 추가한다. App의 primary workflow(`apps.workflow_id`) 기준이며, 활성 예산이 없으면 null이다. 예산 금액은 관리자 표면에만 노출하고 member 표면(`budget_status`)에는 사용률과 상태만 노출한다.
+- BGT-REQ-022: 내 워크플로우 목록/운영 현황 원천인 `GET /apps/operations`의 App summary에 additive 필드 `budget_status`(사용률, 상태)를 추가한다. App의 primary workflow(`apps.workflow_id`) 기준이며, 활성 예산이 없거나 `workflow_id`가 null이면 null이다. 같은 `app_id`에 과거/보조 Workflow row가 남아 있어도 `apps.workflow_id`가 아닌 workflow의 예산 상태를 대신 표시하지 않는다. 예산 금액과 당월 비용 원문은 관리자 표면에만 노출하고 member 표면(`budget_status`)에는 사용률과 상태만 노출한다.
+- BGT-REQ-023: 기존 App 목록 소비자가 동일한 member 표면 예산 상태를 재사용할 수 있도록 `GET /apps`의 `AppResponse`에도 `budget_status`를 같은 shape로 추가한다. `GET /apps`와 `GET /apps/operations` 모두 응답 App의 primary workflow id만 모아 workflow별 당월 비용을 grouped query로 계산해야 하며, App row마다 개별 비용 집계를 수행하는 N+1 구현은 허용하지 않는다. 이 grouped query의 사용량 합산 기준은 BGT-REQ-011과 같아야 하며, `llm_usage_logs.organization_id == organization_id` 조건으로 legacy NULL 로그를 제외하면 안 된다. `workflows.app_id` 역참조를 사용한 누락 복구나 후보 확장은 목록 응답 계산 경로에서 수행하지 않는다.
 
 ### 실행 차단
 
@@ -60,6 +61,8 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - 월이 바뀌면 당월 비용이 0에서 다시 시작하므로 전월 초과 workflow는 자동으로 차단이 풀린다. 별도 초기화 작업은 없다.
 - anonymous public 실행(`/run-public`)의 차단 audit은 actor 없이(actor_id null) 기록한다.
 - workflow 삭제 시 예산 row는 함께 삭제한다 (FK cascade). App의 `workflow_id`가 null이면 `budget_status`는 null이다.
+- App에 과거/보조 Workflow row가 남아 있더라도 member 표면의 `budget_status`는 `apps.workflow_id`가 가리키는 workflow의 상태만 반영한다. 관계 누락이나 고아 Workflow 정리는 별도 정합성 복구 경로에서 다루며, `GET /apps`/`GET /apps/operations` 응답 생성 중 보조 workflow 예산 상태를 대체값으로 사용하지 않는다.
+- `GET /apps`/`GET /apps/operations`의 `budget_status` 조회와 예산 수정·비활성화·삭제가 경합하면 응답은 5xx 없이 완료되어야 한다. 각 row의 `usage_ratio`와 `status`는 같은 조회 스냅샷 기준으로 일관되면 되며, 경합 결과 활성 예산을 찾을 수 없으면 `budget_status=null`로 처리한다.
 - 예산 수정/비활성화가 진행 중인 실행에 소급 적용되지 않는다. 판정은 dispatch 시점 스냅샷이며, 판정과 동시에 예산이 수정되는 경합에서는 수정 전/후 어느 한쪽 기준으로 일관되게 판정되면 된다 (5xx 금지).
 - 월 경계(KST 자정) 근처의 실행 요청은 판정 시점의 KST가 속한 달을 기준으로 집계한다. 사용률 계산은 float 오차로 90%/100% 경계 판정이 뒤집히지 않도록 `Decimal`(원본 `NUMERIC` 정밀도)로 수행한다.
 - 가격 미산정 모델 호출이 `total_cost=0.0`으로 기록되는 admin-dashboard의 알려진 한계는 예산 집계에도 동일하게 적용된다. 실제 비용보다 낮게 집계되어 차단이 늦어질 수 있다 (수용).

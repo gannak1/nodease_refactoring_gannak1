@@ -14,6 +14,8 @@ Verified Against: TBD
 - Given 기존 예산, When `is_enabled=false`로 비활성화하면, Then row는 삭제되지 않고 `workflow_budget.updated` audit(`audit_metadata.is_enabled=false`)이 기록된다.
 - Given 조직 A의 owner/manager가 아닌 member(builder 포함), When 예산 조회/설정 API를 호출하면, Then `403`과 `permission.denied` audit이 기록되고 예산은 변경되지 않는다.
 - Given 기존 값과 동일한 no-op PUT, When 호출하면, Then 200이지만 audit이 기록되지 않는다.
+- Given `monthly_budget_usd`가 `NUMERIC(12,2)` 저장 범위의 최대값 `9999999999.99`를 초과한다, When `PUT /admin/workflow-budgets/{workflow_id}`를 호출하면, Then request validation 단계에서 `422`로 거부되고 service/DB commit까지 전달되지 않으며 예산 row와 audit은 변경되지 않는다.
+- Given `PUT /admin/workflow-budgets/{workflow_id}` request body에 `is_enabledd` 같은 unknown field가 포함된다, When 호출하면, Then request validation 단계에서 `422`로 거부되고 오타 필드는 조용히 무시되지 않으며 service/DB commit까지 전달되지 않는다.
 
 ### AC-2. Organization scope 경계 (BGT-REQ-004)
 
@@ -30,7 +32,7 @@ Verified Against: TBD
 - Given `total_cost`가 NULL인 usage row, When 당월 비용을 합산하면, Then 0으로 합산된다.
 - Given KST 월 경계 근처의 usage row (예: KST 7월 1일 00:30 = UTC 6월 30일 15:30 저장), When 7월 사용률을 계산하면, Then 해당 row는 7월 집계에 포함된다.
 
-### AC-4. 사용률 조회 응답 (BGT-REQ-020~022)
+### AC-4. 사용률 조회 응답 (BGT-REQ-020~023)
 
 - Given 활성 예산 workflow, When `GET /admin/usage/workflows`를 호출하면, Then 항목의 `budget` 블록에 `monthly_budget_usd`, `current_month_cost`, `usage_ratio`, `status`가 포함된다.
 - Given 지난달 기간 필터(`startAt`/`endAt`)로 usage를 조회, When 응답을 확인하면, Then `total_cost`는 지난달 기준이지만 `budget` 블록은 당월(KST) 기준이다.
@@ -38,7 +40,14 @@ Verified Against: TBD
 - Given 활성 예산 workflow 5개 중 at_risk 1개, exceeded 1개, When `GET /admin/summary`를 호출하면, Then `budget`은 `{budgeted_workflow_count: 5, at_risk_count: 1, exceeded_count: 1, ratio: 0.4}`다.
 - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 null이다.
 - Given 활성 예산이 있는 App, When member가 `GET /apps`를 호출하면, Then 항목의 `budget_status`에 `usage_ratio`, `status`만 포함되고 예산 금액/비용 원문은 포함되지 않는다.
-- Given 예산 미설정 App 또는 `workflow_id`가 null인 App, When `GET /apps`를 호출하면, Then `budget_status`는 null이고 기존 응답 필드는 변하지 않는다.
+- Given 활성 예산이 있는 App, When member가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
+- Given 예산 미설정 App 또는 `workflow_id`가 null인 App, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status`는 null이고 기존 응답 필드는 변하지 않는다.
+- Given App의 primary workflow에는 활성 예산이 없고 같은 `app_id`의 과거/보조 workflow에는 활성 예산과 초과 비용이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이고 보조 workflow의 `exceeded` 상태를 대신 표시하지 않는다.
+- Given `workflow_id=null`인 App과 같은 `app_id`를 가진 과거/보조 workflow에 활성 예산이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이다.
+- Given `GET /apps` 또는 `GET /apps/operations` 응답 대상에 여러 App의 primary workflow가 포함된다, When `budget_status`를 계산하면, Then primary workflow별 당월 비용은 grouped query로 계산하고 App row마다 개별 집계를 반복하지 않는다.
+- Given App의 primary workflow에 활성 예산이 있고 같은 workflow의 당월 usage row 중 `llm_usage_logs.organization_id`가 NULL인 기존/마이그레이션 로그가 있다, When `GET /apps` 또는 `GET /apps/operations`의 `budget_status`를 계산하면, Then NULL organization usage도 합산해 실행 차단 판정과 같은 `status`를 반환한다.
+- Given 예산 100 USD와 당월 비용 89.99/90.00/100.00/100.000001 USD인 App들이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status.status`는 각각 `normal`/`at_risk`/`at_risk`/`exceeded`다.
+- Given KST 월 경계 row가 App의 primary workflow에 기록되어 있다, When `budget_status`를 계산하면, Then KST 당월 `[start, end)` 경계 기준으로 포함/제외한다.
 
 ### AC-5. 실행 차단 (BGT-REQ-030~034)
 
@@ -56,6 +65,8 @@ Verified Against: TBD
 
 - Given 예산 row가 없는 workflow, When 두 owner/manager가 서로 다른 금액으로 동시에 PUT하면, Then row는 정확히 1개 생성되고, 두 요청 모두 5xx 없이 성공하며, 최종 값은 나중에 커밋된 쪽이다. audit은 `workflow_budget.created` 1회 + `workflow_budget.updated` 최대 1회만 기록된다.
 - Given 기존 예산 row, When 두 요청이 동시에 서로 다른 값으로 PUT하면, Then 최종 상태는 어느 한쪽 값과 정확히 일치하고 (두 값이 섞이지 않음) 각 갱신마다 `workflow_budget.updated`가 기록된다.
+- Given 예산 수정/비활성화와 `GET /apps` 또는 `GET /apps/operations` 조회가 동시에 발생하면, Then 조회 응답은 5xx 없이 완료되고 `budget_status`는 수정 전 값, 수정 후 값, 또는 비활성화 후 null 중 하나로 일관되게 반환된다.
+- Given workflow 삭제로 예산 row가 cascade 삭제되는 중 `GET /apps/operations`가 실행되면, Then 권한/목록 조회에서 이미 제외된 row는 반환하지 않고, 응답 대상 App에서 예산을 찾을 수 없으면 `budget_status=null`로 처리한다.
 - Given 초과가 `llm_usage_logs`에 이미 반영된 workflow, When 여러 실행 요청이 동시에 도착하면, Then 전부 `429 budget.exceeded`로 차단된다 (보장 하한선, BGT-REQ-034).
 - Given 사용률 99%인 workflow, When 실행 요청 N개가 동시에 판정을 통과해 dispatch되면, Then 이는 수용된 한시적 초과(BGT-REQ-035)이며, 이 실행들의 비용이 기록된 이후의 신규 요청은 모두 차단된다. (테스트는 "통과 자체"가 아니라 "기록 반영 후 차단 전환"을 검증한다.)
 - Given 실행 판정과 동시에 예산이 비활성화되는 경합, When 두 동작이 겹치면, Then 실행은 수정 전/후 어느 한쪽 기준으로 일관되게 판정되고 5xx가 발생하지 않는다.
@@ -83,7 +94,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 
 - KST 월 경계 `[start, end)`: KST 7월 1일 00:00:00 정각 row 포함, 8월 1일 00:00:00 정각 row 제외, UTC 저장값(6월 30일 15:00 UTC = 7월 1일 00:00 KST) 변환 정확성.
 - `total_cost` NULL row는 0으로 합산, usage row 없음은 0 반환.
-- 다른 workflow, 다른 organization의 row는 합산에서 제외.
+- 다른 workflow row는 합산에서 제외한다. `organization_id`는 예산 row/권한 scope의 기준이지 사용량 합산 필터가 아니므로, 같은 workflow의 NULL organization legacy row는 합산한다.
 - 기준 시각(`now`)을 주입받아 월 경계를 결정한다 (월말/월초 테스트 가능하도록).
 
 ### 예산 upsert `upsert_workflow_budget(...)`
@@ -94,6 +105,14 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - 기존 값과 동일한 no-op → 갱신/audit 없음.
 - 생성 경합 IntegrityError → 갱신으로 전환(재시도 1회), 5xx 미발생 (BGT-REQ-005).
 - audit_metadata에 `monthly_budget_usd`, `is_enabled` 외 값(요청자 토큰, raw body 등) 미포함.
+
+### 예산 요청 스키마 `WorkflowBudgetUpsertRequest`
+
+- `monthly_budget_usd` 누락, 숫자 아님, 0 이하 → validation 오류.
+- `monthly_budget_usd` 소수점 3자리 이상 → validation 오류.
+- `monthly_budget_usd=9999999999.99` → `NUMERIC(12,2)` 최대 저장 가능 값으로 허용.
+- `monthly_budget_usd=10000000000.00` 또는 `100000000000` → `NUMERIC(12,2)` overflow를 일으키는 값이므로 validation 오류. API에서는 `422`로 반환되어야 하며 service/DB commit까지 도달하지 않아야 한다.
+- Request body에 `monthly_budget_usd`, `is_enabled` 외 unknown field가 있으면 validation 오류. API에서는 `422`로 반환되어야 하며 service/DB commit까지 도달하지 않아야 한다.
 
 ### 실행 차단 helper `ensure_workflow_budget_allows_execution(...)`
 
@@ -118,7 +137,10 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - admin summary budget 블록 — at_risk/exceeded 카운트, `ratio` 계산, 분모 = 활성 예산 workflow 수, 활성 예산 0개 → null, 비활성 예산 workflow는 분모/분자 모두 제외.
 - `GET /admin/usage/workflows` budget 블록 — 기간 필터와 무관하게 당월 기준, 미설정 null.
 - `GET /admin/workflow-budgets` 목록 — 조직 scope 필터, `updated_at` 내림차순, pagination.
-- `GET /apps` budget_status — 목록 전체가 grouped query 1회로 계산 (N+1 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null.
+- `GET /apps` budget_status — 목록 전체가 primary workflow id 기준 grouped query 1회로 계산 (N+1 없음), 사용량 합산은 실행 차단과 동일하게 `workflow_id`+KST 월 경계 기준(`llm_usage_logs.organization_id` 필터 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null, 같은 `app_id`의 과거/보조 workflow 예산은 무시.
+- `GET /apps/operations` app budget_status — operations page/batch의 primary workflow id 기준으로 grouped query 1회 계산, 같은 workflow의 NULL organization legacy usage를 포함, `row.app.budget_status` shape는 `GET /apps`와 동일, 권한 없는 row에는 예산 상태를 노출하지 않음, `workflows.app_id` 역참조로 후보를 확장하지 않음.
+- App budget_status 경계값 — 89.99/90.00/100.00/100.000001(예산 100)에서 `normal`/`at_risk`/`at_risk`/`exceeded`, `total_cost` NULL은 0, 비활성/0 이하 예산은 null.
+- App budget_status 월 경계 — KST 월초 정각 포함, 다음 달 월초 정각 제외, 기준 시각은 timezone-aware KST now 사용.
 - 모든 예산 응답에 secret/credential/raw payload 계열 필드 부재.
 
 ## Client Tests
@@ -126,7 +148,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 Vitest 기준.
 
 - `BudgetStatusBadge` — status별 렌더링, 사용률 % 표시 반올림.
-- `BudgetEditModal` — 초기값 로드(404 → 신규 폼), 0 이하 입력 차단, 저장 성공 시 refetch 콜백, 422/403 오류 표시.
+- `BudgetEditModal` — 초기값 로드(404 → 신규 폼), 0 이하/비숫자/소수점 3자리 이상/`9999999999.99` 초과 입력 차단, 저장 성공 시 refetch 콜백, 422 필드 오류 표시, 403 권한 오류 표시.
 - 내 워크플로우 목록 — `budget_status` null이면 기존 렌더링 유지, 상태가 있으면 `BudgetStatusBadge` 표시, `exceeded`면 "실행 차단" 표시 + tooltip.
 - 테스트 실행 429 `budget.exceeded` 응답 → 예산 초과 안내 표시 (일반 오류와 구분).
 

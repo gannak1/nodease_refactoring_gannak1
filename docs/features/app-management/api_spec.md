@@ -32,13 +32,31 @@ Budget Management 확장 계약은 [budget-management api_spec](../budget-manage
 
 - `budget_status`는 member 표면용 요약이다. 예산 금액과 당월 비용 원문은 포함하지 않는다.
 - 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
-- 현재 branch의 클라이언트 타입은 이 필드를 소비하도록 준비되어 있지만, Gateway `AppResponse`/`AppOperationAppSummary`의 backend wiring은 별도 구현이 필요하므로 이 문서의 `Verified Against`는 아직 TBD로 둔다.
+- 같은 `app_id`에 과거/보조 Workflow row가 남아 있어도 App의 primary workflow(`apps.workflow_id`)가 아니면 `budget_status` 후보로 사용하지 않는다.
+- `budget_status` 계산 규칙과 N+1 금지는 [budget-management api_spec](../budget-management/api_spec.md)의 `GET /apps, GET /apps/operations (확장)`을 따른다.
+- 당월 비용 합산은 실행 차단과 동일하게 primary workflow id와 KST 월 경계 기준이며, `llm_usage_logs.organization_id`가 NULL인 기존/마이그레이션 usage row도 포함한다.
 
 ### GET /apps/operations
 
 `/dashboard/mymodule`의 원천이다. 응답 항목의 `app` summary는 App 기본 정보와 운영 상태를 함께 표시하기 위한 안전 요약이다.
 
 Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_status`와 동일한 shape를 사용한다.
+
+```json
+{
+  "app": {
+    "id": "<uuid>",
+    "name": "<string>",
+    "workflow_id": "<uuid|null>",
+    "budget_status": {
+      "usage_ratio": 0.923457,
+      "status": "at_risk"
+    }
+  },
+  "deployment": { "...": "..." },
+  "latest_run": { "...": "..." }
+}
+```
 
 ## Errors
 
