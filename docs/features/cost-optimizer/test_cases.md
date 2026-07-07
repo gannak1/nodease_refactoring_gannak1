@@ -5,10 +5,10 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-011까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
-FR-011 모델 라우팅은 사용자 클릭 기반 추천 분석으로 다룬다. 실행 시점 자동 라우팅은 제공하지 않고, workflow runtime은 저장된 모델 설정을 사용한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-012까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 active policy를 사용해 모델을 선택하고, judge LLM은 정책 갱신 시점에만 호출한다.
 
-테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트와 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다. 모델 라우팅 최적화는 LLM 노드 상세 화면의 진입 액션, 운영 로그 기반 추천 분석 계약, 사용자 명시 적용 흐름을 검증한다.
+테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트와 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다. 모델 라우팅은 LLM 노드 상세 화면의 자동 라우팅 토글, active policy runtime 선택, 20회 운영 로그 누적 갱신, 수동 정책 갱신, metadata redaction을 검증한다.
 
 ## Test Matrix
 
@@ -24,7 +24,7 @@ FR-011 모델 라우팅은 사용자 클릭 기반 추천 분석으로 다룬다
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Model routing optimization entry | Model Routing Recommendation Contract | 모델 라우팅 최적화 버튼, 운영 로그 기반 추천 분석 계약, 런타임 자동 전환 금지 | 작성 완료 | 통과 |
+| FR-011 | Model routing policy controls | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 정책 갱신 metadata | 미작성 | 미구현 |
 
 ## Test Implementation Tracking
 
@@ -66,6 +66,8 @@ FR-011 모델 라우팅은 사용자 클릭 기반 추천 분석으로 다룬다
 | FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | legacy `auto_model_routing` 값이 있어도 런타임은 저장된 `model_id`를 사용하고 routing metadata를 남기지 않음 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py -k auto_model_routing` | 통과 |
 | FR-011 | Trace metadata | `apps/shared/tests/services/test_tracing_metadata.py` | model routing decision summary가 safe metadata allowlist로 보존되고 raw prompt/secret은 제거됨 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_tracing_metadata.py` | 통과 |
 | FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 완료 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 부분 통과: 로컬 OpenAI dry-run 통과, Anthropic/Google은 API key 부재로 dry-run 실패 기대 |
+| FR-012 | Gateway/service | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 운영 로그/trace 기반 LLM 파라미터 추천 룰셋, safe evidence, A/B 후보 생성 patch | 미작성 | 후속 구현 시 실행 | 미구현 |
+| FR-012 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr12-parameter-recommendations.test.tsx` | 최적화 권장 모달, 추천 row, 후보 실험 만들기 CTA, 직접 적용 금지 | 미작성 | 후속 구현 시 실행 | 미구현 |
 
 ## Model Routing Recommendation Tests
 
@@ -88,6 +90,29 @@ FR-011 모델 라우팅은 사용자 클릭 기반 추천 분석으로 다룬다
 | FR-011-R13 | high-risk retention | 고객-facing/schema 계약이 있고 보상/SLA/법무 리스크가 큰 LLM node에서 배포 후 운영 로그가 110회 쌓였다 | `ModelRouter.resolve()`를 호출한다 | stage는 `optimized`로 이동하더라도 저비용 탐색으로 자동 하향하지 않고 현재 안정 모델을 유지한다. |
 | FR-011-R14 | multi-provider judge | organization이 Anthropic 또는 Google credential만 가지고 있고 해당 provider의 cheap/mid/high/judge model relation과 `use` 권한이 verified 상태다 | `scripts/verify_model_router_actual.py --provider anthropic` 또는 `--provider google`을 실행한다 | OpenAI 모델 hardcode 없이 해당 provider preset으로 실제 후보 실행과 LLM judge 평가를 수행한다. credential이 없으면 provider 호출 전에 명확한 실패 사유를 출력한다. |
 | FR-011-R15 | provider dry run | 실제 API key가 없거나 비용 발생 없이 설정만 확인하고 싶다 | `scripts/verify_model_router_actual.py --dry-run`을 실행한다 | provider 호출 없이 현재 organization/user가 실행 가능한 preset, cheap/mid/high model, judge model을 출력한다. |
+
+## LLM Parameter Recommendation Tests
+
+관련 FR: FR-012
+
+이 섹션은 LLM 파라미터 추천 룰셋을 검증한다. 추천은 운영 로그와 safe trace summary에 근거해야 하며, raw prompt, raw completion, raw Knowledge chunk content, credential 원문을 사용자의 추천 UI나 응답에 노출하면 안 된다.
+
+| ID | 추천 대상 | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| FR-012-R01 | `max_tokens` | target LLM node의 배포 후 성공 운영 sample이 충분하고, 최근 `completion_tokens` p95가 현재 `max_tokens`보다 낮으며 schema/downstream 실패가 없다 | 파라미터 추천 API를 호출한다 | `max_tokens` 하향 추천 row를 반환한다. `confidence=high`, `risk=low`, `apply_mode=experiment_required`이며 `candidate_patch.parameters.max_tokens`를 포함한다. |
+| FR-012-R02 | `max_tokens` | `completion_tokens` p95는 낮지만 provider finish reason 또는 길이 잘림 여부를 알 수 없다 | 파라미터 추천 API를 호출한다 | 추천을 반환하더라도 `confidence`를 `medium` 이하로 낮추고 reason에 길이 잘림 근거 부족을 표시한다. |
+| FR-012-R03 | `max_tokens` | 최근 output이 잘렸거나 schema/downstream 실패가 증가했다 | 파라미터 추천 API를 호출한다 | `max_tokens` 하향 추천을 만들지 않거나 `적용 비추천` warning을 반환한다. |
+| FR-012-R04 | `temperature` | JSON/schema/분류/추출 성격의 node에서 `temperature > 0.3`이고 schema 실패 또는 retry/fallback 증가가 있다 | 파라미터 추천 API를 호출한다 | `temperature`를 `0.1~0.3` 범위로 낮추는 후보를 반환한다. reason은 안정성/실패 비용 감소를 설명해야 한다. |
+| FR-012-R05 | `temperature` | 사용자-facing 창의 생성 node이고 schema/downstream 실패가 없다 | 파라미터 추천 API를 호출한다 | 비용 절감 근거만으로 `temperature` 하향 추천을 만들지 않는다. |
+| FR-012-R06 | `top_p` | Anthropic 계열처럼 현재 UI/실행 경로에서 `top_p` 동시 사용을 제한하는 모델이다 | 파라미터 추천 API를 호출한다 | `top_p` 값을 새로 추천하지 않고 제거 후보 또는 호환성 warning만 반환한다. |
+| FR-012-R07 | `frequency_penalty` | 최근 output에서 동일 문장 또는 n-gram 반복률이 높고 completion token 증가와 연결된다 | 파라미터 추천 API를 호출한다 | 낮은 위험의 `frequency_penalty` 증가 후보를 반환하되 A/B 후보 생성으로만 연결한다. |
+| FR-012-R08 | `frequency_penalty` | JSON/schema node다 | 파라미터 추천 API를 호출한다 | 반복률 근거가 명확하지 않으면 `frequency_penalty` 추천을 만들지 않는다. |
+| FR-012-R09 | RAG context | `context_token_estimate / prompt_tokens` 비중이 높고 evidence sufficiency가 유지되며 retrieved chunk 수가 과도하다 | 파라미터 추천 API를 호출한다 | `topK`, `retrievedContextMaxChars`, `retrievedContextCompression` 중 하나 이상의 RAG context 조정 후보를 반환한다. |
+| FR-012-R10 | RAG context | RAG evidence가 부족하거나 downstream 실패가 있다 | 파라미터 추천 API를 호출한다 | RAG context 축소 추천을 반환하지 않고 근거 부족 또는 적용 비추천 warning을 반환한다. |
+| FR-012-R11 | prompt safety | prompt token 비중이 높다 | 파라미터 추천 API를 호출한다 | author prompt를 임의로 자르는 patch를 반환하지 않는다. 프롬프트 축소는 별도 LLM 보조 후보 생성과 A/B 실험 필요 상태로만 표시한다. |
+| FR-012-R12 | UI modal | workflow 목록에서 `워크플로우 최적화 권장` 항목을 클릭한다 | 최적화 추천 모달을 연다 | 추천 row에 현재값, 추천값, 예상 효과, 근거, 위험도, 액션이 표시된다. |
+| FR-012-R13 | UI action | 파라미터 추천 row를 선택한다 | `선택 항목으로 실험 만들기`를 클릭한다 | current draft를 직접 수정하지 않고 `candidate_patch`가 merge된 B candidate로 Cost Optimizer A/B workspace에 진입한다. |
+| FR-012-R14 | UI direct apply guard | 추천 유형이 `max_tokens`, `temperature`, RAG context다 | 모달을 렌더링한다 | 단일 `바로 적용` 버튼으로 draft를 수정할 수 없어야 한다. 직접 적용은 정책 갱신류 추천에만 분리해서 허용한다. |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
 ## Knowledge/RAG Compare Tests
