@@ -295,6 +295,32 @@ class OpenAIClient(BaseLLMClient):
         except httpx.RequestError as exc:
             raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
 
+        return self._parse_responses_http_response(responses_resp)
+
+    def _invoke_responses_endpoint_sync(
+        self,
+        client: httpx.Client,
+        payload: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        timeout_seconds: int = 60,
+    ) -> Dict[str, Any]:
+        responses_payload = self._build_responses_request_payload(payload, messages)
+
+        try:
+            responses_resp = client.post(
+                self.responses_url,
+                headers=self._build_headers(),
+                json=responses_payload,
+                timeout=timeout_seconds,
+            )
+        except httpx.RequestError as exc:
+            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+
+        return self._parse_responses_http_response(responses_resp)
+
+    def _parse_responses_http_response(
+        self, responses_resp: httpx.Response
+    ) -> Dict[str, Any]:
         if responses_resp.status_code >= 400:
             try:
                 responses_data = responses_resp.json()
@@ -483,6 +509,13 @@ class OpenAIClient(BaseLLMClient):
             "Content-Type": "application/json",
         }
 
+    def _parse_embedding_response(self, data: Dict[str, Any]) -> List[float]:
+        try:
+            # OpenAI response format: { "data": [ { "embedding": [...] } ] }
+            return data["data"][0]["embedding"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ValueError(f"{self.provider_name} 임베딩 응답 파싱 실패") from exc
+
     async def embed(self, text: str) -> List[float]:
         """
         Embeddings API 호출 (비동기).
@@ -505,10 +538,39 @@ class OpenAIClient(BaseLLMClient):
             )
 
         try:
-            data = resp.json()
-            # OpenAI response format: { "data": [ { "embedding": [...] } ] }
-            return data["data"][0]["embedding"]
-        except (ValueError, KeyError, IndexError) as exc:
+            return self._parse_embedding_response(resp.json())
+        except ValueError as exc:
+            raise ValueError(f"{self.provider_name} 임베딩 응답 파싱 실패") from exc
+
+    def embed_sync(self, text: str) -> List[float]:
+        """
+        Embeddings API 호출 (동기).
+
+        Workflow Engine은 gevent 실행 컨텍스트에서 노드를 실행한다. 기본
+        async wrapper는 일부 Windows/Celery 워커에서 httpx async 요청이
+        timeout까지 완료되지 않는 문제가 있어, worker sync path는
+        직접 동기 httpx.Client를 사용한다.
+        """
+        payload = {"model": self.model_id, "input": text}
+
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(
+                    self.embedding_url,
+                    headers=self._build_headers(),
+                    json=payload,
+                )
+        except httpx.RequestError as exc:
+            raise ValueError(f"{self.provider_name} 임베딩 호출 실패: {exc}") from exc
+
+        if resp.status_code >= 400:
+            raise ValueError(
+                f"{self.provider_name} 임베딩 호출 실패 (status {resp.status_code}): {resp.text[:200]}"
+            )
+
+        try:
+            return self._parse_embedding_response(resp.json())
+        except ValueError as exc:
             raise ValueError(f"{self.provider_name} 임베딩 응답 파싱 실패") from exc
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
@@ -552,6 +614,32 @@ class OpenAIClient(BaseLLMClient):
             return [item["embedding"] for item in sorted_data]
         except (ValueError, KeyError, IndexError) as exc:
             raise ValueError("OpenAI 배치 임베딩 응답 파싱 실패") from exc
+
+    def invoke_sync(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """
+        LLM 호출 (동기).
+
+        Workflow Engine은 gevent 실행 컨텍스트에서 노드를 실행한다. GPT-5.x
+        계열은 Responses endpoint를 사용하므로 worker sync path에서 직접
+        동기 httpx.Client를 사용해 async event loop wrapper 의존을 피한다.
+        """
+        if not self._should_use_responses_endpoint():
+            return super().invoke_sync(messages, **kwargs)
+
+        payload: Dict[str, Any] = {
+            "model": self.model_id,
+            "messages": messages,
+        }
+        payload.update(self._normalize_params(kwargs))
+        timeout_seconds = self._get_chat_timeout()
+
+        with httpx.Client(timeout=60) as client:
+            return self._invoke_responses_endpoint_sync(
+                client=client,
+                payload=payload,
+                messages=messages,
+                timeout_seconds=timeout_seconds,
+            )
 
     async def invoke(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """

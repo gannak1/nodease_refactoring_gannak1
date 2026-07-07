@@ -440,6 +440,7 @@ class RetrievalService:
                     "chunk": chunk,
                     "doc": doc,
                     "vector_rank": rank,
+                    "similarity": 1 - distance,
                 }
             fused_scores[doc_id]["score"] += 1.0 / (k + rank + 1)
 
@@ -679,12 +680,21 @@ class RetrievalService:
                 thresholded_reranked = [
                     item
                     for item in reranked
-                    if float(item.get("rerank_score", 0.0)) >= threshold
+                    if float(
+                        item.get(
+                            "rerank_score",
+                            item.get("similarity", item.get("score", 0.0)),
+                        )
+                    )
+                    >= threshold
                 ]
                 for rank, item in enumerate(thresholded_reranked, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
-                    rerank_score = item.get("rerank_score", 0.0)
+                    rerank_score = item.get(
+                        "rerank_score",
+                        item.get("similarity", item.get("score", 0.0)),
+                    )
                     rrf_score = item.get("score", 0.0)  # 원본 RRF 점수
 
                     meta = self._chunk_metadata(chunk, doc)

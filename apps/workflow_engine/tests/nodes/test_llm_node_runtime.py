@@ -1776,6 +1776,405 @@ def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
     assert result.trace_summary["source_tier_policy"] == "off"
 
 
+def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_a = uuid.uuid4()
+    kb_b = uuid.uuid4()
+    query_vectors = []
+    embedded_queries = []
+
+    kb_rows = [
+        SimpleNamespace(
+            id=kb_a,
+            organization_id=organization_id,
+            lifecycle_state="active",
+            embedding_model="text-embedding-test",
+        ),
+        SimpleNamespace(
+            id=kb_b,
+            organization_id=organization_id,
+            lifecycle_state="active",
+            embedding_model="text-embedding-test",
+        ),
+    ]
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            if self.model is KnowledgeBase:
+                return kb_rows
+            return []
+
+        def first(self):
+            if self.model is LLMModel:
+                return SimpleNamespace(type="embedding")
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery(model)
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="operator",
+                )
+                for kb in kbs
+            }
+
+    class FakeEmbeddingClient:
+        def embed_sync(self, query):
+            embedded_queries.append(query)
+            return [0.1, 0.2]
+
+    class FakeRetrievalService:
+        def __init__(self, db, user_id, organization_id=None):
+            pass
+
+        def search_documents_sync(self, query, *, knowledge_base_id, query_vector=None, **kwargs):
+            query_vectors.append((knowledge_base_id, query_vector))
+            return [
+                _chunk_preview(
+                    f"{knowledge_base_id} 근거",
+                    filename=f"{knowledge_base_id}.md",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *args, **kwargs: FakeEmbeddingClient(),
+    )
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-5.4-mini",
+            user_prompt="query",
+            knowledgeBases=[
+                KnowledgeBaseRef(id=str(kb_a), name="A"),
+                KnowledgeBaseRef(id=str(kb_b), name="B"),
+            ],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert embedded_queries == ["query"]
+    assert query_vectors == [
+        (str(kb_a), [0.1, 0.2]),
+        (str(kb_b), [0.1, 0.2]),
+    ]
+    assert result.should_invoke_llm is True
+
+
+def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_a = uuid.uuid4()
+    kb_b = uuid.uuid4()
+    kb_c = uuid.uuid4()
+    requested_models = []
+
+    kb_rows = [
+        SimpleNamespace(id=kb_a, embedding_model="text-embedding-a"),
+        SimpleNamespace(id=kb_b, embedding_model="text-embedding-b"),
+        SimpleNamespace(id=kb_c, embedding_model="text-embedding-a"),
+    ]
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            if self.model is KnowledgeBase:
+                return kb_rows
+            return []
+
+        def first(self):
+            if self.model is LLMModel:
+                return SimpleNamespace(type="embedding")
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery(model)
+
+    class FakeEmbeddingClient:
+        def __init__(self, model_id):
+            self.model_id = model_id
+
+        def embed_sync(self, query):
+            requested_models.append((self.model_id, query))
+            if self.model_id == "text-embedding-a":
+                return [0.1, 0.2]
+            return [0.3, 0.4]
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda _db, _user_id, model_id, **_kwargs: FakeEmbeddingClient(model_id),
+    )
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(title="LLM", provider="openai", model_id="gpt-5.4-mini"),
+    )
+
+    vectors_by_kb, failed_count, precomputed = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
+        FakeDb(),
+        query="개발팀 온보딩",
+        user_id=user_id,
+        organization_id=organization_id,
+        knowledge_base_ids=[str(kb_a), str(kb_b), str(kb_c)],
+    )
+
+    assert requested_models == [
+        ("text-embedding-a", "개발팀 온보딩"),
+        ("text-embedding-b", "개발팀 온보딩"),
+    ]
+    assert vectors_by_kb == {
+        str(kb_a): [0.1, 0.2],
+        str(kb_b): [0.3, 0.4],
+        str(kb_c): [0.1, 0.2],
+    }
+    assert failed_count == 0
+    assert precomputed is True
+
+
+def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_a = uuid.uuid4()
+    kb_b = uuid.uuid4()
+
+    kb_rows = [
+        SimpleNamespace(id=kb_a, embedding_model="text-embedding-a"),
+        SimpleNamespace(id=kb_b, embedding_model="text-embedding-b"),
+    ]
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            if self.model is KnowledgeBase:
+                return kb_rows
+            return []
+
+        def first(self):
+            if self.model is LLMModel:
+                return SimpleNamespace(type="embedding")
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery(model)
+
+    class FakeEmbeddingClient:
+        def __init__(self, model_id):
+            self.model_id = model_id
+
+        def embed_sync(self, query):
+            if self.model_id == "text-embedding-b":
+                raise RuntimeError("embedding unavailable")
+            return [0.1, 0.2]
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda _db, _user_id, model_id, **_kwargs: FakeEmbeddingClient(model_id),
+    )
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-5.4-mini",
+            ragFailurePolicy="safe_no_result",
+        ),
+    )
+
+    vectors_by_kb, failed_count, precomputed = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
+        FakeDb(),
+        query="개발팀 온보딩",
+        user_id=user_id,
+        organization_id=organization_id,
+        knowledge_base_ids=[str(kb_a), str(kb_b)],
+    )
+
+    assert vectors_by_kb == {str(kb_a): [0.1, 0.2]}
+    assert failed_count == 1
+    assert precomputed is True
+
+
+def test_llm_node_precompute_propagates_failure_when_fail_node(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            if self.model is KnowledgeBase:
+                return [SimpleNamespace(id=kb_id, embedding_model="text-embedding-a")]
+            return []
+
+        def first(self):
+            if self.model is LLMModel:
+                return SimpleNamespace(type="embedding")
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery(model)
+
+    class FailingEmbeddingClient:
+        def embed_sync(self, query):
+            raise RuntimeError("embedding unavailable")
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *_args, **_kwargs: FailingEmbeddingClient(),
+    )
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-5.4-mini",
+            ragFailurePolicy="fail_node",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="embedding unavailable"):
+        node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
+            FakeDb(),
+            query="개발팀 온보딩",
+            user_id=user_id,
+            organization_id=organization_id,
+            knowledge_base_ids=[str(kb_id)],
+        )
+
+
+def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    valid_kb = uuid.uuid4()
+    missing_kb = uuid.uuid4()
+    invalid_kb = uuid.uuid4()
+    client_calls = []
+
+    kb_rows = [
+        SimpleNamespace(id=valid_kb, embedding_model="text-embedding-a"),
+        SimpleNamespace(id=invalid_kb, embedding_model=None),
+    ]
+
+    class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            if self.model is KnowledgeBase:
+                return kb_rows
+            return []
+
+        def first(self):
+            if self.model is LLMModel:
+                return SimpleNamespace(type="embedding")
+            return None
+
+    class FakeDb:
+        def query(self, model):
+            return FakeQuery(model)
+
+    class FakeEmbeddingClient:
+        def embed_sync(self, query):
+            client_calls.append(query)
+            return [0.1, 0.2]
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *_args, **_kwargs: FakeEmbeddingClient(),
+    )
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-5.4-mini",
+            ragFailurePolicy="safe_no_result",
+        ),
+    )
+
+    vectors_by_kb, failed_count, precomputed = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
+        FakeDb(),
+        query="개발팀 온보딩",
+        user_id=user_id,
+        organization_id=organization_id,
+        knowledge_base_ids=[str(valid_kb), str(missing_kb), str(invalid_kb)],
+    )
+
+    assert vectors_by_kb == {str(valid_kb): [0.1, 0.2]}
+    assert client_calls == ["개발팀 온보딩"]
+    assert failed_count == 2
+    assert precomputed is True
+
+
 def test_llm_node_rag_template_query_rewrite_uses_safe_trace_summary(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -3356,7 +3755,7 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
     assert embedding_queries == ["환불 정책 알려줘"]
     assert fake_db.vector_execute_count == 1
     assert fake_db.keyword_execute_count == 1
-    assert fake_db.closed is True
+    assert fake_db.closed is False
     assert "KNOWLEDGE" in message_text
     assert "[파일: refund-policy.md]" in message_text
     assert "환불 정책은 결제 후 7일 이내 요청할 수 있다." in message_text
