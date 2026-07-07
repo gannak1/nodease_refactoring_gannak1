@@ -12,6 +12,9 @@ from apps.gateway.api.v1.endpoints.rag import _prepare_api_source
 from apps.gateway.services.ingestion.service import IngestionOrchestrator
 from apps.gateway.services.ingestion.processors import api_processor
 from apps.gateway.services.ingestion.processors.api_processor import ApiProcessor
+from apps.gateway.services.knowledge_document_content_service import (
+    content_disposition_type_for_document,
+)
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.db.models.knowledge import SourceType
 from apps.shared.connectors.postgres import PostgresConnector
@@ -945,14 +948,14 @@ def test_upload_existing_kb_requires_owner_or_write_permission(monkeypatch):
 
 def test_uploaded_active_content_is_not_served_inline():
     assert (
-        knowledge_endpoint._content_disposition_type_for_document(
+        content_disposition_type_for_document(
             "evil.html",
             "text/html",
         )
         == "attachment"
     )
     assert (
-        knowledge_endpoint._content_disposition_type_for_document(
+        content_disposition_type_for_document(
             "safe.pdf",
             "application/pdf",
         )

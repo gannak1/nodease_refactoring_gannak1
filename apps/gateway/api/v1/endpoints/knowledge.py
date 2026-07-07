@@ -1,14 +1,8 @@
-import html
 import json
 import logging
-import mimetypes
-import os
-import tempfile
 from typing import List
 from uuid import UUID
 
-import pandas as pd
-from docx import Document as DocxDocument
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -19,11 +13,6 @@ from fastapi import (
     Request,
     Response,
     status,
-)
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    StreamingResponse,
 )
 from pydantic import ValidationError
 from sqlalchemy import func
@@ -40,6 +29,9 @@ from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidat
 from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
+)
+from apps.gateway.services.knowledge_document_content_service import (
+    KnowledgeDocumentContentService,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
@@ -82,20 +74,10 @@ from apps.shared.services.rag_hierarchy import (
     RAGHierarchyError,
     validate_chunking_request,
 )
-from apps.shared.services.egress_guard import (
-    DOCUMENT_RESPONSE_CONTENT_TYPES,
-    EgressGuardError,
-    EgressGuardPolicy,
-    safe_http_request,
-    safe_quote_filename,
-)
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-SAFE_INLINE_FILE_EXTENSIONS = {".md", ".pdf", ".txt"}
-SAFE_INLINE_MEDIA_TYPES = {"application/pdf", "text/markdown", "text/plain"}
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -103,13 +85,6 @@ def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
         status_code=exc.status_code,
         detail={"reason": exc.reason, "message": exc.message},
     )
-
-
-def _content_disposition_type_for_document(filename: str, media_type: str) -> str:
-    ext = os.path.splitext(str(filename or ""))[1].lower()
-    if ext in SAFE_INLINE_FILE_EXTENSIONS and media_type in SAFE_INLINE_MEDIA_TYPES:
-        return "inline"
-    return "attachment"
 
 
 def _knowledge_collection_service(
@@ -825,201 +800,7 @@ def get_document_content(
             status_code=400, detail="Document does not belong to this Knowledge Base"
         )
 
-    # API 소스는 파일이 없으므로 미리보기 불가 처리
-    if doc.source_type == "API" or not doc.file_path:
-        raise HTTPException(
-            status_code=400,
-            detail="API로 받은 응답은 원문 보기를 제공하지 않습니다.",
-        )
-
-    # file path가 S3 URL인지 확인합니다.
-    is_s3_file = str(doc.file_path).startswith("http") or str(doc.file_path).startswith(
-        "s3://"
-    )
-
-    # 파일 존재 확인 (Local only)
-    if not is_s3_file and not os.path.exists(doc.file_path):
-        raise HTTPException(status_code=404, detail="File not found on server")
-
-    # 미디어 타입 추론
-    media_type, _ = mimetypes.guess_type(doc.file_path)
-    if not media_type:
-        media_type = "application/octet-stream"
-    content_disposition_type = _content_disposition_type_for_document(
-        doc.filename,
-        media_type,
-    )
-
-    # Excel/CSV/Word 파일은 HTML로 변환하여 미리보기 제공
-    ext = os.path.splitext(doc.filename)[1].lower()
-    if ext in [".xlsx", ".xls", ".csv", ".docx"]:
-        temp_file_path = None
-        try:
-            target_path = doc.file_path
-
-            # S3 파일인 경우 임시 다운로드
-            if is_s3_file:
-                if doc.file_path.startswith("s3://"):
-                    # s3:// 프로토콜은 presigned url 변환이 필요하나, 현재는 http url을 가정
-                    pass
-                else:
-                    response = safe_http_request(
-                        "GET",
-                        doc.file_path,
-                        policy=EgressGuardPolicy(
-                            timeout_seconds=30.0,
-                            max_response_bytes=50 * 1024 * 1024,
-                            allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
-                        ),
-                    )
-                    if response.status_code >= 400:
-                        raise RuntimeError("Remote file returned an error.")
-
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                        tmp.write(response.content)
-                        temp_file_path = tmp.name
-                        target_path = temp_file_path
-
-            body_content = ""
-
-            if ext == ".docx":
-                # WORD 처리
-                doc_word = DocxDocument(target_path)
-                paragraphs = [
-                    f"<p>{html.escape(p.text)}</p>"
-                    for p in doc_word.paragraphs
-                    if p.text.strip()
-                ]
-
-                # 표 내용도 간단히 추가
-                for table in doc_word.tables:
-                    rows_html = []
-                    for row in table.rows:
-                        cells = [
-                            f"<td>{html.escape(cell.text)}</td>"
-                            for cell in row.cells
-                        ]
-                        rows_html.append(f"<tr>{''.join(cells)}</tr>")
-                    if rows_html:
-                        paragraphs.append(
-                            f"<table class='docx-table'>{''.join(rows_html)}</table>"
-                        )
-
-                body_content = "\n".join(paragraphs)
-
-            else:
-                # EXCEL/CSV 처리
-                if ext == ".csv":
-                    df = pd.read_csv(target_path, nrows=100)
-                else:
-                    df = pd.read_excel(target_path, nrows=100)
-
-                body_content = f"""
-                <div class="info-banner">
-                    <span>⚠️</span>
-                    성능을 위해 상위 100행만 미리보기로 제공됩니다.
-                </div>
-                {df.to_html(index=False, border=0)}
-                """
-
-            # 공통 HTML 스타일링
-            html_content = f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background-color: #ffffff; line-height: 1.6; }}
-                    /* Table Styles */
-                    table {{ border-collapse: collapse; width: 100%; font-size: 14px; border: 1px solid #e5e7eb; margin-bottom: 20px; }}
-                    th {{ background-color: #f9fafb; color: #374151; font-weight: 600; text-align: left; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }}
-                    td {{ padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #4b5563; }}
-                    tr:last-child td {{ border-bottom: none; }}
-                    tr:hover td {{ background-color: #f9fafb; }}
-                    
-                    /* Docx Specific */
-                    p {{ margin-bottom: 0.8em; color: #1f2937; }}
-                    .docx-table td {{ border: 1px solid #e5e7eb; }}
-
-                    .info-banner {{
-                        margin-bottom: 16px; padding: 10px 14px; background: #fffbeb; border: 1px solid #fcd34d;
-                        color: #92400e; border-radius: 6px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px;
-                    }}
-                </style>
-            </head>
-            <body>
-                {body_content}
-            </body>
-            </html>
-            """
-            return HTMLResponse(content=html_content)
-        except EgressGuardError as e:
-            logger.warning("External preview denied by egress guard: %s", e.reason_code)
-            raise HTTPException(
-                status_code=400,
-                detail={"reason_code": e.reason_code},
-            )
-        except Exception as e:
-            logger.error("Document preview conversion failed: %s", type(e).__name__)
-            # 변환 실패 시 다운로드로 fallback
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.remove(temp_file_path)
-                except Exception:
-                    pass
-
-    # 브라우저가 s3에서 파일을 직접 받아온다.
-    if is_s3_file:
-        try:
-            # 1. 서버가 외부 파일을 guard를 통해 가져옴
-            external_res = safe_http_request(
-                "GET",
-                doc.file_path,
-                policy=EgressGuardPolicy(
-                    timeout_seconds=30.0,
-                    max_response_bytes=50 * 1024 * 1024,
-                    allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
-                ),
-            )
-            if external_res.status_code >= 400:
-                raise RuntimeError("Remote file returned an error.")
-
-            # 2. 클라이언트에게 스트리밍 전송 함수 정의
-            def iterfile():
-                yield external_res.content
-
-            # 3. StreamingResponse 반환
-            return StreamingResponse(
-                iterfile(),
-                media_type=media_type,
-                headers={
-                    "Content-Disposition": (
-                        f"{content_disposition_type}; "
-                        f"filename={safe_quote_filename(doc.filename)}"
-                    )
-                },
-            )
-        except EgressGuardError as e:
-            logger.warning(
-                "External file proxy denied by egress guard: %s",
-                e.reason_code,
-            )
-            raise HTTPException(
-                status_code=400,
-                detail={"reason_code": e.reason_code},
-            )
-        except Exception as e:
-            logger.error("Failed to proxy external file: %s", type(e).__name__)
-            raise HTTPException(
-                status_code=502,
-                detail={"reason_code": "egress.proxy_failed"},
-            )
-
-    return FileResponse(
-        doc.file_path,
-        filename=doc.filename,
-        media_type=media_type,
-        content_disposition_type=content_disposition_type,
-    )
+    return KnowledgeDocumentContentService().build_content_response(doc)
 
 
 @router.post(
