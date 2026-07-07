@@ -471,6 +471,34 @@ def test_llm_node_adds_json_schema_instruction_to_system_message():
     assert "markdown" in system_message
 
 
+def test_llm_node_adds_json_instruction_for_explicit_json_response_format():
+    """response_format=json_object만 있어도 OpenAI JSON mode용 지시를 messages에 넣는다."""
+    dummy_client = DummyClient()
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={"response_format": {"type": "json_object"}},
+        output_format=None,
+    )
+    node = LLMNode("llm-1", data)
+    node._client_override = dummy_client  # noqa: SLF001 - 테스트용
+
+    node.execute({})
+
+    system_message = dummy_client.calls[0]["messages"][0]["content"]
+    assert "JSON object" in system_message
+    assert "markdown" in system_message
+    assert dummy_client.calls[0]["kwargs"]["response_format"] == {
+        "type": "json_object"
+    }
+
+
 def test_llm_node_does_not_override_explicit_response_format():
     """사용자가 명시한 response_format은 출력 형식 기본 힌트로 덮어쓰지 않는다."""
     dummy_client = DummyClient()
