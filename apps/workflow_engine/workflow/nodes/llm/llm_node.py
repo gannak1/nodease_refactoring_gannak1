@@ -72,7 +72,7 @@ SUMMARY_MODEL_PREFS = {
 SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
 
 JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX = (
-    "응답은 반드시 아래 JSON schema를 만족하는 JSON object 하나만 반환하세요."
+    "응답은 반드시 아래 json schema를 만족하는 json object 하나만 반환하세요."
 )
 
 
@@ -89,7 +89,7 @@ def _build_json_output_schema_instruction(
     schema = output_format.get("schema") if isinstance(output_format, dict) else None
     if not isinstance(schema, dict) or not schema:
         return (
-            "응답은 반드시 JSON object 하나만 반환하세요. "
+            "응답은 반드시 json object 하나만 반환하세요. "
             "설명 문장, markdown, code fence는 포함하지 마세요."
         )
 
@@ -97,7 +97,7 @@ def _build_json_output_schema_instruction(
     return (
         f"{JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX}\n"
         "설명 문장, markdown, code fence는 포함하지 마세요.\n\n"
-        f"JSON schema:\n{schema_text}"
+        f"json schema:\n{schema_text}"
     )
 
 
