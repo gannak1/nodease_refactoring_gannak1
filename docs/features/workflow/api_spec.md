@@ -85,6 +85,9 @@ Example `node_finish` event data with node-level summary:
 
 ### 3. 워크플로우 조작 편의성
 
+- 왼쪽 노드 패널의 `뒤에 추가` 액션은 클라이언트 graph 편집 동작이다.
+- `뒤에 추가` 결과 graph는 기존 workflow draft 저장 API를 통해 저장된다. 별도 노드 추가 API, edge 연결 API, 자동 정렬 API를 추가하지 않는다.
+- 자동 생성 node와 edge는 기존 workflow graph node/edge schema를 사용한다.
 - Backspace/Delete 키 노드 삭제와 자동 재연결은 클라이언트 graph 편집 동작이다.
 - 삭제 결과 graph는 기존 workflow draft 저장 API를 통해 저장된다. 별도 삭제 API나 재연결 API를 추가하지 않는다.
 - 자동 생성 edge는 기존 edge schema를 사용한다.

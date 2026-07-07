@@ -26,6 +26,12 @@ export type ModuleOperationAppSummary = {
   icon?: AppIcon;
   workflow_id?: string;
   budget_status?: BudgetStatusPayload | null;
+  operation_metrics?: {
+    current_month_cost: number;
+    projected_month_cost?: number | null;
+    previous_month_cost: number;
+    trend_percent?: number | null;
+  } | null;
   owner_name?: string;
   created_at: string;
   updated_at: string;

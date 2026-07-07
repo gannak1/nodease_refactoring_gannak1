@@ -92,6 +92,8 @@ Verified Against: feature/mba-102 @ 968c8df
 ### 3. 워크플로우 조작 편의성
 
 - `node-selected`: 하나 이상의 노드가 캔버스에서 선택된 상태다. Backspace/Delete 삭제 대상이 된다.
+- `node-add-after-available`: 캔버스에 선택 노드가 있거나 단일 terminal node가 있어 왼쪽 패널에서 `뒤에 추가`를 실행할 수 있는 상태다.
+- `node-add-after-pending-target`: 선택 노드가 여러 개이거나 분기 handle이 모호해 연결 대상을 더 선택해야 하는 상태다.
 - `node-delete-reconnecting`: 선택 노드 삭제와 자동 재연결 edge 계산이 한 번의 graph update로 처리되는 상태다.
 
 ### 4. 노드 실행 기록 패널 추가
@@ -126,6 +128,15 @@ Verified Against: feature/mba-102 @ 968c8df
 
 ### 3. 워크플로우 조작 편의성
 
+- 왼쪽 노드 패널의 각 노드 항목은 일반 추가와 `뒤에 추가` 액션을 구분해 제공한다.
+- 일반 추가는 기존 자유 배치 또는 캔버스 추가 흐름을 유지한다.
+- `뒤에 추가`는 현재 선택된 노드를 기준으로 오른쪽에 새 노드를 local placement하고, 선택 노드에서 새 노드로 edge를 생성한다.
+- 선택된 노드가 없고 terminal node가 하나뿐이면 `뒤에 추가`는 해당 terminal node를 기준으로 동작할 수 있다.
+- sticky note처럼 workflow 실행 graph에 포함되지 않는 보조 노드는 terminal node 개수 계산에서 제외한다.
+- 선택 노드가 여러 개이거나 terminal node가 여러 개이거나 condition/switch/loop처럼 연결 handle이 모호한 경우에는 임의 연결하지 않는다. 연결 대상 또는 handle 선택 UI를 표시하거나 액션을 비활성화한다.
+- `뒤에 추가`의 edge 생성은 일반 연결 validation을 통과한 경우에만 적용한다. validation이 실패하면 새 노드도 남기지 않는다.
+- `뒤에 추가` 실행 후 전체 graph 자동 정렬을 수행하지 않는다. 새 노드와 기준 노드 주변만 겹치지 않게 배치한다.
+- `뒤에 추가`는 undo 한 번으로 노드 생성과 edge 생성을 함께 되돌릴 수 있어야 한다.
 - 사용자가 캔버스에서 노드를 선택하고 Backspace/Delete를 누르면 선택 노드를 삭제한다.
 - 삭제되는 노드의 앞단과 뒷단이 모두 존재하면 삭제 후 앞단 노드에서 뒷단 노드로 자동 edge를 생성한다.
 - 입력 요소에 focus가 있는 상태에서는 Backspace/Delete가 텍스트 삭제로 동작하고 노드 삭제를 실행하지 않는다.

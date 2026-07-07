@@ -135,6 +135,26 @@ export interface LLMNodeData extends BaseNodeData {
   model_id: string;
   fallback_model_id?: string;
   auto_model_routing?: boolean;
+  model_routing_policy?: {
+    status?: 'off' | 'collecting' | 'active' | 'refreshing' | 'pending_review' | 'failed';
+    policy_id?: string;
+    policy_version?: string;
+    active_policy?: {
+      default_model_id?: string;
+      fallback_model_id?: string;
+      rules?: Array<{
+        id?: string;
+        selected_model_id?: string;
+        fallback_model_id?: string;
+        reason_code?: string;
+      }>;
+    };
+    refresh?: {
+      runs_since_last_refresh?: number;
+      refresh_every_runs?: number;
+      last_refresh_result?: string;
+    };
+  };
   task_type?: string;
   system_prompt?: string;
   user_prompt?: string;

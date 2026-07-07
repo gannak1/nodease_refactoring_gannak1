@@ -139,24 +139,6 @@ const groupModelsByProvider = (models: ModelOption[]) => {
     }));
 };
 
-const routingStages = [
-  {
-    stage: 'Cold start',
-    condition: '실행 로그 10회 미만',
-    policy: '보수적 규칙 기반으로 mid/high 모델을 우선 고려하고 실패 시 상위 모델로 닫습니다.',
-  },
-  {
-    stage: 'Warming up',
-    condition: '실행 로그 10~49회',
-    policy: '기본 규칙에 schema 성공률, downstream 성공률, fallback 빈도를 함께 반영합니다.',
-  },
-  {
-    stage: 'Optimized',
-    condition: '실행 로그 50회 이상',
-    policy: '노드별 실제 성공률, 비용, latency profile을 기준으로 cheap/mid/high 후보를 조정합니다.',
-  },
-] as const;
-
 export function LLMNodePanel({
   nodeId,
   data,
@@ -229,7 +211,6 @@ export function LLMNodePanel({
     () => groupModelsByProvider(chatModelOptions),
     [chatModelOptions],
   );
-  const autoRoutingEnabled = Boolean(data.auto_model_routing);
   const selectedModel = useMemo(
     () =>
       modelOptions.find(
@@ -260,21 +241,41 @@ export function LLMNodePanel({
     });
   }, [fallbackCandidates, data.model_id, selectedModel]);
   const fallbackDisabled = !data.model_id?.trim();
-  const handleAutoRoutingChange = useCallback(
-    (enabled: boolean) => {
-      const updates: Partial<LLMNodeData> = { auto_model_routing: enabled };
+  const routingPolicySummary = useMemo(() => {
+    const policy = data.model_routing_policy;
+    const activePolicy = policy?.active_policy;
+    const firstRule = activePolicy?.rules?.find(Boolean);
+    const selectedModelId =
+      firstRule?.selected_model_id ||
+      activePolicy?.default_model_id ||
+      data.model_id ||
+      '';
+    const fallbackModelId =
+      firstRule?.fallback_model_id ||
+      activePolicy?.fallback_model_id ||
+      data.fallback_model_id ||
+      '';
+    const runsSinceLastRefresh = policy?.refresh?.runs_since_last_refresh ?? 0;
+    const refreshEveryRuns = policy?.refresh?.refresh_every_runs ?? 20;
+    const status =
+      policy?.status ||
+      (activePolicy ? 'active' : data.auto_model_routing ? 'collecting' : 'off');
 
-      if (enabled) {
-        updates.fallback_model_id = '';
-        if (!data.model_id?.trim() && chatModelOptions[0]) {
-          updates.model_id = chatModelOptions[0].model_id_for_api_call;
-        }
-      }
-
-      updateNodeData(nodeId, updates);
-    },
-    [chatModelOptions, data.model_id, nodeId, updateNodeData],
-  );
+    return {
+      status,
+      selectedModelId,
+      fallbackModelId,
+      policyVersion: policy?.policy_version || '정책 없음',
+      reasonCode: firstRule?.reason_code || '정책 대기 중',
+      runsSinceLastRefresh,
+      refreshEveryRuns,
+    };
+  }, [
+    data.auto_model_routing,
+    data.fallback_model_id,
+    data.model_id,
+    data.model_routing_policy,
+  ]);
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -585,9 +586,12 @@ export function LLMNodePanel({
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-xs font-bold text-slate-900">비용 최적화</div>
+            <div className="text-xs font-bold text-slate-900">
+              모델 라우팅 최적화
+            </div>
             <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              같은 입력으로 실행 로그와 후보 설정을 비교합니다.
+              배포 후 운영 로그를 기준으로 추천 모델과 예상 절감 근거를
+              확인한 뒤 직접 적용합니다.
             </p>
           </div>
           <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
@@ -625,133 +629,161 @@ export function LLMNodePanel({
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>
         <div className="flex flex-col gap-2">
-          <label className="flex items-start justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3">
-            <span className="min-w-0">
-              <span className="block text-xs font-bold text-emerald-900">
-                자동 라우팅
-              </span>
-              <span className="mt-0.5 block text-xs leading-relaxed text-emerald-700">
-                로그가 없을 때는 보수적으로, 로그가 쌓이면 노드별 성공률과
-                비용 기준으로 모델 선택 기준을 조정합니다.
-              </span>
-            </span>
-            <input
-              type="checkbox"
-              checked={autoRoutingEnabled}
-              onChange={(event) =>
-                handleAutoRoutingChange(event.target.checked)
-              }
-              disabled={loadingModels || chatModelOptions.length === 0}
-              className="mt-1 h-4 w-4 shrink-0 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-            />
-          </label>
-
-          {autoRoutingEnabled ? (
-            <div className="rounded-lg border border-emerald-200 bg-white p-3">
-              <div className="flex flex-col gap-1">
-                <div className="text-xs font-bold text-emerald-900">
-                  자동 라우팅 사용 중
-                </div>
-                <p className="text-xs leading-relaxed text-slate-600">
-                  기본 모델과 대체 모델은 직접 선택하지 않습니다. 실행 가능한
-                  credential/model 후보 중 로그 단계에 맞는 정책으로 모델을
-                  고릅니다.
-                </p>
-              </div>
-              <div className="mt-3 grid gap-2">
-                {routingStages.map((item) => (
-                  <div
-                    key={item.stage}
-                    className="rounded-md border border-slate-200 bg-slate-50 p-2"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[11px] font-bold text-slate-900">
-                        {item.stage}
-                      </span>
-                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 ring-1 ring-slate-200">
-                        {item.condition}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
-                      {item.policy}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                현재 런타임 라우터 API가 연결되기 전까지 저장된 기본 모델은
-                실행 호환성을 위한 내부 fallback으로 유지됩니다.
-              </p>
-            </div>
-          ) : loadingModels ? (
+          {loadingModels ? (
             <div className="text-xs text-gray-400">모델 로딩 중...</div>
           ) : modelOptions.length > 0 ? (
             <>
-              <div className="flex items-center">
-                <label className="text-xs font-semibold text-gray-700">
-                  기본 모델
-                </label>
-                <PropertyVisibilityToggle
-                  nodeId={nodeId}
-                  propertyKey="model_id"
+              <label className="flex items-start gap-2 rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2">
+                <input
+                  type="checkbox"
+                  className="nodrag mt-0.5 h-4 w-4 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                  checked={Boolean(data.auto_model_routing)}
+                  onChange={(event) =>
+                    handleUpdateData(
+                      'auto_model_routing',
+                      event.target.checked,
+                    )
+                  }
+                  aria-label="자동 모델 라우팅"
                 />
-              </div>
-              <ModelSelectDropdown
-                value={data.model_id || ''}
-                onChange={handleModelChange}
-                models={chatModelOptions}
-                groupedModels={groupedModelOptions}
-                placeholder="모델을 선택하세요"
-              />
-              <div className="mt-3 flex flex-col gap-2">
-                <div className="flex items-center gap-1">
-                  <label className="text-xs font-semibold text-gray-700">
-                    대체 모델
-                  </label>
-                  <HelpPopover
-                    id="fallback"
-                    activeHelp={activeHelp}
-                    onToggle={toggleHelp}
-                    widthClassName="w-60"
-                  >
-                    기본 모델 호출이 실패하거나 타임아웃될 때 대신 사용할
-                    모델입니다.
-                  </HelpPopover>
-                </div>
-                <div className="relative group">
-                  <ModelSelectDropdown
-                    value={data.fallback_model_id || ''}
-                    onChange={(val) =>
-                      handleUpdateData('fallback_model_id', val)
-                    }
-                    models={fallbackCandidates}
-                    groupedModels={groupedFallbackOptions}
-                    disabled={fallbackDisabled}
-                    placeholder={
-                      fallbackDisabled
-                        ? '먼저 모델을 선택하세요'
-                        : '대체 모델을 선택하세요'
-                    }
-                  />
-                  {fallbackDisabled && (
-                    <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 w-56 rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600 shadow-lg opacity-0 transition-opacity group-hover:opacity-100">
-                      먼저 기본 모델을 설정해주세요.
+                <span className="min-w-0">
+                  <span className="block text-xs font-semibold text-emerald-900">
+                    자동 모델 라우팅
+                  </span>
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-emerald-700">
+                    켜면 저장된 정책으로 실행 모델을 고르고, 실행 중에는
+                    judge LLM을 호출하지 않습니다.
+                  </span>
+                </span>
+              </label>
+
+              {data.auto_model_routing ? (
+                <div className="rounded-md border border-slate-200 bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800">
+                        자동 라우팅 사용 중
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                        직접 모델 선택 대신 active policy를 기준으로 모델을
+                        선택합니다.
+                      </p>
                     </div>
-                  )}
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                      {routingPolicySummary.status}
+                    </span>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
+                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
+                      <dt className="font-semibold text-slate-500">
+                        선택 모델
+                      </dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.selectedModelId || '정책 대기 중'}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
+                      <dt className="font-semibold text-slate-500">
+                        Fallback 모델
+                      </dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.fallbackModelId || '없음'}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
+                      <dt className="font-semibold text-slate-500">
+                        정책 버전
+                      </dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.policyVersion}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
+                      <dt className="font-semibold text-slate-500">
+                        정책 갱신 기준
+                      </dt>
+                      <dd className="mt-1 font-semibold text-slate-900">
+                        {routingPolicySummary.runsSinceLastRefresh}/
+                        {routingPolicySummary.refreshEveryRuns}회
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                    갱신 근거: {routingPolicySummary.reasonCode}
+                  </p>
                 </div>
-                <p className="text-xs text-gray-500">
-                  대체 모델은 다른 Provider 사용을 권장합니다.
-                  <br />
-                  다른 Provider를 추가하려면 아래에서 API Key를 등록하세요.
-                </p>
-              </div>
-              {/* Provider 설정 링크 */}
-              <button
-                onClick={openSettingsTab}
-                className="mt-2 text-xs text-blue-600 hover:text-blue-800 hover:underline text-left"
-              >
-                Provider API Key 등록하기
-              </button>
+              ) : (
+                <>
+                  <div className="flex items-center">
+                    <label className="text-xs font-semibold text-gray-700">
+                      기본 모델
+                    </label>
+                    <PropertyVisibilityToggle
+                      nodeId={nodeId}
+                      propertyKey="model_id"
+                    />
+                  </div>
+                  <ModelSelectDropdown
+                    value={data.model_id || ''}
+                    onChange={handleModelChange}
+                    models={chatModelOptions}
+                    groupedModels={groupedModelOptions}
+                    placeholder="모델을 선택하세요"
+                  />
+                  <div className="mt-3 flex flex-col gap-2">
+                    <div className="flex items-center gap-1">
+                      <label className="text-xs font-semibold text-gray-700">
+                        대체 모델
+                      </label>
+                      <HelpPopover
+                        id="fallback"
+                        activeHelp={activeHelp}
+                        onToggle={toggleHelp}
+                        widthClassName="w-60"
+                      >
+                        기본 모델 호출이 실패하거나 타임아웃될 때 대신 사용할
+                        모델입니다.
+                      </HelpPopover>
+                    </div>
+                    <div className="relative group">
+                      <ModelSelectDropdown
+                        value={data.fallback_model_id || ''}
+                        onChange={(val) =>
+                          handleUpdateData('fallback_model_id', val)
+                        }
+                        models={fallbackCandidates}
+                        groupedModels={groupedFallbackOptions}
+                        disabled={fallbackDisabled}
+                        placeholder={
+                          fallbackDisabled
+                            ? '먼저 모델을 선택하세요'
+                            : '대체 모델을 선택하세요'
+                        }
+                      />
+                      {fallbackDisabled && (
+                        <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 w-56 rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-600 shadow-lg opacity-0 transition-opacity group-hover:opacity-100">
+                          먼저 기본 모델을 설정해주세요.
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      대체 모델은 다른 Provider 사용을 권장합니다.
+                      <br />
+                      다른 Provider를 추가하려면 아래에서 API Key를
+                      등록하세요.
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {!data.auto_model_routing && (
+                <button
+                  onClick={openSettingsTab}
+                  className="mt-2 text-left text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                >
+                  Provider API Key 등록하기
+                </button>
+              )}
             </>
           ) : (
             <div className="flex flex-col gap-2 p-3 bg-gray-50 rounded border border-gray-200 items-center justify-center text-center">

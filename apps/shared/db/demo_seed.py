@@ -1574,7 +1574,7 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
                     "model_id": models[model_name].id,
                     "workflow_id": WORKFLOW_IDS[workflow_key],
                     "workflow_run_id": run_id,
-                    "node_id": f"llm-node-{index}",
+                    "node_id": "llm-triage",
                     "prompt_tokens": prompt,
                     "completion_tokens": completion,
                     "total_cost": cost,

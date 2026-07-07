@@ -137,15 +137,15 @@ describe('FR-002 Cost Optimizer 진입-playground 연결', () => {
     vi.restoreAllMocks();
   });
 
-  it('A/B 테스트하기 클릭 시 해당 workflow/node 전용 playground로 이동한다', () => {
+  it('모델 라우팅 최적화 클릭 시 해당 workflow/node 전용 추천 화면으로 이동한다', () => {
     render(<NodeInlinePanel node={createLlmNode()} />);
 
     fireEvent.click(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     );
 
     expect(routerMock.push).toHaveBeenCalledWith(
-      '/modules/workflow-1/cost-optimizer/llm-1',
+      '/modules/workflow-1/model-routing/llm-1',
     );
   });
 });

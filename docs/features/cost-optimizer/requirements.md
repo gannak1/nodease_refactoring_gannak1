@@ -61,7 +61,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `구현 완료` | `테스트 통과` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트 진입 액션과 availability 검증을 제공한다. |
 | FR-002 | A baseline 실행 로그 선택 | P1 | `구현 완료` | `테스트 통과` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 선택하는 API/UI 경로를 제공한다. |
-| FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 갱신 필요` | 모델, fallback 모델, 자동 라우팅 상태, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. 작업 유형은 사용자 선택값으로 노출하지 않는다. |
+| FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 통과` | 모델, fallback 모델, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. 작업 유형은 사용자 선택값으로 노출하지 않는다. |
 | FR-004 | 동일 입력 기준 비교 | P1 | `구현 완료` | `테스트 통과` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
 | FR-005 | 하이브리드 비교 | P1 | `구현 완료` | `테스트 통과` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
 | FR-006 | A/B 비교 화면 | P1 | `구현 완료` | `테스트 통과` | A baseline, B candidate, Inspector 3영역으로 비용/토큰/trace를 비교하고, 결과 분석 화면에서 B 후보를 현재 노드에 적용해도 되는지 판단 요약을 제공한다. |
@@ -69,14 +69,15 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | 모델 라우팅과 최적화 에이전트 후속 확장 | P3 | `진행중` | `프론트 UI 기반 구현, 라우터 API 후속` | LLM 노드 상세 화면은 자동 라우팅 토글과 cold start/warming up/optimized 정책 안내를 제공한다. 실제 실행 시점 모델 라우터와 최적화 에이전트는 후속 기능으로 분리한다. |
+| FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `진행중` | `문서화, 구현 필요` | LLM 노드는 자동 모델 라우팅을 켜면 저장된 active policy로 실행 시점 모델을 선택한다. Judge LLM은 매 실행마다 호출하지 않고, 배포 후 운영 로그 20회 누적 또는 사용자의 수동 갱신 요청 시 정책 갱신에만 사용한다. |
+| FR-012 | LLM 파라미터 추천 룰셋 | P2 | `미완료` | `문서화, 구현 필요` | 운영 로그와 trace summary를 기반으로 `max_tokens`, `temperature`, RAG context 같은 후보 조정안을 추천한다. LLM은 후보 생성/품질 평가 보조로만 사용하고, 추천 적용은 A/B 후보 생성 후 사용자 확인을 거친다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
 
 Cost Optimizer의 비교 단위는 workflow 전체가 아니라 특정 LLM 노드 하나다.
 
 - 사용자는 workflow 편집 화면에서 LLM 노드를 선택해 비용 비교를 시작할 수 있어야 한다.
-- LLM 노드 상세 화면에는 이 노드에 대해 `A/B 테스트하기` 액션이 있어야 한다.
+- LLM 노드 상세 화면에는 이 노드에 대해 A/B 테스트를 시작하는 액션이 있어야 한다.
 - 비교 대상은 `llmNode`로 제한한다.
 - LLM 노드가 아닌 노드에서는 비용 비교를 실행하지 않는다.
 
@@ -126,7 +127,6 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 
 - 모델
 - fallback 모델
-- 자동 라우팅 사용 여부
 - system prompt
 - user prompt
 - assistant prompt
@@ -152,19 +152,13 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 
 LLM 노드 상세 화면과 Cost Optimizer B 후보 설정 화면은 `task type`을 사용자가 직접 고르는 입력으로 노출하지 않는다. 작업 유형은 라우터 또는 노드 실행 맥락에서 내부적으로 판단할 후속 정책값이며, 기존 저장/compare request 호환성을 위해 내부 데이터에는 기본값을 유지할 수 있다.
 
-LLM 노드 상세 화면의 자동 라우팅 UX는 다음을 따른다.
+LLM 노드 상세 화면의 모델 설정 UX는 다음을 따른다.
 
-- 자동 라우팅 ON: 기본 모델 선택 UI와 fallback 모델 선택 UI를 숨긴다.
-- 자동 라우팅 ON: `자동 라우팅 사용 중` 상태와 라우팅 정책/예상 선택 기준을 보여준다.
-- 자동 라우팅 ON: 라우터 API 연결 전까지 저장된 `model_id`는 실행 호환성을 위한 내부 fallback으로 유지할 수 있다.
-- 자동 라우팅 OFF: 기존처럼 기본 모델과 fallback 모델을 직접 선택한다.
-- 자동 라우팅 OFF: 작업 유형 입력은 표시하지 않는다.
-
-자동 라우팅 정책은 로그 축적 정도에 따라 세 단계로 설명한다.
-
-- `cold_start`: 해당 노드 실행 로그가 10회 미만이면 보수적 규칙 기반으로 mid/high 모델을 우선 고려하고 실패 시 상위 모델 fallback을 전제한다.
-- `warming_up`: 실행 로그가 10~49회이면 기본 규칙에 schema pass rate, downstream success rate, fallback rate, retry rate, 평균 비용/latency를 함께 반영한다.
-- `optimized`: 실행 로그가 50회 이상이면 노드별 실제 성공률, 비용, 품질 profile을 기준으로 cheap/mid/high 후보를 조정한다.
+- 자동 모델 라우팅 OFF 상태에서는 기본 모델과 fallback 모델 선택 UI를 표시한다.
+- 자동 모델 라우팅 ON 상태에서는 기본 모델과 fallback 모델 선택 UI를 숨기고 active policy 상태를 표시한다.
+- 실행 시점 자동 라우팅은 active policy를 사용하며, judge LLM을 매 실행마다 호출하지 않는다.
+- 정책 갱신은 배포 후 운영 실행 20회 누적 또는 사용자의 `자동 정책 갱신하기` 요청으로 수행한다.
+- 작업 유형 입력은 표시하지 않는다.
 
 프롬프트 편집은 기존 LLM 노드 상세 편집과 마찬가지로 변수 삽입을 지원해야 한다. 사용자는 upstream output 변수를 system/user/assistant prompt에 삽입할 수 있어야 하며, 등록되지 않은 변수는 실행 전에 validation으로 드러나야 한다.
 
@@ -225,7 +219,7 @@ B 후보 설정 validation은 두 단계로 처리한다. 프론트는 명백히
 
 비교 실행은 일회성 응답으로만 버리지 않는다. B 후보 실행은 LLM 비용을 발생시키므로 비교 실행 기록, 후보 설정, 사용량, schema 검증 결과, retrieval summary, downstream 호환성 상태를 추적 가능하게 저장해야 한다.
 
-자동 모델 추천, 모델 라우팅, RAG strategy 비교, Knowledge Skill version 비교는 1차 구현의 필수 범위는 아니지만 후속 확장 후보로 둔다.
+RAG strategy 비교, Knowledge Skill version 비교, 최적화 에이전트는 1차 구현의 필수 범위는 아니지만 후속 확장 후보로 둔다. 모델 라우팅은 FR-011의 정책 기반 자동 라우팅으로 별도 정의한다.
 
 ### FR-004. 동일 입력 기준 비교
 
@@ -396,58 +390,220 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
-### FR-011. 모델 라우팅과 최적화 에이전트 후속 확장
+### FR-011. 정책 기반 자동 모델 라우팅
 
-Cost Optimizer는 LLM 노드의 모델 라우팅과 최적화 에이전트를 단계적으로 다룰 수 있어야 한다.
+Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 선택할 수 있도록 정책 기반 모델 라우팅을 제공해야 한다.
 
-모델 라우팅은 작업 난이도나 작업 유형에 따라 더 저렴한 모델 또는 더 강한 모델을 선택하는 기능이다.
+모델 라우팅은 매 실행마다 LLM judge를 호출해 판단하는 기능이 아니다. 실행 시점에는 이미 저장된 active policy를 읽고, 그 정책의 rule에 따라 사용할 기본 모델과 fallback 모델을 선택한다. Judge LLM은 정책 생성 또는 정책 갱신 시점에만 호출한다.
 
-현재 프론트 구현은 LLM 노드 상세 화면에 자동 라우팅 토글과 정책 안내를 제공한다. 자동 라우팅을 켜면 사용자가 기본 모델과 fallback 모델을 직접 고르는 UI를 숨기고, 로그 축적 단계별 라우팅 기준을 보여준다. 단, 실제 실행 시점에 모델을 고르는 라우터 API와 workflow engine 연동은 후속 구현이다.
+사용자 시나리오는 다음 흐름을 따른다.
 
-가능한 모델 라우팅 방식은 다음과 같다.
+1. 빌더가 LLM 노드 상세 화면에서 `자동 모델 라우팅`을 켠다.
+2. ON 상태에서는 기본 모델과 fallback 모델 직접 선택 UI를 숨기고 현재 정책 상태를 보여준다.
+3. 배포 후 실행 시 LLM 노드는 active policy를 읽어 모델을 선택한다.
+4. 실행 시점에는 judge LLM을 호출하지 않는다.
+5. 배포 후 운영 실행이 20회 쌓이면 정책 갱신 job이 실행된다.
+6. 사용자는 `자동 정책 갱신하기` 버튼으로 즉시 갱신을 요청할 수 있다.
+7. judge가 새 정책을 만들면 품질 gate 통과 시 active policy로 반영한다.
+8. 품질 근거가 부족하면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
+9. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 fallback 정책을 사용한다.
 
-- 수동 라우팅: 사용자가 노드별 모델을 직접 선택한다.
-- 규칙 기반 라우팅: 분류, 요약, 단순 추출은 저렴한 모델을 쓰고 복잡한 추론이나 고위험 답변은 강한 모델을 쓴다.
-- LLM 기반 라우팅: 앞단에서 작은 모델 또는 별도 판단기가 요청 난이도를 분류해 적절한 모델을 선택한다.
+정책 상태는 다음 값만 사용한다. `cold_start`, `warming_up`, `optimized` 같은 데이터 성숙도 단계는 사용자-facing 상태와 API 계약에서 사용하지 않는다.
 
-자동 모델 라우터는 처음부터 완성된 최적 라우터로 동작하지 않는다. 같은 LLM 노드에 쌓인 실행 로그 수와 품질 지표에 따라 `cold_start`, `warming_up`, `optimized` 3단계로 나누어 보수적으로 진화해야 한다.
+| 상태 | 의미 |
+| --- | --- |
+| `off` | 자동 라우팅 꺼짐 |
+| `collecting` | 자동 라우팅은 켜졌지만 정책 갱신에 필요한 운영 로그를 모으는 중 |
+| `active` | active policy로 실행 중 |
+| `refreshing` | judge가 운영 로그를 분석해 정책을 갱신 중 |
+| `pending_review` | 새 정책안이 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 반영 보류 |
+| `failed` | 정책 갱신 실패 |
 
-라우터가 보는 로그는 workflow 전체 실행 횟수가 아니라 target LLM node 기준 실행 이력이다. 라우팅 단계 판단에는 사용 가능한 node run 수, 성공/실패 상태, usage, output, schema 검증 결과, downstream 호환성 결과를 함께 사용한다. 보관 기간 만료나 redaction 때문에 usage/output을 복원할 수 없는 run은 라우팅 프로파일 계산에서 제외한다.
+정책 저장은 LLM 노드 data JSON이 아니라 별도 정책 테이블을 source of truth로 둔다. 노드 data에는 자동 라우팅 ON/OFF와 현재 정책 참조에 필요한 최소 식별자만 둘 수 있다. 정책 본문, 정책 버전, judge 갱신 이력, 갱신 실패 사유, 보류 정책은 별도 테이블에 저장한다.
 
-| 라우팅 상태 | 진입 조건 | 목표 | 모델 선택 방식 | fallback 정책 |
-| --- | --- | --- | --- | --- |
-| `cold_start` | target LLM node의 사용 가능한 실행 로그가 10회 미만 | 품질을 망치지 않는 보수적 비용 절감 | 규칙 기반으로 시작한다. JSON 추출, 내부 triage, 짧은 분류처럼 위험이 낮고 schema가 단순한 작업은 mid 모델을 우선 검토한다. 고객에게 바로 나가는 답변, 장애/보상/보안/법무/SLA 판단, RAG 기반 정책 답변은 mid/high 이상을 우선한다. 애매하면 더 강한 모델을 고른다. | high 또는 현재 저장된 안정 모델을 fallback으로 둔다. 사용할 수 있는 credential/model이 없으면 실행하지 않고 명확한 실패 사유를 반환한다. |
-| `warming_up` | 사용 가능한 실행 로그가 10회 이상 50회 미만 | 규칙 기반 판단에 해당 노드의 실제 성공률을 반영 | 기본 규칙을 유지하되, 최근 실행의 schema pass rate, downstream success rate, fallback rate, retry rate, 평균 비용, latency를 반영한다. 저렴한 후보는 품질 gate를 통과할 때만 기본 선택으로 승격한다. | 저렴한 모델에서 schema/downstream 실패나 fallback이 늘면 해당 후보를 제외하고 mid/high로 승격한다. confidence가 낮으면 작은 모델 판단 결과를 참고만 하고 강한 모델로 보낸다. |
-| `optimized` | 사용 가능한 실행 로그가 50회 이상 | node별 실제 성능 프로파일 기반 비용 최적화 | 일반 task type보다 이 노드의 최근 성능 프로파일을 우선한다. 짧은 JSON triage처럼 안정적으로 성공한 노드는 cheap/mid 우선, 입력 난이도 편차가 큰 노드는 confidence 기반 라우팅, 실패 비용이 큰 노드는 high 고정 또는 매우 엄격한 downgrade를 적용한다. | 최근 window에서 schema 실패, downstream 실패, fallback, retry, human correction이 증가하면 즉시 더 강한 모델로 승격한다. |
+자동 라우팅 ON 상태에서 운영 실행은 다음 순서로 동작한다.
 
-모델을 더 저렴한 후보로 낮추는 조건은 비용 절감만으로 판단하지 않는다. 최소 조건은 다음과 같다.
+1. target LLM node의 active policy를 조회한다.
+2. active policy가 있고 사용할 수 있는 모델이면 policy rule로 모델을 선택한다.
+3. 선택된 모델과 fallback 모델이 현재 organization credential/model relation에서 실행 가능한지 검증한다.
+4. 선택된 모델을 사용할 수 없으면 policy fallback을 사용한다.
+5. fallback도 사용할 수 없으면 저장된 안정 모델 또는 상위 안정 모델로 보수적으로 실행한다.
+6. 실행 metadata에 policy id, policy version, selected model, fallback model, reason code를 남긴다.
 
-- 최근 window의 schema pass rate가 기준 이상이다. 초기 기준은 98%로 둔다.
-- downstream success rate가 기준 이상이다. 초기 기준은 99%로 둔다.
-- fallback rate가 기준 이하이다. 초기 기준은 2% 이하로 둔다.
-- retry rate와 human correction rate가 증가하지 않는다. human correction rate는 지표가 수집되기 전까지 `unknown`으로 취급한다.
-- 평균 비용 절감이 의미 있는 수준이다. 초기 기준은 30% 이상으로 둔다.
-- latency가 서비스 UX나 downstream timeout을 악화시키지 않는다.
+정책 갱신 샘플은 workflow 전체가 아니라 target LLM node 기준으로 계산한다. 자동 갱신 기준은 배포 후 운영 실행 20회다.
 
-라우터는 선택 결과를 설명 가능해야 한다. 실행 결과나 trace summary에는 최소한 다음 정보를 safe summary로 남긴다.
+정책 갱신 샘플에 포함하는 데이터:
+
+- `workflow_runs.deployment_id IS NOT NULL`인 배포 후 실행
+- `trigger_mode`가 API, webhook, scheduler, app 같은 운영 실행인 run
+- target LLM node의 `workflow_node_runs`
+- 모델, 비용, token, latency 원천인 `llm_usage_logs`
+- schema/downstream/fallback/retry safe metadata
+
+정책 갱신 샘플에서 제외하는 데이터:
+
+- 배포 전 테스트 실행
+- `deployment_id IS NULL`인 수동 테스트 실행
+- Cost Optimizer A/B 후보 실행
+- usage 또는 output을 복원할 수 없는 실행
+- retention/redaction 정책 때문에 safe summary를 만들 수 없는 실행
+
+Judge LLM 호출은 정책 갱신 작업에서만 발생한다. 자동 라우팅 ON 상태의 일반 workflow 실행마다 judge를 호출해서는 안 된다.
+
+정책 갱신 trigger는 다음 두 가지다.
+
+| Trigger | 설명 |
+| --- | --- |
+| `auto_20_runs` | active policy 기준 마지막 갱신 이후 배포 후 운영 실행 20회가 누적되면 자동 실행 |
+| `manual_refresh` | 사용자가 `자동 정책 갱신하기` 버튼을 눌러 즉시 실행 |
+
+Judge LLM에 전달하는 입력은 safe summary만 허용한다. raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content는 전달하거나 저장하지 않는다.
+
+Judge 입력 safe summary는 다음 정보를 포함할 수 있다.
+
+- eligible run count
+- excluded run count와 제외 사유 count
+- 모델별 평균 비용, 평균 token, 평균 latency
+- schema pass rate
+- downstream success rate
+- fallback rate
+- retry count
+- output format/schema summary
+- RAG 사용 여부와 retrieval safe summary
+- 현재 active policy version
+- candidate model 목록과 가격/credential 사용 가능 여부 summary
+
+Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 통과한 경우에만 active policy로 조건부 자동 반영한다.
+
+- 사용할 수 있는 credential/model만 포함한다.
+- 비용 또는 latency 개선 근거가 있다.
+- schema/downstream 품질 지표가 기준 이하로 떨어지지 않는다.
+- fallback/retry 증가가 허용 범위 이내다.
+- judge 결과 confidence가 정책 기준 이상이다.
+- raw payload 또는 secret을 포함하지 않는다.
+
+gate를 통과하지 못하면 새 정책안은 `pending_review`로 저장하고 기존 active policy를 유지한다. `pending_review` 정책은 운영 실행에 영향을 주지 않는다.
+
+정책 갱신 metadata는 추적 가능해야 한다. 최소한 다음 정보를 저장한다.
 
 ```json
 {
-  "routing_stage": "optimized",
-  "selected_model": "gpt-4.1-mini",
-  "fallback_model": "gpt-4.1",
-  "reason": "최근 50회 실행에서 schema pass 98%, downstream success 100%, 평균 비용 76% 절감",
-  "policy_version": "model-router-v1"
+  "trigger": "auto_20_runs",
+  "judge_model": "gpt-4.1-mini",
+  "prompt_version": "model-routing-policy-judge-v1",
+  "eligible_run_count": 20,
+  "excluded_run_count": 7,
+  "judge_usage_log_id": "uuid",
+  "result": "applied",
+  "new_policy_version": "router-policy-v4"
 }
 ```
 
-작업 유형은 사용자가 직접 고르는 입력값으로 두지 않는다. 라우터는 node 설정, output format/schema, prompt, RAG 사용 여부, downstream 계약, 과거 node run profile을 보고 내부적으로 판단한다.
+실행 시점 trace metadata는 모델 선택 결과만 safe summary로 남긴다.
 
-자동 라우팅이 켜져 있어도 품질 gate를 통과하지 못하면 비용이 더 싼 모델을 선택하지 않는다. 이 기능의 기본 원칙은 `품질 유지 후 비용 절감`이다.
+```json
+{
+  "llm": {
+    "model_routing": {
+      "enabled": true,
+      "policy_id": "uuid",
+      "policy_version": "router-policy-v4",
+      "selected_model": "gpt-4.1-mini",
+      "fallback_model": "gpt-4.1",
+      "decision_source": "active_policy",
+      "matched_rule_id": "low-risk-json-triage",
+      "reason_code": "quality_gate_passed_cost_reduction",
+      "judge_called": false
+    }
+  }
+}
+```
 
-최적화 에이전트는 실행 로그와 A/B 비교 결과를 바탕으로 모델, 프롬프트, `max_tokens`, 출력 형식 같은 최적화 후보를 제안하는 기능이다.
+작업 유형은 사용자가 직접 고르는 입력값으로 두지 않는다. 정책 갱신은 node 설정, output format/schema, prompt safe summary, RAG 사용 여부, downstream 계약, 과거 node run profile을 보고 내부적으로 판단한다.
 
-최적화 에이전트는 후속 기능으로 추가한다. 에이전트는 자동 적용하지 않고 제안만 제공해야 한다.
+정책 기반 자동 모델 라우팅의 기본 원칙은 `품질 유지 후 비용 절감`이다. 비용이 더 싼 모델이라도 품질 gate를 통과하지 못하면 active policy로 반영하지 않는다.
+
+최적화 에이전트는 실행 로그와 A/B 비교 결과를 바탕으로 모델, 프롬프트, `max_tokens`, 출력 형식 같은 최적화 후보를 제안하는 별도 후속 기능이다. 에이전트는 자동 정책 갱신 judge와 역할이 다르며, 후속 기능으로 추가한다.
+
+### FR-012. LLM 파라미터 추천 룰셋
+
+Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 후보도 추천할 수 있어야 한다.
+
+파라미터 추천의 기본 원칙은 `룰셋 + 운영 로그 통계`다. LLM이 직접 추천 결정을 내리지 않는다. LLM은 프롬프트 축소 후보 생성, 변경안 설명 문장 생성, 샘플 품질 judge 같은 보조 역할로만 사용할 수 있다.
+
+추천 대상은 다음 범위로 제한한다.
+
+| 추천 대상 | 추천 근거 | 1차 추천 방식 | 적용 방식 |
+| --- | --- | --- | --- |
+| `max_tokens` | 최근 `completion_tokens` p95/p99, 응답 잘림 여부, schema/downstream 성공률 | 통계 기반 룰셋 | A/B 후보 생성 후 적용 |
+| `temperature` | 출력 형식, JSON schema 사용 여부, schema 실패율, retry/fallback 추세 | 작업 성격 기반 룰셋 | A/B 후보 생성 후 적용 |
+| `top_p` | provider 지원 여부, `temperature`와의 조합, 현재 값이 극단값인지 여부 | 보수적 룰셋 | A/B 후보 생성 후 적용 |
+| `frequency_penalty` | 출력 반복 패턴, 동일 문장/토큰 반복률, 사용자-facing 답변 품질 이슈 | 로그/출력 패턴 기반 룰셋 | A/B 후보 생성 후 적용 |
+| RAG context 사용량 | `prompt_tokens` 중 retrieval context 비중, `context_token_estimate`, `retrieved_chunk_count`, evidence 충분성 | trace summary 기반 룰셋 | A/B 후보 생성 후 적용 |
+
+다음 항목은 1차 자동 추천에서 제외한다.
+
+- `presence_penalty`: 비용 절감과 직접 연결되는 근거가 약하다.
+- `stop`: 출력 패턴 분석과 provider별 finish reason 수집이 더 필요하다.
+- 프롬프트 축소 자동 적용: 품질 저하 위험이 커서 LLM이 후보를 만들더라도 반드시 A/B 실험을 거쳐야 한다.
+
+`max_tokens` 추천은 다음 조건을 만족할 때만 생성한다.
+
+- target LLM node의 배포 후 운영 성공 sample이 충분하다.
+- 최근 sample의 `completion_tokens` p95가 현재 `max_tokens`보다 충분히 낮다.
+- schema 실패율과 downstream 실패율이 허용 기준 이하이다.
+- 응답이 길이 제한 때문에 잘린 근거가 없다.
+
+추천값은 `completion_tokens` p95 또는 p99에 안전 여유를 더해 계산한다. 예를 들어 현재 `max_tokens=4096`, 최근 p95가 820이고 길이 잘림이 없다면 `1200~1500` 범위를 추천할 수 있다.
+
+현재 코드에는 provider `finish_reason` 저장이 충분하지 않다. 따라서 `max_tokens` 추천은 응답 잘림 여부를 확실히 알 수 없는 경우 confidence를 `medium` 이하로 낮추고, 후속으로 `finish_reason == length` 계열 정보를 usage summary 또는 trace metadata에 저장해야 한다.
+
+`temperature` 추천은 다음 정책을 따른다.
+
+- JSON 출력, schema 필수, 분류, 추출, routing 판단처럼 일관성이 중요한 노드는 낮은 값을 추천한다.
+- `temperature > 0.3`이고 schema 실패 또는 출력 변동성 문제가 있으면 `0.1~0.3` 범위를 추천한다.
+- 사용자-facing 답변이나 창의적 생성 노드는 낮추더라도 품질 영향이 있을 수 있으므로 반드시 A/B 후보로만 제안한다.
+- `temperature` 추천은 직접 비용 절감보다 실패, 재시도, fallback 비용 감소를 목표로 한다.
+
+`top_p` 추천은 provider 호환성과 조합 안정성을 우선한다.
+
+- Anthropic 계열처럼 현재 UI/실행 경로에서 `top_p` 동시 사용을 제한하는 모델은 추천 대상에서 제외하거나 제거 후보로만 표시한다.
+- `temperature`와 `top_p`가 동시에 극단값이면 한쪽만 조정하도록 추천한다.
+- 단독 비용 절감 근거가 약하므로 `temperature` 안정화 추천의 보조 항목으로 다룬다.
+
+`frequency_penalty` 추천은 반복 출력이 확인되는 경우에만 생성한다.
+
+- 최근 성공 output에서 동일 문장 반복, 같은 bullet 반복, 동일 n-gram 반복률이 높다.
+- 반복 때문에 completion token이 증가하고 있다.
+- JSON/schema 노드에는 기본적으로 추천하지 않는다.
+
+RAG context 추천은 다음 데이터를 사용한다.
+
+- `LLMUsageLog.prompt_tokens`
+- `workflow_node_runs.trace_metadata` 또는 RAG trace payload의 `context_token_estimate`
+- `retrieved_chunk_count`
+- `evidence_sufficient`
+- `answer_grounding` 또는 downstream 성공 여부
+
+RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 유지되며, 실제 검색 chunk가 과도하게 많으면 `topK`, `retrievedContextMaxChars`, `retrievedContextCompression` 조정을 추천한다. 이때 author가 작성한 system/user/assistant prompt는 임의로 자르지 않는다. 제한 대상은 Knowledge/RAG context뿐이다.
+
+추천 결과는 다음 판단 정보를 가져야 한다.
+
+| Field | 의미 |
+| --- | --- |
+| `recommendation_type` | `llm_parameter` |
+| `parameter_key` | 추천 대상 파라미터 또는 RAG 옵션 |
+| `current_value` | 현재 LLM 노드 설정값 |
+| `suggested_value` | 추천 후보값 |
+| `confidence` | `high`, `medium`, `low` |
+| `risk` | `low`, `medium`, `high` |
+| `reason` | 사용자에게 보여줄 근거 |
+| `evidence` | sample 수, p95 token, 실패율, context token 비중 같은 safe summary |
+| `apply_mode` | `experiment_required` 또는 `direct_policy_update` |
+
+파라미터 추천의 기본 `apply_mode`는 `experiment_required`다. 추천 모달에서 `바로 적용`을 누르더라도 `max_tokens`, `temperature`, RAG context 변경은 직접 draft를 수정하지 않고 Cost Optimizer B candidate를 생성해 A/B 비교 화면으로 넘긴다.
+
+자동 모델 라우팅 정책 갱신처럼 운영 정책만 바꾸는 항목은 후속 구현에서 `direct_policy_update`를 허용할 수 있다. 그러나 현재 LLM node의 prompt, parameter, Knowledge/RAG 설정값을 바꾸는 추천은 A/B 비교와 사용자 확인 없이 적용하지 않는다.
 
 ## Policies And Edge Cases
 
@@ -468,9 +624,8 @@ Cost Optimizer는 LLM 노드의 모델 라우팅과 최적화 에이전트를 �
 
 - workflow 전체 A/B 테스트
 - 자동 품질 점수 산정
-- LLM judge 기반 평가
-- 자동 모델 추천
-- 실행 시점 모델 라우터 API와 workflow engine 연동
+- 일반 A/B 결과에 대한 LLM judge 기반 자동 품질 점수 산정
+- 사용자 클릭 기반 단발 모델 추천 화면
 - 최적화 에이전트
 - LLM response cache
 - budget guardrail
@@ -508,7 +663,7 @@ Open Question 중요도는 다음 3단계로 나눈다.
 | Priority 1 | 적용 방식 | 선택 후보를 draft에 바로 적용할지, versioning과 연결할지 | 사용자가 실수로 기존 설정을 잃을 수 있다 | 결정: 현재 draft target LLM node에 후보 설정 전체를 적용하고 기존 저장/되돌리기 흐름을 따른다. |
 | Priority 2 | downstream 계약 검증 | 1차 구현에서 어떤 다음 노드 타입까지 계약 검증할지 | 지원하지 않는 노드가 있으면 검증 결과를 신뢰하기 어렵다 | 결정: target LLM node를 직접 참조하는 variable extraction mapping, condition selector, answer output selector, Slack referenced variable selector를 후보 출력 기준으로 검사한다. |
 | Priority 2 | 실패 후보 처리 | B 후보 실행이 실패했을 때 workspace 전체를 실패로 볼지 | 비교 UX가 달라진다 | 해당 B 실행만 `failed` 후보로 기록하고 A baseline과 기존 history는 유지한다 |
-| Priority 3 | 자동 추천 | 가격표 기반으로 후보 모델을 자동 추천할지 | 사용성은 좋아지지만 정책과 품질 판단이 필요하다 | 1차 구현에서는 사용자가 직접 후보를 만든다 |
-| Priority 3 | 모델 라우팅 | 수동, 규칙 기반, LLM 기반 라우팅 중 어떤 방식을 먼저 제공할지 | 비용 절감 효과는 크지만 잘못 라우팅하면 품질 문제가 생긴다 | 후속 기능으로 분리한다 |
+| Priority 3 | 자동 추천 | 가격표 기반 단발 추천 화면을 별도로 둘지 | 정책 기반 자동 라우팅과 겹치면 사용자가 실행 정책과 단발 추천을 혼동할 수 있다 | FR-011은 정책 기반 자동 라우팅으로 결정하고, 단발 추천 화면은 후속으로 분리한다 |
+| Priority 3 | 모델 라우팅 정책 세부 gate | 정책 자동 반영의 정확한 schema/downstream/fallback/confidence 기준값을 어디까지 고정할지 | gate가 느슨하면 품질이 흔들리고, 너무 엄격하면 비용 절감 효과가 낮다 | 기본 원칙은 품질 gate 통과 시 조건부 자동 반영, 미통과 시 `pending_review`로 둔다 |
 | Priority 3 | 최적화 에이전트 | 에이전트가 어떤 근거로 모델/프롬프트/파라미터 최적화 후보를 제안할지 | 추천 자체도 비용이 들고 잘못된 추천은 workflow 품질을 해칠 수 있다 | 후속 기능으로 분리하고 자동 적용은 금지한다 |
 | Priority 3 | cache/budget | LLM cache와 budget guardrail을 1차 구현에 넣을지 | 실제 비용 절감 효과는 크지만 범위가 커진다 | 별도 follow-up 이슈로 분리한다 |
