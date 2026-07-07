@@ -9,16 +9,17 @@ Status: Draft
 - Knowledge Base처럼 resolver가 해결할 수 있는 값은 즉시 `missing_information`으로 올리지 않고 `pending_resolution`으로 둔다.
 - `blocking` 최종값은 LLM hint가 아니라 product policy와 slot type 규칙으로 확정된다.
 - `TargetResolver`는 자연어 target이 selected node보다 우선한다.
+- `TargetResolver`는 사용자가 edge를 선택하고 자연어가 "여기 사이에", "이 연결에"처럼 edge 문맥을 지칭할 때 `selected_edge_id`를 위치 hint로 사용한다.
 - 동일 type node가 여러 개이고 selected node가 후보가 아니면 clarification을 반환한다.
 - `WorkflowDraftValidator`는 unsupported node type, missing config, schema mismatch, permission shortage를 실패로 반환한다.
 
 ## API Tests
 
-- (FR-001) 생성 요청 성공 시 MVP 허용 capability 안에서 노드 그래프를 반환한다. 대표 프롬프트: "사내 휴가 정책을 바탕으로 직원 질문에 답하고 결과를 Slack으로 보내줘" → Start/Input, Knowledge Base-backed LLM, Slack send, Answer 계열 노드 포함. Slack channel 또는 KB 후보가 모호하면 draft를 확정하지 않고 clarification을 반환한다.
+- (FR-001) 생성 요청 성공 시 MVP 허용 capability 안에서 노드 그래프를 반환한다. 대표 프롬프트: "사내 휴가 정책을 바탕으로 직원 질문에 답하고 결과를 Slack으로 보내줘" → Start/Input, Knowledge Base-backed LLM, Slack send, Answer 계열 노드 포함. 이 케이스는 capability coverage test이며, PRD demo happy path는 Slack을 제외한 Knowledge Base-backed LLM flow로 검증한다. Slack channel 또는 KB 후보가 모호하면 draft를 확정하지 않고 clarification을 반환한다.
 - (FR-003) 사용 가능한 credential이 없는 상태에서 생성 요청 → 부족한 credential/모델을 명시한 사전 안내 응답.
 - 유효하지 않은 `X-Organization-Id` header → 실행 전 검증 오류로 거부.
 - 해석 불가능한 프롬프트(예: 빈 문자열, 자동화와 무관한 요청) → 빈 workflow를 만들지 않고 명시적 실패 응답.
-- 사내 지식 검색 workflow 생성 요청에서 Builder는 safe skill metadata와 safe collection/KB display metadata만 사용하고 raw skill body, hidden source reference, raw source title/path/url을 prompt나 응답에 포함하지 않는다.
+- 사내 지식 검색 workflow 생성 요청에서 MVP Builder는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않고 safe collection/KB display metadata와 ADR-0017 기본 RAG option 후보만 사용한다. 후속 기능에서 Skill을 사용하더라도 raw skill body, hidden source reference, raw source title/path/url은 prompt나 응답에 포함하지 않는다.
 - LLM node RAG 옵션 후보 resolver는 intended execution subject/audience 기준 `available`, `warning`, `unavailable`, `unknown` runtime availability를 반환하고, hidden KB id/name, exact denied count, hidden source distribution을 반환하지 않는다.
 - Agent Builder의 RAG 옵션 추천은 Knowledge RAG Recommendation Adapter를 통해서만 수행하며, Agent Builder가 Knowledge permission row, source ACL row, hidden KB 목록을 직접 읽지 않는다.
 - Recommendation 결과는 초기 구현에서 KB 단위로 materialize되고, Collection은 safe `source_collection_summary`로만 표시된다. Builder draft에는 현재 LLM node schema의 `knowledgeBases` 중심으로 저장된다.
@@ -26,6 +27,7 @@ Status: Draft
 - 후보가 source ACL stale/unmapped/ambiguous/unverified/revoked 또는 scope 밖 resource 때문에 제외된 경우 Builder 응답은 safe reason class와 required action만 표시하고 세부 source ACL state나 raw source path/title/url을 노출하지 않는다.
 - `X-Organization-Id`가 없으면 Agent Builder request가 거부된다.
 - Request body에 `organization_id`가 있어도 권한/scope 판단에는 사용되지 않는다.
+- Request body의 `selected_edge_id`는 target resolution hint로만 쓰이고 권한/scope 판단에는 사용되지 않는다.
 - Agent Builder session id는 server-issued 값이어야 하며, client-generated session id는 권한/scope/audit 판단에 사용되지 않는다.
 - 기존 workflow 수정 요청은 workflow read/write 권한이 없으면 `WORKFLOW_PERMISSION_REQUIRED`를 반환한다.
 - 새 workflow draft 요청은 app 또는 workflow 생성 scope 권한이 없으면 `APP_CREATE_PERMISSION_REQUIRED`를 반환한다.
@@ -34,17 +36,19 @@ Status: Draft
 
 ## Knowledge Recommendation Tests
 
-- Agent Builder는 raw user input 전체가 아니라 `StructuredRequest`의 safe summary, `knowledge_requirement`, `pending_resolution_ref`로 adapter request를 만든다.
+- Agent Builder는 raw user input 전체가 아니라 `StructuredRequest`의 safe summary, `knowledge_requirement`, `pending_resolution_ref`, `safe_workflow_context_summary`로 adapter request를 만든다.
 - Adapter request에는 raw source ACL, raw source id/path/url/title, raw document/chunk content, hidden/denied list, exact hidden/denied count가 포함되지 않는다.
-- Adapter는 `StructuredRequest`의 `knowledge_requirement`와 `pending_resolution_ref`를 Knowledge side의 `KnowledgeCandidateResolver`가 반환한 authorized safe candidate set 안에서만 매칭하고 추천한다.
+- Adapter는 `StructuredRequest`의 `knowledge_requirement`와 `pending_resolution_ref`를 Knowledge side의 `KnowledgeCandidateResolver`가 반환한 server-issued reference 또는 같은 backend 내부 service call의 authorized safe candidate set 안에서만 매칭하고 추천한다. HTTP 또는 serialized boundary에서는 full candidate set이 아니라 reference만 사용한다.
 - Recommendation `candidate_id`는 raw source id/path/url/title이 아니라 server-issued safe handle이어야 한다.
+- Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다.
+- Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
 - Draft 생성 또는 apply/save 시 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다.
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
 - 후보 여러 개 또는 점수 근접이면 clarification option이 표시된다.
 - 후보 0개이면 validation failure 또는 clarification으로 연결된다.
-- Adapter unavailable이고 safe KB list가 있으면 fallback clarification을 반환한다.
-- Adapter unavailable이고 safe KB list도 없으면 validation failure를 반환한다.
+- Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options` 기반 fallback clarification을 반환한다.
+- Adapter unavailable이고 safe 후보 선택지도 없으면 validation failure를 반환한다.
 - 추천 결과는 LLM node의 `knowledgeBases`로 materialize 가능해야 한다.
 - Collection은 preview 설명용 safe summary로만 표시되고 workflow runtime field로 저장되지 않는다.
 - MVP에서 RAG retrieval signal과 LLM reranker는 비활성이다.
@@ -62,7 +66,7 @@ Status: Draft
 
 ## Draft Preview Mode And Apply Save Tests
 
-- Draft 생성 시 Knowledge Base retrieval, Slack 전송, workflow 실행이 발생하지 않는다.
+- Draft 생성 시 workflow graph 저장, Knowledge Base retrieval, Slack 전송, workflow 실행, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
 - Draft preview는 생성/변경될 step, target 위치, missing info, validation result, warning을 표시한다.
 - Validation 실패 draft에는 `도안 보기` 또는 `적용 및 저장` action이 표시되지 않는다.
 - Chatbot panel의 `도안 보기`를 선택하면 Preview Mode가 열리고, actual editor graph는 변경되지 않는다.
@@ -81,7 +85,10 @@ Status: Draft
 - 전체 교체 draft는 기존 workflow read/write 권한과 교체 validation을 모두 만족해야 저장된다.
 - 저장되지 않은 editor 변경이 있으면 MVP에서는 draft 생성, Preview Mode 진입, 또는 `적용 및 저장`이 차단되고 저장/폐기 안내가 표시된다.
 - 후속 확장 전까지 client graph snapshot만으로 unsaved editor graph를 draft base로 자동 포함하지 않는다.
-- `DRAFT_METADATA_NOT_FOUND`, `DRAFT_METADATA_EXPIRED`, `WORKFLOW_PERMISSION_REQUIRED`, `APP_CREATE_PERMISSION_REQUIRED`, `DRAFT_STALE`, `DRAFT_VALIDATION_FAILED`, `SAVE_FAILED`, `ORGANIZATION_CONTEXT_MISMATCH`, `UNSAVED_EDITOR_CHANGES`는 각각 한국어 안내와 함께 저장을 차단하거나 실패 상태를 표시한다.
+- `DRAFT_METADATA_NOT_FOUND`, `DRAFT_METADATA_EXPIRED`, `WORKFLOW_PERMISSION_REQUIRED`, `APP_CREATE_PERMISSION_REQUIRED`, `DRAFT_STALE`, `DRAFT_VALIDATION_FAILED`, `ORGANIZATION_CONTEXT_MISMATCH`, `UNSAVED_EDITOR_CHANGES`는 `outcome=blocked`와 `block_reason`으로 한국어 차단 안내를 표시한다.
+- `SAVE_FAILED`는 `outcome=failed`와 `failure_reason`으로 한국어 실패 안내를 표시한다.
+- `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용되지 않는다.
+- workflow graph 저장 시도 후 apply/save audit 기록이 실패하면 `SAVE_FAILED` 또는 동등한 safe failure로 처리되고 Preview Mode가 유지되며 actual editor graph는 변경되지 않는다.
 - 저장 성공 시 Preview Mode가 종료되고 editor는 저장된 최신 workflow graph를 표시한다.
 - 저장 차단 또는 실패 시 Preview Mode가 유지되고 actual editor graph는 변경되지 않는다.
 - 저장 성공 후에도 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경은 발생하지 않는다.
@@ -100,7 +107,7 @@ Status: Draft
 8. 사용자가 `도안 보기`를 선택하면 Workflow Editor가 Preview Mode로 전환된다.
 9. Preview Mode에서 draft graph가 읽기 전용으로 표시되고, 사용자는 node를 클릭해 Node Detail Panel에서 내부 설정을 확인한다.
 10. 사용자가 `적용 및 저장`을 선택하면 backend가 draft metadata, 권한, stale, validation을 재확인한다.
-11. 재확인을 통과하면 workflow graph가 저장되고 audit-safe apply/save success event가 기록된다.
+11. 재확인을 통과하고 apply/save audit 기록까지 성공하면 workflow graph가 저장 성공으로 완료되고 audit-safe apply/save success event가 기록된다.
 12. Preview Mode가 종료되고 editor는 저장된 최신 workflow graph를 표시한다.
 13. 이 시점에도 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경은 발생하지 않는다.
 

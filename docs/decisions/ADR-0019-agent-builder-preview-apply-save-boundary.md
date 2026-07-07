@@ -44,9 +44,9 @@ MVP에서는 Workflow Editor에 저장되지 않은 변경이 있으면 Agent Bu
 - credential 사용 또는 변경
 - 외부 시스템 변경
 
-저장 성공 시 Preview Mode를 종료하고 Workflow Editor는 저장된 최신 workflow graph를 표시한다. 저장 차단 또는 실패 시 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. 사용자는 차단 사유를 확인한 뒤 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있어야 한다.
+저장 성공 시 Preview Mode를 종료하고 Workflow Editor는 저장된 최신 workflow graph를 표시한다. `outcome=saved`는 apply/save audit event 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용하지 않는다. 저장 시도 후 audit 기록이 실패하면 저장 성공으로 취급하지 않고 `failed` outcome과 safe failure reason으로 처리한다. 저장 차단 또는 실패 시 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. 사용자는 차단 사유 또는 실패 사유를 확인한 뒤 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있어야 한다. `blocked` outcome은 metadata, permission, stale, validation, unsaved editor change 같은 조건 미충족을 뜻하며 `block_reason`으로 표현한다. `failed` outcome은 backend 저장 시도 자체 또는 apply/save audit 기록 실패 같은 safe failure를 뜻하며 `failure_reason`으로 표현한다.
 
-Agent Builder apply/save audit은 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소 event를 구분한다. Audit metadata는 draft id, request id, session id, workflow id 또는 새 workflow 생성 scope, preview graph hash, base graph hash, latest graph hash, workflow version 또는 updated_at, draft mode, apply/save outcome, block reason, permission recheck outcome, stale state, validation state, saved workflow id, timestamp 같은 safe metadata만 포함할 수 있다.
+Agent Builder apply/save audit은 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소 event를 구분한다. Audit metadata는 draft id, request id, apply id, session id, workflow id 또는 새 workflow 생성 scope, preview graph hash, base graph hash, latest graph hash, workflow version 또는 updated_at, draft mode, apply/save outcome, block reason, failure reason, permission recheck outcome, stale state, validation state, saved workflow id, timestamp 같은 safe metadata만 포함할 수 있다.
 
 Audit, trace, prompt, preview, validation message에는 credential 원문, API key, token, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
 

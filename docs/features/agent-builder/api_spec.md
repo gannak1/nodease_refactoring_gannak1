@@ -30,6 +30,7 @@ Client request body는 organization override를 포함하지 않는다.
 | `workflow_id` | 기존 workflow 수정 요청일 때 현재 workflow id |
 | `app_id` | 새 workflow draft 생성 scope |
 | `selected_node_id` | 현재 선택된 canvas node |
+| `selected_edge_id` | 현재 선택된 canvas edge. "이 연결 사이에", "여기 사이에"처럼 edge 선택 문맥일 때 target resolution hint로만 사용하며 권한/scope 판단에 사용하지 않음 |
 | `client_graph_snapshot` | 현재 canvas graph의 client snapshot 또는 hash. MVP에서는 unsaved editor graph를 draft base로 신뢰하지 않고 dirty/stale 감지와 차단 안내에만 사용한다. |
 | `conversation_context_id` | 이어지는 clarification context |
 
@@ -53,6 +54,7 @@ Client request body는 organization override를 포함하지 않는다.
 | Field | Description |
 | --- | --- |
 | `request_type` | `new_workflow`, `modify_workflow`, `clarification`, `unsupported`, `validation_failure` |
+| `draft_mode` | `new_workflow`, `modify_workflow`, `replace_workflow`. 전체 교체는 `request_type=modify_workflow`, `draft_mode=replace_workflow`로 표현 |
 | `intent_summary` | redaction-safe intent summary |
 | `planned_steps` | draft generation 후보 step 목록 |
 | `knowledge_requirements` | KB-backed step이 필요한 지식 요구사항 |
@@ -72,14 +74,15 @@ Adapter는 public client endpoint가 아니라 Agent Builder backend에서 호�
 | --- | --- |
 | `intent_summary` | Agent Builder가 만든 안전 요약 |
 | `target_step_ref` | KB 추천이 필요한 planned step |
-| `node_purpose` | 해당 LLM step의 지식 사용 목적 |
+| `node_purpose_summary` | 해당 LLM step의 지식 사용 목적 safe 요약 |
+| `safe_workflow_context_summary` | 현재 workflow 목적, 기존 KB 참조, 관련 노드 역할을 요약한 safe context. Raw graph payload나 hidden source 정보는 포함하지 않음 |
 | `knowledge_requirement` | `requirement_id`, `query_topics`, `expected_evidence_type`, `required` |
 | `pending_resolution_ref` | `resolution_id`, `slot_type=knowledge_base`, `slot_key`, `blocking` |
-| `candidate_scope` | `auto_collection` 또는 `explicit_kb` |
-| `authorized_safe_candidate_set` | Knowledge side의 `KnowledgeCandidateResolver`가 만든 권한 확인된 safe 후보 집합. Client body나 `StructuredRequestBuilder` 입력에서 오지 않음 |
+| `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환 |
+| `authorized_safe_candidate_set_ref` | Knowledge side의 `KnowledgeCandidateResolver`가 만든 권한 확인된 safe 후보 집합을 가리키는 server-issued reference. Client body나 `StructuredRequestBuilder` 입력에서 오지 않음 |
 | `constraints` | max recommendations, high risk domain, query rewrite policy |
 
-Actor, organization, workflow/app scope는 request body가 아니라 server-resolved context에서 전달한다. Adapter는 `knowledge_requirement`와 `pending_resolution_ref`로 "무엇을 찾아야 하는지"를 알고, `authorized_safe_candidate_set`으로 "어디에서 찾을 수 있는지"를 제한한다.
+Actor, organization, workflow/app scope는 request body가 아니라 server-resolved context에서 전달한다. Adapter는 `knowledge_requirement`와 `pending_resolution_ref`로 "무엇을 찾아야 하는지"를 알고, `authorized_safe_candidate_set_ref`로 "어디에서 찾을 수 있는지"를 제한한다. 같은 backend 내부 service call에서만 full `authorized_safe_candidate_set` 객체를 전달할 수 있으며, HTTP 또는 serialized boundary에서는 full 후보 집합을 request body로 전달하지 않는다.
 
 ### Adapter Output
 
@@ -88,12 +91,23 @@ Actor, organization, workflow/app scope는 request body가 아니라 server-reso
 | `status` | `recommended`, `clarification_required`, `no_candidate`, `unavailable` |
 | `resolution_id` | 해결 대상 pending resolution |
 | `requirement_id` | 해결 대상 knowledge requirement |
-| `recommendations` | safe KB recommendation 목록 |
+| `recommendations` | safe KB recommendation 목록. 각 item은 score, confidence, reason category, threshold result를 포함 |
 | `clarification_options` | safe candidate selection options |
 | `user_safe_warning` | partial access, runtime availability 등 사용자 표시 경고 |
-| `fallback_reason` | unavailable 또는 no candidate 이유 |
+| `fallback_reason` | `adapter_unavailable`, `no_candidate` 같은 safe reason code |
+
+Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공할 수 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환한다. Safe 후보 선택지도 제공할 수 없으면 `status=unavailable`과 safe `fallback_reason`을 반환하고, Agent Builder는 validation failure 또는 사용자 안내로 닫는다.
 
 Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder가 draft를 생성하거나 apply/save를 수행할 때 backend가 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
+
+Recommendation item은 다음 판단 필드를 포함해야 한다.
+
+| Field | Description |
+| --- | --- |
+| `score` | 후보 ranking에 사용한 normalized score. Raw retrieval score나 provider raw score가 아니라 Adapter가 노출 가능한 값으로 정규화한 점수 |
+| `confidence` | `high`, `medium`, `low` 중 하나. 후보 1개 high confidence 자동 해결과 사용자 선택 clarification을 구분하는 기준 |
+| `reason_category` | 추천 근거의 safe category. 예: topic keyword match, metadata match, collection context match |
+| `threshold_result` | `high_confidence`, `close_score`, `below_threshold` 등 자동 해결, clarification, failure 분기를 설명하는 safe 결과 |
 
 ### Adapter Prohibited Data
 
@@ -122,7 +136,7 @@ Draft preview response는 chatbot panel 요약과 Preview Mode 렌더링에 필�
 | `draft_mode` | `new_workflow`, `modify_workflow`, `replace_workflow` |
 | `node_detail_previews` | Node Detail Panel에 표시할 read-only safe node configuration |
 | `validation_result` | preview 표시 기준 validation 결과 |
-| `safety_notices` | 저장 전 실행/Knowledge Base retrieval/Slack 전송/credential 사용 없음 등 안내 |
+| `safety_notices` | draft preview와 apply/save 전후 side effect 경계 안내. workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경 없음 등 |
 
 `preview_graph`와 `node_detail_previews`에는 credential 원문, raw KB content, raw source path/url/title, hidden resource detail이 포함되지 않는다. Client는 `preview_graph`를 actual editor graph에 merge하지 않고 Preview Mode 전용 state로 렌더링한다.
 
@@ -151,13 +165,14 @@ Response:
 | `latest_workflow_version` | 저장 또는 차단 판단에 사용한 최신 workflow version |
 | `latest_workflow_updated_at` | 저장 또는 차단 판단에 사용한 최신 workflow updated_at |
 | `block_reason` | 저장 차단 사유 |
+| `failure_reason` | `outcome=failed`일 때 저장 시도 실패 사유. `blocked`의 차단 사유와 구분 |
 | `stale_state` | stale 여부 |
 | `permission_recheck_outcome` | 권한 재확인 결과 |
 | `validation_state` | validation 재확인 결과 |
-| `audit_recorded` | apply/save audit 기록 여부 |
+| `audit_recorded` | apply/save audit 기록 여부. `outcome=saved`에서는 반드시 `true`여야 하며, 저장 성공과 audit 기록 성공은 같은 완료 조건으로 취급한다. 저장 시도 후 audit 기록이 실패하면 `outcome=failed`, `failure_reason=SAVE_FAILED` 또는 동등한 safe failure로 반환한다. |
 | `notices` | user-safe 한국어 안내 |
 
-`apply_and_save`는 workflow graph 저장까지 수행할 수 있지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. `cancel`은 preview graph를 저장하지 않고 draft apply audit에 취소 outcome만 남길 수 있다.
+`apply_and_save`는 workflow graph 저장까지 수행할 수 있지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용하지 않는다. 저장 성공으로 응답하기 전 apply/save audit event는 canonical audit store에 기록되었거나, workflow graph 저장과 같은 transaction 또는 동등한 내구성 경계의 outbox/durable queue에 enqueue되어야 한다. 저장 시도 또는 저장 성공 audit 기록이 실패하면 safe failure로 처리하고 Preview Mode를 유지한다. `cancel`은 preview graph를 저장하지 않고 draft apply audit에 취소 outcome만 남길 수 있다.
 
 Stale check는 서버가 원 draft metadata의 `base_graph_hash`와 workflow version 또는 updated_at을 최신 workflow graph/context와 비교해 수행한다. Client가 보낸 graph hash, version, updated_at은 stale hint와 사용자 안내에만 사용하며 권한, scope, organization 판단을 대체하지 않는다.
 
@@ -171,11 +186,11 @@ Stale check는 서버가 원 draft metadata의 `base_graph_hash`와 workflow ver
 | `DraftPreviewOpened` | 사용자가 `도안 보기`로 Preview Mode 진입 |
 | `DraftApplySaveRequested` | 사용자가 `적용 및 저장` 요청 |
 | `DraftApplySaveBlocked` | metadata, permission, stale, validation, unsaved change 등으로 저장 차단 |
-| `DraftApplySaveSucceeded` | workflow graph 저장 성공 |
+| `DraftApplySaveSucceeded` | workflow graph 저장과 apply/save audit 기록 성공 |
 | `DraftApplySaveFailed` | 저장 시도 실패 |
 | `DraftApplyCanceled` | 사용자가 preview를 취소 |
 
-Audit-safe metadata에는 `request_id`, `draft_id`, `session_id`, `workflow_id` 또는 새 workflow 생성 scope, `draft_mode`, `base_graph_hash`, `latest_graph_hash`, `preview_graph_hash`, workflow version 또는 updated_at, `block_reason`, `permission_recheck_outcome`, `stale_state`, `validation_state`, `saved_workflow_id`, timestamp를 포함할 수 있다.
+Audit-safe metadata에는 `request_id`, `draft_id`, `apply_id`, `session_id`, `workflow_id` 또는 새 workflow 생성 scope, `draft_mode`, `base_graph_hash`, `latest_graph_hash`, `preview_graph_hash`, workflow version 또는 updated_at, apply/save outcome, `block_reason`, `failure_reason`, `permission_recheck_outcome`, `stale_state`, `validation_state`, `saved_workflow_id`, timestamp를 포함할 수 있다.
 
 Audit metadata에는 credential 원문, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
 
@@ -192,6 +207,6 @@ Audit metadata에는 credential 원문, raw KB content, raw source path/url/titl
 | `DRAFT_METADATA_NOT_FOUND` | apply 대상 draft metadata 없음 |
 | `DRAFT_METADATA_EXPIRED` | apply 대상 draft metadata가 만료됨 |
 | `DRAFT_STALE` | 최신 graph/context와 draft base가 맞지 않음 |
-| `SAVE_FAILED` | backend 저장 시도 실패 |
+| `SAVE_FAILED` | backend 저장 시도 또는 apply/save audit 기록 실패 |
 | `ORGANIZATION_CONTEXT_MISMATCH` | draft 생성 시 active organization과 apply 시 active organization이 다름 |
 | `UNSAVED_EDITOR_CHANGES` | 저장되지 않은 editor 변경이 있어 MVP 정책상 draft 생성, Preview Mode, 또는 apply/save를 진행할 수 없음 |

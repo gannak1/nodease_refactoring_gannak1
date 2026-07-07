@@ -77,6 +77,8 @@ Knowledge Base, workflow target, supported capability처럼 다른 resolver가 �
 
 기존 workflow 수정 요청에서는 자연어 target이 selected node보다 우선한다. 자연어가 특정 node type 또는 role을 지칭하고 후보가 하나이면 그 후보를 기준으로 한다. 후보가 여러 개이면 selected node가 후보 안에 있을 때만 selected node를 기준으로 하고, 그렇지 않으면 clarification을 반환한다.
 
+사용자가 canvas edge를 선택했고 자연어가 `여기 사이에`, `이 연결에`처럼 edge 문맥을 지칭하면 `selected_edge_id`를 target resolution hint로 사용할 수 있다. `selected_edge_id`는 위치 해석 보조 정보일 뿐이며 권한, scope, organization 판단에 사용하지 않는다.
+
 `여기`, `이 노드`, `방금 만든 노드` 같은 문맥 의존 표현은 현재 selected node 또는 대화 맥락으로 특정 가능할 때만 사용한다.
 
 ### AB-FR-006: Knowledge Base-backed LLM Step
@@ -95,7 +97,7 @@ Agent Builder가 KB/Collection picker 또는 workflow generation proposal을 표
 
 Agent Builder는 `StructuredRequest`의 `knowledge_requirements`와 관련 `pending_resolution`을 기반으로 KB Recommendation Adapter를 호출한다.
 
-KB Recommendation Adapter는 `StructuredRequestBuilder`가 만든 지식 요구와 pending slot, 그리고 Knowledge side의 `KnowledgeCandidateResolver`가 만든 authorized safe candidate set을 매칭한다. Authorized safe candidate set은 client request body나 `StructuredRequestBuilder` 입력에서 오지 않는다.
+KB Recommendation Adapter는 `StructuredRequestBuilder`가 만든 지식 요구와 pending slot, 그리고 Knowledge side의 `KnowledgeCandidateResolver`가 만든 server-issued safe candidate set reference를 매칭한다. Authorized safe candidate set은 client request body나 `StructuredRequestBuilder` 입력에서 오지 않는다. 같은 backend 내부 service call에서는 full authorized safe candidate set 객체를 사용할 수 있지만, HTTP 또는 serialized boundary에서는 server-issued reference만 전달한다.
 
 Adapter는 raw user input 전체가 아니라 다음 안전 요약을 사용해야 한다.
 
@@ -104,9 +106,12 @@ Adapter는 raw user input 전체가 아니라 다음 안전 요약을 사용해�
 - node purpose summary
 - knowledge requirement
 - pending resolution reference
+- safe workflow context summary
 - server-resolved actor, active organization, workflow/app scope
 
 MVP adapter는 keyword/metadata 기반 deterministic ranking만 사용한다. RAG retrieval signal과 LLM-assisted reranking은 후속 확장이다.
+
+Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다. 이 값은 후보 1개 high confidence 자동 해결, 후보 여러 개 또는 점수 근접 clarification, 후보 없음 validation failure를 일관되게 판정하기 위한 safe metadata이며 raw retrieval score나 provider raw response를 노출하지 않는다.
 
 Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
 
@@ -114,9 +119,9 @@ Recommendation candidate 식별자는 raw source id, raw source path, raw source
 
 초기 recommendation 결과는 KB 단위로 materialize된다. Builder UI는 Collection 맥락을 safe `source_collection_summary`로 설명할 수 있지만, 현재 LLM node draft에는 `knowledgeBases` 중심으로 저장한다.
 
-Agent Builder는 LLM node의 RAG 옵션인 `query_rewrite_mode`, `evidence_sufficiency_policy`, source tier hint 같은 후보를 제안할 수 있다. 기본값은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다. 이 설정은 workflow node 옵션일 뿐이며 권한 범위를 넓히거나 runtime data access를 부여하지 않는다.
+MVP에서 Agent Builder가 제안하는 LLM node RAG 옵션은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 기본값과 안전한 후보 설명으로 제한한다. `query_rewrite_mode`, `evidence_sufficiency_policy`, source tier hint의 자동 튜닝이나 품질 최적화는 후속 기능이다. 이 설정은 workflow node 옵션일 뿐이며 권한 범위를 넓히거나 runtime data access를 부여하지 않는다.
 
-Knowledge Skill을 prompt context로 사용할 경우 skill visibility, safe metadata display, freshness/eval gate를 통과한 Skill metadata/body/checklist만 사용한다. Skill이 제안한 collection/KB reference는 workflow 실행 시점에 execution subject 권한으로 다시 검증된다. Raw skill body, hidden source reference, raw source title/path/url, restricted document list, raw prompt/completion/provider response는 LLM context, audit, trace에 넣지 않는다.
+Knowledge Skill을 prompt context로 직접 사용하는 기능은 MBA-145 MVP 범위가 아니다. 후속 기능에서 Knowledge Skill을 사용할 경우에도 skill visibility, safe metadata display, freshness/eval gate를 통과한 safe field만 사용할 수 있으며, Skill이 제안한 collection/KB reference는 workflow 실행 시점에 execution subject 권한으로 다시 검증되어야 한다. Raw skill body, hidden source reference, raw source title/path/url, restricted document list, raw prompt/completion/provider response는 LLM context, audit, trace에 넣지 않는다.
 
 ### AB-FR-008: KB Recommendation Outcomes
 
@@ -125,7 +130,7 @@ KB recommendation 결과는 다음 중 하나여야 한다.
 - 후보 1개 high confidence: 해당 pending KB resolution을 resolved 처리하고 draft 추천값으로 사용
 - 후보 여러 개 또는 점수 근접: 사용자에게 KB 선택 clarification 제공
 - 후보 0개: validation failure 또는 clarification 제공
-- adapter unavailable: 권한 확인된 safe KB 목록이 있으면 fallback clarification, 없으면 validation failure
+- adapter unavailable: 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`로 fallback clarification을 반환하고, safe 후보 선택지도 없으면 validation failure
 - optional KB requirement unresolved: product policy가 허용할 때만 warning과 함께 KB 없는 draft 가능
 
 Builder가 recommendation 실패 또는 no recommendation을 받으면 기본적으로 사용자 확인 필요 상태로 둔다. 자동으로 RAG 없는 LLM node를 생성하는 fallback은 별도 Builder 정책 gate가 닫힌 경우에만 허용한다.
@@ -165,13 +170,13 @@ Stale check는 draft 생성 시점의 `base_graph_hash`와 workflow `version` �
 
 `적용 및 저장`은 workflow graph 저장까지 의미하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 의미하지 않는다. 저장 이후 workflow 실행은 기존 execution flow의 별도 사용자 동작으로만 수행된다.
 
-저장 성공 시 Preview Mode를 종료하고 Workflow Editor는 저장된 최신 workflow graph를 표시한다. 새 workflow draft 생성이 성공하면 새 workflow editor로 이동하거나 현재 editor context를 새 workflow로 전환한다. Agent Builder chatbot은 저장 완료와 별도 실행 필요 상태를 한국어로 안내한다.
+저장 성공 시 Preview Mode를 종료하고 Workflow Editor는 저장된 최신 workflow graph를 표시한다. `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용하지 않는다. 새 workflow draft 생성이 성공하면 새 workflow editor로 이동하거나 현재 editor context를 새 workflow로 전환한다. Agent Builder chatbot은 저장 완료와 별도 실행 필요 상태를 한국어로 안내한다.
 
-저장 실패 또는 차단 시 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. 사용자는 차단 사유를 확인한 뒤 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있어야 한다. 대표 차단 사유는 draft metadata 없음, draft metadata 만료, workflow read/write 권한 부족, app 또는 workflow 생성 scope 권한 부족, stale draft, validation 실패, 저장 실패, active organization mismatch, 저장되지 않은 editor 변경이다.
+저장 차단 또는 저장 시도 실패 시 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. 사용자는 차단 사유 또는 실패 사유를 확인한 뒤 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있어야 한다. `blocked` outcome은 draft metadata 없음, draft metadata 만료, workflow read/write 권한 부족, app 또는 workflow 생성 scope 권한 부족, stale draft, validation 실패, active organization mismatch, 저장되지 않은 editor 변경 같은 차단 사유를 `block_reason`으로 표현한다. `failed` outcome은 backend 저장 시도 실패 또는 apply/save audit 기록 실패 같은 실패 사유를 `failure_reason`으로 표현한다.
 
-Preview Mode는 `actualEditorGraph`와 `previewGraph`를 섞지 않아야 한다. 진단을 위해 draft id, request id, session id, workflow id 또는 새 workflow 생성 scope, preview graph hash, base graph hash, latest graph hash, workflow version 또는 updated_at, draft mode, apply/save outcome, block reason, permission recheck outcome, stale state, validation state, saved workflow id, timestamp를 audit-safe metadata로 추적할 수 있어야 한다. Audit metadata에는 credential 원문, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
+Preview Mode는 `actualEditorGraph`와 `previewGraph`를 섞지 않아야 한다. 진단을 위해 draft id, request id, apply id, session id, workflow id 또는 새 workflow 생성 scope, preview graph hash, base graph hash, latest graph hash, workflow version 또는 updated_at, draft mode, apply/save outcome, block reason, failure reason, permission recheck outcome, stale state, validation state, saved workflow id, timestamp를 audit-safe metadata로 추적할 수 있어야 한다. Audit metadata에는 credential 원문, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
 
-Apply/save audit event는 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소를 구분해야 한다. 저장 성공 event는 workflow graph 저장 완료를 의미하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 의미하지 않는다.
+Apply/save audit event는 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소를 구분해야 한다. 저장 성공 event는 workflow graph 저장 완료와 audit 기록 성공을 함께 의미하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 의미하지 않는다.
 
 MVP에서는 editor에 저장되지 않은 변경이 있으면 Agent Builder draft 생성, Preview Mode 진입, 또는 `적용 및 저장`을 진행하지 않는다. 사용자는 먼저 기존 editor 변경을 저장하거나 폐기해야 한다. 이는 unsaved graph와 agent draft가 섞여 저장 충돌이나 rollback 문제를 만드는 것을 막기 위한 동시성 보호 정책이다.
 
@@ -190,7 +195,7 @@ Pending request가 있으면 중복 submit을 막고 cancel을 제공한다. Can
 - KB 후보가 권한 확인된 safe metadata 안에서만 추천된다.
 - 후보가 모호하면 임의 선택하지 않고 질문한다.
 - `적용 및 저장` 전에는 workflow 저장, workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
-- Demo happy path에서 draft preview, Preview Mode, 읽기 전용 Node Detail 확인, backend 재검사, workflow graph 저장, Preview Mode 종료, 저장된 최신 graph 표시, audit 기록을 확인할 수 있다.
+- Demo happy path에서 draft preview, Preview Mode, 읽기 전용 Node Detail 확인, backend 재검사, workflow graph 저장, apply/save audit 기록 성공, Preview Mode 종료, 저장된 최신 graph 표시를 확인할 수 있다.
 
 ## Edge Cases
 

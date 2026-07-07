@@ -87,12 +87,18 @@ Status: Draft
 - Recommendation response item은 초기 구현에서 `candidate_type=knowledge_base`만 사용한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다.
 - `materialized_knowledge_bases`는 LLM node `knowledgeBases`로 변환 가능한 safe KB ref만 포함하고, `MAX_RAG_RETRIEVAL_KBS=20` cap을 넘지 않는다.
 - Safe label이 없는 KB recommendation은 raw KB name을 fallback으로 사용하지 않고 `null` 또는 generic label만 사용한다.
-- Recommendation request의 raw `workflow_intent`와 `node_purpose`는 durable audit/trace/log에 저장하지 않고, 길이 cap과 control character normalization을 통과해야 한다.
+- Recommendation request는 raw `workflow_intent`나 raw natural language 전체가 아니라 `StructuredRequest` 기반 `intent_summary`, `node_purpose_summary`, `knowledge_requirement`, `pending_resolution_ref`, `safe_workflow_context_summary`를 사용해야 한다. 이 safe structured input도 durable raw storage 금지, 길이 cap, control character normalization을 통과해야 한다.
+- Workflow Builder RAG recommendation은 Agent Builder client가 직접 호출하는 public client endpoint가 아니라, Agent Builder backend가 server-resolved context를 확정한 뒤 호출하는 Knowledge domain boundary로 취급해야 한다.
+- Recommendation response는 `status`, `resolution_id`, `requirement_id`, `recommendations`, `clarification_options`, `user_safe_warning`, `fallback_reason` top-level envelope를 사용해야 하며 recommendation item list만 단독으로 반환하지 않아야 한다.
+- Recommendation ranking은 `KnowledgeCandidateResolver`가 만든 server-issued reference 또는 같은 backend 내부 service call의 safe candidate set만 사용해야 하며, raw KB id나 raw source metadata로 권한 후보를 직접 만들지 않아야 한다. HTTP 또는 serialized boundary에서는 full candidate set 객체가 아니라 reference만 사용해야 한다.
+- Recommendation response item은 `score`, `confidence`, `reason_category`, `threshold_result`를 포함해야 하며 raw retrieval/provider score나 hidden resource identity를 노출하지 않아야 한다.
+- Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
+- Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환해야 한다. Safe 후보 선택지도 없으면 `status=unavailable`과 safe fallback reason으로 닫아야 한다.
 - Recommendation provenance는 `recommendation_strategy`, `safe_reason_code`, `used_signals`, safe matched terms, bucketed counts 같은 allowlist만 포함하고 raw source title/path/url, hidden id/name, exact denied count를 포함하지 않는다.
 - `high_risk_domain` hint는 `strict_citation` 같은 RAG option 추천에만 영향을 주고 권한, source ACL, policy block 결정을 대체하지 않는다.
 - No recommendation result는 사용자 확인 필요 상태를 기본값으로 만들며, Builder 정책 gate 없이 자동으로 RAG 없는 LLM node를 생성하지 않는다.
-- Workflow Builder는 safe skill metadata만 받으며 raw skill body, hidden source reference, restricted document list를 받지 않는다.
-- Skill Context Loader는 선택된 skill의 redaction-safe checklist/body만 빌더 단계에 필요한 시점에 로드하고, 실제 문서 내용은 workflow 테스트 또는 실행 시점 authorized retrieval로 가져온다.
+- MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않는다. 후속 Skill 사용 흐름에서도 Workflow Builder는 safe skill metadata만 받고 raw skill body, hidden source reference, restricted document list를 받지 않는다.
+- Skill Context Loader는 후속 target 흐름에서만 선택된 skill의 redaction-safe checklist/body를 빌더 단계에 필요한 시점에 로드하고, 실제 문서 내용은 workflow 테스트 또는 실행 시점 authorized retrieval로 가져온다.
 - Skill source-of-truth tier는 LLM node의 RAG 옵션 구성과 routing/procedure hint로만 사용되고, citation/evidence는 KB/document version/chunk/decision record를 가리킨다.
 - Workflow 실행 시점 RAG는 명시적으로 resolve된 execution subject가 있으면 해당 subject 기준으로 KB permission/source ACL을 평가한다. Subject가 없으면 workflow owner fallback 없이 anonymous public-only로 낮추고, 모호한 subject는 private retrieval fail-closed로 처리한다.
 - `subject_type="organization"` source-policy KB use grant는 active organization member에게만 적용되고 removed/suspended/invited/non-member user에게는 적용되지 않는다.
