@@ -655,6 +655,10 @@ RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 
 - 비교 리포트에는 context token estimate, retrieved chunk count, citation count, cost, latency, policy result, query rewrite 적용 여부, evidence sufficiency 결과, source tier summary 같은 safe summary만 표시한다. 권한 없는 문서명/ID, raw source metadata, raw rewritten query, raw prompt/completion, raw chunk content는 표시하지 않는다.
 - Skill 기반 비교 리포트에도 raw skill body, hidden source refs, raw source title/path/url, restricted document list, raw eval fixture를 표시하지 않는다.
 - `llm_assisted` query rewrite는 별도 승인 전까지 비교 변수로 사용하지 않는다. 승인 후 비교 변수로 삼으면 rewrite LLM call의 usage/cost도 비교 비용에 포함해야 한다.
+- 모든 RAG 검색 모드는 권한 검사를 통과한 문서만 검색 후보로 사용한다. A/B의 차이는 권한 적용 여부가 아니라 권한 범위 안에서 근거를 얼마나 정밀하게 선택하느냐다.
+- 가격 정보가 없는 모델은 자동 추천 후보에서 제외하고, 수동 비교 시에는 비용 비교 불가 상태를 명시한다.
+- 한쪽 variant 실행이 실패하면 성공한 variant의 부분 결과와 실패 원인을 구분해 표시하고, 절감률은 계산하지 않는다.
+- 더 저렴한 후보가 없으면 빈 리포트 대신 "절감 가능 없음"을 명시한다.
 
 ## Open Questions
 
