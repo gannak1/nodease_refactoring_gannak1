@@ -71,6 +71,34 @@ SUMMARY_MODEL_PREFS = {
 
 SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
 
+JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX = (
+    "응답은 반드시 아래 JSON schema를 만족하는 JSON object 하나만 반환하세요."
+)
+
+
+def _build_json_output_schema_instruction(
+    output_format: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(output_format, dict):
+        return None
+    if output_format.get("type") != "json":
+        return None
+
+    schema = output_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        return (
+            "응답은 반드시 JSON object 하나만 반환하세요. "
+            "설명 문장, markdown, code fence는 포함하지 마세요."
+        )
+
+    schema_text = json.dumps(schema, ensure_ascii=False, sort_keys=True)
+    return (
+        f"{JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX}\n"
+        "설명 문장, markdown, code fence는 포함하지 마세요.\n\n"
+        f"JSON schema:\n{schema_text}"
+    )
+
+
 RAG_NO_EVIDENCE_MESSAGE = "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
 RAG_INSUFFICIENT_EVIDENCE_MESSAGE = "확인된 문서 기준으로는 답변 근거가 부족합니다."
 _TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]+")
@@ -588,6 +616,11 @@ class LLMNode(Node[LLMNodeData]):
             system_parts = [SAFETY_SYSTEM_PROMPT]
             if system_content:
                 system_parts.append(system_content)
+            json_schema_instruction = _build_json_output_schema_instruction(
+                self.data.output_format
+            )
+            if json_schema_instruction:
+                system_parts.append(json_schema_instruction)
             messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
             for untrusted_block in privileged_untrusted_blocks:
