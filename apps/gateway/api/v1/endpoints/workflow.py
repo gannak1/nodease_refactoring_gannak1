@@ -1347,6 +1347,15 @@ def _cost_optimizer_candidate_data_from_node_data(
         if node_data.get("fallback_model_id") is not None
         else None
     )
+    if bool(node_data.get("auto_model_routing")):
+        routing_model_id = _active_model_routing_policy_model_id(node_data)
+        if routing_model_id:
+            model_id = model_id or routing_model_id
+        routing_fallback_model_id = _active_model_routing_policy_fallback_model_id(
+            node_data
+        )
+        if routing_fallback_model_id:
+            fallback_model_id = fallback_model_id or routing_fallback_model_id
     if fallback_model_id == model_id:
         fallback_model_id = None
 
@@ -1389,6 +1398,37 @@ def _cost_optimizer_candidate_data_from_node_data(
             or "off",
         },
     }
+
+
+def _active_model_routing_policy_model_id(node_data: dict[str, Any]) -> str | None:
+    policy = node_data.get("model_routing_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    active_policy = policy.get("active_policy")
+    active_policy = active_policy if isinstance(active_policy, dict) else {}
+    default_model_id = active_policy.get("default_model_id")
+    if isinstance(default_model_id, str) and default_model_id.strip():
+        return default_model_id.strip()
+    rules = active_policy.get("rules")
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict):
+            continue
+        selected_model_id = rule.get("selected_model_id")
+        if isinstance(selected_model_id, str) and selected_model_id.strip():
+            return selected_model_id.strip()
+    return None
+
+
+def _active_model_routing_policy_fallback_model_id(
+    node_data: dict[str, Any],
+) -> str | None:
+    policy = node_data.get("model_routing_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    active_policy = policy.get("active_policy")
+    active_policy = active_policy if isinstance(active_policy, dict) else {}
+    fallback_model_id = active_policy.get("fallback_model_id")
+    if isinstance(fallback_model_id, str) and fallback_model_id.strip():
+        return fallback_model_id.strip()
+    return None
 
 
 def _apply_cost_optimizer_recommendation_patch(
@@ -1439,6 +1479,8 @@ def _cost_optimizer_candidate_from_recommendations(
     node_id: str,
     recommendations_payload: dict[str, Any],
     recommendation_ids: list[str],
+    *,
+    allowed_apply_modes: set[str] | None = None,
 ) -> tuple[CostOptimizerCandidateRequest, list[str]]:
     selected_ids = [
         item for item in recommendation_ids if isinstance(item, str) and item
@@ -1474,6 +1516,13 @@ def _cost_optimizer_candidate_from_recommendations(
             raise HTTPException(
                 status_code=400,
                 detail="cost_optimizer.recommendation_not_found",
+            )
+        apply_mode = recommendation.get("apply_mode")
+        apply_mode = apply_mode if isinstance(apply_mode, str) else "experiment_required"
+        if allowed_apply_modes is not None and apply_mode not in allowed_apply_modes:
+            raise HTTPException(
+                status_code=400,
+                detail="cost_optimizer.recommendation_requires_experiment",
             )
         candidate_data = _apply_cost_optimizer_recommendation_patch(
             candidate_data,
@@ -2882,6 +2931,7 @@ def apply_cost_optimizer_recommendations(
             node_id,
             recommendations_payload,
             request_body.recommendation_ids,
+            allowed_apply_modes={"direct_policy_update"},
         )
     )
     _validate_cost_optimizer_candidate_shape(candidate_settings)

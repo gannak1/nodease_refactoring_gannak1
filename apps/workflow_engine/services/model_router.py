@@ -632,8 +632,15 @@ class ModelRouter:
         if keywords is not None:
             if not isinstance(keywords, list):
                 return False
+            normalized_keywords = [
+                str(keyword).strip().casefold()
+                for keyword in keywords
+                if str(keyword).strip()
+            ]
+            if not normalized_keywords:
+                return False
             text = runtime_context.text.casefold()
-            if not any(str(keyword).casefold() in text for keyword in keywords):
+            if not any(keyword in text for keyword in normalized_keywords):
                 return False
         return True
 

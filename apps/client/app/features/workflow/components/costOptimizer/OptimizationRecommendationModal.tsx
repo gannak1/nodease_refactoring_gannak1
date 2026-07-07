@@ -206,6 +206,10 @@ export function OptimizationRecommendationModal({
     selectedRecommendations.length > 0 &&
     !isLoadingRecommendations &&
     !isApplyingRecommendations;
+  const canApplyDirect = selectedRecommendations.every(
+    (recommendation) => recommendation.apply_mode === 'direct_policy_update',
+  );
+  const canApplyAction = canRunAction && canApplyDirect;
 
   const handleTestRecommendations = () => {
     if (!workflowId || !selectedNodeId) return;
@@ -222,6 +226,12 @@ export function OptimizationRecommendationModal({
 
   const handleApplyRecommendations = async () => {
     if (!workflowId || !selectedNodeId) return;
+    if (!canApplyDirect) {
+      setActionError(
+        'A/B 검증이 필요한 추천은 테스트하기로 먼저 후보 결과를 확인해야 합니다.',
+      );
+      return;
+    }
     setActionError('');
     setIsApplyingRecommendations(true);
     const patches = collectCandidatePatches(selectedRecommendations);
@@ -453,8 +463,8 @@ export function OptimizationRecommendationModal({
 
           <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
             테스트하기는 최신 실행 로그를 A 기준으로 잡고 선택한 추천을 B
-            후보 설정에 넣어 A/B 화면으로 이동합니다. 적용하기는 선택한 추천을
-            현재 workflow draft의 해당 LLM 노드 설정에 바로 반영합니다.
+            후보 설정에 넣어 A/B 화면으로 이동합니다. 적용하기는 자동 모델
+            라우팅 정책처럼 즉시 반영 가능한 추천에만 사용할 수 있습니다.
           </div>
 
           {actionError ? (
@@ -483,8 +493,13 @@ export function OptimizationRecommendationModal({
           </button>
           <button
             type="button"
-            disabled={!canRunAction}
+            disabled={!canApplyAction}
             onClick={handleApplyRecommendations}
+            title={
+              canApplyDirect
+                ? undefined
+                : 'A/B 검증이 필요한 추천은 테스트하기로 먼저 확인해야 합니다.'
+            }
             className="inline-flex items-center gap-2 rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <Wand2 className="h-4 w-4" />

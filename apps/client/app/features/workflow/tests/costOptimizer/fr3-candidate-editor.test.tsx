@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeSettingsComparisonPanel } from '../../components/costOptimizer/NodeSettingsComparisonPanel';
 import {
+  applyCandidatePatchToDraft,
   candidateFromOptions,
   compareRequestCandidateFromDraft,
   downstreamOutputContractChipsFromNodes,
@@ -497,6 +498,22 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
       frequency_penalty: -0.1,
       stop: ['END', 'STOP'],
     });
+  });
+
+  it('null 파라미터 추천 패치는 compare request에서 해당 파라미터를 제거한다', () => {
+    const patchedDraft = applyCandidatePatchToDraft(
+      {
+        ...baseDraft,
+        top_p: 0.8,
+      },
+      { parameters: { top_p: null } },
+    );
+    const request = compareRequestCandidateFromDraft(patchedDraft);
+    const nodeData = llmDataFromCandidate(patchedDraft);
+
+    expect(patchedDraft.removed_parameter_keys).toContain('top_p');
+    expect(request.parameters).not.toHaveProperty('top_p');
+    expect(nodeData.parameters).not.toHaveProperty('top_p');
   });
 
   it('redacted 지식 베이스 id는 baseline 복사와 compare request에서 제외한다', () => {

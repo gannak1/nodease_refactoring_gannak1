@@ -1140,6 +1140,10 @@ function OptimizationRecommendationModal({
     selectedRecommendations.length > 0 &&
     !isLoadingRecommendations &&
     !isApplyingRecommendations;
+  const canApplyDirect = selectedRecommendations.every(
+    (recommendation) => recommendation.apply_mode === 'direct_policy_update',
+  );
+  const canApplyAction = canRunAction && canApplyDirect;
 
   const handleTestRecommendations = () => {
     if (!row.app.workflow_id || !selectedNodeId) return;
@@ -1161,6 +1165,12 @@ function OptimizationRecommendationModal({
 
   const handleApplyRecommendations = async () => {
     if (!row.app.workflow_id || !selectedNodeId) return;
+    if (!canApplyDirect) {
+      setActionError(
+        'A/B 검증이 필요한 추천은 테스트하기로 먼저 후보 결과를 확인해야 합니다.',
+      );
+      return;
+    }
     setActionError('');
     setIsApplyingRecommendations(true);
     try {
@@ -1416,8 +1426,13 @@ function OptimizationRecommendationModal({
           </button>
           <button
             type="button"
-            disabled={!canRunAction}
+            disabled={!canApplyAction}
             onClick={handleApplyRecommendations}
+            title={
+              canApplyDirect
+                ? undefined
+                : 'A/B 검증이 필요한 추천은 테스트하기로 먼저 확인해야 합니다.'
+            }
             className="inline-flex items-center gap-2 rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <Wand2 className="h-4 w-4" />

@@ -610,6 +610,79 @@ def test_runtime_policy_evaluator_matches_low_risk_rule_and_uses_fallback():
     assert decision.runtime_context.intent == "generate"
 
 
+def test_runtime_policy_evaluator_ignores_empty_keyword_rule():
+    """빈 keyword rule은 모든 입력에 매칭되지 않고 기본 모델로 떨어져야 한다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "empty-keyword",
+                    "priority": 10,
+                    "when": {"keyword_any": ["", "   "]},
+                    "selected_model_id": "gpt-4.1",
+                    "reason_code": "invalid_empty_keyword",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "일반적인 고객 문의입니다."},
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+        ),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.fallback_model_id == "gpt-4.1"
+    assert decision.matched_rule_id is None
+
+
+def test_runtime_policy_evaluator_matches_trimmed_keyword_rule():
+    """keyword rule은 앞뒤 공백을 제거한 유효 키워드로만 매칭한다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "sla-risk",
+                    "priority": 10,
+                    "when": {"keyword_any": ["", " SLA "]},
+                    "selected_model_id": "gpt-4.1",
+                    "reason_code": "high_risk_requires_strong_model",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "SLA 위반 가능성이 있어 보상 여부를 검토해 주세요."},
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+        ),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1"
+    assert decision.matched_rule_id == "sla-risk"
+
+
 def test_runtime_policy_evaluator_prioritizes_specific_keyword_rule_over_generic_rule():
     """judge가 낮은 우선순위 숫자를 잘못 줘도 keyword rule은 generic rule에 가려지지 않는다."""
     policy = {
