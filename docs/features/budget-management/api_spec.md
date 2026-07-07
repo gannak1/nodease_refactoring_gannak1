@@ -85,7 +85,7 @@ Request body:
 { "monthly_budget_usd": 100.0, "is_enabled": true }
 ```
 
-- `monthly_budget_usd`: 필수, 0보다 큰 number. 소수점 2자리까지 허용 (`NUMERIC(12,2)` 저장).
+- `monthly_budget_usd`: 필수, 0보다 큰 number. 소수점 2자리까지 허용하고 `NUMERIC(12,2)` 저장 범위(`9999999999.99` 이하)를 초과하면 `422`로 거부한다.
 - `is_enabled`: 필수 boolean.
 
 Response `200`: 단건 조회와 동일한 shape. 신규 생성이어도 `200`으로 통일한다.

@@ -14,6 +14,7 @@ Verified Against: TBD
 - Given 기존 예산, When `is_enabled=false`로 비활성화하면, Then row는 삭제되지 않고 `workflow_budget.updated` audit(`audit_metadata.is_enabled=false`)이 기록된다.
 - Given 조직 A의 owner/manager가 아닌 member(builder 포함), When 예산 조회/설정 API를 호출하면, Then `403`과 `permission.denied` audit이 기록되고 예산은 변경되지 않는다.
 - Given 기존 값과 동일한 no-op PUT, When 호출하면, Then 200이지만 audit이 기록되지 않는다.
+- Given `monthly_budget_usd`가 `NUMERIC(12,2)` 저장 범위의 최대값 `9999999999.99`를 초과한다, When `PUT /admin/workflow-budgets/{workflow_id}`를 호출하면, Then request validation 단계에서 `422`로 거부되고 service/DB commit까지 전달되지 않으며 예산 row와 audit은 변경되지 않는다.
 
 ### AC-2. Organization scope 경계 (BGT-REQ-004)
 
@@ -100,6 +101,13 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - 기존 값과 동일한 no-op → 갱신/audit 없음.
 - 생성 경합 IntegrityError → 갱신으로 전환(재시도 1회), 5xx 미발생 (BGT-REQ-005).
 - audit_metadata에 `monthly_budget_usd`, `is_enabled` 외 값(요청자 토큰, raw body 등) 미포함.
+
+### 예산 요청 스키마 `WorkflowBudgetUpsertRequest`
+
+- `monthly_budget_usd` 누락, 숫자 아님, 0 이하 → validation 오류.
+- `monthly_budget_usd` 소수점 3자리 이상 → validation 오류.
+- `monthly_budget_usd=9999999999.99` → `NUMERIC(12,2)` 최대 저장 가능 값으로 허용.
+- `monthly_budget_usd=10000000000.00` 또는 `100000000000` → `NUMERIC(12,2)` overflow를 일으키는 값이므로 validation 오류. API에서는 `422`로 반환되어야 하며 service/DB commit까지 도달하지 않아야 한다.
 
 ### 실행 차단 helper `ensure_workflow_budget_allows_execution(...)`
 

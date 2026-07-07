@@ -5,8 +5,14 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
+MAX_MONTHLY_BUDGET_USD = Decimal("9999999999.99")
+
+
 class WorkflowBudgetUpsertRequest(BaseModel):
-    monthly_budget_usd: Decimal = Field(gt=0)
+    monthly_budget_usd: Decimal = Field(
+        gt=0,
+        le=MAX_MONTHLY_BUDGET_USD,
+    )
     is_enabled: bool
 
     @field_validator("monthly_budget_usd")
