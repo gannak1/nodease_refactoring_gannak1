@@ -952,14 +952,22 @@ class LLMNode(Node[LLMNodeData]):
 
         try:
             current_run_id = self.execution_context.get("workflow_run_id")
+            conversation_id = self.execution_context.get("conversation_id")
             # 최근 실행 N건 조회 (본 실행 제외)
+            # conversation_id가 있으면(챗봇 공개 실행 등) 방문자별 대화로 기억을 격리한다.
+            # 공개 실행은 user_id가 앱 소유자로 고정되어 격리 기준이 될 수 없으므로,
+            # conversation_id가 있을 때는 user_id 필터를 사용하지 않는다.
+            run_filters = [
+                WorkflowRun.workflow_id == workflow_id,
+                WorkflowRun.status == RunStatus.SUCCESS,
+            ]
+            if conversation_id:
+                run_filters.append(WorkflowRun.conversation_id == conversation_id)
+            else:
+                run_filters.append(WorkflowRun.user_id == user_id)
             run_query = (
                 db_session.query(WorkflowRun)
-                .filter(
-                    WorkflowRun.workflow_id == workflow_id,
-                    WorkflowRun.user_id == user_id,
-                    WorkflowRun.status == RunStatus.SUCCESS,
-                )
+                .filter(*run_filters)
                 .order_by(WorkflowRun.started_at.desc())
                 .limit(MEMORY_RUN_LIMIT + 1)
             )

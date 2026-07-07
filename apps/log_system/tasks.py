@@ -215,6 +215,7 @@ def create_run_log(self, data: Dict[str, Any]):
             deployment_id=deployment_id,
             workflow_version=data.get("workflow_version"),
             correlation_id=data.get("correlation_id"),
+            conversation_id=data.get("conversation_id"),
             request_id=data.get("request_id"),
             workflow_task_id=data.get("workflow_task_id"),
             trace_metadata=TraceMetadataSanitizer.sanitize_run_metadata(
