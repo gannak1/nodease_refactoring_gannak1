@@ -1,15 +1,21 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: feature/mba-102 @ 968c8df
+Verified Against: feature/mba-163 @ 056673e
 
 ## Endpoints
 
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
-| POST | `/api/v1/workflows/{workflow_id}/execute/stream` | 테스트 실행 스트리밍 이벤트를 반환한다. 기존 구현을 사용한다. | workflow execute 권한 |
+| POST | `/api/v1/workflows/{workflow_id}/stream` | 테스트 실행 스트리밍 이벤트를 반환한다. 기존 구현을 사용한다. | workflow execute 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs` | 현재 노드가 실행된 workflow run 목록을 최신순으로 조회한다. 목록 row에 필요한 node-level preview를 포함한다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs/{run_id}` | 선택한 workflow run 안의 현재 노드 input/output/trace/usage 상세를 조회한다. | workflow read 권한 |
+
+Client 내부 route:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/stream-api/workflows/{workflow_id}` | Next.js route handler가 Gateway `/api/v1/workflows/{workflow_id}/stream`으로 SSE를 proxy한다. Backend URL은 `API_URL`, `NEXT_PUBLIC_API_URL`, `http://127.0.0.1:8000` 순서로 결정하며 trailing `/api/v1`은 제거한다. Cookie와 `X-Organization-Id`, `X-Request-Id`, `X-Correlation-Id` 같은 safe context header만 전달한다. 서버/컨테이너 runtime에서는 `API_URL` 명시를 우선한다. `API_URL`이 없고 `NEXT_PUBLIC_API_URL`이 공개 Gateway URL이면 production에서도 fallback으로 사용할 수 있지만, `localhost`, `127.0.0.1`, `::1`, `0.0.0.0` 같은 loopback public URL은 production server fallback으로 사용하지 않는다. |
 
 ## Request And Response Models
 
@@ -21,6 +27,7 @@ Verified Against: feature/mba-102 @ 968c8df
   - `node_finish`: `{ node_id, node_type, output, latency_ms, total_tokens, total_cost }`
   - `workflow_finish`: 최종 workflow output
   - `error`: `{ message, node_id? }`
+- Gateway는 `X-Organization-Id`가 전달된 테스트 실행 요청에서 active organization membership을 검증하고, 해당 organization이 workflow의 organization과 다르면 scope 밖 resource로 보고 `404`로 숨긴다. Header가 없는 legacy 호출은 기존 workflow row organization 기준 permission check를 유지한다.
 - `node_finish` 이벤트의 node-level summary 표준 필드:
   - `latency_ms`: 노드 실행 소요 시간. 서버/엔진 기준 millisecond 단위 값.
   - `total_tokens`: 노드 실행에서 사용한 전체 토큰 수. 토큰 사용이 없는 노드는 null 또는 0을 반환할 수 있다.
