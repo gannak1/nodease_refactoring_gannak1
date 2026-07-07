@@ -131,9 +131,9 @@ KB recommendation 결과는 다음 중 하나여야 한다.
 - 후보 여러 개 또는 점수 근접: 사용자에게 KB 선택 clarification 제공
 - 후보 0개: validation failure 또는 clarification 제공
 - adapter unavailable: 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`로 fallback clarification을 반환하고, safe 후보 선택지도 없으면 validation failure
-- optional KB requirement unresolved: product policy가 허용할 때만 warning과 함께 KB 없는 draft 가능
+- optional KB requirement unresolved: 명시적으로 열린 product policy gate가 허용할 때만 warning과 함께 KB 없는 draft 가능
 
-Builder가 recommendation 실패 또는 no recommendation을 받으면 기본적으로 사용자 확인 필요 상태로 둔다. 자동으로 RAG 없는 LLM node를 생성하는 fallback은 별도 Builder 정책 gate가 닫힌 경우에만 허용한다.
+Builder가 recommendation 실패 또는 no recommendation을 받으면 기본적으로 사용자 확인 필요 상태로 둔다. 자동으로 RAG 없는 LLM node를 생성하는 fallback은 별도 Builder 정책 gate가 명시적으로 열려 있고 해당 요청의 KB 요구가 optional로 판정된 경우에만 허용한다.
 
 ### AB-FR-009: Draft Generation
 

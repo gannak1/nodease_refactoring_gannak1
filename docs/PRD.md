@@ -263,7 +263,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 ## 8. Open Questions
 
-- Agent Builder가 생성할 수 있는 노드 타입 범위를 어디까지 허용할지 (전체 vs 안전한 부분집합)
+- Agent Builder MVP capability allowlist에 포함할 구체 node type 범위와 후속 확장 승인 기준
 - 비용 최적화의 "품질 차이 Y"를 어떤 지표로 계산할지 (LLM judge, 규칙 기반, 사람 평가)
 - 예산의 설정 주체와 기간 단위 (관리자 vs workflow 소유 빌더, 월 단위 여부)
 - 권한 신청/승인의 canonical audit action 명명 (ADR-0008 갱신 시 확정)
