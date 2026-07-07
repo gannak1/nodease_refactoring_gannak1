@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
+
+from apps.shared.db.models.budget_alert import BudgetAlertState
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
@@ -67,3 +70,57 @@ def serialize_alert_item(item, viewer_is_manager: bool) -> dict:
         data["monthly_budget_usd"] = item.monthly_budget_usd
         data["current_month_cost"] = item.current_month_cost
     return data
+
+
+def record_transition(db, *, workflow_id, period_month, new_status) -> str | None:
+    """(workflow, 당월) 전이 원장을 조건부 갱신하고 상향 전이면 발송 임계를 반환한다.
+
+    동시성 안전 (BGA-REQ-011): 갱신 전 with_for_update로 원장 행을 잠가 UPDATE 경합을
+    직렬화하고, 생성 경합은 IntegrityError → rollback → 조건부 갱신으로 전환한다.
+    commit은 호출자가 수행한다(원장 갱신 + 수신자 팬아웃 원자성).
+    """
+    existing = _lock_alert_state(db, workflow_id, period_month)
+    if existing is not None:
+        return _apply_transition(existing, new_status)
+
+    threshold = decide_alert_transition(None, new_status)
+    if threshold is None:
+        return None
+
+    db.add(
+        BudgetAlertState(
+            workflow_id=workflow_id,
+            period_month=period_month,
+            last_notified_status=threshold,
+        )
+    )
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = _lock_alert_state(db, workflow_id, period_month)
+        if existing is None:
+            raise
+        return _apply_transition(existing, new_status)
+    return threshold
+
+
+def _lock_alert_state(db, workflow_id, period_month):
+    """(workflow, 당월) 원장 행을 with_for_update로 잠그고 반환한다 (UPDATE 경합 직렬화)."""
+    return (
+        db.query(BudgetAlertState)
+        .filter(
+            BudgetAlertState.workflow_id == workflow_id,
+            BudgetAlertState.period_month == period_month,
+        )
+        .with_for_update()
+        .first()
+    )
+
+
+def _apply_transition(state, new_status) -> str | None:
+    threshold = decide_alert_transition(state.last_notified_status, new_status)
+    if threshold is None:
+        return None
+    state.last_notified_status = threshold
+    return threshold
