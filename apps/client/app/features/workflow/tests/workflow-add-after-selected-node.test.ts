@@ -159,6 +159,13 @@ describe('workflow test cases: 뒤에 추가', () => {
     expect(findAddAfterTarget(nodes, [])).toBeNull();
   });
 
+  it('선택 노드가 note이면 뒤에 추가 기준으로 사용하지 않는다', () => {
+    const note = { ...createNoteNode('note'), selected: true };
+    const nodes = [createStartNode('start'), note] as AppNode[];
+
+    expect(findAddAfterTarget(nodes, [])).toBeNull();
+  });
+
   it('노드와 edge를 하나의 undo 단위로 추가한다', () => {
     const start = createStartNode('start');
     const target = createCodeNode('target');
@@ -237,6 +244,25 @@ describe('workflow test cases: 뒤에 추가', () => {
     fireEvent.click(screen.getByRole('button', { name: '노드' }));
 
     expect(screen.getByRole('button', { name: 'LLM 기준 노드 뒤에 추가' })).toBeEnabled();
+  });
+
+  it('선택 노드가 note이면 뒤에 추가 버튼을 비활성화한다', () => {
+    const note = { ...createNoteNode('note'), selected: true };
+    useWorkflowStore.getState().setNodes([createStartNode('start'), note]);
+    useWorkflowStore.getState().setEdges([]);
+
+    render(
+      createElement(NodeLibraryContent, {
+        onSelect: () => undefined,
+        onAddAfterSelected: () => undefined,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '노드' }));
+
+    expect(
+      screen.getByRole('button', { name: 'LLM 기준 노드 뒤에 추가' }),
+    ).toBeDisabled();
   });
 
   it('뒤에 추가 위치가 기존 노드 bounding box와 겹치면 다음 세로 위치로 피한다', () => {

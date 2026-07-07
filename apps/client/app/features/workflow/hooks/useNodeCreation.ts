@@ -41,7 +41,12 @@ export const getLastNodes = (nodes: AppNode[], edges: Edge[]) => {
 
 export const findAddAfterTarget = (nodes: AppNode[], edges: Edge[]) => {
   const selectedNodes = nodes.filter((node) => node.selected);
-  if (selectedNodes.length === 1) return selectedNodes[0];
+  if (selectedNodes.length === 1) {
+    const selectedNode = selectedNodes[0];
+    return NON_WORKFLOW_NODE_TYPES.has(selectedNode.type || '')
+      ? null
+      : selectedNode;
+  }
   if (selectedNodes.length > 1) return null;
 
   const terminalCandidates = getLastNodes(nodes, edges);
@@ -56,6 +61,7 @@ const canUseNodeAsAddAfterSource = (node?: AppNode | null) => {
   if (!node) return false;
   const nodeType = node.type || '';
   return (
+    !NON_WORKFLOW_NODE_TYPES.has(nodeType) &&
     !SOURCE_BLOCKED_NODE_TYPES.has(nodeType) &&
     !SOURCE_AMBIGUOUS_NODE_TYPES.has(nodeType)
   );
