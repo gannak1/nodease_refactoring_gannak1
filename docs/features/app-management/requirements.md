@@ -17,7 +17,7 @@ TBD
 
 - APP-REQ-010: `GET /apps`는 active organization context 기준으로 현재 사용자가 읽을 수 있는 App 목록을 반환한다. 각 App은 기본 정보, primary `workflow_id`, 활성 배포 요약, owner 표시명을 포함한다.
 - APP-REQ-020: `GET /apps/operations`는 `/dashboard/mymodule`의 원천으로, 현재 사용자가 운영 현황을 볼 수 있는 App/Workflow row를 반환한다. 각 row는 App summary, workflow permission summary, deployment state, latest run state를 포함한다.
-- APP-REQ-030: Budget Management 확장 시 `GET /apps`의 `AppResponse.budget_status`와 `GET /apps/operations`의 `row.app.budget_status`는 같은 member 표면 shape를 사용한다. 계산 규칙, null 조건, 노출 금지 필드는 [budget-management requirements](../budget-management/requirements.md)의 BGT-REQ-022~023을 따른다. App의 primary workflow(`apps.workflow_id`)만 기준으로 하며, 같은 `app_id`의 과거/보조 Workflow row는 예산 상태 후보가 아니다.
+- APP-REQ-030: Budget Management 확장 시 `GET /apps`의 `AppResponse.budget_status`와 `GET /apps/operations`의 `row.app.budget_status`는 같은 member 표면 shape를 사용한다. 계산 규칙, null 조건, 노출 금지 필드는 [budget-management requirements](../budget-management/requirements.md)의 BGT-REQ-011, BGT-REQ-022~023을 따른다. App의 primary workflow(`apps.workflow_id`)만 기준으로 하며, 같은 `app_id`의 과거/보조 Workflow row는 예산 상태 후보가 아니다. 사용량 합산은 실행 차단 판정과 동일하게 primary workflow id와 KST 월 경계 기준이며, `llm_usage_logs.organization_id`가 NULL인 기존 로그를 제외하지 않는다.
 
 ## Policies And Edge Cases
 

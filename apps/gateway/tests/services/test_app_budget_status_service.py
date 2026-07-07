@@ -200,6 +200,47 @@ def test_app_budget_status_uses_grouped_cost_lookup(monkeypatch):
     assert statuses[workflow_ids[1]]["status"] == "at_risk"
 
 
+def test_app_budget_status_includes_null_organization_usage_for_primary_workflow():
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    other_workflow_id = uuid4()
+    db = _BudgetStatusDb(
+        budgets=[_budget_row(organization_id, workflow_id, Decimal("100.00"))],
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("80.00"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                None,
+                workflow_id,
+                total_cost=Decimal("30.00"),
+                created_at=datetime(2026, 7, 11, 0, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                None,
+                other_workflow_id,
+                total_cost=Decimal("999.00"),
+                created_at=datetime(2026, 7, 11, 0, 0, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+
+    statuses = AppService._budget_status_by_workflow_id(
+        db,
+        [workflow_id],
+        organization_id=organization_id,
+        now=datetime(2026, 7, 15, 9, 0, tzinfo=KST),
+    )
+
+    assert statuses[workflow_id] == {
+        "usage_ratio": pytest.approx(1.1),
+        "status": "exceeded",
+    }
+
+
 def test_attach_budget_status_ignores_workflow_app_relation_when_app_pointer_is_missing():
     organization_id = uuid4()
     app_id = uuid4()

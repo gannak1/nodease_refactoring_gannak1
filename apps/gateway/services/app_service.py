@@ -757,7 +757,6 @@ class AppService:
         )
         costs = _budget_status_costs(
             db,
-            organization_id=organization_id,
             workflow_ids=target_ids,
             period=period,
         )
@@ -1079,20 +1078,17 @@ def _active_budget_rows(
 def _budget_status_costs(
     db: Session,
     *,
-    organization_id: Any,
     workflow_ids: list[Any],
     period,
 ) -> dict[Any, Decimal]:
     if hasattr(db, "budgets"):
         return _fake_budget_status_costs(
             db,
-            organization_id=organization_id,
             workflow_ids=workflow_ids,
             period=period,
         )
     return _budget_status_costs_query(
         db,
-        organization_id=organization_id,
         workflow_ids=workflow_ids,
         period=period,
     )
@@ -1120,15 +1116,12 @@ def _member_budget_status(
 def _fake_budget_status_costs(
     db,
     *,
-    organization_id: Any,
     workflow_ids: list[Any],
     period,
 ) -> dict[Any, Decimal]:
     workflow_id_set = set(workflow_ids)
     costs = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
     for usage in getattr(db, "usage_logs", []):
-        if usage.organization_id != organization_id:
-            continue
         if usage.workflow_id not in workflow_id_set:
             continue
         if not (period.start_at <= usage.created_at < period.end_at):
@@ -1142,7 +1135,6 @@ def _fake_budget_status_costs(
 def _budget_status_costs_query(
     db: Session,
     *,
-    organization_id: Any,
     workflow_ids: list[Any],
     period,
 ) -> dict[Any, Decimal]:
@@ -1152,7 +1144,6 @@ def _budget_status_costs_query(
     rows = (
         db.query(LLMUsageLog.workflow_id.label("workflow_id"), total_cost)
         .filter(
-            LLMUsageLog.organization_id == organization_id,
             LLMUsageLog.workflow_id.in_(set(workflow_ids)),
             LLMUsageLog.created_at >= period.start_at,
             LLMUsageLog.created_at < period.end_at,

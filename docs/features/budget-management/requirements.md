@@ -29,7 +29,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 ### 사용률 판정
 
 - BGT-REQ-010: 활성 예산은 `is_enabled=true`이고 `monthly_budget_usd > 0`인 예산이다. 예산 미설정, 비활성, 0 이하 예산 workflow는 위험/초과 판정과 실행 차단 대상에서 제외한다.
-- BGT-REQ-011: 사용률은 `당월 비용 합계 / monthly_budget_usd`로 계산한다. 당월 비용 합계는 해당 workflow의 `llm_usage_logs.total_cost`를 KST(Asia/Seoul) 달력 월 경계로 합산한 값이며, `total_cost`가 NULL인 row는 0으로 합산한다 (admin-dashboard 시간대/집계 규칙과 동일).
+- BGT-REQ-011: 사용률은 `당월 비용 합계 / monthly_budget_usd`로 계산한다. 당월 비용 합계는 해당 workflow의 `llm_usage_logs.total_cost`를 KST(Asia/Seoul) 달력 월 경계로 합산한 값이며, `total_cost`가 NULL인 row는 0으로 합산한다 (admin-dashboard 시간대/집계 규칙과 동일). 비용 합산 범위는 실행 차단 판정과 동일하게 `workflow_id`와 월 경계로 결정한다. 예산 row 조회와 접근 권한은 organization scope로 제한하지만, `llm_usage_logs.organization_id`는 nullable/denormalized 호환 컬럼이므로 비용 합산 필터로 요구하지 않는다. 따라서 `workflow_id`가 일치하는 기존/마이그레이션 로그는 `organization_id`가 NULL이어도 합산한다.
 - BGT-REQ-012: 상태는 반올림 전 사용률 값으로 판정한다: 90% 미만은 `normal`, 90% 이상 100% 이하는 `at_risk`, 100% 초과는 `exceeded`.
 
 ### 사용률 조회 (FR-052, FR-015)
@@ -37,7 +37,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - BGT-REQ-020: 관리자 workflow 사용량 조회(`GET /admin/usage/workflows`) 응답 항목에 예산 블록(예산 금액, 당월 비용, 사용률, 상태)을 포함한다. 예산 블록은 조회 기간 필터와 무관하게 항상 당월(KST) 기준으로 계산한다. 활성 예산이 없는 workflow는 null이다.
 - BGT-REQ-021: admin summary(`GET /admin/summary`)의 `budget` 블록을 실제 예산 데이터 기준으로 반환한다. `at_risk_count`, `exceeded_count`, `ratio`를 포함하고, `ratio`의 분모는 조직의 활성 예산 workflow 수다 (admin-dashboard Open Question 확정). 활성 예산 workflow가 0개면 `budget`은 null이다 ("예산 미설정" 표시).
 - BGT-REQ-022: 내 워크플로우 목록/운영 현황 원천인 `GET /apps/operations`의 App summary에 additive 필드 `budget_status`(사용률, 상태)를 추가한다. App의 primary workflow(`apps.workflow_id`) 기준이며, 활성 예산이 없거나 `workflow_id`가 null이면 null이다. 같은 `app_id`에 과거/보조 Workflow row가 남아 있어도 `apps.workflow_id`가 아닌 workflow의 예산 상태를 대신 표시하지 않는다. 예산 금액과 당월 비용 원문은 관리자 표면에만 노출하고 member 표면(`budget_status`)에는 사용률과 상태만 노출한다.
-- BGT-REQ-023: 기존 App 목록 소비자가 동일한 member 표면 예산 상태를 재사용할 수 있도록 `GET /apps`의 `AppResponse`에도 `budget_status`를 같은 shape로 추가한다. `GET /apps`와 `GET /apps/operations` 모두 응답 App의 primary workflow id만 모아 workflow별 당월 비용을 grouped query로 계산해야 하며, App row마다 개별 비용 집계를 수행하는 N+1 구현은 허용하지 않는다. `workflows.app_id` 역참조를 사용한 누락 복구나 후보 확장은 목록 응답 계산 경로에서 수행하지 않는다.
+- BGT-REQ-023: 기존 App 목록 소비자가 동일한 member 표면 예산 상태를 재사용할 수 있도록 `GET /apps`의 `AppResponse`에도 `budget_status`를 같은 shape로 추가한다. `GET /apps`와 `GET /apps/operations` 모두 응답 App의 primary workflow id만 모아 workflow별 당월 비용을 grouped query로 계산해야 하며, App row마다 개별 비용 집계를 수행하는 N+1 구현은 허용하지 않는다. 이 grouped query의 사용량 합산 기준은 BGT-REQ-011과 같아야 하며, `llm_usage_logs.organization_id == organization_id` 조건으로 legacy NULL 로그를 제외하면 안 된다. `workflows.app_id` 역참조를 사용한 누락 복구나 후보 확장은 목록 응답 계산 경로에서 수행하지 않는다.
 
 ### 실행 차단
 
