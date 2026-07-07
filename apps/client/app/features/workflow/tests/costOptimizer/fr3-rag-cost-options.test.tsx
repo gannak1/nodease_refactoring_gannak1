@@ -205,6 +205,63 @@ describe('FR-003 RAG cost optimization options', () => {
     expect(updateNodeDataMock).not.toHaveBeenCalled();
   });
 
+  it('지식 베이스 목록 조회 실패 시 기존 RAG 연결을 지우지 않는다', async () => {
+    vi.mocked(fetchEligibleKnowledgeBases).mockRejectedValueOnce(
+      new Error('network failed'),
+    );
+
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={{
+          ...baseData,
+          knowledgeBases: [{ id: 'kb-existing', name: '기존 정책' }],
+        }}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    expect(
+      await screen.findByText('지식을 불러오지 못했습니다.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('선택됨:')).toBeInTheDocument();
+    expect(screen.getAllByText('1').length).toBeGreaterThan(0);
+    expect(updateNodeDataMock).not.toHaveBeenCalled();
+  });
+
+  it('특수문자가 포함된 지식 베이스 이름을 선택 payload에 보존한다', async () => {
+    const kbName = 'R&D 정책 / 승인: <Beta>';
+    vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
+      bases: [
+        {
+          id: 'kb-special',
+          name: kbName,
+          description: '특수문자 이름 테스트',
+          document_count: 2,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+        },
+      ],
+      detailsById: {},
+    });
+
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={baseData}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /R&D 정책/ }));
+
+    expect(updateNodeDataMock).toHaveBeenCalledWith('llm-1', {
+      knowledgeBases: [{ id: 'kb-special', name: kbName }],
+    });
+  });
+
   it('A/B 후보 지식 베이스 탭에서 지식 베이스를 선택한다', async () => {
     const onNodeDataChange = vi.fn();
     vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({

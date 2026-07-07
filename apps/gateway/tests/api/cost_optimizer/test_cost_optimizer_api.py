@@ -923,6 +923,7 @@ class TestCostOptimizerCompareApi:
         app_id = uuid4()
         user_id = uuid4()
         baseline_id = uuid4()
+        candidate_kb_id = uuid4()
         db = MagicMock()
         workflow = SimpleNamespace(
             id=workflow_id,
@@ -940,6 +941,10 @@ class TestCostOptimizerCompareApi:
                             "system_prompt": "baseline system",
                             "user_prompt": "baseline user",
                             "parameters": {"temperature": 0.2},
+                            "knowledgeBases": [
+                                {"id": str(uuid4()), "name": "기존 KB"}
+                            ],
+                            "topK": 2,
                         },
                     }
                 ],
@@ -994,6 +999,11 @@ class TestCostOptimizerCompareApi:
                 return_value=_available_model_options("gpt-4.1-mini"),
             ),
             patch(
+                "apps.gateway.api.v1.endpoints.workflow.has_knowledge_base_permission",
+                return_value=True,
+                create=True,
+            ) as has_kb_permission,
+            patch(
                 "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
                 side_effect=fake_send_task,
             ),
@@ -1019,6 +1029,15 @@ class TestCostOptimizerCompareApi:
                             "max_tokens": 800,
                             "temperature": 0.1,
                         },
+                        "knowledge": {
+                            "knowledge_base_ids": [str(candidate_kb_id)],
+                            "top_k": 5,
+                            "score_threshold": 0.65,
+                            "dedupe_retrieved_context": True,
+                            "retrieved_context_max_chars": 6000,
+                            "retrieved_context_compression": "light",
+                            "answer_grounding_check": "basic",
+                        },
                     },
                 },
             )
@@ -1029,6 +1048,13 @@ class TestCostOptimizerCompareApi:
         )
         get_baseline.assert_called_once_with(
             db, workflow, "llm-triage", str(baseline_id)
+        )
+        has_kb_permission.assert_called_once_with(
+            db,
+            user_id,
+            str(candidate_kb_id),
+            "use",
+            organization_id,
         )
         assert len(sent_tasks) == 1
         assert sent_tasks[0]["name"] == "workflow.execute"
@@ -1054,6 +1080,15 @@ class TestCostOptimizerCompareApi:
         assert patched_node["data"]["model_id"] == "gpt-4.1-mini"
         assert patched_node["data"]["system_prompt"] == "candidate system"
         assert patched_node["data"]["user_prompt"] == "candidate user {{message}}"
+        assert patched_node["data"]["knowledgeBases"] == [
+            {"id": str(candidate_kb_id), "name": ""}
+        ]
+        assert patched_node["data"]["topK"] == 5
+        assert patched_node["data"]["scoreThreshold"] == 0.65
+        assert patched_node["data"]["dedupeRetrievedContext"] is True
+        assert patched_node["data"]["retrievedContextMaxChars"] == 6000
+        assert patched_node["data"]["retrievedContextCompression"] == "light"
+        assert patched_node["data"]["answerGroundingCheck"] == "basic"
         assert patched_node["data"]["referenced_variables"] == [
             {
                 "name": "message",

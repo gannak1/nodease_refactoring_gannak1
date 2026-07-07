@@ -3398,13 +3398,22 @@ def test_workflow_llm_node_rag_trace_redacts_raw_content_and_sensitive_metadata(
         for payload in node._trace_payloads
         if payload["payload_kind"] == "rag.retrieval"
     )
-    serialized_payload = json.dumps(rag_payload, ensure_ascii=False)
+    prompt_payload = next(
+        payload["payload"]
+        for payload in node._trace_payloads
+        if payload["payload_kind"] == "prompt"
+    )
+    serialized_payload = json.dumps(
+        {"prompt": prompt_payload, "rag": rag_payload},
+        ensure_ascii=False,
+    )
 
     assert result["metadata"]["knowledge_search"][0]["metadata_summary"] == {
         "classification": "internal",
         "nested": {},
     }
     assert rag_payload["raw_content_returned"] is False
+    assert "knowledge context omitted from prompt trace" in serialized_payload
     assert "문서 원문은 trace에 남으면 안 된다." not in serialized_payload
     assert "https://source.example/raw/secret" not in serialized_payload
     assert "secret-key" not in serialized_payload
@@ -3543,6 +3552,403 @@ def test_workflow_llm_node_embedding_credential_failure_returns_safe_no_result(
     assert result["metadata"]["rag"]["evidence_sufficient"] is False
     assert result["metadata"]["rag"]["insufficiency_reason"] == "operational_error"
     assert result["metadata"]["rag"]["failed_candidate_count_bucket"] == "1"
+
+
+def test_workflow_graph_llm_nodes_use_only_their_assigned_kbs(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    first_kb_id = uuid.uuid4()
+    second_kb_id = uuid.uuid4()
+    fake_db = _patch_allowed_knowledge_permissions(
+        monkeypatch,
+        [first_kb_id, second_kb_id],
+    )
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            if kwargs["knowledge_base_id"] == str(first_kb_id):
+                return [_chunk_preview("첫 번째 LLM 전용 근거", filename="first.md")]
+            if kwargs["knowledge_base_id"] == str(second_kb_id):
+                return [_chunk_preview("두 번째 LLM 전용 근거", filename="second.md")]
+            raise AssertionError(f"unexpected KB: {kwargs['knowledge_base_id']}")
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+    graph_nodes = [
+        {
+            "id": "llm-a",
+            "data": {
+                "title": "LLM A",
+                "provider": "openai",
+                "model_id": "gpt-4o",
+                "user_prompt": "query",
+                "knowledgeBases": [{"id": str(first_kb_id), "name": "첫 KB"}],
+            },
+        },
+        {
+            "id": "llm-b",
+            "data": {
+                "title": "LLM B",
+                "provider": "openai",
+                "model_id": "gpt-4o",
+                "user_prompt": "query",
+                "knowledgeBases": [{"id": str(second_kb_id), "name": "둘째 KB"}],
+            },
+        },
+    ]
+    clients = []
+    results = []
+
+    for graph_node in graph_nodes:
+        node = LLMNode(
+            graph_node["id"],
+            LLMNodeData.model_validate(graph_node["data"]),
+            execution_context={
+                "user_id": str(user_id),
+                "organization_id": str(organization_id),
+                "execution_subject": {
+                    "subject_type": "user",
+                    "subject_id": str(user_id),
+                },
+                "workflow_id": str(uuid.uuid4()),
+                "workflow_run_id": str(uuid.uuid4()),
+                "db": fake_db,
+            },
+        )
+        _patch_rag_gevent_inline(monkeypatch, node)
+        client = StaticTextClient(f"{graph_node['id']} 답변")
+        node._client_override = client  # noqa: SLF001
+        clients.append(client)
+        results.append(node.execute({}))
+
+    first_prompt = "\n".join(
+        message["content"] for message in clients[0].calls[0]["messages"]
+    )
+    second_prompt = "\n".join(
+        message["content"] for message in clients[1].calls[0]["messages"]
+    )
+
+    assert results[0]["text"] == "llm-a 답변"
+    assert results[1]["text"] == "llm-b 답변"
+    assert "첫 번째 LLM 전용 근거" in first_prompt
+    assert "두 번째 LLM 전용 근거" not in first_prompt
+    assert "두 번째 LLM 전용 근거" in second_prompt
+    assert "첫 번째 LLM 전용 근거" not in second_prompt
+
+
+@pytest.mark.parametrize("trigger_mode", ["schedule", "webhook", "api_secret"])
+def test_non_interactive_rag_without_subject_uses_public_only_candidates(
+    monkeypatch,
+    trigger_mode,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    public_kb_id = uuid.uuid4()
+    private_kb_id = uuid.uuid4()
+    source_managed_kb_id = uuid.uuid4()
+    captured_authorized_kbs = []
+
+    class FakeQuery:
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                (
+                    SimpleNamespace(knowledge_base_id=public_kb_id),
+                    SimpleNamespace(safe_metadata={"visibility": "public"}),
+                    SimpleNamespace(id=public_kb_id, source_identity_id=None),
+                ),
+                (
+                    SimpleNamespace(knowledge_base_id=private_kb_id),
+                    SimpleNamespace(safe_metadata={}),
+                    SimpleNamespace(id=private_kb_id, source_identity_id=None),
+                ),
+                (
+                    SimpleNamespace(knowledge_base_id=source_managed_kb_id),
+                    SimpleNamespace(safe_metadata={"visibility": "public"}),
+                    SimpleNamespace(
+                        id=source_managed_kb_id,
+                        source_identity_id=uuid.uuid4(),
+                    ),
+                ),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="query",
+            knowledgeBases=[
+                KnowledgeBaseRef(id=str(public_kb_id), name="Public"),
+                KnowledgeBaseRef(id=str(private_kb_id), name="Private"),
+                KnowledgeBaseRef(id=str(source_managed_kb_id), name="Source"),
+            ],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "trigger_mode": trigger_mode,
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        captured_authorized_kbs.extend(kwargs["knowledge_base_ids"])
+        return WorkflowRAGFanoutResult(
+            results=[(str(public_kb_id), [_chunk_preview("공개 근거")])],
+            failed_count=0,
+        )
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+    monkeypatch.setattr(node, "_record_rag_retrieve_audit", lambda *args, **kwargs: None)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert captured_authorized_kbs == [str(public_kb_id)]
+    assert "공개 근거" in result.context
+    assert result.should_invoke_llm is True
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        RuntimeError("vector store unavailable"),
+        TimeoutError("RAG retrieval timed out."),
+        LLMCredentialNotAvailableError(
+            "embedding_credential_unavailable",
+            "embedding credential unavailable",
+            model_id="text-embedding-test",
+        ),
+    ],
+)
+def test_workflow_llm_node_fail_node_propagates_retrieval_failures(
+    monkeypatch,
+    exception,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            raise exception
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="query",
+            ragFailurePolicy="fail_node",
+            knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "db": fake_db,
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+    node._client_override = StaticTextClient("unused")  # noqa: SLF001
+
+    with pytest.raises(type(exception), match=str(exception)):
+        node.execute({})
+
+
+def test_knowledge_search_partial_timeout_trace_summary_is_safe(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    ok_kb_id = uuid.uuid4()
+    timeout_kb_id = uuid.uuid4()
+    fake_db = _patch_allowed_knowledge_permissions(
+        monkeypatch,
+        [ok_kb_id, timeout_kb_id],
+    )
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="query",
+            knowledgeBases=[
+                KnowledgeBaseRef(id=str(ok_kb_id), name="OK"),
+                KnowledgeBaseRef(id=str(timeout_kb_id), name="Timeout"),
+            ],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_run_rag_retrieval_fanout",
+        lambda **kwargs: WorkflowRAGFanoutResult(
+            results=[(str(ok_kb_id), [_chunk_preview("정상 근거")])],
+            failed_count=1,
+            timeout_count=1,
+        ),
+    )
+    monkeypatch.setattr(node, "_record_rag_retrieve_audit", lambda *args, **kwargs: None)
+
+    result = node._execute_knowledge_search("query", db_session=fake_db)  # noqa: SLF001
+
+    assert result.should_invoke_llm is True
+    assert result.evidence_decision.partial_result is True
+    assert result.evidence_decision.failed_candidate_count_bucket == "1"
+    assert result.trace_summary["safe_exclusion_summary"] == {
+        "operational_failure_count_bucket": "1",
+        "timeout_count_bucket": "1",
+    }
+    assert str(timeout_kb_id) not in str(result.trace_summary)
+    assert "Timeout" not in str(result.trace_summary)
+
+
+def test_knowledge_search_caps_kbs_after_deduping_and_preserves_order(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_ids = [uuid.uuid4() for _ in range(MAX_RAG_RETRIEVAL_KBS + 3)]
+    captured_authorized_kbs = []
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, kb_ids)
+
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="query",
+            knowledgeBases=[
+                KnowledgeBaseRef(id=str(kb_ids[0]), name="Duplicate"),
+                *[
+                    KnowledgeBaseRef(id=str(kb_id), name=f"KB {index}")
+                    for index, kb_id in enumerate(kb_ids)
+                ],
+            ],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_run_rag_retrieval_fanout",
+        lambda **kwargs: (
+            captured_authorized_kbs.extend(kwargs["knowledge_base_ids"])
+            or WorkflowRAGFanoutResult(results=[], failed_count=0)
+        ),
+    )
+
+    result = node._execute_knowledge_search("query", db_session=fake_db)  # noqa: SLF001
+
+    assert captured_authorized_kbs == [
+        str(kb_id) for kb_id in kb_ids[:MAX_RAG_RETRIEVAL_KBS]
+    ]
+    assert result.should_invoke_llm is False
+
+
+def test_workflow_llm_node_ignores_stale_kb_display_name_at_runtime(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    fake_db = _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+
+    class FakeRetrievalService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def search_documents_sync(self, *args, **kwargs):
+            return [_chunk_preview("현재 근거", filename="current.md")]
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
+        FakeRetrievalService,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: None,
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="query",
+            knowledgeBases=[
+                KnowledgeBaseRef(
+                    id=str(kb_id),
+                    name="오래된 표시명 raw-source-title",
+                )
+            ],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": fake_db,
+        },
+    )
+    _patch_rag_gevent_inline(monkeypatch, node)
+    client = StaticTextClient("답변")
+    node._client_override = client  # noqa: SLF001
+
+    result = node.execute({})
+    prompt_text = "\n".join(
+        message["content"] for message in client.calls[0]["messages"]
+    )
+
+    assert result["metadata"]["knowledge_search"][0]["knowledge_base_id"] == str(kb_id)
+    assert "현재 근거" in prompt_text
+    assert "오래된 표시명" not in prompt_text
+    assert "raw-source-title" not in prompt_text
 
 
 def test_knowledge_search_deduplicates_retrieved_context_when_enabled(monkeypatch):

@@ -200,6 +200,7 @@ class RetrievalService:
         )
         conditions = [
             Document.knowledge_base_id == knowledge_base_id,
+            Document.status == "completed",
             self._retrieval_visible_chunk_condition(),
         ]
         conditions.extend(
@@ -266,6 +267,7 @@ class RetrievalService:
             JOIN knowledge_bases kb ON dc.knowledge_base_id = kb.id
             LEFT JOIN document_versions dv ON dc.document_version_id = dv.id
             WHERE dc.knowledge_base_id = :kb_id
+              AND d.status = 'completed'
               AND (
                   (
                       kb.active_document_version_id IS NULL
@@ -356,6 +358,7 @@ class RetrievalService:
         return (
             self.db.query(DocumentChunk.id)
             .join(parent, DocumentChunk.parent_chunk_id == parent.id)
+            .join(Document, Document.id == DocumentChunk.document_id)
             .join(KnowledgeBase, KnowledgeBase.id == DocumentChunk.knowledge_base_id)
             .outerjoin(child_version, DocumentChunk.document_version_id == child_version.id)
             .outerjoin(parent_version, parent.document_version_id == parent_version.id)
@@ -365,6 +368,7 @@ class RetrievalService:
                 parent.chunk_level == "parent",
                 DocumentChunk.document_id == parent.document_id,
                 DocumentChunk.knowledge_base_id == parent.knowledge_base_id,
+                Document.status == "completed",
                 or_(
                     and_(
                         KnowledgeBase.active_document_version_id.is_(None),
