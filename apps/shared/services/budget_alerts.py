@@ -15,6 +15,9 @@ from apps.shared.services.permissions import (
     has_organization_scope_access,
 )
 
+# log_system이 run 완료 후 send_task로 호출하는 평가 task 이름 (앱 경계 import 없이 공유).
+BUDGET_ALERT_EVALUATION_TASK = "budget_alert.evaluate"
+
 # 상태 심각도. None/"normal"은 미알림(0), at_risk(1) < exceeded(2).
 _SEVERITY = {None: 0, "normal": 0, "at_risk": 1, "exceeded": 2}
 

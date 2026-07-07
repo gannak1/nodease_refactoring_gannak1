@@ -43,6 +43,7 @@ from apps.shared.db.models.workflow_run import (
 )
 from apps.shared.db.session import SessionLocal
 from apps.shared.audit.actions import AuditAction
+from apps.shared.services.budget_alerts import BUDGET_ALERT_EVALUATION_TASK
 from apps.shared.audit.logger import record_audit
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from sqlalchemy import func
@@ -121,6 +122,20 @@ def _record_workflow_execute_audit(run_log, status, reason_code=None):
         status=status,
         metadata=metadata,
     )
+
+
+def _enqueue_budget_alert(workflow_id):
+    """run 완료 후 예산 알림 평가 task를 이름 기반으로 enqueue (gateway import 없음).
+
+    enqueue 실패는 run 로그 저장 task로 전파하지 않는다 — 발송 경로 실패가 저장
+    task 재시도를 유발하면 안 된다 (BGA-REQ-004).
+    """
+    if workflow_id is None:
+        return
+    try:
+        celery_app.send_task(BUDGET_ALERT_EVALUATION_TASK, args=[str(workflow_id)])
+    except Exception:
+        logger.warning("Failed to enqueue budget alert evaluation", exc_info=True)
 
 
 def _insert_trace_payloads(session, workflow_run_id, payload_records):
@@ -305,6 +320,7 @@ def update_run_log_finish(self, data: Dict[str, Any]):
         _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
         _record_workflow_execute_audit(run_log, "success")
+        _enqueue_budget_alert(run_log.workflow_id)
 
         return {"status": "success", "run_id": str(run_id)}
 

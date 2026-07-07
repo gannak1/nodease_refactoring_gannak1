@@ -8,13 +8,20 @@ send_task(이름 기반)로 호출한다(앱 경계 import 없음).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from apps.gateway.services.notification_service import publish_notifications_changed
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.shared.celery_app import celery_app
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_budget import WorkflowBudget
+from apps.shared.db.session import SessionLocal
 from apps.shared.services.budget_alerts import (
+    BUDGET_ALERT_EVALUATION_TASK,
     create_alert_items,
     record_transition,
     resolve_alert_recipients,
@@ -69,6 +76,41 @@ def evaluate_budget_alert(db, *, workflow, organization, budget, now=None):
     for item in created:
         publish_notifications_changed(item.user_id)
     return threshold
+
+
+def run_budget_alert_evaluation(db, workflow_id, now=None):
+    """workflow/organization/budget을 로드해 evaluate_budget_alert를 호출한다.
+
+    Celery task가 세션을 열어 이 함수를 호출한다. workflow나 예산이 없으면 skip.
+    """
+    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if workflow is None:
+        return None
+    budget = (
+        db.query(WorkflowBudget)
+        .filter(WorkflowBudget.workflow_id == workflow_id)
+        .first()
+    )
+    if budget is None:
+        return None
+    organization = (
+        db.query(Organization)
+        .filter(Organization.id == workflow.organization_id)
+        .first()
+    )
+    return evaluate_budget_alert(
+        db, workflow=workflow, organization=organization, budget=budget, now=now
+    )
+
+
+@celery_app.task(name=BUDGET_ALERT_EVALUATION_TASK)
+def budget_alert_evaluation_task(workflow_id):
+    """run 완료 후 log_system이 send_task로 호출하는 평가 task 엔트리포인트."""
+    session = SessionLocal()
+    try:
+        run_budget_alert_evaluation(session, uuid.UUID(str(workflow_id)))
+    finally:
+        session.close()
 
 
 def _period_month_kst(now) -> str:

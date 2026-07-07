@@ -313,3 +313,90 @@ def test_budget_none_skips(wire):
 
     assert result is None
     assert db.added_of(BudgetAlert) == []
+
+
+# --- run_budget_alert_evaluation (task 래퍼: workflow/org/budget 로드) --------
+
+
+class _LoaderDb:
+    """model 클래스별 preset row를 반환하는 최소 로더 fake."""
+
+    class _One:
+        def __init__(self, obj):
+            self.obj = obj
+
+        def filter(self, *args):
+            return self
+
+        def first(self):
+            return self.obj
+
+    def __init__(self, by_model):
+        self._by_model = by_model
+
+    def query(self, model, *rest):
+        return _LoaderDb._One(self._by_model.get(model))
+
+
+def _models():
+    from apps.shared.db.models.organization import Organization
+    from apps.shared.db.models.workflow import Workflow
+    from apps.shared.db.models.workflow_budget import WorkflowBudget
+
+    return Workflow, WorkflowBudget, Organization
+
+
+def test_run_loads_entities_and_evaluates(monkeypatch):
+    Workflow, WorkflowBudget, Organization = _models()
+    org_id, wf_id = uuid4(), uuid4()
+    workflow = SimpleNamespace(id=wf_id, organization_id=org_id)
+    budget = SimpleNamespace(monthly_budget_usd=Decimal("100.00"), is_enabled=True)
+    organization = SimpleNamespace(id=org_id)
+    db = _LoaderDb({Workflow: workflow, WorkflowBudget: budget, Organization: organization})
+
+    captured = {}
+    monkeypatch.setattr(
+        budget_alert_service,
+        "evaluate_budget_alert",
+        lambda _db, **kw: captured.update(kw) or "at_risk",
+    )
+
+    result = budget_alert_service.run_budget_alert_evaluation(db, wf_id, now=NOW)
+
+    assert result == "at_risk"
+    assert captured["workflow"] is workflow
+    assert captured["organization"] is organization
+    assert captured["budget"] is budget
+    assert captured["now"] == NOW
+
+
+def test_run_skips_when_workflow_missing(monkeypatch):
+    Workflow, WorkflowBudget, Organization = _models()
+    db = _LoaderDb({Workflow: None, WorkflowBudget: None, Organization: None})
+    called = []
+    monkeypatch.setattr(
+        budget_alert_service, "evaluate_budget_alert", lambda *a, **k: called.append(1)
+    )
+
+    result = budget_alert_service.run_budget_alert_evaluation(db, uuid4())
+
+    assert result is None
+    assert called == []
+
+
+def test_run_skips_when_budget_missing(monkeypatch):
+    Workflow, WorkflowBudget, Organization = _models()
+    wf_id, org_id = uuid4(), uuid4()
+    workflow = SimpleNamespace(id=wf_id, organization_id=org_id)
+    db = _LoaderDb(
+        {Workflow: workflow, WorkflowBudget: None, Organization: SimpleNamespace(id=org_id)}
+    )
+    called = []
+    monkeypatch.setattr(
+        budget_alert_service, "evaluate_budget_alert", lambda *a, **k: called.append(1)
+    )
+
+    result = budget_alert_service.run_budget_alert_evaluation(db, wf_id)
+
+    assert result is None
+    assert called == []
