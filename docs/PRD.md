@@ -43,7 +43,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 | 축 | 현재 상태 | 이번에 만드는 것 |
 | --- | --- | --- |
-| **Agent Builder** | node 단위 wizard만 존재 (prompt/code/template 개선·생성) | 프롬프트 입력 → workflow 자동 생성. 예: "사내 복지, 휴가, 인사 정책 문서를 검색해 직원 질문에 답변해줘" → `[입력] → [Knowledge Base 연결 LLM] → [응답]` |
+| **Agent Builder** | node 단위 wizard만 존재 (prompt/code/template 개선·생성) | 프롬프트 입력 → workflow 초안 생성 → Preview Mode 검토 → `적용 및 저장`. 예: "사내 복지, 휴가, 인사 정책 문서를 바탕으로 직원 질문에 답변해줘" → `[입력] → [Knowledge Base-backed LLM] → [응답]` |
 | **Admin 대시보드** | `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터는 이미 쌓임 | 조회 UI: 권한 신청/승인 이력, 누가 언제 뭘 했는지(audit), workflow별 비용(usage), 예산 위험 표시 |
 | **비용 최적화** | `POST /api/v1/workflows/{id}/compare` 모델 비교 API 구현됨 | "비용 최적화" UI: LLM 노드의 현재 설정과 후보 설정을 같은 입력으로 비교하고, `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정에 따른 비용·품질 차이를 표시 |
 | **통합 RAG** | KB 구축/검색, metadata-aware·hierarchical retrieval 구현됨 | 현재 데모는 준비된 KB 검색/citation과 권한 경계를 유지하고, 목표 구조는 gate 승인 후 자동 수집 가능한 사내 지식 통합 저장소, document-level KB 권한 경계, collection 기반 routing으로 확장 |
@@ -199,10 +199,10 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 ### Agent Builder — [features/agent-builder/](features/agent-builder/requirements.md)
 
-- FR-001: 자연어 프롬프트로부터 실행 가능한 workflow 노드 그래프 생성
-- FR-002: 생성된 workflow의 캔버스 편집과 테스트 실행
+- FR-001: 자연어 프롬프트로부터 실행 가능한 workflow 초안 생성
+- FR-002: 생성된 workflow 초안을 Preview Mode에서 검토하고, `적용 및 저장`으로 저장한 뒤 별도 테스트 실행
 - FR-003: 생성 결과에 필요한 credential/권한이 없으면 사전 안내
-- FR-004: Knowledge Base가 연결된 사내 지식 통합 RAG workflow 초안 생성
+- FR-004: Knowledge Base-backed LLM node 설정을 포함한 사내 지식 통합 RAG workflow 초안 생성
 
 ### Admin 대시보드 — [features/admin-dashboard/](features/admin-dashboard/requirements.md)
 
@@ -254,7 +254,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 이 프로젝트의 성공 기준은 **데모 시나리오 완주**다. 시연은 통합 데모 흐름으로 진행하며, 아래 시나리오별 조건이 그 흐름 안에서 모두 동작하면 성공으로 판단한다.
 
 - [ ] 시나리오 1 (권한 신청): 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
-- [ ] 시나리오 1 (AI Builder): Agent Builder가 사내 복지/휴가/인사 정책 문서를 검색하는 RAG workflow 초안을 만들고, 테스트 실행에서 응답과 citation/retrieval 근거를 확인
+- [ ] 시나리오 1 (AI Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 초안을 만들고, Preview Mode에서 내부 설정을 확인한 뒤 `적용 및 저장`으로 저장하고, 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
 - [ ] 시나리오 2: 관리자가 관리자 화면에서 권한 신청/승인, workflow 생성/배포/실행 audit 기록과 조직 비용/예산 위험 요약을 확인
 - [ ] 시나리오 3: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
 
