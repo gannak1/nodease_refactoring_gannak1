@@ -1,8 +1,9 @@
 import re
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SourceAclState = Literal[
@@ -37,6 +38,9 @@ KnowledgeRAGQueryRewriteMode = Literal["off", "template"]
 KnowledgeRAGEvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 KnowledgeRAGFailurePolicy = Literal["safe_no_result", "fail_node"]
 KnowledgeRAGSourceTierPolicy = Literal["tie_break", "off"]
+KnowledgeCollectionAction = Literal["read", "route", "manage", "sync"]
+KnowledgeCollectionVisibility = Literal["private", "public"]
+KnowledgeCollectionLifecycleState = Literal["active", "archived", "deleted"]
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
 
@@ -77,6 +81,133 @@ class KnowledgeCandidateResolveRequest(BaseModel):
     purpose: KnowledgeCandidatePurpose = "builder_suggestion"
     max_collections: int = Field(default=20, ge=1, le=100)
     max_candidate_kbs: int = Field(default=5000, ge=1, le=5000)
+
+
+class KnowledgeCollectionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    safe_metadata: dict = Field(default_factory=dict)
+
+
+class KnowledgeCollectionUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    safe_metadata: dict | None = None
+
+
+class KnowledgeCollectionResponse(BaseModel):
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: str | None = None
+    is_system_managed: bool = False
+    sync_state: str = "manual"
+    lifecycle_state: KnowledgeCollectionLifecycleState = "active"
+    visibility: KnowledgeCollectionVisibility = "private"
+    linked_kb_count_bucket: str = "0"
+    active_kb_count_bucket: str = "0"
+    can_read: bool = False
+    can_route: bool = False
+    can_manage: bool = False
+    can_sync: bool = False
+    safe_metadata: dict = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeCollectionListResponse(BaseModel):
+    collections: list[KnowledgeCollectionResponse] = Field(default_factory=list)
+    can_create_collection: bool = False
+    can_change_public_visibility: bool = False
+
+
+class KnowledgeCollectionItemLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge_base_id: UUID
+    rank: int = Field(default=0, ge=0)
+
+
+class KnowledgeCollectionItemResponse(BaseModel):
+    item_id: UUID
+    knowledge_base_id: UUID
+    safe_label: str | None = None
+    lifecycle_state: str = "active"
+    sync_state: str = "manual"
+    rank: int = 0
+    can_manage_kb: bool = False
+    can_use_kb: bool = False
+
+
+class KnowledgeCollectionItemsResponse(BaseModel):
+    items: list[KnowledgeCollectionItemResponse] = Field(default_factory=list)
+
+
+class KnowledgeCollectionItemReorderEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: UUID
+    rank: int = Field(ge=0)
+
+
+class KnowledgeCollectionItemReorderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[KnowledgeCollectionItemReorderEntry] = Field(
+        ..., min_length=1, max_length=500
+    )
+
+
+class KnowledgeCollectionLinkCandidate(BaseModel):
+    knowledge_base_id: UUID
+    safe_label: str | None = None
+    disabled: bool = False
+    safe_reason_code: str | None = None
+
+
+class KnowledgeCollectionLinkCandidatesResponse(BaseModel):
+    candidates: list[KnowledgeCollectionLinkCandidate] = Field(default_factory=list)
+
+
+class KnowledgeCollectionPermissionGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject_type: Literal["team", "user"]
+    subject_id: UUID
+    permission_action: KnowledgeCollectionAction
+
+
+class KnowledgeCollectionPermissionResponse(BaseModel):
+    permission_id: UUID
+    subject_type: Literal["team", "user"]
+    subject_id: UUID
+    subject_safe_label: str | None = None
+    permission_action: KnowledgeCollectionAction
+
+
+class KnowledgeCollectionPermissionsResponse(BaseModel):
+    permissions: list[KnowledgeCollectionPermissionResponse] = Field(
+        default_factory=list
+    )
+
+
+class KnowledgeCollectionVisibilityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    visibility: KnowledgeCollectionVisibility
+    acknowledged_public_runtime_exposure: bool = False
+
+
+class KnowledgeCollectionVisibilityResponse(BaseModel):
+    collection: KnowledgeCollectionResponse
+    public_runtime_effect: str = "anonymous_public_only_candidate"
+    linked_kb_count_bucket: str = "0"
+    active_kb_count_bucket: str = "0"
+    sensitive_content_warning: str = "unknown_or_present"
 
 
 def normalize_recommendation_text(value: str | None) -> str | None:

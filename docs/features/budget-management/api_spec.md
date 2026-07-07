@@ -85,8 +85,9 @@ Request body:
 { "monthly_budget_usd": 100.0, "is_enabled": true }
 ```
 
-- `monthly_budget_usd`: 필수, 0보다 큰 number. 소수점 2자리까지 허용 (`NUMERIC(12,2)` 저장).
+- `monthly_budget_usd`: 필수, 0보다 큰 number. 소수점 2자리까지 허용하고 `NUMERIC(12,2)` 저장 범위(`9999999999.99` 이하)를 초과하면 `422`로 거부한다.
 - `is_enabled`: 필수 boolean.
+- Request body의 unknown field는 `422`로 거부한다. 예: `is_enabledd` 같은 오타 필드는 조용히 무시하지 않는다.
 
 Response `200`: 단건 조회와 동일한 shape. 신규 생성이어도 `200`으로 통일한다.
 
@@ -144,7 +145,7 @@ Side effects:
 
 ### GET /apps, GET /apps/operations (확장)
 
-내 워크플로우 목록/운영 현황 원천인 기존 `AppResponse` 또는 operations row의 `app` summary에 additive 필드 `budget_status`를 추가한다.
+내 워크플로우 목록/운영 현황 원천인 operations row의 `app` summary와 기존 `AppResponse`에 additive 필드 `budget_status`를 추가한다. `/dashboard/mymodule`의 FR-052 예산 상태 표시는 `GET /apps/operations`의 `app.budget_status`를 사용한다. `GET /apps`는 dashboard 홈, 설정, 관리자 보조 화면 등 기존 App 목록 소비자에게 같은 member 표면 요약을 제공한다.
 
 ```json
 {
@@ -157,9 +158,12 @@ Side effects:
 ```
 
 - App의 primary workflow(`apps.workflow_id`) 기준이다. 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
-- member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022).
-- 목록 전체의 사용률 계산은 workflow별 당월 집계를 한 번의 grouped query로 조회한다 (N+1 금지).
-- `/dashboard/mymodule`은 `GET /apps/operations`의 `app.budget_status`를 사용한다.
+- 같은 `app_id`에 연결된 과거/보조 Workflow row는 `budget_status` 후보가 아니다. `apps.workflow_id`가 null이거나 해당 workflow에 활성 예산이 없으면, 다른 Workflow row에 활성 예산이 있어도 `budget_status`는 null이다.
+- member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022~023).
+- `usage_ratio`와 `status`의 판정은 관리자 예산 블록과 동일하게 당월(KST) 비용 합계와 반올림 전 값을 사용한다.
+- 당월 비용 합계는 실행 차단 판정과 동일하게 `workflow_id`와 KST 월 경계 기준으로 계산한다. 예산 row는 organization scope로 조회하지만, 사용량 합산에서는 `llm_usage_logs.organization_id`를 필수 조건으로 요구하지 않는다. `workflow_id`가 일치하는 기존/마이그레이션 로그는 `organization_id`가 NULL이어도 포함한다.
+- 목록 전체의 사용률 계산은 현재 응답 App의 primary workflow id를 모아 workflow별 당월 비용을 grouped query로 조회한다 (N+1 금지). 누락 복구를 위해 `workflows.app_id`로 workflow 후보를 확장하지 않는다.
+- `GET /apps/operations`에서는 각 row의 `app.budget_status`에 포함한다. `GET /apps`에서는 각 `AppResponse.budget_status`에 포함한다.
 
 ## 실행 차단 응답
 
@@ -193,7 +197,7 @@ Response `429`:
 | 401 | 미인증 |
 | 403 | organization scope 안이지만 owner/manager 아님 — `permission.denied` audit 기록 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)) |
 | 404 | 요청 organization scope 밖 또는 존재하지 않는 `workflow_id`, 예산 미설정 workflow의 단건 조회 — 존재를 숨긴다 (`resource.not_found`, ADR-0010) |
-| 422 | request 형식 오류 — `monthly_budget_usd` 누락/0 이하/숫자 아님, `is_enabled` 누락 |
+| 422 | request 형식 오류 — `monthly_budget_usd` 누락/0 이하/숫자 아님/소수점 3자리 이상/저장 범위 초과, `is_enabled` 누락, unknown field 포함 |
 | 429 | 예산 초과 실행 차단 (`budget.exceeded`) |
 
 ## Permissions

@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
@@ -24,6 +24,8 @@ Status: Draft
 | --- | --- | --- |
 | Collections | `/api/v1/knowledge/collections`, `/api/v1/knowledge/collections/{collection_id}` | Collection 목록, safe metadata, route/manage/sync operation |
 | Collection items | `/api/v1/knowledge/collections/{collection_id}/items` | Document-level KB link/unlink. KB content permission을 부여하지 않음 |
+| Collection permissions | `/api/v1/knowledge/collections/{collection_id}/permissions` | Collection `read`/`route`/`manage`/`sync` grant/revoke. Additive allow만 제공 |
+| Collection visibility | `/api/v1/knowledge/collections/{collection_id}/visibility` | Anonymous public-only runtime 후보 여부를 safe metadata flag로 전환. Source-managed KB public exposure approval은 별도 정책 row로 검증 |
 | Document-level KBs | `/api/v1/knowledge/kbs/{kb_id}` | KB detail, active version, sync state, remediation summary |
 | Document versions | `/api/v1/knowledge/kbs/{kb_id}/versions/*` | Version history, active version, re-index state |
 | Raw/compliance view | `/api/v1/knowledge/kbs/{kb_id}/raw-artifacts/*` | Raw/compliance gate 이후 선택적 protected raw content access. RAG answer API에서 사용하지 않음 |
@@ -40,8 +42,8 @@ Builder와 deployment preflight가 사용할 MBA-105 candidate resolver contract
 | `actor` | Builder 또는 deployer subject. Candidate metadata 표시 권한의 기준 |
 | `intended_execution_subject_id` / `audience` | Runtime availability 계산 기준. 없으면 availability를 `unknown` 또는 `unavailable`로 낮춘다. Phase 7 baseline은 요청 필드를 받되 runtime에서는 execution_subject 기준으로 다시 판정한다 |
 | `mode` | `auto_collection` 또는 `explicit_kb` |
-| `collection_ids` | Auto collection mode에서 route scope 후보. 누락 시 actor가 route할 수 있는 safe subset만 사용 |
-| `knowledge_base_ids` | Explicit KB mode 후보. Collection route는 생략할 수 있지만 KB visibility/use/source ACL/final evidence preflight는 수행 |
+| `collection_ids` | Auto collection mode에서 서버가 해석한 route scope 후보. 누락 시 actor가 route할 수 있는 safe subset만 사용 |
+| `knowledge_base_ids` | Explicit KB mode에서 서버가 safe handle, authorized picker, 또는 trusted backend context로 해석한 KB 후보. Collection route는 생략할 수 있지만 KB visibility/use/source ACL/final evidence preflight는 수행 |
 | `purpose` | `builder_suggestion`, `deployment_preflight`, `runtime_preview` 같은 bounded enum |
 | `max_collections` / `max_candidate_kbs` | 서버 cap. Baseline은 `max_collections <= 100`, `max_candidate_kbs <= 5000`을 강제한다. Cap은 route/use/source ACL helper를 통과한 authorized subset에 적용하며, 임의 row를 먼저 자른 뒤 authorization하지 않는다 |
 
@@ -49,17 +51,22 @@ Response는 safe candidate list와 summary만 포함한다. 각 candidate는 `ca
 
 ### Workflow Builder RAG Recommendation
 
-`POST /api/v1/knowledge/rag-recommendations`는 Workflow Builder가 자연어 workflow intent와 LLM node 목적을 기준으로 현재 LLM node schema에 맞는 RAG option 후보를 받기 위한 Builder 단계 API다. 이 endpoint는 권한을 새로 판단하지 않고 `KnowledgeCandidateResolver`가 만든 safe candidate set만 ranking한다.
+`POST /api/v1/knowledge/rag-recommendations`는 Workflow Builder/Agent Builder가 `StructuredRequest`에서 파생한 safe intent summary, 지식 요구사항, pending resolution을 기준으로 현재 LLM node schema에 맞는 RAG option 후보를 받기 위한 Builder 단계 API다. Agent Builder client가 직접 호출하는 public client endpoint가 아니라, Agent Builder backend가 인증 사용자, active organization, workflow/app scope를 server-resolved context로 확정한 뒤 호출하는 Knowledge domain boundary로 취급한다. HTTP request는 `KnowledgeCandidateResolver`가 만든 server-issued safe candidate set reference 또는 server-resolved scope hint만 전달하며, full safe candidate set 객체는 같은 backend 내부 service call에서만 소비할 수 있다. Request의 collection/KB scope 값은 candidate resolver hint일 뿐이며, ranking 단계가 raw KB id나 raw source metadata를 직접 해석해서 권한 후보를 만들면 안 된다.
 
-Request body는 raw user input으로 간주한다.
+Request body는 raw user input 전체가 아니라 Agent Builder가 구조화한 safe summary로 간주한다. Raw natural language 전체, raw prompt, hidden source 정보는 이 endpoint 입력이 아니다.
 
 | 필드 | 규칙 |
 | --- | --- |
-| `workflow_intent` | 필수. 길이 cap과 control character normalization을 적용한다. Raw text는 durable audit/trace/log에 저장하지 않는다 |
-| `node_purpose` | 선택. LLM node 목적 요약. Raw text는 durable metadata에 저장하지 않는다 |
+| `intent_summary` | 필수. `StructuredRequest`에서 만든 redaction-safe intent summary. 길이 cap과 control character normalization을 적용한다 |
+| `target_step_ref` | KB 추천이 필요한 planned step reference |
+| `node_purpose_summary` | LLM node 목적 safe 요약. Raw text는 durable metadata에 저장하지 않는다 |
+| `safe_workflow_context_summary` | 현재 workflow 목적, 기존 KB 참조, 관련 노드 역할을 요약한 safe context. Raw graph payload, hidden source 정보, raw KB content를 포함하지 않는다 |
+| `knowledge_requirement` | `requirement_id`, `query_topics`, `expected_evidence_type`, `required` 같은 지식 요구사항 |
+| `pending_resolution_ref` | `resolution_id`, `slot_type=knowledge_base`, `slot_key`, `blocking` 같은 unresolved slot reference |
+| `authorized_safe_candidate_set_ref` | 선택. KnowledgeCandidateResolver가 만든 safe candidate set의 server-issued reference. 없으면 Knowledge domain이 아래 scope hint를 기준으로 candidate resolver를 먼저 수행하고, recommendation ranking은 그 결과만 사용한다 |
 | `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환한다 |
-| `collection_ids` | 선택. Auto collection 후보 scope. Field를 생략하면 actor가 route할 수 있는 서버 정책상 collection subset을 사용한다. 명시적으로 `[]`를 보내면 빈 scope로 해석해 recommendation을 만들지 않는다. Collection은 recommendation item으로 반환하지 않고 safe summary로만 제공한다 |
-| `knowledge_base_ids` | 선택. Explicit KB 후보 |
+| `collection_ids` | 선택. 서버가 active organization과 actor 권한 기준으로 해석한 route scope hint. Field를 생략하면 actor가 route할 수 있는 서버 정책상 collection subset을 사용한다. 명시적으로 `[]`를 보내면 빈 scope로 해석해 recommendation을 만들지 않는다. Collection은 recommendation item으로 반환하지 않고 safe summary로만 제공한다 |
+| `knowledge_base_ids` | 선택. 서버가 safe handle, authorized picker, 또는 trusted backend context에서 해석한 explicit KB 후보. Agent Builder client가 보낸 raw KB id를 그대로 전달하는 값이 아니다 |
 | `intended_execution_subject_id` | 선택. Runtime availability warning 계산용. 실행 권한 보장이 아니며 runtime은 다시 검증한다 |
 | `max_recommendations` | 서버 cap. 초기 기본값은 5, 최대 20 |
 | `max_collections` | Auto collection 후보 탐색 cap. 서버 기본값 20, 최대 100 |
@@ -67,7 +74,23 @@ Request body는 raw user input으로 간주한다.
 | `high_risk_domain` | Builder hint. `strict_citation` 같은 option recommendation에만 사용하며 권한, policy block, compliance decision에 사용하지 않는다 |
 | `allow_query_rewrite` | `high_risk_domain`이 있는 경우 safe template 기반 `queryRewriteMode=template` 추천을 허용할지 결정한다. 이 값은 권한 후보를 넓히거나 LLM-assisted rewrite를 승인하지 않는다 |
 
-Response item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다. 현재 Workflow LLM node는 `knowledgeBases`를 실행 입력으로 사용하므로 recommendation result는 `materialized_knowledge_bases`를 통해 LLM node `knowledgeBases`로 변환한다.
+HTTP request body는 full `authorized_safe_candidate_set` 객체를 받지 않는다. 같은 backend 내부 service call에서는 full safe candidate set 객체를 넘길 수 있지만, HTTP 또는 serialized boundary에서는 `authorized_safe_candidate_set_ref` 또는 server-resolved scope hint만 사용한다.
+
+Response는 Agent Builder 내부 adapter 계약과 같은 top-level envelope를 반환한다. Agent Builder backend가 내부 service call이 아니라 HTTP boundary를 사용하더라도 같은 envelope를 소비해야 하며, recommendation item list만 단독으로 반환하지 않는다.
+
+| 필드 | 규칙 |
+| --- | --- |
+| `status` | `recommended`, `clarification_required`, `no_candidate`, `unavailable` |
+| `resolution_id` | 해결 대상 pending resolution id |
+| `requirement_id` | 해결 대상 knowledge requirement id |
+| `recommendations` | safe KB recommendation item 목록. `status=recommended`일 때 포함하며 각 item은 아래 허용 response field를 따른다 |
+| `clarification_options` | 후보가 여러 개이거나 score가 근접한 경우, 또는 adapter unavailable fallback에서 사용자에게 표시할 safe option 목록 |
+| `user_safe_warning` | partial access, runtime availability, unavailable fallback 같은 사용자 표시 경고 |
+| `fallback_reason` | `adapter_unavailable`, `no_candidate` 같은 safe reason code. Hidden resource identity나 exact count를 포함하지 않는다 |
+
+Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공할 수 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환한다. Safe 후보 선택지도 제공할 수 없으면 `status=unavailable`, `fallback_reason=adapter_unavailable` 또는 동등한 safe reason code를 반환한다.
+
+Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다. 현재 Workflow LLM node는 `knowledgeBases`를 실행 입력으로 사용하므로 recommendation result는 `materialized_knowledge_bases`를 통해 LLM node `knowledgeBases`로 변환한다.
 
 허용 response field:
 
@@ -76,9 +99,13 @@ Response item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환
 | `recommendation_id` | Opaque id. Hidden resource identity를 인코딩하지 않는다 |
 | `recommendation_mode` | `auto_collection` 또는 `explicit_kb` |
 | `candidate_type` | 초기 구현은 `knowledge_base`만 허용 |
-| `candidate_id` | 권한 helper를 통과한 KB id |
+| `candidate_id` | Agent Builder-facing server-issued safe candidate handle. Raw source id/path/url/title 또는 client-stable raw KB id를 직접 노출하지 않는다 |
 | `safe_label` | Display-policy-approved label. 없으면 raw KB name fallback 금지, `null` 또는 generic label만 허용 |
-| `materialized_knowledge_bases` | 현재 LLM node `knowledgeBases`로 변환 가능한 safe KB ref list. `MAX_RAG_RETRIEVAL_KBS=20` 이하 |
+| `materialized_knowledge_bases` | backend가 현재 LLM node `knowledgeBases`로 변환 가능한 권한 확인 safe KB ref list. `MAX_RAG_RETRIEVAL_KBS=20` 이하 |
+| `score` | Recommendation ranking에 사용한 normalized score. Raw retrieval/provider score를 직접 노출하지 않는다 |
+| `confidence` | `high`, `medium`, `low` 중 하나. 후보 1개 high confidence 자동 해결과 clarification 분기를 구분한다 |
+| `reason_category` | 추천 근거의 safe category. 예: topic keyword match, metadata match, collection context match |
+| `threshold_result` | `high_confidence`, `close_score`, `below_threshold` 등 자동 해결, clarification, failure 분기를 설명하는 safe 결과 |
 | `recommended_options` | `queryRewriteMode`, `queryRewriteTemplate`, `evidenceSufficiencyPolicy`, `ragFailurePolicy`, `sourceTierPolicy`, `scoreThreshold`, `topK` allowlist만 허용 |
 | `source_collection_summary` | Safe collection id/label, route scope type, bucketed linked KB count 정도만 허용 |
 | `provenance` | `recommendation_strategy`, `safe_reason_code`, `used_signals`, `matched_safe_terms`, bucketed counts 같은 redaction-safe summary |
@@ -87,9 +114,9 @@ Response item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환
 | `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
 
-금지: raw workflow intent, raw node purpose, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
+금지: raw workflow intent, raw node purpose, raw natural language 전체, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
 
-Validation 실패 응답도 같은 금지선을 따른다. `workflow_intent`, `node_purpose` 같은 raw prompt-like input은 Pydantic/FastAPI validation detail의 `input` 값으로 echo하지 않고, field path/type/message 수준의 sanitized error만 반환한다.
+Validation 실패 응답도 같은 금지선을 따른다. Safe summary 입력이라도 Pydantic/FastAPI validation detail의 `input` 값으로 echo하지 않고, field path/type/message 수준의 sanitized error만 반환한다.
 
 ## Request Model
 
@@ -133,6 +160,69 @@ Router는 authorized safe candidate와 safe metadata만 받는다. Raw source AC
 Router candidate metadata는 safe identifier와 coarse summary로 제한한다. 예시는 `knowledge_base_id`, optional `collection_id`, safe redacted display label, coarse source type, safe classification/category/tag, coarse sync/source ACL state, request-scoped ranking hint다. Raw source id/url/path/title, raw principal, raw ACL row, exact hidden/denied count, credential value, prompt/completion, raw content는 router input이 아니다.
 
 Skill candidate metadata도 같은 boundary를 따른다. Workflow Builder가 받을 수 있는 skill field는 safe skill id, skill version, safe display label, source-of-truth tier, freshness state, eval status, validation checklist id, redaction-safe routing hint 정도로 제한한다. Raw skill body, hidden source reference, raw source title/path/url, restricted document list, raw content, prompt/completion, provider raw response는 Builder input이 아니다.
+
+## Manual Collection Management
+
+Manual Collection 관리 API는 Knowledge 관리 영역에서 사용한다. Workflow Builder가 Collection을 생성/삭제하거나 권한을 관리하는 surface가 아니다.
+
+### Collection CRUD
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/collections` | Collection 목록. `collection.read` 가능한 row만 반환 | `collection.read` 또는 organization manager override |
+| POST | `/api/v1/knowledge/collections` | Manual Collection 생성 | MVP는 organization manager만 허용 |
+| GET | `/api/v1/knowledge/collections/{collection_id}` | Collection 상세 | `collection.read` 또는 organization manager override |
+| PATCH | `/api/v1/knowledge/collections/{collection_id}` | safe name/description/metadata 수정 | `collection.manage` 또는 organization manager override |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}` | physical delete가 아니라 archive 전이 | `collection.manage` 또는 organization manager override |
+
+List response는 `collections`, `can_create_collection`, `can_change_public_visibility`를 포함한다. 각 Collection row는 `id`, `name`, `description`, `is_system_managed`, `sync_state`, `lifecycle_state`, `visibility`, bucketed linked/active KB count, caller action flags, `safe_metadata`, timestamps만 포함한다. Raw source title/path/url/principal, hidden KB name/id, exact denied count는 반환하지 않는다.
+
+Create request는 `name`, optional `description`, optional allowlisted `safe_metadata`만 받는다. Client는 `is_system_managed=true`, source identity, raw source URL/path/title, permission row를 create body에 넣을 수 없다. Duplicate safe name은 safe `409 conflict`로 반환한다.
+
+Update request는 visibility를 바꾸지 않는다. Public/private 전환은 별도 visibility endpoint만 사용한다. System-managed Collection은 connector/sync가 소유하므로 manual update는 safe override가 승인된 field로 제한한다.
+
+### Collection Item Management
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/collections/{collection_id}/items` | linked KB item 목록 | `collection.read` |
+| POST | `/api/v1/knowledge/collections/{collection_id}/items` | KB link | `collection.manage` + 대상 KB `manage` |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}/items/{item_id}` | KB unlink | `collection.manage` + 대상 KB `manage` |
+| PATCH | `/api/v1/knowledge/collections/{collection_id}/items/reorder` | deterministic rank 변경 | `collection.manage` |
+| GET | `/api/v1/knowledge/collections/{collection_id}/link-candidates` | link 가능한 KB 후보 | `collection.manage`; 기본적으로 대상 KB `manage` 가능한 후보만 반환 |
+
+Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
+
+### Collection Permission Management
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/collections/{collection_id}/permissions` | permission grant 목록 | `collection.manage` 또는 organization manager |
+| POST | `/api/v1/knowledge/collections/{collection_id}/permissions` | team/user action grant | `collection.manage` 또는 organization manager |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}/permissions/{permission_id}` | grant revoke | `collection.manage` 또는 organization manager |
+
+Grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Explicit deny, inherited grant, role table 연결은 이번 MVP 범위가 아니다. Revoke는 자기 자신의 마지막 `manage` grant를 제거하는 edge case를 safe denial로 처리하거나 organization manager만 허용해야 한다.
+
+### Public Visibility
+
+```text
+POST /api/v1/knowledge/collections/{collection_id}/visibility
+```
+
+Request:
+
+```json
+{
+  "visibility": "public",
+  "acknowledged_public_runtime_exposure": true
+}
+```
+
+MVP에서 public/private visibility 전환은 organization manager만 허용한다. Public 전환에는 explicit acknowledgement가 필요하다. 전환 전 summary는 linked KB count bucket, active KB count bucket, safe sensitive-content warning, anonymous public-only runtime 영향 요약만 포함한다. Raw KB title/path/url, hidden KB id/name, exact denied count는 포함하지 않는다.
+
+`safe_metadata["visibility"] == "public"`은 anonymous public-only runtime의 collection candidate inclusion flag다. 인증 사용자 KB `use`, source ACL requester authorization, final evidence policy를 대체하지 않는다.
+
+Source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
 
 ### Workflow Runtime RAG Execution Subject
 
@@ -253,7 +343,7 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Explicit KB mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, KB visibility/resource hiding, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | 빌더 단계 Knowledge Skill mode | active organization, skill visibility, skill safe metadata display, skill freshness/eval gate. Skill visibility는 collection route, KB permission, source ACL gate를 대체하지 않는다 |
 | 실행 시점 LLM node의 RAG 옵션 | execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate와 final evidence policy. execution subject가 없으면 anonymous public-only gate와 final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate 또는 anonymous public-only gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
-| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
+| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, source-managed KB의 valid public exposure approval, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
 | Collection management | `collection.manage`; 기존 KB linking에는 `kb.manage`도 필요 |
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |

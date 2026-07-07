@@ -76,6 +76,17 @@ describe('BudgetEditModal 초기값', () => {
 });
 
 describe('BudgetEditModal 검증/저장', () => {
+  it('서버 저장 범위를 input 속성으로 노출한다', async () => {
+    mockedGet.mockRejectedValueOnce(axiosError(404));
+    renderModal();
+
+    const input = await screen.findByLabelText('월 예산(USD)');
+
+    expect(input).toHaveAttribute('min', '0');
+    expect(input).toHaveAttribute('step', '0.01');
+    expect(input).toHaveAttribute('max', '9999999999.99');
+  });
+
   it('0 이하 금액은 제출을 막고 서버를 호출하지 않는다', async () => {
     mockedGet.mockRejectedValueOnce(axiosError(404));
     renderModal();
@@ -86,6 +97,34 @@ describe('BudgetEditModal 검증/저장', () => {
 
     expect(
       await screen.findByText('0보다 큰 금액을 입력해주세요'),
+    ).toBeInTheDocument();
+    expect(mockedUpsert).not.toHaveBeenCalled();
+  });
+
+  it('소수점 3자리 이상 금액은 제출을 막고 서버를 호출하지 않는다', async () => {
+    mockedGet.mockRejectedValueOnce(axiosError(404));
+    renderModal();
+
+    const input = await screen.findByLabelText('월 예산(USD)');
+    fireEvent.change(input, { target: { value: '100.001' } });
+    fireEvent.click(screen.getByRole('button', { name: '저장' }));
+
+    expect(
+      await screen.findByText('소수점은 최대 2자리까지 입력해주세요'),
+    ).toBeInTheDocument();
+    expect(mockedUpsert).not.toHaveBeenCalled();
+  });
+
+  it('서버 저장 범위 초과 금액은 제출을 막고 서버를 호출하지 않는다', async () => {
+    mockedGet.mockRejectedValueOnce(axiosError(404));
+    renderModal();
+
+    const input = await screen.findByLabelText('월 예산(USD)');
+    fireEvent.change(input, { target: { value: '10000000000' } });
+    fireEvent.click(screen.getByRole('button', { name: '저장' }));
+
+    expect(
+      await screen.findByText('월 예산은 9999999999.99 USD 이하로 입력해주세요'),
     ).toBeInTheDocument();
     expect(mockedUpsert).not.toHaveBeenCalled();
   });
@@ -129,9 +168,18 @@ describe('BudgetEditModal 검증/저장', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it('그 외 실패(422 등)는 저장 실패 안내를 표시한다', async () => {
+  it('422이면 필드 오류 안내를 표시한다', async () => {
     mockedGet.mockRejectedValueOnce(axiosError(404));
-    mockedUpsert.mockRejectedValueOnce(axiosError(422));
+    mockedUpsert.mockRejectedValueOnce(
+      axiosError(422, {
+        detail: [
+          {
+            loc: ['body', 'monthly_budget_usd'],
+            msg: 'Input should be less than or equal to 9999999999.99',
+          },
+        ],
+      }),
+    );
     renderModal();
 
     const input = await screen.findByLabelText('월 예산(USD)');
@@ -139,7 +187,7 @@ describe('BudgetEditModal 검증/저장', () => {
     fireEvent.click(screen.getByRole('button', { name: '저장' }));
 
     expect(
-      await screen.findByText('예산 저장에 실패했습니다'),
+      await screen.findByText('예산 입력값을 확인해주세요'),
     ).toBeInTheDocument();
   });
 });

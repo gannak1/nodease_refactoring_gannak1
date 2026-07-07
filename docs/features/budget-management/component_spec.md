@@ -24,6 +24,7 @@ Verified Against: feature/mba-132 @ a843ec7
 
 기존 내 모듈 운영 목록(`apps/client/app/dashboard/mymodule/page.tsx`, 원천 `GET /apps/operations`)의 각 row를 확장한다.
 
+- 데이터 원천: `GET /apps/operations`의 `row.app.budget_status`. `GET /apps`는 같은 shape를 제공하지만 `/dashboard/mymodule`의 표시 원천은 operations 응답이다.
 - `budget_status`가 있으면 사용률(%)과 상태 배지(`BudgetStatusBadge`)를 표시한다. null이면 아무것도 표시하지 않는다 (기존 레이아웃 유지).
 - `status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시와 "월 예산 초과로 실행이 차단되었습니다" tooltip을 표시한다. 현재 `/dashboard/mymodule`에는 별도 실행 버튼이 없으므로 편집/조회 진입은 차단하지 않는다.
 - member 표면이므로 예산 금액은 표시하지 않는다 (BGT-REQ-022). 사용률과 상태만 표시한다.
@@ -38,10 +39,10 @@ Verified Against: feature/mba-132 @ a843ec7
 ### BudgetEditModal (신규)
 
 - 위치: 비용 탭 예산 설정 버튼에서 열리는 모달. 기존 모달/폼 패턴을 재사용한다.
-- 입력: `monthly_budget_usd`(양수, USD, 소수점 2자리), `is_enabled` 토글.
+- 입력: `monthly_budget_usd`(양수, USD, 소수점 2자리, 최대 `9999999999.99`), `is_enabled` 토글.
 - 초기값: `GET /admin/workflow-budgets/{workflow_id}` (404면 신규 설정 폼).
 - 저장: `PUT /admin/workflow-budgets/{workflow_id}`. 성공 시 비용 탭 테이블과 요약 카드를 refetch한다.
-- 검증: 0 이하/비숫자 입력은 제출 전에 막고, 서버 422 응답도 필드 오류로 표시한다.
+- 검증: 0 이하/비숫자/소수점 3자리 이상/`9999999999.99` 초과 입력은 제출 전에 막고, 서버 422 응답도 필드 오류로 표시한다.
 
 ### BudgetStatusBadge (신규, 공용)
 

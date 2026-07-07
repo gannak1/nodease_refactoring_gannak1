@@ -11,6 +11,14 @@ Verified Against: feature/mba-120 @ 7a7032e
 
 Connectors UI는 현재 Knowledge 화면 내부의 DB source 설정 부분으로 제공된다. Organization-wide connector inventory, connection 공유/권한 관리, connector health/remediation 전용 화면은 아직 구현되지 않았다.
 
+## Target Knowledge Source Connector Boundary
+
+목표 Knowledge Source Connector는 현재 workflow DB connector UI/API를 그대로 확장한 것이 아니라 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)의 server-side allowlist adapter 경계를 따른다. MCP/API source도 LLM 자유 tool-use surface가 아니며, source listing, changed item listing, content fetch, ACL/tombstone listing, capture event normalization, runtime authorization primitive처럼 승인된 operation만 호출할 수 있다.
+
+Private source-managed retrieval에 쓰이는 connector는 `check_access_batch(subject_ref, source_item_refs[])`를 우선 제공해야 한다. Batch 미지원 source는 bounded single `check_access(subject_ref, source_item_ref)` fallback을 제공할 수 있지만, runtime authorization primitive가 없으면 Knowledge retrieval 후보가 아니라 remediation 대상이다. Connector component와 UI는 raw source payload, raw principal, raw source URL/path/title, raw tool error를 표시하거나 durable log/audit/trace에 남기지 않고 safe reason code와 remediation state만 전달한다.
+
+File/page artifact connector는 egress guard 이후에도 artifact content를 trusted로 취급하지 않는다. Target component는 content safety gate와 parser isolation worker를 거쳐 macro/script/embedded object/executable, archive bomb, unsupported type, scan timeout/unknown을 fail-closed 또는 remediation으로 전달해야 한다.
+
 ## Components
 
 ### `connectorApi`
