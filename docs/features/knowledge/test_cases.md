@@ -142,6 +142,20 @@ Status: Draft
 
 ## API And UI Tests
 
+- Manual Collection CRUD API는 organization manager만 Collection을 생성할 수 있게 하고, `collection.read`가 없는 사용자는 목록/상세에서 hidden-safe 응답을 받는다.
+- Collection update/archive는 `collection.manage` 또는 organization manager만 허용하고, system-managed Collection의 source-owned field는 manual update로 바꾸지 못한다.
+- Duplicate Collection safe name은 raw DB constraint나 internal value 없이 safe conflict response로 닫힌다.
+- Collection item link는 `collection.manage`와 대상 KB `manage`를 모두 요구한다. 둘 중 하나만 있으면 실패하고 hidden KB id/name을 오류에 포함하지 않는다.
+- Collection item duplicate link는 idempotent success 또는 문서화된 safe conflict 중 하나로 deterministic하게 처리한다.
+- Collection item unlink와 reorder는 같은 Collection 안의 item만 대상으로 하며, 다른 organization 또는 hidden KB item을 조작하지 못한다.
+- Link candidate API는 기본적으로 KB `manage` 가능한 후보만 반환하고, visible-only KB를 표시해야 하는 경우 disabled 상태와 safe reason만 반환한다.
+- Collection permission grant/revoke는 `read`, `route`, `manage`, `sync`만 허용하고 explicit deny나 role inheritance를 만들지 않는다.
+- Collection permission revoke는 자기 자신의 마지막 `manage` grant 제거 edge case를 safe denial 또는 organization manager 전용 동작으로 처리한다.
+- Public visibility 전환은 organization manager와 explicit acknowledgement를 요구하고, 전환 audit에는 raw KB title/path/url, hidden KB id/name, exact denied count가 들어가지 않는다.
+- Public visibility가 켜져도 인증 사용자 KB `use` 권한이나 source ACL requester authorization이 생기지 않는다.
+- Knowledge Collection 관리 UI는 Workflow Builder와 분리되어 있고, Builder 화면에서 Collection 생성/삭제/권한관리를 주 기능으로 제공하지 않는다.
+- Collection 관리 UI는 `can_manage_collection`, `can_manage_kb`, `can_use_kb`를 혼동하지 않고, item list에 보이는 KB가 runtime retrieval 가능성을 보장하지 않는다는 상태를 표현한다.
+- Collection 관리 UI는 raw source title/path/url/principal, hidden KB name/id, exact denied count를 표시하지 않는다.
 - Collection list는 safe redacted name/description과 non-color text label이 있는 state badge를 표시한다.
 - Source metadata에서 유래한 system-managed collection display name/description은 storage/display 전에 redaction, cap, display-policy approval을 거친다.
 - KB detail은 hidden source path를 누출하지 않으면서 sync failed, source ACL stale, source deleted, archived, deleted state를 구분한다.
