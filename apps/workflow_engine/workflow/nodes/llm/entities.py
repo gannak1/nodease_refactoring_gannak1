@@ -41,6 +41,9 @@ class LLMNodeData(BaseNodeData):
     provider: Optional[str] = None
     model_id: str
     fallback_model_id: Optional[str] = None
+    auto_model_routing: bool = Field(
+        default=False, description="LLM 모델 자동 라우팅 사용 여부"
+    )
     task_type: str = Field(default="generate", description="LLM 노드 작업 유형")
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None

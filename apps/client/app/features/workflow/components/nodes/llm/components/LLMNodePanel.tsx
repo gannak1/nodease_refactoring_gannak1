@@ -28,7 +28,6 @@ import {
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
-import { LLM_TASK_TYPES } from '@/app/features/workflow/utils/llmTaskTypes';
 import { isWorkflowChatModelOption } from '@/app/features/workflow/utils/llmModelFilters';
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
@@ -140,6 +139,24 @@ const groupModelsByProvider = (models: ModelOption[]) => {
     }));
 };
 
+const routingStages = [
+  {
+    stage: 'Cold start',
+    condition: '실행 로그 10회 미만',
+    policy: '보수적 규칙 기반으로 mid/high 모델을 우선 고려하고 실패 시 상위 모델로 닫습니다.',
+  },
+  {
+    stage: 'Warming up',
+    condition: '실행 로그 10~49회',
+    policy: '기본 규칙에 schema 성공률, downstream 성공률, fallback 빈도를 함께 반영합니다.',
+  },
+  {
+    stage: 'Optimized',
+    condition: '실행 로그 50회 이상',
+    policy: '노드별 실제 성공률, 비용, latency profile을 기준으로 cheap/mid/high 후보를 조정합니다.',
+  },
+] as const;
+
 export function LLMNodePanel({
   nodeId,
   data,
@@ -212,6 +229,7 @@ export function LLMNodePanel({
     () => groupModelsByProvider(chatModelOptions),
     [chatModelOptions],
   );
+  const autoRoutingEnabled = Boolean(data.auto_model_routing);
   const selectedModel = useMemo(
     () =>
       modelOptions.find(
@@ -242,6 +260,21 @@ export function LLMNodePanel({
     });
   }, [fallbackCandidates, data.model_id, selectedModel]);
   const fallbackDisabled = !data.model_id?.trim();
+  const handleAutoRoutingChange = useCallback(
+    (enabled: boolean) => {
+      const updates: Partial<LLMNodeData> = { auto_model_routing: enabled };
+
+      if (enabled) {
+        updates.fallback_model_id = '';
+        if (!data.model_id?.trim() && chatModelOptions[0]) {
+          updates.model_id = chatModelOptions[0].model_id_for_api_call;
+        }
+      }
+
+      updateNodeData(nodeId, updates);
+    },
+    [chatModelOptions, data.model_id, nodeId, updateNodeData],
+  );
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -592,16 +625,77 @@ export function LLMNodePanel({
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>
         <div className="flex flex-col gap-2">
-          <div className="flex items-center">
-            <label className="text-xs font-semibold text-gray-700">
-              기본 모델
-            </label>
-            <PropertyVisibilityToggle nodeId={nodeId} propertyKey="model_id" />
-          </div>
-          {loadingModels ? (
+          <label className="flex items-start justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50/70 p-3">
+            <span className="min-w-0">
+              <span className="block text-xs font-bold text-emerald-900">
+                자동 라우팅
+              </span>
+              <span className="mt-0.5 block text-xs leading-relaxed text-emerald-700">
+                로그가 없을 때는 보수적으로, 로그가 쌓이면 노드별 성공률과
+                비용 기준으로 모델 선택 기준을 조정합니다.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={autoRoutingEnabled}
+              onChange={(event) =>
+                handleAutoRoutingChange(event.target.checked)
+              }
+              disabled={loadingModels || chatModelOptions.length === 0}
+              className="mt-1 h-4 w-4 shrink-0 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+            />
+          </label>
+
+          {autoRoutingEnabled ? (
+            <div className="rounded-lg border border-emerald-200 bg-white p-3">
+              <div className="flex flex-col gap-1">
+                <div className="text-xs font-bold text-emerald-900">
+                  자동 라우팅 사용 중
+                </div>
+                <p className="text-xs leading-relaxed text-slate-600">
+                  기본 모델과 대체 모델은 직접 선택하지 않습니다. 실행 가능한
+                  credential/model 후보 중 로그 단계에 맞는 정책으로 모델을
+                  고릅니다.
+                </p>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {routingStages.map((item) => (
+                  <div
+                    key={item.stage}
+                    className="rounded-md border border-slate-200 bg-slate-50 p-2"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-bold text-slate-900">
+                        {item.stage}
+                      </span>
+                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 ring-1 ring-slate-200">
+                        {item.condition}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                      {item.policy}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                현재 런타임 라우터 API가 연결되기 전까지 저장된 기본 모델은
+                실행 호환성을 위한 내부 fallback으로 유지됩니다.
+              </p>
+            </div>
+          ) : loadingModels ? (
             <div className="text-xs text-gray-400">모델 로딩 중...</div>
           ) : modelOptions.length > 0 ? (
             <>
+              <div className="flex items-center">
+                <label className="text-xs font-semibold text-gray-700">
+                  기본 모델
+                </label>
+                <PropertyVisibilityToggle
+                  nodeId={nodeId}
+                  propertyKey="model_id"
+                />
+              </div>
               <ModelSelectDropdown
                 value={data.model_id || ''}
                 onChange={handleModelChange}
@@ -672,32 +766,6 @@ export function LLMNodePanel({
               </button>
             </div>
           )}
-          <div className="mt-3 flex flex-col gap-1.5">
-            <label
-              htmlFor={`${nodeId}-task-type`}
-              className="text-xs font-semibold text-gray-700"
-            >
-              작업 유형
-            </label>
-            <select
-              id={`${nodeId}-task-type`}
-              value={data.task_type || 'generate'}
-              onChange={(event) =>
-                handleUpdateData('task_type', event.target.value)
-              }
-              className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {LLM_TASK_TYPES.map((taskType) => (
-                <option key={taskType.value} value={taskType.value}>
-                  {taskType.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-500">
-              비용 비교와 후보 적용 시 같은 작업 유형 기준으로 모델과
-              프롬프트를 평가합니다.
-            </p>
-          </div>
         </div>
       </CollapsibleSection>
 

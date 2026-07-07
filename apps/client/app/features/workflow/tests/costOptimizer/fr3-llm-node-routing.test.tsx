@@ -99,12 +99,29 @@ const createLlmNode = (data: Partial<LLMNodeData> = {}): AppNode =>
     },
   }) as AppNode;
 
-describe('FR-003 LLM node task type option', () => {
+describe('FR-003 LLM node model routing option', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     global.fetch = vi.fn(async () => ({
       ok: true,
-      json: async () => [],
+      json: async () => [
+        {
+          id: 'model-1',
+          model_id_for_api_call: 'gpt-4.1',
+          name: 'GPT-4.1',
+          type: 'chat',
+          provider_name: 'openai',
+          is_active: true,
+        },
+        {
+          id: 'model-2',
+          model_id_for_api_call: 'gpt-4.1-mini',
+          name: 'GPT-4.1 mini',
+          type: 'chat',
+          provider_name: 'openai',
+          is_active: true,
+        },
+      ],
     })) as unknown as typeof fetch;
     const node = createLlmNode();
     useWorkflowStore.setState(
@@ -133,19 +150,43 @@ describe('FR-003 LLM node task type option', () => {
     vi.restoreAllMocks();
   });
 
-  it('원본 LLM 노드 상세 설정에서 작업 유형을 선택하면 node data에 저장된다', () => {
+  it('자동 라우팅 OFF에서는 모델 선택을 보여주고 작업 유형 입력은 숨긴다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
 
-    fireEvent.change(screen.getByLabelText('작업 유형'), {
-      target: { value: 'classify' },
-    });
+    expect(await screen.findByText('기본 모델')).toBeInTheDocument();
+    expect(screen.getByText('대체 모델')).toBeInTheDocument();
+    expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
+  });
+
+  it('자동 라우팅 토글을 켜면 node data에 저장된다', async () => {
+    const node = useWorkflowStore.getState().nodes[0] as AppNode;
+
+    render(<NodeInlinePanel node={node} />);
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: /자동 라우팅/ }),
+    );
 
     expect(useWorkflowStore.getState().nodes[0]?.data).toEqual(
       expect.objectContaining({
-        task_type: 'classify',
+        auto_model_routing: true,
       }),
     );
+  });
+
+  it('자동 라우팅 ON에서는 모델 선택을 숨기고 로그 단계별 라우팅 정책을 보여준다', () => {
+    const node = createLlmNode({ auto_model_routing: true });
+
+    render(<NodeInlinePanel node={node} />);
+
+    expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
+    expect(screen.getByText('Cold start')).toBeInTheDocument();
+    expect(screen.getByText('Warming up')).toBeInTheDocument();
+    expect(screen.getByText('Optimized')).toBeInTheDocument();
+    expect(screen.queryByText('기본 모델')).not.toBeInTheDocument();
+    expect(screen.queryByText('대체 모델')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 });
