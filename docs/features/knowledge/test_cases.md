@@ -101,6 +101,8 @@ Status: Draft
 - Safe label이 없는 KB recommendation은 raw KB name을 fallback으로 사용하지 않고 `null` 또는 generic label만 사용한다.
 - Recommendation request는 raw `workflow_intent`나 raw natural language 전체가 아니라 `StructuredRequest` 기반 `intent_summary`, `node_purpose_summary`, `knowledge_requirement`, `pending_resolution_ref`, `safe_workflow_context_summary`를 사용해야 한다. 이 safe structured input도 durable raw storage 금지, 길이 cap, control character normalization을 통과해야 한다.
 - Workflow Builder RAG recommendation은 Agent Builder client가 직접 호출하는 public client endpoint가 아니라, Agent Builder backend가 server-resolved context를 확정한 뒤 호출하는 Knowledge domain boundary로 취급해야 한다.
+- Public HTTP recommendation endpoint는 `mode=explicit_kb`와 raw KB id 기반 scope opening을 safe validation error로 거부한다. `mode=auto`에 raw KB/collection id가 섞여 있으면 권한 판단에 사용하지 않고 무시한다.
+- Trusted backend/internal service boundary는 safe handle, authorized picker, server-resolved context를 통과한 경우에만 explicit KB 후보를 recommendation scope로 사용할 수 있다.
 - Recommendation response는 `status`, `resolution_id`, `requirement_id`, `recommendations`, `clarification_options`, `user_safe_warning`, `fallback_reason` top-level envelope를 사용해야 하며 recommendation item list만 단독으로 반환하지 않아야 한다.
 - Recommendation ranking은 `KnowledgeCandidateResolver`가 만든 server-issued reference 또는 같은 backend 내부 service call의 safe candidate set만 사용해야 하며, raw KB id나 raw source metadata로 권한 후보를 직접 만들지 않아야 한다. HTTP 또는 serialized boundary에서는 full candidate set 객체가 아니라 reference만 사용해야 한다.
 - Recommendation response item은 `score`, `confidence`, `reason_category`, `threshold_result`를 포함해야 하며 raw retrieval/provider score나 hidden resource identity를 노출하지 않아야 한다.

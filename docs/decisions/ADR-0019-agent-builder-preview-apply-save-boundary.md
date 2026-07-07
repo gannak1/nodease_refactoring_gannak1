@@ -32,7 +32,7 @@ Agent Builder의 validation 통과 draft는 Workflow Editor의 Preview Mode에�
 - draft 생성 시점의 `base_graph_hash`와 workflow `version` 또는 `updated_at`이 적용 시점 최신 값과 일치한다.
 - validation 결과가 여전히 통과 상태다.
 
-Stale check는 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 함께 사용한다. `base_graph_hash`는 workflow 실행 의미에 영향을 주는 node id, node type, node data/config, edge source/target/handle만 포함한다. Viewport, selection, panel state, preview state, timestamp, UI-only metadata는 hash 입력에서 제외한다.
+Stale check는 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 함께 사용한다. `base_graph_hash`는 workflow 실행 의미에 영향을 주는 node id, node type, node data/config, edge source/target/handle만 포함한다. Viewport, selection, panel state, preview state, timestamp, UI-only metadata, note/memo node와 해당 note/memo node에만 연결된 non-runtime edge는 hash 입력에서 제외한다.
 
 MVP에서는 Workflow Editor에 저장되지 않은 변경이 있으면 Agent Builder draft 생성, Preview Mode 진입, `적용 및 저장`을 차단한다. 사용자는 먼저 기존 변경을 저장하거나 폐기해야 한다. 후속 확장에서는 server-validated client graph snapshot을 draft base로 쓰는 방식을 별도 결정할 수 있다.
 

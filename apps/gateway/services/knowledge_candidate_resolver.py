@@ -315,7 +315,7 @@ class KnowledgeCandidateResolver:
     def _kb_safe_label(self, kb: KnowledgeBase) -> str | None:
         source_identity = getattr(kb, "source_identity", None)
         if source_identity is None:
-            return kb.name
+            return None
         if getattr(source_identity, "display_policy_state", None) == "approved":
             return getattr(source_identity, "safe_display_name", None)
         return None

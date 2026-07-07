@@ -16,6 +16,7 @@ Agent Builder API는 workflow draft 생성, clarification, validation, draft pre
 | `GET` | `/api/v1/agent-builder/sessions/{session_id}` | 최근 메시지, pending request, draft preview 상태 조회 |
 | `POST` | `/api/v1/agent-builder/sessions/{session_id}/messages` | 사용자 자연어 요청 제출 |
 | `POST` | `/api/v1/agent-builder/requests/{request_id}/cancel` | pending 또는 processing request 취소 |
+| `POST` | `/api/v1/agent-builder/drafts/{draft_id}/preview-opened` | 사용자가 `도안 보기`로 Preview Mode에 진입했음을 audit-safe event로 기록 |
 | `POST` | `/api/v1/agent-builder/drafts/{draft_id}/apply` | 사용자가 Preview Mode에서 확인한 draft를 재검사 후 workflow graph로 저장 |
 
 `session_id`는 server-issued identifier다. Server는 session을 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶어 관리한다. Client-generated session id는 권한, scope, organization, audit 판단에 사용하지 않는다.
@@ -31,8 +32,9 @@ Client request body는 organization override를 포함하지 않는다.
 | `app_id` | 새 workflow draft 생성 scope |
 | `selected_node_id` | 현재 선택된 canvas node |
 | `selected_edge_id` | 현재 선택된 canvas edge. "이 연결 사이에", "여기 사이에"처럼 edge 선택 문맥일 때 target resolution hint로만 사용하며 권한/scope 판단에 사용하지 않음 |
-| `client_graph_snapshot` | 현재 canvas graph의 client snapshot 또는 hash. MVP에서는 unsaved editor graph를 draft base로 신뢰하지 않고 dirty/stale 감지와 차단 안내에만 사용한다. |
 | `conversation_context_id` | 이어지는 clarification context |
+
+MVP message request는 raw editor graph snapshot을 받지 않는다. Client는 선택된 node/edge hint만 보낼 수 있으며, unsaved editor graph를 draft base로 신뢰하지 않는다. Apply/save stale guard에 필요한 graph 비교는 apply request의 semantic graph hash로만 수행한다. Request body에 `client_graph_snapshot` 또는 동등한 raw graph payload가 포함되면 서버는 이를 권한/scope 판단이나 draft base로 사용하지 않고 거부해야 한다.
 
 ## Message Response
 
@@ -78,7 +80,7 @@ Adapter는 public client endpoint가 아니라 Agent Builder backend에서 호�
 | `safe_workflow_context_summary` | 현재 workflow 목적, 기존 KB 참조, 관련 노드 역할을 요약한 safe context. Raw graph payload나 hidden source 정보는 포함하지 않음 |
 | `knowledge_requirement` | `requirement_id`, `query_topics`, `expected_evidence_type`, `required` |
 | `pending_resolution_ref` | `resolution_id`, `slot_type=knowledge_base`, `slot_key`, `blocking` |
-| `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환 |
+| `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환. `explicit_kb`는 Agent Builder backend 또는 Knowledge domain 내부 service call처럼 safe handle과 server-resolved context를 이미 통과한 trusted boundary에서만 사용하며, Agent Builder client가 raw KB id로 여는 public request mode가 아니다 |
 | `authorized_safe_candidate_set_ref` | Knowledge side의 `KnowledgeCandidateResolver`가 만든 권한 확인된 safe 후보 집합을 가리키는 server-issued reference. Client body나 `StructuredRequestBuilder` 입력에서 오지 않음 |
 | `constraints` | max recommendations, high risk domain, query rewrite policy |
 
@@ -98,7 +100,7 @@ Actor, organization, workflow/app scope는 request body가 아니라 server-reso
 
 Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공할 수 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환한다. Safe 후보 선택지도 제공할 수 없으면 `status=unavailable`과 safe `fallback_reason`을 반환하고, Agent Builder는 validation failure 또는 사용자 안내로 닫는다.
 
-Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder가 draft를 생성하거나 apply/save를 수행할 때 backend가 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
+Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder draft metadata는 safe handle과 structured request safe context만 보존하고 runtime KB id mapping을 저장하지 않는다. Backend는 apply/save 직전에 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
 
 Recommendation item은 다음 판단 필드를 포함해야 한다.
 
@@ -149,10 +151,12 @@ Request:
 | Field | Description |
 | --- | --- |
 | `action` | `apply_and_save` 또는 `cancel` |
-| `client_preview_graph_hash` | 사용자가 확인한 preview graph hash |
-| `client_latest_graph_hash` | editor가 알고 있는 최신 graph hash |
+| `client_preview_graph_hash` | 사용자가 확인한 preview graph의 semantic hash. `apply_and_save`에서는 필수이며, preview graph 자체를 request body로 보내지 않는다. |
+| `client_latest_graph_hash` | editor가 알고 있는 최신 actual editor graph의 semantic hash. 기존 workflow 수정 draft에서는 필수이며, raw graph snapshot을 대체하지 않는다. |
 | `client_workflow_version` | editor가 알고 있는 workflow version. stale hint로만 사용하며 권한/scope 판단에 사용하지 않음 |
 | `client_workflow_updated_at` | editor가 알고 있는 workflow updated_at. stale hint로만 사용하며 권한/scope 판단에 사용하지 않음 |
+
+`client_preview_graph_hash`와 `client_latest_graph_hash`는 node id, node type, semantic node data/config, edge source/target/handle 같은 workflow 의미 값만 기준으로 계산한다. viewport, selection, panel state, preview state, timestamp, dragging/hover/status 같은 UI-only metadata는 hash에 포함하지 않는다. Client crypto/hash 계산을 수행할 수 없으면 raw graph fallback을 보내지 않고 apply/save를 차단해야 한다.
 
 Response:
 
@@ -176,7 +180,7 @@ Response:
 
 Stale check는 서버가 원 draft metadata의 `base_graph_hash`와 workflow version 또는 updated_at을 최신 workflow graph/context와 비교해 수행한다. Client가 보낸 graph hash, version, updated_at은 stale hint와 사용자 안내에만 사용하며 권한, scope, organization 판단을 대체하지 않는다.
 
-저장 성공 시 client는 Preview Mode를 종료하고 저장된 최신 workflow graph를 표시한다. 저장 차단 또는 실패 시 client는 Preview Mode를 유지하고 actual editor graph를 변경하지 않는다.
+저장 성공 시 client는 Preview Mode를 종료하고 저장된 최신 workflow graph를 표시한다. Client는 저장 성공 응답만으로 local `previewGraph`를 actual editor graph로 승격하지 않고, 저장된 workflow id를 기준으로 서버의 최신 workflow graph를 다시 조회하거나 동등한 서버 반환 graph로 reconcile한 뒤 표시해야 한다. 저장 차단 또는 실패 시 client는 Preview Mode를 유지하고 actual editor graph를 변경하지 않는다.
 
 ## Apply/Save Audit Events
 
@@ -184,6 +188,7 @@ Stale check는 서버가 원 draft metadata의 `base_graph_hash`와 workflow ver
 | --- | --- |
 | `DraftPreviewGenerated` | validation을 통과한 draft preview 생성 |
 | `DraftPreviewOpened` | 사용자가 `도안 보기`로 Preview Mode 진입 |
+| `DraftPreviewBlocked` | preview-opened audit 전 draft 상태, 만료, validation, 또는 scope 재확인 실패로 Preview Mode 진입 차단 |
 | `DraftApplySaveRequested` | 사용자가 `적용 및 저장` 요청 |
 | `DraftApplySaveBlocked` | metadata, permission, stale, validation, unsaved change 등으로 저장 차단 |
 | `DraftApplySaveSucceeded` | workflow graph 저장과 apply/save audit 기록 성공 |
@@ -193,6 +198,8 @@ Stale check는 서버가 원 draft metadata의 `base_graph_hash`와 workflow ver
 Audit-safe metadata에는 `request_id`, `draft_id`, `apply_id`, `session_id`, `workflow_id` 또는 새 workflow 생성 scope, `draft_mode`, `base_graph_hash`, `latest_graph_hash`, `preview_graph_hash`, workflow version 또는 updated_at, apply/save outcome, `block_reason`, `failure_reason`, `permission_recheck_outcome`, `stale_state`, `validation_state`, `saved_workflow_id`, timestamp를 포함할 수 있다.
 
 Audit metadata에는 credential 원문, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
+
+`DraftPreviewOpened` 기록에 실패하면 client는 Preview Mode에 진입하지 않고 사용자에게 재시도 안내를 표시해야 한다. Preview Mode 진입은 preview-opened audit-safe event 기록 성공 이후에만 가능하다.
 
 ## Error Codes
 
@@ -204,9 +211,12 @@ Audit metadata에는 credential 원문, raw KB content, raw source path/url/titl
 | `DRAFT_VALIDATION_FAILED` | draft validation 실패 |
 | `KB_CANDIDATE_UNAVAILABLE` | 권한 확인된 KB 후보 없음 |
 | `KB_CANDIDATE_AMBIGUOUS` | KB 후보가 여러 개이며 자동 선택 불가 |
+| `KB_PERMISSION_REQUIRED` | draft 생성 이후 KB use 권한, source ACL, runtime availability 재확인 실패 |
 | `DRAFT_METADATA_NOT_FOUND` | apply 대상 draft metadata 없음 |
 | `DRAFT_METADATA_EXPIRED` | apply 대상 draft metadata가 만료됨 |
+| `DRAFT_NOT_APPLICABLE` | 이미 취소, 저장, 만료, 또는 terminal 처리된 draft라 다시 적용할 수 없음 |
 | `DRAFT_STALE` | 최신 graph/context와 draft base가 맞지 않음 |
+| `UNSAVED_EDITOR_CHANGES` | 현재 editor에 저장되지 않은 변경이 있어 apply/save 차단 |
 | `SAVE_FAILED` | backend 저장 시도 또는 apply/save audit 기록 실패 |
 | `ORGANIZATION_CONTEXT_MISMATCH` | draft 생성 시 active organization과 apply 시 active organization이 다름 |
 | `UNSAVED_EDITOR_CHANGES` | 저장되지 않은 editor 변경이 있어 MVP 정책상 draft 생성, Preview Mode, 또는 apply/save를 진행할 수 없음 |

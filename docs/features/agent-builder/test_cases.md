@@ -10,6 +10,7 @@ Status: Draft
 - `blocking` 최종값은 LLM hint가 아니라 product policy와 slot type 규칙으로 확정된다.
 - `TargetResolver`는 자연어 target이 selected node보다 우선한다.
 - `TargetResolver`는 사용자가 edge를 선택하고 자연어가 "여기 사이에", "이 연결에"처럼 edge 문맥을 지칭할 때 `selected_edge_id`를 위치 hint로 사용한다.
+- `selected_edge_id`가 확정된 기존 workflow 수정 draft는 선택된 edge의 source와 target 사이에 생성 step을 삽입하는 preview graph를 만들고, 저장 시 기존 선택 edge를 제거한 뒤 생성 step edge를 연결한다.
 - 동일 type node가 여러 개이고 selected node가 후보가 아니면 clarification을 반환한다.
 - `WorkflowDraftValidator`는 unsupported node type, missing config, schema mismatch, permission shortage를 실패로 반환한다.
 
@@ -28,6 +29,8 @@ Status: Draft
 - `X-Organization-Id`가 없으면 Agent Builder request가 거부된다.
 - Request body에 `organization_id`가 있어도 권한/scope 판단에는 사용되지 않는다.
 - Request body의 `selected_edge_id`는 target resolution hint로만 쓰이고 권한/scope 판단에는 사용되지 않는다.
+- Message request에 `client_graph_snapshot` 또는 동등한 raw graph payload가 포함되면 서버는 이를 draft base나 권한/scope 판단에 사용하지 않고 거부한다.
+- Apply/save request에 raw graph payload와 동등한 `graph`, `nodes`, `edges`, `preview_graph`, `workflow_graph` 같은 field가 포함되면 서버는 입력 값을 echo하지 않고 safe validation error로 거부한다.
 - Agent Builder session id는 server-issued 값이어야 하며, client-generated session id는 권한/scope/audit 판단에 사용되지 않는다.
 - 기존 workflow 수정 요청은 workflow read/write 권한이 없으면 `WORKFLOW_PERMISSION_REQUIRED`를 반환한다.
 - 새 workflow draft 요청은 app 또는 workflow 생성 scope 권한이 없으면 `APP_CREATE_PERMISSION_REQUIRED`를 반환한다.
@@ -42,7 +45,8 @@ Status: Draft
 - Recommendation `candidate_id`는 raw source id/path/url/title이 아니라 server-issued safe handle이어야 한다.
 - Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다.
 - Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
-- Draft 생성 또는 apply/save 시 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다.
+- Draft metadata에는 safe handle과 structured request safe context만 저장되고 runtime KB id mapping은 저장되지 않는다.
+- Apply/save 직전에 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다.
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
 - 후보 여러 개 또는 점수 근접이면 clarification option이 표시된다.
@@ -70,7 +74,13 @@ Status: Draft
 - Draft preview는 생성/변경될 step, target 위치, missing info, validation result, warning을 표시한다.
 - Validation 실패 draft에는 `도안 보기` 또는 `적용 및 저장` action이 표시되지 않는다.
 - Chatbot panel의 `도안 보기`를 선택하면 Preview Mode가 열리고, actual editor graph는 변경되지 않는다.
+- `도안 보기`를 선택하면 `DraftPreviewOpened` 또는 동등한 preview-opened audit event가 safe metadata로 기록된다.
+- `DraftPreviewOpened` audit 기록에 실패하면 Preview Mode에 진입하지 않고 재시도 안내를 표시한다.
+- draft 상태, 만료, validation, 또는 scope 재확인 실패로 preview-opened가 차단되면 `DraftPreviewBlocked` 또는 동등한 audit-safe event를 기록하고 Preview Mode에 진입하지 않는다.
 - Preview Mode는 agent draft graph를 `previewGraph`로 렌더링하고 actual editor graph와 분리한다.
+- Preview Mode 중 URL `?node=` 또는 browser popstate가 들어와도 actual workflow node editor를 열지 않고, preview node detail 경계만 유지한다.
+- Preview Mode action이 Agent Builder panel 안에 있으면 panel close를 차단해 `적용 및 저장`과 `취소` 경로가 유지된다.
+- workflow/app route scope가 바뀌면 이전 scope의 Agent Builder session, pending state, preview graph가 새 scope로 이어지지 않는다.
 - Preview Mode에서 node를 클릭하면 Node Detail Panel에 node type, 주요 설정, KB/Slack binding, credential 참조 상태, input/output mapping, validation 상태가 읽기 전용으로 표시된다.
 - Preview Mode의 Node Detail Panel에서는 node 설정, credential, KB, edge, delete action을 수정할 수 없다.
 - `취소`를 선택하면 preview graph가 폐기되고 actual editor graph는 Preview Mode 진입 전 상태를 유지한다.
@@ -78,7 +88,8 @@ Status: Draft
 - Stale check는 base graph hash와 latest graph hash를 비교하고, workflow version 또는 updated_at도 함께 비교한다.
 - Base graph hash가 같아도 workflow version 또는 updated_at이 달라지면 stale draft로 저장되지 않는다.
 - Workflow version 또는 updated_at이 같아도 graph hash가 달라지면 stale draft로 저장되지 않는다.
-- Graph hash는 node id, node type, node data/config, edge source/target/handle 같은 workflow 의미 값만 반영하고 viewport, selection, panel state, preview state, timestamp, UI-only metadata는 반영하지 않는다.
+- Graph hash는 node id, node type, node data/config, edge source/target/handle 같은 workflow 의미 값만 반영하고 viewport, selection, panel state, preview state, timestamp, UI-only metadata, note/memo node와 해당 note/memo node에만 연결된 non-runtime edge는 반영하지 않는다.
+- `apply_and_save` request에는 사용자가 확인한 `client_preview_graph_hash`가 필요하며, 기존 workflow 수정 draft에는 `client_latest_graph_hash`가 필요하다. Hash 계산이 불가능하면 raw graph fallback을 보내지 않고 apply/save를 차단한다.
 - Stale draft는 저장되지 않고 user-safe block reason을 반환하며 Preview Mode를 유지한다.
 - 기존 workflow 수정 draft는 workflow read/write 권한이 없으면 저장되지 않는다.
 - 새 workflow draft는 app 또는 workflow 생성 scope 권한이 없으면 저장되지 않는다.
@@ -90,6 +101,7 @@ Status: Draft
 - `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용되지 않는다.
 - workflow graph 저장 시도 후 apply/save audit 기록이 실패하면 `SAVE_FAILED` 또는 동등한 safe failure로 처리되고 Preview Mode가 유지되며 actual editor graph는 변경되지 않는다.
 - 저장 성공 시 Preview Mode가 종료되고 editor는 저장된 최신 workflow graph를 표시한다.
+- 저장 성공 후 client는 local `previewGraph`를 actual editor graph로 직접 승격하지 않고, 저장된 workflow id를 기준으로 서버 최신 graph를 다시 조회하거나 동등한 서버 반환 graph로 reconcile해 표시한다.
 - 저장 차단 또는 실패 시 Preview Mode가 유지되고 actual editor graph는 변경되지 않는다.
 - 저장 성공 후에도 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경은 발생하지 않는다.
 - Draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소 audit event가 구분되어 기록된다.

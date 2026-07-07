@@ -115,7 +115,7 @@ Recommendation item은 score, confidence, reason category, threshold result를 �
 
 Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
 
-Recommendation candidate 식별자는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이어야 한다. Draft preview와 clarification에는 safe metadata만 표시한다. Agent Builder가 draft를 생성하거나 저장할 때는 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석해야 하며, handle이 만료되었거나 권한 확인을 통과하지 못하면 validation failure 또는 재선택 질문으로 닫아야 한다.
+Recommendation candidate 식별자는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이어야 한다. Draft preview와 clarification에는 safe metadata만 표시한다. Draft metadata에는 runtime KB id mapping을 저장하지 않고 safe handle과 structured request safe context만 보존한다. Agent Builder가 apply/save로 workflow graph를 저장하기 직전 backend는 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석해야 하며, handle이 만료되었거나 권한 확인을 통과하지 못하면 validation failure 또는 재선택 질문으로 닫아야 한다.
 
 초기 recommendation 결과는 KB 단위로 materialize된다. Builder UI는 Collection 맥락을 safe `source_collection_summary`로 설명할 수 있지만, 현재 LLM node draft에는 `knowledgeBases` 중심으로 저장한다.
 
@@ -160,17 +160,19 @@ Agent Builder는 validation을 통과한 draft에 대해 사용자가 저장 전
 
 Preview Mode는 현재 editor graph를 덮어쓰지 않고, agent가 생성한 `previewGraph`를 실제 editor graph와 분리된 읽기 전용 graph로 렌더링해야 한다. 사용자는 preview graph의 node와 edge를 확인하고, node를 선택해 Node Detail Panel에서 node type, 주요 설정, Knowledge Base binding, Slack channel binding, credential 참조 상태, input/output mapping, validation 상태를 확인할 수 있어야 한다.
 
-Preview Mode의 Node Detail Panel은 편집을 허용하지 않는다. 사용자가 draft 내용을 바꾸려면 채팅 후속 요청으로 수정해야 한다. Preview Mode에는 이 graph가 아직 저장되지 않은 도안이라는 banner와 `적용 및 저장`, `취소` action을 표시해야 한다.
+Preview Mode의 Node Detail Panel은 편집을 허용하지 않는다. 사용자가 draft 내용을 바꾸려면 채팅 후속 요청으로 수정해야 한다. Preview Mode에는 이 graph가 아직 저장되지 않은 도안이라는 안내와 `적용 및 저장`, `취소` action을 항상 접근 가능한 위치에 표시해야 한다. MVP에서는 이 action을 canvas banner/action bar 또는 Preview Mode 동안 닫을 수 없는 Agent Builder panel에 둘 수 있지만, 사용자가 panel을 닫아 적용/취소 경로를 잃게 해서는 안 된다.
 
 `취소`를 선택하면 preview graph를 폐기하고 기존 editor state로 돌아간다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
 
 `적용 및 저장`을 선택하면 backend는 원 draft metadata 조회, 요청 유형별 권한 재확인, stale check, validation 재확인을 통과한 경우에만 workflow graph를 저장한다. 기존 workflow 수정 draft는 workflow read/write 권한을 재확인하고, 새 workflow draft는 app 또는 workflow 생성 scope 권한을 재확인한다. 전체 교체 draft는 기존 workflow read/write 권한과 교체 validation을 모두 만족해야 한다.
 
-Stale check는 draft 생성 시점의 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 저장하고, 적용 및 저장 시점의 최신 graph hash와 최신 version/updated_at을 함께 비교한다. `base_graph_hash` 또는 version/updated_at 중 하나라도 달라지면 stale로 간주하고 저장을 차단한다. `base_graph_hash`에는 node id, node type, node data/config, edge source/target/handle처럼 workflow 의미에 영향을 주는 값만 포함하고, viewport, selection, panel state, preview state, timestamp, UI-only metadata는 포함하지 않는다.
+Stale check는 draft 생성 시점의 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 저장하고, 적용 및 저장 시점의 최신 graph hash와 최신 version/updated_at을 함께 비교한다. `base_graph_hash` 또는 version/updated_at 중 하나라도 달라지면 stale로 간주하고 저장을 차단한다. `base_graph_hash`에는 node id, node type, node data/config, edge source/target/handle처럼 workflow 의미에 영향을 주는 값만 포함하고, viewport, selection, panel state, preview state, timestamp, UI-only metadata, note/memo node와 해당 note/memo node에만 연결된 non-runtime edge는 포함하지 않는다.
 
 `적용 및 저장`은 workflow graph 저장까지 의미하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 의미하지 않는다. 저장 이후 workflow 실행은 기존 execution flow의 별도 사용자 동작으로만 수행된다.
 
 저장 성공 시 Preview Mode를 종료하고 Workflow Editor는 저장된 최신 workflow graph를 표시한다. `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용하지 않는다. 새 workflow draft 생성이 성공하면 새 workflow editor로 이동하거나 현재 editor context를 새 workflow로 전환한다. Agent Builder chatbot은 저장 완료와 별도 실행 필요 상태를 한국어로 안내한다.
+
+저장 성공 후 Workflow Editor는 local `previewGraph`를 actual editor graph로 바로 승격하지 않는다. 저장된 workflow id를 기준으로 서버의 최신 workflow graph를 다시 조회하거나, 서버가 반환한 동등한 최신 저장 graph로 reconcile한 뒤 표시해야 한다. 이 경계는 preview-only graph가 실제 저장 결과와 달라지는 상황을 방지하기 위한 것이다.
 
 저장 차단 또는 저장 시도 실패 시 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. 사용자는 차단 사유 또는 실패 사유를 확인한 뒤 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있어야 한다. `blocked` outcome은 draft metadata 없음, draft metadata 만료, workflow read/write 권한 부족, app 또는 workflow 생성 scope 권한 부족, stale draft, validation 실패, active organization mismatch, 저장되지 않은 editor 변경 같은 차단 사유를 `block_reason`으로 표현한다. `failed` outcome은 backend 저장 시도 실패 또는 apply/save audit 기록 실패 같은 실패 사유를 `failure_reason`으로 표현한다.
 
@@ -179,6 +181,8 @@ Preview Mode는 `actualEditorGraph`와 `previewGraph`를 섞지 않아야 한다
 Apply/save audit event는 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소를 구분해야 한다. 저장 성공 event는 workflow graph 저장 완료와 audit 기록 성공을 함께 의미하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 의미하지 않는다.
 
 MVP에서는 editor에 저장되지 않은 변경이 있으면 Agent Builder draft 생성, Preview Mode 진입, 또는 `적용 및 저장`을 진행하지 않는다. 사용자는 먼저 기존 editor 변경을 저장하거나 폐기해야 한다. 이는 unsaved graph와 agent draft가 섞여 저장 충돌이나 rollback 문제를 만드는 것을 막기 위한 동시성 보호 정책이다.
+
+MVP message request는 raw client graph snapshot을 받지 않는다. Client는 선택된 node/edge hint만 보낼 수 있고, apply/save 단계에서 `client_preview_graph_hash`와 `client_latest_graph_hash` 같은 semantic graph hash를 사용해 preview 확인 여부와 stale 여부를 검증한다. Hash 계산이 불가능하면 raw graph payload로 fallback하지 않고 apply/save를 차단해야 한다.
 
 후속 확장에서는 현재 unsaved editor graph를 검증 가능한 client graph snapshot으로 서버에 전달하고, 서버가 snapshot hash와 schema를 검증한 뒤 해당 snapshot을 draft base로 삼는 방식을 고려할 수 있다. 이 확장 전까지는 unsaved editor graph를 draft base로 자동 포함하지 않는다.
 

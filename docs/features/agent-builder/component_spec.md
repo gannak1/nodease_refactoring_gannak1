@@ -26,7 +26,7 @@ Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 P
 | `PreviewModeController` | actual editor graph와 preview graph를 분리하고 Preview Mode 진입/종료 제어 |
 | `PreviewCanvasRenderer` | agent draft graph를 실제 editor graph와 분리된 읽기 전용 canvas로 렌더링 |
 | `PreviewNodeDetailPanel` | preview node의 type, 주요 설정, KB/Slack binding, credential 참조 상태, validation 상태를 읽기 전용으로 표시 |
-| `DraftApplyActionBar` | Preview Mode banner, `적용 및 저장`, `취소`, 저장 전 safety notice 표시 |
+| `DraftApplyActionBar` | Preview Mode 안내, `적용 및 저장`, `취소`, 저장 전 safety notice 표시. MVP에서는 별도 canvas action bar 또는 Preview Mode 동안 닫을 수 없는 Agent Builder panel 안의 action 영역으로 구현할 수 있다 |
 | `DraftApplyStateGuard` | unsaved editor change, stale warning, apply/save processing 중 중복 action 방지 |
 | `DraftApplyResultPresenter` | 저장 성공, 저장 차단, 저장 실패, 취소 결과를 한국어로 표시하고 Preview Mode 유지/종료를 제어 |
 
@@ -49,9 +49,11 @@ Preview Mode component는 preview graph를 actual editor graph에 merge하지 �
 | `WorkflowDraftValidator` | schema, permission, side effect, missing config 검증 |
 | `WorkflowDraftApplyService` | draft metadata 조회, 권한 재확인, stale check, validation 재확인, workflow graph 저장, apply/save audit 기록. 저장 성공은 audit 기록 성공을 전제로 한다. |
 
-`WorkflowDraftApplyService`는 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 최신 graph/context와 비교한다. Graph hash는 workflow 의미에 영향을 주는 node id, node type, node data/config, edge source/target/handle을 기준으로 계산하고 viewport, selection, panel state, preview state, timestamp, UI-only metadata는 제외한다.
+`WorkflowDraftApplyService`는 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 최신 graph/context와 비교한다. Graph hash는 workflow 의미에 영향을 주는 node id, node type, node data/config, edge source/target/handle을 기준으로 계산하고 viewport, selection, panel state, preview state, timestamp, UI-only metadata, note/memo node와 해당 note/memo node에만 연결된 non-runtime edge는 제외한다.
 
 Apply/save가 성공하면 backend는 저장된 workflow id와 최신 workflow version 또는 updated_at을 반환한다. 이 성공 응답은 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 상태는 허용하지 않는다. Frontend는 이 결과를 받은 뒤 Preview Mode를 종료하고 저장된 최신 workflow graph를 표시한다. 새 workflow draft 생성이 성공하면 새 workflow editor로 이동하거나 현재 editor context를 새 workflow로 전환한다.
+
+Frontend는 저장 성공 응답만으로 local `previewGraph`를 actual editor graph에 직접 승격하지 않는다. 저장된 workflow id를 기준으로 서버의 최신 workflow graph를 다시 조회하거나, 서버가 반환한 동등한 최신 저장 graph로 reconcile한 뒤 editor state를 갱신한다.
 
 Apply/save가 차단되거나 실패하면 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. Backend response는 `blocked`에 `block_reason`, `failed`에 `failure_reason`을 사용해 차단과 저장 시도 실패 또는 apply/save audit 기록 실패를 구분한다. Frontend는 block reason 또는 failure reason을 표시하고, 사용자가 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있게 한다.
 
@@ -93,9 +95,11 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 - Cancel 이후 도착한 결과는 draft preview, Preview Mode, apply/save로 이어질 수 없다.
 - 선택된 edge는 "이 연결 사이에" 같은 자연어 edge 문맥에서만 target hint로 사용하고, 권한/scope 판단에는 사용하지 않는다.
 - Validation을 통과하지 않은 draft에는 `도안 보기` 또는 `적용 및 저장` action을 표시하지 않는다.
-- Preview Mode banner는 "미리보기 모드이며 아직 저장되지 않았다"는 상태를 명확히 표시한다.
+- Preview Mode 안내는 "미리보기 모드이며 아직 저장되지 않았다"는 상태를 명확히 표시한다. `적용 및 저장`과 `취소` action이 Agent Builder panel 안에 있다면 Preview Mode 동안 panel close를 차단해 action 경로가 사라지지 않게 한다.
+- `도안 보기` audit 기록이 실패하면 Preview Mode에 진입하지 않고 재시도 안내를 표시한다.
 - Preview Mode에서 actual editor graph와 preview graph는 별도 state로 유지한다.
 - MVP에서는 editor에 저장되지 않은 변경이 있으면 Agent Builder draft 생성, Preview Mode 진입, 또는 `적용 및 저장`을 차단하고 먼저 저장 또는 폐기를 요구한다.
+- MVP message request는 raw client graph snapshot을 보내지 않는다. Client는 selected node/edge hint만 보내며, apply/save 단계의 preview 확인과 stale guard에는 semantic graph hash만 사용한다. Hash 계산이 불가능하면 raw graph payload fallback을 보내지 않고 apply/save를 차단한다.
 - 후속 확장에서는 검증 가능한 client graph snapshot을 draft base로 삼는 정책을 도입할 수 있으나, 그 전까지 unsaved editor graph를 agent draft base로 자동 포함하지 않는다.
 - `적용 및 저장`은 workflow graph 저장까지 수행하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
 - `적용 및 저장` 성공 시 Preview Mode를 종료하고 editor는 저장된 최신 workflow graph를 표시한다. 이 성공 상태는 backend 저장과 apply/save audit 기록 성공을 모두 통과한 경우에만 사용한다.

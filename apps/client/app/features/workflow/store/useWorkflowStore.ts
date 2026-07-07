@@ -52,6 +52,24 @@ export interface Workflow {
   };
 }
 
+export type AgentBuilderValidationResult = {
+  valid: boolean;
+  issues?: Array<{ code: string; message: string; path?: string | null }>;
+};
+
+export type AgentBuilderPreviewState = {
+  draftId: string;
+  previewGraph: {
+    nodes: Node[];
+    edges: Edge[];
+    viewport?: { x: number; y: number; zoom: number };
+  };
+  nodeDetailPreviews: Array<Record<string, unknown>>;
+  validationResult: AgentBuilderValidationResult;
+  baseGraphHash?: string | null;
+  draftMode: 'new_workflow' | 'modify_workflow' | 'replace_workflow';
+};
+
 const createIdleTestExecutionState = () => ({
   isTestPanelOpen: false,
   testExecutionStatus: 'idle' as const,
@@ -139,6 +157,7 @@ type WorkflowState = {
   envVariables: EnvVariable[]; // 환경 변수
   runtimeVariables: RuntimeVariable[]; // 런타임 변수
   hasUnsavedChanges: boolean;
+  agentBuilderPreview: AgentBuilderPreviewState | null;
 
   // === ReactFlow 액션 ===
   onNodesChange: OnNodesChange;
@@ -218,12 +237,16 @@ type WorkflowState = {
   setEnvVariables: (vars: EnvVariable[]) => void;
   setRuntimeVariables: (vars: RuntimeVariable[]) => void;
   setHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
+  setAgentBuilderPreview: (preview: AgentBuilderPreviewState) => void;
+  clearAgentBuilderPreview: () => void;
   updateNodeData: (nodeId: string, newData: Record<string, unknown>) => void;
   setWorkflowData: (
     data: {
       nodes: Node[];
       edges: Edge[];
       viewport: { x: number; y: number; zoom: number };
+      appId?: string;
+      app_id?: string;
       features?: Features;
       envVariables?: EnvVariable[];
       runtimeVariables?: RuntimeVariable[];
@@ -589,6 +612,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   envVariables: [],
   runtimeVariables: [],
   hasUnsavedChanges: false,
+  agentBuilderPreview: null,
 
   // === Inner Node Selection ===
   selectedInnerNode: null,
@@ -605,6 +629,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       nodes,
       workflows: updatedWorkflows,
+      hasUnsavedChanges: true,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(currentNodes, edges),
@@ -624,6 +649,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       edges,
       workflows: updatedWorkflows,
+      hasUnsavedChanges: true,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(nodes, currentEdges),
@@ -655,6 +681,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       nodes: nextNodes,
       features: nextFeatures,
       workflows: updatedWorkflows,
+      hasUnsavedChanges: true,
     });
 
     return numberedNode;
@@ -738,6 +765,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     );
     const isDragging = changes.some(isDraggingPositionChange);
     const shouldRecord = shouldRecordCompletedNodeChanges(changes);
+    const hasMeaningfulChange = changes.some((change) => change.type !== 'select');
     const historySnapshot = pendingDragStartSnapshot
       ? pendingDragStartSnapshot
       : cloneGraph(currentNodes, currentEdges);
@@ -745,6 +773,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       nodes: newNodes as Node[],
       workflows: updatedWorkflows,
+      hasUnsavedChanges: hasMeaningfulChange ? true : state.hasUnsavedChanges,
       pendingDragStartSnapshot: isDragging
         ? state.pendingDragStartSnapshot ||
           cloneGraph(currentNodes, currentEdges)
@@ -772,9 +801,11 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       currentNodes,
       newEdges,
     );
+    const hasMeaningfulChange = changes.some((change) => change.type !== 'select');
     set((state) => ({
       edges: newEdges,
       workflows: updatedWorkflows,
+      hasUnsavedChanges: hasMeaningfulChange ? true : state.hasUnsavedChanges,
       ...(shouldRecordEdgeChanges(changes)
         ? {
             undoStack: [
@@ -813,6 +844,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       edges: newEdges,
       workflows: updatedWorkflows,
       numberConnection: null,
+      hasUnsavedChanges: true,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(currentNodes, currentEdges),
@@ -836,6 +868,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         previous.nodes,
         previous.edges,
       ),
+      hasUnsavedChanges: true,
       undoStack: undoStack.slice(0, -1),
       redoStack: [...state.redoStack.slice(-(HISTORY_LIMIT - 1)), current],
       pendingDragStartSnapshot: null,
@@ -857,6 +890,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         next.nodes,
         next.edges,
       ),
+      hasUnsavedChanges: true,
       undoStack: [...state.undoStack.slice(-(HISTORY_LIMIT - 1)), current],
       redoStack: redoStack.slice(0, -1),
       pendingDragStartSnapshot: null,
@@ -910,6 +944,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nextEdges,
         numbered.features,
       ),
+      hasUnsavedChanges: true,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(nodes, edges),
@@ -955,6 +990,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nextEdges,
         numbered.features,
       ),
+      hasUnsavedChanges: true,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(nodes, edges),
@@ -994,6 +1030,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nextNodes,
         nextEdges,
       ),
+      hasUnsavedChanges: true,
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
         cloneGraph(nodes, edges),
@@ -1060,7 +1097,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   toggleVersionHistory: () =>
     set((state) => ({
-      isVersionHistoryOpen: !state.isVersionHistoryOpen,
+      isVersionHistoryOpen: state.agentBuilderPreview
+        ? false
+        : !state.isVersionHistoryOpen,
       isSettingsOpen: false,
       isTestPanelOpen: false,
     })),
@@ -1181,6 +1220,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   cancelNumberConnection: () => set({ numberConnection: null }),
 
   previewVersion: (version) => {
+    if (get().agentBuilderPreview) return;
     // 현재 스냅샷을 노드/엣지에 적용 (미리보기)
     const snapshot = version.graph_snapshot;
     set({
@@ -1325,6 +1365,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nodes: workflow.nodes,
         edges: workflow.edges,
         features: workflow.features,
+        agentBuilderPreview: null,
+        fullscreenNodeId: null,
         undoStack: [],
         redoStack: [],
         ...createIdleTestExecutionState(),
@@ -1341,6 +1383,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     if (!workflow) {
       set({
         activeWorkflowId: id,
+        agentBuilderPreview: null,
+        fullscreenNodeId: null,
         undoStack: [],
         redoStack: [],
         ...createIdleTestExecutionState(),
@@ -1354,6 +1398,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set({
       activeWorkflowId: id,
       features: workflow.features,
+      agentBuilderPreview: null,
+      fullscreenNodeId: null,
       undoStack: [],
       redoStack: [],
       ...createIdleTestExecutionState(),
@@ -1375,6 +1421,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nodes: newActive.nodes,
         edges: newActive.edges,
         features: newActive.features,
+        agentBuilderPreview: null,
+        fullscreenNodeId: null,
       });
     } else {
       set({ workflows: filteredWorkflows });
@@ -1425,11 +1473,23 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     const updatedWorkflows = workflows.map((w) =>
       w.id === activeWorkflowId ? { ...w, features } : w,
     );
-    set({ features, workflows: updatedWorkflows });
+    set({ features, workflows: updatedWorkflows, hasUnsavedChanges: true });
   },
-  setEnvVariables: (envVariables) => set({ envVariables }),
-  setRuntimeVariables: (runtimeVariables) => set({ runtimeVariables }),
+  setEnvVariables: (envVariables) =>
+    set({ envVariables, hasUnsavedChanges: true }),
+  setRuntimeVariables: (runtimeVariables) =>
+    set({ runtimeVariables, hasUnsavedChanges: true }),
   setHasUnsavedChanges: (hasUnsavedChanges) => set({ hasUnsavedChanges }),
+  setAgentBuilderPreview: (preview) =>
+    set({
+      agentBuilderPreview: preview,
+      isVersionHistoryOpen: false,
+      isSettingsOpen: false,
+      isTestPanelOpen: false,
+      fullscreenNodeId: null,
+      previewingVersion: null,
+    }),
+  clearAgentBuilderPreview: () => set({ agentBuilderPreview: null }),
 
   updateNodeData: (nodeId, newData) => {
     set({
@@ -1454,6 +1514,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   updateInnerNodeData: (parentNodeId, nodeId, newData) => {
     set({
+      hasUnsavedChanges: true,
       nodes: get().nodes.map((node) => {
         if (node.id === parentNodeId) {
           // Find and update the inner node within subGraph
@@ -1486,16 +1547,18 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
     const { activeWorkflowId, workflows } = get();
     const targetId = workflowId || activeWorkflowId;
-    const isActiveTarget = targetId === activeWorkflowId;
+    const shouldLoadIntoEditor = Boolean(targetId) && targetId === activeWorkflowId;
 
-    if (isActiveTarget) {
+    if (shouldLoadIntoEditor && targetId) {
       set({
+        activeWorkflowId: targetId,
         nodes: normalized.nodes,
         edges: data.edges || [],
         features: normalized.features,
         envVariables: data.envVariables || [],
         runtimeVariables: data.runtimeVariables || [],
         hasUnsavedChanges: false,
+        agentBuilderPreview: null,
         undoStack: [],
         redoStack: [],
       });
@@ -1522,7 +1585,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
           ...workflows,
           {
             id: targetId,
-            appId: '',
+            appId: data.appId ?? data.app_id ?? '',
             nodes: normalized.nodes,
             edges: data.edges || [],
             features: normalized.features,

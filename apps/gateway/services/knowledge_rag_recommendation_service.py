@@ -63,21 +63,38 @@ class KnowledgeRAGRecommendationService:
     def recommend_for_builder(
         self,
         request: KnowledgeRAGRecommendationRequest,
+        *,
+        include_materialized_refs: bool = False,
     ) -> KnowledgeRAGRecommendationResponse:
         resolver = self.resolver or self._resolver_for_request(request)
         recommendation_mode = self._resolved_mode(request)
-        resolution = self._resolve_candidates(resolver, request, recommendation_mode)
+        try:
+            resolution = self._resolve_candidates(resolver, request, recommendation_mode)
+        except Exception:
+            return self._adapter_unavailable_response(request)
+        try:
+            ranked = self._rank_candidates(resolution.candidates, request)
+        except Exception:
+            return self._adapter_unavailable_response(request, resolution.candidates)
 
-        ranked = self._rank_candidates(resolution.candidates, request)
         limited = ranked[: request.max_recommendations]
         recommendations = [
             self._recommendation(candidate, score, matched_terms, used_signals, request)
             for candidate, score, matched_terms, used_signals in limited
         ]
+        if not include_materialized_refs:
+            for item in recommendations:
+                item.materialized_knowledge_bases = []
 
         warning_count = sum(1 for item in recommendations if item.warnings)
         return KnowledgeRAGRecommendationResponse(
+            status="recommended" if recommendations else "no_candidate",
+            resolution_id=request.pending_resolution_ref,
+            requirement_id=(request.knowledge_requirement or {}).get("requirement_id")
+            if request.knowledge_requirement
+            else None,
             recommendations=recommendations,
+            fallback_reason=None if recommendations else "no_candidate",
             summary=KnowledgeRAGRecommendationSummary(
                 candidate_count_bucket=bucket_count(len(resolution.candidates)),
                 recommendation_count_bucket=bucket_count(len(recommendations)),
@@ -89,6 +106,34 @@ class KnowledgeRAGRecommendationService:
                 warning_count_bucket=bucket_count(warning_count),
             ),
             reason_code=None if recommendations else resolution.reason_code or "no_candidate",
+        )
+
+    def _adapter_unavailable_response(
+        self,
+        request: KnowledgeRAGRecommendationRequest,
+        candidates: list[KnowledgeCandidate] | None = None,
+    ) -> KnowledgeRAGRecommendationResponse:
+        safe_options = [
+            {
+                "candidate_id": self._recommendation_id(candidate),
+                "safe_label": candidate.safe_label or GENERIC_KB_LABEL,
+                "candidate_type": candidate.candidate_type,
+                "runtime_availability": candidate.runtime_availability,
+                "reason_category": "adapter_unavailable",
+            }
+            for candidate in (candidates or [])[: request.max_recommendations]
+        ]
+        return KnowledgeRAGRecommendationResponse(
+            status="clarification_required" if safe_options else "unavailable",
+            resolution_id=request.pending_resolution_ref,
+            requirement_id=(request.knowledge_requirement or {}).get("requirement_id")
+            if request.knowledge_requirement
+            else None,
+            recommendations=[],
+            clarification_options=safe_options,
+            fallback_reason="adapter_unavailable",
+            reason_code="adapter_unavailable",
+            user_safe_warning="Knowledge Base 추천을 사용할 수 없어 사용자 확인이 필요합니다.",
         )
 
     def _resolver_for_request(
@@ -207,12 +252,24 @@ class KnowledgeRAGRecommendationService:
             )
         ][:MAX_MATERIALIZED_KBS]
         safe_reason_code = self._safe_reason_code(matched_terms, request)
+        recommendation_id = self._recommendation_id(candidate)
+        threshold_result = (
+            "high_confidence" if score >= 0.65 else "close_score" if score >= 0.45 else "below_threshold"
+        )
+        confidence_label = (
+            "high" if score >= 0.65 else "medium" if score >= 0.45 else "low"
+        )
         return KnowledgeRAGRecommendation(
-            recommendation_id=self._recommendation_id(candidate),
+            recommendation_id=recommendation_id,
             recommendation_mode=self._resolved_mode(request),
-            candidate_id=candidate.candidate_id,
+            candidate_id=recommendation_id,
+            candidate_handle=recommendation_id,
             safe_label=safe_label,
-            confidence=round(score, 4),
+            confidence=confidence_label,
+            confidence_label=confidence_label,
+            score=round(score, 4),
+            reason_category=safe_reason_code,
+            threshold_result=threshold_result,
             safe_reason_code=safe_reason_code,
             recommended_options=options,
             materialized_knowledge_bases=materialized_refs,
@@ -230,8 +287,8 @@ class KnowledgeRAGRecommendationService:
         )
 
     def _recommendation_id(self, candidate: KnowledgeCandidate) -> str:
-        # 추천 ID는 candidate_id를 직접 인코딩하지 않는 opaque 값으로 만든다.
-        # candidate_id 자체는 허용된 KB로 응답에 포함되지만, 별도 식별자는 문서 계약상 opaque여야 한다.
+        # Agent Builder-facing IDs must be opaque safe handles; the runtime KB
+        # UUID remains available only in materialized_knowledge_bases.
         stable_id = uuid.uuid5(
             uuid.NAMESPACE_URL,
             (

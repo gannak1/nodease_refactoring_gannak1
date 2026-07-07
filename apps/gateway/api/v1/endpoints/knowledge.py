@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
@@ -94,6 +95,24 @@ KNOWLEDGE_BASE_MUTATION_COLUMNS = {
 
 class KnowledgeSchemaIntrospectionError(Exception):
     """Raised when schema readiness cannot be verified safely."""
+
+
+SAFE_PUBLIC_RECOMMENDATION_REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,80}$")
+UNSAFE_PUBLIC_RECOMMENDATION_REF_RE = re.compile(
+    r"(api[_-]?key|token|secret|password|credential|authorization)",
+    re.IGNORECASE,
+)
+
+
+def _safe_public_recommendation_ref(value) -> str | None:
+    if value is None:
+        return None
+    ref = str(value).strip()
+    if UNSAFE_PUBLIC_RECOMMENDATION_REF_RE.search(ref):
+        return None
+    if SAFE_PUBLIC_RECOMMENDATION_REF_RE.fullmatch(ref):
+        return ref
+    return None
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -556,18 +575,50 @@ async def recommend_rag_options(
     Workflow Builder가 LLM node RAG 옵션을 구성할 때 사용할 안전한 KB 추천을 반환합니다.
     """
     recommendation_request = await _parse_rag_recommendation_request(request)
+    if recommendation_request.mode == "explicit_kb":
+        raise_api_error(
+            request,
+            422,
+            "knowledge.rag_recommendations.explicit_ids_not_allowed",
+            "Explicit Knowledge Base identifiers are not accepted at this public boundary.",
+        )
     organization_id = resolve_active_organization_id(
         db,
         request,
         x_organization_id,
         current_user.id,
     )
+    safe_request_payload = recommendation_request.model_dump(
+        exclude={
+            "intended_execution_subject_id",
+            "knowledge_base_ids",
+            "collection_ids",
+        }
+    )
+    safe_request_payload["pending_resolution_ref"] = _safe_public_recommendation_ref(
+        recommendation_request.pending_resolution_ref
+    )
+    if isinstance(safe_request_payload.get("knowledge_requirement"), dict):
+        knowledge_requirement = dict(safe_request_payload["knowledge_requirement"])
+        knowledge_requirement["requirement_id"] = _safe_public_recommendation_ref(
+            knowledge_requirement.get("requirement_id")
+        )
+        safe_request_payload["knowledge_requirement"] = knowledge_requirement
+    recommendation_request = KnowledgeRAGRecommendationRequest.model_validate(
+        {
+            **safe_request_payload,
+            "intended_execution_subject_id": current_user.id,
+        }
+    )
     service = KnowledgeRAGRecommendationService(
         db,
         user_id=current_user.id,
         organization_id=organization_id,
     )
-    return service.recommend_for_builder(recommendation_request)
+    result = service.recommend_for_builder(recommendation_request)
+    for recommendation in result.recommendations:
+        recommendation.materialized_knowledge_bases = []
+    return result
 
 
 @router.get("/collections", response_model=KnowledgeCollectionListResponse)

@@ -3187,6 +3187,65 @@ def test_knowledge_search_without_execution_subject_excludes_private_collection_
     assert result.evidence_decision.insufficiency_reason == "no_evidence"
 
 
+def test_knowledge_search_without_execution_subject_excludes_source_managed_public_kbs(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    source_managed_kb_id = uuid.uuid4()
+    captured_authorized_kbs = []
+
+    class FakeQuery:
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            item = SimpleNamespace(knowledge_base_id=source_managed_kb_id)
+            collection = SimpleNamespace(safe_metadata={"visibility": "public"})
+            kb = SimpleNamespace(
+                id=source_managed_kb_id,
+                source_identity_id=uuid.uuid4(),
+            )
+            return [(item, collection, kb)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(source_managed_kb_id), name="Source KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        captured_authorized_kbs.extend(kwargs["knowledge_base_ids"])
+        return WorkflowRAGFanoutResult(results=[], failed_count=0)
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert captured_authorized_kbs == []
+    assert result.should_invoke_llm is False
+    assert result.evidence_decision.insufficiency_reason == "no_evidence"
+
+
 def test_knowledge_search_requires_execution_subject_for_private_runtime_path():
     data = LLMNodeData(
         title="LLM",
@@ -3204,6 +3263,29 @@ def test_knowledge_search_requires_execution_subject_for_private_runtime_path():
     )
 
     with pytest.raises(PermissionError, match="credential user"):
+        node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+
+def test_knowledge_search_rejects_malformed_execution_subject():
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(uuid.uuid4()), name="KB"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "execution_subject": "not-a-subject-object",
+            "organization_id": str(uuid.uuid4()),
+        },
+    )
+
+    with pytest.raises(PermissionError, match="execution subject"):
         node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
 
 
@@ -3247,6 +3329,71 @@ def test_knowledge_search_does_not_fallback_to_user_id_without_execution_subject
     result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
     assert result.should_invoke_llm is False
+    assert result.evidence_decision.insufficiency_reason == "no_evidence"
+
+
+def test_knowledge_search_uses_execution_subject_for_acl_and_actor_for_retrieval(
+    monkeypatch,
+):
+    actor_user_id = uuid.uuid4()
+    execution_subject_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    authorization_calls = []
+    fanout_calls = []
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(actor_user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(execution_subject_id),
+            },
+        },
+    )
+
+    def fake_authorized_runtime_kb_ids(
+        db_session,
+        *,
+        user_id,
+        organization_id,
+        knowledge_base_ids,
+    ):
+        authorization_calls.append(
+            {
+                "user_id": user_id,
+                "organization_id": organization_id,
+                "knowledge_base_ids": knowledge_base_ids,
+            }
+        )
+        return [str(kb_id)]
+
+    def fake_fanout(**kwargs):
+        fanout_calls.append(kwargs)
+        return WorkflowRAGFanoutResult(results=[], failed_count=0, timeout_count=0)
+
+    monkeypatch.setattr(
+        node,
+        "_authorized_runtime_kb_ids",
+        fake_authorized_runtime_kb_ids,
+    )
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+    monkeypatch.setattr(node, "_record_rag_retrieve_audit", lambda *args, **kwargs: None)
+
+    result = node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+    assert authorization_calls[0]["user_id"] == execution_subject_id
+    assert fanout_calls[0]["user_id"] == actor_user_id
     assert result.evidence_decision.insufficiency_reason == "no_evidence"
 
 
