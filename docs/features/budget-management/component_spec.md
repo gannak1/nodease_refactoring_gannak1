@@ -39,10 +39,10 @@ Verified Against: feature/mba-132 @ a843ec7
 ### BudgetEditModal (신규)
 
 - 위치: 비용 탭 예산 설정 버튼에서 열리는 모달. 기존 모달/폼 패턴을 재사용한다.
-- 입력: `monthly_budget_usd`(양수, USD, 소수점 2자리), `is_enabled` 토글.
+- 입력: `monthly_budget_usd`(양수, USD, 소수점 2자리, 최대 `9999999999.99`), `is_enabled` 토글.
 - 초기값: `GET /admin/workflow-budgets/{workflow_id}` (404면 신규 설정 폼).
 - 저장: `PUT /admin/workflow-budgets/{workflow_id}`. 성공 시 비용 탭 테이블과 요약 카드를 refetch한다.
-- 검증: 0 이하/비숫자 입력은 제출 전에 막고, 서버 422 응답도 필드 오류로 표시한다.
+- 검증: 0 이하/비숫자/소수점 3자리 이상/`9999999999.99` 초과 입력은 제출 전에 막고, 서버 422 응답도 필드 오류로 표시한다.
 
 ### BudgetStatusBadge (신규, 공용)
 

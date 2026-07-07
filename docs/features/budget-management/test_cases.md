@@ -15,6 +15,7 @@ Verified Against: TBD
 - Given 조직 A의 owner/manager가 아닌 member(builder 포함), When 예산 조회/설정 API를 호출하면, Then `403`과 `permission.denied` audit이 기록되고 예산은 변경되지 않는다.
 - Given 기존 값과 동일한 no-op PUT, When 호출하면, Then 200이지만 audit이 기록되지 않는다.
 - Given `monthly_budget_usd`가 `NUMERIC(12,2)` 저장 범위의 최대값 `9999999999.99`를 초과한다, When `PUT /admin/workflow-budgets/{workflow_id}`를 호출하면, Then request validation 단계에서 `422`로 거부되고 service/DB commit까지 전달되지 않으며 예산 row와 audit은 변경되지 않는다.
+- Given `PUT /admin/workflow-budgets/{workflow_id}` request body에 `is_enabledd` 같은 unknown field가 포함된다, When 호출하면, Then request validation 단계에서 `422`로 거부되고 오타 필드는 조용히 무시되지 않으며 service/DB commit까지 전달되지 않는다.
 
 ### AC-2. Organization scope 경계 (BGT-REQ-004)
 
@@ -111,6 +112,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - `monthly_budget_usd` 소수점 3자리 이상 → validation 오류.
 - `monthly_budget_usd=9999999999.99` → `NUMERIC(12,2)` 최대 저장 가능 값으로 허용.
 - `monthly_budget_usd=10000000000.00` 또는 `100000000000` → `NUMERIC(12,2)` overflow를 일으키는 값이므로 validation 오류. API에서는 `422`로 반환되어야 하며 service/DB commit까지 도달하지 않아야 한다.
+- Request body에 `monthly_budget_usd`, `is_enabled` 외 unknown field가 있으면 validation 오류. API에서는 `422`로 반환되어야 하며 service/DB commit까지 도달하지 않아야 한다.
 
 ### 실행 차단 helper `ensure_workflow_budget_allows_execution(...)`
 
@@ -146,7 +148,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 Vitest 기준.
 
 - `BudgetStatusBadge` — status별 렌더링, 사용률 % 표시 반올림.
-- `BudgetEditModal` — 초기값 로드(404 → 신규 폼), 0 이하 입력 차단, 저장 성공 시 refetch 콜백, 422/403 오류 표시.
+- `BudgetEditModal` — 초기값 로드(404 → 신규 폼), 0 이하/비숫자/소수점 3자리 이상/`9999999999.99` 초과 입력 차단, 저장 성공 시 refetch 콜백, 422 필드 오류 표시, 403 권한 오류 표시.
 - 내 워크플로우 목록 — `budget_status` null이면 기존 렌더링 유지, 상태가 있으면 `BudgetStatusBadge` 표시, `exceeded`면 "실행 차단" 표시 + tooltip.
 - 테스트 실행 429 `budget.exceeded` 응답 → 예산 초과 안내 표시 (일반 오류와 구분).
 

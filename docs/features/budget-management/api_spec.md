@@ -87,6 +87,7 @@ Request body:
 
 - `monthly_budget_usd`: 필수, 0보다 큰 number. 소수점 2자리까지 허용하고 `NUMERIC(12,2)` 저장 범위(`9999999999.99` 이하)를 초과하면 `422`로 거부한다.
 - `is_enabled`: 필수 boolean.
+- Request body의 unknown field는 `422`로 거부한다. 예: `is_enabledd` 같은 오타 필드는 조용히 무시하지 않는다.
 
 Response `200`: 단건 조회와 동일한 shape. 신규 생성이어도 `200`으로 통일한다.
 
@@ -196,7 +197,7 @@ Response `429`:
 | 401 | 미인증 |
 | 403 | organization scope 안이지만 owner/manager 아님 — `permission.denied` audit 기록 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)) |
 | 404 | 요청 organization scope 밖 또는 존재하지 않는 `workflow_id`, 예산 미설정 workflow의 단건 조회 — 존재를 숨긴다 (`resource.not_found`, ADR-0010) |
-| 422 | request 형식 오류 — `monthly_budget_usd` 누락/0 이하/숫자 아님, `is_enabled` 누락 |
+| 422 | request 형식 오류 — `monthly_budget_usd` 누락/0 이하/숫자 아님/소수점 3자리 이상/저장 범위 초과, `is_enabled` 누락, unknown field 포함 |
 | 429 | 예산 초과 실행 차단 (`budget.exceeded`) |
 
 ## Permissions

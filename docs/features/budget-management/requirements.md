@@ -21,7 +21,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 ### 예산 설정 (FR-051)
 
 - BGT-REQ-001: organization owner/manager는 workflow 단위 월간 USD 예산을 설정/수정/비활성화할 수 있어야 한다. workflow당 예산은 최대 1개다.
-- BGT-REQ-002: 예산 설정값은 `monthly_budget_usd`(양수, USD)와 `is_enabled`로 구성한다. 비활성화는 row 삭제가 아니라 `is_enabled=false` 갱신으로 표현하고, 설정값은 이력 없이 최신 상태만 유지한다.
+- BGT-REQ-002: 예산 설정값은 `monthly_budget_usd`(양수, USD)와 `is_enabled`로 구성한다. `monthly_budget_usd`는 소수점 2자리까지 허용하고 `NUMERIC(12,2)` 저장 범위(`9999999999.99` 이하)를 초과하면 거부한다. 요청 body의 unknown field는 오타를 숨기지 않도록 validation 오류로 거부한다. 비활성화는 row 삭제가 아니라 `is_enabled=false` 갱신으로 표현하고, 설정값은 이력 없이 최신 상태만 유지한다.
 - BGT-REQ-003: 예산 관리 API(조회/설정/수정/비활성화)는 organization owner/manager 전용이다. 그 외 조직 member의 접근은 `403 permission.denied`로 차단한다 (NFR-001, [ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
 - BGT-REQ-005: 같은 workflow에 대한 동시 예산 설정 요청은 DB unique 제약(`UNIQUE(workflow_id)`)과 upsert(ON CONFLICT 갱신 또는 IntegrityError 재시도)로 방어한다. 생성 경합에서 row는 정확히 1개만 만들어지고, 어느 요청도 5xx로 실패하지 않으며, 마지막 쓰기가 최종 상태가 된다. audit은 실제 발생한 사건대로 `workflow_budget.created` 1회와 이후 갱신 건수만큼 `workflow_budget.updated`를 기록한다.
 - BGT-REQ-004: 요청 organization scope([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)) 밖 workflow의 예산 접근은 `404 resource.not_found`로 숨긴다 (ADR-0010).

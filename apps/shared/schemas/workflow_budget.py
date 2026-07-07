@@ -2,13 +2,15 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 MAX_MONTHLY_BUDGET_USD = Decimal("9999999999.99")
 
 
 class WorkflowBudgetUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     monthly_budget_usd: Decimal = Field(
         gt=0,
         le=MAX_MONTHLY_BUDGET_USD,
