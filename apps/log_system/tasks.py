@@ -45,6 +45,7 @@ from apps.shared.db.session import SessionLocal
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
+from celery.exceptions import Retry
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
@@ -157,6 +158,13 @@ def _insert_trace_payloads(session, workflow_run_id, payload_records):
             else datetime.now(timezone.utc),
         )
         session.add(payload)
+
+
+def _retry_waiting_for_workflow_run(task, workflow_run_id):
+    raise task.retry(
+        exc=Exception(f"Waiting for WorkflowRun: {workflow_run_id}"),
+        countdown=1,
+    )
 
 
 @celery_app.task(name="log.create_run", bind=True, max_retries=3)
@@ -374,10 +382,7 @@ def create_node_log(self, data: Dict[str, Any]):
         if not run_exists:
             # [FIX] Race Condition: 부모(WorkflowRun)가 아직 생성되지 않음
             # 에러 로그 없이 조용히 재시도 (Quiet Retry)
-            raise self.retry(
-                exc=Exception(f"Waiting for WorkflowRun: {workflow_run_id}"),
-                countdown=1,
-            )
+            _retry_waiting_for_workflow_run(self, workflow_run_id)
 
         node_run = WorkflowNodeRun(
             id=node_run_id,  # [NEW] PK 지정
@@ -428,6 +433,8 @@ def create_node_log(self, data: Dict[str, Any]):
                 exc=payload_error, countdown=min(2 ** (self.request.retries + 1), 30)
             )
         return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+    except Retry:
+        raise
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] create_node_log 실패: {e}")
@@ -475,10 +482,7 @@ def update_node_log_finish(self, data: Dict[str, Any]):
                 .first()
             )
             if not run_exists:
-                raise self.retry(
-                    exc=Exception(f"Waiting for WorkflowRun: {workflow_run_id}"),
-                    countdown=1,
-                )
+                _retry_waiting_for_workflow_run(self, workflow_run_id)
 
             node_run = WorkflowNodeRun(
                 id=log_id,
@@ -541,6 +545,8 @@ def update_node_log_finish(self, data: Dict[str, Any]):
             f"[Log-System] update_node_finish 중복 처리 무시: log_id={data.get('log_id')}"
         )
         return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+    except Retry:
+        raise
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] update_node_log_finish 실패: {e}")
@@ -581,10 +587,7 @@ def update_node_log_error(self, data: Dict[str, Any]):
                 .first()
             )
             if not run_exists:
-                raise self.retry(
-                    exc=Exception(f"Waiting for WorkflowRun: {workflow_run_id}"),
-                    countdown=1,
-                )
+                _retry_waiting_for_workflow_run(self, workflow_run_id)
 
             node_run = WorkflowNodeRun(
                 id=log_id,
@@ -642,6 +645,8 @@ def update_node_log_error(self, data: Dict[str, Any]):
             f"[Log-System] update_node_error 중복 처리 무시: log_id={data.get('log_id')}"
         )
         return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+    except Retry:
+        raise
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] update_node_log_error 실패: {e}")
