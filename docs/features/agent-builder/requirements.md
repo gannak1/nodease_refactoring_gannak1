@@ -111,7 +111,7 @@ Adapter는 raw user input 전체가 아니라 다음 안전 요약을 사용해�
 
 MVP adapter는 keyword/metadata 기반 deterministic ranking만 사용한다. RAG retrieval signal과 LLM-assisted reranking은 후속 확장이다.
 
-Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다. 이 값은 후보 1개 high confidence 자동 해결, 후보 여러 개 또는 점수 근접 clarification, 후보 없음 validation failure를 일관되게 판정하기 위한 safe metadata이며 raw retrieval score나 provider raw response를 노출하지 않는다.
+Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다. 이 값은 후보 1개 high confidence 자동 해결, 후보 여러 개 또는 점수 근접 clarification을 일관되게 판정하기 위한 safe metadata이며 raw retrieval score나 provider raw response를 노출하지 않는다.
 
 Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
 
@@ -129,11 +129,11 @@ KB recommendation 결과는 다음 중 하나여야 한다.
 
 - 후보 1개 high confidence: 해당 pending KB resolution을 resolved 처리하고 draft 추천값으로 사용
 - 후보 여러 개 또는 점수 근접: 사용자에게 KB 선택 clarification 제공
-- 후보 0개: validation failure 또는 clarification 제공
+- 후보 0개: 권한 확인된 KB 후보가 없다는 경고를 표시하고, Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있음
 - adapter unavailable: 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`로 fallback clarification을 반환하고, safe 후보 선택지도 없으면 validation failure
-- optional KB requirement unresolved: 명시적으로 열린 product policy gate가 허용할 때만 warning과 함께 KB 없는 draft 가능
+- optional KB requirement unresolved: warning과 함께 KB 없는 draft 가능
 
-Builder가 recommendation 실패 또는 no recommendation을 받으면 기본적으로 사용자 확인 필요 상태로 둔다. 자동으로 RAG 없는 LLM node를 생성하는 fallback은 별도 Builder 정책 gate가 명시적으로 열려 있고 해당 요청의 KB 요구가 optional로 판정된 경우에만 허용한다.
+Builder가 adapter unavailable 같은 recommendation 실패를 받으면 기본적으로 사용자 확인 필요 또는 validation failure 상태로 둔다. 다만 adapter가 정상 동작했고 권한 확인된 후보가 0개인 경우는 fail-open 권한 확장이 아니라 preview-only KB binding 미설정 상태로 보며, 한국어 경고와 함께 RAG 없는 LLM node draft를 생성할 수 있다. 이 draft는 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
 
 ### AB-FR-009: Draft Generation
 

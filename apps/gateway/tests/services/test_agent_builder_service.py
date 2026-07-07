@@ -757,6 +757,52 @@ def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypa
     assert "Knowledge Base" in result["warnings"][0]
 
 
+def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkeypatch):
+    monkeypatch.setenv(service_module.APPROVED_DRAFT_MODEL_ENV, "approved-draft-route")
+
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                recommendations=[],
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="0",
+                    recommendation_count_bucket="0",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 Slack으로 보내는 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=result["bindings"],
+    )
+
+    nodes_by_type = {node["type"]: node for node in preview_graph["nodes"]}
+    assert result["status"] == "recommended"
+    assert result["bindings"] == []
+    assert "Knowledge Base 없이" in result["warnings"][0]
+    assert nodes_by_type["llmNode"]["data"]["knowledgeBases"] == []
+    assert nodes_by_type["slackPostNode"]["data"]["channel_resolution_state"] == "unresolved"
+
+
 def test_agent_builder_apply_blocks_missing_client_preview_hash(monkeypatch):
     class FakeDb:
         def __init__(self):

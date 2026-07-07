@@ -1774,12 +1774,12 @@ class AgentBuilderService:
             recommendations = list(response.recommendations or [])
             if not recommendations:
                 return {
-                    "status": "validation_failed"
-                    if requirement.required
-                    else "clarification_required",
+                    "status": "recommended",
                     "bindings": [],
-                    "questions": ["사용할 Knowledge Base를 선택해주세요."],
-                    "warnings": ["권한 확인된 Knowledge Base 후보가 없습니다."],
+                    "questions": [],
+                    "warnings": [
+                        "권한 확인된 Knowledge Base 후보가 없어 Knowledge Base 없이 LLM node 초안을 생성합니다."
+                    ],
                 }
             top = recommendations[0]
             top_score = top.score if top.score is not None else 0.0

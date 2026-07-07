@@ -94,6 +94,7 @@ const agentBuilderPreviewNodeTypes = {
   startNode: AgentBuilderPreviewNode,
   llmNode: AgentBuilderPreviewNode,
   answerNode: AgentBuilderPreviewNode,
+  slackPostNode: AgentBuilderPreviewNode,
   note: AgentBuilderPreviewNode,
 } as unknown as NodeTypes;
 

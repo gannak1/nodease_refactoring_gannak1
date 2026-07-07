@@ -25,7 +25,7 @@ Status: Draft
 - LLM node RAG 옵션 후보 resolver는 intended execution subject/audience 기준 `available`, `warning`, `unavailable`, `unknown` runtime availability를 반환하고, hidden KB id/name, exact denied count, hidden source distribution을 반환하지 않는다.
 - Agent Builder의 RAG 옵션 추천은 Knowledge RAG Recommendation Adapter를 통해서만 수행하며, Agent Builder가 Knowledge permission row, source ACL row, hidden KB 목록을 직접 읽지 않는다.
 - Recommendation 결과는 초기 구현에서 KB 단위로 materialize되고, Collection은 safe `source_collection_summary`로만 표시된다. Builder draft에는 현재 LLM node schema의 `knowledgeBases` 중심으로 저장된다.
-- Recommendation이 없으면 Builder는 사용자 확인 필요 상태를 표시하고, 별도 정책 gate 없이 자동으로 RAG 없는 LLM node를 생성하지 않는다.
+- Recommendation 후보가 0개이면 Builder는 권한 확인된 KB 후보가 없다는 경고를 표시하고, Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있다.
 - 후보가 source ACL stale/unmapped/ambiguous/unverified/revoked 또는 scope 밖 resource 때문에 제외된 경우 Builder 응답은 safe reason class와 required action만 표시하고 세부 source ACL state나 raw source path/title/url을 노출하지 않는다.
 - `X-Organization-Id`가 없으면 Agent Builder request가 거부된다.
 - Request body에 `organization_id`가 있어도 권한/scope 판단에는 사용되지 않는다.
@@ -52,7 +52,7 @@ Status: Draft
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
 - 후보 여러 개 또는 점수 근접이면 clarification option이 표시된다.
-- 후보 0개이면 validation failure 또는 clarification으로 연결된다.
+- 후보 0개이면 validation failure로 닫지 않고, 권한 확인된 KB 후보가 없다는 경고와 함께 Knowledge Base binding이 비어 있는 LLM node draft를 생성한다.
 - Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options` 기반 fallback clarification을 반환한다.
 - Adapter unavailable이고 safe 후보 선택지도 없으면 validation failure를 반환한다.
 - 추천 결과는 LLM node의 `knowledgeBases`로 materialize 가능해야 한다.

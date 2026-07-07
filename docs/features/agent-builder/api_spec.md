@@ -98,6 +98,8 @@ Actor, organization, workflow/app scope는 request body가 아니라 server-reso
 | `user_safe_warning` | partial access, runtime availability 등 사용자 표시 경고 |
 | `fallback_reason` | `adapter_unavailable`, `no_candidate` 같은 safe reason code |
 
+`status=no_candidate`는 adapter가 정상 동작했지만 권한 확인된 safe 후보 집합 안에서 매칭되는 KB를 찾지 못한 상태다. Agent Builder는 이 상태를 권한 확장이나 hidden resource 노출로 처리하지 않고, 한국어 경고와 함께 Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있다.
+
 Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공할 수 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환한다. Safe 후보 선택지도 제공할 수 없으면 `status=unavailable`과 safe `fallback_reason`을 반환하고, Agent Builder는 validation failure 또는 사용자 안내로 닫는다.
 
 Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder draft metadata는 safe handle과 structured request safe context만 보존하고 runtime KB id mapping을 저장하지 않는다. Backend는 apply/save 직전에 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
