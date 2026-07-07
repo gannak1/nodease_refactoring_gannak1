@@ -725,6 +725,7 @@ class AppService:
                     now=datetime.now(KST),
                 )
             except Exception:
+                _rollback_budget_status_lookup(db)
                 statuses = {}
 
         for app in apps:
@@ -1038,6 +1039,12 @@ def _workflow_id_candidates_by_app_key(
                 [*workflow_ids_by_app_key[app_key], workflow.id]
             )
     return workflow_ids_by_app_key
+
+
+def _rollback_budget_status_lookup(db: Session) -> None:
+    rollback = getattr(db, "rollback", None)
+    if callable(rollback):
+        rollback()
 
 
 def _workflow_rows_for_apps(

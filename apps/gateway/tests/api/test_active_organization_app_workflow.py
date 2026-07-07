@@ -294,9 +294,13 @@ class _FakeDb:
     def __init__(self, value):
         self.value = value
         self.query_obj = _FakeQuery(value)
+        self.rollback_count = 0
 
     def query(self, *args, **kwargs):
         return self.query_obj
+
+    def rollback(self):
+        self.rollback_count += 1
 
 
 def test_get_user_apps_filters_by_active_organization_before_permission_filter(monkeypatch):
@@ -405,6 +409,7 @@ def test_get_user_apps_returns_null_budget_status_when_lookup_races(
     apps = AppService.get_user_apps(db, user_id, organization_id=organization_id)
 
     assert getattr(apps[0], "budget_status", "missing") is None
+    assert db.rollback_count == 1
 
 
 def test_list_app_operations_returns_safe_summary(monkeypatch):
@@ -591,10 +596,15 @@ def test_list_app_operations_returns_null_budget_status_when_lookup_races(
         "get_effective_workflow_auth_state",
         lambda *a, **kwargs: "viewer",
     )
+
+    def permission_sources_by_workflow_ids(*args, **kwargs):
+        assert db.rollback_count == 1
+        return {}
+
     monkeypatch.setattr(
         app_service,
         "get_workflow_permission_sources_by_workflow_ids",
-        lambda *a, **kwargs: {},
+        permission_sources_by_workflow_ids,
     )
     monkeypatch.setattr(
         AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"}
@@ -621,6 +631,7 @@ def test_list_app_operations_returns_null_budget_status_when_lookup_races(
     )
 
     assert rows[0].model_dump()["app"].get("budget_status", "missing") is None
+    assert db.rollback_count == 1
 
 
 def test_list_app_operations_filters_by_capability(monkeypatch):
