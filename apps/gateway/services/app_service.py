@@ -2,6 +2,7 @@ import copy
 import secrets
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import func
@@ -538,7 +539,7 @@ class AppService:
     @staticmethod
     def _latest_runs_by_workflow_id(
         db: Session, workflow_ids: list[Any]
-    ) -> dict[Any, WorkflowRun]:
+    ) -> dict[Any, Any]:
         if not workflow_ids:
             return {}
 
@@ -557,14 +558,29 @@ class AppService:
             .filter(WorkflowRun.workflow_id.in_(set(workflow_ids)))
             .subquery()
         )
-        runs = (
-            db.query(WorkflowRun)
+        run_rows = (
+            db.query(
+                WorkflowRun.workflow_id.label("workflow_id"),
+                WorkflowRun.id.label("id"),
+                WorkflowRun.status.label("status"),
+                WorkflowRun.started_at.label("started_at"),
+                WorkflowRun.finished_at.label("finished_at"),
+                WorkflowRun.error_message.label("error_message"),
+            )
             .join(latest_run_ids, WorkflowRun.id == latest_run_ids.c.id)
             .filter(latest_run_ids.c.row_number == 1)
             .all()
         )
         latest_by_workflow_id = {}
-        for run in runs:
+        for run in run_rows:
+            run = SimpleNamespace(
+                workflow_id=run.workflow_id,
+                id=run.id,
+                status=run.status,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                error_message=run.error_message,
+            )
             latest_by_workflow_id.setdefault(run.workflow_id, run)
         return latest_by_workflow_id
 
