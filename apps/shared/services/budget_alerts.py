@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy.exc import IntegrityError
 
-from apps.shared.db.models.budget_alert import BudgetAlertState
+from apps.shared.db.models.budget_alert import BudgetAlert, BudgetAlertState
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
@@ -124,3 +124,59 @@ def _apply_transition(state, new_status) -> str | None:
         return None
     state.last_notified_status = threshold
     return threshold
+
+
+def create_alert_items(
+    db,
+    *,
+    workflow_id,
+    organization_id,
+    period_month,
+    status,
+    recipient_ids,
+    usage_ratio,
+    monthly_budget_usd,
+    current_month_cost,
+) -> list:
+    """수신자별 알림 항목을 스냅샷과 함께 생성하고 생성 목록을 반환한다.
+
+    (workflow, 당월, status)에 이미 있는 수신자는 건너뛴다 — 재시도/누락 복구 멱등
+    (backstop은 UNIQUE(workflow_id, period_month, status, user_id)).
+    """
+    existing_user_ids = _existing_alert_user_ids(
+        db, workflow_id, period_month, status
+    )
+
+    created = []
+    for user_id in recipient_ids:
+        if user_id in existing_user_ids:
+            continue
+        item = BudgetAlert(
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            user_id=user_id,
+            period_month=period_month,
+            status=status,
+            usage_ratio=usage_ratio,
+            monthly_budget_usd=monthly_budget_usd,
+            current_month_cost=current_month_cost,
+        )
+        db.add(item)
+        created.append(item)
+        # 같은 호출에 중복 user_id가 들어와도 한 번만 생성 (BGA-REQ-021).
+        existing_user_ids.add(user_id)
+    return created
+
+
+def _existing_alert_user_ids(db, workflow_id, period_month, status) -> set:
+    """(workflow, 당월, status)에 이미 알림 항목이 있는 수신자 user_id 집합."""
+    rows = (
+        db.query(BudgetAlert)
+        .filter(
+            BudgetAlert.workflow_id == workflow_id,
+            BudgetAlert.period_month == period_month,
+            BudgetAlert.status == status,
+        )
+        .all()
+    )
+    return {row.user_id for row in rows}
