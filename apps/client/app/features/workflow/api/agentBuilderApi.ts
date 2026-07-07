@@ -37,10 +37,24 @@ export type AgentBuilderSessionResponse = {
   workflow_id?: string | null;
   app_id?: string | null;
   status: string;
-  messages: Array<Record<string, unknown>>;
+  messages: AgentBuilderSessionMessage[];
   pending_request?: Record<string, unknown> | null;
-  draft_preview?: Record<string, unknown> | null;
+  draft_preview?: AgentBuilderDraftPreview | null;
 };
+
+export type AgentBuilderSessionMessage =
+  | AgentBuilderMessageResponse
+  | {
+      kind: 'user';
+      request_id: string;
+      content: string;
+      redacted?: boolean;
+    }
+  | {
+      kind: 'assistant';
+      request_id: string;
+      response: AgentBuilderMessageResponse;
+    };
 
 export type AgentBuilderMessageResponse = {
   request_id: string;
@@ -52,6 +66,12 @@ export type AgentBuilderMessageResponse = {
   validation_result?: AgentBuilderValidationResult | null;
   preview_prompt?: string | null;
   warnings: string[];
+};
+
+export type AgentBuilderKnowledgeCandidateSelection = {
+  candidate_id: string;
+  resolution_id?: string | null;
+  requirement_id?: string | null;
 };
 
 export type AgentBuilderApplyResponse = {
@@ -94,6 +114,7 @@ export const agentBuilderApi = {
       appId?: string | null;
       selectedNodeId?: string | null;
       selectedEdgeId?: string | null;
+      selectedKnowledgeCandidate?: AgentBuilderKnowledgeCandidateSelection | null;
     },
   ): Promise<AgentBuilderMessageResponse> {
     const response = await apiClient.post(
@@ -104,6 +125,7 @@ export const agentBuilderApi = {
         app_id: input.appId ?? undefined,
         selected_node_id: input.selectedNodeId ?? undefined,
         selected_edge_id: input.selectedEdgeId ?? undefined,
+        selected_knowledge_candidate: input.selectedKnowledgeCandidate ?? undefined,
       },
     );
     return response.data;

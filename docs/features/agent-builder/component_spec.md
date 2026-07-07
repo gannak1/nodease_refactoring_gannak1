@@ -30,7 +30,7 @@ Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 P
 | `DraftApplyStateGuard` | unsaved editor change, stale warning, apply/save processing 중 중복 action 방지 |
 | `DraftApplyResultPresenter` | 저장 성공, 저장 차단, 저장 실패, 취소 결과를 한국어로 표시하고 Preview Mode 유지/종료를 제어 |
 
-Preview Mode component는 preview graph를 actual editor graph에 merge하지 않는다. `취소`는 preview graph를 폐기하고 Preview Mode를 종료할 뿐이며, 원복 로직에 의존하지 않아야 한다.
+Preview Mode component는 preview graph를 actual editor graph에 merge하지 않는다. `취소`는 server-side apply/save audit에 canceled event를 기록한 뒤 preview graph를 닫고 Preview Mode를 종료한다. 이 동작은 draft metadata를 terminal 폐기하지 않으며, 원복 로직에 의존하지 않아야 한다.
 
 `PreviewNodeDetailPanel`은 편집 가능한 input, credential picker, KB picker, node delete, edge edit action을 제공하지 않는다. 설정 변경은 채팅 후속 요청으로 새 draft를 생성하거나 기존 draft를 수정하는 방식으로 수행한다.
 
@@ -39,7 +39,7 @@ Preview Mode component는 preview graph를 actual editor graph에 merge하지 �
 | Component | Responsibility |
 | --- | --- |
 | `RequestContextResolver` | 인증 사용자, active organization, workflow/app scope, 권한 context 확정 |
-| `ConversationSessionService` | server-issued chat session, 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
+| `ConversationSessionService` | server-issued chat session, redaction된 사용자 message summary와 assistant response로 구성된 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
 | `StructuredRequestBuilder` | 자연어 의미 후보를 안전한 `StructuredRequest`로 정규화 |
 | `WorkflowContextSnapshotBuilder` | graph, selected node, selected edge, existing node/edge summary 생성 |
 | `TargetResolver` | 기존 workflow 수정 target 해석 |
@@ -69,6 +69,8 @@ Agent Builder는 Knowledge DB를 직접 조회하지 않는다.
 
 Adapter result는 recommendation item마다 score, confidence, reason category, threshold result를 포함해야 한다. Agent Builder는 이 값을 기준으로 후보 1개 high confidence는 resolved 처리하고, 점수 근접 또는 후보 다중 상황은 clarification으로 전환한다.
 
+KB clarification UI는 safe candidate handle과 safe label/confidence/score/reason category만 표시한다. 사용자가 후보를 선택하면 frontend는 raw KB id나 safe metadata 전체를 다시 보내지 않고 candidate safe handle과 선택적 resolution/requirement reference만 제출한다. Backend는 원 clarification option과 같은 session/context에서 온 선택인지 검증하고, apply/save 직전 runtime KB reference materialization을 다시 수행한다.
+
 MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않는다. Agent Builder가 제안하는 RAG option은 ADR-0017 기본값과 safe candidate 설명 범위로 제한하고, Knowledge Skill 직접 사용과 고급 RAG option tuning은 후속 기능으로 둔다.
 
 ## UI States
@@ -90,7 +92,7 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 
 ## Interaction Rules
 
-- Refresh 후에는 최근 대화와 pending request 상태를 복구한다.
+- Refresh 후에는 redaction된 사용자 message summary와 assistant response를 포함한 최근 대화, pending request 상태를 복구한다.
 - Pending request가 있으면 새 submit은 막고 cancel은 허용한다.
 - Cancel 이후 도착한 결과는 draft preview, Preview Mode, apply/save로 이어질 수 없다.
 - 선택된 edge는 "이 연결 사이에" 같은 자연어 edge 문맥에서만 target hint로 사용하고, 권한/scope 판단에는 사용하지 않는다.

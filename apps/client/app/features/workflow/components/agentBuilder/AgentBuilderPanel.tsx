@@ -6,7 +6,13 @@ import { useRouter } from 'next/navigation';
 import { AlertCircle, Bot, Eye, Loader2, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useReactFlow, type Edge, type Viewport } from '@xyflow/react';
-import { agentBuilderApi, AgentBuilderMessageResponse } from '../../api/agentBuilderApi';
+import {
+  agentBuilderApi,
+  type AgentBuilderDraftPreview,
+  type AgentBuilderKnowledgeCandidateSelection,
+  type AgentBuilderMessageResponse,
+  type AgentBuilderSessionMessage,
+} from '../../api/agentBuilderApi';
 import { workflowApi } from '../../api/workflowApi';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { Node } from '../../types/Workflow';
@@ -118,6 +124,76 @@ const assistantItemsFromResponses = (
     response,
   }));
 
+const isAgentBuilderMessageResponse = (
+  value: unknown,
+): value is AgentBuilderMessageResponse => {
+  return (
+    Boolean(value) &&
+    typeof value === 'object' &&
+    typeof (value as AgentBuilderMessageResponse).request_id === 'string' &&
+    typeof (value as AgentBuilderMessageResponse).status === 'string'
+  );
+};
+
+const conversationItemsFromSessionMessages = (
+  messages: AgentBuilderSessionMessage[],
+): {
+  responses: AgentBuilderMessageResponse[];
+  conversationItems: ConversationItem[];
+} => {
+  const responses: AgentBuilderMessageResponse[] = [];
+  const conversationItems: ConversationItem[] = [];
+
+  messages.forEach((message, index) => {
+    if (isAgentBuilderMessageResponse(message)) {
+      responses.push(message);
+      conversationItems.push({
+        kind: 'assistant',
+        id: `assistant-${message.request_id}`,
+        response: message,
+      });
+      return;
+    }
+    if (message.kind === 'user') {
+      conversationItems.push({
+        kind: 'user',
+        id: `user-${message.request_id}-${index}`,
+        content: message.content,
+      });
+      return;
+    }
+    if (message.kind === 'assistant' && message.response) {
+      responses.push(message.response);
+      conversationItems.push({
+        kind: 'assistant',
+        id: `assistant-${message.response.request_id}`,
+        response: message.response,
+      });
+    }
+  });
+
+  return { responses, conversationItems };
+};
+
+const responseFromSessionDraftPreview = (
+  draftPreview: AgentBuilderDraftPreview | null | undefined,
+): AgentBuilderMessageResponse | null => {
+  if (!draftPreview?.preview_graph || !draftPreview.validation_result) {
+    return null;
+  }
+  return {
+    request_id: `session-draft-${draftPreview.draft_id}`,
+    status: draftPreview.validation_result.valid ? 'draft_ready' : 'validation_failed',
+    structured_request: null,
+    clarification_questions: [],
+    clarification_options: [],
+    draft_preview: draftPreview,
+    validation_result: draftPreview.validation_result,
+    preview_prompt: draftPreview.validation_result.valid ? '도안 보기' : null,
+    warnings: draftPreview.safety_notices ?? [],
+  };
+};
+
 function formatClarificationOptionValue(value: unknown): string | null {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number') return value.toFixed(2);
@@ -129,6 +205,21 @@ const createLocalUserMessageId = () => {
     return `user-${crypto.randomUUID()}`;
   }
   return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+};
+
+const knowledgeCandidateSelectionFromOption = (
+  option: Record<string, unknown>,
+): (AgentBuilderKnowledgeCandidateSelection & { label?: string | null }) | null => {
+  const candidateId = formatClarificationOptionValue(option.candidate_id);
+  if (!candidateId) return null;
+  return {
+    candidate_id: candidateId,
+    resolution_id: formatClarificationOptionValue(option.resolution_id),
+    requirement_id: formatClarificationOptionValue(option.requirement_id),
+    label:
+      formatClarificationOptionValue(option.label) ??
+      formatClarificationOptionValue(option.safe_label),
+  };
 };
 
 export function AgentBuilderPanel({
@@ -150,6 +241,10 @@ export function AgentBuilderPanel({
   const [conversationItems, setConversationItems] = useState<ConversationItem[]>([]);
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
   const [prePreviewViewport, setPrePreviewViewport] = useState<Viewport | null>(null);
+  const [selectedKnowledgeCandidate, setSelectedKnowledgeCandidate] =
+    useState<(AgentBuilderKnowledgeCandidateSelection & { label?: string | null }) | null>(
+      null,
+    );
   const router = useRouter();
   const { getViewport, setViewport } = useReactFlow();
   const agentBuilderPreview = useWorkflowStore((state) => state.agentBuilderPreview);
@@ -207,6 +302,7 @@ export function AgentBuilderPanel({
     setConversationItems([]);
     setPendingRequestId(null);
     setPrePreviewViewport(null);
+    setSelectedKnowledgeCandidate(null);
     clearAgentBuilderPreview();
   }, [storageKey, clearAgentBuilderPreview]);
 
@@ -220,9 +316,32 @@ export function AgentBuilderPanel({
       .then((session) => {
         if (isCanceled) return;
         setSessionId(session.session_id);
-        const restoredResponses = session.messages as AgentBuilderMessageResponse[];
+        const restored = conversationItemsFromSessionMessages(session.messages);
+        const topLevelDraftResponse = responseFromSessionDraftPreview(
+          session.draft_preview,
+        );
+        const hasRestoredDraft = restored.responses.some(
+          (response) =>
+            response.draft_preview?.draft_id ===
+            topLevelDraftResponse?.draft_preview?.draft_id,
+        );
+        const restoredResponses =
+          topLevelDraftResponse && !hasRestoredDraft
+            ? [...restored.responses, topLevelDraftResponse]
+            : restored.responses;
+        const restoredConversationItems =
+          topLevelDraftResponse && !hasRestoredDraft
+            ? [
+                ...restored.conversationItems,
+                {
+                  kind: 'assistant' as const,
+                  id: `assistant-${topLevelDraftResponse.request_id}`,
+                  response: topLevelDraftResponse,
+                },
+              ]
+            : restored.conversationItems;
         setResponses(restoredResponses);
-        setConversationItems(assistantItemsFromResponses(restoredResponses));
+        setConversationItems(restoredConversationItems);
         const requestId = session.pending_request?.request_id;
         setPendingRequestId(typeof requestId === 'string' ? requestId : null);
       })
@@ -244,37 +363,82 @@ export function AgentBuilderPanel({
     return session.session_id;
   };
 
-  const submit = async () => {
-    const message = input.trim();
-    if (!message || isSubmitting) return;
+  const submitAgentBuilderMessage = async (
+    message: string,
+    options?: {
+      selectedKnowledgeCandidate?: AgentBuilderKnowledgeCandidateSelection & {
+        label?: string | null;
+      };
+      clearInput?: boolean;
+    },
+  ) => {
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage || isSubmitting) return;
+    const selectedCandidate = options?.selectedKnowledgeCandidate;
     if (hasUnsavedChanges) {
       toast.warning('저장되지 않은 변경이 있어 Agent Builder를 시작할 수 없습니다.');
       return;
     }
+    if (agentBuilderPreview) {
+      clearAgentBuilderPreview();
+      if (prePreviewViewport) {
+        setViewport(prePreviewViewport);
+        setPrePreviewViewport(null);
+      }
+      setApplyNotice('새 요청을 보내 이전 도안 보기를 종료했습니다.');
+    }
     setIsSubmitting(true);
     setConversationItems((items) => [
       ...items,
-      { kind: 'user', id: createLocalUserMessageId(), content: message },
+      {
+        kind: 'user',
+        id: createLocalUserMessageId(),
+        content: selectedCandidate?.label
+          ? `Knowledge Base 선택: ${selectedCandidate.label}`
+          : trimmedMessage,
+      },
     ]);
     try {
       const nextSessionId = await ensureSession();
       setPendingRequestId('submitting');
       const response = await agentBuilderApi.sendMessage(nextSessionId, {
-        message,
+        message: trimmedMessage,
         workflowId,
         appId,
         selectedNodeId,
         selectedEdgeId,
+        selectedKnowledgeCandidate: selectedCandidate
+          ? {
+              candidate_id: selectedCandidate.candidate_id,
+              resolution_id: selectedCandidate.resolution_id,
+              requirement_id: selectedCandidate.requirement_id,
+            }
+          : undefined,
       });
       appendResponse(response);
       setPendingRequestId(null);
-      setInput('');
+      setSelectedKnowledgeCandidate(null);
+      if (options?.clearInput !== false) {
+        setInput('');
+      }
     } catch {
       toast.error('Agent Builder 요청에 실패했습니다.');
       setPendingRequestId(null);
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const submit = async () => {
+    await submitAgentBuilderMessage(input, { clearInput: true });
+  };
+
+  const confirmKnowledgeCandidate = async () => {
+    if (!selectedKnowledgeCandidate) return;
+    await submitAgentBuilderMessage('선택한 Knowledge Base로 도안을 생성해줘', {
+      selectedKnowledgeCandidate,
+      clearInput: false,
+    });
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -291,9 +455,9 @@ export function AgentBuilderPanel({
     }
     if (!sessionId) return null;
     const session = await agentBuilderApi.getSession(sessionId);
-    const restoredResponses = session.messages as AgentBuilderMessageResponse[];
-    setResponses(restoredResponses);
-    setConversationItems(assistantItemsFromResponses(restoredResponses));
+    const restored = conversationItemsFromSessionMessages(session.messages);
+    setResponses(restored.responses);
+    setConversationItems(restored.conversationItems);
     const requestId = session.pending_request?.request_id;
     if (typeof requestId === 'string') {
       setPendingRequestId(requestId);
@@ -420,6 +584,24 @@ export function AgentBuilderPanel({
   };
 
   const cancelPreview = async () => {
+    if (!agentBuilderPreview) return;
+    try {
+      const response = await agentBuilderApi.cancelDraft(agentBuilderPreview.draftId);
+      if (response.outcome !== 'canceled' || !response.audit_recorded) {
+        const notice =
+          response.notices[0] ??
+          response.block_reason ??
+          response.failure_reason ??
+          '도안 보기 취소를 기록하지 못했습니다.';
+        setApplyNotice(notice);
+        toast.warning(notice);
+        return;
+      }
+    } catch {
+      setApplyNotice('도안 보기 취소 기록에 실패했습니다.');
+      toast.error('도안 보기 취소 기록에 실패했습니다.');
+      return;
+    }
     setApplyNotice(null);
     clearAgentBuilderPreview();
     if (prePreviewViewport) {
@@ -513,6 +695,7 @@ export function AgentBuilderPanel({
                   {response.clarification_options?.length ? (
                     <div className="mt-3 space-y-2">
                       {response.clarification_options.map((option, index) => {
+                        const selection = knowledgeCandidateSelectionFromOption(option);
                         const label =
                           formatClarificationOptionValue(option.label) ??
                           formatClarificationOptionValue(option.safe_label) ??
@@ -524,10 +707,28 @@ export function AgentBuilderPanel({
                         const reason = formatClarificationOptionValue(
                           option.reason_category,
                         );
+                        const isSelected =
+                          Boolean(selection) &&
+                          selectedKnowledgeCandidate?.candidate_id ===
+                            selection?.candidate_id &&
+                          selectedKnowledgeCandidate?.resolution_id ===
+                            selection?.resolution_id;
                         return (
-                          <div
+                          <button
+                            type="button"
                             key={`${option.candidate_id ?? label}-${index}`}
-                            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                            onClick={() => {
+                              if (selection) {
+                                setSelectedKnowledgeCandidate(selection);
+                              }
+                            }}
+                            disabled={!selection || isSubmitting}
+                            aria-pressed={isSelected}
+                            className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
+                              isSelected
+                                ? 'border-slate-900 bg-slate-100'
+                                : 'border-slate-200 bg-white'
+                            } disabled:cursor-not-allowed disabled:opacity-60`}
                           >
                             <div className="font-medium text-slate-900">{label}</div>
                             <div className="mt-1 text-xs text-slate-500">
@@ -539,9 +740,19 @@ export function AgentBuilderPanel({
                                 .filter(Boolean)
                                 .join(' · ')}
                             </div>
-                          </div>
+                          </button>
                         );
                       })}
+                      {selectedKnowledgeCandidate && (
+                        <button
+                          type="button"
+                          onClick={confirmKnowledgeCandidate}
+                          disabled={isSubmitting || Boolean(pendingRequestId)}
+                          className="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          이 Knowledge Base로 도안 생성
+                        </button>
+                      )}
                     </div>
                   ) : null}
                   {response.validation_result?.issues?.map((issue) => (

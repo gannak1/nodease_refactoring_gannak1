@@ -21,6 +21,8 @@ Agent Builder API는 workflow draft 생성, clarification, validation, draft pre
 
 `session_id`는 server-issued identifier다. Server는 session을 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶어 관리한다. Client-generated session id는 권한, scope, organization, audit 판단에 사용하지 않는다.
 
+Session 조회/복구 response의 최근 메시지는 사용자 turn과 assistant response를 함께 복구할 수 있어야 한다. 사용자 turn은 redaction을 거친 `message_summary` 또는 동등한 safe content만 포함하고, assistant turn은 기존 Agent Builder message response와 같은 safe response payload를 포함한다. Legacy response-only message가 남아 있더라도 client는 이를 assistant turn으로 해석할 수 있지만, 신규 저장은 사용자 redacted turn과 assistant turn을 구분해야 한다.
+
 ## Message Request
 
 Client request body는 organization override를 포함하지 않는다.
@@ -33,8 +35,11 @@ Client request body는 organization override를 포함하지 않는다.
 | `selected_node_id` | 현재 선택된 canvas node |
 | `selected_edge_id` | 현재 선택된 canvas edge. "이 연결 사이에", "여기 사이에"처럼 edge 선택 문맥일 때 target resolution hint로만 사용하며 권한/scope 판단에 사용하지 않음 |
 | `conversation_context_id` | 이어지는 clarification context |
+| `selected_knowledge_candidate` | KB 후보 clarification에 대한 사용자 선택. `candidate_id`, 선택적 `resolution_id`, 선택적 `requirement_id`만 포함하며 raw KB id, raw source id/path/url/title은 포함하지 않음 |
 
 MVP message request는 raw editor graph snapshot을 받지 않는다. Client는 선택된 node/edge hint만 보낼 수 있으며, unsaved editor graph를 draft base로 신뢰하지 않는다. Apply/save stale guard에 필요한 graph 비교는 apply request의 semantic graph hash로만 수행한다. Request body에 `client_graph_snapshot` 또는 동등한 raw graph payload가 포함되면 서버는 이를 권한/scope 판단이나 draft base로 사용하지 않고 거부해야 한다.
+
+`selected_knowledge_candidate`는 새 권한 판단 입력이 아니다. Server는 같은 authenticated user, active organization, workflow/app scope, agent panel session 안의 최근 KB 후보 clarification response를 조회하고, 선택된 `candidate_id`가 해당 response의 `clarification_options`에 있던 server-issued safe handle인지 확인해야 한다. `resolution_id` 또는 `requirement_id`가 함께 오면 원 clarification option의 값과 일치해야 한다. 일치하지 않거나 만료된 선택은 validation failure 또는 재선택 질문으로 닫고, raw KB id fallback으로 해석하지 않는다.
 
 ## Message Response
 
@@ -105,7 +110,9 @@ Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공
 
 후보 여러 개 또는 score 근접으로 자동 선택하지 않는 `clarification_required` 응답은 질문만 반환하지 않는다. Agent Builder message response는 Adapter의 safe `clarification_options`를 함께 반환하고, client는 후보명, confidence, score, reason category를 표시해야 한다. 이 선택지는 raw source id/path/url/title, raw document/chunk content, hidden/denied resource detail을 포함하지 않는다.
 
-Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder draft metadata는 safe handle과 structured request safe context만 보존하고 runtime KB id mapping을 저장하지 않는다. Backend는 apply/save 직전에 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
+사용자가 KB 후보를 선택하면 client는 후보 카드에 표시된 safe metadata 전체를 다시 보내지 않고 선택된 safe handle과 선택적 resolution/requirement reference만 보낸다. Backend는 원 clarification option과 같은 session/context 안에서 선택을 검증한 뒤, 해당 candidate handle만 resolved KB pending slot으로 사용한다. Adapter unavailable fallback으로 반환된 safe option도 같은 방식으로 검증해야 하며, 선택 검증 또는 apply/save 직전 materialization에 실패하면 draft 확정 또는 저장으로 이어지면 안 된다.
+
+Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder draft metadata는 safe handle과 structured request safe context만 보존하고 runtime KB id mapping을 저장하지 않는다. Backend는 apply/save 직전에 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. 이 materialization은 현재 recommendation top-N 결과에 다시 의존하지 않고, 권한 확인된 candidate set 안에서 safe handle을 직접 재검증해야 한다. Collection은 `source_collection_summary`로만 반환한다.
 
 Recommendation item은 다음 판단 필드를 포함해야 한다.
 
@@ -181,7 +188,7 @@ Response:
 | `audit_recorded` | apply/save audit 기록 여부. `outcome=saved`에서는 반드시 `true`여야 하며, 저장 성공과 audit 기록 성공은 같은 완료 조건으로 취급한다. 저장 시도 후 audit 기록이 실패하면 `outcome=failed`, `failure_reason=SAVE_FAILED` 또는 동등한 safe failure로 반환한다. |
 | `notices` | user-safe 한국어 안내 |
 
-`apply_and_save`는 workflow graph 저장까지 수행할 수 있지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용하지 않는다. 저장 성공으로 응답하기 전 apply/save audit event는 canonical audit store에 기록되었거나, workflow graph 저장과 같은 transaction 또는 동등한 내구성 경계의 outbox/durable queue에 enqueue되어야 한다. 저장 시도 또는 저장 성공 audit 기록이 실패하면 safe failure로 처리하고 Preview Mode를 유지한다. `cancel`은 preview graph를 저장하지 않고 draft apply audit에 취소 outcome만 남길 수 있다.
+`apply_and_save`는 workflow graph 저장까지 수행할 수 있지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용하지 않는다. 저장 성공으로 응답하기 전 apply/save audit event는 canonical audit store에 기록되었거나, workflow graph 저장과 같은 transaction 또는 동등한 내구성 경계의 outbox/durable queue에 enqueue되어야 한다. 저장 시도 또는 저장 성공 audit 기록이 실패하면 safe failure로 처리하고 Preview Mode를 유지한다. `cancel`은 preview graph를 저장하지 않고 draft apply audit에 취소 outcome만 남기며, validation을 통과한 ready draft를 terminal 폐기하지 않는다.
 
 Stale check는 서버가 원 draft metadata의 `base_graph_hash`와 workflow version 또는 updated_at을 최신 workflow graph/context와 비교해 수행한다. Client가 보낸 graph hash, version, updated_at은 stale hint와 사용자 안내에만 사용하며 권한, scope, organization 판단을 대체하지 않는다.
 
@@ -219,7 +226,7 @@ Audit metadata에는 credential 원문, raw KB content, raw source path/url/titl
 | `KB_PERMISSION_REQUIRED` | draft 생성 이후 KB use 권한, source ACL, runtime availability 재확인 실패 |
 | `DRAFT_METADATA_NOT_FOUND` | apply 대상 draft metadata 없음 |
 | `DRAFT_METADATA_EXPIRED` | apply 대상 draft metadata가 만료됨 |
-| `DRAFT_NOT_APPLICABLE` | 이미 취소, 저장, 만료, 또는 terminal 처리된 draft라 다시 적용할 수 없음 |
+| `DRAFT_NOT_APPLICABLE` | 이미 저장, 만료, 또는 terminal 처리된 draft라 다시 적용할 수 없음. Preview 취소 audit만으로 ready draft가 terminal 처리되지는 않음 |
 | `DRAFT_STALE` | 최신 graph/context와 draft base가 맞지 않음 |
 | `UNSAVED_EDITOR_CHANGES` | 현재 editor에 저장되지 않은 변경이 있어 apply/save 차단 |
 | `SAVE_FAILED` | backend 저장 시도 또는 apply/save audit 기록 실패 |

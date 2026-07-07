@@ -664,9 +664,42 @@ class AgentBuilderService:
         self.db.commit()
 
         try:
-            structured = self._build_structured_request(message_request, workflow)
+            selected_kb_context = self._selected_knowledge_candidate_context(
+                session,
+                message_request,
+            )
+            if selected_kb_context and selected_kb_context.get("error"):
+                issue = AgentBuilderValidationIssue(
+                    code="KB_SELECTION_INVALID",
+                    message="선택한 Knowledge Base 후보를 다시 확인할 수 없습니다.",
+                    path="selected_knowledge_candidate",
+                )
+                response = AgentBuilderMessageResponse(
+                    request_id=request_row.id,
+                    status="validation_failed",
+                    validation_result=AgentBuilderValidationResult(
+                        valid=False,
+                        issues=[issue],
+                    ),
+                    warnings=[SAFE_SIDE_EFFECT_NOTICE],
+                )
+                self._finish_request(request_row, response)
+                self.db.commit()
+                return response
+            structured = (
+                selected_kb_context["structured_request"]
+                if selected_kb_context
+                else self._build_structured_request(message_request, workflow)
+            )
             validation = self._validate_structured_request(structured, app_id=app_id)
-            recommendations = self._resolve_knowledge_requirements(structured)
+            recommendations = self._resolve_knowledge_requirements(
+                structured,
+                selected_candidate_handles=(
+                    selected_kb_context["candidate_handles"]
+                    if selected_kb_context
+                    else None
+                ),
+            )
         except Exception:
             return self._fail_processing_request(request_row)
         structured_warnings = self._structured_request_warnings(structured)
@@ -834,6 +867,11 @@ class AgentBuilderService:
                 if workflow and workflow.updated_at
                 else None,
                 "safe_kb_bindings": self._safe_kb_bindings(recommendations["bindings"]),
+                "selected_kb_handles": list(
+                    selected_kb_context["candidate_handles"]
+                )
+                if selected_kb_context
+                else [],
                 "structured_request": structured.model_dump(mode="json"),
                 "generated_node_ids": generated_node_ids,
                 "generated_edge_ids": generated_edge_ids,
@@ -1084,6 +1122,33 @@ class AgentBuilderService:
                     "적용 및 저장 요청 audit 기록에 실패했습니다. Preview Mode를 유지하고 다시 시도해주세요."
                 ],
             )
+        try:
+            draft = self._lock_draft_for_apply(draft)
+            metadata_base = self._apply_metadata_base(draft, apply_id)
+        except HTTPException:
+            add_action_audit(
+                self.db,
+                AuditAction.AGENT_BUILDER_APPLY_SAVE_BLOCKED,
+                self.user.id,
+                "agent_builder_draft",
+                draft_id,
+                organization_id=self.organization_id,
+                metadata={
+                    "apply_id": str(apply_id),
+                    "draft_id": str(draft_id),
+                    "outcome": "blocked",
+                    "block_reason": "DRAFT_METADATA_NOT_FOUND",
+                },
+                status="failure",
+            )
+            self.db.commit()
+            return AgentBuilderApplyResponse(
+                apply_id=apply_id,
+                outcome="blocked",
+                block_reason="DRAFT_METADATA_NOT_FOUND",
+                audit_recorded=True,
+                notices=["초안 정보를 다시 확인할 수 없어 적용 및 저장을 차단했습니다."],
+            )
         if apply_request.action == "cancel":
             if draft.status != "ready":
                 return self._block_apply(
@@ -1094,7 +1159,6 @@ class AgentBuilderService:
                     notice="이미 처리되었거나 취소된 초안은 다시 취소할 수 없습니다.",
                     mark_blocked=False,
                 )
-            draft.status = "canceled"
             add_action_audit(
                 self.db,
                 AuditAction.AGENT_BUILDER_APPLY_SAVE_CANCELED,
@@ -1110,7 +1174,9 @@ class AgentBuilderService:
                 outcome="canceled",
                 block_reason="USER_CANCELED",
                 audit_recorded=True,
-                notices=["도안 적용을 취소했습니다. 실제 workflow graph는 변경되지 않았습니다."],
+                notices=[
+                    "도안 보기를 닫았습니다. 실제 workflow graph는 변경되지 않았습니다."
+                ],
             )
 
         if draft.status != "ready":
@@ -1553,6 +1619,21 @@ class AgentBuilderService:
             )
 
         text = request.message.lower()
+        if "guardrail" in text or "가드레일" in request.message or "안전장치" in request.message:
+            return AgentBuilderStructuredRequest(
+                request_type="unsupported",
+                draft_mode="new_workflow",
+                intent_summary=_safe_summary(request.message),
+                planned_steps=[],
+                knowledge_requirements=[],
+                required_capabilities=[],
+                pending_resolution=[],
+                missing_information=[],
+                unsupported_requests=[
+                    "Guardrail node 자동 생성은 MVP 범위가 아닙니다."
+                ],
+                risk_flags=["unsupported_capability"],
+            )
         needs_kb = any(
             token in request.message
             for token in ["정책", "규정", "내규", "문서", "자료", "근거", "찾아", "검색", "Knowledge", "KB"]
@@ -1727,6 +1808,7 @@ class AgentBuilderService:
         structured: AgentBuilderStructuredRequest,
         *,
         include_materialized_refs: bool = False,
+        selected_candidate_handles: set[str] | None = None,
     ) -> dict[str, Any]:
         if not structured.knowledge_requirements:
             return {"status": "not_required", "bindings": [], "questions": [], "warnings": []}
@@ -1760,20 +1842,130 @@ class AgentBuilderService:
                 ),
                 include_materialized_refs=include_materialized_refs,
             )
+            resolution_id = pending_by_step.get(requirement.target_step_ref)
             if response.status == "unavailable":
+                if selected_candidate_handles and not include_materialized_refs:
+                    selected_option = next(
+                        (
+                            option
+                            for option in response.clarification_options
+                            if str(option.get("candidate_id"))
+                            in selected_candidate_handles
+                        ),
+                        None,
+                    )
+                    if selected_option:
+                        bindings.append(
+                            {
+                                "safe_handle": selected_option.get("candidate_id"),
+                                "name": _safe_display_label(
+                                    selected_option.get("safe_label")
+                                    or selected_option.get("label")
+                                ),
+                                "confidence": selected_option.get("confidence")
+                                or "medium",
+                                "score": selected_option.get("score"),
+                                "reason_category": selected_option.get(
+                                    "reason_category"
+                                )
+                                or "user_selected",
+                                "threshold_result": selected_option.get(
+                                    "threshold_result"
+                                )
+                                or "user_selected",
+                            }
+                        )
+                        warnings.append(
+                            response.user_safe_warning
+                            or "사용자가 선택한 Knowledge Base 후보로 초안을 생성합니다."
+                        )
+                        continue
                 return {
                     "status": "validation_failed"
                     if requirement.required
                     else "clarification_required",
                     "bindings": [],
                     "questions": ["사용할 Knowledge Base를 선택해주세요."],
-                    "options": response.clarification_options,
+                    "options": self._kb_options_with_requirement_context(
+                        response.clarification_options,
+                        requirement=requirement,
+                        resolution_id=resolution_id,
+                    ),
                     "warnings": [
                         response.user_safe_warning
                         or "Knowledge Base 추천을 사용할 수 없습니다."
                     ],
                 }
+            if response.status == "clarification_required" and not selected_candidate_handles:
+                return {
+                    "status": "clarification_required",
+                    "bindings": [],
+                    "questions": ["사용할 Knowledge Base를 선택해주세요."],
+                    "options": self._kb_options_with_requirement_context(
+                        response.clarification_options,
+                        requirement=requirement,
+                        resolution_id=resolution_id,
+                    ),
+                    "warnings": [
+                        response.user_safe_warning
+                        or "Knowledge Base 후보를 사용자 확인으로 선택해야 합니다."
+                    ],
+                }
             recommendations = list(response.recommendations or [])
+            if selected_candidate_handles:
+                selected_recommendations = [
+                    item
+                    for item in recommendations
+                    if (item.candidate_handle or item.recommendation_id)
+                    in selected_candidate_handles
+                ]
+                if selected_recommendations:
+                    recommendations = selected_recommendations
+                else:
+                    if not include_materialized_refs:
+                        selected_option = next(
+                            (
+                                option
+                                for option in response.clarification_options
+                                if str(option.get("candidate_id"))
+                                in selected_candidate_handles
+                            ),
+                            None,
+                        )
+                        if selected_option:
+                            bindings.append(
+                                {
+                                    "safe_handle": selected_option.get("candidate_id"),
+                                    "name": _safe_display_label(
+                                        selected_option.get("safe_label")
+                                        or selected_option.get("label")
+                                    ),
+                                    "confidence": selected_option.get("confidence")
+                                    or "medium",
+                                    "score": selected_option.get("score"),
+                                    "reason_category": selected_option.get(
+                                        "reason_category"
+                                    )
+                                    or "user_selected",
+                                    "threshold_result": selected_option.get(
+                                        "threshold_result"
+                                    )
+                                    or "user_selected",
+                                }
+                            )
+                            warnings.append(
+                                "사용자가 선택한 Knowledge Base 후보로 초안을 생성합니다."
+                            )
+                            continue
+                    return {
+                        "status": "validation_failed",
+                        "bindings": [],
+                        "questions": [],
+                        "options": [],
+                        "warnings": [
+                            "선택한 Knowledge Base 후보를 다시 확인할 수 없습니다."
+                        ],
+                    }
             if not recommendations:
                 return {
                     "status": "recommended",
@@ -1804,7 +1996,11 @@ class AgentBuilderService:
                     "status": "clarification_required",
                     "bindings": [],
                     "questions": ["추천 후보가 여러 개입니다. 사용할 Knowledge Base를 선택해주세요."],
-                    "options": self._kb_clarification_options(recommendations),
+                    "options": self._kb_clarification_options(
+                        recommendations,
+                        requirement=requirement,
+                        resolution_id=resolution_id,
+                    ),
                     "warnings": ["Knowledge Base 후보가 비슷해 자동 선택하지 않았습니다."],
                 }
             binding_base = {
@@ -1829,7 +2025,13 @@ class AgentBuilderService:
             warnings.extend(top.warnings)
         return {"status": "recommended", "bindings": bindings, "questions": [], "options": [], "warnings": warnings}
 
-    def _kb_clarification_options(self, recommendations: list[Any]) -> list[dict[str, Any]]:
+    def _kb_clarification_options(
+        self,
+        recommendations: list[Any],
+        *,
+        requirement: AgentBuilderKnowledgeRequirement,
+        resolution_id: str | None,
+    ) -> list[dict[str, Any]]:
         options: list[dict[str, Any]] = []
         for item in recommendations:
             options.append(
@@ -1844,7 +2046,28 @@ class AgentBuilderService:
                     "runtime_availability": item.runtime_availability,
                 }
             )
-        return options
+        return self._kb_options_with_requirement_context(
+            options,
+            requirement=requirement,
+            resolution_id=resolution_id,
+        )
+
+    def _kb_options_with_requirement_context(
+        self,
+        options: list[dict[str, Any]],
+        *,
+        requirement: AgentBuilderKnowledgeRequirement,
+        resolution_id: str | None,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                **option,
+                "requirement_id": option.get("requirement_id")
+                or requirement.requirement_id,
+                "resolution_id": option.get("resolution_id") or resolution_id,
+            }
+            for option in options
+        ]
 
     def _safe_kb_bindings(self, bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
@@ -1887,18 +2110,40 @@ class AgentBuilderService:
         except Exception:
             return "KB_CANDIDATE_UNAVAILABLE"
 
-        recommendations = self._resolve_knowledge_requirements(
-            structured,
-            include_materialized_refs=True,
+        service = KnowledgeRAGRecommendationService(
+            self.db,
+            user_id=self.user.id,
+            organization_id=self.organization_id,
         )
-        if recommendations["status"] != "recommended":
-            return (
-                "KB_PERMISSION_REQUIRED"
-                if recommendations["status"] == "validation_failed"
-                else "KB_CANDIDATE_UNAVAILABLE"
+        pending_by_step = {
+            item.target_step_ref: item.resolution_id
+            for item in structured.pending_resolution
+            if item.slot_type == "knowledge_base"
+        }
+        runtime_bindings: list[dict[str, Any]] = []
+        for requirement in structured.knowledge_requirements:
+            runtime_bindings.extend(
+                service.materialize_candidate_handles_for_builder(
+                    KnowledgeRAGRecommendationRequest(
+                        workflow_intent=structured.intent_summary,
+                        node_purpose="; ".join(requirement.query_topics)
+                        or requirement.expected_evidence_type,
+                        knowledge_requirement=requirement.model_dump(mode="json"),
+                        pending_resolution_ref=pending_by_step.get(
+                            requirement.target_step_ref
+                        ),
+                        safe_workflow_context_summary={
+                            "planned_step_count": len(structured.planned_steps),
+                            "required_capabilities": structured.required_capabilities,
+                        },
+                        intended_execution_subject_id=self.user.id,
+                        mode="auto",
+                        max_recommendations=3,
+                    ),
+                    required_handles,
+                )
             )
 
-        runtime_bindings = self._runtime_kb_bindings(recommendations["bindings"])
         runtime_handles = {item.get("safe_handle") for item in runtime_bindings}
         if required_handles - runtime_handles:
             return "KB_CANDIDATE_UNAVAILABLE"
@@ -2303,16 +2548,41 @@ class AgentBuilderService:
             workflow_id=session.workflow_id,
             app_id=session.app_id,
             status=session.status,
-            messages=[
-                self._message_payload_with_latest_preview(latest_request, latest_draft)
-            ]
-            if latest_request
-            else [],
+            messages=self._session_messages(latest_request, latest_draft),
             pending_request=self._request_summary(latest_request)
             if latest_request and latest_request.status == "processing"
             else None,
             draft_preview=self._draft_summary(latest_draft) if latest_draft else None,
         )
+
+    def _session_messages(
+        self,
+        latest_request: AgentBuilderRequest | None,
+        latest_draft: AgentBuilderDraft | None,
+    ) -> list[dict[str, Any]]:
+        if latest_request is None:
+            return []
+        messages: list[dict[str, Any]] = []
+        if latest_request.message_summary:
+            messages.append(
+                {
+                    "kind": "user",
+                    "request_id": str(latest_request.id),
+                    "content": latest_request.message_summary,
+                    "redacted": True,
+                }
+            )
+        messages.append(
+            {
+                "kind": "assistant",
+                "request_id": str(latest_request.id),
+                "response": self._message_payload_with_latest_preview(
+                    latest_request,
+                    latest_draft,
+                ),
+            }
+        )
+        return messages
 
     def _session_scope_allowed(self, session: AgentBuilderSession) -> bool:
         if session.workflow_id:
@@ -2353,6 +2623,23 @@ class AgentBuilderService:
         }
 
     def _draft_summary(self, draft: AgentBuilderDraft) -> dict[str, Any]:
+        if (
+            draft.status == "ready"
+            and (draft.validation_result or {}).get("valid", False)
+            and not (draft.expires_at and draft.expires_at < _now())
+        ):
+            return AgentBuilderDraftPreview(
+                draft_id=draft.id,
+                preview_graph=draft.preview_graph,
+                base_graph_hash=draft.base_graph_hash,
+                base_workflow_updated_at=draft.base_workflow_updated_at,
+                draft_mode=draft.draft_mode,
+                node_detail_previews=draft.node_detail_previews,
+                validation_result=AgentBuilderValidationResult.model_validate(
+                    draft.validation_result
+                ),
+                safety_notices=[SAFE_SIDE_EFFECT_NOTICE],
+            ).model_dump(mode="json")
         return {
             "draft_id": str(draft.id),
             "status": draft.status,
@@ -2387,6 +2674,67 @@ class AgentBuilderService:
                 safety_notices=[SAFE_SIDE_EFFECT_NOTICE],
             ).model_dump(mode="json")
         return payload
+
+    def _selected_knowledge_candidate_context(
+        self,
+        session: AgentBuilderSession,
+        message_request: AgentBuilderMessageRequest,
+    ) -> dict[str, Any] | None:
+        selection = message_request.selected_knowledge_candidate
+        if selection is None:
+            return None
+        now = _now()
+        candidate_id = selection.candidate_id
+        previous_request = (
+            self.db.query(AgentBuilderRequest)
+            .filter(
+                AgentBuilderRequest.session_id == session.id,
+                AgentBuilderRequest.user_id == self.user.id,
+                AgentBuilderRequest.organization_id == self.organization_id,
+                AgentBuilderRequest.status == "clarification_required",
+                or_(
+                    AgentBuilderRequest.expires_at.is_(None),
+                    AgentBuilderRequest.expires_at > now,
+                ),
+            )
+            .order_by(AgentBuilderRequest.created_at.desc())
+            .first()
+        )
+        if previous_request is None:
+            return {"error": "missing_prior_clarification"}
+
+        response_payload = previous_request.response_payload or {}
+        options = response_payload.get("clarification_options") or []
+        matched = None
+        for option in options:
+            if str(option.get("candidate_id")) != candidate_id:
+                continue
+            if selection.resolution_id and str(option.get("resolution_id")) != str(
+                selection.resolution_id
+            ):
+                continue
+            if selection.requirement_id and str(option.get("requirement_id")) != str(
+                selection.requirement_id
+            ):
+                continue
+            matched = option
+            break
+        if matched is None:
+            return {"error": "candidate_not_in_prior_options"}
+
+        structured_payload = previous_request.structured_request or response_payload.get(
+            "structured_request"
+        )
+        try:
+            structured = AgentBuilderStructuredRequest.model_validate(
+                structured_payload
+            )
+        except Exception:
+            return {"error": "structured_request_unavailable"}
+        return {
+            "structured_request": structured,
+            "candidate_handles": {candidate_id},
+        }
 
     def _finish_request(
         self,

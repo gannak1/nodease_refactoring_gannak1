@@ -379,6 +379,7 @@ def test_agent_builder_record_preview_opened_blocks_invalid_draft(monkeypatch):
 
 def test_create_session_uses_workflow_app_id_over_client_app_id(monkeypatch):
     db = FakeDb()
+    db.query_result = FakeQuery(None)
     workflow_id = uuid.uuid4()
     workflow_app_id = uuid.uuid4()
     client_app_id = uuid.uuid4()
@@ -394,6 +395,7 @@ def test_create_session_uses_workflow_app_id_over_client_app_id(monkeypatch):
     )
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
     monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(svc, "_session_response", lambda _session: SimpleNamespace())
 
     svc.create_or_restore_session(
         service_module.AgentBuilderSessionCreateRequest(
@@ -480,6 +482,29 @@ def test_structured_request_rejects_non_workflow_message_with_hints():
     assert structured.request_type == "unsupported"
     assert structured.planned_steps == []
     assert structured.unsupported_requests
+    assert validation.valid is False
+    assert validation.issues[0].code == "UNSUPPORTED_REQUEST"
+
+
+def test_structured_request_rejects_guardrail_node_in_mvp():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력값을 검사하는 Guardrail 노드를 추가해줘"),
+        workflow=None,
+    )
+    validation = svc._validate_structured_request(  # noqa: SLF001
+        structured,
+        app_id=uuid.uuid4(),
+    )
+
+    assert structured.request_type == "unsupported"
+    assert structured.planned_steps == []
+    assert "unsupported_capability" in structured.risk_flags
     assert validation.valid is False
     assert validation.issues[0].code == "UNSUPPORTED_REQUEST"
 
@@ -644,7 +669,8 @@ def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(m
     result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
 
     assert result["status"] == "recommended"
-    assert result["bindings"][0]["knowledge_base_id"] == str(kb_id)
+    assert result["bindings"][0]["safe_handle"] == "safe-rec-1"
+    assert "knowledge_base_id" not in result["bindings"][0]
     assert captured["user_id"] == user_id
     assert captured["organization_id"] == organization_id
     assert "sk-" not in captured["workflow_intent"]
@@ -731,6 +757,8 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
             "reason_category": "topic_keyword_match",
             "threshold_result": "high_confidence",
             "runtime_availability": "available",
+            "requirement_id": "kr_1",
+            "resolution_id": "res_kb_1",
         },
         {
             "type": "knowledge_base",
@@ -741,7 +769,214 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
             "reason_category": "metadata_match",
             "threshold_result": "high_confidence",
             "runtime_availability": "available",
+            "requirement_id": "kr_1",
+            "resolution_id": "res_kb_1",
         },
+    ]
+
+
+def test_agent_builder_selected_kb_candidate_uses_selected_safe_handle(monkeypatch):
+    kb_id_a = uuid.uuid4()
+    kb_id_b = uuid.uuid4()
+
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **kwargs):
+            include_materialized_refs = kwargs.get("include_materialized_refs", False)
+            materialized_a = [{"id": kb_id_a, "name": "휴가 정책"}] if include_materialized_refs else []
+            materialized_b = [{"id": kb_id_b, "name": "인사 정책"}] if include_materialized_refs else []
+            return KnowledgeRAGRecommendationResponse(
+                recommendations=[
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-1",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-1",
+                        candidate_handle="safe-rec-1",
+                        safe_label="휴가 정책",
+                        confidence="high",
+                        score=0.7,
+                        threshold_result="high_confidence",
+                        safe_reason_code="topic_keyword_match",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        materialized_knowledge_bases=materialized_a,
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="topic_keyword_match",
+                        ),
+                        runtime_availability="available",
+                    ),
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-2",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-2",
+                        candidate_handle="safe-rec-2",
+                        safe_label="인사 정책",
+                        confidence="high",
+                        score=0.66,
+                        threshold_result="high_confidence",
+                        safe_reason_code="metadata_match",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        materialized_knowledge_bases=materialized_b,
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="metadata_match",
+                        ),
+                        runtime_availability="available",
+                    ),
+                ],
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="2",
+                    recommendation_count_bucket="2",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(  # noqa: SLF001
+        structured,
+        selected_candidate_handles={"safe-rec-2"},
+        include_materialized_refs=True,
+    )
+
+    assert result["status"] == "recommended"
+    assert result["bindings"] == [
+        {
+            "safe_handle": "safe-rec-2",
+            "name": "인사 정책",
+            "confidence": "high",
+            "score": 0.66,
+            "reason_category": "metadata_match",
+            "threshold_result": "high_confidence",
+            "knowledge_base_id": str(kb_id_b),
+        }
+    ]
+
+
+def test_agent_builder_kb_recommendation_adapter_unavailable_with_options_requires_clarification(monkeypatch):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                status="clarification_required",
+                recommendations=[],
+                clarification_options=[
+                    {
+                        "candidate_id": "safe-rec-1",
+                        "safe_label": "휴가 정책",
+                        "reason_category": "adapter_unavailable",
+                    }
+                ],
+                fallback_reason="adapter_unavailable",
+                user_safe_warning="Knowledge Base 추천을 사용할 수 없어 사용자 확인이 필요합니다.",
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
+
+    assert result["status"] == "clarification_required"
+    assert result["options"][0]["candidate_id"] == "safe-rec-1"
+    assert result["options"][0]["requirement_id"] == "kr_1"
+    assert result["options"][0]["resolution_id"] == "res_kb_1"
+
+
+def test_agent_builder_selected_kb_candidate_from_unavailable_fallback_is_used(monkeypatch):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                status="unavailable",
+                recommendations=[],
+                clarification_options=[
+                    {
+                        "candidate_id": "safe-rec-1",
+                        "safe_label": "HR Policy",
+                        "confidence": "low",
+                        "score": 0.0,
+                        "reason_category": "adapter_unavailable",
+                        "threshold_result": "adapter_unavailable",
+                    }
+                ],
+                fallback_reason="adapter_unavailable",
+                user_safe_warning="Knowledge Base recommendation is unavailable.",
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="Use a Knowledge policy document in this workflow",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["policy"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+
+    result = svc._resolve_knowledge_requirements(  # noqa: SLF001
+        structured,
+        selected_candidate_handles={"safe-rec-1"},
+    )
+
+    assert result["status"] == "recommended"
+    assert result["bindings"] == [
+        {
+            "safe_handle": "safe-rec-1",
+            "name": "HR Policy",
+            "confidence": "low",
+            "score": 0.0,
+            "reason_category": "adapter_unavailable",
+            "threshold_result": "adapter_unavailable",
+        }
     ]
 
 
@@ -769,7 +1004,7 @@ def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypa
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="?닿? ?뺤콉 臾몄꽌瑜?李얠븘 ?듬? workflow瑜?留뚮뱾?댁쨾"),
+        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
         workflow=None,
     )
 
@@ -825,6 +1060,140 @@ def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkey
     assert nodes_by_type["slackPostNode"]["data"]["channel_resolution_state"] == "unresolved"
 
 
+def test_agent_builder_session_messages_restore_redacted_user_turn_and_assistant_turn():
+    request_id = uuid.uuid4()
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    request_row = SimpleNamespace(
+        id=request_id,
+        message_summary="휴가 정책을 찾아서 요약해줘",
+        response_payload={
+            "request_id": str(request_id),
+            "status": "clarification_required",
+            "clarification_questions": ["사용할 Knowledge Base를 선택해주세요."],
+            "clarification_options": [],
+            "warnings": [],
+        },
+    )
+
+    messages = svc._session_messages(request_row, None)  # noqa: SLF001
+
+    assert messages[0] == {
+        "kind": "user",
+        "request_id": str(request_id),
+        "content": "휴가 정책을 찾아서 요약해줘",
+        "redacted": True,
+    }
+    assert messages[1]["kind"] == "assistant"
+    assert messages[1]["response"]["status"] == "clarification_required"
+
+
+def test_agent_builder_selected_kb_candidate_validates_prior_clarification_context():
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="휴가 정책",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["휴가 정책"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+    previous_request = SimpleNamespace(
+        response_payload={
+            "clarification_options": [
+                {
+                    "candidate_id": "safe-rec-1",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                }
+            ],
+            "structured_request": structured.model_dump(mode="json"),
+        },
+        structured_request=structured.model_dump(mode="json"),
+    )
+    db = FakeDb()
+    db.query_result = FakeQuery(previous_request)
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    session = SimpleNamespace(id=uuid.uuid4())
+
+    context = svc._selected_knowledge_candidate_context(  # noqa: SLF001
+        session,
+        AgentBuilderMessageRequest(
+            message="선택한 Knowledge Base로 도안을 생성해줘",
+            selected_knowledge_candidate={
+                "candidate_id": "safe-rec-1",
+                "resolution_id": "res_kb_1",
+                "requirement_id": "kr_1",
+            },
+        ),
+    )
+
+    assert context["candidate_handles"] == {"safe-rec-1"}
+    assert context["structured_request"].knowledge_requirements[0].requirement_id == "kr_1"
+
+
+def test_agent_builder_selected_kb_candidate_rejects_mismatched_context():
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="휴가 정책",
+        knowledge_requirements=[],
+        pending_resolution=[],
+    )
+    previous_request = SimpleNamespace(
+        response_payload={
+            "clarification_options": [
+                {
+                    "candidate_id": "safe-rec-1",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                }
+            ],
+            "structured_request": structured.model_dump(mode="json"),
+        },
+        structured_request=structured.model_dump(mode="json"),
+    )
+    db = FakeDb()
+    db.query_result = FakeQuery(previous_request)
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    context = svc._selected_knowledge_candidate_context(  # noqa: SLF001
+        SimpleNamespace(id=uuid.uuid4()),
+        AgentBuilderMessageRequest(
+            message="선택한 Knowledge Base로 도안을 생성해줘",
+            selected_knowledge_candidate={
+                "candidate_id": "safe-rec-1",
+                "resolution_id": "other-resolution",
+                "requirement_id": "kr_1",
+            },
+        ),
+    )
+
+    assert context == {"error": "candidate_not_in_prior_options"}
+
+
 def test_agent_builder_apply_blocks_missing_client_preview_hash(monkeypatch):
     class FakeDb:
         def __init__(self):
@@ -855,7 +1224,13 @@ def test_agent_builder_apply_blocks_missing_client_preview_hash(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
+    lock_calls = []
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(
+        svc,
+        "_lock_draft_for_apply",
+        lambda locked_draft: lock_calls.append(locked_draft.id) or locked_draft,
+    )
 
     response = svc.apply_draft(
         draft_id,
@@ -868,6 +1243,7 @@ def test_agent_builder_apply_blocks_missing_client_preview_hash(monkeypatch):
     assert response.audit_recorded is True
     assert db.committed is True
     assert draft.status == "ready"
+    assert lock_calls == [draft_id, draft_id]
 
 
 def test_agent_builder_apply_blocks_preview_hash_mismatch(monkeypatch):
@@ -971,6 +1347,40 @@ def test_agent_builder_cancel_does_not_overwrite_applied_draft(monkeypatch):
     assert response.outcome == "blocked"
     assert response.block_reason == "DRAFT_NOT_APPLICABLE"
     assert draft.status == "applied"
+
+
+def test_agent_builder_cancel_records_audit_without_terminally_canceling_ready_draft(monkeypatch):
+    preview_graph = {"nodes": [], "edges": []}
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="modify_workflow",
+        base_graph_hash=calculate_graph_hash(preview_graph),
+        preview_graph=preview_graph,
+        status="ready",
+        workflow_id=uuid.uuid4(),
+        app_id=None,
+        draft_metadata={"workflow_id": str(uuid.uuid4())},
+        expires_at=None,
+    )
+    db = FakeDb()
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(action="cancel"),
+    )
+
+    assert response.outcome == "canceled"
+    assert response.audit_recorded is True
+    assert draft.status == "ready"
+    assert db.commits == 2
 
 
 def test_agent_builder_apply_requires_workflow_write_permission(monkeypatch):
@@ -1279,6 +1689,7 @@ def test_agent_builder_preview_auto_layouts_new_workflow_chain(monkeypatch):
         request_type="new_workflow",
         draft_mode="new_workflow",
         intent_summary="create",
+        required_capabilities=["start_input", "llm", "answer"],
     )
 
     preview = svc._build_preview_graph(  # noqa: SLF001
@@ -1359,6 +1770,7 @@ def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypa
         request_type="modify_workflow",
         draft_mode="modify_workflow",
         intent_summary="append",
+        required_capabilities=["start_input", "llm", "answer"],
     )
 
     preview = svc._build_preview_graph(  # noqa: SLF001
@@ -1580,21 +1992,25 @@ def test_agent_builder_apply_materializes_kb_at_apply_time(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(
-        svc,
-        "_resolve_knowledge_requirements",
-        lambda _structured, *, include_materialized_refs: {
-            "status": "recommended",
-            "bindings": [
+
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def materialize_candidate_handles_for_builder(self, request, candidate_handles):
+            assert candidate_handles == {"safe-rec-1"}
+            return [
                 {
                     "safe_handle": "safe-rec-1",
                     "knowledge_base_id": str(uuid.uuid4()),
                     "name": "휴가 규정",
                 }
-            ],
-            "questions": [],
-            "warnings": [],
-        },
+            ]
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
     )
 
     bindings = svc._runtime_kb_bindings_for_apply(draft)  # noqa: SLF001

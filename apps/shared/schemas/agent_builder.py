@@ -35,6 +35,12 @@ class AgentBuilderSessionResponse(BaseModel):
     draft_preview: dict[str, Any] | None = None
 
 
+class AgentBuilderKnowledgeCandidateSelection(BaseModel):
+    candidate_id: str = Field(min_length=1, max_length=255)
+    resolution_id: str | None = Field(default=None, max_length=255)
+    requirement_id: str | None = Field(default=None, max_length=255)
+
+
 class AgentBuilderMessageRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -44,6 +50,7 @@ class AgentBuilderMessageRequest(BaseModel):
     selected_node_id: str | None = Field(default=None, max_length=255)
     selected_edge_id: str | None = Field(default=None, max_length=255)
     conversation_context_id: str | None = Field(default=None, max_length=255)
+    selected_knowledge_candidate: AgentBuilderKnowledgeCandidateSelection | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -64,7 +71,6 @@ class AgentBuilderMessageRequest(BaseModel):
         if isinstance(data, dict) and raw_graph_keys.intersection(data):
             raise ValueError("raw workflow graph payload is not accepted")
         return data
-
 
 class AgentBuilderPlannedStep(BaseModel):
     step_id: str

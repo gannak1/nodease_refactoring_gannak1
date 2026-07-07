@@ -108,6 +108,40 @@ class KnowledgeRAGRecommendationService:
             reason_code=None if recommendations else resolution.reason_code or "no_candidate",
         )
 
+    def materialize_candidate_handles_for_builder(
+        self,
+        request: KnowledgeRAGRecommendationRequest,
+        candidate_handles: set[str],
+    ) -> list[dict[str, str]]:
+        """Resolve previously issued safe handles to authorized runtime KB refs.
+
+        This path is for apply/save materialization. It does not depend on
+        top-N ranking; a still-authorized handle can be materialized even if
+        current recommendation ordering changed.
+        """
+        if not candidate_handles:
+            return []
+        resolver = self.resolver or self._resolver_for_request(request)
+        recommendation_mode = self._resolved_mode(request)
+        try:
+            resolution = self._resolve_candidates(resolver, request, recommendation_mode)
+        except Exception:
+            return []
+
+        materialized: list[dict[str, str]] = []
+        for candidate in resolution.candidates:
+            handle = self._recommendation_id(candidate)
+            if handle not in candidate_handles:
+                continue
+            materialized.append(
+                {
+                    "safe_handle": handle,
+                    "knowledge_base_id": str(candidate.candidate_id),
+                    "name": candidate.safe_label or GENERIC_KB_LABEL,
+                }
+            )
+        return materialized
+
     def _adapter_unavailable_response(
         self,
         request: KnowledgeRAGRecommendationRequest,
@@ -119,7 +153,10 @@ class KnowledgeRAGRecommendationService:
                 "safe_label": candidate.safe_label or GENERIC_KB_LABEL,
                 "candidate_type": candidate.candidate_type,
                 "runtime_availability": candidate.runtime_availability,
+                "confidence": "low",
+                "score": 0.0,
                 "reason_category": "adapter_unavailable",
+                "threshold_result": "adapter_unavailable",
             }
             for candidate in (candidates or [])[: request.max_recommendations]
         ]
@@ -197,6 +234,7 @@ class KnowledgeRAGRecommendationService:
             source_priority = self._source_tier_priority(candidate)
             availability = _AVAILABILITY_ORDER.get(candidate.runtime_availability, 1)
             freshness = self._freshness_bonus(candidate)
+            sync_penalty = self._sync_state_penalty(candidate)
 
             keyword_score = min(1.0, len(matched_terms) / max(1, len(terms)))
             score = (
@@ -204,6 +242,7 @@ class KnowledgeRAGRecommendationService:
                 + (source_priority / 100) * 0.15
                 + (availability / 3) * 0.15
                 + freshness * 0.05
+                - sync_penalty
             )
             if request.high_risk_domain != "none":
                 score += 0.05
@@ -216,7 +255,7 @@ class KnowledgeRAGRecommendationService:
             ranked.append(
                 (
                     candidate,
-                    min(score, 0.99),
+                    max(0.0, min(score, 0.99)),
                     matched_terms,
                     used_signals,
                 )
@@ -329,6 +368,9 @@ class KnowledgeRAGRecommendationService:
             warnings.append("runtime_availability_unknown")
         elif candidate.runtime_availability != "available":
             warnings.append("runtime_availability_not_available")
+        sync_state = str((candidate.safe_metadata or {}).get("sync_state") or "").lower()
+        if sync_state in {"stale", "failed"}:
+            warnings.append(f"kb_sync_state_{sync_state}")
         if safe_label is None:
             warnings.append("safe_label_unavailable")
         return warnings
@@ -409,6 +451,12 @@ class KnowledgeRAGRecommendationService:
             "not_source_managed",
         }:
             return 1.0
+        return 0.0
+
+    def _sync_state_penalty(self, candidate: KnowledgeCandidate) -> float:
+        sync_state = str((candidate.safe_metadata or {}).get("sync_state") or "").lower()
+        if sync_state in {"stale", "failed"}:
+            return 0.1
         return 0.0
 
     def _used_signals(

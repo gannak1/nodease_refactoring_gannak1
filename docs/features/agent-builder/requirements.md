@@ -14,7 +14,7 @@ MVP는 다음을 포함한다.
 - Workflow Editor 우측 하단 고정 launcher와 chatbot panel
 - 자연어 요청을 `StructuredRequest`로 변환
 - 새 workflow draft 생성과 기존 workflow 수정 제안 구분
-- Start/Input, LLM, Knowledge Base-backed LLM, Answer, Guardrail, Slack send 같은 허용된 capability 조합 제안
+- Start/Input, LLM, Knowledge Base-backed LLM, Answer, Slack send 같은 MVP 허용 capability 조합 제안
 - 기존 workflow context와 selected node를 고려한 target resolution
 - Knowledge Base 후보가 필요한 경우 safe candidate set 기반 추천
 - draft preview, validation result, Preview Mode 기반 적용 및 저장 gating
@@ -30,6 +30,7 @@ MVP는 다음을 포함하지 않는다.
 - credential 자동 생성 또는 credential 원문 사용
 - 외부 MCP client/server 구현
 - 모든 node type 자동 생성
+- Guardrail node 자동 생성. MVP에서는 future allowlist 후보로만 남기고, 지원 capability로 노출하지 않는다.
 - LLM-assisted KB reranking
 
 ## Users
@@ -115,7 +116,7 @@ Recommendation item은 score, confidence, reason category, threshold result를 �
 
 Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
 
-Recommendation candidate 식별자는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이어야 한다. Draft preview와 clarification에는 safe metadata만 표시한다. Draft metadata에는 runtime KB id mapping을 저장하지 않고 safe handle과 structured request safe context만 보존한다. Agent Builder가 apply/save로 workflow graph를 저장하기 직전 backend는 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석해야 하며, handle이 만료되었거나 권한 확인을 통과하지 못하면 validation failure 또는 재선택 질문으로 닫아야 한다.
+Recommendation candidate 식별자는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이어야 한다. Draft preview와 clarification에는 safe metadata만 표시한다. Draft metadata에는 runtime KB id mapping을 저장하지 않고 safe handle과 structured request safe context만 보존한다. Agent Builder가 apply/save로 workflow graph를 저장하기 직전 backend는 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석해야 하며, 이 재해석은 현재 recommendation top-N ranking 결과에 의존하지 않고 권한 확인된 후보 집합 안에서 safe handle을 직접 materialize해야 한다. Handle이 만료되었거나 권한 확인을 통과하지 못하면 validation failure 또는 재선택 질문으로 닫아야 한다.
 
 초기 recommendation 결과는 KB 단위로 materialize된다. Builder UI는 Collection 맥락을 safe `source_collection_summary`로 설명할 수 있지만, 현재 LLM node draft에는 `knowledgeBases` 중심으로 저장한다.
 
@@ -134,6 +135,8 @@ KB recommendation 결과는 다음 중 하나여야 한다.
 - optional KB requirement unresolved: warning과 함께 KB 없는 draft 가능
 
 Builder가 adapter unavailable 같은 recommendation 실패를 받으면 기본적으로 사용자 확인 필요 또는 validation failure 상태로 둔다. 다만 adapter가 정상 동작했고 권한 확인된 후보가 0개인 경우는 fail-open 권한 확장이 아니라 preview-only KB binding 미설정 상태로 보며, 한국어 경고와 함께 RAG 없는 LLM node draft를 생성할 수 있다. 이 draft는 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
+
+KB 선택 clarification을 받은 사용자가 후보를 선택하면 Agent Builder는 safe handle과 선택적 resolution/requirement reference만 서버에 다시 보낸다. Backend는 같은 authenticated user, active organization, workflow/app scope, agent panel session의 원 clarification option 안에 있던 후보인지 검증해야 하며, 통과한 경우에만 해당 pending KB resolution을 resolved 처리한다. 선택이 원 clarification context와 맞지 않거나 만료되었거나 apply/save 직전 runtime KB reference로 다시 해석되지 않으면 draft 확정 또는 저장으로 이어지면 안 된다.
 
 ### AB-FR-009: Draft Generation
 
@@ -162,7 +165,7 @@ Preview Mode는 현재 editor graph를 덮어쓰지 않고, agent가 생성한 `
 
 Preview Mode의 Node Detail Panel은 편집을 허용하지 않는다. 사용자가 draft 내용을 바꾸려면 채팅 후속 요청으로 수정해야 한다. Preview Mode에는 이 graph가 아직 저장되지 않은 도안이라는 안내와 `적용 및 저장`, `취소` action을 항상 접근 가능한 위치에 표시해야 한다. MVP에서는 이 action을 canvas banner/action bar 또는 Preview Mode 동안 닫을 수 없는 Agent Builder panel에 둘 수 있지만, 사용자가 panel을 닫아 적용/취소 경로를 잃게 해서는 안 된다.
 
-`취소`를 선택하면 현재 Preview Mode를 종료하고 기존 editor state로 돌아간다. 이는 draft metadata 자체를 폐기한다는 뜻이 아니며, validation을 통과한 직전 draft는 만료되거나 새 draft로 대체되기 전까지 다시 `도안 보기`로 열 수 있다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
+`취소`를 선택하면 현재 Preview Mode를 종료하고 기존 editor state로 돌아간다. 이 event는 server-side apply/save audit에 `canceled` outcome으로 기록할 수 있어야 하지만, draft metadata 자체를 terminal 폐기한다는 뜻은 아니다. Validation을 통과한 직전 draft는 만료되거나 새 draft로 대체되기 전까지 다시 `도안 보기`로 열 수 있다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
 
 `적용 및 저장`을 선택하면 backend는 원 draft metadata 조회, 요청 유형별 권한 재확인, stale check, validation 재확인을 통과한 경우에만 workflow graph를 저장한다. 기존 workflow 수정 draft는 workflow read/write 권한을 재확인하고, 새 workflow draft는 app 또는 workflow 생성 scope 권한을 재확인한다. 전체 교체 draft는 기존 workflow read/write 권한과 교체 validation을 모두 만족해야 한다.
 
@@ -188,7 +191,7 @@ MVP message request는 raw client graph snapshot을 받지 않는다. Client는 
 
 ### AB-FR-012: Conversation Session
 
-Agent Builder chatbot session은 refresh 이후에도 최근 대화와 pending request 상태를 복구할 수 있어야 한다. Session identifier는 server-issued 값이어야 하며, 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶여야 한다. Client가 임의로 생성한 session id는 권한, scope, audit, stale 판단의 근거로 사용할 수 없다.
+Agent Builder chatbot session은 refresh 이후에도 최근 대화와 pending request 상태를 복구할 수 있어야 한다. 최근 대화 복구는 redaction을 거친 사용자 message summary와 assistant response를 함께 포함해야 하며, 사용자 원문 또는 secret-like value를 그대로 저장/표시하지 않는다. Session identifier는 server-issued 값이어야 하며, 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶여야 한다. Client가 임의로 생성한 session id는 권한, scope, audit, stale 판단의 근거로 사용할 수 없다.
 
 Pending request가 있으면 중복 submit을 막고 cancel을 제공한다. Cancel된 request의 late result는 draft preview, Preview Mode 진입, apply/save로 이어질 수 없다.
 

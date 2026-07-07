@@ -96,6 +96,8 @@ Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공
 
 Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다. 현재 Workflow LLM node는 `knowledgeBases`를 실행 입력으로 사용하므로 Agent Builder backend 내부 service call은 recommendation result를 runtime KB reference로 materialize할 수 있다. 단, HTTP 또는 serialized boundary의 response는 safe handle과 safe metadata만 반환하며 raw runtime KB id를 담은 materialized reference를 노출하지 않는다.
 
+Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과를 다시 소비하는 방식이 아니라, 이전에 발급한 safe candidate handle을 KnowledgeCandidateResolver의 권한 확인 candidate set 안에서 직접 재검증하고 runtime KB reference로 해석하는 backend/internal service boundary여야 한다. Ranking 변화 때문에 여전히 권한상 유효한 handle이 top-N 밖으로 밀렸다는 이유만으로 저장을 차단하지 않는다.
+
 허용 response field:
 
 | 필드 | 규칙 |
@@ -117,6 +119,8 @@ Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 
 | `warnings` | Safe warning code/message만 허용 |
 | `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
+
+KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active document version이 없는 KB, active document version이 `ready`가 아닌 KB는 recommendation candidate에서 제외한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
 
 금지: raw workflow intent, raw node purpose, raw natural language 전체, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
 

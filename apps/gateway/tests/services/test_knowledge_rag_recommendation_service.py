@@ -255,8 +255,48 @@ def test_recommendation_falls_back_to_clarification_when_ranker_fails_with_candi
     assert result.fallback_reason == "adapter_unavailable"
     assert result.recommendations == []
     assert result.clarification_options
-    assert result.clarification_options[0]["candidate_id"].startswith("rec-")
+    option = result.clarification_options[0]
+    assert option["candidate_id"].startswith("rec-")
+    assert option["confidence"] == "low"
+    assert option["score"] == 0.0
+    assert option["threshold_result"] == "adapter_unavailable"
     assert result.user_safe_warning
+
+
+def test_materialize_candidate_handles_does_not_depend_on_top_n_ranking():
+    lower = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+        safe_label="복지 안내",
+        runtime_availability="unknown",
+    )
+    higher = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        safe_label="휴가 정책",
+        runtime_availability="available",
+        safe_metadata={"source_tier": "company_policy"},
+    )
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[lower, higher]))
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="휴가 정책",
+        max_recommendations=1,
+    )
+    recommended = service.recommend_for_builder(request)
+    lower_handle = service._recommendation_id(lower)  # noqa: SLF001
+
+    assert recommended.recommendations[0].candidate_handle != lower_handle
+    materialized = service.materialize_candidate_handles_for_builder(
+        request,
+        {lower_handle},
+    )
+
+    assert materialized == [
+        {
+            "safe_handle": lower_handle,
+            "knowledge_base_id": str(lower.candidate_id),
+            "name": "복지 안내",
+        }
+    ]
 
 
 def test_intended_subject_absence_keeps_runtime_availability_unknown_warning():
@@ -269,6 +309,37 @@ def test_intended_subject_absence_keeps_runtime_availability_unknown_warning():
     recommendation = result.recommendations[0]
     assert recommendation.runtime_availability == "unknown"
     assert "runtime_availability_unknown" in recommendation.warnings
+
+
+def test_recommendation_keeps_stale_or_failed_sync_candidates_with_safe_warning():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    safe_label="휴가 규정",
+                    runtime_availability="available",
+                    safe_metadata={"sync_state": "stale"},
+                ),
+                _candidate(
+                    safe_label="인사 규정",
+                    runtime_availability="available",
+                    safe_metadata={"sync_state": "failed"},
+                ),
+            ]
+        )
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 인사 규정",
+            max_recommendations=2,
+        )
+    )
+
+    warnings = {warning for item in result.recommendations for warning in item.warnings}
+    assert result.status == "recommended"
+    assert "kb_sync_state_stale" in warnings
+    assert "kb_sync_state_failed" in warnings
 
 
 def test_request_normalizes_control_characters_and_rejects_blank_text():

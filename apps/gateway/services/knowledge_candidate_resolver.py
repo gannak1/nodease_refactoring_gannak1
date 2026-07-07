@@ -79,6 +79,9 @@ class KnowledgeCandidateResolver:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 continue
+            if self._kb_candidate_exclusion_reason(kb):
+                unavailable_count += 1
+                continue
             decision = kb_decisions[kb.id]
             if decision.allowed:
                 allowed_pairs.append((kb, decision))
@@ -166,6 +169,9 @@ class KnowledgeCandidateResolver:
         for kb_id in kb_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
+                continue
+            if self._kb_candidate_exclusion_reason(kb):
+                unavailable_count += 1
                 continue
             decision = kb_decisions[kb.id]
             if decision.allowed:
@@ -325,11 +331,21 @@ class KnowledgeCandidateResolver:
         # Adapter가 DocumentVersion을 직접 조회하지 않게 하여 permission/candidate 경계를 유지한다.
         version = getattr(kb, "active_document_version", None)
         if version is None or getattr(version, "status", None) != "ready":
-            return {}
+            return {"active_document_version_status": "missing"}
         source_tier = getattr(version, "source_tier", None)
+        metadata = {"active_document_version_status": "ready"}
         if not isinstance(source_tier, str) or not source_tier.strip():
-            return {}
-        return {"source_tier": source_tier.strip()}
+            return metadata
+        return {**metadata, "source_tier": source_tier.strip()}
+
+    def _kb_candidate_exclusion_reason(self, kb: KnowledgeBase) -> str | None:
+        sync_state = str(getattr(kb, "sync_state", "") or "").lower()
+        if sync_state == "source_deleted":
+            return "source_deleted"
+        version = getattr(kb, "active_document_version", None)
+        if version is None or getattr(version, "status", None) != "ready":
+            return "no_active_ready_version"
+        return None
 
     def _collection_context_by_kb_id(
         self,

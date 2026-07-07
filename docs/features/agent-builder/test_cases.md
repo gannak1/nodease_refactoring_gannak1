@@ -52,6 +52,8 @@ Status: Draft
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
 - 후보 여러 개 또는 점수 근접이면 질문만 표시하지 않고 safe label, candidate safe handle, confidence, score, reason category를 포함한 clarification option이 표시된다.
+- 사용자가 clarification option 중 하나를 선택하면 client는 safe candidate handle과 선택적 resolution/requirement reference만 제출하고, backend는 원 clarification option과 같은 session/context인지 검증한 뒤 pending KB resolution을 resolved 처리한다.
+- 원 clarification context와 맞지 않는 candidate handle, 만료된 option, 또는 apply/save 직전 materialization 실패는 draft 확정이나 저장으로 이어지지 않는다.
 - 후보 0개이면 validation failure로 닫지 않고, 권한 확인된 KB 후보가 없다는 경고와 함께 Knowledge Base binding이 비어 있는 LLM node draft를 생성한다.
 - Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options` 기반 fallback clarification을 반환한다.
 - Adapter unavailable이고 safe 후보 선택지도 없으면 validation failure를 반환한다.
@@ -75,6 +77,7 @@ Status: Draft
 - Draft 생성 시 workflow graph 저장, Knowledge Base retrieval, Slack 전송, workflow 실행, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
 - Draft preview는 생성/변경될 step, target 위치, missing info, validation result, warning을 표시한다.
 - Validation 실패 draft에는 `도안 보기` 또는 `적용 및 저장` action이 표시되지 않는다.
+- Guardrail node 자동 생성 요청은 MBA-145 MVP에서 unsupported 또는 후속 기능 안내로 닫히며, Start/LLM/Answer 같은 다른 draft로 silent success 처리되지 않는다.
 - Chatbot panel의 `도안 보기`를 선택하면 Preview Mode가 열리고, actual editor graph는 변경되지 않는다.
 - `도안 보기`를 선택하면 `DraftPreviewOpened` 또는 동등한 preview-opened audit event가 safe metadata로 기록된다.
 - `DraftPreviewOpened` audit 기록에 실패하면 Preview Mode에 진입하지 않고 재시도 안내를 표시한다.
@@ -83,9 +86,10 @@ Status: Draft
 - Preview Mode 중 URL `?node=` 또는 browser popstate가 들어와도 actual workflow node editor를 열지 않고, preview node detail 경계만 유지한다.
 - Preview Mode action이 Agent Builder panel 안에 있으면 panel close를 차단해 `적용 및 저장`과 `취소` 경로가 유지된다.
 - workflow/app route scope가 바뀌면 이전 scope의 Agent Builder session, pending state, preview graph가 새 scope로 이어지지 않는다.
+- Refresh 후 session 복구는 redaction된 사용자 message summary와 assistant response를 함께 복구하고, secret-like user input 원문을 다시 표시하지 않는다.
 - Preview Mode에서 node를 클릭하면 Node Detail Panel에 node type, 주요 설정, KB/Slack binding, credential 참조 상태, input/output mapping, validation 상태가 읽기 전용으로 표시된다.
 - Preview Mode의 Node Detail Panel에서는 node 설정, credential, KB, edge, delete action을 수정할 수 없다.
-- `취소`를 선택하면 Preview Mode만 종료되고 actual editor graph는 Preview Mode 진입 전 상태를 유지한다. 이는 draft metadata 폐기를 의미하지 않으며, 직전 draft가 만료되거나 새 draft로 대체되지 않았다면 사용자는 같은 draft를 다시 `도안 보기`로 열 수 있다.
+- `취소`를 선택하면 server-side apply/save audit에 canceled outcome이 기록되고 Preview Mode만 종료되며, actual editor graph는 Preview Mode 진입 전 상태를 유지한다. 이는 draft metadata terminal 폐기를 의미하지 않으며, 직전 draft가 만료되거나 새 draft로 대체되지 않았다면 사용자는 같은 draft를 다시 `도안 보기`로 열 수 있다.
 - `적용 및 저장` 이후 backend는 draft metadata 조회, 권한 재확인, stale check, validation 재확인을 수행한다.
 - Stale check는 base graph hash와 latest graph hash를 비교하고, workflow version 또는 updated_at도 함께 비교한다.
 - Base graph hash가 같아도 workflow version 또는 updated_at이 달라지면 stale draft로 저장되지 않는다.

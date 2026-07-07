@@ -253,3 +253,53 @@ def test_link_candidates_apply_limit_after_manage_filter(monkeypatch):
 
     assert [candidate.knowledge_base_id for candidate in candidates] == [allowed_kb.id]
     assert len(calls) == 2
+
+
+def test_link_candidates_redacts_source_managed_kb_name_without_approved_display_policy(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Internal HR Source Name",
+        lifecycle_state="active",
+        source_identity=SimpleNamespace(
+            display_policy_state="unreviewed",
+            safe_display_name="Reviewed HR Label",
+        ),
+    )
+
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_require_collection_action", lambda collection, action: None)
+    monkeypatch.setattr(service, "_linked_kb_ids", lambda collection_id: set())
+    monkeypatch.setattr(service, "_link_candidate_kb_page", lambda *, limit, offset: [kb])
+    monkeypatch.setattr(service, "_kb_manage_allowed", lambda kb: True)
+
+    candidates = service.list_link_candidates(collection.id, limit=1)
+
+    assert candidates[0].safe_label == "Knowledge Base"
+
+
+def test_link_candidates_use_approved_source_safe_display_name(monkeypatch):
+    service = _service(monkeypatch)
+    collection = _collection()
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Internal HR Source Name",
+        lifecycle_state="active",
+        source_identity=SimpleNamespace(
+            display_policy_state="approved",
+            safe_display_name="Reviewed HR Label",
+        ),
+    )
+
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_require_collection_action", lambda collection, action: None)
+    monkeypatch.setattr(service, "_linked_kb_ids", lambda collection_id: set())
+    monkeypatch.setattr(service, "_link_candidate_kb_page", lambda *, limit, offset: [kb])
+    monkeypatch.setattr(service, "_kb_manage_allowed", lambda kb: True)
+
+    candidates = service.list_link_candidates(collection.id, limit=1)
+
+    assert candidates[0].safe_label == "Reviewed HR Label"
