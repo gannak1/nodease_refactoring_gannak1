@@ -2,7 +2,10 @@ import type { Edge } from '@xyflow/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { findAddAfterTarget } from '../hooks/useNodeCreation';
+import {
+  findAddAfterTarget,
+  getNonOverlappingPosition,
+} from '../hooks/useNodeCreation';
 import { NodeLibraryContent } from '../components/editor/NodeLibraryContent';
 import { useWorkflowStore } from '../store/useWorkflowStore';
 import type { AppNode } from '../types/Nodes';
@@ -234,5 +237,17 @@ describe('workflow test cases: 뒤에 추가', () => {
     fireEvent.click(screen.getByRole('button', { name: '노드' }));
 
     expect(screen.getByRole('button', { name: 'LLM 기준 노드 뒤에 추가' })).toBeEnabled();
+  });
+
+  it('뒤에 추가 위치가 기존 노드 bounding box와 겹치면 다음 세로 위치로 피한다', () => {
+    const start = createStartNode('start', 0, 0);
+    const existing = createCodeNode('existing', 700, 0);
+
+    expect(
+      getNonOverlappingPosition([start, existing] as AppNode[], {
+        x: 520,
+        y: 0,
+      }),
+    ).toEqual({ x: 520, y: 240 });
   });
 });

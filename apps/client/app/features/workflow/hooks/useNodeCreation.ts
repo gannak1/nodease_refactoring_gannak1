@@ -11,11 +11,10 @@ import { useWorkflowStore } from '../store/useWorkflowStore';
 import type { NodeDefinition } from '../config/nodeRegistry';
 import {
   WORKFLOW_NODE_GAP,
+  WORKFLOW_NODE_SIZE,
   snapCanvasPosition,
 } from '../utils/workflowCanvasGeometry';
 
-const OVERLAP_THRESHOLD_X = 90;
-const OVERLAP_THRESHOLD_Y = 90;
 const SOURCE_AMBIGUOUS_NODE_TYPES = new Set(['conditionNode']);
 const SOURCE_BLOCKED_NODE_TYPES = new Set(['answerNode']);
 const NON_WORKFLOW_NODE_TYPES = new Set(['note']);
@@ -79,7 +78,35 @@ export const canAddNodeDefinitionAfterTarget = (
   );
 };
 
-const getNonOverlappingPosition = (
+const getNodeSize = (node: AppNode) => {
+  const measuredNode = node as AppNode & {
+    measured?: { width?: number; height?: number };
+    width?: number;
+    height?: number;
+  };
+
+  return {
+    width:
+      measuredNode.measured?.width ??
+      measuredNode.width ??
+      WORKFLOW_NODE_SIZE.width,
+    height:
+      measuredNode.measured?.height ??
+      measuredNode.height ??
+      WORKFLOW_NODE_SIZE.height,
+  };
+};
+
+const doRectsOverlap = (
+  first: { x: number; y: number; width: number; height: number },
+  second: { x: number; y: number; width: number; height: number },
+) =>
+  first.x < second.x + second.width &&
+  first.x + first.width > second.x &&
+  first.y < second.y + second.height &&
+  first.y + first.height > second.y;
+
+export const getNonOverlappingPosition = (
   nodes: AppNode[],
   basePosition: { x: number; y: number },
 ) => {
@@ -88,11 +115,22 @@ const getNonOverlappingPosition = (
 
   while (
     attempts < 12 &&
-    nodes.some(
-      (node) =>
-        Math.abs(node.position.x - nextPosition.x) < OVERLAP_THRESHOLD_X &&
-        Math.abs(node.position.y - nextPosition.y) < OVERLAP_THRESHOLD_Y,
-    )
+    nodes.some((node) => {
+      const nodeSize = getNodeSize(node);
+      return doRectsOverlap(
+        {
+          x: nextPosition.x,
+          y: nextPosition.y,
+          width: WORKFLOW_NODE_SIZE.width,
+          height: WORKFLOW_NODE_SIZE.height,
+        },
+        {
+          x: node.position.x,
+          y: node.position.y,
+          ...nodeSize,
+        },
+      );
+    })
   ) {
     attempts += 1;
     nextPosition = snapCanvasPosition({
