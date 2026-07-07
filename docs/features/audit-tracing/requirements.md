@@ -23,6 +23,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Trace redaction storage policy는 Audit/Tracing이 소유하되, PII/secret detector와 masking engine은 shared privacy/redaction boundary로 분리해 Knowledge ingestion도 재사용한다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
 - Raw Knowledge artifact access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Skill usage summary는 redaction-safe allowlist만 사용한다. 허용값은 workflow draft/LLM node의 RAG 옵션/test run에서 사용한 skill id, skill version, freshness state, eval status, safe source-of-truth tier, safe provenance ref, request/correlation id다.
+- Workflow LLM node prompt trace가 RAG context를 포함한 provider 호출을 기록하더라도, durable trace payload에는 Knowledge context 원문이나 chunk body를 중복 저장하지 않는다. 저장 payload는 redacted marker, safe summary, count/strategy metadata 같은 allowlist만 사용할 수 있다.
 
 ## Policies And Edge Cases
 
@@ -30,6 +31,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Authorized retrieval/answer path는 redaction-safe id와 summary만 저장할 수 있다. 허용되는 값은 KB id, document version id, chunk id, citation id, optional collection id, score/rank summary, safe metadata summary, policy result, latency/cost/token aggregate, retryability, opaque correlation/request id, `retrieval_strategy`, `rag_mode`, authorized/selected/retrieved count summary, `context_token_estimate`, `permission_filter_applied`, `safe_exclusion_summary`, `query_rewrite_applied`, `query_rewrite_strategy`, `evidence_sufficient`, `insufficiency_reason`, `source_tier_policy`, `source_tier_used`, `fanout_concurrency`, `fanout_timeout_seconds`, `failure_policy`다. Raw rewritten query는 저장하지 않는다.
 - Hidden/denied/resource-hidden path는 sanitized reason class, request/correlation id, actor/org scope, 필요한 경우 coarse retryability, audit action/status만 저장한다. Raw source id/url/path/title, raw source principal, source distribution, raw ACL fact, exact hidden/denied count, raw query, raw answer, raw prompt/completion, content preview, raw exception은 저장하지 않는다.
 - Partial result audit/trace는 `partial_result=true`, bucketed reason summary, retryability, correlation/request id만 저장한다.
+- Prompt trace와 RAG retrieval trace는 서로 다른 payload kind를 사용할 수 있지만 raw evidence 저장 금지 기준은 동일하게 적용한다. RAG context block, citation preview, chunk body를 디버깅 편의 목적으로 durable trace에 복사하지 않는다.
 - Source ACL mapping audit는 safe principal reference만 저장하고 raw email/path/title/url은 저장하지 않는다.
 - Raw/compliance access permission 이름은 RBAC ADR에서 최종 확정한다. 테스트나 구현에서 임시 이름을 영구 enum처럼 사용하지 않는다.
 - Raw/compliance access event는 actor, organization, KB/document version safe reference, reason code, decision, retention/legal-hold state summary, request id 정도의 allowlist만 저장한다.

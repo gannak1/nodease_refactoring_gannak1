@@ -156,11 +156,39 @@ def test_keyword_search_applies_active_version_visibility_filter():
     assert result == []
     assert "LEFT JOIN document_versions dv" in captured["stmt"]
     assert "JOIN knowledge_bases kb" in captured["stmt"]
+    assert "status = 'completed'" in captured["stmt"]
     assert "kb.active_document_version_id IS NULL" in captured["stmt"]
     assert "dc.document_version_id IS NULL" in captured["stmt"]
     assert "kb.active_document_version_id = dc.document_version_id" in captured["stmt"]
     assert "dv.status = 'ready'" in captured["stmt"]
     assert captured["params"] == {"query": "policy", "kb_id": "kb-id", "top_k": 3}
+
+
+def test_vector_search_filters_completed_documents():
+    captured = {}
+
+    class FakeResult:
+        def all(self):
+            return []
+
+    class FakeDb:
+        def execute(self, stmt):
+            captured["stmt"] = stmt
+            return FakeResult()
+
+    service = RetrievalService(db=FakeDb(), user_id=None)
+    result = service._vector_search([0.1, 0.2], "kb-id", 3)
+
+    compiled = str(
+        captured["stmt"].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).replace('"', "")
+
+    assert result == []
+    assert "documents.status = 'completed'" in compiled
+    assert "knowledge_bases.active_document_version_id" in compiled
 
 
 def test_hierarchy_availability_uses_active_ready_version_filter():
@@ -195,9 +223,10 @@ def test_hierarchy_availability_uses_active_ready_version_filter():
             )
         )
         for criterion in captured["criteria"]
-    )
+    ).replace('"', "")
 
     assert "document_chunks.document_version_id IS NULL" in compiled
     assert "active_document_version_id IS NULL" in compiled
     assert "knowledge_bases.active_document_version_id" in compiled
     assert "status = 'ready'" in compiled
+    assert "documents.status = 'completed'" in compiled

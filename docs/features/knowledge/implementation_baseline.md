@@ -241,6 +241,7 @@ Target ingestion은 partial artifact를 retrieval-visible하게 만들면 안 �
 - `active` document version status 단독으로 active source of truth를 표현하지 않는다. `ready` status와 `knowledge_bases.active_document_version_id` pointer를 함께 active retrieval indicator로 사용한다.
 - Finalization이 성공하기 전까지 기존 active version은 계속 retrieval-visible 상태로 유지한다.
 - MBA-105 legacy compatibility에서는 `active_document_version_id`가 아직 없는 KB에 한해 `document_chunks.document_version_id IS NULL` chunk를 retrieval-visible로 둘 수 있다. KB에 active pointer가 생긴 뒤에는 `ready` active document version chunk만 retrieval-visible하다.
+- Legacy `documents` row가 남아 있는 전환기 retrieval 구현은 vector, keyword, hierarchy search 모두에서 `documents.status='completed'` 문서에 속한 chunk만 retrieval-visible로 취급한다. `pending`, `processing`, `failed`, `deleted` 또는 동등한 미완료/실패 상태의 chunk는 active pointer 조건을 만족하더라도 evidence 후보가 될 수 없다.
 - Pre-finalized chunk, vector, keyword index artifact는 retrieval-visible하지 않다.
 - External index 성공 후 DB finalize가 실패하면 기존 active version을 유지하고 cleanup을 queue에 넣는다.
 - DB finalize 성공 후 cleanup이 실패하면 같은 transaction에서 기록된 outbox event를 기준으로 새 active version을 유지하고 cleanup을 retry한다.
@@ -385,6 +386,8 @@ Production readiness load test는 candidate cap, route collection cap, permissio
 | Partial failure | 일부 authorized retrieval failure는 bucketed count와 safe reason만 남기고 hidden id/count 누출 없음 |
 
 Workflow LLM node의 RAG retrieval trace payload는 redaction-safe chunk summary만 저장하고, 초기 구현에서는 최대 20개 chunk summary만 durable payload에 포함한다. 전체 검색 결과 수는 safe count로 남길 수 있지만, payload가 cap을 넘으면 `retrieved_chunk_summary_truncated=true`로 표시한다.
+
+Workflow LLM node가 LLM provider 호출을 위해 redacted canonical text 기반의 authorized Knowledge context를 prompt에 포함하더라도, durable prompt trace payload는 Knowledge context body를 중복 저장하지 않는다. Prompt trace는 `[BEGIN KNOWLEDGE - UNTRUSTED]`와 같은 Knowledge context block을 redacted marker 또는 동등한 safe summary로 대체해야 하며, RAG evidence 저장소로 사용하지 않는다.
 
 ## Gate closure 전 구현 금지
 

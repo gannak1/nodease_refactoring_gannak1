@@ -8,18 +8,28 @@ from apps.workflow_engine import tasks
 
 
 class FakeSession:
+    deployment = None
+    app = None
+
     def close(self):
         return None
 
-    def query(self, _model):
-        return FakeQuery()
+    def query(self, model):
+        return FakeQuery(model)
 
 
 class FakeQuery:
+    def __init__(self, model):
+        self.model = model
+
     def filter(self, *args, **kwargs):
         return self
 
     def first(self):
+        if self.model is FakeWorkflowDeployment and FakeSession.deployment is not None:
+            return FakeSession.deployment
+        if self.model is FakeApp and FakeSession.app is not None:
+            return FakeSession.app
         return SimpleNamespace(
             id=uuid.uuid4(),
             app_id=uuid.uuid4(),
@@ -51,7 +61,10 @@ class FakeWorkflowDeployment:
 
 
 class FakeWorkflowEngine:
+    calls = []
+
     def __init__(self, *args, **kwargs):
+        self.__class__.calls.append({"args": args, "kwargs": kwargs})
         self.execution_context = kwargs.get("execution_context", {})
 
     def execute(self):
@@ -86,6 +99,9 @@ class FakeSyncService:
 @pytest.fixture(autouse=True)
 def patch_task_dependencies(monkeypatch):
     FakeSyncService.calls = []
+    FakeWorkflowEngine.calls = []
+    FakeSession.deployment = None
+    FakeSession.app = None
     monkeypatch.setattr(tasks, "SessionLocal", lambda: FakeSession())
     monkeypatch.setitem(
         sys.modules,
@@ -247,3 +263,57 @@ def test_execute_by_deployment_skips_sync_without_execution_subject():
         "reason": "anonymous_public_only",
     }
     assert FakeSyncService.calls == []
+
+
+def test_execute_by_deployment_uses_snapshot_rag_selection():
+    deployment_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = str(uuid.uuid4())
+    graph_snapshot = {
+        "nodes": [
+            {
+                "id": "llm-1",
+                "type": "llmNode",
+                "data": {
+                    "title": "LLM",
+                    "provider": "openai",
+                    "model_id": "gpt-4o",
+                    "user_prompt": "query",
+                    "knowledgeBases": [
+                        {"id": knowledge_base_id, "name": "제품 정책"}
+                    ],
+                    "topK": 4,
+                },
+            }
+        ],
+        "edges": [],
+    }
+    FakeSession.deployment = SimpleNamespace(
+        id=deployment_id,
+        app_id=uuid.uuid4(),
+        version=7,
+        graph_snapshot=graph_snapshot,
+    )
+    FakeSession.app = SimpleNamespace(
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )
+
+    result = tasks.execute_by_deployment.run(
+        str(deployment_id),
+        {"message": "hello"},
+        {},
+    )
+
+    engine_kwargs = FakeWorkflowEngine.calls[0]["kwargs"]
+    assert result["status"] == "success"
+    assert engine_kwargs["graph"]["nodes"][0]["data"]["knowledgeBases"] == [
+        {"id": knowledge_base_id, "name": "제품 정책"}
+    ]
+    assert engine_kwargs["graph"]["nodes"][0]["data"]["topK"] == 4
+    assert engine_kwargs["execution_context"]["workflow_id"] == str(workflow_id)
+    assert engine_kwargs["execution_context"]["organization_id"] == str(
+        organization_id
+    )
+    assert engine_kwargs["execution_context"]["deployment_id"] == str(deployment_id)
