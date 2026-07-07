@@ -425,7 +425,7 @@ export function AgentBuilderPanel({
   };
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-3">
+    <div className="fixed bottom-24 right-5 z-50 flex flex-col items-end gap-3">
       {isOpen && (
         <section className="flex h-[520px] w-[380px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
           <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
