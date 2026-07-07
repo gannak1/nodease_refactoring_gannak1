@@ -44,6 +44,10 @@ type ModelOption = {
 };
 
 const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
+const MODEL_ROUTING_REFRESH_MIN = 5;
+const MODEL_ROUTING_REFRESH_MAX = 100;
+const MODEL_ROUTING_REFRESH_STEP = 5;
+const MODEL_ROUTING_REFRESH_RECOMMEND = [20, 50] as const;
 
 const extractTokenNames = (value: string) => {
   const names = new Set<string>();
@@ -326,6 +330,24 @@ export function LLMNodePanel({
     },
     [nodeId, updateNodeData],
   );
+  const handleRoutingRefreshEveryRunsChange = useCallback(
+    (value: number) => {
+      const refreshEveryRuns = Math.min(
+        MODEL_ROUTING_REFRESH_MAX,
+        Math.max(MODEL_ROUTING_REFRESH_MIN, value),
+      );
+      updateNodeData(nodeId, {
+        model_routing_policy: {
+          ...(data.model_routing_policy || {}),
+          refresh: {
+            ...(data.model_routing_policy?.refresh || {}),
+            refresh_every_runs: refreshEveryRuns,
+          },
+        },
+      });
+    },
+    [data.model_routing_policy, nodeId, updateNodeData],
+  );
 
   // Claude 계열 여부 판별 (모델 옵션 우선, 실패 시 이름 프리픽스 판단)
   const isAnthropicModelId = useCallback(
@@ -571,6 +593,28 @@ export function LLMNodePanel({
     };
   }, [activeHelp]);
 
+  const routingRefreshRange = useMemo(() => {
+    const totalRange = MODEL_ROUTING_REFRESH_MAX - MODEL_ROUTING_REFRESH_MIN;
+    const currentPercent =
+      ((routingPolicySummary.refreshEveryRuns - MODEL_ROUTING_REFRESH_MIN) /
+        totalRange) *
+      100;
+    const recommendStart =
+      ((MODEL_ROUTING_REFRESH_RECOMMEND[0] - MODEL_ROUTING_REFRESH_MIN) /
+        totalRange) *
+      100;
+    const recommendEnd =
+      ((MODEL_ROUTING_REFRESH_RECOMMEND[1] - MODEL_ROUTING_REFRESH_MIN) /
+        totalRange) *
+      100;
+
+    return {
+      currentPercent,
+      recommendStart,
+      recommendWidth: recommendEnd - recommendStart,
+    };
+  }, [routingPolicySummary.refreshEveryRuns]);
+
   return (
     <div className="relative flex flex-col gap-2">
       {!isUsingExternalAdvancedPanel && isParameterPanelOpen && (
@@ -711,6 +755,66 @@ export function LLMNodePanel({
                   <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
                     갱신 근거: {routingPolicySummary.reasonCode}
                   </p>
+                  <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-emerald-900">
+                          자동 정책 점검 주기
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-emerald-700">
+                          배포 후 운영 실행이 이 횟수만큼 쌓이면 모델 선택
+                          정책을 다시 점검합니다.
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-mono font-semibold text-emerald-800 ring-1 ring-emerald-200">
+                        {routingPolicySummary.refreshEveryRuns}회
+                      </span>
+                    </div>
+                    <div className="mt-3">
+                      <div className="relative h-7">
+                        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-2.5 -translate-y-1/2 overflow-hidden rounded-full bg-white ring-1 ring-emerald-200">
+                          <div
+                            className="absolute inset-y-0 bg-emerald-200"
+                            style={{
+                              left: `${routingRefreshRange.recommendStart}%`,
+                              width: `${routingRefreshRange.recommendWidth}%`,
+                            }}
+                          />
+                          <div
+                            className="absolute inset-y-0 w-0.5 bg-emerald-600"
+                            style={{
+                              left: `${routingRefreshRange.currentPercent}%`,
+                            }}
+                          />
+                        </div>
+                        <input
+                          type="range"
+                          min={MODEL_ROUTING_REFRESH_MIN}
+                          max={MODEL_ROUTING_REFRESH_MAX}
+                          step={MODEL_ROUTING_REFRESH_STEP}
+                          value={routingPolicySummary.refreshEveryRuns}
+                          onChange={(event) =>
+                            handleRoutingRefreshEveryRunsChange(
+                              Number(event.target.value),
+                            )
+                          }
+                          className="nodrag absolute inset-0 h-6 w-full cursor-pointer appearance-none bg-transparent accent-emerald-600
+                            [&::-moz-range-track]:bg-transparent
+                            [&::-ms-track]:bg-transparent
+                            [&::-webkit-slider-runnable-track]:bg-transparent"
+                          aria-label="자동 정책 점검 주기"
+                        />
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[10px] text-emerald-700/70">
+                        <span>자주 갱신</span>
+                        <span className="font-semibold text-emerald-700">
+                          권장: {MODEL_ROUTING_REFRESH_RECOMMEND[0]}~
+                          {MODEL_ROUTING_REFRESH_RECOMMEND[1]}회
+                        </span>
+                        <span>보수적 갱신</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <>

@@ -39,6 +39,10 @@ from apps.workflow_engine.services.llm_service import (
     LLMCredentialNotAvailableError,
     LLMService,
 )
+from apps.workflow_engine.services.model_router import (
+    ModelRouter,
+    ModelRoutingUnavailableError,
+)
 from apps.workflow_engine.services.retrieval import RetrievalService
 
 from ..base.node import Node
@@ -297,7 +301,9 @@ class LLMNode(Node[LLMNodeData]):
 
     node_type = "llmNode"
 
-    def _resolve_model_routing_policy(self) -> tuple[str, Optional[str], Optional[dict]]:
+    def _resolve_model_routing_policy(
+        self, inputs: Dict[str, Any]
+    ) -> tuple[str, Optional[str], Optional[dict]]:
         """저장된 active policy snapshot으로 실행 모델을 결정한다.
 
         Judge LLM은 정책 갱신 단계에서만 호출되어야 하므로, 런타임은 이미
@@ -328,29 +334,21 @@ class LLMNode(Node[LLMNodeData]):
                 "judge_called": False,
             }
 
-        selected_model_id = (
-            str(active_policy.get("default_model_id") or "").strip()
-            or selected_model_id
-        )
-        fallback_model_id = (
-            str(active_policy.get("fallback_model_id") or "").strip()
-            or fallback_model_id
-        )
-        matched_rule_id = None
-        reason_code = "active_policy"
-        rules = active_policy.get("rules")
-        if isinstance(rules, list) and rules:
-            first_rule = rules[0] if isinstance(rules[0], dict) else {}
-            selected_model_id = (
-                str(first_rule.get("selected_model_id") or "").strip()
-                or selected_model_id
+        try:
+            decision = ModelRouter.resolve_policy(
+                policy,
+                inputs=inputs,
+                node_data=self.data,
             )
-            fallback_model_id = (
-                str(first_rule.get("fallback_model_id") or "").strip()
-                or fallback_model_id
-            )
-            matched_rule_id = first_rule.get("id")
-            reason_code = first_rule.get("reason_code") or reason_code
+            selected_model_id = decision.selected_model_id
+            fallback_model_id = decision.fallback_model_id
+            matched_rule_id = decision.matched_rule_id
+            reason_code = decision.reason_code
+            routing_context = decision.runtime_context.as_metadata()
+        except ModelRoutingUnavailableError:
+            matched_rule_id = None
+            reason_code = "policy_unavailable"
+            routing_context = None
 
         if fallback_model_id == selected_model_id:
             fallback_model_id = None
@@ -364,6 +362,7 @@ class LLMNode(Node[LLMNodeData]):
             "decision_source": "active_policy",
             "matched_rule_id": matched_rule_id,
             "reason_code": reason_code,
+            "runtime_context": routing_context,
             "judge_called": False,
         }
 
@@ -389,7 +388,7 @@ class LLMNode(Node[LLMNodeData]):
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
         selected_model_id, fallback_model_id, model_routing_metadata = (
-            self._resolve_model_routing_policy()
+            self._resolve_model_routing_policy(inputs)
         )
 
         if not client_override or self.data.knowledgeBases:

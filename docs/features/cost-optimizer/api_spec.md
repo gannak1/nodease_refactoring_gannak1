@@ -64,6 +64,8 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 이 섹션은 FR-011 정책 기반 자동 모델 라우팅의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, judge LLM은 호출하지 않는다. Judge LLM 호출은 policy refresh 작업에서만 수행한다.
 
+Policy refresh는 모델 변경을 의미하지 않는다. `auto_20_runs` 또는 `manual_refresh`는 active policy 재평가 trigger이며, 검증된 저비용 후보가 품질 gate를 통과한 경우에만 active policy를 변경한다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
+
 예상 service/API entrypoint:
 
 ```python
@@ -97,10 +99,26 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
     "fallback_model_id": "gpt-4.1",
     "rules": [
       {
-        "id": "low-risk-json-triage",
-        "reason_code": "quality_gate_passed_cost_reduction",
+        "id": "short-json-no-knowledge",
+        "priority": 10,
+        "when": {
+          "output_format": "json",
+          "knowledge_enabled": false,
+          "input_length_bucket": "short"
+        },
+        "reason_code": "short_structured_input_uses_low_cost_model",
         "selected_model_id": "gpt-4.1-mini",
         "fallback_model_id": "gpt-4.1"
+      },
+      {
+        "id": "domain-risk-terms",
+        "priority": 20,
+        "when": {
+          "keyword_any": ["SLA", "보상", "장애"]
+        },
+        "reason_code": "judge_generated_domain_keyword_rule",
+        "selected_model_id": "gpt-4.1",
+        "fallback_model_id": null
       }
     ]
   },
@@ -145,6 +163,7 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 `status` 값:
 
 - `applied`: 품질 gate를 통과해 active policy로 반영됐다.
+- `kept_current`: 정책 재평가는 성공했지만 검증된 변경 후보가 없어 기존 active policy를 유지했다.
 - `pending_review`: 새 정책안은 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 운영에 반영하지 않았다.
 - `failed`: 로그 부족, credential/model 사용 불가, judge 호출 실패 등으로 갱신하지 못했다.
 
@@ -167,7 +186,7 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 | `pending_policy` | JSONB nullable | gate 미통과 또는 검토 보류 정책안 |
 | `refresh_every_runs` | integer | 기본값 20 |
 | `last_refreshed_at` | datetime nullable | 마지막 정책 갱신 시각 |
-| `last_refresh_result` | string nullable | `applied`, `pending_review`, `failed` |
+| `last_refresh_result` | string nullable | `applied`, `kept_current`, `pending_review`, `failed` |
 | `created_by`, `updated_by` | UUID nullable | 변경 사용자 |
 
 #### `llm_node_model_routing_policy_updates`
@@ -177,7 +196,7 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 | `id` | UUID | policy update id |
 | `policy_id` | UUID | 대상 policy |
 | `trigger` | string | `auto_20_runs` 또는 `manual_refresh` |
-| `status` | string | `applied`, `pending_review`, `failed` |
+| `status` | string | `applied`, `kept_current`, `pending_review`, `failed` |
 | `eligible_run_count` | integer | judge 입력에 포함한 운영 run count |
 | `excluded_run_count` | integer | 제외한 run count |
 | `excluded_reason_summary` | JSONB | 테스트 실행, usage 누락, retention 누락 등 safe summary |
@@ -204,13 +223,29 @@ LLM node 실행 시점 metadata는 선택 결과만 safe summary로 남긴다.
       "selected_model": "gpt-4.1-mini",
       "fallback_model": "gpt-4.1",
       "decision_source": "active_policy",
-      "matched_rule_id": "low-risk-json-triage",
-      "reason_code": "quality_gate_passed_cost_reduction",
+      "matched_rule_id": "short-json-no-knowledge",
+      "reason_code": "short_structured_input_uses_low_cost_model",
+      "runtime_context": {
+        "intent": "generate",
+        "risk_level": "medium",
+        "customer_facing": false,
+        "knowledge_enabled": false,
+        "output_format": "json",
+        "schema_required": true,
+        "has_file_input": false,
+        "input_length": 180,
+        "input_length_bucket": "short",
+        "prompt_length": 920,
+        "prompt_length_bucket": "medium",
+        "node_task": "generate"
+      },
       "judge_called": false
     }
   }
 }
 ```
+
+런타임은 도메인 키워드 목록을 코드 상수로 갖지 않는다. `keyword_any`는 judge policy refresh가 생성해 저장한 policy rule 조건일 때만 평가된다.
 
 ### Refresh Metadata
 

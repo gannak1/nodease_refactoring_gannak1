@@ -213,8 +213,8 @@ def test_warming_up_uses_passing_lower_cost_candidate():
     assert decision.metrics_snapshot["operational_usable_runs"] == 42
 
 
-def test_warming_up_explores_lower_cost_candidate_when_only_current_model_passes():
-    """현재 모델만 검증된 warming 단계에서는 fallback을 둔 저비용 후보 탐색을 시작한다."""
+def test_warming_up_keeps_current_model_when_lower_cost_candidate_is_unverified():
+    """정책 갱신은 검증 샘플 생성을 위해 자동 하향하지 않고 현재 모델을 유지한다."""
     decision = ModelRouter.resolve(
         ModelRouterContext(
             workflow_id="workflow-1",
@@ -249,9 +249,9 @@ def test_warming_up_explores_lower_cost_candidate_when_only_current_model_passes
     )
 
     assert decision.routing_stage == "warming_up"
-    assert decision.selected_model_id == "gpt-4o"
-    assert decision.fallback_model_id == "gpt-4.1"
-    assert "탐색 모델" in decision.reason
+    assert decision.selected_model_id == "gpt-4.1"
+    assert decision.fallback_model_id is None
+    assert "안정 모델" in decision.reason
 
 
 def test_high_risk_warming_up_keeps_current_model_instead_of_exploring():
@@ -518,3 +518,256 @@ def test_recommendation_service_does_not_require_auto_toggle():
 
     assert decision.routing_stage == "optimized"
     assert decision.selected_model_id == "gpt-4.1"
+
+
+def test_runtime_policy_evaluator_matches_high_risk_rule():
+    """실행 시점 라우터는 저장된 policy의 도메인 keyword rule만 평가한다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "low-risk-simple",
+                    "priority": 20,
+                    "when": {"keyword_any": ["다운로드", "위치"]},
+                    "selected_model_id": "gpt-4o-mini",
+                    "fallback_model_id": "gpt-4.1-mini",
+                    "reason_code": "simple_low_risk",
+                },
+                {
+                    "id": "high-risk-customer",
+                    "priority": 10,
+                    "when": {"keyword_any": ["SLA", "보상", "결제 API"]},
+                    "selected_model_id": "gpt-4.1",
+                    "reason_code": "high_risk_requires_strong_model",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={
+            "message": "SLA 위반 가능성이 있는 결제 API 장애입니다. 보상 여부도 검토해 주세요.",
+            "customerTier": "enterprise",
+        },
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "json"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+        ),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1"
+    assert decision.fallback_model_id is None
+    assert decision.matched_rule_id == "high-risk-customer"
+    assert decision.reason_code == "high_risk_requires_strong_model"
+    assert decision.runtime_context.risk_level == "medium"
+    assert decision.runtime_context.input_length_bucket == "short"
+
+
+def test_runtime_policy_evaluator_matches_low_risk_rule_and_uses_fallback():
+    """keyword 조건은 코드 상수가 아니라 active policy rule에 있을 때만 동작한다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "low-risk-simple",
+                    "priority": 10,
+                    "when": {"keyword_any": ["다운로드", "위치"]},
+                    "selected_model_id": "gpt-4o-mini",
+                    "fallback_model_id": "gpt-4.1-mini",
+                    "reason_code": "simple_low_risk",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "정산 파일 다운로드 위치를 안내해 주세요."},
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+        ),
+    )
+
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.fallback_model_id == "gpt-4.1-mini"
+    assert decision.matched_rule_id == "low-risk-simple"
+    assert decision.runtime_context.intent == "generate"
+
+
+def test_runtime_policy_evaluator_prioritizes_specific_keyword_rule_over_generic_rule():
+    """judge가 낮은 우선순위 숫자를 잘못 줘도 keyword rule은 generic rule에 가려지지 않는다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "generic-short-json",
+                    "priority": 10,
+                    "when": {
+                        "output_format": "json",
+                        "knowledge_enabled": False,
+                        "input_length_bucket": "short",
+                    },
+                    "selected_model_id": "gpt-4o-mini",
+                    "fallback_model_id": "gpt-4.1-mini",
+                    "reason_code": "generic_short_json",
+                },
+                {
+                    "id": "domain-risk-keyword",
+                    "priority": 50,
+                    "when": {
+                        "customer_facing": True,
+                        "keyword_any": ["치명", "SLA", "보상"],
+                    },
+                    "selected_model_id": "gpt-4.1",
+                    "fallback_model_id": None,
+                    "reason_code": "domain_keyword_quality",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={
+            "message": "SLA 위반 가능성이 있는 치명 장애입니다. 보상 안내도 검토해 주세요."
+        },
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "json", "schema": {"type": "object"}},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+            model_routing_context={"customer_facing": True},
+        ),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1"
+    assert decision.matched_rule_id == "domain-risk-keyword"
+    assert decision.reason_code == "domain_keyword_quality"
+
+
+def test_runtime_policy_evaluator_rejects_unknown_condition_keys():
+    """judge가 허용되지 않은 condition key를 만들면 rule을 넓게 매칭하지 않는다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "bad-unknown-key",
+                    "priority": 10,
+                    "when": {
+                        "customer_facing": True,
+                        "customer_support_ticket_triage": True,
+                    },
+                    "selected_model_id": "gpt-4.1",
+                    "fallback_model_id": None,
+                    "reason_code": "bad_unknown_condition",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "고객 문의입니다."},
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+            model_routing_context={"customer_facing": True},
+        ),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.matched_rule_id is None
+    assert decision.reason_code == "policy_default"
+
+
+def test_runtime_policy_evaluator_falls_back_to_default_when_rule_model_unavailable():
+    """사용 가능한 모델 목록에서 제외된 rule 모델은 건너뛰고 default 모델로 닫는다."""
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "low-risk-simple",
+                    "priority": 10,
+                    "when": {"keyword_any": ["다운로드", "위치"]},
+                    "selected_model_id": "missing-model",
+                    "fallback_model_id": "also-missing",
+                    "reason_code": "simple_low_risk",
+                },
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "다운로드 위치를 알려 주세요."},
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+        ),
+        available_model_ids=["gpt-4.1-mini", "gpt-4.1"],
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.fallback_model_id == "gpt-4.1"
+    assert decision.matched_rule_id is None
+    assert decision.reason_code == "policy_default"
+
+
+def test_runtime_context_does_not_classify_domain_keywords_by_itself():
+    """도메인 키워드는 런타임 코드가 아니라 저장된 policy rule에서만 의미를 가진다."""
+    context = ModelRouter.infer_runtime_context(
+        {
+            "message": "SLA 위반 가능성이 있는 결제 API 장애입니다. 보상 여부도 검토해 주세요."
+        },
+        SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            knowledgeBases=[],
+            output_format={"type": "json", "schema": {"type": "object"}},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+            task_type="generate",
+        ),
+    )
+
+    assert context.risk_level == "medium"
+    assert context.intent == "generate"
+    assert context.schema_required is True
+    assert context.output_format == "json"
+    assert "keywords" not in context.as_metadata()

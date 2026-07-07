@@ -2445,6 +2445,8 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
                 "rules": [
                     {
                         "id": "low-risk-json-triage",
+                        "priority": 10,
+                        "when": {"output_format": "text", "input_length_bucket": "short"},
                         "reason_code": "quality_gate_passed_cost_reduction",
                         "selected_model_id": "gpt-4.1-mini",
                     }
@@ -2478,6 +2480,20 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
         "decision_source": "active_policy",
         "matched_rule_id": "low-risk-json-triage",
         "reason_code": "quality_gate_passed_cost_reduction",
+        "runtime_context": {
+            "intent": "generate",
+            "risk_level": "medium",
+            "customer_facing": False,
+            "knowledge_enabled": False,
+            "output_format": "text",
+            "schema_required": False,
+            "has_file_input": False,
+            "input_length": 0,
+            "input_length_bucket": "short",
+            "prompt_length": 5,
+            "prompt_length_bucket": "short",
+            "node_task": "generate",
+        },
         "judge_called": False,
     }
 
