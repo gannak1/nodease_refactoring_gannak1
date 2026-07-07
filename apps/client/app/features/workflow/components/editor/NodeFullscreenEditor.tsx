@@ -31,14 +31,16 @@ import {
   sumPanelWidths,
 } from '../../utils/nodeEditorPanelLayout';
 import { LLMNodeData } from '../../types/Nodes';
-import { LLMParameterSidePanel } from '../nodes/llm/components/LLMParameterSidePanel';
 import { LLMReferenceSidePanel } from '../nodes/llm/components/LLMReferenceSidePanel';
-import { NodeInlinePanel } from '../nodes/NodeInlinePanel';
+import {
+  NodeInlinePanel,
+  NodeInlinePanelSidePanelId,
+} from '../nodes/NodeInlinePanel';
 import { NodeOutputsSection } from '../nodes/NodeOutputsSection';
 import { VariableInsertionProvider } from '../nodes/ui/VariableInsertionProvider';
 import { useVariableInsertion } from '../nodes/ui/useVariableInsertion';
 
-type RightPanelTabId = 'advanced' | 'knowledge';
+type RightPanelTabId = 'knowledge';
 
 type RightPanelTab = {
   id: RightPanelTabId;
@@ -46,7 +48,6 @@ type RightPanelTab = {
 };
 
 const RIGHT_PANEL_TAB_LABELS: Record<RightPanelTabId, string> = {
-  advanced: '고급 설정',
   knowledge: '지식 베이스',
 };
 
@@ -69,6 +70,17 @@ const getInputChipColor = (sourceNodeId: string) => {
       (hash * 31 + sourceNodeId.charCodeAt(index)) % INPUT_CHIP_COLORS.length;
   }
   return INPUT_CHIP_COLORS[hash];
+};
+
+const getInitialNodeEditorLayoutWidth = () => {
+  if (typeof window === 'undefined') {
+    return (
+      sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.default) +
+      NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2
+    );
+  }
+
+  return getNodeEditorMaxLayoutWidth(window.innerWidth);
 };
 
 const PanelResizeHandle = ({
@@ -326,12 +338,11 @@ export function NodeFullscreenEditor() {
   const [openNavigationPopover, setOpenNavigationPopover] = useState<
     'previous' | 'next' | null
   >(null);
-  const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(
-    NODE_EDITOR_PANEL_WIDTHS.default,
+  const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(() =>
+    getDefaultPanelWidthsForLayout(getInitialNodeEditorLayoutWidth()),
   );
   const [layoutWidth, setLayoutWidth] = useState<number>(
-    sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.default) +
-      NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2,
+    getInitialNodeEditorLayoutWidth,
   );
   const titleInputRef = useRef<HTMLInputElement>(null);
   const outputLabelInputRef = useRef<HTMLInputElement>(null);
@@ -369,12 +380,19 @@ export function NodeFullscreenEditor() {
   }, [editingOutputKey]);
 
   useEffect(() => {
+    if (!fullscreenNodeId) return;
+
     const layoutShell = layoutShellRef.current;
     if (!layoutShell) return;
 
     const updateLayoutWidth = () => {
+      const measuredWidth = layoutShell.getBoundingClientRect().width;
+      let shellWidth = measuredWidth;
+      if (shellWidth <= 0 && typeof window !== 'undefined') {
+        shellWidth = window.innerWidth;
+      }
       const nextLayoutWidth = getNodeEditorMaxLayoutWidth(
-        layoutShell.getBoundingClientRect().width,
+        shellWidth,
       );
       setLayoutWidth(nextLayoutWidth);
       if (!hasCustomPanelWidthsRef.current) {
@@ -383,11 +401,15 @@ export function NodeFullscreenEditor() {
     };
 
     updateLayoutWidth();
+    const animationFrame = window.requestAnimationFrame(updateLayoutWidth);
     const resizeObserver = new ResizeObserver(updateLayoutWidth);
     resizeObserver.observe(layoutShell);
 
-    return () => resizeObserver.disconnect();
-  }, []);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+    };
+  }, [fullscreenNodeId, node?.id]);
 
   const definition = getNodeDefinitionByType(node?.type || '');
   const nodeTypeLabel = definition?.name || 'Node';
@@ -467,6 +489,15 @@ export function NodeFullscreenEditor() {
       });
     },
     [fullscreenNodeId],
+  );
+
+  const openNodeInlineSidePanel = useCallback(
+    (panelId: NodeInlinePanelSidePanelId) => {
+      if (panelId === 'knowledge') {
+        openRightPanelTab('knowledge');
+      }
+    },
+    [openRightPanelTab],
   );
 
   const navigateToNode = useCallback(
@@ -989,8 +1020,7 @@ export function NodeFullscreenEditor() {
                 <NodeInlinePanel
                   node={node}
                   showFrame={false}
-                  activeSidePanel={activeRightTabId}
-                  onOpenSidePanel={openRightPanelTab}
+                  onOpenSidePanel={openNodeInlineSidePanel}
                 />
               </div>
             </div>
@@ -1053,15 +1083,7 @@ export function NodeFullscreenEditor() {
               )}
 
               <div className="min-h-0 flex-1 overflow-hidden bg-white">
-                {node.type === 'llmNode' && activeRightTabId === 'advanced' ? (
-                  <LLMParameterSidePanel
-                    embedded
-                    nodeId={node.id}
-                    data={node.data as LLMNodeData}
-                    onClose={() => closeRightPanelTab('advanced')}
-                  />
-                ) : node.type === 'llmNode' &&
-                  activeRightTabId === 'knowledge' ? (
+                {node.type === 'llmNode' && activeRightTabId === 'knowledge' ? (
                   <LLMReferenceSidePanel
                     embedded
                     nodeId={node.id}
@@ -1074,8 +1096,8 @@ export function NodeFullscreenEditor() {
                       열린 보조 패널 없음
                     </div>
                     <p>
-                      중앙 설정에서 고급 설정, 지식 베이스, 미리보기 같은 보조
-                      기능을 열면 이곳에 탭으로 추가됩니다.
+                      중앙 설정에서 지식 베이스 같은 보조 기능을 열면 이곳에
+                      탭으로 추가됩니다.
                     </p>
                   </div>
                 )}

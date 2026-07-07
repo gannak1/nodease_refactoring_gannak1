@@ -48,6 +48,10 @@ class LLMNodeData(BaseNodeData):
         default=None,
         description="실행 시점 자동 모델 라우팅 active policy safe snapshot",
     )
+    model_routing_context: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="도메인 키워드 없이 런타임 라우팅 rule 평가에 사용할 명시적 노드 분류 힌트",
+    )
     task_type: str = Field(default="generate", description="LLM 노드 작업 유형")
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
@@ -119,10 +123,12 @@ class LLMNodeData(BaseNodeData):
 
         rules = active_policy.get("rules")
         if isinstance(rules, list) and rules:
-            first_rule = rules[0] if isinstance(rules[0], dict) else {}
-            selected_model = str(first_rule.get("selected_model_id") or "").strip()
-            if selected_model:
-                return selected_model
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                selected_model = str(rule.get("selected_model_id") or "").strip()
+                if selected_model:
+                    return selected_model
 
         default_model = str(active_policy.get("default_model_id") or "").strip()
         return default_model or None

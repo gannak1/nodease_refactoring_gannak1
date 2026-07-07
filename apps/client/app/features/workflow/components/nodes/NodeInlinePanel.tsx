@@ -21,15 +21,13 @@ import { VisiblePropertiesControl } from './VisiblePropertiesControl';
 const isPanelSupported = (node: AppNode) =>
   node.type !== 'note' && node.type !== undefined;
 
-type NodeInlinePanelSidePanelId = 'advanced' | 'knowledge';
+type NodeInlinePanelSidePanelId = 'knowledge';
 
 const NodePanelBody = ({
   node,
-  activeSidePanel,
   onOpenSidePanel,
 }: {
   node: AppNode;
-  activeSidePanel?: NodeInlinePanelSidePanelId | null;
   onOpenSidePanel?: (panelId: NodeInlinePanelSidePanelId) => void;
 }) => {
   if (node.type === 'startNode') {
@@ -55,10 +53,6 @@ const NodePanelBody = ({
       <LLMNodePanel
         nodeId={node.id}
         data={node.data}
-        isAdvancedSettingsOpen={activeSidePanel === 'advanced'}
-        onOpenAdvancedSettings={
-          onOpenSidePanel ? () => onOpenSidePanel('advanced') : undefined
-        }
         onOpenKnowledgeBaseSettings={
           onOpenSidePanel ? () => onOpenSidePanel('knowledge') : undefined
         }
@@ -103,12 +97,10 @@ const NodePanelBody = ({
 export const NodeInlinePanel = ({
   node,
   showFrame = true,
-  activeSidePanel,
   onOpenSidePanel,
 }: {
   node: AppNode;
   showFrame?: boolean;
-  activeSidePanel?: NodeInlinePanelSidePanelId | null;
   onOpenSidePanel?: (panelId: NodeInlinePanelSidePanelId) => void;
 }) => {
   if (!isPanelSupported(node)) return null;
@@ -124,7 +116,6 @@ export const NodeInlinePanel = ({
         {node.type !== 'llmNode' && <VisiblePropertiesControl node={node} />}
         <NodePanelBody
           node={node}
-          activeSidePanel={activeSidePanel}
           onOpenSidePanel={onOpenSidePanel}
         />
       </div>
