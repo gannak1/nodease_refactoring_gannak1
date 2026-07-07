@@ -276,8 +276,8 @@ def test_llm_node_runs_with_override_client():
     }
 
 
-def test_llm_node_auto_model_routing_flag_does_not_change_runtime_model(monkeypatch):
-    """모델 라우팅 최적화는 사용자 클릭 기반이므로 런타임은 저장된 모델을 사용한다."""
+def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatch):
+    """자동 라우팅 policy가 아직 없으면 런타임은 저장 모델을 쓰고 judge를 호출하지 않는다."""
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     captured_model_ids = []
@@ -323,7 +323,14 @@ def test_llm_node_auto_model_routing_flag_does_not_change_runtime_model(monkeypa
 
     assert captured_model_ids[0] == "gpt-4.1"
     assert result["model"] == "gpt-4.1"
-    assert "model_routing" not in result["metadata"]
+    assert result["metadata"]["model_routing"] == {
+        "enabled": True,
+        "policy_id": None,
+        "policy_version": None,
+        "decision_source": "stored_model",
+        "reason_code": "active_policy_unavailable",
+        "judge_called": False,
+    }
 
     # 응답 파싱 검증
     assert result["text"] == "hello world"
