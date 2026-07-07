@@ -5,7 +5,7 @@ LLM 클라이언트의 공통 인터페이스.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 
 class BaseLLMClient(ABC):
@@ -20,6 +20,61 @@ class BaseLLMClient(ABC):
     def __init__(self, model_id: str, credentials: Optional[Dict[str, Any]] = None):
         self.model_id = model_id
         self.credentials = credentials or {}
+
+    @staticmethod
+    def _run_coroutine_sync(
+        coro_factory: Callable[[], Coroutine[Any, Any, Any]]
+    ) -> Any:
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return BaseLLMClient._run_in_new_event_loop(coro_factory)
+
+        try:
+            from gevent import get_hub, monkey
+        except ImportError:
+            pass
+        else:
+            if monkey.is_module_patched("threading"):
+                # gevent-patched threading still hits asyncio's running-loop guard.
+                return get_hub().threadpool.apply(
+                    BaseLLMClient._run_in_new_event_loop, (coro_factory,)
+                )
+
+        import threading
+
+        result: List[Any] = []
+        errors: List[BaseException] = []
+
+        def runner() -> None:
+            try:
+                result.append(BaseLLMClient._run_in_new_event_loop(coro_factory))
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join()
+
+        if errors:
+            raise errors[0]
+        return result[0] if result else None
+
+    @staticmethod
+    def _run_in_new_event_loop(
+        coro_factory: Callable[[], Coroutine[Any, Any, Any]]
+    ) -> Any:
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro_factory())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
 
     @abstractmethod
     async def invoke(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
@@ -49,13 +104,7 @@ class BaseLLMClient(ABC):
         Returns:
             모델 응답을 담은 딕셔너리
         """
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(self.invoke(messages, **kwargs))
-        finally:
-            loop.close()
+        return self._run_coroutine_sync(lambda: self.invoke(messages, **kwargs))
 
     @abstractmethod
     def get_num_tokens(self, messages: List[Dict[str, Any]]) -> int:
@@ -109,10 +158,4 @@ class BaseLLMClient(ABC):
         Returns:
             float 리스트 형태의 벡터
         """
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(self.embed(text))
-        finally:
-            loop.close()
+        return self._run_coroutine_sync(lambda: self.embed(text))

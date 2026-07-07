@@ -83,6 +83,14 @@ Status: Draft
 - Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다.
 - Router는 authorized safe candidate와 safe metadata만 받는다.
 - Router는 raw source ACL fact, hidden KB id, raw source title/path/url, exact hidden count, raw content를 받지 않는다.
+- Knowledge RAG Recommendation Adapter는 `KnowledgeCandidateResolver`가 반환한 safe KB candidate만 ranking하고, permission/source ACL row를 직접 조회하거나 해석하지 않는다.
+- Recommendation response item은 초기 구현에서 `candidate_type=knowledge_base`만 사용한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다.
+- `materialized_knowledge_bases`는 LLM node `knowledgeBases`로 변환 가능한 safe KB ref만 포함하고, `MAX_RAG_RETRIEVAL_KBS=20` cap을 넘지 않는다.
+- Safe label이 없는 KB recommendation은 raw KB name을 fallback으로 사용하지 않고 `null` 또는 generic label만 사용한다.
+- Recommendation request의 raw `workflow_intent`와 `node_purpose`는 durable audit/trace/log에 저장하지 않고, 길이 cap과 control character normalization을 통과해야 한다.
+- Recommendation provenance는 `recommendation_strategy`, `safe_reason_code`, `used_signals`, safe matched terms, bucketed counts 같은 allowlist만 포함하고 raw source title/path/url, hidden id/name, exact denied count를 포함하지 않는다.
+- `high_risk_domain` hint는 `strict_citation` 같은 RAG option 추천에만 영향을 주고 권한, source ACL, policy block 결정을 대체하지 않는다.
+- No recommendation result는 사용자 확인 필요 상태를 기본값으로 만들며, Builder 정책 gate 없이 자동으로 RAG 없는 LLM node를 생성하지 않는다.
 - Workflow Builder는 safe skill metadata만 받으며 raw skill body, hidden source reference, restricted document list를 받지 않는다.
 - Skill Context Loader는 선택된 skill의 redaction-safe checklist/body만 빌더 단계에 필요한 시점에 로드하고, 실제 문서 내용은 workflow 테스트 또는 실행 시점 authorized retrieval로 가져온다.
 - Skill source-of-truth tier는 LLM node의 RAG 옵션 구성과 routing/procedure hint로만 사용되고, citation/evidence는 KB/document version/chunk/decision record를 가리킨다.
@@ -101,9 +109,14 @@ Status: Draft
 - Authorized source에서 evidence가 없는 경우는 성공한 empty evidence response이며 hidden resource를 암시하지 않는다.
 - Evidence sufficiency policy가 `minimum_evidence` 또는 `strict_citation`일 때 evidence가 없거나 score/citation coverage가 부족하면 `evidence_sufficient=false`와 safe `insufficiency_reason`을 반환하고 추측 답변을 생성하지 않는다.
 - `insufficiency_reason`은 권한 없는 문서명, hidden KB id, exact denied count를 포함하지 않는다.
+- Retrieved context, memory summary, upstream node output, external connector content에 `ignore previous instructions`, `system prompt`, 역할 위장 같은 prompt injection성 지시문이 포함되어도 LLM system/developer policy와 사용자 명시 요청보다 우선하지 않는다.
+- Standalone Agent answer와 Workflow LLM node RAG path는 retrieved context를 system prompt 본문에 직접 합치지 않고 untrusted evidence delimiter로 감싸며, 의심 지시문 라인을 redaction하거나 무해화한다.
+- Workflow LLM node의 system/assistant prompt template에 upstream referenced variable이 포함되면 원문 value는 privileged role에 직접 렌더링되지 않고 untrusted evidence block으로 분리된다.
+- Prompt injection guard 테스트 fixture는 악성 chunk 원문이 provider messages의 system role, audit metadata, trace metadata, answer summary에 저장되지 않는지 확인한다.
 - Explicit KB id not found, outside org, archived/deleted, requester source authorization denied, source ACL stale/unmapped/ambiguous/unverified/revoked, permission-unverified는 matrix가 요구하는 동일한 safe resource-hidden shape를 따른다.
 - Hidden/resource-hidden path의 external JSON/SSE `reason_code`는 `resource.hidden`으로 일반화되며 `source_authorization.denied` 또는 `source_acl.stale/unmapped/ambiguous/unverified/revoked` 세부 reason을 반환하지 않는다.
 - PII/final evidence policy block은 answer delta나 citation content preview가 emit되기 전에 발생한다.
+- Workflow LLM node RAG path도 `classification=pii` chunk를 외부 LLM context에 넣기 전에 차단하고, safe no-result 또는 fail-node 정책에 따라 닫는다.
 - 현재 standalone single-KB Agent answer lifecycle과 same-scope blocked 처리 테스트는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 기준으로 유지하고, ADR-0017/implementation baseline matrix 테스트는 target cutover/source-managed/auto/multi-KB mode에 추가한다.
 
 ## Audit, Trace, And Privacy Tests

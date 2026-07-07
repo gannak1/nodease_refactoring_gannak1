@@ -39,6 +39,8 @@ from apps.shared.services.permissions import (
     has_organization_scope_access,
 )
 
+from .notification_service import publish_notifications_changed
+
 VISIBLE_ORGANIZATION_STATES = {
     ORGANIZATION_MEMBERSHIP_ACTIVE,
     ORGANIZATION_MEMBERSHIP_INVITED,
@@ -451,6 +453,7 @@ class OrganizationMemberService:
             ),
         )
         db.commit()
+        publish_notifications_changed(membership.user_id)
         db.refresh(membership)
         return _member_response(membership)
 
@@ -486,6 +489,40 @@ class OrganizationMemberService:
             ),
         )
         db.commit()
+        publish_notifications_changed(current_user.id)
+        db.refresh(membership)
+        return _member_response(membership)
+
+    @staticmethod
+    def decline_invitation(
+        db: Session,
+        current_user: User,
+        organization_id: Any,
+    ) -> OrganizationMemberResponse:
+        _get_active_organization(db, organization_id)
+        membership = _get_membership(db, organization_id, current_user.id)
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Invitation not found.")
+        if membership.membership_state != ORGANIZATION_MEMBERSHIP_INVITED:
+            raise HTTPException(status_code=409, detail="Invitation cannot be declined.")
+
+        previous_state = membership.membership_state
+        membership.membership_state = ORGANIZATION_MEMBERSHIP_REMOVED
+        membership.accepted_at = None
+        membership.removed_at = _now()
+        _add_audit_log(
+            db,
+            AuditAction.ORGANIZATION_MEMBER_DECLINE,
+            current_user,
+            membership,
+            _audit_metadata(
+                membership,
+                previous_membership_state=previous_state,
+                next_membership_state=membership.membership_state,
+            ),
+        )
+        db.commit()
+        publish_notifications_changed(current_user.id)
         db.refresh(membership)
         return _member_response(membership)
 

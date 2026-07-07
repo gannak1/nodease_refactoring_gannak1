@@ -29,6 +29,7 @@ class AuditAction:
     ORGANIZATION_UPDATE = "organization.update"
     ORGANIZATION_INVITE = "organization.invite"
     ORGANIZATION_MEMBER_ACCEPT = "organization.member.accept"
+    ORGANIZATION_MEMBER_DECLINE = "organization.member.decline"
     ORGANIZATION_MEMBER_UPDATE = "organization.member.update"
     ORGANIZATION_MEMBER_REMOVE = "organization.member.remove"
 

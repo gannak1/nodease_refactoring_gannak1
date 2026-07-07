@@ -461,6 +461,10 @@ type VariableTokenEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onDropOutput?: (output: DraggedOutputVariable) => string | void;
+  insertOutputRequest?: {
+    id: string;
+    output: DraggedOutputVariable;
+  } | null;
   placeholder?: string;
   className?: string;
   ariaLabel?: string;
@@ -471,6 +475,7 @@ export const VariableTokenEditor = ({
   value,
   onChange,
   onDropOutput,
+  insertOutputRequest,
   placeholder,
   className,
   ariaLabel,
@@ -607,6 +612,11 @@ export const VariableTokenEditor = ({
   useEffect(() => {
     insertOutputTokenRef.current = insertOutputToken;
   }, [insertOutputToken]);
+
+  useEffect(() => {
+    if (!insertOutputRequest) return;
+    insertOutputTokenRef.current(insertOutputRequest.output);
+  }, [insertOutputRequest]);
 
   useEffect(
     () =>

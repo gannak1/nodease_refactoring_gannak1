@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { authApi } from '../../auth/api/authApi';
 import {
+  Bell,
   Search,
   Settings,
   BookOpen,
@@ -16,13 +17,19 @@ import {
   Building2,
   LayoutDashboard,
   ShieldCheck,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   ACTIVE_ORGANIZATION_CHANGED_EVENT,
   getStoredActiveOrganizationId,
+  setActiveOrganizationId,
 } from '@/lib/activeOrganization';
 import { apiClient } from '@/lib/apiClient';
+import { notificationsApi } from '../../notifications/api/notificationsApi';
+import { NotificationOverlay } from '../../notifications/components/NotificationOverlay';
+import type { NotificationItem } from '../../notifications/types/Notification';
 
 const navigationItems = [
   {
@@ -63,6 +70,12 @@ const navigationItems = [
   },
 ];
 
+type SidebarOrganization = {
+  id: string;
+  name: string;
+  is_manager: boolean;
+};
+
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -70,9 +83,36 @@ export default function Sidebar() {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [userName, setUserName] = useState('사용자');
   const [userEmail, setUserEmail] = useState('');
+  const [activeOrganizationId, setActiveOrganizationIdState] = useState<
+    string | null
+  >(null);
   const [organizationName, setOrganizationName] = useState('');
   const [isOrganizationManager, setIsOrganizationManager] = useState(false);
+  const [organizations, setOrganizations] = useState<SidebarOrganization[]>([]);
+  const [isOrganizationDropdownOpen, setIsOrganizationDropdownOpen] =
+    useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(true);
+  const [notificationsError, setNotificationsError] = useState<string | null>(
+    null,
+  );
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const organizationDropdownRef = useRef<HTMLDivElement>(null);
+
+  const loadNotifications = useCallback(async () => {
+    setNotificationsLoading(true);
+    setNotificationsError(null);
+    try {
+      const data = await notificationsApi.listNotifications();
+      setNotifications(data.items);
+    } catch {
+      setNotifications([]);
+      setNotificationsError('알림을 불러오지 못했습니다.');
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, []);
 
   // Fetch user info
   useEffect(() => {
@@ -94,23 +134,52 @@ export default function Sidebar() {
   }, []);
 
   useEffect(() => {
+    loadNotifications();
+
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = notificationsApi.createEventSource();
+      eventSource.addEventListener('notifications.changed', loadNotifications);
+    } catch {
+      // SSE 연결 실패는 초기/수동 조회로 보완한다.
+    }
+
+    return () => {
+      eventSource?.close();
+    };
+  }, [loadNotifications]);
+
+  useEffect(() => {
     const fetchOrganization = async () => {
       try {
         const organizationId = getStoredActiveOrganizationId();
         if (!organizationId) {
+          setActiveOrganizationIdState(null);
           setOrganizationName('');
           setIsOrganizationManager(false);
+          setOrganizations([]);
           return;
         }
 
-        const response = await apiClient.get('/organizations/current');
-        if (response.data?.name) {
-          setOrganizationName(response.data.name);
+        const [currentResponse, organizationsResponse] = await Promise.all([
+          apiClient.get('/organizations/current'),
+          apiClient.get('/organizations'),
+        ]);
+        if (currentResponse.data?.name) {
+          setOrganizationName(currentResponse.data.name);
         }
-        setIsOrganizationManager(response.data?.is_manager === true);
+        setActiveOrganizationIdState(currentResponse.data?.id || organizationId);
+        setIsOrganizationManager(currentResponse.data?.is_manager === true);
+        setOrganizations(
+          Array.isArray(organizationsResponse.data)
+            ? organizationsResponse.data
+            : [],
+        );
       } catch {
+        setActiveOrganizationIdState(null);
         setOrganizationName('');
         setIsOrganizationManager(false);
+        setOrganizations([]);
       }
     };
 
@@ -138,6 +207,34 @@ export default function Sidebar() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        organizationDropdownRef.current &&
+        !organizationDropdownRef.current.contains(event.target as Node)
+      ) {
+        setIsOrganizationDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectOrganization = (organization: SidebarOrganization) => {
+    if (organization.id === activeOrganizationId) {
+      setIsOrganizationDropdownOpen(false);
+      return;
+    }
+
+    setActiveOrganizationId(organization.id);
+    setActiveOrganizationIdState(organization.id);
+    setOrganizationName(organization.name);
+    setIsOrganizationManager(organization.is_manager === true);
+    setIsOrganizationDropdownOpen(false);
+    router.push('/dashboard');
+  };
+
   const handleLogout = async () => {
     try {
       await authApi.logout();
@@ -148,6 +245,9 @@ export default function Sidebar() {
       router.push('/auth/login');
     }
   };
+
+  const canSwitchOrganization = organizations.length > 1;
+  const organizationTypeLabel = isOrganizationManager ? '내 조직' : '멤버 조직';
 
   return (
     <aside
@@ -225,11 +325,81 @@ export default function Sidebar() {
       </nav>
 
       {!isCollapsed && organizationName && (
-        <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-            <Building2 className="h-3.5 w-3.5 text-blue-600" />
-            <span className="truncate">{organizationName}</span>
-          </div>
+        <div className="relative mb-3" ref={organizationDropdownRef}>
+          <button
+            type="button"
+            aria-label="조직 전환"
+            aria-haspopup={canSwitchOrganization ? 'menu' : undefined}
+            aria-expanded={
+              canSwitchOrganization ? isOrganizationDropdownOpen : undefined
+            }
+            disabled={!canSwitchOrganization}
+            onClick={() =>
+              setIsOrganizationDropdownOpen((isOpen) =>
+                canSwitchOrganization ? !isOpen : false,
+              )
+            }
+            className={cn(
+              'flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left transition-colors',
+              canSwitchOrganization
+                ? 'hover:border-blue-200 hover:bg-blue-50'
+                : 'cursor-default',
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <Building2 className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+              <div className="min-w-0">
+                <span className="block truncate text-xs font-semibold text-slate-700">
+                  {organizationName}
+                </span>
+                <span className="mt-1 inline-flex rounded-md bg-white px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
+                  {organizationTypeLabel}
+                </span>
+              </div>
+            </div>
+            {canSwitchOrganization && (
+              <ChevronDown
+                className={cn(
+                  'h-4 w-4 shrink-0 text-slate-400 transition-transform',
+                  isOrganizationDropdownOpen && 'rotate-180',
+                )}
+              />
+            )}
+          </button>
+
+          {canSwitchOrganization && isOrganizationDropdownOpen && (
+            <div className="absolute bottom-full left-0 z-50 mb-2 w-full overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+              <div className="max-h-64 overflow-y-auto">
+                {organizations.map((organization) => {
+                  const isSelected = organization.id === activeOrganizationId;
+                  return (
+                    <button
+                      key={organization.id}
+                      type="button"
+                      role="menuitem"
+                      aria-label={`${organization.name} 조직 선택`}
+                      aria-current={isSelected ? 'true' : undefined}
+                      onClick={() => selectOrganization(organization)}
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-700 transition-colors hover:bg-slate-50"
+                    >
+                      <Building2 className="h-4 w-4 shrink-0 text-blue-600" />
+                      <div className="min-w-0 flex-1">
+                        <span className="block truncate font-semibold text-slate-900">
+                          {organization.name}
+                        </span>
+                        <span className="mt-1 inline-flex rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500">
+                          {organization.is_manager ? '내 조직' : '멤버 조직'}
+                        </span>
+                      </div>
+                      {isSelected && (
+                        <Check className="h-4 w-4 shrink-0 text-blue-600" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -273,6 +443,16 @@ export default function Sidebar() {
           >
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
               <button
+                onClick={() => {
+                  setIsDropdownOpen(false);
+                  setIsNotificationsOpen(true);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <Bell className="w-4 h-4" />
+                <span>알림</span>
+              </button>
+              <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
               >
@@ -283,6 +463,15 @@ export default function Sidebar() {
           </div>
         )}
       </div>
+      {isNotificationsOpen && (
+        <NotificationOverlay
+          notifications={notifications}
+          loading={notificationsLoading}
+          error={notificationsError}
+          onClose={() => setIsNotificationsOpen(false)}
+          onRefresh={loadNotifications}
+        />
+      )}
     </aside>
   );
 }

@@ -12,6 +12,10 @@ from apps.shared.db.models.knowledge import RAGAnswerRun
 from apps.shared.db.models.llm import LLMCredential, LLMModel
 from apps.shared.schemas.rag import RAGAgentAnswerRequest, RAGUsageSummary
 from apps.shared.services.llm_client import get_llm_client
+from apps.shared.utils.prompt_injection_guard import (
+    PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT,
+    build_untrusted_context_block,
+)
 
 
 class RAGAgentAnswerGenerationRunner:
@@ -40,15 +44,20 @@ class RAGAgentAnswerGenerationRunner:
     ) -> tuple[str, RAGUsageSummary]:
         client = self._client_for(model, credential)
         context_text = self.builder.context_for_chunks(chunks, model)
-        system_prompt = (
-            "You are a helpful assistant. Use the following context to answer the user's question.\n"
-            "If the answer is not in the context, say you don't know.\n\n"
-            f"Context:\n{context_text}"
+        system_prompt = "\n".join(
+            [
+                PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT,
+                "Answer using only the provided knowledge evidence.",
+                "If the answer is not supported by the evidence, say you don't know.",
+            ]
         )
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": payload.query},
         ]
+        knowledge_block = build_untrusted_context_block(context_text, label="KNOWLEDGE")
+        if knowledge_block:
+            messages.append({"role": "user", "content": knowledge_block})
+        messages.append({"role": "user", "content": payload.query})
         llm_start = time.perf_counter()
         try:
             result = await asyncio.wait_for(

@@ -137,8 +137,8 @@ def main(inputs):
 # 가성비와 코드 생성 능력을 모두 고려한 모델 선정
 PROVIDER_EFFICIENT_MODELS = {
     "openai": "gpt-4o-mini",  # 압도적인 가성비 + 준수한 코딩 능력
-    "google": "gemini-1.5-flash",  # 매우 저렴 + 긴 컨텍스트
-    "anthropic": "claude-3-5-sonnet-20240620",  # 코딩 성능 최강자 (Haiku보다 비싸지만 성능 확실)
+    "google": "gemini-3.1-flash-lite",  # 최신 저비용 + 긴 컨텍스트
+    "anthropic": "claude-sonnet-4-6",  # active Sonnet 계열 중 안정적인 코딩 기본값
 }
 
 

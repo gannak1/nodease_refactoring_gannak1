@@ -10,6 +10,10 @@ Celery Worker에서 모델을 import할 때 순서 문제를 방지합니다.
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.connection import Connection
+from apps.shared.db.models.cost_optimizer import (
+    CostOptimizerCandidate,
+    CostOptimizerExperiment,
+)
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
@@ -86,6 +90,8 @@ __all__ = [
     "App",
     "AuditLog",
     "Connection",
+    "CostOptimizerExperiment",
+    "CostOptimizerCandidate",
     "Document",
     "DocumentChunk",
     "DocumentVersion",

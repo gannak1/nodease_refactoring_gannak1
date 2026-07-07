@@ -8,6 +8,8 @@ MINIMUM_EVIDENCE_POLICY = "minimum_evidence"
 STRICT_CITATION_POLICY = "strict_citation"
 DEFAULT_MIN_EVIDENCE_SCORE = 0.15
 STRICT_MIN_CITATION_COUNT = 2
+BLOCKED_EVIDENCE_CLASSIFICATIONS = frozenset({"pii"})
+PII_POLICY_BLOCK_REASON = "pii_policy_blocked"
 
 
 @dataclass(frozen=True)
@@ -144,3 +146,19 @@ class RAGEvidencePolicy:
             "tiers": tiers,
             "tier_count": len(tiers),
         }
+
+
+def blocked_evidence_reason_for_chunks(chunks: Iterable[ChunkPreview]) -> str | None:
+    """외부 LLM에 전달하면 안 되는 evidence classification을 fail-closed로 판정한다."""
+    for chunk in chunks:
+        classification = _chunk_metadata_value(chunk, "classification")
+        if str(classification).strip().lower() in BLOCKED_EVIDENCE_CLASSIFICATIONS:
+            return PII_POLICY_BLOCK_REASON
+    return None
+
+
+def _chunk_metadata_value(chunk: ChunkPreview, key: str) -> Any:
+    for metadata in (chunk.metadata_summary, chunk.metadata):
+        if isinstance(metadata, dict) and metadata.get(key) is not None:
+            return metadata.get(key)
+    return None

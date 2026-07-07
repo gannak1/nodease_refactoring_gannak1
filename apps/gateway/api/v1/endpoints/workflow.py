@@ -1,15 +1,18 @@
 import copy
+import hashlib
 import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, List, Literal, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, Integer, cast, func
+from sqlalchemy import Date, Integer, cast, func, or_
 from sqlalchemy.orm import Session, noload, selectinload
 
 # from sqlalchemy.orm import Session, noload, selectinload
@@ -26,12 +29,22 @@ from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
+from apps.shared.db.models.cost_optimizer import (
+    CostOptimizerCandidate,
+    CostOptimizerExperiment,
+)
+from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import workflow_auth_state_allows
 
 # [NEW] 로깅 모델 및 스키마
-from apps.shared.db.models.workflow_run import NodeRunStatus, RunStatus, WorkflowRun
+from apps.shared.db.models.workflow_run import (
+    NodeRunStatus,
+    RunStatus,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
 from apps.shared.db.session import get_db
 from apps.shared.schemas.log import (
     DashboardStatsResponse,
@@ -48,10 +61,21 @@ from apps.shared.schemas.workflow import (
 from apps.shared.services.permissions import (
     get_effective_workflow_auth_state,
     get_workflow_permission_sources,
+    has_knowledge_base_permission,
 )
+from apps.shared.services.cost_optimizer_retention import CostOptimizerRetentionService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+COST_OPTIMIZER_ALLOWED_TASK_TYPES = {
+    "classify",
+    "extract",
+    "summarize",
+    "generate",
+    "reason",
+}
+COST_OPTIMIZER_BASELINE_INPUT_NODE_ID = "__cost_optimizer_baseline_input__"
 
 
 class WorkflowCompareRequest(BaseModel):
@@ -60,6 +84,2269 @@ class WorkflowCompareRequest(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     left: str
     right: str
+
+
+class CostOptimizerPermissionResponse(BaseModel):
+    can_compare: bool
+    can_apply: bool
+    required_auth_state: str
+
+
+class CostOptimizerAvailabilityResponse(BaseModel):
+    available: bool
+    reason: str | None = None
+    workflow_id: str
+    node_id: str
+    node_type: str
+    permission: CostOptimizerPermissionResponse
+
+
+class CostOptimizerLatestBaselineResponse(BaseModel):
+    baseline: dict[str, Any]
+
+
+class CostOptimizerBaselineListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[dict[str, Any]]
+
+
+class CostOptimizerCandidateRequest(BaseModel):
+    label: str = "B"
+    model_id: str
+    fallback_model_id: str | None = None
+    task_type: str | None = None
+    system_prompt: str | None = None
+    user_prompt: str | None = None
+    assistant_prompt: str | None = None
+    referenced_variables: list[dict[str, Any]] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    output_format: dict[str, Any] | None = None
+    knowledge: dict[str, Any] | None = None
+
+
+class CostOptimizerCompareRequest(BaseModel):
+    baseline_id: str
+    candidate: CostOptimizerCandidateRequest
+
+
+class CostOptimizerApplyRequest(BaseModel):
+    comparison_id: str | None = None
+    candidate_settings: CostOptimizerCandidateRequest
+    acknowledge_downstream_warning: bool = False
+
+
+def _raise_invalid_cost_optimizer_candidate() -> None:
+    raise HTTPException(status_code=400, detail="cost_optimizer.invalid_candidate")
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_number_range(
+    value: Any,
+    *,
+    minimum: float,
+    maximum: float,
+) -> None:
+    if not _is_number(value) or value < minimum or value > maximum:
+        _raise_invalid_cost_optimizer_candidate()
+
+
+def _validate_cost_optimizer_candidate_shape(
+    candidate: CostOptimizerCandidateRequest,
+) -> None:
+    model_id = (candidate.model_id or "").strip()
+    if not model_id:
+        _raise_invalid_cost_optimizer_candidate()
+
+    fallback_model_id = (
+        candidate.fallback_model_id.strip()
+        if isinstance(candidate.fallback_model_id, str)
+        else None
+    )
+    if fallback_model_id and fallback_model_id == model_id:
+        _raise_invalid_cost_optimizer_candidate()
+
+    if candidate.task_type is not None:
+        if (
+            not isinstance(candidate.task_type, str)
+            or candidate.task_type not in COST_OPTIMIZER_ALLOWED_TASK_TYPES
+        ):
+            _raise_invalid_cost_optimizer_candidate()
+
+    prompts = (
+        candidate.system_prompt,
+        candidate.user_prompt,
+        candidate.assistant_prompt,
+    )
+    if all(prompt is not None for prompt in prompts) and not any(
+        isinstance(prompt, str) and prompt.strip() for prompt in prompts
+    ):
+        _raise_invalid_cost_optimizer_candidate()
+
+    for variable in candidate.referenced_variables or []:
+        if not isinstance(variable, dict):
+            _raise_invalid_cost_optimizer_candidate()
+        name = variable.get("name")
+        selector = variable.get("value_selector")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(selector, list)
+            or len(selector) < 2
+            or any(not isinstance(item, str) or not item.strip() for item in selector)
+        ):
+            _raise_invalid_cost_optimizer_candidate()
+
+    parameters = candidate.parameters or {}
+    max_tokens = parameters.get("max_tokens")
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
+        _raise_invalid_cost_optimizer_candidate()
+    _validate_number_range(max_tokens, minimum=1, maximum=8192)
+
+    temperature = parameters.get("temperature")
+    _validate_number_range(temperature, minimum=0, maximum=2)
+
+    if "top_p" in parameters:
+        _validate_number_range(parameters.get("top_p"), minimum=0, maximum=1)
+    if "presence_penalty" in parameters:
+        _validate_number_range(
+            parameters.get("presence_penalty"), minimum=-2, maximum=2
+        )
+    if "frequency_penalty" in parameters:
+        _validate_number_range(
+            parameters.get("frequency_penalty"), minimum=-2, maximum=2
+        )
+    if "stop" in parameters:
+        stop = parameters.get("stop")
+        if (
+            not isinstance(stop, list)
+            or len(stop) > 4
+            or any(not isinstance(item, str) for item in stop)
+        ):
+            _raise_invalid_cost_optimizer_candidate()
+
+    output_format = candidate.output_format
+    if output_format is not None:
+        if not isinstance(output_format, dict):
+            _raise_invalid_cost_optimizer_candidate()
+        if output_format.get("type") not in {"text", "json"}:
+            _raise_invalid_cost_optimizer_candidate()
+        schema = output_format.get("schema")
+        if schema is not None and not isinstance(schema, dict):
+            _raise_invalid_cost_optimizer_candidate()
+        if isinstance(schema, dict):
+            _validate_cost_optimizer_json_schema_shape(schema)
+
+    knowledge = candidate.knowledge
+    if knowledge is None:
+        return
+    if not isinstance(knowledge, dict):
+        _raise_invalid_cost_optimizer_candidate()
+
+    if "knowledge_base_ids" in knowledge:
+        knowledge_base_ids = knowledge.get("knowledge_base_ids")
+        if (
+            not isinstance(knowledge_base_ids, list)
+            or any(
+                not isinstance(knowledge_base_id, str)
+                or not knowledge_base_id.strip()
+                for knowledge_base_id in knowledge_base_ids
+            )
+        ):
+            _raise_invalid_cost_optimizer_candidate()
+    if "top_k" in knowledge:
+        top_k = knowledge.get("top_k")
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
+            _raise_invalid_cost_optimizer_candidate()
+    if "score_threshold" in knowledge:
+        _validate_number_range(
+            knowledge.get("score_threshold"), minimum=0, maximum=1
+        )
+    if "dedupe_retrieved_context" in knowledge and not isinstance(
+        knowledge.get("dedupe_retrieved_context"), bool
+    ):
+        _raise_invalid_cost_optimizer_candidate()
+    if "retrieved_context_max_chars" in knowledge:
+        retrieved_context_max_chars = knowledge.get("retrieved_context_max_chars")
+        if retrieved_context_max_chars is not None:
+            if (
+                not isinstance(retrieved_context_max_chars, int)
+                or isinstance(retrieved_context_max_chars, bool)
+                or retrieved_context_max_chars < 1
+            ):
+                _raise_invalid_cost_optimizer_candidate()
+    if knowledge.get("retrieved_context_compression") not in {
+        None,
+        "off",
+        "light",
+        "strong",
+    }:
+        _raise_invalid_cost_optimizer_candidate()
+    if knowledge.get("answer_grounding_check") not in {None, "off", "basic", "strict"}:
+        _raise_invalid_cost_optimizer_candidate()
+
+
+def _validate_cost_optimizer_json_schema_shape(schema: dict[str, Any]) -> None:
+    allowed_types = {"object", "array", "string", "number", "boolean"}
+    schema_type = schema.get("type")
+    if schema_type is not None and schema_type not in allowed_types:
+        _raise_invalid_cost_optimizer_candidate()
+
+    properties = schema.get("properties")
+    if properties is not None and not isinstance(properties, dict):
+        _raise_invalid_cost_optimizer_candidate()
+    if isinstance(properties, dict):
+        for property_schema in properties.values():
+            if not isinstance(property_schema, dict):
+                _raise_invalid_cost_optimizer_candidate()
+            property_type = property_schema.get("type")
+            if property_type is not None and property_type not in allowed_types:
+                _raise_invalid_cost_optimizer_candidate()
+
+    required = schema.get("required")
+    if required is not None and (
+        not isinstance(required, list)
+        or any(not isinstance(item, str) or not item.strip() for item in required)
+    ):
+        _raise_invalid_cost_optimizer_candidate()
+    if isinstance(required, list) and isinstance(properties, dict):
+        property_keys = set(properties.keys())
+        if any(item not in property_keys for item in required):
+            _raise_invalid_cost_optimizer_candidate()
+
+
+def _ensure_cost_optimizer_candidate_knowledge_available(
+    db: Session,
+    current_user: User,
+    workflow: Workflow,
+    candidate: CostOptimizerCandidateRequest,
+) -> None:
+    knowledge = candidate.knowledge if isinstance(candidate.knowledge, dict) else {}
+    knowledge_base_ids = knowledge.get("knowledge_base_ids") or []
+    for knowledge_base_id in knowledge_base_ids:
+        if not has_knowledge_base_permission(
+            db,
+            current_user.id,
+            str(knowledge_base_id),
+            "use",
+            workflow.organization_id,
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="cost_optimizer.knowledge_unavailable",
+            )
+
+
+def _cost_optimizer_model_id_from_option(model: Any) -> str | None:
+    if isinstance(model, dict):
+        value = model.get("model_id_for_api_call") or model.get("model_id")
+    else:
+        value = getattr(model, "model_id_for_api_call", None) or getattr(
+            model,
+            "model_id",
+            None,
+        )
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _ensure_cost_optimizer_candidate_models_available(
+    db: Session,
+    current_user: User,
+    candidate: CostOptimizerCandidateRequest,
+) -> None:
+    available_model_ids = {
+        model_id
+        for model_id in (
+            _cost_optimizer_model_id_from_option(model)
+            for model in LLMService.get_my_available_models(db, current_user.id)
+        )
+        if model_id
+    }
+    requested_model_ids = {(candidate.model_id or "").strip()}
+    if candidate.fallback_model_id:
+        requested_model_ids.add(candidate.fallback_model_id.strip())
+    if not requested_model_ids.issubset(available_model_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="cost_optimizer.model_unavailable",
+        )
+
+
+def _find_workflow_node(graph: dict[str, Any] | None, node_id: str) -> dict[str, Any] | None:
+    if not isinstance(graph, dict):
+        return None
+    nodes = graph.get("nodes") or []
+    for node in nodes:
+        if isinstance(node, dict) and str(node.get("id")) == node_id:
+            return node
+    return None
+
+
+def _ensure_cost_optimizer_llm_node(workflow: Workflow, node_id: str) -> dict[str, Any]:
+    node = _find_workflow_node(workflow.graph, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    if str(node.get("type") or "") != "llmNode":
+        raise HTTPException(status_code=400, detail="cost_optimizer.not_llm_node")
+
+    return node
+
+
+def _canonical_json_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cost_optimizer_downstream_contracts_for_consumer(
+    target_node_id: str,
+    consumer: dict[str, Any],
+) -> list[dict[str, Any]]:
+    consumer_type = str(consumer.get("type") or "")
+    data = consumer.get("data") if isinstance(consumer.get("data"), dict) else {}
+    contracts: list[dict[str, Any]] = []
+
+    if consumer_type == "variableExtractionNode":
+        source_selector = data.get("source_selector") or []
+        if not source_selector or source_selector[0] != target_node_id:
+            return contracts
+        selector = source_selector[1] if len(source_selector) > 1 else "text"
+        for mapping in data.get("mappings") or []:
+            if not isinstance(mapping, dict):
+                continue
+            json_path = str(mapping.get("json_path") or "").strip()
+            if not json_path:
+                continue
+            contracts.append(
+                {
+                    "kind": "json_path",
+                    "selector": selector,
+                    "path": json_path,
+                    "required": True,
+                }
+            )
+
+    elif consumer_type == "conditionNode":
+        for case in data.get("cases") or []:
+            if not isinstance(case, dict):
+                continue
+            for condition in case.get("conditions") or []:
+                if not isinstance(condition, dict):
+                    continue
+                selector = condition.get("variable_selector") or []
+                if selector and selector[0] == target_node_id and len(selector) > 1:
+                    contracts.append(
+                        {
+                            "kind": "selector",
+                            "key": str(selector[1]),
+                            "required": True,
+                        }
+                    )
+
+    elif consumer_type == "answerNode":
+        for output in data.get("outputs") or []:
+            if not isinstance(output, dict):
+                continue
+            selector = output.get("value_selector") or []
+            if selector and selector[0] == target_node_id and len(selector) > 1:
+                contracts.append(
+                    {
+                        "kind": "selector",
+                        "key": str(selector[1]),
+                        "required": True,
+                    }
+                )
+
+    elif consumer_type == "slackPostNode":
+        for variable in data.get("referenced_variables") or []:
+            if not isinstance(variable, dict):
+                continue
+            selector = variable.get("value_selector") or []
+            if selector and selector[0] == target_node_id and len(selector) > 1:
+                contracts.append(
+                    {
+                        "kind": "selector",
+                        "key": str(selector[1]),
+                        "required": True,
+                    }
+                )
+
+    return contracts
+
+
+def _cost_optimizer_downstream_has_side_effect(node_type: str) -> bool:
+    return node_type in {"slackPostNode", "httpRequestNode", "databaseNode"}
+
+
+def build_cost_optimizer_downstream_snapshot(
+    graph: dict[str, Any] | None,
+    node_id: str,
+) -> dict[str, Any]:
+    nodes = graph.get("nodes") if isinstance(graph, dict) else []
+    edges = graph.get("edges") if isinstance(graph, dict) else []
+    nodes = nodes if isinstance(nodes, list) else []
+    edges = edges if isinstance(edges, list) else []
+    node_by_id = {
+        str(node.get("id")): node
+        for node in nodes
+        if isinstance(node, dict) and node.get("id")
+    }
+    node_types = {
+        str(node.get("id")): str(node.get("type") or "")
+        for node in nodes
+        if isinstance(node, dict) and node.get("id")
+    }
+    adjacency: dict[str, list[str]] = {}
+    normalized_edges = []
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = edge.get("source")
+        target = edge.get("target")
+        if source is None or target is None:
+            continue
+        source_id = str(source)
+        target_id = str(target)
+        adjacency.setdefault(source_id, []).append(target_id)
+        normalized_edges.append(
+            {
+                "source": source_id,
+                "target": target_id,
+                "source_handle": edge.get("sourceHandle"),
+                "target_handle": edge.get("targetHandle"),
+            }
+        )
+
+    direct_consumer_ids = sorted(set(adjacency.get(node_id, [])))
+    visited: set[str] = set()
+    queue = list(direct_consumer_ids)
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        queue.extend(adjacency.get(current, []))
+
+    downstream_edges = [
+        edge
+        for edge in normalized_edges
+        if edge["source"] == node_id
+        or edge["source"] in visited
+        or edge["target"] in visited
+    ]
+    comparable = {
+        "direct_consumers": [
+            {
+                "id": consumer_id,
+                "type": node_types.get(consumer_id, ""),
+                "contracts": _cost_optimizer_downstream_contracts_for_consumer(
+                    node_id,
+                    node_by_id.get(consumer_id, {}),
+                ),
+                "has_side_effect": _cost_optimizer_downstream_has_side_effect(
+                    node_types.get(consumer_id, "")
+                ),
+            }
+            for consumer_id in direct_consumer_ids
+        ],
+        "reachable_nodes": [
+            {
+                "id": downstream_id,
+                "type": node_types.get(downstream_id, ""),
+                "has_side_effect": _cost_optimizer_downstream_has_side_effect(
+                    node_types.get(downstream_id, "")
+                ),
+            }
+            for downstream_id in sorted(visited)
+        ],
+        "edges": sorted(
+            downstream_edges,
+            key=lambda item: (
+                item["source"],
+                item["target"],
+                str(item.get("source_handle") or ""),
+                str(item.get("target_handle") or ""),
+            ),
+        ),
+    }
+    return {
+        **comparable,
+        "hash": _canonical_json_hash(comparable),
+    }
+
+
+def _cost_optimizer_json_path_exists(payload: Any, json_path: str) -> bool:
+    path = str(json_path or "").strip()
+    if not path:
+        return True
+    current = payload
+    for segment in path.split("."):
+        if isinstance(current, dict) and segment in current:
+            current = current[segment]
+            continue
+        return False
+    return True
+
+
+def _cost_optimizer_contract_payload(candidate_output: Any, selector: str | None) -> Any:
+    if not isinstance(candidate_output, dict):
+        return candidate_output
+    selected = candidate_output.get(selector or "text")
+    if selected is None and selector is not None:
+        return None
+    if selected is None:
+        selected = candidate_output
+    if isinstance(selected, str):
+        try:
+            return json.loads(selected)
+        except json.JSONDecodeError:
+            return selected
+    return selected
+
+
+def _cost_optimizer_selector_exists(candidate_output: Any, selector: list[Any]) -> bool:
+    if len(selector) < 2:
+        return True
+    key = selector[1]
+    if not isinstance(key, str) or not key:
+        return True
+    if isinstance(candidate_output, dict):
+        if key in candidate_output:
+            return True
+        text_payload = _cost_optimizer_contract_payload(candidate_output, "text")
+        return _cost_optimizer_json_path_exists(text_payload, key)
+    return False
+
+
+def _cost_optimizer_downstream_contract_check(
+    baseline_snapshot: dict[str, Any],
+    candidate_output: Any,
+) -> dict[str, Any]:
+    checked_node_ids: list[str] = []
+    warnings: list[str] = []
+
+    direct_consumers = baseline_snapshot.get("direct_consumers")
+    direct_consumers = direct_consumers if isinstance(direct_consumers, list) else []
+    for consumer in direct_consumers:
+        if not isinstance(consumer, dict):
+            continue
+        consumer_id = str(consumer.get("id"))
+        checked_node_ids.append(consumer_id)
+        contracts = consumer.get("contracts")
+        contracts = contracts if isinstance(contracts, list) else []
+        for contract in contracts:
+            if not isinstance(contract, dict) or not contract.get("required", True):
+                continue
+            if contract.get("kind") == "json_path":
+                json_path = contract.get("path")
+                payload = _cost_optimizer_contract_payload(
+                    candidate_output,
+                    str(contract.get("selector") or "text"),
+                )
+                if not _cost_optimizer_json_path_exists(payload, str(json_path or "")):
+                    warnings.append(
+                        f"{consumer_id} requires candidate output path '{json_path}'"
+                    )
+            elif contract.get("kind") == "selector":
+                key = str(contract.get("key") or "")
+                if key and not _cost_optimizer_selector_exists(
+                    candidate_output,
+                    ["", key],
+                ):
+                    warnings.append(
+                        f"{consumer_id} requires candidate output selector '{key}'"
+                    )
+
+    return {
+        "status": "failed" if warnings else "pass",
+        "checked_node_ids": checked_node_ids,
+        "warnings": warnings,
+    }
+
+
+def build_cost_optimizer_downstream_compatibility(
+    baseline_snapshot: dict[str, Any] | None,
+    current_graph: dict[str, Any] | None,
+    node_id: str,
+    candidate_output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(baseline_snapshot, dict):
+        return {
+            "state": "unknown",
+            "label": "판정 전",
+            "message": "baseline 실행 시점의 downstream snapshot이 없어 판정할 수 없습니다.",
+            "first_consumer_status": "unknown",
+            "contract_check": {
+                "status": "skipped",
+                "checked_node_ids": [],
+                "warnings": ["baseline_downstream_snapshot_unavailable"],
+            },
+        }
+
+    current_snapshot = build_cost_optimizer_downstream_snapshot(
+        current_graph,
+        node_id,
+    )
+    output_contract_check = (
+        _cost_optimizer_downstream_contract_check(
+            baseline_snapshot,
+            candidate_output,
+        )
+        if candidate_output is not None
+        else None
+    )
+    baseline_hash = baseline_snapshot.get("hash")
+    current_hash = current_snapshot.get("hash")
+    baseline_consumers = [
+        consumer.get("id")
+        for consumer in baseline_snapshot.get("direct_consumers", [])
+        if isinstance(consumer, dict) and consumer.get("id")
+    ]
+    current_consumers = [
+        consumer.get("id")
+        for consumer in current_snapshot.get("direct_consumers", [])
+        if isinstance(consumer, dict) and consumer.get("id")
+    ]
+    checked_node_ids = list(current_consumers)
+
+    if output_contract_check and output_contract_check["status"] == "failed":
+        return {
+            "state": "incompatible",
+            "label": "검증 불가",
+            "message": "후보 출력이 현재 downstream 소비 노드의 필수 입력 계약을 만족하지 못합니다.",
+            "baseline_downstream_hash": baseline_hash,
+            "current_downstream_hash": current_hash,
+            "first_consumer_status": "same"
+            if baseline_consumers == current_consumers
+            else "changed",
+            "contract_check": output_contract_check,
+        }
+
+    if baseline_hash == current_hash:
+        return {
+            "state": "compatible",
+            "label": "검증 가능",
+            "message": "baseline 실행 시점의 downstream과 현재 downstream이 호환됩니다.",
+            "baseline_downstream_hash": baseline_hash,
+            "current_downstream_hash": current_hash,
+            "first_consumer_status": "same",
+            "contract_check": output_contract_check
+            or {
+                "status": "pass",
+                "checked_node_ids": checked_node_ids,
+                "warnings": [],
+            },
+        }
+
+    if baseline_consumers and baseline_consumers == current_consumers:
+        warnings = ["downstream structure changed after first consumer"]
+        if output_contract_check:
+            warnings.extend(output_contract_check.get("warnings") or [])
+        return {
+            "state": "warning",
+            "label": "주의 필요",
+            "message": "downstream 구조가 일부 달라졌지만 첫 소비 노드는 동일합니다. 적용 전 현재 workflow 테스트 실행으로 확인해야 합니다.",
+            "baseline_downstream_hash": baseline_hash,
+            "current_downstream_hash": current_hash,
+            "first_consumer_status": "same",
+            "contract_check": {
+                "status": "warning",
+                "checked_node_ids": output_contract_check.get("checked_node_ids", checked_node_ids)
+                if output_contract_check
+                else checked_node_ids,
+                "warnings": warnings,
+            },
+        }
+
+    return {
+        "state": "incompatible",
+        "label": "검증 불가",
+        "message": "target LLM node 이후 소비 노드가 바뀌어 현재 workflow에서 downstream 성공 여부를 별도로 검증해야 합니다.",
+        "baseline_downstream_hash": baseline_hash,
+        "current_downstream_hash": current_hash,
+        "first_consumer_status": "changed",
+        "contract_check": {
+            "status": "failed",
+            "checked_node_ids": checked_node_ids,
+            "warnings": ["first consumer changed or missing"],
+        },
+    }
+
+
+SENSITIVE_BASELINE_KEYS = {"api_key", "authorization", "encrypted_config", "secret"}
+SENSITIVE_CANDIDATE_PROMPT_FIELDS = (
+    "system_prompt",
+    "user_prompt",
+    "assistant_prompt",
+)
+SENSITIVE_RAG_SUMMARY_KEYS = {
+    "content",
+    "raw_content",
+    "chunk_content",
+    "raw_chunk_content",
+    "chunks",
+    "raw_chunks",
+    "source_metadata",
+    "raw_source_metadata",
+    "metadata",
+    "raw_metadata",
+    "document_name",
+    "filename",
+    "file_name",
+}
+COST_OPTIMIZER_SAFE_SUMMARY_MAX_LIST_ITEMS = 20
+COST_OPTIMIZER_SAFE_SUMMARY_MAX_STRING_CHARS = 200
+
+
+def _redact_baseline_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]"
+            if str(key).lower() in SENSITIVE_BASELINE_KEYS
+            else _redact_baseline_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_baseline_value(item) for item in value]
+    return value
+
+
+def _safe_cost_optimizer_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _safe_cost_optimizer_value(item)
+            for key, item in value.items()
+            if str(key).lower() not in SENSITIVE_BASELINE_KEYS
+        }
+    if isinstance(value, list):
+        return [_safe_cost_optimizer_value(item) for item in value]
+    return value
+
+
+def _cost_optimizer_stable_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _cost_optimizer_candidate_settings_fingerprint(settings: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        _cost_optimizer_stable_json(settings).encode("utf-8")
+    ).hexdigest()
+
+
+def _safe_cost_optimizer_candidate_settings(
+    candidate: CostOptimizerCandidateRequest,
+) -> dict[str, Any]:
+    raw_settings = candidate.model_dump(mode="json")
+    safe_settings = _safe_cost_optimizer_value(raw_settings)
+    if not isinstance(safe_settings, dict):
+        safe_settings = {}
+    safe_settings["_settings_fingerprint"] = (
+        _cost_optimizer_candidate_settings_fingerprint(raw_settings)
+    )
+
+    for field in SENSITIVE_CANDIDATE_PROMPT_FIELDS:
+        value = raw_settings.get(field)
+        if isinstance(value, str):
+            safe_settings[field] = {
+                "redacted": True,
+                "present": bool(value),
+                "length": len(value),
+            }
+        else:
+            safe_settings[field] = None
+
+    return safe_settings
+
+
+def _safe_cost_optimizer_rag_summary(value: Any) -> Any:
+    safe_value = _safe_cost_optimizer_value(value)
+    if isinstance(safe_value, dict):
+        return {
+            key: _safe_cost_optimizer_rag_summary(item)
+            for key, item in safe_value.items()
+            if str(key).lower() not in SENSITIVE_RAG_SUMMARY_KEYS
+        }
+    if isinstance(safe_value, list):
+        return [
+            _safe_cost_optimizer_rag_summary(item)
+            for item in safe_value[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_LIST_ITEMS]
+        ]
+    if isinstance(safe_value, str):
+        return safe_value[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_STRING_CHARS]
+    return safe_value
+
+
+def _preview_baseline_payload(value: Any) -> str:
+    if value is None:
+        return ""
+    redacted = _redact_baseline_value(value)
+    if isinstance(redacted, str):
+        text = redacted
+    else:
+        text = json.dumps(redacted, ensure_ascii=False, default=str)
+    return text[:300]
+
+
+def _trace_payload_value(
+    node_run: WorkflowNodeRun,
+    payload_kind: str,
+) -> tuple[bool, bool, Any]:
+    trace_payloads = getattr(node_run, "trace_payloads", None) or []
+    for payload in trace_payloads:
+        if getattr(payload, "payload_kind", None) != payload_kind:
+            continue
+        if getattr(payload, "retention_purged_at", None) is not None:
+            return True, False, None
+        return True, True, getattr(payload, "redacted_payload", None)
+    return False, False, None
+
+
+def _usage_model_name(usage: LLMUsageLog) -> str:
+    model = getattr(usage, "model", None)
+    for attr in ("model_id_for_api_call", "name"):
+        value = getattr(model, attr, None)
+        if value:
+            return str(value)
+    return str(usage.model_id)
+
+
+def _decimal_to_float(value: Any) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    return float(value or 0)
+
+
+def _cost_optimizer_baseline_latency_ms(
+    node_run: WorkflowNodeRun,
+    usage: LLMUsageLog,
+) -> int:
+    usage_latency = getattr(usage, "latency_ms", None)
+    if isinstance(usage_latency, (int, float)) and usage_latency > 0:
+        return int(usage_latency)
+
+    node_duration = getattr(node_run, "duration", None)
+    if isinstance(node_duration, (int, float)) and node_duration > 0:
+        return int(node_duration * 1000)
+
+    return int(usage_latency or 0)
+
+
+def _baseline_row_from_records(
+    *,
+    workflow: Workflow,
+    run: WorkflowRun,
+    node_run: WorkflowNodeRun,
+    usage: LLMUsageLog,
+) -> dict[str, Any]:
+    has_trace_input, trace_input_available, trace_input = _trace_payload_value(
+        node_run,
+        "input",
+    )
+    has_trace_output, trace_output_available, trace_output = _trace_payload_value(
+        node_run,
+        "output",
+    )
+    input_payload = trace_input if has_trace_input else node_run.inputs
+    output_payload = trace_output if has_trace_output else node_run.outputs
+    input_available = (
+        trace_input_available if has_trace_input else node_run.inputs is not None
+    )
+    output_available = (
+        trace_output_available if has_trace_output else node_run.outputs is not None
+    )
+    usage_available = usage is not None
+    compare_available = input_available and output_available and usage_available
+    total_tokens = int((usage.prompt_tokens or 0) + (usage.completion_tokens or 0))
+    cost = _decimal_to_float(usage.total_cost)
+    latency_ms = _cost_optimizer_baseline_latency_ms(node_run, usage)
+    model = _usage_model_name(usage)
+    input_preview = _preview_baseline_payload(input_payload)
+    output_preview = _preview_baseline_payload(output_payload)
+    trace_available = bool(node_run.trace_metadata) or has_trace_input or has_trace_output
+    process_data = getattr(node_run, "process_data", None) or {}
+    node_options = (
+        process_data.get("node_options") if isinstance(process_data, dict) else {}
+    )
+    node_options = node_options if isinstance(node_options, dict) else {}
+    workflow_graph = getattr(workflow, "graph", None)
+    downstream_snapshot = build_cost_optimizer_downstream_snapshot(
+        workflow_graph,
+        node_run.node_id,
+    )
+    downstream_compatibility = build_cost_optimizer_downstream_compatibility(
+        downstream_snapshot,
+        workflow_graph,
+        node_run.node_id,
+    )
+
+    return {
+        "baseline_id": str(node_run.id),
+        "baseline_source": "workflow_node_run",
+        "source_workflow_node_run_id": str(node_run.id),
+        "workflow_run_id": str(run.id),
+        "workflow_id": str(workflow.id),
+        "node_id": node_run.node_id,
+        "run_started_at": run.started_at.isoformat(),
+        "workflow_run_status": run.status.value
+        if hasattr(run.status, "value")
+        else str(run.status),
+        "node_status": node_run.status.value
+        if hasattr(node_run.status, "value")
+        else str(node_run.status),
+        "model": model,
+        "cost": cost,
+        "total_tokens": total_tokens,
+        "latency_ms": latency_ms,
+        "input_available": input_available,
+        "output_available": output_available,
+        "usage_available": usage_available,
+        "trace_available": trace_available,
+        "compare_available": compare_available,
+        "unavailable_reason": None
+        if compare_available
+        else "input_payload_unavailable",
+        "input_preview": input_preview,
+        "output_preview": output_preview,
+        "has_trace": trace_available,
+        "input": _redact_baseline_value(input_payload),
+        "output": _redact_baseline_value(output_payload),
+        "node_options": _redact_baseline_value(node_options),
+        "downstream_snapshot": downstream_snapshot,
+        "usage": {
+            "model": model,
+            "prompt_tokens": int(usage.prompt_tokens or 0),
+            "completion_tokens": int(usage.completion_tokens or 0),
+            "total_tokens": total_tokens,
+            "cost": cost,
+            "latency_ms": latency_ms,
+            "status": usage.status,
+        },
+        "trace": {
+            "input_preview": input_preview,
+            "output_preview": output_preview,
+            "messages_preview": [],
+            "rag_summary": None,
+            "error_message": node_run.error_message,
+        },
+        "downstream_compatibility": downstream_compatibility,
+    }
+
+
+def _cost_optimizer_baseline_rows(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+) -> list[dict[str, Any]]:
+    rows = (
+        db.query(WorkflowNodeRun, WorkflowRun, LLMUsageLog)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowNodeRun.workflow_run_id)
+        .join(
+            LLMUsageLog,
+            (LLMUsageLog.workflow_run_id == WorkflowRun.id)
+            & (LLMUsageLog.workflow_id == workflow.id)
+            & (LLMUsageLog.node_id == WorkflowNodeRun.node_id),
+        )
+        .filter(
+            WorkflowRun.workflow_id == workflow.id,
+            WorkflowNodeRun.node_id == node_id,
+            WorkflowNodeRun.node_type == "llmNode",
+            WorkflowNodeRun.status == NodeRunStatus.SUCCESS,
+            LLMUsageLog.status == "success",
+            LLMUsageLog.cost_optimizer_candidate_id.is_(None),
+            ~_cost_optimizer_candidate_run_exists(db),
+            _not_cost_optimizer_trace_run(),
+        )
+        .all()
+    )
+
+    return [
+        _baseline_row_from_records(
+            workflow=workflow,
+            run=run,
+            node_run=node_run,
+            usage=usage,
+        )
+        for node_run, run, usage in rows
+    ]
+
+
+def _cost_optimizer_candidate_run_exists(db: Session):
+    return (
+        db.query(CostOptimizerCandidate.id)
+        .filter(CostOptimizerCandidate.candidate_workflow_run_id == WorkflowRun.id)
+        .exists()
+    )
+
+
+def _not_cost_optimizer_trace_run():
+    return or_(
+        WorkflowRun.trace_metadata.is_(None),
+        ~WorkflowRun.trace_metadata.has_key("cost_optimizer"),  # noqa: W601
+    )
+
+
+def _has_cost_optimizer_baseline_result(row: dict[str, Any]) -> bool:
+    return bool(row.get("output_available")) and bool(row.get("usage_available"))
+
+
+def get_cost_optimizer_latest_baseline(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+) -> dict[str, Any]:
+    candidates = [
+        row
+        for row in _cost_optimizer_baseline_rows(db, workflow, node_id)
+        if _has_cost_optimizer_baseline_result(row) and row["compare_available"]
+    ]
+    if not candidates:
+        raise HTTPException(status_code=400, detail="cost_optimizer.no_baseline")
+    return sorted(candidates, key=lambda row: row["run_started_at"], reverse=True)[0]
+
+
+def list_cost_optimizer_baselines(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    *,
+    q: str | None = None,
+    model: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: str = "started_at_desc",
+    compare_available: bool | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    rows = [
+        row
+        for row in _cost_optimizer_baseline_rows(db, workflow, node_id)
+        if _has_cost_optimizer_baseline_result(row)
+    ]
+
+    if q:
+        query_text = q.lower()
+        rows = [
+            row
+            for row in rows
+            if query_text in (row.get("input_preview") or "").lower()
+            or query_text in (row.get("output_preview") or "").lower()
+        ]
+    if model:
+        rows = [row for row in rows if row.get("model") == model]
+    if date_from:
+        rows = [
+            row
+            for row in rows
+            if datetime.fromisoformat(row["run_started_at"]) >= date_from
+        ]
+    if date_to:
+        rows = [
+            row
+            for row in rows
+            if datetime.fromisoformat(row["run_started_at"]) <= date_to
+        ]
+    if compare_available is not None:
+        rows = [
+            row
+            for row in rows
+            if row.get("compare_available") is compare_available
+        ]
+
+    sort_key = {
+        "cost_desc": lambda row: row.get("cost") or 0,
+        "cost_asc": lambda row: row.get("cost") or 0,
+        "tokens_desc": lambda row: row.get("total_tokens") or 0,
+        "latency_desc": lambda row: row.get("latency_ms") or 0,
+        "started_at_desc": lambda row: row.get("run_started_at") or "",
+    }.get(sort, lambda row: row.get("run_started_at") or "")
+    rows = sorted(rows, key=sort_key, reverse=sort != "cost_asc")
+
+    total = len(rows)
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": rows[offset : offset + limit],
+    }
+
+
+def get_cost_optimizer_baseline_by_id(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    baseline_id: str,
+) -> dict[str, Any]:
+    for row in _cost_optimizer_baseline_rows(db, workflow, node_id):
+        if not _has_cost_optimizer_baseline_result(row):
+            continue
+        if row.get("baseline_id") == baseline_id:
+            return row
+        if row.get("source_workflow_node_run_id") == baseline_id:
+            return row
+    raise HTTPException(status_code=404, detail="resource.not_found")
+
+
+def _public_cost_optimizer_baseline_row(row: dict[str, Any]) -> dict[str, Any]:
+    public_row = copy.deepcopy(row)
+    public_row.pop("downstream_snapshot", None)
+    return public_row
+
+
+def _patch_cost_optimizer_candidate_graph(
+    graph: dict[str, Any],
+    node_id: str,
+    candidate: CostOptimizerCandidateRequest,
+) -> dict[str, Any]:
+    patched_graph = copy.deepcopy(graph)
+    target_node = _find_workflow_node(patched_graph, node_id)
+    if target_node is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    data = target_node.setdefault("data", {})
+    if not isinstance(data, dict):
+        data = {}
+        target_node["data"] = data
+
+    data["model_id"] = candidate.model_id
+    data["fallback_model_id"] = candidate.fallback_model_id
+    if candidate.task_type is not None:
+        data["task_type"] = candidate.task_type
+    if candidate.system_prompt is not None:
+        data["system_prompt"] = candidate.system_prompt
+    if candidate.user_prompt is not None:
+        data["user_prompt"] = candidate.user_prompt
+    if candidate.assistant_prompt is not None:
+        data["assistant_prompt"] = candidate.assistant_prompt
+    if candidate.referenced_variables is not None:
+        data["referenced_variables"] = candidate.referenced_variables
+    if candidate.parameters:
+        current_parameters = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
+        data["parameters"] = {**current_parameters, **candidate.parameters}
+    if candidate.output_format is not None:
+        data["output_format"] = candidate.output_format
+
+    knowledge = candidate.knowledge if isinstance(candidate.knowledge, dict) else {}
+    if knowledge:
+        if "knowledge_base_ids" in knowledge:
+            data["knowledgeBases"] = [
+                {"id": str(knowledge_base_id), "name": ""}
+                for knowledge_base_id in knowledge.get("knowledge_base_ids") or []
+            ]
+        if "top_k" in knowledge:
+            data["topK"] = knowledge.get("top_k")
+        if "score_threshold" in knowledge:
+            data["scoreThreshold"] = knowledge.get("score_threshold")
+        if "dedupe_retrieved_context" in knowledge:
+            data["dedupeRetrievedContext"] = knowledge.get("dedupe_retrieved_context")
+        if "retrieved_context_max_chars" in knowledge:
+            data["retrievedContextMaxChars"] = knowledge.get(
+                "retrieved_context_max_chars"
+            )
+        if "retrieved_context_compression" in knowledge:
+            data["retrievedContextCompression"] = knowledge.get(
+                "retrieved_context_compression"
+            )
+        if "answer_grounding_check" in knowledge:
+            data["answerGroundingCheck"] = knowledge.get("answer_grounding_check")
+
+    return patched_graph
+
+
+def _cost_optimizer_baseline_input_variables(
+    baseline_input: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": key,
+            "name": key,
+            "label": key,
+            "type": "text",
+            "required": False,
+        }
+        for key in baseline_input
+        if isinstance(key, str) and key
+    ]
+
+
+def _cost_optimizer_retarget_referenced_variables(
+    value: Any,
+) -> Any:
+    if isinstance(value, list):
+        return [_cost_optimizer_retarget_referenced_variables(item) for item in value]
+    if isinstance(value, dict):
+        updated = {
+            key: _cost_optimizer_retarget_referenced_variables(item)
+            for key, item in value.items()
+        }
+        selector = updated.get("value_selector")
+        if isinstance(selector, list) and selector:
+            updated["value_selector"] = [
+                COST_OPTIMIZER_BASELINE_INPUT_NODE_ID,
+                *selector,
+            ]
+        return updated
+    return value
+
+
+def _build_cost_optimizer_candidate_execution_graph(
+    graph: dict[str, Any],
+    node_id: str,
+    candidate: CostOptimizerCandidateRequest,
+    baseline_input: dict[str, Any],
+) -> dict[str, Any]:
+    patched_graph = _patch_cost_optimizer_candidate_graph(graph, node_id, candidate)
+    target_node = _find_workflow_node(patched_graph, node_id)
+    if target_node is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    target_node = copy.deepcopy(target_node)
+    data = target_node.get("data") if isinstance(target_node.get("data"), dict) else {}
+    data = copy.deepcopy(data)
+    data["referenced_variables"] = _cost_optimizer_retarget_referenced_variables(
+        data.get("referenced_variables") or []
+    )
+    target_node["data"] = data
+
+    input_node = {
+        "id": COST_OPTIMIZER_BASELINE_INPUT_NODE_ID,
+        "type": "startNode",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "title": "Cost Optimizer Baseline Input",
+            "trigger_type": "manual",
+            "variables": _cost_optimizer_baseline_input_variables(baseline_input),
+        },
+    }
+
+    return {
+        "nodes": [input_node, target_node],
+        "edges": [
+            {
+                "id": f"cost-optimizer-input-to-{node_id}",
+                "source": COST_OPTIMIZER_BASELINE_INPUT_NODE_ID,
+                "target": node_id,
+            }
+        ],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+
+def _extract_cost_optimizer_node_output(
+    task_result: dict[str, Any],
+    node_id: str,
+) -> dict[str, Any]:
+    result = task_result.get("result") if isinstance(task_result, dict) else {}
+    if isinstance(result, dict) and isinstance(result.get(node_id), dict):
+        return result[node_id]
+    return result if isinstance(result, dict) else {}
+
+
+def _cost_optimizer_usage_number(
+    usage: dict[str, Any] | None,
+    *keys: str,
+) -> float | None:
+    if not isinstance(usage, dict):
+        return None
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, (int, float, Decimal)):
+            return float(value)
+    return None
+
+
+def _cost_optimizer_total_tokens(usage: dict[str, Any] | None) -> int | None:
+    total = _cost_optimizer_usage_number(usage, "total_tokens", "totalTokens")
+    if total is not None:
+        return int(total)
+    prompt = _cost_optimizer_usage_number(usage, "prompt_tokens", "promptTokens")
+    completion = _cost_optimizer_usage_number(
+        usage,
+        "completion_tokens",
+        "completionTokens",
+    )
+    if prompt is None and completion is None:
+        return None
+    return int(prompt or 0) + int(completion or 0)
+
+
+def _normalize_cost_optimizer_candidate_usage(
+    usage: dict[str, Any] | None,
+    output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(usage, dict):
+        return {}
+
+    normalized = dict(usage)
+    cost = _cost_optimizer_usage_number(normalized, "cost", "total_cost")
+    if cost is None and isinstance(output, dict):
+        cost = _cost_optimizer_usage_number(output, "cost", "total_cost")
+    if cost is None:
+        normalized["cost"] = None
+        normalized["cost_unavailable"] = True
+    else:
+        normalized["cost"] = cost
+        normalized["cost_unavailable"] = False
+    return normalized
+
+
+def _build_cost_optimizer_candidate_trace(output: dict[str, Any]) -> dict[str, Any]:
+    safe_output = _safe_cost_optimizer_value(output)
+    metadata = safe_output.get("metadata") if isinstance(safe_output, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    rag_summary = metadata.get("rag_summary") or metadata.get("retrieval_summary")
+    rag_summary = rag_summary if isinstance(rag_summary, dict) else None
+    rag_summary = _safe_cost_optimizer_rag_summary(rag_summary)
+    rag_summary = rag_summary if isinstance(rag_summary, dict) else None
+    return {
+        "input_preview": "",
+        "output_preview": _preview_baseline_payload(safe_output.get("text", safe_output)),
+        "messages_preview": [],
+        "rag_summary": rag_summary,
+        "error_message": None,
+    }
+
+
+def _cost_optimizer_json_value_type_matches(value: Any, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    return True
+
+
+def _cost_optimizer_output_payload_for_schema(output: dict[str, Any]) -> Any:
+    payload = output.get("text") if isinstance(output, dict) and "text" in output else output
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    return payload
+
+
+def _validate_cost_optimizer_candidate_output_schema(
+    output: dict[str, Any],
+    candidate: CostOptimizerCandidateRequest,
+) -> dict[str, Any]:
+    output_format = candidate.output_format if isinstance(candidate.output_format, dict) else {}
+    if output_format.get("type") != "json":
+        return {"status": "skipped", "errors": []}
+
+    schema = output_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        return {"status": "valid", "errors": []}
+
+    payload = _cost_optimizer_output_payload_for_schema(output)
+    if payload is None:
+        return {
+            "status": "schema_failed",
+            "errors": ["output must be valid JSON"],
+        }
+
+    errors: list[str] = []
+    expected_type = schema.get("type")
+    if expected_type and not _cost_optimizer_json_value_type_matches(
+        payload,
+        expected_type,
+    ):
+        errors.append(f"output must be {expected_type}")
+
+    if isinstance(payload, dict):
+        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        for field in required:
+            if isinstance(field, str) and field not in payload:
+                errors.append(f"{field} is required")
+
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            for field, field_schema in properties.items():
+                if field not in payload or not isinstance(field_schema, dict):
+                    continue
+                field_type = field_schema.get("type")
+                if isinstance(field_type, str) and not _cost_optimizer_json_value_type_matches(
+                    payload[field],
+                    field_type,
+                ):
+                    errors.append(f"{field} must be {field_type}")
+
+    if errors:
+        return {"status": "schema_failed", "errors": errors}
+    return {"status": "valid", "errors": []}
+
+
+def _build_cost_optimizer_diff(
+    baseline: dict[str, Any],
+    candidate_result: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_usage = baseline.get("usage") if isinstance(baseline, dict) else {}
+    candidate_usage = (
+        candidate_result.get("usage") if isinstance(candidate_result, dict) else {}
+    )
+    baseline_usage = baseline_usage if isinstance(baseline_usage, dict) else {}
+    candidate_usage = candidate_usage if isinstance(candidate_usage, dict) else {}
+
+    baseline_cost = _cost_optimizer_usage_number(baseline_usage, "cost", "total_cost")
+    candidate_cost = _cost_optimizer_usage_number(candidate_usage, "cost", "total_cost")
+    baseline_tokens = _cost_optimizer_total_tokens(baseline_usage)
+    candidate_tokens = _cost_optimizer_total_tokens(candidate_usage)
+    baseline_latency = _cost_optimizer_usage_number(baseline_usage, "latency_ms")
+    candidate_latency = _cost_optimizer_usage_number(
+        candidate_usage,
+        "latency_ms",
+    )
+    if candidate_latency is None:
+        candidate_latency = _cost_optimizer_usage_number(
+            candidate_result,
+            "latency_ms",
+        )
+
+    diff: dict[str, Any] = {}
+    if baseline_cost is not None and candidate_cost is not None:
+        cost_delta = candidate_cost - baseline_cost
+        diff["cost_delta"] = round(cost_delta, 10)
+        diff["cost_delta_percent"] = (
+            round((cost_delta / baseline_cost) * 100, 2)
+            if baseline_cost
+            else None
+        )
+    if baseline_tokens is not None and candidate_tokens is not None:
+        diff["token_delta"] = candidate_tokens - baseline_tokens
+    if baseline_latency is not None and candidate_latency is not None:
+        diff["latency_delta_ms"] = int(candidate_latency - baseline_latency)
+    return diff
+
+
+def _resolve_cost_optimizer_downstream_compatibility(
+    baseline: dict[str, Any],
+    workflow: Workflow,
+    node_id: str,
+    candidate_output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    baseline_snapshot = baseline.get("downstream_snapshot")
+    if isinstance(baseline_snapshot, dict):
+        return build_cost_optimizer_downstream_compatibility(
+            baseline_snapshot,
+            workflow.graph,
+            node_id,
+            candidate_output=candidate_output,
+        )
+    existing = baseline.get("downstream_compatibility")
+    if isinstance(existing, dict):
+        return existing
+    return {
+        "state": "unknown",
+        "label": "판정 전",
+        "message": "downstream compatibility is not evaluated yet",
+    }
+
+
+def _uuid_or_none(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _cost_optimizer_schema_status(
+    schema_validation: dict[str, Any] | None,
+) -> str:
+    if not isinstance(schema_validation, dict):
+        return "not_checked"
+    status = schema_validation.get("status")
+    if status == "schema_failed":
+        return "failed"
+    if status in {"valid", "pass"}:
+        return "pass"
+    return "not_checked"
+
+
+def _create_cost_optimizer_comparison(
+    *,
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    baseline: dict[str, Any],
+    candidate: CostOptimizerCandidateRequest,
+    current_user: User,
+) -> tuple[CostOptimizerExperiment, CostOptimizerCandidate]:
+    candidate_settings = _safe_cost_optimizer_candidate_settings(candidate)
+    baseline_usage_summary = _cost_optimizer_baseline_usage_summary(baseline)
+    created_at = datetime.now(timezone.utc)
+    retention_expires_at = CostOptimizerRetentionService.expires_at(
+        db,
+        app_id=getattr(workflow, "app_id", None),
+        organization_id=getattr(workflow, "organization_id", None),
+        created_at=created_at,
+    )
+    experiment = CostOptimizerExperiment(
+        id=uuid4(),
+        organization_id=getattr(workflow, "organization_id", None),
+        workflow_id=workflow.id,
+        app_id=getattr(workflow, "app_id", None),
+        node_id=node_id,
+        baseline_node_run_id=_uuid_or_none(
+            baseline.get("source_workflow_node_run_id") or baseline.get("baseline_id")
+        ),
+        baseline_workflow_run_id=_uuid_or_none(baseline.get("workflow_run_id")),
+        baseline_node_options=baseline.get("node_options") or {},
+        baseline_usage_summary=baseline_usage_summary,
+        baseline_trace_summary=baseline.get("trace") or {},
+        baseline_downstream_snapshot=baseline.get("downstream_snapshot") or {},
+        usage_summary={},
+        status="running",
+        created_by=current_user.id,
+        created_at=created_at,
+        updated_at=created_at,
+        retention_expires_at=retention_expires_at,
+    )
+    candidate_row = CostOptimizerCandidate(
+        id=uuid4(),
+        experiment_id=experiment.id,
+        name=candidate.label,
+        model_id=candidate.model_id,
+        fallback_model_id=candidate.fallback_model_id,
+        task_type=candidate.task_type,
+        candidate_settings=candidate_settings,
+        usage_summary={},
+        schema_validation={"status": "skipped", "errors": []},
+        downstream_compatibility={},
+        diff_summary={},
+        status="running",
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    db.add(experiment)
+    db.add(candidate_row)
+    db.commit()
+    return experiment, candidate_row
+
+
+def _link_cost_optimizer_candidate_run(
+    db: Session,
+    *,
+    experiment: CostOptimizerExperiment,
+    candidate_row: CostOptimizerCandidate,
+    workflow_run_id: UUID | None,
+) -> None:
+    if workflow_run_id is None:
+        return
+
+    candidate_row.candidate_workflow_run_id = workflow_run_id
+    candidate_node_run = (
+        db.query(WorkflowNodeRun)
+        .filter(
+            WorkflowNodeRun.workflow_run_id == workflow_run_id,
+            WorkflowNodeRun.node_id == experiment.node_id,
+        )
+        .order_by(WorkflowNodeRun.started_at.desc())
+        .first()
+    )
+    if candidate_node_run:
+        candidate_row.candidate_node_run_id = candidate_node_run.id
+
+    (
+        db.query(LLMUsageLog)
+        .filter(
+            LLMUsageLog.workflow_run_id == workflow_run_id,
+            LLMUsageLog.node_id == experiment.node_id,
+            LLMUsageLog.cost_optimizer_candidate_id.is_(None),
+        )
+        .update(
+            {LLMUsageLog.cost_optimizer_candidate_id: candidate_row.id},
+            synchronize_session=False,
+        )
+    )
+
+
+def _persist_cost_optimizer_comparison(
+    *,
+    db: Session,
+    experiment: CostOptimizerExperiment,
+    candidate_row: CostOptimizerCandidate,
+    candidate: CostOptimizerCandidateRequest,
+    candidate_result: dict[str, Any],
+    diff: dict[str, Any],
+    downstream_compatibility: dict[str, Any],
+) -> CostOptimizerExperiment:
+    usage = candidate_result.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    trace = candidate_result.get("trace")
+    trace = trace if isinstance(trace, dict) else {}
+    retrieval_summary = trace.get("rag_summary")
+    schema_validation = candidate_result.get("schema_validation")
+    schema_validation = schema_validation if isinstance(schema_validation, dict) else {}
+    total_cost = _cost_optimizer_usage_number(usage, "cost", "total_cost")
+    latency_ms = _cost_optimizer_usage_number(usage, "latency_ms")
+    if latency_ms is None:
+        latency_ms = candidate_result.get("latency_ms")
+    downstream_state = downstream_compatibility.get("state")
+    status = str(candidate_result.get("status") or "failed")
+    candidate_workflow_run_id = _uuid_or_none(
+        candidate_result.get("candidate_workflow_run_id")
+    )
+
+    experiment.usage_summary = usage
+    experiment.status = "failed" if status == "failed" else "completed"
+    candidate_row.name = candidate.label
+    candidate_row.model_id = candidate.model_id
+    candidate_row.fallback_model_id = candidate.fallback_model_id
+    candidate_row.task_type = candidate.task_type
+    candidate_row.candidate_settings = _safe_cost_optimizer_candidate_settings(candidate)
+    candidate_row.total_cost = Decimal(str(total_cost)) if total_cost is not None else None
+    candidate_row.total_tokens = _cost_optimizer_total_tokens(usage)
+    candidate_row.latency_ms = (
+        int(latency_ms) if isinstance(latency_ms, (int, float)) else None
+    )
+    candidate_row.schema_status = _cost_optimizer_schema_status(schema_validation)
+    candidate_row.downstream_state = str(downstream_state) if downstream_state else None
+    candidate_row.usage_summary = usage
+    candidate_row.schema_validation = schema_validation
+    candidate_row.retrieval_summary = (
+        retrieval_summary if isinstance(retrieval_summary, dict) else None
+    )
+    _link_cost_optimizer_candidate_run(
+        db,
+        experiment=experiment,
+        candidate_row=candidate_row,
+        workflow_run_id=candidate_workflow_run_id,
+    )
+    candidate_row.downstream_compatibility = downstream_compatibility
+    candidate_row.diff_summary = diff
+    candidate_row.status = status
+    db.commit()
+    return experiment
+
+
+def _cost_optimizer_candidate_settings_match(
+    stored_settings: Any,
+    request_settings: dict[str, Any],
+) -> bool:
+    if not isinstance(stored_settings, dict):
+        return False
+    fingerprint = stored_settings.get("_settings_fingerprint")
+    if isinstance(fingerprint, str):
+        return fingerprint == _cost_optimizer_candidate_settings_fingerprint(
+            request_settings
+        )
+    return stored_settings == request_settings
+
+
+def _ensure_cost_optimizer_candidate_apply_allowed(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    comparison_id: str | None,
+    candidate_settings: CostOptimizerCandidateRequest,
+    acknowledge_downstream_warning: bool,
+) -> tuple[Any | None, list[Any]]:
+    experiment_id = _uuid_or_none(comparison_id)
+    if experiment_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="cost_optimizer.candidate_not_found",
+        )
+
+    experiment = (
+        db.query(CostOptimizerExperiment)
+        .options(selectinload(CostOptimizerExperiment.candidates))
+        .filter(
+            CostOptimizerExperiment.id == experiment_id,
+            CostOptimizerExperiment.workflow_id == workflow.id,
+            CostOptimizerExperiment.node_id == node_id,
+            CostOptimizerExperiment.organization_id == workflow.organization_id,
+        )
+        .first()
+    )
+    rows = list(getattr(experiment, "candidates", []) or []) if experiment else []
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="cost_optimizer.candidate_not_found",
+        )
+
+    requested = candidate_settings.model_dump(mode="json")
+    for row in rows:
+        is_target_candidate = _cost_optimizer_candidate_settings_match(
+            getattr(row, "candidate_settings", None),
+            requested,
+        )
+        if not is_target_candidate:
+            continue
+
+        status = getattr(row, "status", None)
+        schema_status = getattr(row, "schema_status", None)
+        if status == "schema_failed" or schema_status == "failed":
+            raise HTTPException(
+                status_code=400,
+                detail="cost_optimizer.schema_failed_candidate",
+            )
+
+        downstream_compatibility = getattr(row, "downstream_compatibility", None)
+        downstream_state = (
+            downstream_compatibility.get("state")
+            if isinstance(downstream_compatibility, dict)
+            else None
+        )
+        if (
+            downstream_state in {"warning", "incompatible"}
+            and not acknowledge_downstream_warning
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="cost_optimizer.downstream_ack_required",
+            )
+        return row, rows
+
+    raise HTTPException(
+        status_code=400,
+        detail="cost_optimizer.candidate_not_found",
+    )
+
+
+def _cost_optimizer_datetime(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _cost_optimizer_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cost_optimizer_summary_value(
+    summary: dict[str, Any],
+    *keys: str,
+) -> Any:
+    for key in keys:
+        value = summary.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _cost_optimizer_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cost_optimizer_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _cost_optimizer_baseline_usage_summary(baseline: dict[str, Any]) -> dict[str, Any]:
+    usage_summary = dict(_cost_optimizer_dict(baseline.get("usage")))
+    for source_key, summary_key in (
+        ("model", "model"),
+        ("cost", "cost"),
+        ("total_tokens", "total_tokens"),
+        ("latency_ms", "latency_ms"),
+    ):
+        if (
+            usage_summary.get(summary_key) is None
+            and baseline.get(source_key) is not None
+        ):
+            usage_summary[summary_key] = baseline.get(source_key)
+    return usage_summary
+
+
+def _cost_optimizer_summary_missing_any(
+    summary: dict[str, Any],
+    key_groups: tuple[tuple[str, ...], ...],
+) -> bool:
+    return any(
+        _cost_optimizer_summary_value(summary, *keys) is None for keys in key_groups
+    )
+
+
+def _cost_optimizer_node_run_output_summary(node_run: WorkflowNodeRun) -> dict[str, Any]:
+    has_trace_output, trace_output_available, trace_output = _trace_payload_value(
+        node_run,
+        "output",
+    )
+    output_payload = trace_output if has_trace_output else node_run.outputs
+    output_available = (
+        trace_output_available if has_trace_output else node_run.outputs is not None
+    )
+    if not output_available:
+        return {"output_available": False}
+
+    return {
+        "output_available": True,
+        "output": _redact_baseline_value(output_payload),
+        "output_preview": _preview_baseline_payload(output_payload),
+    }
+
+
+def _cost_optimizer_node_run_output_summary_from_source(
+    db: Session,
+    *,
+    node_run_id: Any = None,
+    workflow_run_id: Any = None,
+    node_id: str | None = None,
+) -> dict[str, Any]:
+    if node_run_id is None and (workflow_run_id is None or node_id is None):
+        return {}
+
+    query = db.query(WorkflowNodeRun)
+    if node_run_id is not None:
+        query = query.filter(WorkflowNodeRun.id == node_run_id)
+    else:
+        query = query.filter(
+            WorkflowNodeRun.workflow_run_id == workflow_run_id,
+            WorkflowNodeRun.node_id == node_id,
+        ).order_by(WorkflowNodeRun.started_at.desc())
+
+    if not hasattr(query, "first"):
+        return {}
+    node_run = query.first()
+    if node_run is None:
+        return {}
+    return _cost_optimizer_node_run_output_summary(node_run)
+
+
+def _cost_optimizer_candidate_summary(
+    db: Session,
+    row: Any,
+    node_id: str,
+) -> dict[str, Any]:
+    usage_summary = _cost_optimizer_dict(getattr(row, "usage_summary", None))
+    prompt_tokens = _cost_optimizer_usage_number(
+        usage_summary,
+        "prompt_tokens",
+        "promptTokens",
+    )
+    completion_tokens = _cost_optimizer_usage_number(
+        usage_summary,
+        "completion_tokens",
+        "completionTokens",
+    )
+    summary = {
+        "candidate_id": str(row.id),
+        "name": getattr(row, "name", None),
+        "status": getattr(row, "status", None),
+        "model_id": getattr(row, "model_id", None),
+        "fallback_model_id": getattr(row, "fallback_model_id", None),
+        "task_type": getattr(row, "task_type", None),
+        "total_cost": _cost_optimizer_float(getattr(row, "total_cost", None)),
+        "total_tokens": getattr(row, "total_tokens", None),
+        "latency_ms": getattr(row, "latency_ms", None),
+        "schema_status": getattr(row, "schema_status", None),
+        "downstream_state": getattr(row, "downstream_state", None),
+        "is_applied": bool(getattr(row, "is_applied", False)),
+        "created_at": _cost_optimizer_datetime(getattr(row, "created_at", None)),
+    }
+    if prompt_tokens is not None:
+        summary["prompt_tokens"] = int(prompt_tokens)
+    if completion_tokens is not None:
+        summary["completion_tokens"] = int(completion_tokens)
+    output_summary = _cost_optimizer_node_run_output_summary_from_source(
+        db,
+        node_run_id=getattr(row, "candidate_node_run_id", None),
+        workflow_run_id=getattr(row, "candidate_workflow_run_id", None),
+        node_id=node_id,
+    )
+    if output_summary.get("output_available"):
+        summary.update(output_summary)
+    return summary
+
+
+def _cost_optimizer_source_baseline_usage_summary(
+    db: Session,
+    row: Any,
+) -> dict[str, Any]:
+    baseline_node_run_id = getattr(row, "baseline_node_run_id", None)
+    if baseline_node_run_id is None:
+        return {}
+
+    node_run_query = db.query(WorkflowNodeRun).filter(
+        WorkflowNodeRun.id == baseline_node_run_id
+    )
+    if not hasattr(node_run_query, "first"):
+        return {}
+    node_run = node_run_query.first()
+    if node_run is None:
+        return {}
+
+    usage_query = (
+        db.query(LLMUsageLog)
+        .filter(
+            LLMUsageLog.workflow_run_id == node_run.workflow_run_id,
+            LLMUsageLog.node_id == node_run.node_id,
+            LLMUsageLog.cost_optimizer_candidate_id.is_(None),
+        )
+        .order_by(LLMUsageLog.created_at.desc())
+    )
+    if not hasattr(usage_query, "first"):
+        return {}
+    usage = usage_query.first()
+    if usage is None:
+        return {}
+
+    prompt_tokens = int(usage.prompt_tokens or 0)
+    completion_tokens = int(usage.completion_tokens or 0)
+    return {
+        "model": _usage_model_name(usage),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "cost": _decimal_to_float(usage.total_cost),
+        "latency_ms": _cost_optimizer_baseline_latency_ms(node_run, usage),
+    }
+
+
+def _cost_optimizer_baseline_summary(db: Session, row: Any) -> dict[str, Any]:
+    usage_summary = _cost_optimizer_dict(getattr(row, "baseline_usage_summary", None))
+    fallback_key_groups = (
+        ("model", "model_id"),
+        ("cost", "total_cost"),
+        ("prompt_tokens", "promptTokens"),
+        ("completion_tokens", "completionTokens"),
+        ("total_tokens", "totalTokens"),
+        ("latency_ms", "latencyMs"),
+    )
+    source_usage_summary = (
+        _cost_optimizer_source_baseline_usage_summary(db, row)
+        if _cost_optimizer_summary_missing_any(usage_summary, fallback_key_groups)
+        else {}
+    )
+    node_options = _cost_optimizer_dict(getattr(row, "baseline_node_options", None))
+    parameters = (
+        node_options.get("parameters")
+        if isinstance(node_options.get("parameters"), dict)
+        else {}
+    )
+
+    def summary_value(*keys: str) -> Any:
+        primary = _cost_optimizer_summary_value(usage_summary, *keys)
+        if primary is not None:
+            return primary
+        return _cost_optimizer_summary_value(source_usage_summary, *keys)
+
+    model = summary_value("model", "model_id") or node_options.get("model_id")
+    prompt_tokens = summary_value("prompt_tokens", "promptTokens")
+    completion_tokens = summary_value("completion_tokens", "completionTokens")
+    total_tokens = summary_value("total_tokens", "totalTokens")
+    cost = summary_value("total_cost", "cost")
+    latency_ms = summary_value("latency_ms", "latencyMs")
+
+    summary = {
+        "baseline_id": str(row.baseline_node_run_id)
+        if getattr(row, "baseline_node_run_id", None)
+        else None,
+        "workflow_run_id": str(row.baseline_workflow_run_id)
+        if getattr(row, "baseline_workflow_run_id", None)
+        else None,
+        "model": model,
+        "cost": _cost_optimizer_float(cost),
+        "prompt_tokens": _cost_optimizer_int(prompt_tokens),
+        "completion_tokens": _cost_optimizer_int(completion_tokens),
+        "total_tokens": _cost_optimizer_int(total_tokens),
+        "latency_ms": latency_ms,
+        "output_format": node_options.get("output_format"),
+        "max_tokens": parameters.get("max_tokens"),
+        "temperature": parameters.get("temperature"),
+    }
+    output_summary = _cost_optimizer_node_run_output_summary_from_source(
+        db,
+        node_run_id=getattr(row, "baseline_node_run_id", None),
+        workflow_run_id=getattr(row, "baseline_workflow_run_id", None),
+        node_id=getattr(row, "node_id", None),
+    )
+    if output_summary.get("output_available"):
+        summary.update(output_summary)
+    return summary
+
+
+def _cost_optimizer_experiment_summary(db: Session, row: Any) -> dict[str, Any]:
+    candidates = getattr(row, "candidates", None) or []
+    return {
+        "experiment_id": str(row.id),
+        "workflow_id": str(row.workflow_id),
+        "app_id": str(row.app_id) if getattr(row, "app_id", None) else None,
+        "node_id": row.node_id,
+        "baseline_node_run_id": str(row.baseline_node_run_id)
+        if getattr(row, "baseline_node_run_id", None)
+        else None,
+        "baseline_workflow_run_id": str(row.baseline_workflow_run_id)
+        if getattr(row, "baseline_workflow_run_id", None)
+        else None,
+        "status": getattr(row, "status", None),
+        "created_by": str(row.created_by) if getattr(row, "created_by", None) else None,
+        "created_at": _cost_optimizer_datetime(getattr(row, "created_at", None)),
+        "baseline_summary": _cost_optimizer_baseline_summary(db, row),
+        "usage_summary": getattr(row, "usage_summary", None) or {},
+        "candidates": [
+            _cost_optimizer_candidate_summary(db, candidate, row.node_id)
+            for candidate in candidates
+        ],
+    }
+
+
+def list_cost_optimizer_experiments(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    *,
+    baseline_id: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    created_by: str | None = None,
+    candidate_status: str | None = None,
+    model: str | None = None,
+    is_applied: bool | None = None,
+    schema_status: str | None = None,
+    downstream_state: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    query = (
+        db.query(CostOptimizerExperiment)
+        .options(selectinload(CostOptimizerExperiment.candidates))
+        .filter(
+            CostOptimizerExperiment.workflow_id == workflow.id,
+            CostOptimizerExperiment.node_id == node_id,
+        )
+    )
+    if baseline_id:
+        baseline_uuid = _uuid_or_none(baseline_id)
+        if baseline_uuid is None:
+            raise HTTPException(
+                status_code=400,
+                detail="cost_optimizer.invalid_filter",
+            )
+        query = query.filter(
+            CostOptimizerExperiment.baseline_node_run_id == baseline_uuid
+        )
+    if date_from:
+        query = query.filter(CostOptimizerExperiment.created_at >= date_from)
+    if date_to:
+        query = query.filter(CostOptimizerExperiment.created_at <= date_to)
+    if created_by:
+        created_by_uuid = _uuid_or_none(created_by)
+        if created_by_uuid is None:
+            raise HTTPException(
+                status_code=400,
+                detail="cost_optimizer.invalid_filter",
+            )
+        query = query.filter(CostOptimizerExperiment.created_by == created_by_uuid)
+
+    candidate_filters = [
+        candidate_status,
+        model,
+        is_applied is not None,
+        schema_status,
+        downstream_state,
+    ]
+    if any(candidate_filters):
+        query = query.join(CostOptimizerCandidate).distinct()
+        if candidate_status:
+            query = query.filter(CostOptimizerCandidate.status == candidate_status)
+        if model:
+            query = query.filter(CostOptimizerCandidate.model_id == model)
+        if is_applied is not None:
+            query = query.filter(CostOptimizerCandidate.is_applied == is_applied)
+        if schema_status:
+            query = query.filter(CostOptimizerCandidate.schema_status == schema_status)
+        if downstream_state:
+            query = query.filter(
+                CostOptimizerCandidate.downstream_state == downstream_state
+            )
+
+    total = query.count()
+    rows = (
+        query.order_by(
+            CostOptimizerExperiment.created_at.desc(),
+            CostOptimizerExperiment.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [_cost_optimizer_experiment_summary(db, row) for row in rows],
+    }
+
+
+def _cost_optimizer_candidate_execution_context(
+    *,
+    workflow: Workflow,
+    node_id: str,
+    baseline: dict[str, Any],
+    candidate: CostOptimizerCandidateRequest,
+    candidate_id: UUID,
+    workflow_run_id: UUID,
+    current_user: User,
+    request: Request,
+) -> dict[str, Any]:
+    return {
+        "user_id": str(current_user.id),
+        "execution_subject": {
+            "type": "user",
+            "id": str(current_user.id),
+        },
+        "workflow_id": str(workflow.id),
+        "workflow_run_id": str(workflow_run_id),
+        "organization_id": (
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
+        "app_id": str(workflow.app_id) if getattr(workflow, "app_id", None) else None,
+        "trigger_mode": "cost_optimizer_compare",
+        "cost_optimizer_candidate_id": str(candidate_id),
+        "request_id": request.headers.get("x-request-id"),
+        "correlation_id": request.headers.get("x-correlation-id"),
+        "trace_metadata": {
+            "cost_optimizer": {
+                "node_id": node_id,
+                "baseline_id": baseline["baseline_id"],
+                "candidate_id": str(candidate_id),
+            },
+        },
+        "cost_optimizer": {
+            "node_id": node_id,
+            "baseline_id": baseline["baseline_id"],
+            "candidate_id": str(candidate_id),
+            "candidate_label": candidate.label,
+        },
+    }
+
+
+def _run_cost_optimizer_candidate(
+    *,
+    workflow: Workflow,
+    node_id: str,
+    baseline: dict[str, Any],
+    candidate: CostOptimizerCandidateRequest,
+    cost_optimizer_candidate_id: UUID,
+    current_user: User,
+    request: Request,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    candidate_workflow_run_id = uuid4()
+    context = _cost_optimizer_candidate_execution_context(
+        workflow=workflow,
+        node_id=node_id,
+        baseline=baseline,
+        candidate=candidate,
+        candidate_id=cost_optimizer_candidate_id,
+        workflow_run_id=candidate_workflow_run_id,
+        current_user=current_user,
+        request=request,
+    )
+    patched_graph = _build_cost_optimizer_candidate_execution_graph(
+        workflow.graph,
+        node_id,
+        candidate,
+        baseline["input"],
+    )
+
+    try:
+        task = celery_app.send_task(
+            "workflow.execute",
+            args=[patched_graph, baseline["input"], context],
+            kwargs={"is_deployed": False},
+        )
+        task_result = task.get(timeout=600)
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "label": candidate.label,
+            "settings": candidate.model_dump(mode="json"),
+            "candidate_workflow_run_id": str(candidate_workflow_run_id),
+            "status": "failed",
+            "output": {},
+            "usage": {},
+            "schema_validation": {"status": "skipped", "errors": []},
+            "latency_ms": latency_ms,
+            "trace": {},
+            "error_message": str(exc) or type(exc).__name__,
+        }
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if task_result.get("status") == "success":
+        output = _extract_cost_optimizer_node_output(task_result, node_id)
+        safe_output = _safe_cost_optimizer_value(output)
+        usage = safe_output.get("usage", {}) if isinstance(safe_output, dict) else {}
+        usage = _normalize_cost_optimizer_candidate_usage(
+            usage if isinstance(usage, dict) else {},
+            safe_output if isinstance(safe_output, dict) else None,
+        )
+        schema_validation = (
+            _validate_cost_optimizer_candidate_output_schema(safe_output, candidate)
+            if isinstance(safe_output, dict)
+            else {"status": "skipped", "errors": []}
+        )
+        candidate_status = (
+            "schema_failed"
+            if schema_validation.get("status") == "schema_failed"
+            else "success"
+        )
+        if isinstance(usage, dict) and candidate_status == "schema_failed":
+            usage = {**usage, "status": "schema_failed"}
+        return {
+            "label": candidate.label,
+            "settings": candidate.model_dump(mode="json"),
+            "candidate_workflow_run_id": str(candidate_workflow_run_id),
+            "status": candidate_status,
+            "output": safe_output,
+            "usage": usage,
+            "schema_validation": schema_validation,
+            "latency_ms": latency_ms,
+            "trace": _build_cost_optimizer_candidate_trace(safe_output)
+            if isinstance(safe_output, dict)
+            else {},
+            "error_message": None,
+        }
+
+    failed_output = _safe_cost_optimizer_value(
+        _extract_cost_optimizer_node_output(task_result, node_id)
+    )
+    return {
+        "label": candidate.label,
+        "settings": candidate.model_dump(mode="json"),
+        "candidate_workflow_run_id": str(candidate_workflow_run_id),
+        "status": "failed",
+        "output": failed_output,
+        "usage": {},
+        "schema_validation": {"status": "skipped", "errors": []},
+        "latency_ms": latency_ms,
+        "trace": _build_cost_optimizer_candidate_trace(failed_output)
+        if isinstance(failed_output, dict)
+        else {},
+        "error_message": task_result.get("error") or "Workflow execution failed",
+    }
 
 
 def validate_execution_graph(graph: dict):
@@ -192,6 +2479,320 @@ def _format_compare_variant(
         if isinstance(node_output, dict)
         else 0.0,
         "latency_ms": usage.get("latency_ms") or latency_ms,
+    }
+
+
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/availability",
+    response_model=CostOptimizerAvailabilityResponse,
+)
+def get_cost_optimizer_availability(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드가 Cost Optimizer A/B 테스트 진입 대상인지 확인합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+    node_type = str(node.get("type") or "")
+
+    return {
+        "available": True,
+        "reason": None,
+        "workflow_id": str(workflow.id),
+        "node_id": node_id,
+        "node_type": node_type,
+        "permission": {
+            "can_compare": True,
+            "can_apply": True,
+            "required_auth_state": "builder",
+        },
+    }
+
+
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest",
+    response_model=CostOptimizerLatestBaselineResponse,
+)
+def get_cost_optimizer_latest_baseline_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드의 가장 최근 비교 가능 baseline을 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    baseline = get_cost_optimizer_latest_baseline(db, workflow, node_id)
+    return {"baseline": _public_cost_optimizer_baseline_row(baseline)}
+
+
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines",
+    response_model=CostOptimizerBaselineListResponse,
+)
+def list_cost_optimizer_baselines_endpoint(
+    workflow_id: str,
+    node_id: str,
+    q: str | None = None,
+    model: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort: str = "started_at_desc",
+    compare_available: bool | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드의 baseline 후보 목록을 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    result = list_cost_optimizer_baselines(
+        db,
+        workflow,
+        node_id,
+        q=q,
+        model=model,
+        date_from=date_from,
+        date_to=date_to,
+        sort=sort,
+        compare_available=compare_available,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        **result,
+        "items": [
+            _public_cost_optimizer_baseline_row(row)
+            for row in result.get("items", [])
+            if isinstance(row, dict)
+        ],
+    }
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments")
+def list_cost_optimizer_experiments_endpoint(
+    workflow_id: str,
+    node_id: str,
+    baseline_id: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    created_by: str | None = None,
+    candidate_status: str | None = None,
+    model: str | None = None,
+    is_applied: bool | None = None,
+    schema_status: str | None = None,
+    downstream_state: str | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    특정 LLM 노드의 Cost Optimizer experiment/candidate 이력을 조회합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    return list_cost_optimizer_experiments(
+        db,
+        workflow,
+        node_id,
+        baseline_id=baseline_id,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+        candidate_status=candidate_status,
+        model=model,
+        is_applied=is_applied,
+        schema_status=schema_status,
+        downstream_state=downstream_state,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare")
+def compare_cost_optimizer_candidate(
+    workflow_id: str,
+    node_id: str,
+    request_body: CostOptimizerCompareRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    A baseline input을 고정하고 B candidate만 새 설정으로 실행합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    _validate_cost_optimizer_candidate_shape(request_body.candidate)
+    baseline = get_cost_optimizer_baseline_by_id(
+        db,
+        workflow,
+        node_id,
+        request_body.baseline_id,
+    )
+    if not baseline.get("compare_available") or not baseline.get("input_available"):
+        raise HTTPException(
+            status_code=400,
+            detail="cost_optimizer.baseline_input_unavailable",
+        )
+
+    _ensure_cost_optimizer_candidate_knowledge_available(
+        db,
+        current_user,
+        workflow,
+        request_body.candidate,
+    )
+    _ensure_cost_optimizer_candidate_models_available(
+        db,
+        current_user,
+        request_body.candidate,
+    )
+    experiment, candidate_row = _create_cost_optimizer_comparison(
+        db=db,
+        workflow=workflow,
+        node_id=node_id,
+        baseline=baseline,
+        candidate=request_body.candidate,
+        current_user=current_user,
+    )
+
+    candidate_result = _run_cost_optimizer_candidate(
+        workflow=workflow,
+        node_id=node_id,
+        baseline=baseline,
+        candidate=request_body.candidate,
+        cost_optimizer_candidate_id=candidate_row.id,
+        current_user=current_user,
+        request=request,
+    )
+    diff = _build_cost_optimizer_diff(baseline, candidate_result)
+    downstream_compatibility = _resolve_cost_optimizer_downstream_compatibility(
+        baseline,
+        workflow,
+        node_id,
+        candidate_output=candidate_result.get("output")
+        if isinstance(candidate_result, dict)
+        else None,
+    )
+    experiment = _persist_cost_optimizer_comparison(
+        db=db,
+        experiment=experiment,
+        candidate_row=candidate_row,
+        candidate=request_body.candidate,
+        candidate_result=candidate_result,
+        diff=diff,
+        downstream_compatibility=downstream_compatibility,
+    )
+
+    return {
+        "comparison_id": str(experiment.id),
+        "workflow_id": str(workflow.id),
+        "node_id": node_id,
+        "baseline": {
+            "baseline_id": baseline["baseline_id"],
+            "label": "A",
+            "settings": baseline.get("node_options") or {},
+            "input": baseline.get("input"),
+            "output": baseline.get("output"),
+            "usage": baseline.get("usage") or {},
+            "trace": baseline.get("trace") or {},
+        },
+        "candidate": candidate_result,
+        "diff": diff,
+        "downstream_compatibility": downstream_compatibility,
+    }
+
+
+@router.patch("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply")
+def apply_cost_optimizer_candidate(
+    workflow_id: str,
+    node_id: str,
+    request_body: CostOptimizerApplyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    B candidate 설정 전체를 현재 draft의 target LLM node에 적용합니다.
+    """
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    _validate_cost_optimizer_candidate_shape(request_body.candidate_settings)
+    _ensure_cost_optimizer_candidate_knowledge_available(
+        db,
+        current_user,
+        workflow,
+        request_body.candidate_settings,
+    )
+    _ensure_cost_optimizer_candidate_models_available(
+        db,
+        current_user,
+        request_body.candidate_settings,
+    )
+    applied_candidate_row, comparison_candidate_rows = (
+        _ensure_cost_optimizer_candidate_apply_allowed(
+            db,
+            workflow,
+            node_id,
+            request_body.comparison_id,
+            request_body.candidate_settings,
+            request_body.acknowledge_downstream_warning,
+        )
+    )
+
+    current_graph = copy.deepcopy(workflow.graph or {})
+    _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=current_graph),
+        node_id,
+    )
+    workflow.graph = _patch_cost_optimizer_candidate_graph(
+        current_graph,
+        node_id,
+        request_body.candidate_settings,
+    )
+    if applied_candidate_row is not None:
+        applied_at = datetime.now(timezone.utc)
+        for candidate_row in comparison_candidate_rows:
+            is_applied_candidate = candidate_row is applied_candidate_row
+            candidate_row.is_applied = is_applied_candidate
+            candidate_row.applied_at = applied_at if is_applied_candidate else None
+            candidate_row.applied_by = (
+                current_user.id if is_applied_candidate else None
+            )
+    db.commit()
+    try:
+        db.refresh(workflow)
+    except Exception:
+        logger.debug("Cost Optimizer apply refresh skipped", exc_info=True)
+
+    updated_at = getattr(workflow, "updated_at", None)
+    updated_revision = (
+        updated_at.isoformat()
+        if hasattr(updated_at, "isoformat")
+        else str(updated_at)
+        if updated_at is not None
+        else None
+    )
+
+    return {
+        "workflow_id": str(workflow.id),
+        "node_id": node_id,
+        "applied": True,
+        "downstream_compatibility": {
+            "state": "unknown",
+            "label": "판정 전",
+            "message": "후보 설정이 적용되었습니다. 현재 workflow 테스트 실행으로 downstream 결과를 확인하세요.",
+        },
+        "updated_draft_revision": updated_revision,
     }
 
 

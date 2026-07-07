@@ -85,6 +85,7 @@ describe('useAutoSync Hook', () => {
     act(() => {
       useWorkflowStore.setState({
         nodes: [{ id: 'updated', data: {} } as any],
+        hasUnsavedChanges: true,
       });
     });
 
@@ -92,8 +93,12 @@ describe('useAutoSync Hook', () => {
     act(() => {
       vi.advanceTimersByTime(1000);
     });
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     // 저장 API가 정확히 1번 호출되었는지 확인
     expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(1);
+    expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(false);
   });
 });

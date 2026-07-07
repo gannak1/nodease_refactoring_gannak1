@@ -16,19 +16,25 @@ ORG_ID = uuid.UUID("10000000-0000-0000-0000-000000000001")
 USER_ID = uuid.UUID("20000000-0000-0000-0000-000000000001")
 
 
-def _collection(collection_id: uuid.UUID | None = None, *, actions=None):
+def _collection(collection_id: uuid.UUID | None = None, *, actions=None, safe_metadata=None):
     return SimpleNamespace(
         id=collection_id or uuid.uuid4(),
         organization_id=ORG_ID,
         lifecycle_state="active",
         sync_state="synced",
         is_system_managed=False,
-        safe_metadata={},
+        safe_metadata=safe_metadata or {},
         _actions=set(actions or []),
     )
 
 
-def _kb(kb_id: uuid.UUID | None = None, *, source_managed=False):
+def _kb(
+    kb_id: uuid.UUID | None = None,
+    *,
+    source_managed=False,
+    source_tier: str | None = None,
+    version_status: str = "ready",
+):
     return SimpleNamespace(
         id=kb_id or uuid.uuid4(),
         organization_id=ORG_ID,
@@ -37,6 +43,12 @@ def _kb(kb_id: uuid.UUID | None = None, *, source_managed=False):
         sync_state="synced",
         source_identity_id=uuid.uuid4() if source_managed else None,
         source_identity=None,
+        active_document_version=SimpleNamespace(
+            status=version_status,
+            source_tier=source_tier,
+        )
+        if source_tier is not None
+        else None,
     )
 
 
@@ -220,6 +232,103 @@ def test_auto_collection_mode_uses_only_route_allowed_collections():
         allowed_kb.id
     ]
     assert resolver.requested_item_collection_ids == {allowed_collection.id}
+    assert result.unavailable_candidate_count_bucket == "1"
+
+
+def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
+    collection = _collection(
+        safe_metadata={
+            "safe_label": "HR 정책",
+            "raw_source_url": "https://internal.example/private",
+        }
+    )
+    kb = _kb()
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+        ],
+        kbs=[kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    candidate_metadata = result.candidates[0].safe_metadata
+    assert candidate_metadata["collection_id"] == str(collection.id)
+    assert candidate_metadata["collection_safe_label"] == "HR 정책"
+    assert candidate_metadata["route_scope_type"] == "auto_collection"
+    assert candidate_metadata["linked_kb_count_bucket"] == "1"
+    assert "raw_source_url" not in candidate_metadata
+
+
+def test_candidate_carries_source_tier_from_active_ready_version_only():
+    collection = _collection()
+    ready_kb = _kb(source_tier="company_policy")
+    staging_kb = _kb(source_tier="conversation_or_thread", version_status="indexing")
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=ready_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=staging_kb.id,
+            ),
+        ],
+        kbs=[ready_kb, staging_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    metadata_by_kb_id = {
+        candidate.candidate_id: candidate.safe_metadata
+        for candidate in result.candidates
+    }
+    assert metadata_by_kb_id[ready_kb.id]["source_tier"] == "company_policy"
+    assert "source_tier" not in metadata_by_kb_id[staging_kb.id]
+
+
+def test_auto_collection_summary_count_uses_authorized_candidate_subset():
+    collection = _collection(safe_metadata={"safe_label": "HR 정책"})
+    denied_kb = _kb()
+    allowed_kb = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_kb.id else "none"
+
+    helper = PerKbPermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=allowed_kb.id,
+            ),
+        ],
+        kbs=[denied_kb, allowed_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        allowed_kb.id
+    ]
+    assert result.candidates[0].safe_metadata["linked_kb_count_bucket"] == "1"
     assert result.unavailable_candidate_count_bucket == "1"
 
 

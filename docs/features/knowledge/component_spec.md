@@ -21,6 +21,7 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Active Version Finalizer | Transactional active version pointer swap, previous version `superseded` 표시, content_hash/fingerprint commit, outbox insert를 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하거나 pointer swap 후 outbox insert 전에 crash window를 만들지 않는다 |
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞춘다 | DB commit 전 physical delete를 수행하지 않고 retry 가능한 cleanup만 실행한다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
+| Knowledge RAG Recommendation Adapter | Workflow Builder의 자연어 intent와 LLM node purpose를 받아 safe KB recommendation과 LLM node RAG option 후보를 만든다 | 권한 판단을 직접 하지 않고 `KnowledgeCandidateResolver` 결과만 ranking한다. 초기 구현은 `candidate_type=knowledge_base`만 반환하고 Collection은 safe summary metadata로만 제공한다 |
 | Knowledge Skill Registry | Provider-neutral Knowledge Skill, version, owner/review state, freshness/eval status를 관리한다 | Skill은 빌더 단계 LLM node의 RAG 옵션 후보이며 권한 source나 source of truth가 아니다 |
 | Source-of-Truth Catalog | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 source tier와 safe reference를 관리한다 | Raw content나 hidden source identity를 router에 노출하지 않는다 |
 | Skill Context Loader | 빌더 단계 safe skill metadata와 workflow 생성 요청을 기반으로 필요한 skill body/checklist만 점진적으로 로드한다 | 전역 metadata 선노출과 raw skill resource 로드를 금지한다. 실행 시점 evidence는 별도 authorized retrieval로 가져온다 |
@@ -68,7 +69,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 1. Workflow Builder 요청과 active organization을 검증한다.
 2. Builder actor가 볼 수 있는 safe skill metadata와 safe collection/KB display metadata만 후보로 만든다.
 3. Skill Context Loader는 선택된 skill의 redaction-safe body/checklist만 필요 시점에 로드한다.
-4. Builder는 skill procedure, safe metadata, source-of-truth tier를 참고해 LLM node의 RAG 옵션으로 사용할 collection/KB reference 후보, query template, metadata filter, hierarchy mode, citation requirement, `query_rewrite_mode`, `evidence_sufficiency_policy`를 제안한다.
+4. Builder는 Knowledge RAG Recommendation Adapter를 통해 safe KB recommendation과 LLM node RAG option 후보를 받는다. Adapter는 Collection을 실행 candidate로 반환하지 않고 `source_collection_summary`로만 제공하며, 현재 LLM node schema에 맞게 `knowledgeBases`로 materialize 가능한 KB 목록을 반환한다.
 5. Hidden resource를 추론할 수 있는 aggregate count는 bucket 처리하거나 생략한다.
 6. Builder output에는 raw source id/url/path/title, raw principal, raw ACL fact, exact hidden/denied count, raw content, raw skill body를 넣지 않는다.
 7. 생성된 workflow의 LLM node의 RAG 옵션은 실행 시점에 execution subject 기준으로 collection route, KB permission, source ACL/requester authorization, final evidence policy를 다시 통과해야 한다.

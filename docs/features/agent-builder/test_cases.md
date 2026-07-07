@@ -18,6 +18,9 @@ Status: Draft
 - 해석 불가능한 프롬프트(예: 빈 문자열, 자동화와 무관한 요청) → 빈 workflow를 만들지 않고 명시적 실패 응답.
 - 사내 지식 검색 workflow 생성 요청에서 Builder는 safe skill metadata와 safe collection/KB display metadata만 사용하고 raw skill body, hidden source reference, raw source title/path/url을 prompt나 응답에 포함하지 않는다.
 - LLM node RAG 옵션 후보 resolver는 intended execution subject/audience 기준 `available`, `warning`, `unavailable`, `unknown` runtime availability를 반환하고, hidden KB id/name, exact denied count, hidden source distribution을 반환하지 않는다.
+- Workflow Builder의 RAG 옵션 추천은 Knowledge RAG Recommendation Adapter를 통해서만 수행하며, Agent Builder가 Knowledge permission row, source ACL row, hidden KB 목록을 직접 읽지 않는다.
+- Recommendation 결과는 초기 구현에서 KB 단위로 materialize되고, Collection은 safe `source_collection_summary`로만 표시된다. Builder draft에는 현재 LLM node schema의 `knowledgeBases` 중심으로 저장된다.
+- Recommendation이 없으면 Builder는 사용자 확인 필요 상태를 표시하고, 별도 정책 gate 없이 자동으로 RAG 없는 LLM node를 생성하지 않는다.
 - 후보가 source ACL stale/unmapped/ambiguous/unverified/revoked 또는 scope 밖 resource 때문에 제외된 경우 Builder 응답은 safe reason class와 required action만 표시하고 세부 source ACL state나 raw source path/title/url을 노출하지 않는다.
 
 ## E2E Tests

@@ -79,190 +79,130 @@ class LLMService:
 
     # 사용자 친화적인 모델 표시 이름
     MODEL_DISPLAY_NAMES = {
+        "gpt-5.5": "GPT-5.5",
+        "gpt-5.5-pro": "GPT-5.5 Pro",
+        "gpt-5.4-pro": "GPT-5.4 Pro",
+        "gpt-5.4": "GPT-5.4",
+        "gpt-5.4-mini": "GPT-5.4 Mini",
+        "gpt-5.4-nano": "GPT-5.4 Nano",
         "gpt-4o": "GPT-4o (Omni)",
         "gpt-4o-mini": "GPT-4o Mini",
-        "gpt-4-turbo": "GPT-4 Turbo",
-        "gpt-4": "GPT-4 (Legacy)",
-        "gpt-3.5-turbo": "GPT-3.5 Turbo",
-        "gemini-1.5-flash": "Gemini 1.5 Flash",
-        "gemini-1.5-pro": "Gemini 1.5 Pro",
-        "gemini-2.0-flash-exp": "Gemini 2.0 Flash (Exp)",
-        "gemini-pro": "Gemini Pro (1.0)",
-        "claude-3-5-sonnet-20240620": "Claude 3.5 Sonnet",
-        "claude-3-opus-20240229": "Claude 3 Opus",
-        "claude-3-sonnet-20240229": "Claude 3 Sonnet",
-        "claude-3-haiku-20240307": "Claude 3 Haiku",
+        "claude-fable-5": "Claude Fable 5",
+        "claude-opus-4-8": "Claude Opus 4.8",
+        "claude-opus-4-7": "Claude Opus 4.7",
+        "claude-opus-4-6": "Claude Opus 4.6",
+        "claude-opus-4-5-20251101": "Claude Opus 4.5",
+        "claude-sonnet-5": "Claude Sonnet 5",
+        "claude-sonnet-4-6": "Claude Sonnet 4.6",
+        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+        "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+        "claude-haiku-4-5": "Claude Haiku 4.5",
+        "gemini-3.5-flash": "Gemini 3.5 Flash",
+        "gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+        "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
+        "gemini-3-flash-preview": "Gemini 3 Flash Preview",
+        "gemini-2.5-pro": "Gemini 2.5 Pro",
+        "gemini-2.5-flash": "Gemini 2.5 Flash",
+        "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
+        "gemini-embedding-2": "Gemini Embedding 2",
+        "gemini-embedding-001": "Gemini Embedding",
+        "gemini-robotics-er-1.6-preview": "Gemini Robotics-ER 1.6 Preview",
     }
 
     # [신규] Provider별 가성비 모델 매핑 (Prompt Wizard, Query Rewriting 등에서 사용)
     EFFICIENT_MODELS = {
         "openai": "gpt-4o-mini",
-        "google": "gemini-1.5-flash",
-        "anthropic": "claude-3-haiku-20240307",
+        "google": "gemini-3.1-flash-lite",
+        "anthropic": "claude-haiku-4-5-20251001",
     }
 
     # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
-    # 가격 출처: https://openai.com/api/pricing/, https://anthropic.com/pricing
+    # 가격 출처: https://openai.com/api/pricing/, https://docs.anthropic.com/en/docs/about-claude/pricing
     # 아래 가격은 1K 토큰 기준입니다. (예: $5/1M -> 0.005/1K)
     KNOWN_MODEL_PRICES = {
         # ==================== OpenAI 채팅 모델 ====================
-        # --- GPT-5 시리즈 (2025) ---
-        "gpt-5": {"input": 0.005, "output": 0.015},
-        "gpt-5-2025-08-07": {"input": 0.005, "output": 0.015},
-        "gpt-5-pro": {"input": 0.015, "output": 0.060},
-        "gpt-5-pro-2025-10-06": {"input": 0.015, "output": 0.060},
-        "gpt-5-mini": {"input": 0.0003, "output": 0.0012},
-        "gpt-5-mini-2025-08-07": {"input": 0.0003, "output": 0.0012},
-        "gpt-5-nano": {"input": 0.0001, "output": 0.0004},
-        "gpt-5-nano-2025-08-07": {"input": 0.0001, "output": 0.0004},
-        "gpt-5-chat-latest": {"input": 0.005, "output": 0.015},
-        "gpt-5-codex": {"input": 0.005, "output": 0.015},
-        "gpt-5-search-api": {"input": 0.0025, "output": 0.010},
-        "gpt-5-search-api-2025-10-14": {"input": 0.0025, "output": 0.010},
-        # --- GPT-5.1 시리즈 ---
-        "gpt-5.1": {"input": 0.004, "output": 0.012},
-        "gpt-5.1-2025-11-13": {"input": 0.004, "output": 0.012},
-        "gpt-5.1-chat-latest": {"input": 0.004, "output": 0.012},
-        "gpt-5.1-codex": {"input": 0.004, "output": 0.012},
-        "gpt-5.1-codex-mini": {"input": 0.001, "output": 0.004},
-        "gpt-5.1-codex-max": {"input": 0.010, "output": 0.040},
-        # --- GPT-5.2 시리즈 ---
-        "gpt-5.2": {"input": 0.003, "output": 0.010},
-        "gpt-5.2-2025-12-11": {"input": 0.003, "output": 0.010},
-        "gpt-5.2-pro": {"input": 0.010, "output": 0.040},
-        "gpt-5.2-pro-2025-12-11": {"input": 0.010, "output": 0.040},
-        "gpt-5.2-chat-latest": {"input": 0.003, "output": 0.010},
-        # --- GPT-4.1 시리즈 (2025) ---
+        # 가격 출처: https://developers.openai.com/api/docs/pricing
+        # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
+        # --- GPT-5.5 / GPT-5.4 시리즈 ---
+        "gpt-5.5": {"input": 0.005, "output": 0.030},
+        "gpt-5.5-pro": {"input": 0.030, "output": 0.180},
+        "gpt-5.4": {"input": 0.0025, "output": 0.015},
+        "gpt-5.4-mini": {"input": 0.00075, "output": 0.0045},
+        "gpt-5.4-nano": {"input": 0.0002, "output": 0.00125},
+        "gpt-5.4-pro": {"input": 0.030, "output": 0.180},
+        # --- GPT-5 이전 세대 중 아직 pricing에 노출되는 모델 ---
+        "gpt-5.2": {"input": 0.00175, "output": 0.014},
+        "gpt-5.2-pro": {"input": 0.021, "output": 0.168},
+        "gpt-5.1": {"input": 0.00125, "output": 0.010},
+        "gpt-5": {"input": 0.00125, "output": 0.010},
+        "gpt-5-mini": {"input": 0.00025, "output": 0.002},
+        "gpt-5-nano": {"input": 0.00005, "output": 0.0004},
+        "gpt-5-pro": {"input": 0.015, "output": 0.120},
+        # --- GPT-4.1 / GPT-4o 시리즈 ---
         "gpt-4.1": {"input": 0.002, "output": 0.008},
         "gpt-4.1-2025-04-14": {"input": 0.002, "output": 0.008},
         "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
         "gpt-4.1-mini-2025-04-14": {"input": 0.0004, "output": 0.0016},
-        "gpt-4.1-nano": {"input": 0.0001, "output": 0.0004},
-        "gpt-4.1-nano-2025-04-14": {"input": 0.0001, "output": 0.0004},
-        # --- GPT-4o 시리즈 ---
         "gpt-4o": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-2024-05-13": {"input": 0.005, "output": 0.015},
         "gpt-4o-2024-08-06": {"input": 0.0025, "output": 0.010},
         "gpt-4o-2024-11-20": {"input": 0.0025, "output": 0.010},
-        "chatgpt-4o-latest": {"input": 0.005, "output": 0.015},
-        # --- GPT-4o Mini 시리즈 ---
         "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
         "gpt-4o-mini-2024-07-18": {"input": 0.00015, "output": 0.0006},
-        # --- GPT-4o 검색 ---
-        "gpt-4o-search-preview": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-search-preview-2025-03-11": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-mini-search-preview": {"input": 0.00015, "output": 0.0006},
-        "gpt-4o-mini-search-preview-2025-03-11": {"input": 0.00015, "output": 0.0006},
-        # --- GPT-4o 오디오/실시간 ---
-        "gpt-4o-audio-preview": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-audio-preview-2024-12-17": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-audio-preview-2025-06-03": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-mini-audio-preview": {"input": 0.00015, "output": 0.0006},
-        "gpt-4o-mini-audio-preview-2024-12-17": {"input": 0.00015, "output": 0.0006},
-        "gpt-4o-realtime-preview": {"input": 0.005, "output": 0.020},
-        "gpt-4o-realtime-preview-2024-12-17": {"input": 0.005, "output": 0.020},
-        "gpt-4o-realtime-preview-2025-06-03": {"input": 0.005, "output": 0.020},
-        "gpt-4o-mini-realtime-preview": {"input": 0.0006, "output": 0.0024},
-        "gpt-4o-mini-realtime-preview-2024-12-17": {"input": 0.0006, "output": 0.0024},
-        # --- GPT-4o 전사/음성합성 ---
-        "gpt-4o-transcribe": {"input": 0.0025, "output": 0.0},
-        "gpt-4o-transcribe-diarize": {"input": 0.004, "output": 0.0},
-        "gpt-4o-mini-transcribe": {"input": 0.00015, "output": 0.0},
-        "gpt-4o-mini-transcribe-2025-03-20": {"input": 0.00015, "output": 0.0},
-        "gpt-4o-mini-transcribe-2025-12-15": {"input": 0.00015, "output": 0.0},
-        "gpt-4o-mini-tts": {"input": 0.0, "output": 0.0006},
-        "gpt-4o-mini-tts-2025-03-20": {"input": 0.0, "output": 0.0006},
-        "gpt-4o-mini-tts-2025-12-15": {"input": 0.0, "output": 0.0006},
         # --- 추론 모델 (O 시리즈) ---
-        "o1": {"input": 0.015, "output": 0.060},
-        "o1-2024-12-17": {"input": 0.015, "output": 0.060},
-        "o1-pro": {"input": 0.150, "output": 0.600},
-        "o1-pro-2025-03-19": {"input": 0.150, "output": 0.600},
-        "o1-preview": {"input": 0.015, "output": 0.060},
-        "o1-preview-2024-09-12": {"input": 0.015, "output": 0.060},
-        "o1-mini": {"input": 0.003, "output": 0.012},
-        "o1-mini-2024-09-12": {"input": 0.003, "output": 0.012},
-        "o3": {"input": 0.010, "output": 0.040},
-        "o3-2025-04-16": {"input": 0.010, "output": 0.040},
-        "o3-mini": {"input": 0.0011, "output": 0.0044},
-        "o3-mini-2025-01-31": {"input": 0.0011, "output": 0.0044},
-        "o4-mini": {"input": 0.0011, "output": 0.0044},
-        "o4-mini-2025-04-16": {"input": 0.0011, "output": 0.0044},
-        # --- GPT-4 터보 ---
-        "gpt-4-turbo": {"input": 0.01, "output": 0.03},
-        "gpt-4-turbo-2024-04-09": {"input": 0.01, "output": 0.03},
-        "gpt-4-turbo-preview": {"input": 0.01, "output": 0.03},
-        "gpt-4-0125-preview": {"input": 0.01, "output": 0.03},
-        "gpt-4-1106-preview": {"input": 0.01, "output": 0.03},
-        # --- GPT-4 레거시 ---
-        "gpt-4": {"input": 0.03, "output": 0.06},
-        "gpt-4-0613": {"input": 0.03, "output": 0.06},
-        "gpt-4-0314": {"input": 0.03, "output": 0.06},
-        # --- GPT-3.5 ---
-        "gpt-3.5-turbo": {"input": 0.0005, "output": 0.0015},
-        "gpt-3.5-turbo-0125": {"input": 0.0005, "output": 0.0015},
-        "gpt-3.5-turbo-1106": {"input": 0.001, "output": 0.002},
-        "gpt-3.5-turbo-16k": {"input": 0.003, "output": 0.004},
-        "gpt-3.5-turbo-instruct": {"input": 0.0015, "output": 0.002},
-        "gpt-3.5-turbo-instruct-0914": {"input": 0.0015, "output": 0.002},
-        # --- GPT 오디오/실시간 ---
-        "gpt-audio": {"input": 0.005, "output": 0.020},
-        "gpt-audio-2025-08-28": {"input": 0.005, "output": 0.020},
-        "gpt-audio-mini": {"input": 0.0006, "output": 0.0024},
-        "gpt-audio-mini-2025-10-06": {"input": 0.0006, "output": 0.0024},
-        "gpt-audio-mini-2025-12-15": {"input": 0.0006, "output": 0.0024},
-        "gpt-realtime": {"input": 0.005, "output": 0.020},
-        "gpt-realtime-2025-08-28": {"input": 0.005, "output": 0.020},
+        "o3-pro": {"input": 0.020, "output": 0.080},
+        "o3": {"input": 0.002, "output": 0.008},
+        # --- 검색 / Codex 특화 모델 ---
+        "gpt-5-search-api": {"input": 0.00125, "output": 0.010},
+        "gpt-5.3-codex": {"input": 0.00175, "output": 0.014},
+        # --- Realtime / audio / 전사 / 음성합성 ---
+        "gpt-realtime-2": {"input": 0.004, "output": 0.024},
+        "gpt-realtime-1.5": {"input": 0.004, "output": 0.016},
+        "gpt-realtime": {"input": 0.004, "output": 0.016},
         "gpt-realtime-mini": {"input": 0.0006, "output": 0.0024},
-        "gpt-realtime-mini-2025-10-06": {"input": 0.0006, "output": 0.0024},
-        "gpt-realtime-mini-2025-12-15": {"input": 0.0006, "output": 0.0024},
-        # --- 레거시/베이스 모델 ---
-        "davinci-002": {"input": 0.002, "output": 0.002},
-        "babbage-002": {"input": 0.0004, "output": 0.0004},
+        "gpt-audio-1.5": {"input": 0.0025, "output": 0.010},
+        "gpt-audio": {"input": 0.0025, "output": 0.010},
+        "gpt-audio-mini": {"input": 0.0006, "output": 0.0024},
+        "gpt-4o-transcribe": {"input": 0.0025, "output": 0.010},
+        "gpt-4o-transcribe-diarize": {"input": 0.0025, "output": 0.010},
+        "gpt-4o-mini-transcribe": {"input": 0.00125, "output": 0.005},
+        "gpt-4o-mini-tts": {"input": 0.0, "output": 0.0006},
         # ==================== OpenAI 임베딩 모델 ====================
         "text-embedding-3-small": {"input": 0.00002, "output": 0.0},
         "text-embedding-3-large": {"input": 0.00013, "output": 0.0},
         "text-embedding-ada-002": {"input": 0.00010, "output": 0.0},
         # ==================== Anthropic 모델 ====================
-        # --- Claude 3.5 시리즈 ---
-        "claude-3-5-opus": {"input": 0.015, "output": 0.075},  # $15 / $75
-        "claude-3-5-opus-latest": {"input": 0.015, "output": 0.075},
-        "claude-3-5-sonnet": {"input": 0.003, "output": 0.015},  # $3 / $15
-        "claude-3-5-sonnet-latest": {"input": 0.003, "output": 0.015},
-        "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
-        "claude-3-5-sonnet-20240620": {"input": 0.003, "output": 0.015},
-        "claude-3-5-haiku": {"input": 0.00025, "output": 0.00125},  # $0.25 / $1.25
-        "claude-3-5-haiku-latest": {"input": 0.00025, "output": 0.00125},
-        "claude-3-5-haiku-20241022": {"input": 0.00025, "output": 0.00125},
-        # --- Claude 3 시리즈 ---
-        "claude-3-opus-20240229": {"input": 0.015, "output": 0.075},
-        "claude-3-sonnet-20240229": {"input": 0.003, "output": 0.015},
-        "claude-3-haiku-20240307": {"input": 0.00025, "output": 0.00125},
-        # --- 레거시 ---
-        "claude-2.1": {"input": 0.008, "output": 0.024},
-        "claude-2.0": {"input": 0.008, "output": 0.024},
-        "claude-instant-1.2": {"input": 0.0008, "output": 0.0024},
-        # ==================== Google 모델 (2026 가격) ====================
-        # 기본 가격 (128k 컨텍스트 이하). 128k 초과 시 가격 2배 (아직 미반영).
-        # --- Gemini 3 시리즈 ---
-        "gemini-3-pro": {"input": 0.002, "output": 0.012},  # $2.00 / $12.00
-        "gemini-3-flash": {"input": 0.0003, "output": 0.0025},  # $0.30 / $2.50
-        # --- Gemini 1.5 시리즈 ---
-        "gemini-1.5-pro": {
-            "input": 0.00125,
-            "output": 0.010,
-        },  # $1.25 / $10.00 (업데이트)
-        "gemini-1.5-flash": {"input": 0.000075, "output": 0.0003},  # $0.075 / $0.30
-        "gemini-1.5-flash-8b": {
-            "input": 0.0000375,
-            "output": 0.00015,
-        },  # $0.0375 / $0.15
-        # --- Gemini 2.0 / 실험 ---
-        "gemini-2.0-flash-exp": {"input": 0.0001, "output": 0.0004},
-        # --- 레거시 ---
-        "gemini-1.0-pro": {"input": 0.0005, "output": 0.0015},
+        # 가격 출처: https://docs.anthropic.com/en/docs/about-claude/pricing
+        # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
+        "claude-fable-5": {"input": 0.010, "output": 0.050},
+        "claude-opus-4-8": {"input": 0.005, "output": 0.025},
+        "claude-opus-4-7": {"input": 0.005, "output": 0.025},
+        "claude-opus-4-6": {"input": 0.005, "output": 0.025},
+        "claude-opus-4-5": {"input": 0.005, "output": 0.025},
+        "claude-opus-4-5-20251101": {"input": 0.005, "output": 0.025},
+        # Claude Sonnet 5는 2026-08-31까지 introductory 가격이 적용됩니다.
+        "claude-sonnet-5": {"input": 0.002, "output": 0.010},
+        "claude-sonnet-4-6": {"input": 0.003, "output": 0.015},
+        "claude-sonnet-4-5": {"input": 0.003, "output": 0.015},
+        "claude-sonnet-4-5-20250929": {"input": 0.003, "output": 0.015},
+        "claude-haiku-4-5": {"input": 0.001, "output": 0.005},
+        "claude-haiku-4-5-20251001": {"input": 0.001, "output": 0.005},
+        # ==================== Google 모델 ====================
+        # 가격 출처: https://ai.google.dev/gemini-api/docs/pricing
+        # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
+        # --- Gemini 3.x 시리즈 ---
+        "gemini-3.5-flash": {"input": 0.0015, "output": 0.009},
+        "gemini-3.1-pro-preview": {"input": 0.002, "output": 0.012},
+        "gemini-3.1-flash-lite": {"input": 0.00025, "output": 0.0015},
+        "gemini-3-flash-preview": {"input": 0.0005, "output": 0.003},
+        # --- Gemini 2.5 시리즈 ---
+        "gemini-2.5-pro": {"input": 0.00125, "output": 0.010},
+        "gemini-2.5-flash": {"input": 0.0003, "output": 0.0025},
+        "gemini-2.5-flash-lite": {"input": 0.0001, "output": 0.0004},
+        # --- Gemini 특화 모델 ---
+        "gemini-robotics-er-1.6-preview": {"input": 0.001, "output": 0.005},
         # --- 임베딩 ---
-        "text-embedding-004": {"input": 0.000025, "output": 0.0},
+        "gemini-embedding-2": {"input": 0.0002, "output": 0.0},
+        "gemini-embedding-001": {"input": 0.00015, "output": 0.0},
     }
 
     @staticmethod
@@ -1326,7 +1266,7 @@ class LLMService:
     def _normalize_model_id(model_id: str) -> str:
         """
         모델 ID를 정규화하여 KNOWN_MODEL_PRICES와 매칭 가능하게 변환합니다.
-        예: gpt-4o-2024-11-20 -> gpt-4o, claude-3-5-sonnet-20241022 -> claude-3-5-sonnet
+        예: gpt-4o-2024-11-20 -> gpt-4o, claude-haiku-4-5-20251001 -> claude-haiku-4-5
         """
         import re
 
@@ -1336,7 +1276,7 @@ class LLMService:
         # 2. 날짜 접미사 패턴 제거
         # 패턴: -YYYY-MM-DD (예: gpt-4o-2024-11-20)
         clean = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", clean)
-        # 패턴: -YYYYMMDD (예: claude-3-5-sonnet-20241022)
+        # 패턴: -YYYYMMDD (예: claude-haiku-4-5-20251001)
         clean = re.sub(r"-\d{8}$", "", clean)
 
         return clean
@@ -1403,6 +1343,7 @@ class LLMService:
         workflow_id: Optional[uuid.UUID] = None,
         workflow_run_id: Optional[uuid.UUID] = None,
         node_id: Optional[str] = None,
+        cost_optimizer_candidate_id: Optional[uuid.UUID] = None,
     ) -> Optional[LLMUsageLog]:
         """
         LLM 사용 로그를 DB에 저장합니다.
@@ -1454,6 +1395,19 @@ class LLMService:
             )
             return None
 
+        cost_optimizer_candidate_uuid = None
+        if cost_optimizer_candidate_id:
+            try:
+                cost_optimizer_candidate_uuid = uuid.UUID(
+                    str(cost_optimizer_candidate_id)
+                )
+            except (TypeError, ValueError):
+                logger.error(
+                    "[LLMService] Usage log skipped: invalid "
+                    f"cost_optimizer_candidate_id {cost_optimizer_candidate_id}."
+                )
+                return None
+
         log = LLMUsageLog(
             user_id=user_id,
             organization_id=organization_uuid,
@@ -1461,6 +1415,7 @@ class LLMService:
             model_id=model.id,
             workflow_id=workflow_uuid,
             workflow_run_id=workflow_run_uuid,
+            cost_optimizer_candidate_id=cost_optimizer_candidate_uuid,
             node_id=node_id,
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),

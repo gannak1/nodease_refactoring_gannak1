@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import datetime, timezone
 from operator import eq
@@ -13,6 +14,7 @@ from apps.gateway.api.v1.endpoints.organization import (
     list_organization_memberships,
     list_organizations,
 )
+from apps.gateway.api.v1.endpoints.notification import stream_notifications
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.models.organization import Organization
@@ -24,6 +26,7 @@ from apps.shared.schemas.organization_membership import (
     OrganizationMemberResponse,
     RevokedUserPermissionCounts,
 )
+from apps.shared.schemas.notification import NotificationItemResponse
 
 
 class TestOrganizationsApi(unittest.TestCase):
@@ -536,6 +539,71 @@ class TestOrganizationsApi(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["membership_state"], "active")
         self.assertEqual(service.call_args.args[2], organization_id)
+
+    def test_route_declines_invitation_on_literal_me_path(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        member = _member_response(
+            organization_id=organization_id,
+            user_id=user_id,
+            membership_state="removed",
+        )
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.organization."
+            "OrganizationMemberService.decline_invitation",
+            return_value=member,
+        ) as service:
+            response = TestClient(app).post(
+                f"/api/v1/organizations/{organization_id}/members/me/decline"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["membership_state"], "removed")
+        self.assertEqual(service.call_args.args[2], organization_id)
+
+    def test_notifications_list_returns_invitation_items(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        item = NotificationItemResponse(
+            id="organization_invitation:membership-1",
+            type="organization.invitation",
+            organization_id=organization_id,
+            organization_name="Acme",
+            organization_auth_state="member",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.notification."
+            "NotificationService.list_notifications",
+            return_value=[item],
+        ) as service:
+            response = TestClient(app).get("/api/v1/notifications")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["type"], "organization.invitation")
+        self.assertEqual(response.json()["items"][0]["organization_name"], "Acme")
+        self.assertEqual(service.call_args.args[1], user_id)
+
+    def test_notifications_stream_sets_no_buffer_headers(self):
+        response = asyncio.run(
+            stream_notifications(
+                request=SimpleNamespace(),
+                current_user=SimpleNamespace(id=uuid4()),
+            )
+        )
+
+        self.assertIn("text/event-stream", response.headers["content-type"])
+        self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
+        self.assertEqual(response.headers["connection"], "keep-alive")
 
     def test_route_updates_member(self):
         organization_id = uuid4()

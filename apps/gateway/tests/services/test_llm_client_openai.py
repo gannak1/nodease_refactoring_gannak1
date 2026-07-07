@@ -55,6 +55,103 @@ async def test_openai_invoke_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
+    """Responses 전용 모델군은 chat/completions를 거치지 않고 responses를 호출한다."""
+    messages = [{"role": "user", "content": "hi"}]
+    requested_urls = []
+    requested_payloads = []
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "output_text": "hello",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            requested_urls.append(url)
+            requested_payloads.append(kwargs.get("json", {}))
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        lambda **kw: MockAsyncClient()
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    resp = await client.invoke(messages, max_tokens=10)
+
+    assert requested_urls == ["https://api.openai.com/v1/responses"]
+    assert requested_payloads[0]["max_output_tokens"] == 10
+    assert "max_tokens" not in requested_payloads[0]
+    assert "max_completion_tokens" not in requested_payloads[0]
+    assert resp["choices"][0]["message"]["content"] == "hello"
+    assert resp["usage"]["prompt_tokens"] == 2
+    assert resp["usage"]["completion_tokens"] == 3
+    assert resp["usage"]["total_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_openai_invoke_does_not_fallback_to_completions_for_responses_models(monkeypatch):
+    """Responses 모델군은 responses 실패 후 legacy completions로 내려가지 않는다."""
+    messages = [{"role": "user", "content": "hi"}]
+    requested_urls = []
+
+    class MockResponse:
+        status_code = 404
+        text = '{"error":{"message":"model not found","type":"invalid_request_error"}}'
+
+        def json(self):
+            return {
+                "error": {
+                    "message": "model not found",
+                    "type": "invalid_request_error",
+                }
+            }
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            requested_urls.append(url)
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        lambda **kw: MockAsyncClient()
+    )
+
+    client = OpenAIClient(
+        model_id="o1-pro",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="model not found"):
+        await client.invoke(messages)
+
+    assert requested_urls == ["https://api.openai.com/v1/responses"]
+
+
+@pytest.mark.asyncio
 async def test_openai_invoke_failure(monkeypatch):
     """invoke 실패 시 ValueError 발생 확인"""
     messages = [{"role": "user", "content": "hi"}]
@@ -110,4 +207,3 @@ def test_openai_token_estimate():
     messages = [{"role": "user", "content": "hello world"}]
     tokens = client.get_num_tokens(messages)
     assert tokens >= 1
-

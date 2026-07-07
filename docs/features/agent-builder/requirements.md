@@ -26,6 +26,8 @@ Related Features: workflow, knowledge, llm-credentials, deployment
 - FR-007: Agent Builder가 Skill을 prompt context로 사용할 경우 skill visibility, safe metadata display, freshness/eval gate를 통과한 Skill metadata/body/checklist만 사용한다. Skill이 제안한 collection/KB reference는 workflow 실행 시점에 execution subject 권한으로 다시 검증된다.
 - FR-008: Agent Builder는 LLM node의 RAG 옵션인 `query_rewrite_mode`, `evidence_sufficiency_policy`, source tier hint 같은 후보를 제안할 수 있다. 기본값은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다. 이 설정은 workflow node 옵션일 뿐이며 권한 범위를 넓히거나 runtime data access를 부여하지 않는다.
 - FR-009: Agent Builder의 KB/Collection picker와 workflow generation proposal은 builder actor의 권한뿐 아니라 intended execution subject/audience의 runtime availability를 safe warning으로 표시해야 한다. Hidden KB id/name/exact denied count는 표시하지 않는다.
+- FR-010: Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
+- FR-011: 초기 recommendation 결과는 KB 단위로 materialize된다. Builder UI는 Collection 맥락을 safe `source_collection_summary`로 설명할 수 있지만, 현재 LLM node draft에는 `knowledgeBases` 중심으로 저장한다.
 
 ## Policies And Edge Cases
 
@@ -40,6 +42,7 @@ Related Features: workflow, knowledge, llm-credentials, deployment
 - A/B 테스트와 trace side panel은 raw source title/path/url, 권한 없는 문서명/ID, raw prompt/completion을 표시하지 않는다. 필요한 비교값은 RAG strategy summary와 token/cost/latency summary로 제한한다.
 - Query rewrite와 evidence sufficiency 옵션을 제안하더라도 raw rewritten query, hidden source reference, 권한 없는 문서명/ID는 Builder prompt, trace, audit에 넣지 않는다.
 - LLM-assisted query rewrite, code-bearing skill, draft skill publication UX는 별도 승인 전까지 자동 제안/운영 실행에 포함하지 않는다.
+- Builder가 recommendation 실패 또는 no recommendation을 받으면 기본적으로 사용자 확인 필요 상태로 둔다. 자동으로 RAG 없는 LLM node를 생성하는 fallback은 별도 Builder 정책 gate가 닫힌 경우에만 허용한다.
 
 ## Open Questions
 
