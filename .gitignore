@@ -124,6 +124,7 @@ playwright-report/
 test-results/
 **/playwright-report/
 **/test-results/
+.playwright-cli/
 
 # Python tool caches
 .ruff_cache/
