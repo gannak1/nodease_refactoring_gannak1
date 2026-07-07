@@ -91,7 +91,7 @@ describe('UsageTab', () => {
     mockedList.mockResolvedValue({ ...usageResponse, total: 0, items: [] });
 
     render(<UsageTab />);
-    await screen.findByText('해당 기간의 LLM 사용량이 없습니다.');
+    await screen.findByText('표시할 워크플로우가 없습니다.');
     mockedList.mockClear();
 
     fireEvent.change(screen.getByLabelText('기간 시작'), {
@@ -109,7 +109,7 @@ describe('UsageTab', () => {
     mockedList.mockResolvedValue({ ...usageResponse, total: 0, items: [] });
 
     render(<UsageTab />);
-    await screen.findByText('해당 기간의 LLM 사용량이 없습니다.');
+    await screen.findByText('표시할 워크플로우가 없습니다.');
 
     fireEvent.change(screen.getByLabelText('기간 시작'), {
       target: { value: '2026-07-01T00:00' },
