@@ -5,6 +5,11 @@ from uuid import UUID
 import tiktoken
 from apps.shared.db.models.knowledge import Document, DocumentChunk
 from apps.shared.services.embedding_service import EmbeddingService
+from apps.shared.services.rag_hierarchy import (
+    CHUNKING_MODE_HIERARCHICAL,
+    contains_non_flat_payload,
+    document_chunking_mode,
+)
 from apps.shared.utils.encryption import encryption_manager
 from sqlalchemy.orm import Session
 
@@ -44,6 +49,11 @@ class VectorStoreService:
         if not chunks:
             logger.warning(f"[벡터저장] 저장할 청크 없음: 문서 {document_id}")
             return
+
+        if document_chunking_mode(doc.meta_info) == CHUNKING_MODE_HIERARCHICAL:
+            raise RuntimeError("DB sync vector store path is flat-only for MBA-85")
+        if contains_non_flat_payload(chunks):
+            raise RuntimeError("VectorStoreService does not accept hierarchical chunks")
 
         logger.info(f"[벡터저장] {len(chunks)}개 청크 처리 시작: 문서 {document_id}")
 
@@ -169,6 +179,7 @@ class VectorStoreService:
                     knowledge_base_id=doc.knowledge_base_id,
                     content=encrypted_content,
                     chunk_index=i,
+                    chunk_level="flat",
                     token_count=chunk.get("token_count", 0),
                     metadata_=metadata,
                     embedding=embedding,

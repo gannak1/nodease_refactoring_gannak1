@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { Sparkles } from 'lucide-react';
+import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { TemplateNodeData } from '../../../../types/Nodes';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
@@ -12,6 +13,7 @@ import {
   getTokenLabelMap,
   upsertNamedSelector,
 } from '@/app/features/workflow/utils/nodeVariablePorts';
+import { resolveWorkflowWizardOrganizationId } from '@/app/features/workflow/utils/resolveWorkflowWizardOrganizationId';
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 
 interface TemplateNodePanelProps {
@@ -27,7 +29,12 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
   nodeId,
   data,
 }) => {
-  const { nodes, edges, updateNodeData } = useWorkflowStore();
+  const { nodes, edges, updateNodeData, activeWorkflowId, workflowAccess } =
+    useWorkflowStore();
+  const wizardOrganizationId = resolveWorkflowWizardOrganizationId(
+    workflowAccess,
+    activeWorkflowId,
+  );
 
   // 템플릿 마법사 모달 상태
   const [showWizardModal, setShowWizardModal] = useState(false);
@@ -38,8 +45,16 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
     let active = true;
 
     const checkCredentials = async () => {
+      setHasCredentials(null);
+      if (wizardOrganizationId === null) return;
+
       try {
-        const res = await fetch('/api/v1/template-wizard/check-credentials', {
+        const organizationId =
+          wizardOrganizationId ?? getStoredActiveOrganizationId();
+        const query = organizationId
+          ? `?organization_id=${encodeURIComponent(organizationId)}`
+          : '';
+        const res = await fetch(`/api/v1/template-wizard/check-credentials${query}`, {
           method: 'GET',
           credentials: 'include',
         });
@@ -57,7 +72,7 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
     return () => {
       active = false;
     };
-  }, []);
+  }, [wizardOrganizationId]);
 
   // 등록된 변수명 목록 추출
   const registeredVariableNames = useMemo(() => {
@@ -133,7 +148,7 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
               <button
                 type="button"
                 onClick={() => setShowWizardModal(true)}
-                disabled={hasCredentials === false}
+                disabled={hasCredentials === false || wizardOrganizationId === null}
                 title={
                   hasCredentials === false
                     ? 'Provider를 먼저 등록해주세요'
@@ -177,6 +192,7 @@ export const TemplateNodePanel: React.FC<TemplateNodePanelProps> = ({
         onClose={() => setShowWizardModal(false)}
         originalTemplate={data.template || ''}
         registeredVariables={registeredVariableNames}
+        organizationId={wizardOrganizationId}
         onApply={(improvedTemplate) => {
           handleTemplateChange(improvedTemplate);
         }}

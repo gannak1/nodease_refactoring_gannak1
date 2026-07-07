@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   activeOrganizationHeaders,
+  ACTIVE_ORGANIZATION_CHANGED_EVENT,
   getStoredActiveOrganizationId,
   resolveActiveOrganizationId,
   setActiveOrganizationId,
@@ -22,7 +23,7 @@ import {
   DashboardPageHeader,
   DashboardPanel,
   DashboardSummaryCard,
-} from '@/app/features/dashboard/components/DashboardSurface';
+} from '../features/dashboard/components/DashboardSurface';
 
 type OrganizationResponse = {
   id: string;
@@ -144,7 +145,7 @@ export default function DashboardHomePage() {
     [teamMembers],
   );
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -159,7 +160,9 @@ export default function DashboardHomePage() {
         '/organizations/current',
         organizationId,
       );
-      setActiveOrganizationId(org.id);
+      if (getStoredActiveOrganizationId() !== org.id) {
+        setActiveOrganizationId(org.id);
+      }
       setOrganization(org);
 
       const apps = await apiRequest<AppResponse[]>('/apps', org.id);
@@ -211,11 +214,23 @@ export default function DashboardHomePage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadData();
-  }, []);
+    const handleActiveOrganizationChanged = () => {
+      void loadData();
+    };
+    window.addEventListener(
+      ACTIVE_ORGANIZATION_CHANGED_EVENT,
+      handleActiveOrganizationChanged,
+    );
+    return () =>
+      window.removeEventListener(
+        ACTIVE_ORGANIZATION_CHANGED_EVENT,
+        handleActiveOrganizationChanged,
+      );
+  }, [loadData]);
 
   return (
     <div className="min-h-full bg-slate-50 px-6 py-8">
@@ -317,7 +332,7 @@ export default function DashboardHomePage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => router.push('/dashboard/settings')}
+                    onClick={() => router.push('/dashboard/admin')}
                     className="mt-5 inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800"
                   >
                     조직 접근 관리

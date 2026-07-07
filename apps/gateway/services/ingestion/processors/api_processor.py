@@ -1,12 +1,16 @@
 import logging
 from typing import Any, Dict
 
-import requests
-
 from apps.gateway.services.ingestion.parsers.json_parser import JsonParser
 from apps.shared.services.ingestion.processors.base import (
     BaseProcessor,
     ProcessingResult,
+)
+from apps.shared.services.egress_guard import (
+    API_RESPONSE_CONTENT_TYPES,
+    EgressGuardError,
+    EgressGuardPolicy,
+    safe_http_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,14 +58,25 @@ class ApiProcessor(BaseProcessor):
             return ProcessingResult(chunks=[], metadata={"error": "No URL provided"})
 
         try:
-            response = requests.request(
+            response = safe_http_request(
                 method=method,
                 url=url,
                 headers=headers,
-                json=body if method != "GET" else None,
-                timeout=30,
+                json_body=body,
+                policy=EgressGuardPolicy(
+                    timeout_seconds=30.0,
+                    max_response_bytes=10 * 1024 * 1024,
+                    allowed_content_types=API_RESPONSE_CONTENT_TYPES,
+                ),
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                return ProcessingResult(
+                    chunks=[],
+                    metadata={
+                        "error": "External API returned an error.",
+                        "status_code": response.status_code,
+                    },
+                )
 
             parser = JsonParser()
             try:
@@ -77,15 +92,21 @@ class ApiProcessor(BaseProcessor):
                 chunks.append(
                     {
                         "content": block["text"],
-                        "metadata": {"source": url, "page": block["page"]},
+                        "metadata": {"source": "api_response", "page": block["page"]},
                     }
                 )
 
             return ProcessingResult(
                 chunks=chunks,
-                metadata={"url": url, "status_code": response.status_code},
+                metadata={"source_type": "API", "status_code": response.status_code},
             )
 
+        except EgressGuardError as e:
+            logger.warning("[ApiProcessor] Egress guard denied request: %s", e.reason_code)
+            return ProcessingResult(
+                chunks=[],
+                metadata={"error": "Outbound request denied.", "reason_code": e.reason_code},
+            )
         except Exception as e:
-            logger.error(f"[ApiProcessor] Request failed: {e}")
-            return ProcessingResult(chunks=[], metadata={"error": str(e)})
+            logger.error("[ApiProcessor] Request failed: %s", type(e).__name__)
+            return ProcessingResult(chunks=[], metadata={"error": "Request failed."})

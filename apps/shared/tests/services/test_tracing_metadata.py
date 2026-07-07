@@ -75,6 +75,140 @@ def test_rag_metadata_drops_scalar_retrieval_results():
     assert metadata["rag"] == {"retrieved_context_payload_id": "payload-1"}
 
 
+def test_llm_span_metadata_preserves_model_routing_summary_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "recommendation_type": "user_click_model_routing",
+                "analysis_stage": "optimized",
+                "recommended_model": "gpt-4.1-mini",
+                "recommended_fallback_model": "gpt-4.1",
+                "reason": "최근 운영 로그의 품질 gate를 통과했습니다.",
+                "policy_version": "model-router-v1",
+                "confidence": 0.9,
+                "raw_prompt": "secret prompt",
+                "api_key": "sk-secret",
+            }
+        },
+    )
+
+    assert metadata["llm"] == {
+        "recommendation_type": "user_click_model_routing",
+        "analysis_stage": "optimized",
+        "recommended_model": "gpt-4.1-mini",
+        "recommended_fallback_model": "gpt-4.1",
+        "reason": "최근 운영 로그의 품질 gate를 통과했습니다.",
+        "policy_version": "model-router-v1",
+        "confidence": 0.9,
+    }
+
+
+def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "rag": {
+                "retrieval_payload_id": "payload-2",
+                "retrieval_results": [
+                    {
+                        "knowledge_base_id": "kb-1",
+                        "chunk_id": "chunk-1",
+                        "parent_chunk_id": "parent-1",
+                        "document_id": "doc-1",
+                        "filename": "sensitive-title.pdf",
+                        "rank": 1,
+                        "similarity_score": 0.9,
+                        "score": 0.91,
+                        "token_count": 210,
+                        "metadata_summary": {
+                            "classification": "internal",
+                            "source_path": "/private/source/path",
+                            "raw_source_url": "https://internal.example/private",
+                        },
+                        "hierarchy_fallback": True,
+                        "content": "raw chunk text",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert metadata["rag"]["retrieval_payload_id"] == "payload-2"
+    assert metadata["rag"]["knowledge_base_id"] == "kb-1"
+    assert metadata["rag"]["retrieved_chunk_count"] == 1
+    assert metadata["rag"]["document_ids"] == ["doc-1"]
+    assert metadata["rag"]["citation_ids"] == ["chunk-1"]
+    assert metadata["rag"]["score_summary"] == {"min": 0.91, "max": 0.91}
+    assert metadata["rag"]["hierarchy_fallback"] is True
+    assert metadata["rag"]["raw_content_returned"] is False
+    assert "retrieval_results" not in metadata["rag"]
+    assert "raw chunk text" not in str(metadata)
+    assert "sensitive-title.pdf" not in str(metadata)
+    assert "internal.example" not in str(metadata)
+    assert "/private/source/path" not in str(metadata)
+
+
+def test_rag_span_metadata_preserves_evidence_summary_fields_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "rag": {
+                "evidence_sufficient": False,
+                "insufficiency_reason": "minimum_score_not_met",
+                "source_tier_used": "company_policy",
+                "partial_result": True,
+                "failed_candidate_count_bucket": "2-10",
+                "failure_policy": "safe_no_result",
+                "stored_result_count": 20,
+                "retrieved_chunk_summary_truncated": True,
+                "retrieval_strategy": "permission_scoped_hierarchical_hybrid",
+                "rag_mode": "explicit_kb",
+                "authorized_kb_count": 2,
+                "selected_kb_count": 1,
+                "retrieved_chunk_count": 3,
+                "context_token_estimate": 123,
+                "permission_filter_applied": True,
+                "safe_exclusion_summary": {
+                    "operational_failure_count_bucket": "1"
+                },
+                "query_rewrite_applied": False,
+                "query_rewrite_strategy": "off",
+                "source_tier_policy": "tie_break",
+                "hidden_candidate_ids": ["kb-hidden"],
+                "raw_rewritten_query": "raw query",
+            }
+        },
+    )
+
+    assert metadata["rag"]["evidence_sufficient"] is False
+    assert metadata["rag"]["insufficiency_reason"] == "minimum_score_not_met"
+    assert metadata["rag"]["source_tier_used"] == "company_policy"
+    assert metadata["rag"]["partial_result"] is True
+    assert metadata["rag"]["failed_candidate_count_bucket"] == "2-10"
+    assert metadata["rag"]["failure_policy"] == "safe_no_result"
+    assert metadata["rag"]["stored_result_count"] == 20
+    assert metadata["rag"]["retrieved_chunk_summary_truncated"] is True
+    assert (
+        metadata["rag"]["retrieval_strategy"]
+        == "permission_scoped_hierarchical_hybrid"
+    )
+    assert metadata["rag"]["rag_mode"] == "explicit_kb"
+    assert metadata["rag"]["authorized_kb_count"] == 2
+    assert metadata["rag"]["selected_kb_count"] == 1
+    assert metadata["rag"]["retrieved_chunk_count"] == 3
+    assert metadata["rag"]["context_token_estimate"] == 123
+    assert metadata["rag"]["permission_filter_applied"] is True
+    assert metadata["rag"]["safe_exclusion_summary"] == {
+        "operational_failure_count_bucket": "1"
+    }
+    assert metadata["rag"]["query_rewrite_applied"] is False
+    assert metadata["rag"]["query_rewrite_strategy"] == "off"
+    assert metadata["rag"]["source_tier_policy"] == "tie_break"
+    assert "hidden_candidate_ids" not in metadata["rag"]
+    assert "raw_rewritten_query" not in metadata["rag"]
+
+
 def test_trace_detail_metadata_view_hides_error_message_and_sanitizes_metadata():
     run = SimpleNamespace(
         id=uuid.uuid4(),

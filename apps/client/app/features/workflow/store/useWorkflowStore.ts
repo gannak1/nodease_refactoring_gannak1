@@ -27,6 +27,7 @@ import { DEFAULT_NODES } from '../constants';
 import { workflowApi } from '../api/workflowApi';
 import {
   assignMissingNodeDisplayNumbers,
+  assignNewNodeDisplayNumbers,
   createNumberedNode,
   NODE_NUMBER_FEATURE_KEY,
 } from '../utils/nodeNumbering';
@@ -50,6 +51,18 @@ export interface Workflow {
     zoom: number;
   };
 }
+
+const createIdleTestExecutionState = () => ({
+  isTestPanelOpen: false,
+  testExecutionStatus: 'idle' as const,
+  testExecutionStartedAt: null,
+  testExecutionFinishedAt: null,
+  testExecutionResult: null,
+  testNodeResults: [],
+  testExecutionError: null,
+  currentExecutingNodeId: null,
+  isTestUploading: false,
+});
 
 type WorkflowState = {
   // === Editor UI 상태 (editorStore에서 유래) ===
@@ -125,6 +138,7 @@ type WorkflowState = {
   features: Features; // 워크플로우 기능 설정
   envVariables: EnvVariable[]; // 환경 변수
   runtimeVariables: RuntimeVariable[]; // 런타임 변수
+  hasUnsavedChanges: boolean;
 
   // === ReactFlow 액션 ===
   onNodesChange: OnNodesChange;
@@ -136,6 +150,11 @@ type WorkflowState = {
     node: T,
     buildNodes?: (nodes: Node[], node: T) => Node[],
   ) => T;
+  addNodeWithEdge: <T extends Node>(
+    node: T,
+    edge: Omit<Edge, 'target'>,
+    buildNodes?: (nodes: Node[], node: T) => Node[],
+  ) => T | null;
   undo: () => void;
   redo: () => void;
   copySelectedNodes: () => void;
@@ -190,10 +209,7 @@ type WorkflowState = {
 
   // === 시작노드 검증 핼퍼 ===
   getStartNodeType: () =>
-    | 'startNode'
-    | 'webhookTrigger'
-    | 'scheduleTrigger'
-    | null;
+    'startNode' | 'webhookTrigger' | 'scheduleTrigger' | null;
   getStartNodeCount: () => number;
   canPublish: () => boolean;
 
@@ -201,6 +217,7 @@ type WorkflowState = {
   setFeatures: (features: Features) => void;
   setEnvVariables: (vars: EnvVariable[]) => void;
   setRuntimeVariables: (vars: RuntimeVariable[]) => void;
+  setHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
   updateNodeData: (nodeId: string, newData: Record<string, unknown>) => void;
   setWorkflowData: (
     data: {
@@ -258,9 +275,12 @@ const syncActiveWorkflow = (
   activeWorkflowId: string,
   nodes: Node[],
   edges: Edge[],
+  features?: Features,
 ) =>
   workflows.map((workflow) =>
-    workflow.id === activeWorkflowId ? { ...workflow, nodes, edges } : workflow,
+    workflow.id === activeWorkflowId
+      ? { ...workflow, nodes, edges, ...(features ? { features } : {}) }
+      : workflow,
   );
 
 const shouldRecordEdgeChanges = (changes: EdgeChange[]) =>
@@ -369,6 +389,74 @@ const preparePastedNodeData = (
 
 const getInternalEdges = (edges: Edge[], nodeIds: Set<string>) =>
   edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+
+const getEdgeKey = (edge: Pick<Edge, 'source' | 'target'> & Partial<Edge>) =>
+  [
+    edge.source,
+    edge.sourceHandle || '',
+    edge.target,
+    edge.targetHandle || '',
+  ].join('__');
+
+const buildReconnectEdgesAfterDelete = (
+  nodes: Node[],
+  edges: Edge[],
+  deletedNodeIds: Set<string>,
+) => {
+  const nextNodes = nodes.filter((node) => !deletedNodeIds.has(node.id));
+  const nextNodeIds = new Set(nextNodes.map((node) => node.id));
+  const nextEdges = edges.filter(
+    (edge) =>
+      !deletedNodeIds.has(edge.source) && !deletedNodeIds.has(edge.target),
+  );
+  const existingKeys = new Set(nextEdges.map(getEdgeKey));
+  const reconnectEdges: Edge[] = [];
+
+  for (const deletedNodeId of deletedNodeIds) {
+    const incomingEdges = edges.filter(
+      (edge) => edge.target === deletedNodeId && nextNodeIds.has(edge.source),
+    );
+    const outgoingEdges = edges.filter(
+      (edge) => edge.source === deletedNodeId && nextNodeIds.has(edge.target),
+    );
+
+    for (const incomingEdge of incomingEdges) {
+      for (const outgoingEdge of outgoingEdges) {
+        if (incomingEdge.source === outgoingEdge.target) continue;
+
+        const reconnectEdge: Edge = {
+          id: `reconnect-${incomingEdge.source}-${outgoingEdge.target}-${Date.now()}-${reconnectEdges.length}`,
+          source: incomingEdge.source,
+          sourceHandle: incomingEdge.sourceHandle,
+          target: outgoingEdge.target,
+          targetHandle: outgoingEdge.targetHandle,
+        };
+        const edgeKey = getEdgeKey(reconnectEdge);
+        if (existingKeys.has(edgeKey)) continue;
+
+        const validation = validateConnection(
+          nextNodes as AppNode[],
+          [...nextEdges, ...reconnectEdges],
+          {
+            source: reconnectEdge.source,
+            sourceHandle: reconnectEdge.sourceHandle ?? null,
+            target: reconnectEdge.target,
+            targetHandle: reconnectEdge.targetHandle ?? null,
+          },
+        );
+        if (!validation.ok) continue;
+
+        existingKeys.add(edgeKey);
+        reconnectEdges.push(reconnectEdge);
+      }
+    }
+  }
+
+  return {
+    nodes: nextNodes,
+    edges: [...nextEdges, ...reconnectEdges],
+  };
+};
 
 const buildDuplicatedGraphElements = (
   sourceNodes: Node[],
@@ -500,6 +588,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   features: createDefaultFeatures(),
   envVariables: [],
   runtimeVariables: [],
+  hasUnsavedChanges: false,
 
   // === Inner Node Selection ===
   selectedInnerNode: null,
@@ -567,6 +656,62 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       features: nextFeatures,
       workflows: updatedWorkflows,
     });
+
+    return numberedNode;
+  },
+
+  addNodeWithEdge: (node, edge, buildNodes) => {
+    const { nodes, edges, features, workflows, activeWorkflowId } = get();
+    const { node: numberedNode, nextNodeDisplayNumber } = createNumberedNode(
+      node,
+      nodes,
+    );
+    const nextFeatures = {
+      ...features,
+      [NODE_NUMBER_FEATURE_KEY]: nextNodeDisplayNumber,
+    };
+    const nextNodes = buildNodes
+      ? buildNodes(nodes, numberedNode)
+      : [...nodes, numberedNode];
+    const nextEdge: Edge = {
+      ...edge,
+      target: numberedNode.id,
+    };
+    const validation = validateConnection(
+      nextNodes as AppNode[],
+      edges,
+      {
+        source: nextEdge.source,
+        sourceHandle: nextEdge.sourceHandle ?? null,
+        target: nextEdge.target,
+        targetHandle: nextEdge.targetHandle ?? null,
+      },
+    );
+
+    if (!validation.ok) {
+      return null;
+    }
+
+    const nextEdges = [...edges, nextEdge];
+    const updatedWorkflows = syncActiveWorkflow(
+      workflows,
+      activeWorkflowId,
+      nextNodes,
+      nextEdges,
+      nextFeatures,
+    );
+
+    set((state) => ({
+      nodes: nextNodes,
+      edges: nextEdges,
+      features: nextFeatures,
+      workflows: updatedWorkflows,
+      undoStack: [
+        ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+        cloneGraph(nodes, edges),
+      ],
+      redoStack: [],
+    }));
 
     return numberedNode;
   },
@@ -731,17 +876,23 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
 
   pasteCopiedNodes: () => {
-    const { copiedNodes, copiedEdges, nodes, edges, activeWorkflowId } = get();
+    const { copiedNodes, copiedEdges, nodes, edges, activeWorkflowId, features } =
+      get();
     if (copiedNodes.length === 0) return;
 
     const { duplicatedNodes, duplicatedEdges } = buildDuplicatedGraphElements(
       copiedNodes,
       copiedEdges,
     );
+    const numbered = assignNewNodeDisplayNumbers(
+      duplicatedNodes,
+      nodes,
+      features,
+    );
 
     const nextNodes = [
       ...nodes.map((node) => ({ ...node, selected: false }) as Node),
-      ...duplicatedNodes,
+      ...numbered.nodes,
     ];
     const nextEdges = [
       ...edges.map((edge) => ({ ...edge, selected: false })),
@@ -751,11 +902,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       nodes: nextNodes,
       edges: nextEdges,
+      features: numbered.features,
       workflows: syncActiveWorkflow(
         state.workflows,
         activeWorkflowId,
         nextNodes,
         nextEdges,
+        numbered.features,
       ),
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
@@ -766,7 +919,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
 
   duplicateSelectedNodes: () => {
-    const { nodes, edges, activeWorkflowId } = get();
+    const { nodes, edges, activeWorkflowId, features } = get();
     const selectedNodes = nodes.filter((node) => node.selected);
     if (selectedNodes.length === 0) return;
 
@@ -776,10 +929,15 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       selectedNodes,
       selectedEdges,
     );
+    const numbered = assignNewNodeDisplayNumbers(
+      duplicatedNodes,
+      nodes,
+      features,
+    );
 
     const nextNodes = [
       ...nodes.map((node) => ({ ...node, selected: false }) as Node),
-      ...duplicatedNodes,
+      ...numbered.nodes,
     ];
     const nextEdges = [
       ...edges.map((edge) => ({ ...edge, selected: false })),
@@ -789,11 +947,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set((state) => ({
       nodes: nextNodes,
       edges: nextEdges,
+      features: numbered.features,
       workflows: syncActiveWorkflow(
         state.workflows,
         activeWorkflowId,
         nextNodes,
         nextEdges,
+        numbered.features,
       ),
       undoStack: [
         ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
@@ -821,13 +981,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
     if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
 
-    const nextNodes = nodes.filter((node) => !selectedNodeIds.has(node.id));
-    const nextEdges = edges.filter(
-      (edge) =>
-        !selectedEdgeIds.has(edge.id) &&
-        !selectedNodeIds.has(edge.source) &&
-        !selectedNodeIds.has(edge.target),
-    );
+    const retainedEdges = edges.filter((edge) => !selectedEdgeIds.has(edge.id));
+    const { nodes: nextNodes, edges: nextEdges } =
+      buildReconnectEdgesAfterDelete(nodes, retainedEdges, selectedNodeIds);
 
     set((state) => ({
       nodes: nextNodes,
@@ -1093,6 +1249,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         edges: snapshot.edges || [],
         features: normalized.features,
         previewingVersion: null, // 미리보기 종료
+        hasUnsavedChanges: false,
       });
     } catch (error) {
       console.error('Failed to restore version:', error);
@@ -1170,6 +1327,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         features: workflow.features,
         undoStack: [],
         redoStack: [],
+        ...createIdleTestExecutionState(),
       });
     }
   },
@@ -1181,7 +1339,12 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     const workflow = get().workflows.find((w) => w.id === id);
 
     if (!workflow) {
-      set({ activeWorkflowId: id, undoStack: [], redoStack: [] });
+      set({
+        activeWorkflowId: id,
+        undoStack: [],
+        redoStack: [],
+        ...createIdleTestExecutionState(),
+      });
       return;
     }
 
@@ -1193,6 +1356,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       features: workflow.features,
       undoStack: [],
       redoStack: [],
+      ...createIdleTestExecutionState(),
       ...(hasLoadedWorkflowData
         ? { nodes: workflow.nodes, edges: workflow.edges }
         : {}),
@@ -1265,9 +1429,11 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
   setEnvVariables: (envVariables) => set({ envVariables }),
   setRuntimeVariables: (runtimeVariables) => set({ runtimeVariables }),
+  setHasUnsavedChanges: (hasUnsavedChanges) => set({ hasUnsavedChanges }),
 
   updateNodeData: (nodeId, newData) => {
     set({
+      hasUnsavedChanges: true,
       nodes: get().nodes.map((node) => {
         if (node.id === nodeId) {
           return {
@@ -1329,6 +1495,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         features: normalized.features,
         envVariables: data.envVariables || [],
         runtimeVariables: data.runtimeVariables || [],
+        hasUnsavedChanges: false,
         undoStack: [],
         redoStack: [],
       });

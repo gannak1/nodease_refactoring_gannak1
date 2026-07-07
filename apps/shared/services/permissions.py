@@ -1,6 +1,7 @@
 import uuid
 from typing import Any, Optional
 
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
@@ -11,6 +12,7 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     Team,
+    TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
@@ -18,11 +20,15 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import (
+    UserAppCreationPermission,
+)
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
-    AUTH_STATE_RANK,
     AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
+    AUTH_STATE_RANK,
+    knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
     normalize_resource_auth_state,
     stronger_resource_auth_state,
@@ -175,6 +181,35 @@ def has_organization_scope_access(
     }
 
 
+def has_app_creation_permission(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+) -> bool:
+    """조직 수준 App 생성 능력 판정 (ADR-0016).
+
+    organization owner/manager는 허용하고, 그 외에는
+    user_app_creation_permissions row가 있어야 허용한다. fail-closed.
+    """
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return False
+    if not _is_active_user(db, user_uuid):
+        return False
+    if has_organization_manager_permission(db, user_uuid, organization_uuid):
+        return True
+    row = (
+        db.query(UserAppCreationPermission)
+        .filter(
+            UserAppCreationPermission.grantee_organization_id == organization_uuid,
+            UserAppCreationPermission.user_id == user_uuid,
+        )
+        .first()
+    )
+    return row is not None
+
+
 def _workflow_scope(
     db: Session,
     workflow_id: Any,
@@ -225,6 +260,34 @@ def _llm_credential_scope(
         return None, None
 
     return credential, credential_organization_uuid or requested_organization_uuid
+
+
+def _knowledge_base_scope(
+    db: Session,
+    knowledge_base_id: Any,
+    organization_id: Any = None,
+) -> tuple[Optional[KnowledgeBase], Optional[uuid.UUID]]:
+    knowledge_base_uuid = coerce_uuid(knowledge_base_id)
+    requested_organization_uuid = coerce_uuid(organization_id)
+    if knowledge_base_uuid is None:
+        return None, None
+
+    knowledge_base = (
+        db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_uuid).first()
+    )
+    if not knowledge_base:
+        return None, None
+
+    knowledge_base_organization_uuid = coerce_uuid(knowledge_base.organization_id)
+    if knowledge_base_organization_uuid is None:
+        return None, None
+    if (
+        requested_organization_uuid is not None
+        and knowledge_base_organization_uuid != requested_organization_uuid
+    ):
+        return None, None
+
+    return knowledge_base, knowledge_base_organization_uuid
 
 
 def _auth_state_from_row(row: Any) -> Any:
@@ -531,6 +594,67 @@ def has_llm_credential_permission(
         organization_id=organization_id,
     )
     return llm_credential_auth_state_allows(auth_state, action)
+
+
+def get_effective_knowledge_base_auth_state(
+    db: Session,
+    user_id: Any,
+    knowledge_base_id: Any,
+    organization_id: Any = None,
+) -> str:
+    user_uuid = coerce_uuid(user_id)
+    knowledge_base, organization_uuid = _knowledge_base_scope(
+        db, knowledge_base_id, organization_id
+    )
+    if user_uuid is None or knowledge_base is None or organization_uuid is None:
+        return AUTH_STATE_NONE
+
+    organization_auth_state = get_organization_auth_state(
+        db,
+        user_uuid,
+        organization_uuid,
+    )
+    if organization_auth_state == AUTH_STATE_MANAGER:
+        return AUTH_STATE_MANAGER
+    if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+        return AUTH_STATE_NONE
+
+    team_rows = (
+        db.query(TeamKnowledgePermission.auth_state)
+        .join(TeamMembership, TeamMembership.team_id == TeamKnowledgePermission.team_id)
+        .join(Team, Team.id == TeamKnowledgePermission.team_id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamKnowledgePermission.knowledge_base_id == knowledge_base.id,
+            Team.is_active.is_(True),
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamKnowledgePermission.grantee_organization_id == organization_uuid,
+            TeamMembership.grantee_organization_id
+            == TeamKnowledgePermission.grantee_organization_id,
+            Team.organization_id == organization_uuid,
+        )
+        .all()
+    )
+
+    # user_knowledge_permissions는 공식 목표 table이지만 현재 model/migration이 없다.
+    # 모델이 들어오기 전까지 user_id/owner fallback을 grant로 섞지 않고 fail-closed 처리한다.
+    return _strongest_auth_state(team_rows, AUTH_STATE_NONE)
+
+
+def has_knowledge_base_permission(
+    db: Session,
+    user_id: Any,
+    knowledge_base_id: Any,
+    action: str,
+    organization_id: Any = None,
+) -> bool:
+    auth_state = get_effective_knowledge_base_auth_state(
+        db,
+        user_id,
+        knowledge_base_id,
+        organization_id=organization_id,
+    )
+    return knowledge_base_auth_state_allows(auth_state, action)
 
 
 def canonical_effective_auth_state(auth_state: Any) -> str:

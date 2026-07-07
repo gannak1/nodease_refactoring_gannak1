@@ -18,10 +18,18 @@ class AuditAction:
     PERMISSION_REVOKE = "permission.revoke"
     PERMISSION_DENIED = "permission.denied"
 
+    # 권한 신청 lifecycle과 App 생성 권한 row data-change (ADR-0016).
+    PERMISSION_REQUEST_CREATED = "permission_request.created"
+    PERMISSION_REQUEST_APPROVED = "permission_request.approved"
+    PERMISSION_REQUEST_REJECTED = "permission_request.rejected"
+    USER_APP_CREATION_PERMISSION_CREATED = "user_app_creation_permission.created"
+    USER_APP_CREATION_PERMISSION_DELETED = "user_app_creation_permission.deleted"
+
     # 앱/워크플로우/배포: 사용자가 워크플로우 운영 단위에서 수행한 행동.
     ORGANIZATION_UPDATE = "organization.update"
     ORGANIZATION_INVITE = "organization.invite"
     ORGANIZATION_MEMBER_ACCEPT = "organization.member.accept"
+    ORGANIZATION_MEMBER_DECLINE = "organization.member.decline"
     ORGANIZATION_MEMBER_UPDATE = "organization.member.update"
     ORGANIZATION_MEMBER_REMOVE = "organization.member.remove"
 
@@ -34,6 +42,8 @@ class AuditAction:
     WORKFLOW_UPDATE = "workflow.update"
     WORKFLOW_DEPLOY = "workflow.deploy"
     WORKFLOW_EXECUTE = "workflow.execute"
+    WORKFLOW_BUDGET_CREATED = "workflow_budget.created"
+    WORKFLOW_BUDGET_UPDATED = "workflow_budget.updated"
 
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_ACTIVATE_PREVIOUS = "deployment.activate_previous"
@@ -56,3 +66,12 @@ class AuditAction:
     DOCUMENT_UPLOAD = "document.upload"
     DOCUMENT_PROCESS = "document.process"
     DOCUMENT_DELETE = "document.delete"
+    RAG_RETRIEVE = "rag.retrieve"
+    RAG_ANSWER_REQUESTED = "rag.answer.requested"
+    RAG_ANSWER_COMPLETED = "rag.answer.completed"
+    RAG_ANSWER_FAILED = "rag.answer.failed"
+    RAG_ANSWER_CANCELLED = "rag.answer.cancelled"
+    RAG_ANSWER_PURGE = "rag.answer.purge"
+
+    POLICY_WARN = "policy.warn"
+    POLICY_BLOCK = "policy.block"

@@ -10,7 +10,23 @@ Celery Worker에서 모델을 import할 때 순서 문제를 방지합니다.
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.connection import Connection
-from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
+from apps.shared.db.models.cost_optimizer import (
+    CostOptimizerCandidate,
+    CostOptimizerExperiment,
+)
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    DocumentVersion,
+    KnowledgeCollection,
+    KnowledgeCollectionItem,
+    KnowledgeBase,
+    KnowledgeIngestionOutbox,
+    KnowledgeSourceIdentity,
+    RAGAnswerRun,
+    SourceAuthorizationProvenance,
+    SourcePolicyKBUseGrant,
+)
 from apps.shared.db.models.llm import (
     LLMCredential,
     LLMModel,
@@ -18,6 +34,7 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     LLMUsageLog,
 )
+from apps.shared.db.models.llm_node_version import LLMNodeVersion
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
@@ -33,17 +50,30 @@ from apps.shared.db.models.team import (
     TeamAuditPermission,
     TeamAssignmentMixin,
     TeamKnowledgePermission,
+    TeamKnowledgeCollectionPermission,
     TeamLLMPermission,
     TeamResourcePermissionMixin,
     TeamMembership,
     TeamWorkflowPermission,
     UserLLMPermission,
+    UserKnowledgeCollectionPermission,
     UserResourcePermissionMixin,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.permission_request import (
+    PERMISSION_REQUEST_APPROVED,
+    PERMISSION_REQUEST_PENDING,
+    PERMISSION_REQUEST_REJECTED,
+    REQUESTED_PERMISSION_APP_CREATE,
+    PermissionRequest,
+)
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import (
+    UserAppCreationPermission,
+)
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
     TracePayload,
@@ -60,14 +90,25 @@ __all__ = [
     "App",
     "AuditLog",
     "Connection",
+    "CostOptimizerExperiment",
+    "CostOptimizerCandidate",
     "Document",
     "DocumentChunk",
+    "DocumentVersion",
+    "KnowledgeCollection",
+    "KnowledgeCollectionItem",
     "KnowledgeBase",
+    "KnowledgeIngestionOutbox",
+    "KnowledgeSourceIdentity",
+    "RAGAnswerRun",
+    "SourceAuthorizationProvenance",
+    "SourcePolicyKBUseGrant",
     "LLMCredential",
     "LLMModel",
     "LLMProvider",
     "LLMRelCredentialModel",
     "LLMUsageLog",
+    "LLMNodeVersion",
     "Schedule",
     "Organization",
     "OrganizationMembership",
@@ -83,12 +124,21 @@ __all__ = [
     "UserResourcePermissionMixin",
     "TeamMembership",
     "TeamKnowledgePermission",
+    "TeamKnowledgeCollectionPermission",
     "TeamLLMPermission",
     "TeamAuditPermission",
     "TeamWorkflowPermission",
     "UserWorkflowPermission",
     "UserLLMPermission",
+    "UserKnowledgeCollectionPermission",
+    "UserAppCreationPermission",
+    "PermissionRequest",
+    "PERMISSION_REQUEST_PENDING",
+    "PERMISSION_REQUEST_APPROVED",
+    "PERMISSION_REQUEST_REJECTED",
+    "REQUESTED_PERMISSION_APP_CREATE",
     "Workflow",
+    "WorkflowBudget",
     "WorkflowDeployment",
     "WorkflowNodeRun",
     "WorkflowRun",

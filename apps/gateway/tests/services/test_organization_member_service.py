@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.operators import eq, in_op, is_
 
+from apps.gateway.services.notification_service import NotificationService
 from apps.gateway.services.organization_member_service import OrganizationMemberService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
@@ -26,10 +27,19 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
 from apps.shared.schemas.organization_membership import (
     OrganizationMemberInviteRequest,
     OrganizationMemberUpdateRequest,
 )
+
+
+@pytest.fixture(autouse=True)
+def _disable_notification_publish(monkeypatch):
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.publish_notifications_changed",
+        lambda _user_id: None,
+    )
 
 
 def test_list_active_organizations_uses_active_memberships_only():
@@ -70,6 +80,29 @@ def test_list_organization_memberships_uses_active_and_invited_memberships():
     assert [item.id for item in result] == [active_org.id, invited_org.id]
     assert result[0].membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE
     assert result[1].membership_state == ORGANIZATION_MEMBERSHIP_INVITED
+
+
+def test_notification_service_lists_invited_memberships_only():
+    user = _user()
+    invited_org = _organization("Invited", created_by=user.id)
+    active_org = _organization("Active", created_by=user.id)
+    removed_org = _organization("Removed", created_by=user.id)
+    db = _Db(
+        users=[user],
+        organizations=[invited_org, active_org, removed_org],
+        memberships=[
+            _membership(user, invited_org, ORGANIZATION_MEMBERSHIP_INVITED),
+            _membership(user, active_org, ORGANIZATION_MEMBERSHIP_ACTIVE),
+            _membership(user, removed_org, ORGANIZATION_MEMBERSHIP_REMOVED),
+        ],
+    )
+
+    result = NotificationService.list_notifications(db, user.id)
+
+    assert len(result) == 1
+    assert result[0].type == "organization.invitation"
+    assert result[0].organization_id == invited_org.id
+    assert result[0].organization_name == "Invited"
 
 
 def test_member_list_defaults_to_non_removed_and_filters_state(monkeypatch):
@@ -165,6 +198,54 @@ def test_invite_is_idempotent_and_reinvite_removed_records_audit(monkeypatch):
     assert target.email not in str(metadata)
 
 
+def test_invite_accept_and_decline_publish_notification_changes(monkeypatch):
+    manager = _user()
+    invited = _user()
+    declined = _user()
+    org = _organization("Acme", created_by=manager.id)
+    invited_membership = _membership(
+        invited,
+        org,
+        ORGANIZATION_MEMBERSHIP_REMOVED,
+        accepted_at=_now(),
+        removed_at=_now(),
+    )
+    declined_membership = _membership(
+        declined,
+        org,
+        ORGANIZATION_MEMBERSHIP_INVITED,
+    )
+    db = _Db(
+        users=[manager, invited, declined],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            invited_membership,
+            declined_membership,
+        ],
+    )
+    published = []
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.publish_notifications_changed",
+        lambda user_id: published.append(user_id),
+    )
+
+    OrganizationMemberService.invite_member(
+        db,
+        manager,
+        org.id,
+        OrganizationMemberInviteRequest(user_id=invited.id),
+    )
+    OrganizationMemberService.accept_invitation(db, invited, org.id)
+    OrganizationMemberService.decline_invitation(db, declined, org.id)
+
+    assert published == [invited.id, invited.id, declined.id]
+
+
 def test_accept_update_guards_and_state_transitions(monkeypatch):
     manager = _user()
     target = _user()
@@ -208,6 +289,47 @@ def test_accept_update_guards_and_state_transitions(monkeypatch):
         AuditAction.ORGANIZATION_MEMBER_ACCEPT,
         AuditAction.ORGANIZATION_MEMBER_UPDATE,
     ]
+
+
+def test_decline_invitation_marks_removed_and_records_audit():
+    user = _user()
+    org = _organization("Acme", created_by=user.id)
+    membership = _membership(user, org, ORGANIZATION_MEMBERSHIP_INVITED)
+    db = _Db(users=[user], organizations=[org], memberships=[membership])
+
+    response = OrganizationMemberService.decline_invitation(db, user, org.id)
+
+    assert response.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
+    assert membership.accepted_at is None
+    assert membership.removed_at is not None
+    assert _audit_actions(db) == [AuditAction.ORGANIZATION_MEMBER_DECLINE]
+    assert db.commits == 1
+
+
+@pytest.mark.parametrize(
+    "state",
+    [ORGANIZATION_MEMBERSHIP_ACTIVE, ORGANIZATION_MEMBERSHIP_SUSPENDED],
+)
+def test_decline_rejects_non_invited_membership(state):
+    user = _user()
+    org = _organization("Acme", created_by=user.id)
+    db = _Db(users=[user], organizations=[org], memberships=[_membership(user, org, state)])
+
+    with pytest.raises(HTTPException) as conflict:
+        OrganizationMemberService.decline_invitation(db, user, org.id)
+
+    assert conflict.value.status_code == 409
+
+
+def test_decline_missing_invitation_returns_404():
+    user = _user()
+    org = _organization("Acme", created_by=user.id)
+    db = _Db(users=[user], organizations=[org], memberships=[])
+
+    with pytest.raises(HTTPException) as missing:
+        OrganizationMemberService.decline_invitation(db, user, org.id)
+
+    assert missing.value.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -464,6 +586,7 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         team_memberships=[_team_membership(org.id, target.id)],
         workflow_permissions=[_user_workflow_permission(org.id, target.id)],
         llm_permissions=[_user_llm_permission(org.id, target.id)],
+        app_creation_permissions=[_user_app_creation_permission(org.id, target.id)],
     )
     monkeypatch.setattr(
         "apps.gateway.services.organization_member_service.has_organization_manager_permission",
@@ -482,14 +605,19 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
     assert response.removed_team_memberships == 1
     assert response.revoked_user_permissions.workflow == 1
     assert response.revoked_user_permissions.llm_credential == 1
+    assert response.revoked_user_permissions.app_creation == 1
     assert target_membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
     assert db.team_memberships == []
     assert db.workflow_permissions == []
     assert db.llm_permissions == []
+    assert db.app_creation_permissions == []
     assert _audit_actions(db) == [
         AuditAction.ORGANIZATION_MEMBER_REMOVE,
         AuditAction.PERMISSION_REVOKE,
     ]
+    assert db.audit_logs[1].audit_metadata["cleanup"][
+        "user_app_creation_permissions"
+    ] == 1
     for audit_log in db.audit_logs:
         metadata = audit_log.audit_metadata
         assert metadata["request_id"] == "req-test"
@@ -732,6 +860,7 @@ class _Db:
         team_memberships=None,
         workflow_permissions=None,
         llm_permissions=None,
+        app_creation_permissions=None,
     ):
         self.users = users or []
         self.organizations = organizations or []
@@ -739,6 +868,7 @@ class _Db:
         self.team_memberships = team_memberships or []
         self.workflow_permissions = workflow_permissions or []
         self.llm_permissions = llm_permissions or []
+        self.app_creation_permissions = app_creation_permissions or []
         self.audit_logs = []
         self.commits = 0
         self.for_update_calls = 0
@@ -776,6 +906,12 @@ class _Db:
             return _Query(
                 self.llm_permissions,
                 self.llm_permissions,
+                on_for_update=self._record_for_update,
+            )
+        if model is UserAppCreationPermission:
+            return _Query(
+                self.app_creation_permissions,
+                self.app_creation_permissions,
                 on_for_update=self._record_for_update,
             )
         return _Query([], on_for_update=self._record_for_update)
@@ -888,6 +1024,10 @@ def _field_value(item, field):
         "user_workflow_permissions.user_id": "user_id",
         "user_llm_permissions.grantee_organization_id": "grantee_organization_id",
         "user_llm_permissions.user_id": "user_id",
+        (
+            "user_app_creation_permissions.grantee_organization_id"
+        ): "grantee_organization_id",
+        "user_app_creation_permissions.user_id": "user_id",
     }
     return getattr(item, mapping[field])
 
@@ -964,6 +1104,15 @@ def _user_llm_permission(organization_id, user_id):
         llm_credential_id=uuid4(),
         assigned_by=uuid4(),
         auth_state="viewer",
+    )
+
+
+def _user_app_creation_permission(organization_id, user_id):
+    return UserAppCreationPermission(
+        id=uuid4(),
+        grantee_organization_id=organization_id,
+        user_id=user_id,
+        assigned_by=uuid4(),
     )
 
 

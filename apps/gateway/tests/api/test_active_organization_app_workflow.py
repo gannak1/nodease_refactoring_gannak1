@@ -44,6 +44,13 @@ def test_create_app_uses_active_organization_header(monkeypatch):
         "resolve_active_organization_id",
         lambda db, request, raw, user_id: organization_id,
     )
+    # 이 테스트의 관심사는 조직 header 전파다. App 생성 권한 판정(ADR-0016)은
+    # 전용 테스트에서 검증하므로 여기서는 허용으로 고정한다.
+    monkeypatch.setattr(
+        app_endpoint.shared_permissions,
+        "has_app_creation_permission",
+        lambda db, user_id, org_id: True,
+    )
     monkeypatch.setattr(
         app_endpoint.AppService,
         "create_app",
@@ -287,9 +294,13 @@ class _FakeDb:
     def __init__(self, value):
         self.value = value
         self.query_obj = _FakeQuery(value)
+        self.rollback_count = 0
 
     def query(self, *args, **kwargs):
         return self.query_obj
+
+    def rollback(self):
+        self.rollback_count += 1
 
 
 def test_get_user_apps_filters_by_active_organization_before_permission_filter(monkeypatch):
@@ -303,7 +314,9 @@ def test_get_user_apps_filters_by_active_organization_before_permission_filter(m
     )
     db = _FakeDb([app])
 
-    monkeypatch.setattr(app_service, "has_organization_manager_permission", lambda *a: True)
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: True
+    )
     monkeypatch.setattr(AppService, "_populate_owner_name", lambda *a: None)
     monkeypatch.setattr(AppService, "_populate_deployment_status", lambda *a: None)
 
@@ -316,6 +329,87 @@ def test_get_user_apps_filters_by_active_organization_before_permission_filter(m
         and expression.right.value == organization_id
         for expression in db.query_obj.filters
     )
+
+
+def test_get_user_apps_attaches_member_budget_status_from_grouped_lookup(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        created_by=user_id,
+        active_deployment_id=None,
+        is_market=False,
+    )
+    db = _FakeDb([app])
+    captured = {}
+
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: True
+    )
+    monkeypatch.setattr(AppService, "_populate_owner_name", lambda *a: None)
+    monkeypatch.setattr(AppService, "_populate_deployment_status", lambda *a: None)
+
+    def budget_status_by_workflow_id(db_arg, workflow_ids, *args, **kwargs):
+        captured["workflow_ids"] = list(workflow_ids)
+        return {workflow_id: {"usage_ratio": 0.9, "status": "at_risk"}}
+
+    monkeypatch.setattr(
+        AppService,
+        "_budget_status_by_workflow_id",
+        budget_status_by_workflow_id,
+        raising=False,
+    )
+
+    apps = AppService.get_user_apps(db, user_id, organization_id=organization_id)
+
+    assert getattr(apps[0], "budget_status", None) == {
+        "usage_ratio": pytest.approx(0.9),
+        "status": "at_risk",
+    }
+    assert captured["workflow_ids"] == [workflow_id]
+
+
+def test_get_user_apps_returns_null_budget_status_when_lookup_races(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        created_by=user_id,
+        active_deployment_id=None,
+        is_market=False,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: True
+    )
+    monkeypatch.setattr(AppService, "_populate_owner_name", lambda *a: None)
+    monkeypatch.setattr(AppService, "_populate_deployment_status", lambda *a: None)
+
+    def budget_status_by_workflow_id(*args, **kwargs):
+        raise RuntimeError("budget row changed while app list was being built")
+
+    monkeypatch.setattr(
+        AppService,
+        "_budget_status_by_workflow_id",
+        budget_status_by_workflow_id,
+        raising=False,
+    )
+
+    apps = AppService.get_user_apps(db, user_id, organization_id=organization_id)
+
+    assert getattr(apps[0], "budget_status", "missing") is None
+    assert db.rollback_count == 1
 
 
 def test_list_app_operations_returns_safe_summary(monkeypatch):
@@ -368,7 +462,9 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
             ]
         },
     )
-    monkeypatch.setattr(AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"})
+    monkeypatch.setattr(
+        AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"}
+    )
     monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
     monkeypatch.setattr(
         AppService,
@@ -403,6 +499,139 @@ def test_list_app_operations_returns_safe_summary(monkeypatch):
     ]
     assert row["deployment"]["state"] == "active"
     assert row["latest_run"]["state"] == "not_started"
+
+
+def test_list_app_operations_attaches_member_budget_status_from_grouped_lookup(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="예산 운영 모듈",
+        description="예산 상태 표시",
+        icon={"type": "emoji", "content": "B", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db = _FakeDb([app])
+    captured = {}
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(
+        app_service,
+        "get_workflow_permission_sources_by_workflow_ids",
+        lambda *a, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"}
+    )
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    def budget_status_by_workflow_id(db_arg, workflow_ids, *args, **kwargs):
+        captured["workflow_ids"] = list(workflow_ids)
+        return {workflow_id: {"usage_ratio": 1.000001, "status": "exceeded"}}
+
+    monkeypatch.setattr(
+        AppService,
+        "_budget_status_by_workflow_id",
+        budget_status_by_workflow_id,
+        raising=False,
+    )
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+
+    row = rows[0].model_dump()
+    assert row["app"]["budget_status"] == {
+        "usage_ratio": pytest.approx(1.000001),
+        "status": "exceeded",
+    }
+    assert "monthly_budget_usd" not in row["app"]["budget_status"]
+    assert "current_month_cost" not in row["app"]["budget_status"]
+    assert captured["workflow_ids"] == [workflow_id]
+
+
+def test_list_app_operations_returns_null_budget_status_when_lookup_races(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    app = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="예산 경합 모듈",
+        description="예산 조회 경합",
+        icon={"type": "emoji", "content": "B", "background_color": "#E0F2FE"},
+        workflow_id=workflow_id,
+        active_deployment=None,
+        active_deployment_id=None,
+        created_by=user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db = _FakeDb([app])
+
+    monkeypatch.setattr(AppService, "can_read_app_operations", lambda *a: True)
+    monkeypatch.setattr(
+        app_service,
+        "get_effective_workflow_auth_state",
+        lambda *a, **kwargs: "viewer",
+    )
+
+    def permission_sources_by_workflow_ids(*args, **kwargs):
+        assert db.rollback_count == 1
+        return {}
+
+    monkeypatch.setattr(
+        app_service,
+        "get_workflow_permission_sources_by_workflow_ids",
+        permission_sources_by_workflow_ids,
+    )
+    monkeypatch.setattr(
+        AppService, "_owner_names_by_id", lambda *a: {user_id: "혜연"}
+    )
+    monkeypatch.setattr(AppService, "_latest_runs_by_workflow_id", lambda *a: {})
+    monkeypatch.setattr(AppService, "_deployment_history_by_app_id", lambda *a: {})
+
+    def budget_status_by_workflow_id(*args, **kwargs):
+        raise RuntimeError(
+            "budget row changed while operations list was being built"
+        )
+
+    monkeypatch.setattr(
+        AppService,
+        "_budget_status_by_workflow_id",
+        budget_status_by_workflow_id,
+        raising=False,
+    )
+
+    rows = AppService.list_app_operations(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+
+    assert rows[0].model_dump()["app"].get("budget_status", "missing") is None
+    assert db.rollback_count == 1
 
 
 def test_list_app_operations_filters_by_capability(monkeypatch):
@@ -676,6 +905,13 @@ def test_owner_or_manager_without_membership_can_create_and_list_apps_and_workfl
 
 def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
     _patch_audit(monkeypatch)
+    # App 생성 권한 판정(ADR-0016)은 전용 테스트에서 검증한다. 이 테스트의
+    # 관심사는 생성 후 draft manage 권한이므로 생성 능력은 허용으로 고정한다.
+    monkeypatch.setattr(
+        app_endpoint.shared_permissions,
+        "has_app_creation_permission",
+        lambda db, user_id, org_id: True,
+    )
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     session = _RouteSession(
@@ -698,13 +934,39 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
         )
         assert create_response.status_code == 200
         workflow_id = uuid.UUID(create_response.json()["workflow_id"])
+        knowledge_base_id = str(uuid.uuid4())
+        llm_node = {
+            "id": "llm-1",
+            "type": "llmNode",
+            "position": {"x": 100, "y": 200},
+            "data": {
+                "title": "LLM",
+                "provider": "openai",
+                "model_id": "gpt-4o",
+                "user_prompt": "정책을 요약해줘",
+                "knowledgeBases": [{"id": knowledge_base_id, "name": "제품 정책"}],
+            },
+        }
 
         draft_response = TestClient(app).post(
             f"/api/v1/workflows/{workflow_id}/draft",
-            json={"nodes": [], "edges": []},
+            json={"nodes": [llm_node], "edges": []},
         )
         assert draft_response.status_code == 200
         assert draft_response.json()["status"] == "success"
+
+        saved_workflow = next(
+            workflow for workflow in session.workflows if workflow.id == workflow_id
+        )
+        assert saved_workflow.graph["nodes"][0]["data"]["knowledgeBases"] == [
+            {"id": knowledge_base_id, "name": "제품 정책"}
+        ]
+
+        get_response = TestClient(app).get(f"/api/v1/workflows/{workflow_id}/draft")
+        assert get_response.status_code == 200
+        assert get_response.json()["nodes"][0]["data"]["knowledgeBases"] == [
+            {"id": knowledge_base_id, "name": "제품 정책"}
+        ]
     finally:
         app.dependency_overrides = {}
 

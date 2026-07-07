@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/apiClient';
 import type { WorkflowPermissionSummary } from '../../workflow/types/Api';
 import type { AppIcon } from './appApi';
+import type { BudgetStatusPayload } from '../../budget/types';
 
 export type ModulePermissionSource = {
   type: 'team' | 'user';
@@ -24,6 +25,13 @@ export type ModuleOperationAppSummary = {
   description?: string;
   icon?: AppIcon;
   workflow_id?: string;
+  budget_status?: BudgetStatusPayload | null;
+  operation_metrics?: {
+    current_month_cost: number;
+    projected_month_cost?: number | null;
+    previous_month_cost: number;
+    trend_percent?: number | null;
+  } | null;
   owner_name?: string;
   created_at: string;
   updated_at: string;

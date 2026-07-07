@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
@@ -371,6 +372,15 @@ class DeploymentService:
                 )
         # require_auth가 False면 인증 스킵 (웹 앱/위젯)
 
+        # 4-1. 예산 초과 차단 — 아래 dispatch try 블록 밖이어야 429가
+        # "Engine Execution failed" 500으로 감싸이지 않는다 (BGT-REQ-030~031).
+        WorkflowBudgetService.ensure_workflow_budget_allows_execution(
+            db,
+            workflow_id=app.workflow_id,
+            trigger_mode=trigger_mode,
+            actor_id=None,
+        )
+
         # 5. 그래프 데이터 준비
         graph_data = deployment.graph_snapshot
 
@@ -389,7 +399,7 @@ class DeploymentService:
                     str(app.organization_id) if app.organization_id else None
                 ),
                 "app_id": str(app.id),
-                "trigger_mode": "app",  # 실행 모드 (앱 배포 실행)
+                "trigger_mode": trigger_mode,  # 실행 모드 (API/앱 배포 실행)
                 "deployment_id": str(deployment.id),
                 "workflow_version": deployment.version,
                 "memory_mode": memory_mode_enabled,  # 기억 모드 추가

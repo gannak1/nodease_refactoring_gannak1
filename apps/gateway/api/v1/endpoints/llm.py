@@ -1,13 +1,15 @@
+import logging
 from datetime import datetime
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_llm_credential_permission
+from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.llm_service import LLMService
 from apps.shared.audit.actions import AuditAction
@@ -16,6 +18,7 @@ from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
+    LLMCredentialModelOptionResponse,
     LLMCredentialResponse,
     LLMModelPricingUpdate,
     LLMModelResponse,
@@ -24,6 +27,7 @@ from apps.shared.schemas.llm import (
 from apps.shared.services.tracing.access import TraceAccessService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _require_system_admin(db: Session, current_user: User):
@@ -87,6 +91,36 @@ def get_my_credentials(
         return LLMService.get_user_credentials(db, current_user.id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get(
+    "/agent-answer-options",
+    response_model=List[LLMCredentialModelOptionResponse],
+)
+def get_agent_answer_options(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    RAG Agent answer에서 사용할 수 있는 verified model/credential 조합을 조회합니다.
+    """
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    try:
+        return LLMService.get_agent_answer_options(
+            db, current_user.id, organization_id
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Agent answer options lookup failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Agent answer options lookup failed.",
+        ) from exc
 
 
 @router.post("/credentials", response_model=LLMCredentialResponse)

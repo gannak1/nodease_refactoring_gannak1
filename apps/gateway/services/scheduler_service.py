@@ -7,8 +7,10 @@ from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
@@ -169,6 +171,21 @@ class SchedulerService:
             # App 조회하여 workflow_id 가져오기
             app = db.query(App).filter(App.id == deployment.app_id).first()
 
+            # 예산 초과 차단 — 바깥 generic except가 삼켜 rollback하면 차단
+            # audit까지 사라지므로, 여기서 직접 잡고 dispatch만 생략한다.
+            try:
+                WorkflowBudgetService.ensure_workflow_budget_allows_execution(
+                    db,
+                    workflow_id=app.workflow_id if app else None,
+                    trigger_mode="schedule",
+                    actor_id=None,
+                )
+            except HTTPException:
+                logger.warning(
+                    f"예산 초과로 스케줄 실행 차단: {deployment_id} (스케줄: {schedule_id})"
+                )
+                return
+
             # user_input에 스케줄 메타데이터 포함
             user_input = {
                 "triggered_at": triggered_at,
@@ -181,6 +198,9 @@ class SchedulerService:
                 "workflow_id": str(app.workflow_id)
                 if app and app.workflow_id
                 else None,
+                "organization_id": (
+                    str(app.organization_id) if app and app.organization_id else None
+                ),
                 "app_id": str(deployment.app_id),
                 "trigger_mode": "schedule",
                 "deployment_id": str(deployment_id),

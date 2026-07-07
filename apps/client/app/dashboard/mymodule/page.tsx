@@ -5,23 +5,26 @@ import { useRouter } from 'next/navigation';
 import {
   AlertTriangle,
   CheckCircle2,
-  Clock3,
+  DollarSign,
   Edit3,
   ExternalLink,
   Filter,
+  Gauge,
   Layers3,
   Plus,
   RefreshCw,
-  Rocket,
   Search,
-  ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
+  TrendingUp,
   Users,
 } from 'lucide-react';
 
 import CreateAppModal from '@/app/features/app/components/create-app-modal';
 import EditAppModal from '@/app/features/app/components/edit-app-modal';
 import { appApi, type App } from '@/app/features/app/api/appApi';
+import { BudgetStatusBadge } from '@/app/features/budget/components/BudgetStatusBadge';
+import { budgetRunBlockMessage } from '@/app/features/budget/utils/budgetGuard';
 import {
   moduleOperationsApi,
   type ModuleOperationRow,
@@ -40,14 +43,6 @@ type DeploymentFilter = 'all' | 'active' | 'inactive' | 'undeployed';
 type RunFilter = 'all' | 'running' | 'failed';
 
 const PAGE_SIZE = 100;
-
-const permissionLabels: Record<string, string> = {
-  manager: '워크플로우 관리 가능',
-  builder: '워크플로우 수정 가능',
-  operator: '실행 가능',
-  viewer: '조회 가능',
-  none: '권한 없음',
-};
 
 const runLabels: Record<ModuleRunState, string> = {
   running: '실행 중',
@@ -78,23 +73,6 @@ const runTone: Record<ModuleRunState, string> = {
   unavailable: 'border-slate-200 bg-slate-50 text-slate-600',
 };
 
-const permissionTone = (row: ModuleOperationRow) => {
-  if (row.permissionError) return 'border-red-200 bg-red-50 text-red-700';
-  if (row.permission?.can_manage) {
-    return 'border-violet-200 bg-violet-50 text-violet-700';
-  }
-  if (row.permission?.can_write) {
-    return 'border-blue-200 bg-blue-50 text-blue-700';
-  }
-  if (row.permission?.can_execute) {
-    return 'border-amber-200 bg-amber-50 text-amber-700';
-  }
-  if (row.permission?.can_read) {
-    return 'border-slate-200 bg-slate-50 text-slate-700';
-  }
-  return 'border-slate-200 bg-slate-50 text-slate-500';
-};
-
 const formatDate = (value?: string) => {
   if (!value) return '-';
   return new Date(value).toLocaleDateString('ko-KR', {
@@ -105,17 +83,75 @@ const formatDate = (value?: string) => {
   });
 };
 
+const formatCurrency = (value?: number | null) => {
+  if (value == null) return '-';
+  const absoluteValue = Math.abs(value);
+  const fractionDigits =
+    absoluteValue >= 100 ? 0 : absoluteValue >= 1 ? 2 : 6;
+
+  return `$${value.toLocaleString('en-US', {
+    minimumFractionDigits: absoluteValue >= 1 ? 2 : 0,
+    maximumFractionDigits: fractionDigits,
+  })}`;
+};
+
+type CostOptimizationSignal = {
+  monthlyCost: number | null;
+  trendPercent: number | null;
+  budgetUsageRatio: number | null;
+  recommended: boolean;
+  reason: string;
+};
+
+const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
+  if (row.deploymentState !== 'active') {
+    return {
+      monthlyCost: 0,
+      trendPercent: null,
+      budgetUsageRatio: row.app.budget_status?.usage_ratio ?? null,
+      recommended: false,
+      reason: '배포 중인 워크플로우가 아닙니다.',
+    };
+  }
+
+  const metrics = row.app.operation_metrics;
+  const monthlyCost =
+    metrics?.projected_month_cost ?? metrics?.current_month_cost ?? null;
+  const trendPercent = metrics?.trend_percent ?? null;
+  const budgetUsageRatio = row.app.budget_status?.usage_ratio ?? null;
+  const budgetStatus = row.app.budget_status?.status;
+  const hasCostData =
+    metrics != null &&
+    ((metrics.current_month_cost ?? 0) > 0 || (monthlyCost ?? 0) > 0);
+  const budgetAtRisk = budgetStatus === 'at_risk' || budgetStatus === 'exceeded';
+  const trendAtRisk = trendPercent != null && trendPercent >= 20;
+  const recommended = budgetAtRisk || trendAtRisk;
+
+  const reason = recommended
+    ? budgetAtRisk
+      ? budgetStatus === 'exceeded'
+        ? '예산 초과'
+        : '예산 초과 위험'
+      : '전월 대비 비용 증가'
+    : !hasCostData
+      ? '운영 비용 데이터 없음'
+      : trendPercent == null
+        ? '전월 비교 데이터 없음'
+        : '안정 범위';
+
+  return {
+    monthlyCost,
+    trendPercent,
+    budgetUsageRatio,
+    recommended,
+    reason,
+  };
+};
+
 type OrganizationResponse = {
   id: string;
   name: string;
   is_manager?: boolean;
-};
-
-const permissionLabelOf = (row: ModuleOperationRow) => {
-  if (!row.app.workflow_id) return '워크플로우 준비 중';
-  if (row.permissionError) return row.permissionError;
-  const authState = row.permission?.auth_state || 'none';
-  return permissionLabels[authState] || authState;
 };
 
 const sourceLabelOf = (row: ModuleOperationRow) => {
@@ -134,9 +170,6 @@ const sourceLabelOf = (row: ModuleOperationRow) => {
 const canEditApp = (row: ModuleOperationRow, isOrgManager: boolean) =>
   isOrgManager ||
   (row.permissionStatus === 'loaded' && Boolean(row.permission?.can_manage));
-
-const canWriteWorkflow = (row: ModuleOperationRow) =>
-  row.permissionStatus === 'loaded' && Boolean(row.permission?.can_write);
 
 const canToggleDeployment = (row: ModuleOperationRow) =>
   row.permissionStatus === 'loaded' &&
@@ -253,23 +286,46 @@ export default function MyModulePage() {
   }, []);
 
   const summary = useMemo(
-    () => ({
-      active: rows.filter((row) => row.deploymentState === 'active').length,
-      undeployed: rows.filter((row) => row.deploymentState === 'undeployed')
-        .length,
-      failed: rows.filter((row) => row.latestRun.state === 'failed').length,
-      running: rows.filter((row) => row.latestRun.state === 'running').length,
-      editable: rows.filter(canWriteWorkflow).length,
-      manageable: rows.filter((row) => canEditApp(row, isOrgManager)).length,
-      runUnavailable: rows.filter((row) => row.dataQuality.latestRunUnavailable)
-        .length,
-      unavailable: rows.filter(
-        (row) =>
-          row.dataQuality.permissionSourcesUnavailable ||
-          row.dataQuality.latestRunUnavailable,
-      ).length,
-    }),
-    [isOrgManager, rows],
+    () => {
+      const activeRows = rows.filter((row) => row.deploymentState === 'active');
+      const costSignals = activeRows.map(costSignalOf);
+      const monthlyCost = costSignals.reduce(
+        (total, signal) => total + (signal.monthlyCost ?? 0),
+        0,
+      );
+      const trendSignals = costSignals.filter(
+        (signal) => signal.trendPercent != null,
+      );
+      const recommended = costSignals.filter((signal) => signal.recommended);
+      const atRiskBudget = costSignals.filter(
+        (signal) =>
+          signal.budgetUsageRatio != null && signal.budgetUsageRatio >= 0.8,
+      );
+      const averageTrend =
+        trendSignals.length > 0
+          ? Math.round(
+              trendSignals.reduce(
+                (total, signal) => total + (signal.trendPercent ?? 0),
+                0,
+              ) / trendSignals.length,
+            )
+          : null;
+
+      return {
+        active: activeRows.length,
+        unavailable: rows.filter(
+          (row) =>
+            row.dataQuality.permissionSourcesUnavailable ||
+            row.dataQuality.latestRunUnavailable,
+        ).length,
+        monthlyCost,
+        recommendedCount: recommended.length,
+        atRiskBudgetCount: atRiskBudget.length,
+        averageTrend,
+        trendSampleCount: trendSignals.length,
+      };
+    },
+    [rows],
   );
 
   const handleModuleClick = (row: ModuleOperationRow) => {
@@ -342,31 +398,36 @@ export default function MyModulePage() {
 
         <section className="grid gap-4 md:grid-cols-4">
           <DashboardSummaryCard
-            label="배포 중"
-            value={`${summary.active}개`}
-            icon={Rocket}
-            iconClassName="text-green-600"
-            description="현재 로드된 결과 기준"
+            label="예상 월 비용"
+            value={formatCurrency(summary.monthlyCost)}
+            icon={DollarSign}
+            iconClassName="text-emerald-600"
+            description={`${summary.active}개 배포 workflow의 당월 사용량 기준`}
           />
           <DashboardSummaryCard
-            label="최근 오류"
-            value={`${summary.failed}개`}
-            icon={AlertTriangle}
+            label="평균 증가 추세"
+            value={
+              summary.averageTrend == null
+                ? '-'
+                : `${summary.averageTrend > 0 ? '+' : ''}${summary.averageTrend}%`
+            }
+            icon={TrendingUp}
+            iconClassName="text-amber-600"
+            description={`${summary.trendSampleCount}개 workflow 전월 비용 비교`}
+          />
+          <DashboardSummaryCard
+            label="예산 위험"
+            value={`${summary.atRiskBudgetCount}개`}
+            icon={Gauge}
             iconClassName="text-red-600"
-            description="현재 로드된 결과 기준"
+            description="사용률 80% 이상"
           />
           <DashboardSummaryCard
-            label="실행 중"
-            value={`${summary.running}개`}
-            icon={Clock3}
-            description="현재 로드된 결과 기준"
-          />
-          <DashboardSummaryCard
-            label="앱 설정 관리"
-            value={`${summary.manageable}개`}
-            icon={ShieldCheck}
+            label="최적화 권장"
+            value={`${summary.recommendedCount}개`}
+            icon={Sparkles}
             iconClassName="text-violet-600"
-            description={`로드된 결과 중 수정 가능 ${summary.editable}개`}
+            description="비용/추세/예산 위험 신호"
           />
         </section>
 
@@ -455,12 +516,13 @@ export default function MyModulePage() {
               <table className="min-w-full table-fixed divide-y divide-slate-100">
                 <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
-                    <th className="w-[30%] px-5 py-3">모듈</th>
-                    <th className="w-[14%] px-4 py-3">소유자</th>
-                    <th className="w-[16%] px-4 py-3">내 권한</th>
-                    <th className="w-[14%] px-4 py-3">배포</th>
-                    <th className="w-[14%] px-4 py-3">실행 상태</th>
-                    <th className="w-[12%] px-5 py-3 text-right">작업</th>
+                    <th className="w-[24%] px-5 py-3">워크플로우</th>
+                    <th className="w-[13%] px-4 py-3">월 예상 비용</th>
+                    <th className="w-[13%] px-4 py-3">증가 추세</th>
+                    <th className="w-[14%] px-4 py-3">예산 사용률</th>
+                    <th className="w-[15%] px-4 py-3">최적화</th>
+                    <th className="w-[11%] px-4 py-3">상태</th>
+                    <th className="w-[10%] px-5 py-3 text-right">작업</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
@@ -570,6 +632,13 @@ function ModuleOperationTableRow({
   const deploymentState = row.deploymentState;
   const canEdit = canEditApp(row, isOrgManager);
   const canToggle = canToggleDeployment(row);
+  const runBlockMessage = budgetRunBlockMessage(row.app.budget_status);
+  const costSignal = costSignalOf(row);
+  const budgetPercent =
+    costSignal.budgetUsageRatio == null
+      ? null
+      : Math.round(costSignal.budgetUsageRatio * 100);
+  const trendPercent = costSignal.trendPercent;
 
   return (
     <tr className="text-sm text-slate-700 hover:bg-slate-50">
@@ -591,6 +660,14 @@ function ModuleOperationTableRow({
             <span className="mt-1 line-clamp-2 block text-xs text-slate-500">
               {row.app.description || '설명 없음'}
             </span>
+            {row.app.budget_status && (
+              <span className="mt-2 block">
+                <BudgetStatusBadge
+                  status={row.app.budget_status.status}
+                  usageRatio={row.app.budget_status.usage_ratio}
+                />
+              </span>
+            )}
             <span className="mt-2 block text-xs text-slate-400">
               마지막 수정 {formatDate(row.app.updated_at)}
             </span>
@@ -598,45 +675,117 @@ function ModuleOperationTableRow({
         </button>
       </td>
       <td className="px-4 py-4 align-top">
-        <span className="font-medium text-slate-700">
-          {row.app.owner_name || '알 수 없음'}
-        </span>
-      </td>
-      <td className="px-4 py-4 align-top">
-        <div className="flex flex-col gap-2">
-          <Badge className={permissionTone(row)}>{permissionLabelOf(row)}</Badge>
-          <span className="inline-flex items-center gap-1 text-xs text-slate-500">
-            <Users className="h-3.5 w-3.5" />
-            {sourceLabelOf(row)}
-            {row.dataQuality.permissionSourcesUnavailable && (
-              <span className="rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-700">
-                예정
-              </span>
-            )}
+        {row.deploymentState === 'active' ? (
+          <div>
+            <p className="font-semibold text-slate-950">
+              {formatCurrency(costSignal.monthlyCost)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {costSignal.monthlyCost == null || costSignal.monthlyCost === 0
+                ? '운영 비용 없음'
+                : '이번 달 사용량 기반 예상'}
+            </p>
+          </div>
+        ) : (
+          <span className="text-xs font-medium text-slate-400">
+            배포 후 표시
           </span>
-        </div>
+        )}
       </td>
       <td className="px-4 py-4 align-top">
-        <Badge className={deploymentTone[deploymentState]}>
-          {deploymentLabels[deploymentState]}
-        </Badge>
-        {row.deployment.type && (
-          <p className="mt-2 text-xs text-slate-500">
-            {row.deployment.type}
-          </p>
+        {row.deploymentState === 'active' && trendPercent != null ? (
+          <Badge
+            className={
+              trendPercent >= 20
+                ? 'border-red-200 bg-red-50 text-red-700'
+                : trendPercent >= 10
+                  ? 'border-amber-200 bg-amber-50 text-amber-700'
+                  : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            }
+          >
+            {trendPercent > 0 ? '+' : ''}
+            {Math.round(trendPercent)}%
+          </Badge>
+        ) : row.deploymentState === 'active' ? (
+          <span className="text-xs font-medium text-slate-400">
+            비교 데이터 없음
+          </span>
+        ) : (
+          <span className="text-xs font-medium text-slate-400">-</span>
+        )}
+      </td>
+      <td className="px-4 py-4 align-top">
+        {row.deploymentState === 'active' && budgetPercent != null ? (
+          <div className="min-w-28">
+            <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-700">
+              <span>{budgetPercent}%</span>
+              <span
+                className={
+                  budgetPercent >= 100
+                    ? 'text-red-600'
+                    : budgetPercent >= 80
+                      ? 'text-amber-600'
+                      : 'text-emerald-600'
+                }
+              >
+                {budgetPercent >= 100
+                  ? '초과'
+                  : budgetPercent >= 80
+                    ? '위험'
+                    : '정상'}
+              </span>
+            </div>
+            <div className="mt-2 h-2 rounded-full bg-slate-100">
+              <div
+                className={`h-2 rounded-full ${
+                  budgetPercent >= 100
+                    ? 'bg-red-500'
+                    : budgetPercent >= 80
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-500'
+                }`}
+                style={{ width: `${Math.min(budgetPercent, 100)}%` }}
+              />
+            </div>
+          </div>
+        ) : row.deploymentState === 'active' ? (
+          <span className="text-xs font-medium text-slate-400">예산 없음</span>
+        ) : (
+          <span className="text-xs font-medium text-slate-400">-</span>
         )}
       </td>
       <td className="px-4 py-4 align-top">
         <div className="flex flex-col gap-2">
+          {costSignal.recommended ? (
+            <Badge className="border-violet-200 bg-violet-50 text-violet-700">
+              워크플로우 최적화 권장
+            </Badge>
+          ) : (
+            <Badge className="border-slate-200 bg-slate-50 text-slate-600">
+              {row.deploymentState === 'active' ? '안정 범위' : '대상 아님'}
+            </Badge>
+          )}
+          <span className="text-xs text-slate-500">{costSignal.reason}</span>
+          <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+            <Users className="h-3.5 w-3.5" />
+            {sourceLabelOf(row)}
+          </span>
+        </div>
+      </td>
+      <td className="px-4 py-4 align-top">
+        <div className="flex flex-col gap-2">
+          <Badge className={deploymentTone[deploymentState]}>
+            {deploymentLabels[deploymentState]}
+          </Badge>
           <Badge className={runTone[row.latestRun.state]}>
             {runLabels[row.latestRun.state]}
           </Badge>
-          <span className="text-xs text-slate-500">
-            {formatDate(row.latestRun.started_at)}
-          </span>
-          {row.dataQuality.latestRunUnavailable && (
-            <span className="w-fit rounded bg-amber-100 px-1 text-[10px] font-bold text-amber-700">
-              예정
+          {runBlockMessage && (
+            <span
+              title={runBlockMessage}
+              className="w-fit rounded bg-red-100 px-1 text-[10px] font-bold text-red-700"
+            >
+              실행 차단
             </span>
           )}
         </div>

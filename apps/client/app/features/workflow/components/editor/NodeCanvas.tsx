@@ -55,13 +55,10 @@ import { TestSidebar } from './TestSidebar';
 import { NodeFullscreenEditor } from './NodeFullscreenEditor';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
+import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
-const DEFAULT_NODE_SIZE = {
-  width: 420,
-  height: 150,
-};
 
 export default function NodeCanvas() {
   const {
@@ -306,7 +303,11 @@ export default function NodeCanvas() {
   });
 
   // Node creation hook
-  const { onDrop, handleAddNodeFromLibrary } = useNodeCreation({
+  const {
+    onDrop,
+    handleAddNodeFromLibrary,
+    handleAddNodeAfterSelected,
+  } = useNodeCreation({
     edges,
     setEdges,
     previewState,
@@ -559,11 +560,11 @@ export default function NodeCanvas() {
       const nodeWidth =
         measuredNode.measured?.width ??
         measuredNode.width ??
-        DEFAULT_NODE_SIZE.width;
+        WORKFLOW_NODE_SIZE.width;
       const nodeHeight =
         measuredNode.measured?.height ??
         measuredNode.height ??
-        DEFAULT_NODE_SIZE.height;
+        WORKFLOW_NODE_SIZE.height;
       const nodeCenter = {
         x: hoveredNode.position.x + nodeWidth / 2,
         y: hoveredNode.position.y + nodeHeight / 2,
@@ -730,14 +731,6 @@ export default function NodeCanvas() {
     ],
   );
 
-  useCanvasKeyboardShortcuts({
-    isEnabled: !isReadOnly,
-    isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
-    closeMenus: closeCanvasMenus,
-    closePanels: closeCanvasPanels,
-    toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
-  });
-
   const reactFlowConfig = useMemo(() => {
     if (interactiveMode === 'touchpad') {
       return {
@@ -780,6 +773,14 @@ export default function NodeCanvas() {
     activeWorkflowId,
     isReadOnly,
   ]);
+
+  useCanvasKeyboardShortcuts({
+    isEnabled: !isReadOnly,
+    isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
+    closeMenus: closeCanvasMenus,
+    closePanels: closeCanvasPanels,
+    toggleNodeLibrary: () => setIsNodeLibraryOpen((prev) => !prev),
+  });
 
   const currentAppId = useMemo(() => {
     const activeWorkflow = workflows.find((w) => w.id === activeWorkflowId);
@@ -1111,6 +1112,7 @@ export default function NodeCanvas() {
                   isOpen={isNodeLibraryOpen}
                   onToggle={() => setIsNodeLibraryOpen(!isNodeLibraryOpen)}
                   onAddNode={handleAddNodeFromLibrary}
+                  onAddNodeAfterSelected={handleAddNodeAfterSelected}
                   onOpenAppSearch={() =>
                     setSearchModalContext({ isOpen: true })
                   }

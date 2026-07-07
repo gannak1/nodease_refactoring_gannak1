@@ -1,9 +1,11 @@
+import sys
+import types
 import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
-from apps.shared.db.models.knowledge import Document
-from apps.shared.services.ingestion.vector_store_service import VectorStoreService
+
+sys.modules.setdefault("openai", types.SimpleNamespace(OpenAI=object))
 
 # ------------------------------------------------------------------
 # Mocks & Fixtures
@@ -39,20 +41,40 @@ def mock_embedding_service():
         yield instance
 
 
+@pytest.fixture(autouse=True)
+def mock_tiktoken():
+    encoding = MagicMock()
+    encoding.encode.side_effect = lambda text: list(str(text))
+    encoding.decode.side_effect = lambda tokens: "".join(tokens)
+    with patch(
+        "apps.shared.services.ingestion.vector_store_service.tiktoken.encoding_for_model",
+        return_value=encoding,
+    ), patch(
+        "apps.shared.services.ingestion.vector_store_service.tiktoken.get_encoding",
+        return_value=encoding,
+    ):
+        yield encoding
+
+
 @pytest.fixture
 def service(mock_db, mock_encryption, mock_embedding_service):
+    from apps.shared.services.ingestion.vector_store_service import VectorStoreService
+
     user_id = uuid.uuid4()
     return VectorStoreService(db=mock_db, user_id=user_id)
 
 
 @pytest.fixture
 def mock_document(mock_db):
+    from apps.shared.db.models.knowledge import Document
+
     doc_id = uuid.uuid4()
     kb_id = uuid.uuid4()
     mock_doc = MagicMock(spec=Document)
     mock_doc.id = doc_id
     mock_doc.knowledge_base_id = kb_id
     mock_doc.embedding_model = "text-embedding-3-small"
+    mock_doc.meta_info = {}
 
     # DB query for Document returns this doc
     mock_db.query.return_value.filter.return_value.first.return_value = mock_doc
@@ -151,3 +173,18 @@ def test_incremental_update_scenarios(
     assert texts_to_embed[0] == "content 4 UPDATED"
 
     print("✅ Scenario 3 (Partial Update) Passed")
+
+
+def test_vector_store_rejects_hierarchical_document_mode(service, mock_document):
+    mock_document.meta_info = {"chunking_mode": "hierarchical"}
+
+    with pytest.raises(RuntimeError, match="flat-only"):
+        service.save_chunks(mock_document.id, [{"content": "x", "metadata": {}}])
+
+
+def test_vector_store_rejects_non_flat_payload(service, mock_document):
+    with pytest.raises(RuntimeError, match="hierarchical chunks"):
+        service.save_chunks(
+            mock_document.id,
+            [{"content": "x", "metadata": {}, "chunk_level": "child"}],
+        )

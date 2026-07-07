@@ -5,6 +5,16 @@ import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
 import {
   WorkflowCreateRequest,
   WorkflowCompareResponse,
+  CostOptimizerAvailabilityResponse,
+  CostOptimizerApplyRequest,
+  CostOptimizerApplyResponse,
+  CostOptimizerBaselineListParams,
+  CostOptimizerBaselineListResponse,
+  CostOptimizerCompareRequest,
+  CostOptimizerCompareResponse,
+  CostOptimizerExperimentListParams,
+  CostOptimizerExperimentListResponse,
+  CostOptimizerLatestBaselineResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -37,6 +47,31 @@ const cloneMockResponse = <T>(value: T): T => {
     return structuredClone(value);
   }
   return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const createHttpError = (
+  status: number,
+  data: unknown,
+  fallbackMessage: string,
+) => {
+  const detail =
+    typeof data === 'object' && data !== null && 'detail' in data
+      ? (data as { detail?: unknown }).detail
+      : undefined;
+  const message =
+    typeof detail === 'string'
+      ? detail
+      : typeof detail === 'object' &&
+          detail !== null &&
+          'message' in detail &&
+          typeof (detail as { message?: unknown }).message === 'string'
+        ? (detail as { message: string }).message
+        : fallbackMessage;
+
+  return Object.assign(new Error(message), {
+    isAxiosError: true,
+    response: { status, data },
+  });
 };
 
 // 401 에러 인터셉터 (인증 만료 시 로그인 페이지로)
@@ -138,7 +173,11 @@ export const workflowApi = {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || 'Workflow execution failed');
+      throw createHttpError(
+        response.status,
+        errorData,
+        'Workflow execution failed',
+      );
     }
 
     if (!response.body) {
@@ -214,6 +253,74 @@ export const workflowApi = {
     },
   ): Promise<WorkflowCompareResponse> => {
     const response = await api.post(`/workflows/${workflowId}/compare`, data);
+    return response.data;
+  },
+
+  getCostOptimizerAvailability: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<CostOptimizerAvailabilityResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/availability`,
+    );
+    return response.data;
+  },
+
+  getCostOptimizerLatestBaseline: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<CostOptimizerLatestBaselineResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/baselines/latest`,
+    );
+    return response.data;
+  },
+
+  listCostOptimizerBaselines: async (
+    workflowId: string,
+    nodeId: string,
+    params: CostOptimizerBaselineListParams = {},
+  ): Promise<CostOptimizerBaselineListResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/baselines`,
+      { params },
+    );
+    return response.data;
+  },
+
+  compareCostOptimizerCandidate: async (
+    workflowId: string,
+    nodeId: string,
+    data: CostOptimizerCompareRequest,
+  ): Promise<CostOptimizerCompareResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/compare`,
+      data,
+    );
+    return response.data;
+  },
+
+  applyCostOptimizerCandidate: async (
+    workflowId: string,
+    nodeId: string,
+    data: CostOptimizerApplyRequest,
+  ): Promise<CostOptimizerApplyResponse> => {
+    const response = await api.patch(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/apply`,
+      data,
+    );
+    return response.data;
+  },
+
+  listCostOptimizerExperiments: async (
+    workflowId: string,
+    nodeId: string,
+    params: CostOptimizerExperimentListParams = {},
+  ): Promise<CostOptimizerExperimentListResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments`,
+      { params },
+    );
     return response.data;
   },
 

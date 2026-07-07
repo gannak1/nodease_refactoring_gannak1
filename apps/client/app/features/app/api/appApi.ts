@@ -1,5 +1,6 @@
 import { DeploymentType } from '../../workflow/types/Deployment';
 import { apiClient as api, publicApiClient } from '@/lib/apiClient';
+import type { BudgetStatusPayload } from '../../budget/types';
 
 export interface AppIcon {
   type: string;
@@ -20,6 +21,7 @@ export interface App {
   active_deployment_id?: string;
   active_deployment_type?: DeploymentType;
   active_deployment_is_active?: boolean;
+  budget_status?: BudgetStatusPayload | null;
   owner_name?: string;
   created_at: string;
   updated_at: string;

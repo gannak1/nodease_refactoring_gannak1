@@ -1,0 +1,33 @@
+# LLM Credentials Test Cases
+
+Status: Draft
+## 단위 테스트
+
+- Credential registration gate는 organization manager만 통과시키고 일반 active member, builder/operator, credential `use` 권한자, credential `manage` 권한자를 새 credential 등록 권한자로 취급하지 않는다.
+- Credential response builder는 저장 schema의 `user_id`를 개인 credential owner 표시로 노출하지 않거나, 노출이 필요한 기존 response에서는 등록 행위자 reference로만 취급한다.
+- Agent answer option builder는 credential value, encrypted config, API key/token, raw owner metadata, 불필요한 raw timestamp를 제외한다.
+- Credential-model relation resolver는 inactive, unverified, wrong-provider, missing relation case를 거부한다.
+- Generation credential preflight는 KB permission, collection route permission, source ACL authorization을 충족시키지 않는다.
+
+## API 테스트
+
+- `POST /api/v1/llm/credentials`는 active organization manager만 성공해야 하며, 일반 member는 `403 permission.denied`로 실패해야 한다.
+- `POST /api/v1/llm/credentials`는 organization scope 밖 `organization_id`를 resource hiding 정책에 따라 거부해야 하며, 성공 응답과 audit metadata에 raw API key 또는 `encrypted_config` 원문을 포함하지 않아야 한다.
+- `GET /api/v1/llm/agent-answer-options`는 active organization context에서 보이고 verified 상태인 model/credential pair만 반환한다.
+- Knowledge target flow에서 `generation_model_id`/`credential_id`가 없거나 보이지 않으면 Knowledge API gate에 따라 answer-run 생성 전에 실패한다.
+- Credential `use` denial은 sanitized error/audit metadata에서 KB permission denial 및 source ACL denial과 구분된다.
+
+## E2E 테스트
+
+- Standalone RAG answer explicit KB mode와 auto collection mode는 preset/default credential ADR이 승인되기 전까지 모두 명시 generation model/credential selection을 요구한다.
+
+## 권한 테스트
+
+- Credential 등록 권한은 organization manager 전용이며, credential `use`/`manage` 권한은 등록 권한으로 승격되지 않는다.
+- Credential read/list 권한만 있고 credential `use` 권한이 없는 사용자는 해당 credential로 Agent answer generation을 실행할 수 없다.
+- 사용 가능한 credential이라도 요청 model과 verified relation이 없으면 Agent answer generation을 실행할 수 없다.
+
+## Edge Case
+
+- 여러 credential 또는 model이 있어도 name/order fallback selection을 하지 않는다.
+- Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다.

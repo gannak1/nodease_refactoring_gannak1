@@ -1,11 +1,11 @@
 import dagre from 'dagre';
 import type { AppNode } from '../types/Nodes';
 import type { Edge } from '@xyflow/react';
-
-const NODE_WIDTH = 420;
-const NODE_HEIGHT = 150;
-const RANK_GAP = 160;
-const NODE_GAP = 100;
+import {
+  snapCanvasPosition,
+  WORKFLOW_NODE_GAP,
+  WORKFLOW_NODE_SIZE,
+} from './workflowCanvasGeometry';
 
 const getLayoutNodeSize = (node: AppNode) => {
   const measuredNode = node as AppNode & {
@@ -15,8 +15,14 @@ const getLayoutNodeSize = (node: AppNode) => {
   };
 
   return {
-    width: measuredNode.measured?.width ?? measuredNode.width ?? NODE_WIDTH,
-    height: measuredNode.measured?.height ?? measuredNode.height ?? NODE_HEIGHT,
+    width:
+      measuredNode.measured?.width ??
+      measuredNode.width ??
+      WORKFLOW_NODE_SIZE.width,
+    height:
+      measuredNode.measured?.height ??
+      measuredNode.height ??
+      WORKFLOW_NODE_SIZE.height,
   };
 };
 
@@ -32,7 +38,11 @@ export function calculateAutoLayout(
   dagreGraph.setDefaultEdgeLabel(() => ({}));
 
   // 실제 노드 크기를 기준으로 충분한 간격을 두어 겹침을 방지합니다.
-  dagreGraph.setGraph({ rankdir: 'LR', ranksep: RANK_GAP, nodesep: NODE_GAP });
+  dagreGraph.setGraph({
+    rankdir: 'LR',
+    ranksep: WORKFLOW_NODE_GAP.rank,
+    nodesep: WORKFLOW_NODE_GAP.sibling,
+  });
 
   // 2. 연결된 노드와 고립된 노드 분류
   const connectedNodeIds = new Set<string>();
@@ -92,9 +102,13 @@ export function calculateAutoLayout(
                 const x = n.position.x;
                 const y = n.position.y;
                 const w =
-                  (n.measured?.width as number) || (n.width as number) || 300;
+                  (n.measured?.width as number) ||
+                  (n.width as number) ||
+                  WORKFLOW_NODE_SIZE.width;
                 const h =
-                  (n.measured?.height as number) || (n.height as number) || 150;
+                  (n.measured?.height as number) ||
+                  (n.height as number) ||
+                  WORKFLOW_NODE_SIZE.height;
                 return {
                   minX: Math.min(acc.minX, x),
                   maxX: Math.max(acc.maxX, x + w),
@@ -164,8 +178,11 @@ export function calculateAutoLayout(
 
     if (connectedNodeIds.has(node.id)) {
       const nodeWithPosition = dagreGraph.node(node.id);
-      const x = nodeWithPosition.x - nodeWithPosition.width / 2;
-      const y = nodeWithPosition.y - nodeWithPosition.height / 2;
+      const position = snapCanvasPosition({
+        x: nodeWithPosition.x - nodeWithPosition.width / 2,
+        y: nodeWithPosition.y - nodeWithPosition.height / 2,
+      });
+      const { x, y } = position;
 
       // Bounding Box 계산
       minX = Math.min(minX, x);
@@ -176,7 +193,7 @@ export function calculateAutoLayout(
 
       return {
         ...node,
-        position: { x, y },
+        position,
       };
     }
     return node;
@@ -187,7 +204,7 @@ export function calculateAutoLayout(
   if (maxX === -Infinity) maxX = 1000; // 기본 너비
 
   // 고립된 노드(Orphan Nodes) 그리드 배치
-  const orphanStartY = maxY + 150; // 연결된 그래프와 충분한 간격
+  const orphanStartY = maxY + WORKFLOW_NODE_GAP.rank; // 연결된 그래프와 충분한 간격
   let currentX = minX;
   let currentY = orphanStartY;
   const gapX = 50;

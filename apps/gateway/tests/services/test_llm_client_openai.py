@@ -8,6 +8,7 @@ OpenAIClient 단위 테스트.
 import pathlib
 import sys
 
+import httpx
 import pytest
 
 # pytest 실행 시 모듈 검색 경로에 프로젝트 루트를 추가
@@ -16,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from apps.shared.services.llm_client import OpenAIClient
+from apps.shared.services.llm_client.base import BaseLLMClient
 
 
 @pytest.mark.asyncio
@@ -52,6 +54,103 @@ async def test_openai_invoke_success(monkeypatch):
     )
     resp = await client.invoke(messages)
     assert resp == dummy_response
+
+
+@pytest.mark.asyncio
+async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
+    """Responses 전용 모델군은 chat/completions를 거치지 않고 responses를 호출한다."""
+    messages = [{"role": "user", "content": "hi"}]
+    requested_urls = []
+    requested_payloads = []
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "output_text": "hello",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            requested_urls.append(url)
+            requested_payloads.append(kwargs.get("json", {}))
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        lambda **kw: MockAsyncClient()
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    resp = await client.invoke(messages, max_tokens=10)
+
+    assert requested_urls == ["https://api.openai.com/v1/responses"]
+    assert requested_payloads[0]["max_output_tokens"] == 10
+    assert "max_tokens" not in requested_payloads[0]
+    assert "max_completion_tokens" not in requested_payloads[0]
+    assert resp["choices"][0]["message"]["content"] == "hello"
+    assert resp["usage"]["prompt_tokens"] == 2
+    assert resp["usage"]["completion_tokens"] == 3
+    assert resp["usage"]["total_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_openai_invoke_does_not_fallback_to_completions_for_responses_models(monkeypatch):
+    """Responses 모델군은 responses 실패 후 legacy completions로 내려가지 않는다."""
+    messages = [{"role": "user", "content": "hi"}]
+    requested_urls = []
+
+    class MockResponse:
+        status_code = 404
+        text = '{"error":{"message":"model not found","type":"invalid_request_error"}}'
+
+        def json(self):
+            return {
+                "error": {
+                    "message": "model not found",
+                    "type": "invalid_request_error",
+                }
+            }
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            requested_urls.append(url)
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        lambda **kw: MockAsyncClient()
+    )
+
+    client = OpenAIClient(
+        model_id="o1-pro",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="model not found"):
+        await client.invoke(messages)
+
+    assert requested_urls == ["https://api.openai.com/v1/responses"]
 
 
 @pytest.mark.asyncio
@@ -111,3 +210,334 @@ def test_openai_token_estimate():
     tokens = client.get_num_tokens(messages)
     assert tokens >= 1
 
+
+def test_openai_embed_sync_uses_sync_http_client(monkeypatch):
+    """gevent 워커 경로에서 async wrapper 없이 동기 HTTP client로 임베딩한다."""
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+
+    class MockClient:
+        def __init__(self, **kwargs):
+            requested["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, **kwargs):
+            requested["url"] = url
+            requested["payload"] = kwargs["json"]
+            return MockResponse()
+
+    def fail_async_client(*_args, **_kwargs):
+        raise AssertionError("embed_sync must not use AsyncClient")
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        fail_async_client,
+    )
+
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    assert client.embed_sync("hello") == [0.1, 0.2, 0.3]
+    assert requested["client_kwargs"] == {"timeout": 30}
+    assert requested["url"] == "https://api.openai.com/v1/embeddings"
+    assert requested["payload"] == {"model": "text-embedding-3-small", "input": "hello"}
+
+
+def test_openai_embed_sync_request_error_is_wrapped(monkeypatch):
+    """동기 임베딩 네트워크 오류는 provider 오류로 감싸고 async client를 사용하지 않는다."""
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            raise httpx.ConnectTimeout("timeout")
+
+    def fail_async_client(*_args, **_kwargs):
+        raise AssertionError("embed_sync must not use AsyncClient")
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        fail_async_client,
+    )
+
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="OpenAI 임베딩 호출 실패"):
+        client.embed_sync("hello")
+
+
+def test_openai_embed_sync_http_error_includes_status(monkeypatch):
+    """동기 임베딩 HTTP 오류는 status를 포함해 호출 실패로 보고한다."""
+
+    class MockResponse:
+        status_code = 401
+        text = "unauthorized"
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match=r"임베딩 호출 실패 \(status 401\)"):
+        client.embed_sync("hello")
+
+
+def test_openai_embed_sync_malformed_response_is_parse_error(monkeypatch):
+    """동기 임베딩 응답이 JSON이 아니거나 shape가 다르면 파싱 실패로 고정한다."""
+
+    class MockResponse:
+        status_code = 200
+        text = "not-json"
+
+        def json(self):
+            raise ValueError("bad json")
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="OpenAI 임베딩 응답 파싱 실패"):
+        client.embed_sync("hello")
+
+
+def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):
+    """GPT-5.x sync 호출은 gevent 워커에서 Responses endpoint를 동기 호출한다."""
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "output_text": "hello",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+
+    class MockClient:
+        def __init__(self, **kwargs):
+            requested["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, **kwargs):
+            requested["url"] = url
+            requested["payload"] = kwargs["json"]
+            requested["timeout"] = kwargs["timeout"]
+            return MockResponse()
+
+    def fail_async_client(*_args, **_kwargs):
+        raise AssertionError("invoke_sync must not use AsyncClient for GPT-5.x")
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        fail_async_client,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5.4-mini",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    resp = client.invoke_sync([{"role": "user", "content": "hi"}], max_tokens=10)
+
+    assert requested["client_kwargs"] == {"timeout": 60}
+    assert requested["url"] == "https://api.openai.com/v1/responses"
+    assert requested["payload"]["model"] == "gpt-5.4-mini"
+    assert requested["payload"]["max_output_tokens"] == 10
+    assert requested["payload"]["input"][0]["role"] == "user"
+    assert requested["timeout"] == 180
+    assert resp["choices"][0]["message"]["content"] == "hello"
+    assert resp["usage"]["total_tokens"] == 5
+
+
+def test_openai_invoke_sync_responses_error_body_is_wrapped(monkeypatch):
+    """GPT-5.x sync Responses 오류는 legacy completions로 fallback하지 않고 그대로 실패한다."""
+    requested_urls = []
+
+    class MockResponse:
+        status_code = 400
+        text = '{"error":{"message":"bad request","type":"invalid_request_error"}}'
+
+        def json(self):
+            return {
+                "error": {
+                    "message": "bad request",
+                    "type": "invalid_request_error",
+                }
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, **_kwargs):
+            requested_urls.append(url)
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5.4-mini",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="bad request"):
+        client.invoke_sync([{"role": "user", "content": "hi"}])
+
+    assert requested_urls == ["https://api.openai.com/v1/responses"]
+
+
+def test_openai_invoke_sync_responses_malformed_json_is_parse_error(monkeypatch):
+    """GPT-5.x sync Responses 성공 status라도 JSON 파싱 실패면 명시적 오류를 낸다."""
+
+    class MockResponse:
+        status_code = 200
+        text = "not-json"
+
+        def json(self):
+            raise ValueError("bad json")
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5.4-mini",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="OpenAI 응답을 JSON으로 파싱할 수 없습니다"):
+        client.invoke_sync([{"role": "user", "content": "hi"}])
+
+
+def test_openai_invoke_sync_legacy_model_uses_base_sync_wrapper(monkeypatch):
+    """Responses 전용이 아닌 모델은 기존 Base sync wrapper 경로를 유지한다."""
+    calls = []
+
+    def fake_run_coroutine_sync(coro_factory):
+        calls.append(coro_factory)
+        return {"choices": [{"message": {"content": "legacy"}}]}
+
+    def fail_sync_http_client(*_args, **_kwargs):
+        raise AssertionError("legacy sync model must use BaseLLMClient wrapper")
+
+    monkeypatch.setattr(
+        BaseLLMClient,
+        "_run_coroutine_sync",
+        staticmethod(fake_run_coroutine_sync),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        fail_sync_http_client,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-4o",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    assert client.invoke_sync([{"role": "user", "content": "hi"}]) == {
+        "choices": [{"message": {"content": "legacy"}}]
+    }
+    assert len(calls) == 1

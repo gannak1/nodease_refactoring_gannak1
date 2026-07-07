@@ -1,5 +1,5 @@
 import { Handle, Position, HandleProps } from '@xyflow/react';
-import { Check, ChevronDown, Maximize2, Pencil, X } from 'lucide-react';
+import { Check, ChevronDown, Pencil, X } from 'lucide-react';
 import React, {
   useCallback,
   useEffect,
@@ -15,6 +15,7 @@ import { BaseNodeData } from '../../types/Nodes';
 import { useNodeIO } from '../../hooks/useNodeIO';
 import { buildOutputLabelPatch } from '../../utils/nodeOutputLabels';
 import { NodeOutputVariable } from '../../utils/nodeVariablePorts';
+import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 import { VisiblePropertySummary } from './VisiblePropertySummary';
 
 interface BaseNodeProps {
@@ -39,6 +40,8 @@ interface BaseNodeProps {
   onHandlePlusClick?: (side: 'left' | 'right') => void;
   titleClassName?: string;
   showDetailsToggle?: boolean;
+  showBodyContent?: boolean;
+  sizeMode?: 'fixed' | 'auto';
 }
 
 const INPUT_CHIP_COLORS = [
@@ -205,6 +208,8 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   sourceHandleStyle,
   titleClassName = 'truncate max-w-[260px]',
   showDetailsToggle = true,
+  showBodyContent = true,
+  sizeMode = 'fixed',
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -537,10 +542,17 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
       onMouseLeave={scheduleOutputPanelClose}
       onDoubleClick={handleDoubleClick}
       className={cn(
-        'relative group w-[420px] min-h-[150px] p-7 transition-all',
+        'relative group p-7 transition-all',
         className,
       )}
-      style={{ isolation: 'isolate', overflow: 'visible' }}
+      style={{
+        isolation: 'isolate',
+        overflow: 'visible',
+        width: WORKFLOW_NODE_SIZE.width,
+        ...(sizeMode === 'fixed'
+          ? { height: WORKFLOW_NODE_SIZE.height }
+          : { minHeight: WORKFLOW_NODE_SIZE.height }),
+      }}
     >
       <JigsawBackground
         width={dimensions.width}
@@ -697,21 +709,6 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
       )}
 
       <div className="relative z-10">
-        {showDetailsToggle && node && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              openNodeFullscreen(node.id);
-            }}
-            className="nodrag absolute right-0 top-0 z-20 flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800"
-            title="노드 설정 전체화면으로 열기"
-            aria-label="노드 설정 전체화면으로 열기"
-          >
-            <Maximize2 className="h-4 w-4" />
-          </button>
-        )}
-
         {showTargetHandle && (
           <SmartHandle
             id={targetHandleId}
@@ -826,7 +823,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
             )}
             {description && (
               <p
-                className="line-clamp-2 text-[13px] leading-snug text-gray-500"
+                className="line-clamp-2 min-h-[34px] text-[13px] leading-snug text-gray-500"
                 title={String(description)}
               >
                 {String(description)}
@@ -835,7 +832,11 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
           </div>
         </div>
 
-        <div className="min-w-0 max-w-full text-sm">{children}</div>
+        {showBodyContent && (
+          <div className="min-h-[34px] min-w-0 max-w-full text-sm">
+            {children}
+          </div>
+        )}
 
         {node && <VisiblePropertySummary node={node} />}
 

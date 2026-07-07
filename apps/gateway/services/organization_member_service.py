@@ -25,6 +25,7 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
 from apps.shared.schemas.organization_membership import (
     OrganizationMemberInviteRequest,
     OrganizationMemberRemoveResponse,
@@ -37,6 +38,8 @@ from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
 )
+
+from .notification_service import publish_notifications_changed
 
 VISIBLE_ORGANIZATION_STATES = {
     ORGANIZATION_MEMBERSHIP_ACTIVE,
@@ -287,15 +290,15 @@ def _guard_last_manager(
 
 def _cleanup_counts(
     removed_team_memberships: int,
-    revoked_workflow_permissions: int,
-    revoked_llm_permissions: int,
+    revoked_user_permissions: RevokedUserPermissionCounts,
 ) -> dict[str, Any]:
     return {
         "team_memberships": removed_team_memberships,
-        "user_workflow_permissions": revoked_workflow_permissions,
-        "user_llm_permissions": revoked_llm_permissions,
-        "user_knowledge_permissions": 0,
-        "user_audit_permissions": 0,
+        "user_workflow_permissions": revoked_user_permissions.workflow,
+        "user_llm_permissions": revoked_user_permissions.llm_credential,
+        "user_app_creation_permissions": revoked_user_permissions.app_creation,
+        "user_knowledge_permissions": revoked_user_permissions.knowledge_base,
+        "user_audit_permissions": revoked_user_permissions.audit,
     }
 
 
@@ -450,6 +453,7 @@ class OrganizationMemberService:
             ),
         )
         db.commit()
+        publish_notifications_changed(membership.user_id)
         db.refresh(membership)
         return _member_response(membership)
 
@@ -485,6 +489,40 @@ class OrganizationMemberService:
             ),
         )
         db.commit()
+        publish_notifications_changed(current_user.id)
+        db.refresh(membership)
+        return _member_response(membership)
+
+    @staticmethod
+    def decline_invitation(
+        db: Session,
+        current_user: User,
+        organization_id: Any,
+    ) -> OrganizationMemberResponse:
+        _get_active_organization(db, organization_id)
+        membership = _get_membership(db, organization_id, current_user.id)
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Invitation not found.")
+        if membership.membership_state != ORGANIZATION_MEMBERSHIP_INVITED:
+            raise HTTPException(status_code=409, detail="Invitation cannot be declined.")
+
+        previous_state = membership.membership_state
+        membership.membership_state = ORGANIZATION_MEMBERSHIP_REMOVED
+        membership.accepted_at = None
+        membership.removed_at = _now()
+        _add_audit_log(
+            db,
+            AuditAction.ORGANIZATION_MEMBER_DECLINE,
+            current_user,
+            membership,
+            _audit_metadata(
+                membership,
+                previous_membership_state=previous_state,
+                next_membership_state=membership.membership_state,
+            ),
+        )
+        db.commit()
+        publish_notifications_changed(current_user.id)
         db.refresh(membership)
         return _member_response(membership)
 
@@ -620,14 +658,25 @@ class OrganizationMemberService:
             )
             .delete(synchronize_session=False)
         )
+        revoked_app_creation_permissions = (
+            db.query(UserAppCreationPermission)
+            .filter(
+                UserAppCreationPermission.grantee_organization_id == organization_id,
+                UserAppCreationPermission.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
         membership.membership_state = ORGANIZATION_MEMBERSHIP_REMOVED
         membership.removed_at = _now()
 
-        cleanup = _cleanup_counts(
-            removed_team_memberships,
-            revoked_workflow_permissions,
-            revoked_llm_permissions,
+        revoked_user_permissions = RevokedUserPermissionCounts(
+            workflow=revoked_workflow_permissions,
+            llm_credential=revoked_llm_permissions,
+            app_creation=revoked_app_creation_permissions,
+            knowledge_base=0,
+            audit=0,
         )
+        cleanup = _cleanup_counts(removed_team_memberships, revoked_user_permissions)
         _add_audit_log(
             db,
             AuditAction.ORGANIZATION_MEMBER_REMOVE,
@@ -656,12 +705,7 @@ class OrganizationMemberService:
         return OrganizationMemberRemoveResponse(
             status="removed",
             removed_team_memberships=removed_team_memberships,
-            revoked_user_permissions=RevokedUserPermissionCounts(
-                workflow=revoked_workflow_permissions,
-                llm_credential=revoked_llm_permissions,
-                knowledge_base=0,
-                audit=0,
-            ),
+            revoked_user_permissions=revoked_user_permissions,
         )
 
 

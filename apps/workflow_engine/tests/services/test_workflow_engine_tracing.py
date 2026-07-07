@@ -97,10 +97,12 @@ def test_rag_metadata_keeps_source_fields_only():
                 "knowledge_search": [
                     {
                         "knowledge_base_id": "kb-1",
+                        "chunk_id": "chunk-1",
                         "document_id": "doc-1",
                         "filename": "guide.pdf",
                         "page_number": 3,
                         "similarity_score": 0.8,
+                        "score": 0.82,
                         "content": "raw chunk text",
                         "body": "raw body",
                     }
@@ -112,14 +114,13 @@ def test_rag_metadata_keeps_source_fields_only():
         finished_at=datetime.now(timezone.utc),
     )
 
-    retrieval = metadata["rag"]["retrieval_results"][0]
-    assert retrieval == {
-        "knowledge_base_id": "kb-1",
-        "document_id": "doc-1",
-        "filename": "guide.pdf",
-        "page_number": 3,
-        "similarity_score": 0.8,
-    }
+    assert metadata["rag"]["knowledge_base_id"] == "kb-1"
+    assert metadata["rag"]["retrieved_chunk_count"] == 1
+    assert metadata["rag"]["document_ids"] == ["doc-1"]
+    assert metadata["rag"]["citation_ids"] == ["chunk-1"]
+    assert metadata["rag"]["score_summary"] == {"min": 0.82, "max": 0.82}
+    assert metadata["rag"]["raw_content_returned"] is False
+    assert "retrieval_results" not in metadata["rag"]
     assert "raw chunk text" not in str(metadata)
 
 

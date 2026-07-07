@@ -1,5 +1,7 @@
+import json
 import logging
-from typing import List, Optional
+from typing import AsyncIterator, List, Optional
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import (
@@ -9,9 +11,12 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
+    Request,
     UploadFile,
 )
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
@@ -23,10 +28,16 @@ from apps.gateway.core.config import settings
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
 )
-from apps.gateway.services.organization_context import get_user_primary_organization_id
+from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
+from apps.gateway.utils.api_errors import (
+    error_detail,
+    parse_organization_id,
+    raise_api_error,
+)
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.db.models.user import User
@@ -35,12 +46,213 @@ from apps.shared.schemas.rag import (
     ChunkPreview,
     DocumentAnalyzeResponse,
     IngestionResponse,
+    RAGAgentAnswerRequest,
+    RAGAgentAnswerResponse,
+    RAGAgentSSEEvent,
     RAGResponse,
     SearchQuery,
+)
+from apps.shared.permissions import knowledge_base_auth_state_allows
+from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.permissions import (
+    get_effective_knowledge_base_auth_state,
+    has_organization_scope_access,
+)
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.rag_filters import normalize_metadata_filter
+from apps.shared.services.rag_hierarchy import (
+    RAGHierarchyError,
+    validate_chunking_request,
+)
+from apps.shared.services.egress_guard import (
+    API_RESPONSE_CONTENT_TYPES,
+    EgressGuardError,
+    EgressGuardPolicy,
+    safe_http_request,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+SAFE_DOCUMENT_EXTENSIONS = {
+    ".csv",
+    ".docx",
+    ".md",
+    ".pdf",
+    ".txt",
+    ".xls",
+    ".xlsx",
+}
+
+
+def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"reason": exc.reason, "message": exc.message},
+    )
+
+
+def _require_search_knowledge_base_id(request: Request, query: SearchQuery) -> UUID:
+    if query.knowledge_base_id is None:
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "knowledge_base_id is required for RAG search-test.",
+            {"field": "knowledge_base_id"},
+        )
+    return query.knowledge_base_id
+
+
+def _authorize_rag_use(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+) -> KnowledgeBase:
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_id).first()
+    if (
+        kb is None
+        or kb.organization_id != organization_id
+        or not has_organization_scope_access(db, current_user.id, organization_id)
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Knowledge Base not found.",
+        )
+
+    decision = KnowledgePermissionHelper(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    ).evaluate_kb_use(kb)
+    if decision.allowed:
+        return kb
+
+    if decision.external_reason_code == "resource.hidden":
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Knowledge Base not found.",
+        )
+
+    record_resource_permission_denied(
+        user_id=current_user.id,
+        resource_type="knowledge_base",
+        resource_id=knowledge_base_id,
+        action="use",
+        effective_auth_state=decision.effective_auth_state,
+        organization_id=organization_id,
+        metadata={
+            "request_id": getattr(request.state, "request_id", None),
+            "path": request.url.path,
+            "reason_code": decision.reason_code or "kb_use_denied",
+        },
+    )
+    exc = HTTPException(
+        status_code=403,
+        detail=error_detail(
+            request,
+            "permission.denied",
+            "Knowledge Base use permission is required.",
+        ),
+    )
+    setattr(exc, "audit_recorded", True)
+    raise exc
+
+
+def _record_rag_retrieve_audit(
+    request: Request,
+    current_user: User,
+    knowledge_base_id: UUID,
+    metadata_filter,
+    result_count: int,
+    mode: str,
+) -> None:
+    metadata = {
+        "actor": {
+            "id": str(current_user.id),
+            "email": getattr(current_user, "email", None),
+            "name": getattr(current_user, "name", None),
+        },
+        "request_id": getattr(request.state, "request_id", None),
+        "knowledge_base_id": str(knowledge_base_id),
+        "retrieval_mode": mode,
+        "result_count": result_count,
+        "metadata_filter": metadata_filter.audit_summary()
+        if metadata_filter is not None
+        else {},
+        "policy_evaluated": False,
+    }
+    record_audit(
+        action=AuditAction.RAG_RETRIEVE,
+        category="action",
+        actor_id=current_user.id,
+        actor_type="user",
+        target_type="knowledge_base",
+        target_id=knowledge_base_id,
+        status="success",
+        metadata=metadata,
+    )
+
+
+def _rag_agent_sse_event(event: str, data: dict) -> str:
+    payload = RAGAgentSSEEvent(event=event, data=data).model_dump(mode="json")
+    return (
+        f"event: {payload['event']}\n"
+        f"data: {json.dumps(payload['data'], ensure_ascii=False, default=str)}\n\n"
+    )
+
+
+async def _rag_agent_sse_events(
+    events: AsyncIterator[tuple[str, dict]],
+) -> AsyncIterator[str]:
+    async for event, data in events:
+        yield _rag_agent_sse_event(event, data)
+
+
+@router.post("/agent/answer", response_model=RAGAgentAnswerResponse)
+async def rag_agent_answer(
+    payload: RAGAgentAnswerRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = parse_organization_id(request, x_organization_id)
+    service = RAGAgentAnswerService(
+        db=db,
+        current_user=current_user,
+        request=request,
+        organization_id=organization_id,
+    )
+    return await service.answer(payload)
+
+
+@router.post("/agent/answer/stream")
+async def rag_agent_answer_stream(
+    payload: RAGAgentAnswerRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = parse_organization_id(request, x_organization_id)
+    service = RAGAgentAnswerService(
+        db=db,
+        current_user=current_user,
+        request=request,
+        organization_id=organization_id,
+    )
+    execution = service.prepare_execution(payload)
+    return StreamingResponse(
+        _rag_agent_sse_events(service.stream_events(execution)),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/upload/presigned-url")
@@ -83,11 +295,12 @@ async def generate_presigned_url(
         }
     """
     try:
+        safe_filename = _validate_safe_document_filename(filename)
         storage = get_storage_service()
 
         # S3 Presigned URL 생성
         presigned_data = storage.generate_presigned_upload_url(
-            filename=filename,
+            filename=safe_filename,
             content_type=content_type,
             user_id=str(current_user.id),
         )
@@ -98,10 +311,13 @@ async def generate_presigned_url(
             "method": presigned_data["method"],
             "use_backend_proxy": presigned_data.get("use_backend_proxy"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Presigned URL generation failed: {e}")
+        logger.error("Presigned URL generation failed: %s", type(e).__name__)
         raise HTTPException(
-            status_code=500, detail=f"Presigned URL 생성 실패: {str(e)}"
+            status_code=500,
+            detail={"reason_code": "storage.presigned_url_failed"},
         )
 
 
@@ -109,6 +325,8 @@ async def generate_presigned_url(
 @audit(AuditAction.DOCUMENT_UPLOAD)
 async def upload_document(
     background_tasks: BackgroundTasks,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     file: Optional[UploadFile] = File(None, alias="file"),
     knowledge_base_id: Optional[UUID] = Form(None, alias="knowledgeBaseId"),
     source_type: str = Form("FILE", alias="sourceType"),
@@ -130,6 +348,7 @@ async def upload_document(
     # 문서별 청킹 설정
     chunk_size: int = Form(1000, alias="chunkSize"),
     chunk_overlap: int = Form(200, alias="chunkOverlap"),
+    chunking_mode: str = Form("flat", alias="chunkingMode"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -143,11 +362,14 @@ async def upload_document(
     # 0. 환경 변수 확인 (Ingestion Mode)
     ingestion_mode = (settings.STORAGE_TYPE or "LOCAL").upper()
     logger.info(f"=== [upload_document] Request Received (Mode: {ingestion_mode}) ===")
+    organization_id = parse_organization_id(request, x_organization_id)
 
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
+        request,
         db,
         current_user,
+        organization_id,
         knowledge_base_id,
         name,
         description,
@@ -170,16 +392,23 @@ async def upload_document(
     try:
         source_enum = SourceType(source_type)
     except ValueError:
-        source_enum = SourceType.FILE
+        raise HTTPException(status_code=400, detail="Invalid source type")
+
+    try:
+        normalized_chunking_mode = validate_chunking_request(
+            chunking_mode=chunking_mode,
+            source_type=source_enum,
+        )
+    except RAGHierarchyError as exc:
+        raise _chunking_http_exception(exc)
 
     if source_enum == SourceType.FILE:
         # [NEW] S3 Direct Upload 방식
         if s3_file_url and s3_file_key:
-            # 프론트엔드가 이미 S3에 업로드한 경우
-            file_path = s3_file_url
-            # S3 키에서 파일명 추출 (uploads/user-id/uuid_filename.pdf -> uuid_filename.pdf)
-            filename = s3_file_key.split("/")[-1]
-            meta_info = {"s3_key": s3_file_key, "upload_method": "direct"}
+            file_path, filename, meta_info = _prepare_direct_upload_source(
+                s3_file_key=s3_file_key,
+                user_id=current_user.id,
+            )
 
         # [기존] 백엔드 중계 업로드 방식
         elif file:
@@ -200,6 +429,9 @@ async def upload_document(
         )
     else:
         raise HTTPException(status_code=400, detail="Invalid source type")
+
+    meta_info = dict(meta_info or {})
+    meta_info["chunking_mode"] = normalized_chunking_mode
 
     # 4. DB 레코드 생성 (Pending 상태)
     doc_id = local_service.create_pending_document(
@@ -259,7 +491,11 @@ async def analyze_document(
         result = await ingestion_service.analyze_document(document_id)
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("Document analysis failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "document.analyze_failed"},
+        )
 
 
 @router.post("/document/{document_id}/confirm")
@@ -284,10 +520,7 @@ async def confirm_document_parsing(
     # 기존 설정(청크 사이즈 등)은 DB doc에 저장되어 있으므로 불러와서 쓴다고 가정
     ingestion_service = IngestionService(db, user_id=current_user.id)
 
-    background_tasks.add_task(
-        ingestion_service.process_document,  # Was resume_processing, but process_document handles it if logic supports
-        document_id,
-    )
+    background_tasks.add_task(ingestion_service.resume_processing, document_id, strategy)
 
     return {
         "message": f"Parsing resumed with strategy: {strategy}",
@@ -322,7 +555,7 @@ def delete_document(
         try:
             storage.delete(doc.file_path)
         except Exception as e:
-            logger.warning(f"Failed to delete file {doc.file_path}: {e}")
+            logger.warning("Failed to delete document file: %s", type(e).__name__)
             # 파일 삭제 실패해도 DB는 삭제 진행
 
     # 3. DB 삭제 (Cascade로 청크도 같이 삭제됨)
@@ -335,6 +568,8 @@ def delete_document(
 @router.post("/search-test/chat", response_model=RAGResponse)
 async def search_test_chat(
     query: SearchQuery,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -342,12 +577,46 @@ async def search_test_chat(
     [Search Test] RAG Chat Mode
     벡터 검색 + LLM 답변 생성
     """
-    retrieval_service = RetrievalService(db, user_id=current_user.id)
-    kb_id_str = str(query.knowledge_base_id) if query.knowledge_base_id else None
-    response = await retrieval_service.generate_answer_for_test(
-        query.query,
-        knowledge_base_id=kb_id_str,
-        model_id=query.generation_model or "gpt-4o",
+    organization_id = parse_organization_id(request, x_organization_id)
+    knowledge_base_id = _require_search_knowledge_base_id(request, query)
+    _authorize_rag_use(request, db, current_user, organization_id, knowledge_base_id)
+    metadata_filter = normalize_metadata_filter(
+        metadata_filter=query.metadata_filter,
+        classification_filter=query.classification_filter,
+        tags=query.tags,
+        source_type=query.source_type,
+        effective_at=query.effective_at,
+    )
+    retrieval_service = RetrievalService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+    try:
+        response = await retrieval_service.generate_answer_for_test(
+            query.query,
+            knowledge_base_id=str(knowledge_base_id),
+            model_id=query.generation_model or "gpt-4o",
+            top_k=query.top_k or 5,
+            metadata_filter=metadata_filter,
+            hierarchy_mode=query.hierarchy_mode,
+        )
+    except ValueError as exc:
+        if str(exc) == "hierarchy_unavailable":
+            raise_api_error(
+                request,
+                422,
+                "hierarchy_unavailable",
+                "Hierarchical retrieval data is not available for this Knowledge Base.",
+            )
+        raise
+    _record_rag_retrieve_audit(
+        request,
+        current_user,
+        knowledge_base_id,
+        metadata_filter,
+        len(response.references),
+        query.hierarchy_mode,
     )
     return response
 
@@ -355,6 +624,8 @@ async def search_test_chat(
 @router.post("/search-test/pure", response_model=List[ChunkPreview])
 async def search_test_pure(
     query: SearchQuery,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -362,12 +633,47 @@ async def search_test_pure(
     [Search Test] Pure Retrieval Mode
     순수 벡터 검색 (LLM 생성 없음)
     """
-    retrieval_service = RetrievalService(db, user_id=current_user.id)
-    kb_id_str = str(query.knowledge_base_id) if query.knowledge_base_id else None
+    organization_id = parse_organization_id(request, x_organization_id)
+    knowledge_base_id = _require_search_knowledge_base_id(request, query)
+    _authorize_rag_use(request, db, current_user, organization_id, knowledge_base_id)
+    metadata_filter = normalize_metadata_filter(
+        metadata_filter=query.metadata_filter,
+        classification_filter=query.classification_filter,
+        tags=query.tags,
+        source_type=query.source_type,
+        effective_at=query.effective_at,
+    )
+    retrieval_service = RetrievalService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
 
     # RetrievalService.search_documents 직접 호출 (비동기)
-    results = await retrieval_service.search_documents(
-        query.query, knowledge_base_id=kb_id_str, top_k=query.top_k or 5
+    try:
+        results = await retrieval_service.search_documents(
+            query.query,
+            knowledge_base_id=str(knowledge_base_id),
+            top_k=query.top_k or 5,
+            metadata_filter=metadata_filter,
+            hierarchy_mode=query.hierarchy_mode,
+        )
+    except ValueError as exc:
+        if str(exc) == "hierarchy_unavailable":
+            raise_api_error(
+                request,
+                422,
+                "hierarchy_unavailable",
+                "Hierarchical retrieval data is not available for this Knowledge Base.",
+            )
+        raise
+    _record_rag_retrieve_audit(
+        request,
+        current_user,
+        knowledge_base_id,
+        metadata_filter,
+        len(results),
+        query.hierarchy_mode,
     )
     return results
 
@@ -406,7 +712,7 @@ async def get_document_progress(
                 redis_key = f"knowledge_progress:{document_id}"
                 redis_progress = redis_client.get(redis_key)
             except Exception as e:
-                logger.warning(f"Redis read failed for progress: {e}")
+                logger.warning("Redis read failed for progress: %s", type(e).__name__)
 
             # 3. 진행률 결정 (상태 기반 우선)
             if status == "completed":
@@ -457,10 +763,10 @@ async def proxy_api_preview(
     current_user: User = Depends(get_current_user),
 ):
     """
-    프론트엔드 CORS 문제 해결을 위한 API 프록시 엔드포인트
-    requests -> httpx (Async) 로 변경 (timeout 이슈 해결을 위해)
+    프론트엔드 CORS 문제 해결을 위한 API 프록시 엔드포인트.
+    Knowledge/RAG outbound guard를 거치지 않는 raw HTTP client는 사용하지 않는다.
     """
-    import httpx
+    import asyncio
 
     # 기본 헤더가 없으면 추가
     headers = request.headers or {}
@@ -468,58 +774,67 @@ async def proxy_api_preview(
         headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         )
-
-    try:
-        # 비동기 클라이언트 사용 (http_node.py 참조)
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-            response = await client.request(
-                method=request.method,
-                url=request.url,
-                headers=headers,
-                json=request.body if request.method != "GET" else None,
-            )
-
-            # 4xx, 5xx 에러 발생 시 예외 발생
-            response.raise_for_status()
-
-            try:
-                data = response.json()
-            except Exception:
-                data = response.text
-
-            return {
-                "status": response.status_code,
-                "data": data,
-                "headers": dict(response.headers),
-            }
-
-    except httpx.HTTPStatusError as e:
-        # 외부 API가 에러 응답(4xx, 5xx)을 준 경우
-        status_code = e.response.status_code
-        try:
-            detail = e.response.json()
-        except Exception:
-            detail = e.response.text
-        raise HTTPException(status_code=status_code, detail=detail)
-
-    except httpx.TimeoutException:
-        logger.error("[Proxy Log] 타임아웃 발생 (Timeout)")
-        raise HTTPException(status_code=504, detail="External API Timeout")
-
-    except httpx.RequestError as e:
-        logger.error(f"[Proxy Log] 연결 실패 (RequestError): {e}")
+    method = str(request.method or "GET").upper()
+    if method not in {"GET", "POST"}:
         raise HTTPException(
-            status_code=502, detail=f"External API Connection Error: {str(e)}"
+            status_code=400,
+            detail={"reason_code": "egress.unsupported_method"},
         )
 
+    try:
+        response = await asyncio.to_thread(
+            safe_http_request,
+            method,
+            request.url,
+            headers=headers,
+            json_body=request.body,
+            policy=EgressGuardPolicy(
+                timeout_seconds=30.0,
+                max_response_bytes=10 * 1024 * 1024,
+                allowed_content_types=API_RESPONSE_CONTENT_TYPES,
+            ),
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail={"reason_code": "egress.upstream_error"},
+            )
+
+        try:
+            data = response.json()
+        except Exception:
+            data = response.text
+
+        return {
+            "status": response.status_code,
+            "data": data,
+            "headers": response.headers,
+        }
+
+    except EgressGuardError as e:
+        logger.warning("[Proxy Log] Egress guard denied request: %s", e.reason_code)
+        status_code = 504 if e.reason_code == "egress.timeout" else 400
+        raise HTTPException(
+            status_code=status_code,
+            detail={"reason_code": e.reason_code},
+        )
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        logger.error(f"[Proxy Log] 기타 오류 발생: {type(e).__name__} - {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("[Proxy Log] 기타 오류 발생: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail={"reason_code": "egress.proxy_failed"},
+        )
 
 
 def _get_or_create_knowledge_base(
+    request: Request,
     db: Session,
     user: User,
+    organization_id: UUID,
     kb_id: Optional[UUID],
     name: Optional[str],
     description: Optional[str],
@@ -530,6 +845,13 @@ def _get_or_create_knowledge_base(
 ) -> tuple[UUID, str]:
     """자료를 조회하거나 새로 생성합니다."""
     if not kb_id:
+        if not has_organization_scope_access(db, user.id, organization_id):
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "Knowledge Base not found.",
+            )
         if not ai_model:
             raise HTTPException(
                 status_code=400,
@@ -541,7 +863,7 @@ def _get_or_create_knowledge_base(
 
         new_kb = KnowledgeBase(
             user_id=user.id,
-            organization_id=get_user_primary_organization_id(db, user.id),
+            organization_id=organization_id,
             name=kb_name,
             description=description,
             embedding_model=ai_model,
@@ -559,7 +881,70 @@ def _get_or_create_knowledge_base(
         )
         if not kb:
             raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        if kb.organization_id != organization_id:
+            raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        _authorize_upload_knowledge_base_write(request, db, user, kb)
         return kb.id, kb.embedding_model
+
+
+def _authorize_upload_knowledge_base_write(
+    request: Request,
+    db: Session,
+    user: User,
+    kb: KnowledgeBase,
+) -> None:
+    if kb.organization_id and not has_organization_scope_access(
+        db,
+        user.id,
+        kb.organization_id,
+    ):
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    if kb.user_id == user.id:
+        return
+
+    effective_auth_state = get_effective_knowledge_base_auth_state(
+        db,
+        user.id,
+        kb.id,
+        organization_id=kb.organization_id,
+    )
+    if knowledge_base_auth_state_allows(effective_auth_state, "write"):
+        return
+
+    record_resource_permission_denied(
+        user_id=user.id,
+        resource_type="knowledge_base",
+        resource_id=kb.id,
+        action="write",
+        effective_auth_state=effective_auth_state,
+        organization_id=kb.organization_id,
+        metadata={
+            "request_id": getattr(request.state, "request_id", None),
+            "path": request.url.path,
+        },
+    )
+    exc = HTTPException(
+        status_code=403,
+        detail=error_detail(
+            request,
+            "permission.denied",
+            "Knowledge Base write permission is required.",
+        ),
+    )
+    setattr(exc, "audit_recorded", True)
+    raise exc
+
+
+def _validate_safe_document_filename(filename: str) -> str:
+    safe_name = str(filename or "").replace("\\", "/").split("/")[-1]
+    ext = "." + safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+    if not safe_name or ext not in SAFE_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "file_type.unsupported"},
+        )
+    return safe_name
 
 
 def _prepare_file_source(local_service: IngestionService, file: Optional[UploadFile]):
@@ -567,9 +952,56 @@ def _prepare_file_source(local_service: IngestionService, file: Optional[UploadF
     if not file:
         raise HTTPException(status_code=400, detail="File is required for FILE source")
 
+    filename = _validate_safe_document_filename(file.filename)
+    file.filename = filename
     file_path = local_service.save_temp_file(file)
-    filename = file.filename
     return file_path, filename, {}
+
+
+def _prepare_direct_upload_source(
+    *,
+    s3_file_key: str,
+    user_id: UUID,
+) -> tuple[str, str, dict]:
+    key = str(s3_file_key or "").strip().replace("\\", "/")
+    expected_prefix = f"uploads/{user_id}/"
+    if (
+        not key
+        or key.startswith("/")
+        or ".." in key.split("/")
+        or not key.startswith(expected_prefix)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "storage.invalid_object_key"},
+        )
+
+    filename = _validate_safe_document_filename(key.rsplit("/", 1)[-1])
+    if not settings.S3_BUCKET_NAME or not settings.AWS_REGION:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "storage.s3_not_configured"},
+        )
+
+    encoded_key = quote(key, safe="/")
+    file_path = (
+        f"https://{settings.S3_BUCKET_NAME}.s3."
+        f"{settings.AWS_REGION}.amazonaws.com/{encoded_key}"
+    )
+    return file_path, filename, {"s3_key": key, "upload_method": "direct"}
+
+
+def _encrypt_source_config_value(value: str) -> str:
+    from apps.shared.utils.encryption import encryption_manager as security_service
+
+    try:
+        return security_service.encrypt(value)
+    except Exception as exc:
+        logger.error("Failed to encrypt API source configuration: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail={"reason_code": "source_config.encryption_required"},
+        ) from exc
 
 
 def _prepare_api_source(
@@ -584,34 +1016,48 @@ def _prepare_api_source(
 
     import json
 
-    from apps.shared.utils.encryption import encryption_manager as security_service
-
     # 헤더 처리 (JSON 파싱 및 암호화)
     encrypted_headers = None
     if api_headers:
         try:
             json.loads(api_headers)  # 유효성 검증
-            encrypted_headers = security_service.encrypt(api_headers)
         except Exception as e:
-            logger.warning(f"Failed to process headers: {e}")
-            pass
+            logger.warning("Failed to process API source headers: %s", type(e).__name__)
+            raise HTTPException(
+                status_code=400,
+                detail={"reason_code": "validation.failed"},
+            ) from e
+        encrypted_headers = _encrypt_source_config_value(api_headers)
 
-    # 바디 처리 (JSON 파싱)
-    body = None
+    # URL query와 body에는 token/secret이 들어갈 수 있으므로 원문을 durable metadata에 저장하지 않는다.
+    encrypted_url = _encrypt_source_config_value(api_url)
+    encrypted_body = None
     if api_body:
         try:
-            body = json.loads(api_body)
+            json.loads(api_body)
         except Exception as e:
-            logger.warning(f"Failed to parse body: {e}")
-            pass
+            logger.warning("Failed to process API source body: %s", type(e).__name__)
+            raise HTTPException(
+                status_code=400,
+                detail={"reason_code": "validation.failed"},
+            ) from e
+        encrypted_body = _encrypt_source_config_value(api_body)
+
+    method = str(api_method or "GET").upper()
+    if method not in {"GET", "POST"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"reason_code": "egress.unsupported_method"},
+        )
 
     meta_info = {
         "api_config": {
-            "url": api_url,
-            "method": api_method,
-            "headers": encrypted_headers,
-            "body": body,
+            "url_encrypted": encrypted_url,
+            "method": method,
+            "headers_encrypted": encrypted_headers,
+            "body_encrypted": encrypted_body,
+            "safe_label": "API source",
         }
     }
 
-    return None, api_url, meta_info
+    return None, "API source", meta_info

@@ -15,6 +15,57 @@ from apps.shared.db.session import SessionLocal
 logger = logging.getLogger(__name__)
 
 
+def _sync_skipped_result(reason: str) -> Dict[str, Any]:
+    """Knowledge sync를 실행하지 않았음을 task 응답에 안전하게 표시한다."""
+    return {
+        "synced_count": 0,
+        "failed": [],
+        "skipped": True,
+        "reason": reason,
+    }
+
+
+def _resolve_user_execution_subject_id(
+    execution_context: Dict[str, Any],
+) -> uuid.UUID | None:
+    """Private/source-backed Knowledge sync에 사용할 user execution_subject만 해석한다."""
+    subject = execution_context.get("execution_subject")
+    if not isinstance(subject, dict):
+        return None
+
+    subject_type = subject.get("subject_type") or subject.get("type") or "user"
+    if subject_type != "user":
+        return None
+
+    subject_id = subject.get("subject_id") or subject.get("id")
+    try:
+        return uuid.UUID(str(subject_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sync_knowledge_bases_for_execution_subject(
+    session,
+    graph: Dict[str, Any],
+    execution_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    # Anonymous public-only RAG는 이미 색인된 public KB만 검색한다.
+    # Private/source-backed sync에는 명시적인 user execution_subject가 필요하며,
+    # workflow owner/app creator/user_id를 데이터 접근 주체로 대체하지 않는다.
+    subject_id = _resolve_user_execution_subject_id(execution_context)
+    if subject_id is None:
+        return _sync_skipped_result("anonymous_public_only")
+
+    from apps.workflow_engine.services.sync_service import SyncService
+
+    syncer = SyncService(
+        db=session,
+        user_id=subject_id,
+        organization_id=execution_context.get("organization_id"),
+    )
+    return syncer.sync_knowledge_bases(graph)
+
+
 @celery_app.task(name="workflow.execute", bind=True, max_retries=3)
 def execute_workflow(
     self,
@@ -46,13 +97,11 @@ def execute_workflow(
     try:
         # Knowledge Base 동기화
         try:
-            user_id_str = execution_context.get("user_id")
-            if user_id_str:
-                from apps.workflow_engine.services.sync_service import SyncService
-
-                user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
-                sync_result = syncer.sync_knowledge_bases(graph)
+            sync_result = _sync_knowledge_bases_for_execution_subject(
+                session,
+                graph,
+                execution_context,
+            )
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
 
@@ -120,13 +169,11 @@ def execute_deployed_workflow(
 
         sync_result = {}
         try:
-            user_id_str = execution_context.get("user_id")
-            if user_id_str:
-                from apps.workflow_engine.services.sync_service import SyncService
-
-                user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
-                sync_result = syncer.sync_knowledge_bases(graph)
+            sync_result = _sync_knowledge_bases_for_execution_subject(
+                session,
+                graph,
+                execution_context,
+            )
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
 
@@ -198,13 +245,11 @@ def execute_by_deployment(
 
         sync_result = {}
         try:
-            user_id_str = execution_context.get("user_id")
-            if user_id_str:
-                from apps.workflow_engine.services.sync_service import SyncService
-
-                user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
-                sync_result = syncer.sync_knowledge_bases(deployment.graph_snapshot)
+            sync_result = _sync_knowledge_bases_for_execution_subject(
+                session,
+                deployment.graph_snapshot,
+                execution_context,
+            )
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
 
@@ -252,18 +297,16 @@ def stream_workflow(
 
         sync_result = {}
         try:
-            user_id_str = execution_context.get("user_id")
-            if user_id_str:
-                from apps.workflow_engine.services.sync_service import SyncService
+            sync_result = _sync_knowledge_bases_for_execution_subject(
+                session,
+                graph,
+                execution_context,
+            )
 
-                user_id = uuid.UUID(user_id_str)
-                syncer = SyncService(db=session, user_id=user_id)
-                sync_result = syncer.sync_knowledge_bases(graph)
+            if sync_result.get("failed"):
+                from apps.shared.pubsub import publish_workflow_event
 
-                if sync_result.get("failed"):
-                    from apps.shared.pubsub import publish_workflow_event
-
-                    publish_workflow_event(external_run_id, "sync_warning", sync_result)
+                publish_workflow_event(external_run_id, "sync_warning", sync_result)
 
         except Exception as e:
             logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")

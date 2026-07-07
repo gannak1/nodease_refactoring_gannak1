@@ -15,6 +15,7 @@ SENSITIVE_METADATA_KEYS = {
     "cookie",
     "credential",
     "credentials",
+    "filename",
     "headers",
     "input",
     "inputs",
@@ -26,11 +27,19 @@ SENSITIVE_METADATA_KEYS = {
     "prompt",
     "query",
     "raw",
+    "raw_source_path",
+    "raw_source_title",
+    "raw_source_url",
     "refresh_token",
     "request",
     "response",
     "secret",
     "set_cookie",
+    "source_acl",
+    "source_path",
+    "source_principal",
+    "source_title",
+    "source_url",
     "text",
     "token",
     "url",
@@ -55,10 +64,18 @@ SENSITIVE_METADATA_PATTERNS = (
     "prompt",
     "query",
     "raw",
+    "raw_source_path",
+    "raw_source_title",
+    "raw_source_url",
     "refresh_token",
     "request",
     "response",
     "secret",
+    "source_acl",
+    "source_path",
+    "source_principal",
+    "source_title",
+    "source_url",
     "token",
 )
 
@@ -160,19 +177,56 @@ SPAN_SECTION_FIELDS = {
         "completion_payload_id",
         "completion_tokens",
         "credential_id",
+        "confidence",
+        "fallback_model",
+        "recommended_fallback_model",
+        "recommended_model",
+        "recommendation_type",
+        "analysis_stage",
         "latency_ms",
         "model",
         "prompt_payload_id",
         "prompt_tokens",
         "provider",
+        "reason",
         "retry_count",
+        "routing_stage",
+        "selected_model",
+        "policy_version",
         "total_cost",
         "total_tokens",
     },
     "rag": {
+        "citation_ids",
+        "context_token_estimate",
+        "document_ids",
+        "evidence_sufficient",
+        "fanout_concurrency",
+        "fanout_timeout_seconds",
+        "failed_candidate_count_bucket",
+        "failure_policy",
+        "hierarchy_fallback",
+        "insufficiency_reason",
+        "knowledge_base_id",
+        "authorized_kb_count",
+        "permission_filter_applied",
         "latency_ms",
-        "retrieval_results",
+        "partial_result",
+        "query_rewrite_applied",
+        "query_rewrite_strategy",
+        "raw_content_returned",
+        "rag_mode",
+        "retrieval_payload_id",
+        "retrieval_strategy",
+        "retrieved_chunk_summary_truncated",
         "retrieved_context_payload_id",
+        "retrieved_chunk_count",
+        "safe_exclusion_summary",
+        "score_summary",
+        "selected_kb_count",
+        "source_tier_policy",
+        "source_tier_used",
+        "stored_result_count",
     },
     "sandbox": {
         "execution_time_ms",
@@ -188,10 +242,17 @@ SPAN_SECTION_FIELDS = {
 }
 RAG_RESULT_FIELDS = {
     "document_id",
-    "filename",
+    "chunk_id",
+    "parent_chunk_id",
+    "rank",
     "knowledge_base_id",
+    "metadata_summary",
+    "hierarchy_path",
+    "hierarchy_fallback",
     "page_number",
     "similarity_score",
+    "score",
+    "token_count",
 }
 
 
@@ -317,26 +378,77 @@ class TraceMetadataSanitizer:
         return None
 
     @classmethod
+    def summarize_rag_metadata(cls, value: Any) -> dict[str, Any]:
+        """Per-chunk evidence에서 run/node trace에 둘 수 있는 요약만 만든다."""
+        safe_results = cls.sanitize_rag_metadata(value)
+        if isinstance(safe_results, dict):
+            results = [safe_results]
+        elif isinstance(safe_results, list):
+            results = [item for item in safe_results if isinstance(item, dict)]
+        else:
+            results = []
+        if not results:
+            return {}
+
+        document_ids: list[Any] = []
+        citation_ids: list[Any] = []
+        knowledge_base_ids: list[Any] = []
+        scores: list[float] = []
+        hierarchy_fallback = False
+
+        for item in results:
+            document_id = item.get("document_id")
+            if document_id is not None:
+                document_ids.append(document_id)
+            chunk_id = item.get("chunk_id")
+            if chunk_id is not None:
+                citation_ids.append(chunk_id)
+            knowledge_base_id = item.get("knowledge_base_id")
+            if knowledge_base_id is not None:
+                knowledge_base_ids.append(knowledge_base_id)
+            raw_score = item.get("score", item.get("similarity_score"))
+            try:
+                if raw_score is not None:
+                    scores.append(float(raw_score))
+            except (TypeError, ValueError):
+                pass
+            hierarchy_fallback = hierarchy_fallback or bool(item.get("hierarchy_fallback"))
+
+        summary: dict[str, Any] = {
+            "retrieved_chunk_count": len(results),
+            "raw_content_returned": False,
+        }
+        unique_kb_ids = cls._unique_preserving_order(knowledge_base_ids)
+        if len(unique_kb_ids) == 1:
+            summary["knowledge_base_id"] = unique_kb_ids[0]
+        if document_ids:
+            summary["document_ids"] = cls._unique_preserving_order(document_ids)
+        if citation_ids:
+            summary["citation_ids"] = cls._unique_preserving_order(citation_ids)
+        if scores:
+            summary["score_summary"] = {
+                "min": min(scores),
+                "max": max(scores),
+            }
+        if hierarchy_fallback:
+            summary["hierarchy_fallback"] = True
+        return summary
+
+    @classmethod
     def _sanitize_rag_section(cls, value: Any) -> dict[str, Any]:
         safe_value = cls.sanitize_json_safe(value)
         if not isinstance(safe_value, dict):
             return {}
 
         sanitized: dict[str, Any] = {}
-        if "latency_ms" in safe_value:
-            sanitized["latency_ms"] = cls._sanitize_allowed_value(
-                safe_value["latency_ms"]
-            )
-        if "retrieved_context_payload_id" in safe_value:
-            sanitized["retrieved_context_payload_id"] = cls._sanitize_allowed_value(
-                safe_value["retrieved_context_payload_id"]
-            )
+        for key in SPAN_SECTION_FIELDS["rag"]:
+            if key in safe_value:
+                sanitized_value = cls._sanitize_allowed_value(safe_value[key])
+                if sanitized_value is not None:
+                    sanitized[key] = sanitized_value
         if "retrieval_results" in safe_value:
-            retrieval_results = cls.sanitize_rag_metadata(
-                safe_value["retrieval_results"]
-            )
-            if retrieval_results:
-                sanitized["retrieval_results"] = retrieval_results
+            summary = cls.summarize_rag_metadata(safe_value["retrieval_results"])
+            sanitized.update({key: value for key, value in summary.items() if value is not None})
         return sanitized
 
     @classmethod
@@ -375,3 +487,15 @@ class TraceMetadataSanitizer:
                     sanitized_items.append(sanitized_item)
             return sanitized_items
         return safe_value
+
+    @staticmethod
+    def _unique_preserving_order(values: list[Any]) -> list[Any]:
+        unique: list[Any] = []
+        seen: set[str] = set()
+        for value in values:
+            key = str(value)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(value)
+        return unique

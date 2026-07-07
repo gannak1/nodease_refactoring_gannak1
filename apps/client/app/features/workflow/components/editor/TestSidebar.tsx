@@ -4,16 +4,21 @@ import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
 import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
 import {
+  BUDGET_EXCEEDED_MESSAGE,
+  isBudgetExceededError,
+} from '@/app/features/budget/utils/budgetGuard';
+import {
   X,
   Play,
   RefreshCw,
   Loader2,
   CheckCircle,
   AlertCircle,
+  Clock,
+  Coins,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
-import { WorkflowCompareResponse } from '../../types/Api';
 import { getNodeOutputVariables } from '../../utils/nodeVariablePorts';
 import type { WorkflowDraftRequest } from '../../types/Workflow';
 import {
@@ -22,6 +27,16 @@ import {
   validateWorkflowGraph,
 } from '../../utils/validateWorkflowGraph';
 import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
+import {
+  formatCost,
+  formatLatency,
+  formatTokens,
+  isTestExecutionActionDisabled,
+  readNodeFinishExecutionSummary,
+  readCost,
+  readTokenUsage,
+  summarizeWorkflowExecution,
+} from '../../utils/testExecutionSummary';
 
 type TestSidebarProps = {
   appendMemoryFlag?: (
@@ -67,9 +82,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     envVariables,
     runtimeVariables,
     testExecutionStatus,
+    testExecutionStartedAt,
+    testExecutionFinishedAt,
     testExecutionResult,
     testNodeResults,
     testExecutionError,
+    currentExecutingNodeId,
     isTestUploading,
     beginTestExecution,
     setTestUploading,
@@ -88,13 +106,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
-  const [compareResult, setCompareResult] =
-    useState<WorkflowCompareResponse | null>(null);
-  const [isComparing, setIsComparing] = useState(false);
-  const [compareNodeId, setCompareNodeId] = useState('');
-  const [compareType, setCompareType] = useState<'model' | 'prompt'>('model');
-  const [leftValue, setLeftValue] = useState('');
-  const [rightValue, setRightValue] = useState('');
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const isExecuting = testExecutionStatus === 'running';
   const isPreparing =
@@ -105,6 +116,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const nodeResults = testNodeResults;
   const error = testExecutionError;
   const canExecute = workflowAccess?.can_execute !== false;
+  const isExecuteActionDisabled = isTestExecutionActionDisabled({
+    isExecuting,
+    isUploading: isTestUploading,
+    isPreparing,
+    canExecute,
+  });
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -175,65 +192,46 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     ];
   }
 
-  const llmNodes = useMemo(
-    () => nodes.filter((node) => node.type === 'llmNode'),
-    [nodes],
-  );
-
   // 패널이 열릴 때 입력값 초기화 (실행 결과는 유지)
   useEffect(() => {
-    if (isTestPanelOpen) {
-      const initial: Record<string, any> = {};
-      variables.forEach((v) => {
-        if (v.type === 'number') {
-          initial[v.name] = 0;
-        } else if (v.type === 'checkbox') {
-          initial[v.name] = false;
-        } else if (v.type === 'select') {
-          initial[v.name] = v.options?.[0]?.value || '';
-        } else if (v.type === 'file') {
-          initial[v.name] = null;
-        } else {
-          initial[v.name] = '';
-        }
-      });
+    if (!isTestPanelOpen) return;
 
-      // 웹훅의 경우 캡처된 데이터가 있으면 자동 채우기
-      if (startNode?.type === 'webhookTrigger') {
-        const data = startNode.data as any;
-        if (data.captured_payload) {
-          initial['__json_payload__'] = JSON.stringify(
-            data.captured_payload,
-            null,
-            2,
-          );
+    const timeout = window.setTimeout(() => {
+      if (isTestPanelOpen) {
+        const initial: Record<string, any> = {};
+        variables.forEach((v) => {
+          if (v.type === 'number') {
+            initial[v.name] = 0;
+          } else if (v.type === 'checkbox') {
+            initial[v.name] = false;
+          } else if (v.type === 'select') {
+            initial[v.name] = v.options?.[0]?.value || '';
+          } else if (v.type === 'file') {
+            initial[v.name] = null;
+          } else {
+            initial[v.name] = '';
+          }
+        });
+
+        // 웹훅의 경우 캡처된 데이터가 있으면 자동 채우기
+        if (startNode?.type === 'webhookTrigger') {
+          const data = startNode.data as any;
+          if (data.captured_payload) {
+            initial['__json_payload__'] = JSON.stringify(
+              data.captured_payload,
+              null,
+              2,
+            );
+          }
         }
+
+        setInputs(initial);
+        setFiles({});
       }
+    }, 0);
 
-      setInputs(initial);
-      setFiles({});
-    }
+    return () => window.clearTimeout(timeout);
   }, [isTestPanelOpen]);
-
-  useEffect(() => {
-    if (!compareNodeId && llmNodes[0]) {
-      setCompareNodeId(llmNodes[0].id);
-    }
-  }, [compareNodeId, llmNodes]);
-
-  useEffect(() => {
-    const selected = llmNodes.find((node) => node.id === compareNodeId);
-    if (!selected) return;
-    const data = selected.data as any;
-    if (compareType === 'model') {
-      setLeftValue(data.model_id || '');
-      setRightValue(data.fallback_model_id || data.model_id || '');
-    } else {
-      setLeftValue(data.user_prompt || '');
-      setRightValue(data.user_prompt || '');
-    }
-    setCompareResult(null);
-  }, [compareNodeId, compareType, llmNodes]);
 
   if (!isTestPanelOpen) return null;
 
@@ -245,18 +243,196 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     output: any,
     status: 'success' | 'failure' | 'running',
     latencyMs?: number,
+    totalTokens?: number,
+    totalCost?: number,
   ) => {
-    const usage = output?.usage || {};
     return {
       status,
       model: output?.model,
-      total_tokens:
-        usage.total_tokens ||
-        (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
-      total_cost: output?.cost || usage.total_cost || 0,
+      total_tokens: totalTokens ?? readTokenUsage(output),
+      total_cost: totalCost ?? readCost(output),
       latency_ms: latencyMs,
     };
   };
+
+  const resultOutputByNodeId = new Map<string, unknown>();
+  for (const result of nodeResults) {
+    resultOutputByNodeId.set(result.nodeId, result.output);
+  }
+  if (
+    executionResult &&
+    typeof executionResult === 'object' &&
+    !Array.isArray(executionResult)
+  ) {
+    for (const [nodeId, output] of Object.entries(
+      executionResult as Record<string, unknown>,
+    )) {
+      resultOutputByNodeId.set(nodeId, output);
+    }
+  }
+
+  const nodeExecutionSummaries = nodes
+    .map((node) => {
+      const data = node.data as {
+        title?: string;
+        name?: string;
+        status?: string;
+        observability?: {
+          status?: 'success' | 'failure' | 'running';
+          total_tokens?: number;
+          total_cost?: number;
+          latency_ms?: number;
+        };
+      };
+      const output = resultOutputByNodeId.get(node.id);
+      const status =
+        currentExecutingNodeId === node.id
+          ? 'running'
+          : data.observability?.status || data.status || 'idle';
+
+      return {
+        nodeId: node.id,
+        nodeType: node.type || 'node',
+        title: data.title || data.name || getNodeDisplayName(node.id),
+        status,
+        output,
+        latencyMs: data.observability?.latency_ms,
+        totalTokens: data.observability?.total_tokens ?? readTokenUsage(output),
+        totalCost: data.observability?.total_cost ?? readCost(output),
+      };
+    })
+    .filter((summary) =>
+      ['running', 'success', 'failure'].includes(summary.status),
+    );
+
+  const workflowExecutionSummary = summarizeWorkflowExecution(
+    nodeExecutionSummaries.map((summary) => ({
+      nodeId: summary.nodeId,
+      status: summary.status as 'running' | 'success' | 'failure',
+      latencyMs: summary.latencyMs,
+      totalTokens: summary.totalTokens,
+      cost: summary.totalCost,
+    })),
+    testExecutionStartedAt,
+    testExecutionFinishedAt,
+    executionResult as
+      | {
+          duration?: unknown;
+          total_tokens?: unknown;
+          total_cost?: unknown;
+        }
+      | null
+      | undefined,
+  );
+
+  const renderNodeExecutionSummary = (
+    summary: (typeof nodeExecutionSummaries)[number],
+  ) => {
+    const isRunning = summary.status === 'running';
+    const isFailure = summary.status === 'failure';
+    const statusLabel = isRunning ? '실행 중' : isFailure ? '실패' : '성공';
+    const statusClassName = isRunning
+      ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300'
+      : isFailure
+        ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
+        : 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300';
+    const StatusIcon = isRunning
+      ? Loader2
+      : isFailure
+        ? AlertCircle
+        : CheckCircle;
+
+    return (
+      <div
+        key={summary.nodeId}
+        className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {summary.title}
+            </div>
+            <div className="mt-1 text-xs text-gray-500">{summary.nodeType}</div>
+          </div>
+          <span
+            className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${statusClassName}`}
+          >
+            <StatusIcon
+              className={`h-3.5 w-3.5 ${isRunning ? 'animate-spin' : ''}`}
+            />
+            {statusLabel}
+          </span>
+        </div>
+        <dl className="grid grid-cols-3 gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900">
+          <div>
+            <dt className="flex items-center gap-1 text-gray-500">
+              <Clock className="h-3.5 w-3.5" />
+              시간
+            </dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatLatency(summary.latencyMs)}
+            </dd>
+          </div>
+          <div>
+            <dt className="flex items-center gap-1 text-gray-500">
+              <Coins className="h-3.5 w-3.5" />
+              비용
+            </dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatCost(summary.totalCost)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">토큰</dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatTokens(summary.totalTokens)}
+            </dd>
+          </div>
+        </dl>
+        {summary.output !== undefined && (
+          <div className="max-h-40 overflow-x-auto border-t border-gray-100 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
+            <pre className="text-xs font-mono text-gray-600 dark:text-gray-300">
+              {stringifyOutputForDisplay(summary.nodeId, summary.output)}
+            </pre>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderExecutionTotalSummary = () => (
+    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
+      <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+        최종 실행 요약
+      </h3>
+      <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">서버 실행</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {formatLatency(workflowExecutionSummary.serverDurationMs)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">화면 완료</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {formatLatency(workflowExecutionSummary.screenCompletionDurationMs)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">전체 비용</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {formatCost(workflowExecutionSummary.totalCost)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-blue-700 dark:text-blue-300">전체 토큰</dt>
+          <dd className="mt-1 font-semibold text-blue-950 dark:text-blue-50">
+            {formatTokens(workflowExecutionSummary.totalTokens)}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
 
   const handleExecute = async () => {
     if (!activeWorkflowId) return;
@@ -416,15 +592,21 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               }
             } else if (type === 'node_finish') {
               const startedAt = nodeStartedAtRef.current[data.node_id];
-              const latencyMs = startedAt
+              const fallbackLatencyMs = startedAt
                 ? Math.round(performance.now() - startedAt)
                 : undefined;
+              const metrics = readNodeFinishExecutionSummary(
+                data,
+                fallbackLatencyMs,
+              );
               updateNodeData(data.node_id, {
                 status: 'success',
                 observability: buildObservability(
                   data.output,
                   'success',
-                  latencyMs,
+                  metrics.latencyMs,
+                  metrics.totalTokens,
+                  metrics.totalCost,
                 ),
               });
 
@@ -474,8 +656,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       }
     } catch (err: any) {
       console.error('Execution failed:', err);
-      failTestExecution(err.message || '실행 중 오류가 발생했습니다.');
-      toast.error('실행 실패');
+      const budgetExceeded = isBudgetExceededError(err);
+      failTestExecution(
+        budgetExceeded
+          ? BUDGET_EXCEEDED_MESSAGE
+          : err.message || '실행 중 오류가 발생했습니다.',
+      );
+      toast.error(budgetExceeded ? BUDGET_EXCEEDED_MESSAGE : '실행 실패');
     } finally {
       setTestUploading(false);
       setPreflightStatus('idle');
@@ -485,99 +672,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const handleReset = () => {
     setValidationErrors([]);
     setPreflightStatus('idle');
-    setCompareResult(null);
     resetTestExecution();
-  };
-
-  const handleCompare = async () => {
-    if (!activeWorkflowId || !compareNodeId || !leftValue || !rightValue) {
-      return;
-    }
-    if (!canExecute) {
-      toast.error('현재 권한으로는 비교 실행을 할 수 없습니다.');
-      return;
-    }
-
-    setValidationErrors([]);
-    setCompareResult(null);
-    setIsComparing(true);
-    setPreflightStatus('validating');
-
-    try {
-      let compareInputs: Record<string, any> = { ...inputs };
-
-      if (startNode?.type === 'webhookTrigger') {
-        try {
-          const rawJson = inputs['__json_payload__'];
-          compareInputs = JSON.parse(rawJson);
-        } catch {
-          toast.error('유효하지 않은 JSON 형식입니다.');
-          return;
-        }
-      }
-
-      const graphSnapshot = cloneDraft({
-        nodes,
-        edges,
-        viewport: getViewport(),
-        features,
-        envVariables,
-        runtimeVariables,
-      });
-      const validation = validateWorkflowGraph(graphSnapshot);
-
-      if (!validation.ok) {
-        setValidationErrors(validation.errors);
-        toast.error('실행 전 그래프 검증 실패');
-        return;
-      }
-
-      setPreflightStatus('saving');
-      await workflowApi.syncDraftWorkflow(
-        activeWorkflowId,
-        buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
-      );
-
-      const hasFiles = Object.values(files).some((file) => file !== null);
-      if (hasFiles) {
-        setTestUploading(true);
-        try {
-          for (const [key, file] of Object.entries(files)) {
-            if (!file) continue;
-            const presignedData = await knowledgeApi.getPresignedUploadUrl(
-              file.name,
-              file.type || 'application/octet-stream',
-            );
-            await knowledgeApi.uploadToS3(
-              presignedData.upload_url,
-              file,
-              file.type || 'application/octet-stream',
-            );
-            compareInputs[key] = presignedData.upload_url.split('?')[0];
-          }
-        } finally {
-          setTestUploading(false);
-        }
-      }
-
-      const inputsWithMemory = appendMemoryFlag
-        ? appendMemoryFlag(compareInputs)
-        : compareInputs;
-      const result = await workflowApi.compareWorkflow(activeWorkflowId, {
-        node_id: compareNodeId,
-        compare_type: compareType,
-        inputs: inputsWithMemory as Record<string, unknown>,
-        left: leftValue,
-        right: rightValue,
-      });
-      setCompareResult(result);
-    } catch (err: any) {
-      toast.error(err.message || '비교 실행 실패');
-    } finally {
-      setTestUploading(false);
-      setPreflightStatus('idle');
-      setIsComparing(false);
-    }
   };
 
   const getVariableDisplayName = (variable: WorkflowVariable) =>
@@ -601,31 +696,23 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {isExecuting && nodeResults.length > 0 ? (
+        {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-blue-600 mb-4">
               <Loader2 className="w-5 h-5 animate-spin" />
               <h3 className="text-sm font-medium">실행 중...</h3>
             </div>
-            {nodeResults.map((result, index) => (
-              <div
-                key={`${result.nodeId}-${index}`}
-                className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700 animate-in fade-in slide-in-from-bottom-2 duration-300"
-              >
-                <div className="px-4 py-2 bg-green-50 border-b border-green-200 flex items-center gap-2 dark:bg-green-900/20 dark:border-green-800">
-                  <CheckCircle className="w-4 h-4 text-green-600" />
-                  <span className="text-xs font-medium text-green-800 dark:text-green-400">
-                    [{result.nodeType}] 완료
-                  </span>
-                </div>
-                <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900 max-h-40">
-                  <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                    {stringifyOutputForDisplay(result.nodeId, result.output)}
-                  </pre>
+            {nodeExecutionSummaries.length > 0 ? (
+              nodeExecutionSummaries.map(renderNodeExecutionSummary)
+            ) : (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                <div className="flex items-center gap-2 font-medium">
+                  <Loader2 className="h-4 w-4 animate-spin" />첫 노드 실행
+                  결과를 기다리는 중입니다.
                 </div>
               </div>
-            ))}
+            )}
           </div>
         ) : !hasExecutionResult && !error ? (
           /* Input Form */
@@ -797,153 +884,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
               )}
             </div>
-
-            {llmNodes.length > 0 && (
-              <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                <div className="border-b border-gray-200 bg-gray-50 px-4 py-3 dark:bg-gray-800 dark:border-gray-700">
-                  <h3 className="text-sm font-medium text-gray-900 dark:text-gray-200">
-                    Model / Prompt 비교
-                  </h3>
-                </div>
-                <div className="space-y-3 p-4">
-                  <div className="grid grid-cols-2 gap-2">
-                    <select
-                      value={compareNodeId}
-                      onChange={(event) => setCompareNodeId(event.target.value)}
-                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                    >
-                      {llmNodes.map((node) => (
-                        <option key={node.id} value={node.id}>
-                          {(node.data as any).title || node.id}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-gray-300 dark:border-gray-700">
-                      {(['model', 'prompt'] as const).map((type) => (
-                        <button
-                          key={type}
-                          type="button"
-                          onClick={() => setCompareType(type)}
-                          className={`py-2 text-sm font-medium ${
-                            compareType === type
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200'
-                          }`}
-                        >
-                          {type}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {compareType === 'model' ? (
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        value={leftValue}
-                        onChange={(event) => setLeftValue(event.target.value)}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Model A"
-                      />
-                      <input
-                        value={rightValue}
-                        onChange={(event) => setRightValue(event.target.value)}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Model B"
-                      />
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      <textarea
-                        value={leftValue}
-                        onChange={(event) => setLeftValue(event.target.value)}
-                        className="min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Prompt A"
-                      />
-                      <textarea
-                        value={rightValue}
-                        onChange={(event) => setRightValue(event.target.value)}
-                        className="min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm dark:bg-gray-800 dark:border-gray-700"
-                        placeholder="Prompt B"
-                      />
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleCompare}
-                    disabled={
-                      isComparing ||
-                      isTestUploading ||
-                      isPreparing ||
-                      !canExecute ||
-                      !leftValue ||
-                      !rightValue
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2 font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
-                  >
-                    {isComparing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        비교 실행 중...
-                      </>
-                    ) : (
-                      '비교 실행'
-                    )}
-                  </button>
-
-                  {compareResult && (
-                    <div className="grid grid-cols-2 gap-2">
-                      {compareResult.variants.map((variant) => (
-                        <div
-                          key={variant.label}
-                          className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                              {variant.label}
-                            </span>
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                variant.status === 'success'
-                                  ? 'bg-green-50 text-green-700'
-                                  : 'bg-red-50 text-red-700'
-                              }`}
-                            >
-                              {variant.status}
-                            </span>
-                          </div>
-                          <dl className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
-                            <div className="flex justify-between gap-2">
-                              <dt>tokens</dt>
-                              <dd>{variant.total_tokens || 0}</dd>
-                            </div>
-                            <div className="flex justify-between gap-2">
-                              <dt>cost</dt>
-                              <dd>
-                                ${Number(variant.total_cost || 0).toFixed(6)}
-                              </dd>
-                            </div>
-                            <div className="flex justify-between gap-2">
-                              <dt>latency</dt>
-                              <dd>{variant.latency_ms || 0}ms</dd>
-                            </div>
-                          </dl>
-                          {variant.error ? (
-                            <p className="mt-2 line-clamp-3 text-xs text-red-600">
-                              {variant.error}
-                            </p>
-                          ) : (
-                            <pre className="mt-2 max-h-32 overflow-auto rounded bg-gray-50 p-2 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                              {JSON.stringify(variant.node_output, null, 2)}
-                            </pre>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         ) : (
           /* Execution Result */
@@ -982,27 +922,18 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             )}
 
             {hasExecutionResult && (
-              <div>
+              <div className="space-y-4">
+                {renderExecutionTotalSummary()}
                 <h3 className="text-sm font-medium text-gray-900 mb-3 dark:text-gray-200">
                   노드별 실행 결과
                 </h3>
                 <div className="space-y-3">
-                  {Object.entries(executionResult as Record<string, any>).map(
-                    ([nodeId, output]: [string, any]) => (
-                      <div
-                        key={nodeId}
-                        className="border border-gray-200 rounded-lg overflow-hidden dark:border-gray-700"
-                      >
-                        <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 dark:bg-gray-800 dark:border-gray-700">
-                          {getNodeDisplayName(nodeId)}
-                        </div>
-                        <div className="p-3 bg-white overflow-x-auto dark:bg-gray-900">
-                          <pre className="text-xs text-gray-600 font-mono dark:text-gray-300">
-                            {stringifyOutputForDisplay(nodeId, output)}
-                          </pre>
-                        </div>
-                      </div>
-                    ),
+                  {nodeExecutionSummaries.length > 0 ? (
+                    nodeExecutionSummaries.map(renderNodeExecutionSummary)
+                  ) : (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800">
+                      노드별 실행 결과가 없습니다.
+                    </div>
                   )}
                 </div>
               </div>
@@ -1016,7 +947,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {!hasExecutionResult && !error ? (
           <button
             onClick={handleExecute}
-            disabled={isExecuting || isTestUploading || isPreparing || !canExecute}
+            disabled={isExecuteActionDisabled}
             className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
           >
             {isExecuting || isTestUploading || isPreparing ? (

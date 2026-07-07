@@ -17,6 +17,7 @@ from apps.shared.db.models.knowledge import (  # noqa: F401
     Document,
     DocumentChunk,
     KnowledgeBase,
+    RAGAnswerRun,
 )
 from apps.shared.db.models.llm import (  # noqa: F401
     LLMCredential,
@@ -666,6 +667,87 @@ def trace_retention_purge(self, data: Dict[str, Any]):
     except Exception as e:
         session.rollback()
         logger.error(f"[Log-System] trace_retention_purge 실패: {e}")
+        raise self.retry(exc=e, countdown=2**self.request.retries)
+    finally:
+        session.close()
+
+
+def _parse_rag_answer_purge_limit(data: Dict[str, Any]) -> int:
+    from apps.shared.services.rag_answer_retention import (
+        DEFAULT_RAG_ANSWER_PURGE_LIMIT,
+        RAGAnswerRetentionService,
+    )
+
+    return RAGAnswerRetentionService.validate_limit(
+        data.get("limit", DEFAULT_RAG_ANSWER_PURGE_LIMIT)
+    )
+
+
+@celery_app.task(name="log.rag_answer_retention_purge", bind=True, max_retries=3)
+def rag_answer_retention_purge(self, data: Dict[str, Any]):
+    """만료된 standalone RAG Agent answer run 정리 실행."""
+    from apps.shared.services.rag_answer_retention import RAGAnswerRetentionService
+
+    session = SessionLocal()
+    try:
+        organization_id = data.get("organization_id")
+        limit = _parse_rag_answer_purge_limit(data)
+        result = RAGAnswerRetentionService.purge(
+            session,
+            organization_id=uuid.UUID(organization_id) if organization_id else None,
+            dry_run=bool(data.get("dry_run", False)),
+            limit=limit,
+        )
+        return {"status": "success", "result": result}
+    except ValueError:
+        session.rollback()
+        logger.warning("[Log-System] rag_answer_retention_purge invalid request")
+        return {"status": "failed", "error": "invalid_rag_answer_purge_request"}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[Log-System] rag_answer_retention_purge 실패: {e}")
+        raise self.retry(exc=e, countdown=2**self.request.retries)
+    finally:
+        session.close()
+
+
+@celery_app.task(name="log.knowledge_ingestion_outbox_process", bind=True, max_retries=3)
+def knowledge_ingestion_outbox_process(self, data: Dict[str, Any]):
+    """Knowledge ingestion outbox의 cleanup/recovery event를 idempotent하게 처리한다."""
+    from apps.shared.services.knowledge_ingestion_outbox import (
+        DEFAULT_OUTBOX_PROCESS_LIMIT,
+        KnowledgeIngestionOutboxService,
+    )
+    from apps.shared.services.knowledge_ingestion_outbox_processor import (
+        KnowledgeIngestionOutboxProcessor,
+    )
+
+    session = SessionLocal()
+    owner_token = str(uuid.uuid4())
+    try:
+        processor = KnowledgeIngestionOutboxProcessor(session)
+        result = processor.process_due_events(
+            owner_token=owner_token,
+            limit=KnowledgeIngestionOutboxService.validate_limit(
+                data.get("limit") or DEFAULT_OUTBOX_PROCESS_LIMIT
+            ),
+        )
+        session.commit()
+        return {
+            "status": "success",
+            "processed_count": result.processed_count,
+            "recovered_count": result.recovered_count,
+        }
+    except ValueError:
+        session.rollback()
+        logger.warning("[Log-System] knowledge_ingestion_outbox invalid request")
+        return {"status": "failed", "error": "invalid_knowledge_outbox_request"}
+    except Exception as e:
+        session.rollback()
+        logger.error(
+            "[Log-System] knowledge_ingestion_outbox_process 실패: error_type=%s",
+            type(e).__name__,
+        )
         raise self.retry(exc=e, countdown=2**self.request.retries)
     finally:
         session.close()

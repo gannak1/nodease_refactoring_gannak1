@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   X,
   Wand2,
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 
 // 서버 에러 응답 타입 정의 (개선점 1: 에러 스키마 명확화)
 interface ApiErrorResponse {
@@ -40,6 +41,7 @@ interface CodeWizardModalProps {
   onClose: () => void;
   inputVariables: string[]; // 현재 Code Node에 정의된 입력 변수 목록
   onApply: (generatedCode: string) => void;
+  organizationId?: string | null;
 }
 
 export function CodeWizardModal({
@@ -47,6 +49,7 @@ export function CodeWizardModal({
   onClose,
   inputVariables,
   onApply,
+  organizationId,
 }: CodeWizardModalProps) {
   const [description, setDescription] = useState('');
   const [generatedCode, setGeneratedCode] = useState('');
@@ -54,21 +57,26 @@ export function CodeWizardModal({
   const [error, setError] = useState<string | null>(null);
   const [hasCredentials, setHasCredentials] = useState<boolean | null>(null);
   const [copied, setCopied] = useState(false);
+  const isOrganizationScopePending = organizationId === null;
 
-  // 모달 열릴 때 credential 확인 및 상태 초기화
-  useEffect(() => {
-    if (isOpen) {
-      setDescription('');
-      setGeneratedCode('');
-      setError(null);
-      setCopied(false);
-      checkCredentials();
-    }
-  }, [isOpen]);
+  const getWizardOrganizationId = useCallback(
+    () =>
+      organizationId !== undefined
+        ? organizationId
+        : getStoredActiveOrganizationId(),
+    [organizationId],
+  );
 
-  const checkCredentials = async () => {
+  const checkCredentials = useCallback(async () => {
+    setHasCredentials(null);
+    if (isOrganizationScopePending) return;
+
     try {
-      const res = await fetch('/api/v1/code-wizard/check-credentials', {
+      const resolvedOrganizationId = getWizardOrganizationId();
+      const query = resolvedOrganizationId
+        ? `?organization_id=${encodeURIComponent(resolvedOrganizationId)}`
+        : '';
+      const res = await fetch(`/api/v1/code-wizard/check-credentials${query}`, {
         method: 'GET',
         credentials: 'include',
       });
@@ -79,11 +87,27 @@ export function CodeWizardModal({
     } catch {
       setHasCredentials(false);
     }
-  };
+  }, [getWizardOrganizationId, isOrganizationScopePending]);
+
+  // 모달 열릴 때 credential 확인 및 상태 초기화
+  useEffect(() => {
+    if (isOpen) {
+      setDescription('');
+      setGeneratedCode('');
+      setError(null);
+      setCopied(false);
+      void checkCredentials();
+    }
+  }, [isOpen, checkCredentials]);
 
   const handleGenerate = async () => {
     if (!description.trim()) {
       setError('생성할 코드에 대한 설명을 입력해주세요.');
+      return;
+    }
+
+    if (isOrganizationScopePending) {
+      setError('워크플로우 조직 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
       return;
     }
 
@@ -92,6 +116,7 @@ export function CodeWizardModal({
     setGeneratedCode('');
 
     try {
+      const resolvedOrganizationId = getWizardOrganizationId();
       const res = await fetch('/api/v1/code-wizard/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,6 +124,7 @@ export function CodeWizardModal({
         body: JSON.stringify({
           description: description,
           input_variables: inputVariables,
+          organization_id: resolvedOrganizationId ?? undefined,
         }),
       });
 
@@ -109,8 +135,12 @@ export function CodeWizardModal({
 
       const data = await res.json();
       setGeneratedCode(data.generated_code);
-    } catch (err: any) {
-      setError(err.message || '알 수 없는 오류가 발생했습니다.');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : '알 수 없는 오류가 발생했습니다.',
+      );
     } finally {
       setIsLoading(false);
     }
@@ -221,7 +251,8 @@ export function CodeWizardModal({
               ) : (
                 <button
                   onClick={handleGenerate}
-                  disabled={isLoading || !description.trim()}
+                  data-testid="code-wizard-submit"
+                  disabled={isLoading || isOrganizationScopePending || !description.trim()}
                   className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
                 >
                   {isLoading ? (
