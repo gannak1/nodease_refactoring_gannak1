@@ -692,6 +692,7 @@ class AgentBuilderService:
                 status="clarification_required",
                 structured_request=structured,
                 clarification_questions=recommendations["questions"],
+                clarification_options=recommendations.get("options", []),
                 validation_result=validation,
                 warnings=[*structured_warnings, *recommendations["warnings"]],
             )
@@ -1766,6 +1767,7 @@ class AgentBuilderService:
                     else "clarification_required",
                     "bindings": [],
                     "questions": ["사용할 Knowledge Base를 선택해주세요."],
+                    "options": response.clarification_options,
                     "warnings": [
                         response.user_safe_warning
                         or "Knowledge Base 추천을 사용할 수 없습니다."
@@ -1777,6 +1779,7 @@ class AgentBuilderService:
                     "status": "recommended",
                     "bindings": [],
                     "questions": [],
+                    "options": [],
                     "warnings": [
                         "권한 확인된 Knowledge Base 후보가 없어 Knowledge Base 없이 LLM node 초안을 생성합니다."
                     ],
@@ -1801,6 +1804,7 @@ class AgentBuilderService:
                     "status": "clarification_required",
                     "bindings": [],
                     "questions": ["추천 후보가 여러 개입니다. 사용할 Knowledge Base를 선택해주세요."],
+                    "options": self._kb_clarification_options(recommendations),
                     "warnings": ["Knowledge Base 후보가 비슷해 자동 선택하지 않았습니다."],
                 }
             binding_base = {
@@ -1823,7 +1827,24 @@ class AgentBuilderService:
             else:
                 bindings.append(binding_base)
             warnings.extend(top.warnings)
-        return {"status": "recommended", "bindings": bindings, "questions": [], "warnings": warnings}
+        return {"status": "recommended", "bindings": bindings, "questions": [], "options": [], "warnings": warnings}
+
+    def _kb_clarification_options(self, recommendations: list[Any]) -> list[dict[str, Any]]:
+        options: list[dict[str, Any]] = []
+        for item in recommendations:
+            options.append(
+                {
+                    "type": "knowledge_base",
+                    "candidate_id": item.candidate_handle or item.recommendation_id,
+                    "label": _safe_display_label(item.safe_label),
+                    "confidence": item.confidence,
+                    "score": item.score,
+                    "reason_category": item.reason_category or item.safe_reason_code,
+                    "threshold_result": item.threshold_result,
+                    "runtime_availability": item.runtime_availability,
+                }
+            )
+        return options
 
     def _safe_kb_bindings(self, bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [

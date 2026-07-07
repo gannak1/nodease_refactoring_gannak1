@@ -47,6 +47,7 @@ export type AgentBuilderMessageResponse = {
   status: AgentBuilderStatus;
   structured_request?: Record<string, unknown> | null;
   clarification_questions: string[];
+  clarification_options: Array<Record<string, unknown>>;
   draft_preview?: AgentBuilderDraftPreview | null;
   validation_result?: AgentBuilderValidationResult | null;
   preview_prompt?: string | null;

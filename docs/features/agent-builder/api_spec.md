@@ -44,6 +44,7 @@ MVP message request는 raw editor graph snapshot을 받지 않는다. Client는 
 | `status` | `draft_ready`, `clarification_required`, `validation_failed`, `unsupported`, `configuration_required`, `failed`, `canceled` |
 | `structured_request` | 자연어 요청을 안전하게 구조화한 결과 |
 | `clarification_questions` | 사용자 확인이 필요한 질문 |
+| `clarification_options` | 사용자가 선택해야 하는 safe 후보 목록. KB 후보 clarification에서는 safe label, candidate safe handle, confidence, score, reason category를 포함 |
 | `draft_preview` | 생성 또는 변경될 workflow draft preview |
 | `validation_result` | validation outcome과 user-safe reason |
 | `preview_prompt` | validation을 통과한 draft에만 표시되는 `도안 보기` action |
@@ -94,13 +95,15 @@ Actor, organization, workflow/app scope는 request body가 아니라 server-reso
 | `resolution_id` | 해결 대상 pending resolution |
 | `requirement_id` | 해결 대상 knowledge requirement |
 | `recommendations` | safe KB recommendation 목록. 각 item은 score, confidence, reason category, threshold result를 포함 |
-| `clarification_options` | safe candidate selection options |
+| `clarification_options` | safe candidate selection options. `status=clarification_required`에서 KB 후보가 여러 개이거나 score가 근접하면 비어 있으면 안 되며, 사용자가 어떤 KB를 선택할지 판단할 수 있는 safe label, candidate safe handle, confidence, score, reason category를 포함 |
 | `user_safe_warning` | partial access, runtime availability 등 사용자 표시 경고 |
 | `fallback_reason` | `adapter_unavailable`, `no_candidate` 같은 safe reason code |
 
 `status=no_candidate`는 adapter가 정상 동작했지만 권한 확인된 safe 후보 집합 안에서 매칭되는 KB를 찾지 못한 상태다. Agent Builder는 이 상태를 권한 확장이나 hidden resource 노출로 처리하지 않고, 한국어 경고와 함께 Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있다.
 
 Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공할 수 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환한다. Safe 후보 선택지도 제공할 수 없으면 `status=unavailable`과 safe `fallback_reason`을 반환하고, Agent Builder는 validation failure 또는 사용자 안내로 닫는다.
+
+후보 여러 개 또는 score 근접으로 자동 선택하지 않는 `clarification_required` 응답은 질문만 반환하지 않는다. Agent Builder message response는 Adapter의 safe `clarification_options`를 함께 반환하고, client는 후보명, confidence, score, reason category를 표시해야 한다. 이 선택지는 raw source id/path/url/title, raw document/chunk content, hidden/denied resource detail을 포함하지 않는다.
 
 Recommendation item은 `candidate_type=knowledge_base`를 사용한다. `candidate_id`는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이다. Agent Builder draft metadata는 safe handle과 structured request safe context만 보존하고 runtime KB id mapping을 저장하지 않는다. Backend는 apply/save 직전에 이 handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다. Collection은 `source_collection_summary`로만 반환한다.
 

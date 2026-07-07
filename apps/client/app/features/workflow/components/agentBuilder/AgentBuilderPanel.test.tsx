@@ -243,6 +243,7 @@ describe('AgentBuilderPanel', () => {
       status: 'clarification_required',
       structured_request: null,
       clarification_questions: ['추가 정보를 알려주세요.'],
+      clarification_options: [],
       draft_preview: null,
       validation_result: null,
       preview_prompt: null,
@@ -294,6 +295,7 @@ describe('AgentBuilderPanel', () => {
       status: 'clarification_required',
       structured_request: null,
       clarification_questions: ['추가 정보를 알려주세요.'],
+      clarification_options: [],
       draft_preview: null,
       validation_result: null,
       preview_prompt: null,
@@ -325,6 +327,68 @@ describe('AgentBuilderPanel', () => {
     expect(screen.getByText('Summarize input and send to Slack')).toBeTruthy();
   });
 
+  it('Knowledge Base clarification 후보를 선택 가능한 정보로 표시한다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-options',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+      draft_preview: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-kb-options',
+      status: 'clarification_required',
+      structured_request: null,
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [
+        {
+          candidate_id: 'safe-rec-1',
+          label: '휴가 정책',
+          confidence: 'high',
+          score: 0.7,
+          reason_category: 'topic_keyword_match',
+        },
+        {
+          candidate_id: 'safe-rec-2',
+          label: '인사 정책',
+          confidence: 'high',
+          score: 0.66,
+          reason_category: 'metadata_match',
+        },
+      ],
+      draft_preview: null,
+      validation_result: null,
+      preview_prompt: null,
+      warnings: ['Knowledge Base 후보가 비슷해 자동 선택하지 않았습니다.'],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책을 찾아서 요약해줘' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: 'Enter',
+      code: 'Enter',
+    });
+
+    expect(await screen.findByText('휴가 정책')).toBeTruthy();
+    expect(screen.getByText('인사 정책')).toBeTruthy();
+    expect(screen.getByText(/점수 0.70/)).toBeTruthy();
+    expect(screen.getByText(/점수 0.66/)).toBeTruthy();
+  });
+
   it('validation을 통과하지 못한 draft에는 도안 보기 버튼을 노출하지 않는다', async () => {
     window.localStorage.setItem(
       'agent-builder:workflow-old:app-1',
@@ -340,6 +404,7 @@ describe('AgentBuilderPanel', () => {
           request_id: 'request-1',
           status: 'validation_failed',
           clarification_questions: [],
+          clarification_options: [],
           warnings: [],
           draft_preview: {
             draft_id: 'draft-invalid',
@@ -396,6 +461,7 @@ describe('AgentBuilderPanel', () => {
           request_id: 'request-reopen',
           status: 'draft_ready',
           clarification_questions: [],
+          clarification_options: [],
           warnings: [],
           draft_preview: {
             draft_id: 'draft-reopen',

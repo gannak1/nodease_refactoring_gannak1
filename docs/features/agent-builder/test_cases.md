@@ -51,7 +51,7 @@ Status: Draft
 - Apply/save 직전에 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다.
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
-- 후보 여러 개 또는 점수 근접이면 clarification option이 표시된다.
+- 후보 여러 개 또는 점수 근접이면 질문만 표시하지 않고 safe label, candidate safe handle, confidence, score, reason category를 포함한 clarification option이 표시된다.
 - 후보 0개이면 validation failure로 닫지 않고, 권한 확인된 KB 후보가 없다는 경고와 함께 Knowledge Base binding이 비어 있는 LLM node draft를 생성한다.
 - Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options` 기반 fallback clarification을 반환한다.
 - Adapter unavailable이고 safe 후보 선택지도 없으면 validation failure를 반환한다.

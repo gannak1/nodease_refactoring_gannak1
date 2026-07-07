@@ -721,6 +721,28 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
 
     assert result["status"] == "clarification_required"
     assert result["questions"]
+    assert result["options"] == [
+        {
+            "type": "knowledge_base",
+            "candidate_id": "safe-rec-1",
+            "label": "휴가 정책",
+            "confidence": "high",
+            "score": 0.7,
+            "reason_category": "topic_keyword_match",
+            "threshold_result": "high_confidence",
+            "runtime_availability": "available",
+        },
+        {
+            "type": "knowledge_base",
+            "candidate_id": "safe-rec-2",
+            "label": "인사 정책",
+            "confidence": "high",
+            "score": 0.66,
+            "reason_category": "metadata_match",
+            "threshold_result": "high_confidence",
+            "runtime_availability": "available",
+        },
+    ]
 
 
 def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypatch):

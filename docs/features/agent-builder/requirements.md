@@ -128,7 +128,7 @@ Knowledge Skill을 prompt context로 직접 사용하는 기능은 MBA-145 MVP �
 KB recommendation 결과는 다음 중 하나여야 한다.
 
 - 후보 1개 high confidence: 해당 pending KB resolution을 resolved 처리하고 draft 추천값으로 사용
-- 후보 여러 개 또는 점수 근접: 사용자에게 KB 선택 clarification 제공
+- 후보 여러 개 또는 점수 근접: 사용자에게 KB 선택 clarification을 제공하고, safe label, candidate safe handle, confidence, score, reason category를 포함한 `clarification_options`를 함께 표시
 - 후보 0개: 권한 확인된 KB 후보가 없다는 경고를 표시하고, Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있음
 - adapter unavailable: 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`로 fallback clarification을 반환하고, safe 후보 선택지도 없으면 validation failure
 - optional KB requirement unresolved: warning과 함께 KB 없는 draft 가능

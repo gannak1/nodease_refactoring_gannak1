@@ -139,6 +139,7 @@ class AgentBuilderMessageResponse(BaseModel):
     status: AgentBuilderRequestStatus
     structured_request: AgentBuilderStructuredRequest | None = None
     clarification_questions: list[str] = Field(default_factory=list)
+    clarification_options: list[dict[str, Any]] = Field(default_factory=list)
     draft_preview: AgentBuilderDraftPreview | None = None
     validation_result: AgentBuilderValidationResult | None = None
     preview_prompt: str | None = None

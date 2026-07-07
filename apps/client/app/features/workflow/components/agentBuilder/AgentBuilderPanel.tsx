@@ -118,6 +118,12 @@ const assistantItemsFromResponses = (
     response,
   }));
 
+function formatClarificationOptionValue(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return value.toFixed(2);
+  return String(value);
+}
+
 const createLocalUserMessageId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return `user-${crypto.randomUUID()}`;
@@ -504,6 +510,40 @@ export function AgentBuilderPanel({
                       {question}
                     </p>
                   ))}
+                  {response.clarification_options?.length ? (
+                    <div className="mt-3 space-y-2">
+                      {response.clarification_options.map((option, index) => {
+                        const label =
+                          formatClarificationOptionValue(option.label) ??
+                          formatClarificationOptionValue(option.safe_label) ??
+                          `Knowledge Base 후보 ${index + 1}`;
+                        const confidence = formatClarificationOptionValue(
+                          option.confidence,
+                        );
+                        const score = formatClarificationOptionValue(option.score);
+                        const reason = formatClarificationOptionValue(
+                          option.reason_category,
+                        );
+                        return (
+                          <div
+                            key={`${option.candidate_id ?? label}-${index}`}
+                            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                          >
+                            <div className="font-medium text-slate-900">{label}</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {[
+                                confidence && `신뢰도 ${confidence}`,
+                                score && `점수 ${score}`,
+                                reason,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                   {response.validation_result?.issues?.map((issue) => (
                     <p key={`${issue.code}-${issue.path}`} className="mt-2 text-red-700">
                       {issue.message}
