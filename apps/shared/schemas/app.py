@@ -36,6 +36,13 @@ class AppBudgetStatus(BaseModel):
     status: Literal["normal", "at_risk", "exceeded"]
 
 
+class AppOperationMetrics(BaseModel):
+    current_month_cost: float
+    projected_month_cost: Optional[float] = None
+    previous_month_cost: float
+    trend_percent: Optional[float] = None
+
+
 class AppResponse(BaseModel):
     """앱 응답 스키마"""
 
@@ -70,6 +77,7 @@ class AppOperationAppSummary(BaseModel):
     workflow_id: Optional[UUID] = None
     owner_name: Optional[str] = None
     budget_status: Optional[AppBudgetStatus] = None
+    operation_metrics: Optional[AppOperationMetrics] = None
     created_at: datetime
     updated_at: datetime
 

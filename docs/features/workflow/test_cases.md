@@ -52,6 +52,7 @@ Verified Against: feature/mba-102 @ 968c8df
 | 1 | 워크플로우 조작 편의성 | A -> B -> C 구조에서 B 삭제 시 A -> C 자동 재연결 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 입력 필드 focus 중 Backspace/Delete가 노드 삭제로 동작하지 않음 | 통과 | shortcut hook test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 삭제 후 undo 복구 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
+| 1 | 워크플로우 조작 편의성 | 왼쪽 노드 패널의 `뒤에 추가`가 선택 노드 오른쪽에 새 노드와 edge를 생성 | 통과 | 선택 노드 우선, 미선택 시 단일 terminal만 허용, note 제외, undo 단위, validation 실패 rollback unit test 완료 | `apps/client/app/features/workflow/tests/workflow-add-after-selected-node.test.ts` |
 | 1 | 동시성 처리 | 자동 저장 응답이 늦게 도착해도 최신 화면 상태를 이전 상태로 되돌리지 않음 | 통과 | active workflow가 아닌 data 적용 시 현재 화면 nodes/edges를 덮지 않는 store test 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 1 | 동시성 처리 | 테스트 실행 중 graph를 수정해도 실행 결과가 현재 편집 중인 설정값을 덮어쓰지 않음 | 통과 | 실행 결과 observability merge가 기존 node 설정값을 유지하는 store test 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 2 | 실행 편의성 | 권한 없는 테스트 실행의 403 처리 | 미구현 테스트 | Gateway/API contract test infra가 필요하다 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
@@ -184,6 +185,16 @@ Verified Against: feature/mba-102 @ 968c8df
 
 ### 3. 워크플로우 조작 편의성
 
+- 선택 노드가 있는 상태에서 왼쪽 노드 패널의 `뒤에 추가`를 실행하면 선택 노드 오른쪽에 새 노드가 생성되고 선택 노드에서 새 노드로 edge가 생성된다.
+- 일반 노드 클릭/추가는 기존 자유 배치 흐름을 유지하고, `뒤에 추가` 액션과 동작이 섞이지 않는다.
+- 선택 노드가 없고 terminal node가 하나뿐이면 `뒤에 추가`는 terminal node 뒤에 연결할 수 있다.
+- 선택 노드가 없고 terminal node가 여러 개이면 `뒤에 추가`는 임의 연결하지 않고 실행하지 않는다.
+- sticky note처럼 workflow 실행 graph에 포함되지 않는 보조 노드는 terminal node 계산에서 제외한다.
+- 선택 노드가 여러 개이면 `뒤에 추가`는 임의 연결하지 않고 실행하지 않는다.
+- condition/switch/loop처럼 handle이 모호한 노드는 연결 handle이 명확할 때만 자동 edge를 생성한다.
+- `뒤에 추가`는 전체 graph 정렬을 실행하지 않고 새 노드 주변 local placement만 수행한다.
+- `뒤에 추가`는 노드 생성과 edge 생성을 undo 한 번으로 되돌릴 수 있어야 한다.
+- `뒤에 추가` edge 생성이 일반 연결 validation을 통과하지 못하면 새 노드도 남기지 않는다.
 - 단일 중간 노드를 삭제하면 incoming source와 outgoing target 사이에 새 edge가 생성된다.
 - 자동 재연결은 기존 연결 검증 규칙을 통과하는 경우에만 edge를 생성한다.
 - 여러 incoming/outgoing edge가 있는 노드를 삭제하면 가능한 유효 조합만 생성하고 중복 edge는 만들지 않는다.
@@ -348,7 +359,8 @@ Verified Against: feature/mba-102 @ 968c8df
 - 배포 중 draft가 추가로 수정되면 배포 완료 알림은 배포된 snapshot과 현재 draft가 다를 수 있음을 구분한다.
 
 
-(완전 미반영& 항목)
+## Runtime RAG Boundary Tests
+
 - Workflow run context resolver는 interactive user를 `execution_subject`로 만들고, approved service account 또는 assigned operator는 후속 private RAG 기능으로 구분한다.
 - Missing execution subject는 anonymous public-only 결과를 반환하고 workflow owner fallback을 만들지 않는다. Ambiguous execution subject는 private retrieval fail-closed로 처리한다.
 - LLM node의 RAG 옵션은 Builder-time skill selection과 runtime data access 권한을 분리한다.
@@ -356,7 +368,7 @@ Verified Against: feature/mba-102 @ 968c8df
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.
-- Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다.
+- Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
 - 배포 preflight는 private RAG 후속 기능에서 LLM node RAG 옵션의 KB/collection 후보가 intended execution subject/audience에게 사용 가능한지 검증하고, unavailable/unknown 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.

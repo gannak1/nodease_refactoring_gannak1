@@ -1,5 +1,48 @@
 import { NextRequest } from 'next/server';
 
+const CONTEXT_HEADER_ALLOWLIST = [
+  'X-Organization-Id',
+  'X-Request-Id',
+  'X-Correlation-Id',
+];
+
+const normalizeBackendUrl = (url: string) =>
+  url.replace(/\/+$/, '').replace(/\/api\/v1$/i, '');
+
+const isLoopbackUrl = (url: string) => {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return (
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname === '0.0.0.0' ||
+      hostname === '127.0.0.1' ||
+      hostname.startsWith('127.') ||
+      hostname === '::1' ||
+      hostname === '[::1]'
+    );
+  } catch {
+    return false;
+  }
+};
+
+const resolveBackendUrl = () => {
+  const apiUrl = process.env.API_URL?.trim();
+  if (apiUrl) {
+    return normalizeBackendUrl(apiUrl);
+  }
+
+  const publicApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (
+    publicApiUrl &&
+    (process.env.NODE_ENV !== 'production' || !isLoopbackUrl(publicApiUrl))
+  ) {
+    return normalizeBackendUrl(publicApiUrl);
+  }
+
+  return normalizeBackendUrl('http://127.0.0.1:8000');
+};
+
 /**
  * 워크플로우 스트리밍 실행을 위한 프록시 API Route
  *
@@ -13,8 +56,8 @@ export async function POST(
   const resolvedParams = await params;
   const workflowId = resolvedParams.workflowId;
 
-  // 로컬: http://127.0.0.1:8000, EKS: http://api-service:8000
-  const backendUrl = process.env.API_URL || 'http://127.0.0.1:8000';
+  // 로컬 dev에서 일반 API와 stream proxy가 같은 Gateway를 보도록 fallback 순서를 맞춘다.
+  const backendUrl = resolveBackendUrl();
 
   // Content-Type 확인
   const contentType = request.headers.get('content-type') || 'application/json';
@@ -30,26 +73,43 @@ export async function POST(
     body = await request.text();
   }
 
+  const headers = new Headers();
+  const cookie = request.headers.get('cookie');
+  if (cookie) {
+    headers.set('Cookie', cookie);
+  }
+  if (!isFormData) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  for (const headerName of CONTEXT_HEADER_ALLOWLIST) {
+    const value = request.headers.get(headerName);
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
   // FastAPI로 요청 전달
   const response = await fetch(
     `${backendUrl}/api/v1/workflows/${workflowId}/stream`,
     {
       method: 'POST',
-      headers: isFormData
-        ? {
-            Cookie: request.headers.get('cookie') || '',
-          }
-        : {
-            'Content-Type': 'application/json',
-            Cookie: request.headers.get('cookie') || '',
-          },
+      headers,
       body,
     },
   );
 
   // 에러 응답 처리
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
+    const errorText = await response.text().catch(() => '');
+    let errorData: unknown = {};
+    if (errorText) {
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { detail: errorText };
+      }
+    }
     return new Response(JSON.stringify(errorData), {
       status: response.status,
       headers: { 'Content-Type': 'application/json' },

@@ -41,6 +41,17 @@ class LLMNodeData(BaseNodeData):
     provider: Optional[str] = None
     model_id: str
     fallback_model_id: Optional[str] = None
+    auto_model_routing: bool = Field(
+        default=False, description="LLM 모델 자동 라우팅 사용 여부"
+    )
+    model_routing_policy: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="실행 시점 자동 모델 라우팅 active policy safe snapshot",
+    )
+    model_routing_context: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="도메인 키워드 없이 런타임 라우팅 rule 평가에 사용할 명시적 노드 분류 힌트",
+    )
     task_type: str = Field(default="generate", description="LLM 노드 작업 유형")
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
@@ -102,10 +113,31 @@ class LLMNodeData(BaseNodeData):
         description="template rewrite에서 사용할 safe query template",
     )
 
+    def _active_routing_model_id(self) -> Optional[str]:
+        if not self.auto_model_routing or not isinstance(self.model_routing_policy, dict):
+            return None
+
+        active_policy = self.model_routing_policy.get("active_policy")
+        if not isinstance(active_policy, dict):
+            return None
+
+        rules = active_policy.get("rules")
+        if isinstance(rules, list) and rules:
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                selected_model = str(rule.get("selected_model_id") or "").strip()
+                if selected_model:
+                    return selected_model
+
+        default_model = str(active_policy.get("default_model_id") or "").strip()
+        return default_model or None
+
     def validate(self) -> None:
         # 모델은 필수
         if not self.model_id or not self.model_id.strip():
-            raise ValueError("모델을 선택하세요.")
+            if not self._active_routing_model_id():
+                raise ValueError("모델을 선택하세요.")
         # Provider is now inferred from model_id via LLMService
         if self.fallback_model_id is not None:
             stripped_fallback = self.fallback_model_id.strip()

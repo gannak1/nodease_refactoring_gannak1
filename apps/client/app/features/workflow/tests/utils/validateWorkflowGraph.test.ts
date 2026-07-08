@@ -76,6 +76,57 @@ describe('validateWorkflowGraph', () => {
     expect(result.graph.edges.map((edge) => edge.id)).toEqual(['good-edge']);
   });
 
+  it('preserves LLM RAG selection data when cleaning invalid edges', () => {
+    const llmNode = {
+      ...node('llm', 'llmNode', 'LLM'),
+      data: {
+        title: 'LLM',
+        knowledgeBases: [{ id: 'kb-1', name: '제품 정책' }],
+        topK: 4,
+        scoreThreshold: 0.6,
+        dedupeRetrievedContext: true,
+        retrievedContextMaxChars: 4000,
+        retrievedContextCompression: 'light',
+        answerGroundingCheck: 'basic',
+      },
+    } as AppNode;
+    const graph = draft(
+      [node('start', 'startNode', '입력'), llmNode],
+      [
+        {
+          id: 'bad-edge',
+          source: 'llm',
+          sourceHandle: 'source',
+          target: 'start',
+          targetHandle: 'target',
+        },
+        {
+          id: 'good-edge',
+          source: 'start',
+          sourceHandle: 'source',
+          target: 'llm',
+          targetHandle: 'target',
+        },
+      ],
+    );
+
+    const result = cleanupInvalidEdges(graph);
+    const cleanedLlmNode = result.graph.nodes.find(
+      (cleanedNode) => cleanedNode.id === 'llm',
+    );
+
+    expect(result.graph.edges.map((edge) => edge.id)).toEqual(['good-edge']);
+    expect(cleanedLlmNode?.data).toMatchObject({
+      knowledgeBases: [{ id: 'kb-1', name: '제품 정책' }],
+      topK: 4,
+      scoreThreshold: 0.6,
+      dedupeRetrievedContext: true,
+      retrievedContextMaxChars: 4000,
+      retrievedContextCompression: 'light',
+      answerGroundingCheck: 'basic',
+    });
+  });
+
   it('detects cycles before execution', () => {
     const nodes = [
       node('start', 'startNode', '입력'),

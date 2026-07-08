@@ -160,40 +160,40 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     vi.restoreAllMocks();
   });
 
-  it('LLM 노드 상세 패널에는 A/B 테스트하기 진입 액션이 표시된다', () => {
+  it('LLM 노드 상세 패널에는 모델 라우팅 최적화 진입 액션이 표시된다', () => {
     renderPanel(createLlmNode());
 
     expect(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     ).toBeInTheDocument();
   });
 
-  it('LLM 노드가 아닌 노드 상세 패널에는 A/B 테스트하기 진입 액션이 표시되지 않는다', () => {
+  it('LLM 노드가 아닌 노드 상세 패널에는 모델 라우팅 최적화 진입 액션이 표시되지 않는다', () => {
     renderPanel(createNonLlmNode());
 
     expect(
-      screen.queryByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.queryByRole('button', { name: /모델 라우팅 최적화/i }),
     ).not.toBeInTheDocument();
   });
 
-  it('builder 이상 권한이 없으면 A/B 테스트하기 진입 액션은 비활성화된다', () => {
+  it('builder 이상 권한이 없으면 모델 라우팅 최적화 진입 액션은 비활성화된다', () => {
     setWorkflowPermission(false);
 
     renderPanel(createLlmNode());
 
     expect(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     ).toBeDisabled();
   });
 
-  it('A/B 테스트하기 클릭 시 Cost Optimizer 선택 화면을 연다', async () => {
+  it('모델 라우팅 최적화 클릭 시 모델 추천 화면을 연다', async () => {
     renderPanel(createLlmNode());
     fireEvent.click(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     );
 
     expect(routerMock.push).toHaveBeenCalledWith(
-      '/modules/workflow-1/cost-optimizer/llm-1',
+      '/modules/workflow-1/model-routing/llm-1',
     );
   });
 
@@ -204,7 +204,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
 
     renderPanel(createLlmNode());
     fireEvent.click(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     );
 
     expect(routerMock.push).not.toHaveBeenCalled();
@@ -215,7 +215,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     ).toBeInTheDocument();
   });
 
-  it('availability API가 unavailable을 반환하면 A/B 테스트하기 진입 액션은 비활성화된다', async () => {
+  it('availability API가 unavailable을 반환하면 모델 라우팅 최적화 진입 액션은 비활성화된다', async () => {
     workflowApiMock.getCostOptimizerAvailability.mockResolvedValue({
       available: false,
       reason: 'cost_optimizer.not_llm_node',
@@ -238,7 +238,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
       );
     });
     expect(
-      screen.getByRole('button', { name: /A\/B 테스트하기|비용 비교/i }),
+      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     ).toBeDisabled();
   });
 });

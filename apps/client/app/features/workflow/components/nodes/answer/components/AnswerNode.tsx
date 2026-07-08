@@ -18,6 +18,7 @@ export const AnswerNode = memo(
         showSourceHandle={false}
         icon={<MessageSquare className="text-white" />}
         iconColor="#10b981" // green-500
+        sizeMode="auto"
       >
         <div className="flex flex-col gap-2 p-1">
           <label className="text-xs font-semibold text-gray-500">

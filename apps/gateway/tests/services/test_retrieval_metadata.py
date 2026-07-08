@@ -3,7 +3,7 @@ import uuid
 from types import SimpleNamespace
 
 from apps.shared.db.models.knowledge import KnowledgeBase
-from apps.shared.db.models.llm import LLMCredential, LLMProvider
+from apps.shared.db.models.llm import LLMCredential, LLMModel, LLMProvider
 from apps.shared.schemas.rag import ChunkPreview
 from apps.shared.services.rag_source_tier import (
     chunk_source_tier_priority,
@@ -317,6 +317,149 @@ def test_search_documents_uses_resolved_embedding_model_client(monkeypatch):
         "model": embedding_model,
         "organization_id": organization_id,
     }
+
+
+def test_search_documents_threshold_uses_score_when_rerank_falls_back(monkeypatch):
+    kb_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+
+    class FakeModelQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(type="embedding", is_active=True)
+
+    class FakeDb:
+        def query(self, model):
+            return FakeModelQuery()
+
+    class FakeClient:
+        async def embed(self, query):
+            return [0.1, 0.2]
+
+    chunk = SimpleNamespace(
+        id=uuid.uuid4(),
+        content="개발 직군 신입 보상 밴드 근거",
+        metadata_={},
+        parent_chunk_id=None,
+        chunk_level="flat",
+        token_count=12,
+    )
+    doc = SimpleNamespace(
+        id=uuid.uuid4(),
+        filename="compensation.md",
+        meta_info={},
+        source_type="FILE",
+    )
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *args, **kwargs: FakeClient(),
+    )
+
+    service = RetrievalService(
+        db=FakeDb(),
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+    monkeypatch.setattr(
+        service,
+        "_retrieval_knowledge_bases",
+        lambda kb_ids: {
+            str(kb_id): SimpleNamespace(id=kb_id, embedding_model="text-embedding-test")
+        },
+    )
+    monkeypatch.setattr(service, "_has_valid_hierarchy", lambda *_: False)
+
+    async def fake_collect(all_candidates, **kwargs):
+        all_candidates[str(chunk.id)] = {
+            "score": 0.02,
+            "similarity": 0.9,
+            "chunk": chunk,
+            "doc": doc,
+        }
+
+    monkeypatch.setattr(service, "_collect_kb_candidates", fake_collect)
+    monkeypatch.setattr(
+        service,
+        "_rerank",
+        lambda _query, candidates, _top_k, **_kwargs: candidates,
+    )
+
+    result = asyncio.run(
+        service.search_documents(
+            "개발팀 신입 연봉 기준",
+            knowledge_base_id=str(kb_id),
+            threshold=0.3,
+            hybrid_search=True,
+            use_rerank=True,
+        )
+    )
+
+    assert [chunk.filename for chunk in result] == ["compensation.md"]
+    assert result[0].score > 0
+
+
+def test_search_documents_rejects_non_embedding_model_before_search(monkeypatch):
+    kb_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+
+    class FakeKbQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id, embedding_model="gpt-5.4-mini")]
+
+    class FakeModelQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(type="chat", is_active=True)
+
+    class FakeDb:
+        def query(self, model):
+            if model is KnowledgeBase:
+                return FakeKbQuery()
+            if model is LLMModel:
+                return FakeModelQuery()
+            raise AssertionError(f"unexpected model lookup: {model}")
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("non-embedding model must not request an embed client")
+        ),
+    )
+
+    service = RetrievalService(
+        db=FakeDb(),
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+    monkeypatch.setattr(service, "_has_valid_hierarchy", lambda *_: False)
+    monkeypatch.setattr(
+        service,
+        "_vector_search",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("non-embedding model must not search")
+        ),
+    )
+
+    result = asyncio.run(
+        service.search_documents(
+            "개발팀 신입 연봉 기준",
+            knowledge_base_id=str(kb_id),
+        )
+    )
+
+    assert result == []
 
 
 def test_search_documents_merges_multiple_authorized_kbs(monkeypatch):

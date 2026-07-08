@@ -75,6 +75,35 @@ def test_rag_metadata_drops_scalar_retrieval_results():
     assert metadata["rag"] == {"retrieved_context_payload_id": "payload-1"}
 
 
+def test_llm_span_metadata_preserves_model_routing_summary_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "recommendation_type": "user_click_model_routing",
+                "analysis_stage": "optimized",
+                "recommended_model": "gpt-4.1-mini",
+                "recommended_fallback_model": "gpt-4.1",
+                "reason": "최근 운영 로그의 품질 gate를 통과했습니다.",
+                "policy_version": "model-router-v1",
+                "confidence": 0.9,
+                "raw_prompt": "secret prompt",
+                "api_key": "sk-secret",
+            }
+        },
+    )
+
+    assert metadata["llm"] == {
+        "recommendation_type": "user_click_model_routing",
+        "analysis_stage": "optimized",
+        "recommended_model": "gpt-4.1-mini",
+        "recommended_fallback_model": "gpt-4.1",
+        "reason": "최근 운영 로그의 품질 gate를 통과했습니다.",
+        "policy_version": "model-router-v1",
+        "confidence": 0.9,
+    }
+
+
 def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

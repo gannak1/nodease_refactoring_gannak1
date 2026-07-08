@@ -243,6 +243,7 @@ class WorkflowLogger:
             "deployment_id": execution_context.get("deployment_id"),
             "workflow_version": execution_context.get("workflow_version"),
             "correlation_id": execution_context.get("correlation_id"),
+            "conversation_id": execution_context.get("conversation_id"),
             "request_id": execution_context.get("request_id"),
             "workflow_task_id": execution_context.get("workflow_task_id"),
             "trace_payloads": payload_records,

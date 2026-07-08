@@ -13,6 +13,7 @@ interface NodeLibrarySidebarProps {
   // Canvas handles the drag/drop logic, usually by listening to drag events on the window or canvas.
   // But here we need to set dataTransfer.
   onAddNode?: (type: string, position: { x: number; y: number }) => void; // Unused for drag, but kept for interface compat if needed
+  onAddNodeAfterSelected?: (nodeDefId: string) => void;
   onOpenAppSearch?: () => void;
 }
 
@@ -29,6 +30,7 @@ export default function NodeLibrarySidebar({
   onToggle,
   onOpenAppSearch,
   onAddNode,
+  onAddNodeAfterSelected,
 }: NodeLibrarySidebarProps) {
   const sidebarRef = useRef<HTMLDivElement>(null);
   const [isHovering, setIsHovering] = useState(false);
@@ -124,6 +126,7 @@ export default function NodeLibrarySidebar({
               onAddNode?.(def.id, { x: 100, y: 200 });
             }
           }}
+          onAddAfterSelected={(_, def) => onAddNodeAfterSelected?.(def.id)}
           hoveredNode={hoveredNode?.id}
           onHoverNode={handleHoverNode}
           disabledNodeTypes={disabledNodeTypes}

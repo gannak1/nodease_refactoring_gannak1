@@ -30,6 +30,7 @@ from apps.shared.db.models.team import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.db.session import get_db
 
 
@@ -824,6 +825,61 @@ def test_operation_latest_run_summary_does_not_expose_raw_error_message():
     assert summary.error_message == "execution_failed"
 
 
+def test_latest_runs_query_does_not_load_full_workflow_run_entity():
+    workflow_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    captured_queries = []
+
+    class LatestRunQuery:
+        def __init__(self, rows=None):
+            self.rows = rows or []
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def join(self, *args, **kwargs):
+            return self
+
+        def subquery(self):
+            return SimpleNamespace(c=SimpleNamespace(id=object(), row_number=object()))
+
+        def all(self):
+            return self.rows
+
+    class LatestRunDb:
+        def query(self, *entities):
+            captured_queries.append(entities)
+            if len(captured_queries) == 2:
+                return LatestRunQuery(
+                    [
+                        SimpleNamespace(
+                            workflow_id=workflow_id,
+                            id=run_id,
+                            status=SimpleNamespace(value="success"),
+                            started_at=now,
+                            finished_at=now,
+                            error_message=None,
+                        )
+                    ]
+                )
+            return LatestRunQuery()
+
+    latest_runs = AppService._latest_runs_by_workflow_id(LatestRunDb(), [workflow_id])
+
+    assert latest_runs[workflow_id].id == run_id
+    assert not any(
+        entity is WorkflowRun for query in captured_queries for entity in query
+    )
+    selected_names = {
+        getattr(entity, "name", str(entity))
+        for query in captured_queries
+        for entity in query
+    }
+    assert "conversation_id" not in selected_names
+    assert "chat_session_id" not in selected_names
+
+
 def test_create_workflow_rejects_active_organization_mismatch(monkeypatch):
     app_organization_id = uuid.uuid4()
     active_organization_id = uuid.uuid4()
@@ -934,13 +990,39 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
         )
         assert create_response.status_code == 200
         workflow_id = uuid.UUID(create_response.json()["workflow_id"])
+        knowledge_base_id = str(uuid.uuid4())
+        llm_node = {
+            "id": "llm-1",
+            "type": "llmNode",
+            "position": {"x": 100, "y": 200},
+            "data": {
+                "title": "LLM",
+                "provider": "openai",
+                "model_id": "gpt-4o",
+                "user_prompt": "정책을 요약해줘",
+                "knowledgeBases": [{"id": knowledge_base_id, "name": "제품 정책"}],
+            },
+        }
 
         draft_response = TestClient(app).post(
             f"/api/v1/workflows/{workflow_id}/draft",
-            json={"nodes": [], "edges": []},
+            json={"nodes": [llm_node], "edges": []},
         )
         assert draft_response.status_code == 200
         assert draft_response.json()["status"] == "success"
+
+        saved_workflow = next(
+            workflow for workflow in session.workflows if workflow.id == workflow_id
+        )
+        assert saved_workflow.graph["nodes"][0]["data"]["knowledgeBases"] == [
+            {"id": knowledge_base_id, "name": "제품 정책"}
+        ]
+
+        get_response = TestClient(app).get(f"/api/v1/workflows/{workflow_id}/draft")
+        assert get_response.status_code == 200
+        assert get_response.json()["nodes"][0]["data"]["knowledgeBases"] == [
+            {"id": knowledge_base_id, "name": "제품 정책"}
+        ]
     finally:
         app.dependency_overrides = {}
 

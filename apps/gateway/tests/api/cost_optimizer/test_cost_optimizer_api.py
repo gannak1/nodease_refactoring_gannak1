@@ -219,6 +219,18 @@ class TestCostOptimizerAvailabilityApi:
                 None,
             ),
             (
+                "GET",
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/parameter-recommendations",
+                None,
+            ),
+            (
+                "PATCH",
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply-recommendations",
+                {"recommendation_ids": ["max_tokens"]},
+            ),
+            (
                 "POST",
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/compare",
@@ -248,6 +260,181 @@ class TestCostOptimizerAvailabilityApi:
 
         assert ensure_builder.call_count == len(requests)
         assert all(call.args[3] == "write" for call in ensure_builder.call_args_list)
+
+    def test_fr12_parameter_recommendations_calls_rule_service_for_llm_node(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "parameters": {"max_tokens": 2048, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        service_payload = {
+            "analysis_stage": "insufficient_logs",
+            "policy_version": "llm-parameter-recommendation-rules-v1",
+            "recommendations": [],
+            "warnings": [{"code": "operation_logs_insufficient"}],
+            "profile": {"sample_count": 0},
+        }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_builder, patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "CostOptimizerParameterRecommendationService.recommend",
+            return_value=service_payload,
+        ) as recommend:
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/parameter-recommendations"
+            )
+
+        assert response.status_code == 200
+        assert response.json() == service_payload
+        ensure_builder.assert_called_once()
+        assert ensure_builder.call_args.args[3] == "write"
+        recommend.assert_called_once_with(db, workflow=workflow, node_id="llm-triage")
+
+    def test_fr12_apply_recommendations_recomputes_and_patches_current_draft(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "parameters": {"max_tokens": 2000, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        service_payload = {
+            "analysis_stage": "recommendations_available",
+            "policy_version": "llm-parameter-recommendation-rules-v1",
+            "recommendations": [
+                {
+                    "recommendation_type": "llm_parameter",
+                    "parameter_key": "max_tokens",
+                    "current_value": 2000,
+                    "suggested_value": 600,
+                    "candidate_patch": {"parameters": {"max_tokens": 600}},
+                }
+            ],
+            "warnings": [],
+            "profile": {"sample_count": 20},
+        }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_builder, patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "CostOptimizerParameterRecommendationService.recommend",
+            return_value=service_payload,
+        ) as recommend, patch(
+            "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+            return_value=_available_model_options("gpt-4.1-mini"),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply-recommendations",
+                json={"recommendation_ids": ["max_tokens"]},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["applied"] is True
+        assert response.json()["applied_recommendation_ids"] == ["max_tokens"]
+        assert workflow.graph["nodes"][0]["data"]["parameters"]["max_tokens"] == 600
+        assert workflow.graph["nodes"][0]["data"]["parameters"]["temperature"] == 0.2
+        db.commit.assert_called_once()
+        ensure_builder.assert_called_once()
+        assert ensure_builder.call_args.args[3] == "write"
+        recommend.assert_called_once_with(db, workflow=workflow, node_id="llm-triage")
+
+    def test_fr12_apply_recommendations_normalizes_same_fallback_model(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1",
+                        "fallback_model_id": "gpt-4.1",
+                        "parameters": {"max_tokens": 2000, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        service_payload = {
+            "analysis_stage": "recommendations_available",
+            "policy_version": "llm-parameter-recommendation-rules-v1",
+            "recommendations": [
+                {
+                    "recommendation_type": "llm_parameter",
+                    "parameter_key": "max_tokens",
+                    "current_value": 2000,
+                    "suggested_value": 600,
+                    "candidate_patch": {"parameters": {"max_tokens": 600}},
+                }
+            ],
+            "warnings": [],
+            "profile": {"sample_count": 20},
+        }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "CostOptimizerParameterRecommendationService.recommend",
+            return_value=service_payload,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+            return_value=_available_model_options("gpt-4.1"),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply-recommendations",
+                json={"recommendation_ids": ["max_tokens"]},
+            )
+
+        assert response.status_code == 200
+        assert workflow.graph["nodes"][0]["data"]["parameters"]["max_tokens"] == 600
+        assert workflow.graph["nodes"][0]["data"]["fallback_model_id"] is None
+        db.commit.assert_called_once()
 
 
 def _baseline_row(
@@ -923,6 +1110,7 @@ class TestCostOptimizerCompareApi:
         app_id = uuid4()
         user_id = uuid4()
         baseline_id = uuid4()
+        candidate_kb_id = uuid4()
         db = MagicMock()
         workflow = SimpleNamespace(
             id=workflow_id,
@@ -940,6 +1128,10 @@ class TestCostOptimizerCompareApi:
                             "system_prompt": "baseline system",
                             "user_prompt": "baseline user",
                             "parameters": {"temperature": 0.2},
+                            "knowledgeBases": [
+                                {"id": str(uuid4()), "name": "기존 KB"}
+                            ],
+                            "topK": 2,
                         },
                     }
                 ],
@@ -994,6 +1186,11 @@ class TestCostOptimizerCompareApi:
                 return_value=_available_model_options("gpt-4.1-mini"),
             ),
             patch(
+                "apps.gateway.api.v1.endpoints.workflow.has_knowledge_base_permission",
+                return_value=True,
+                create=True,
+            ) as has_kb_permission,
+            patch(
                 "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
                 side_effect=fake_send_task,
             ),
@@ -1019,6 +1216,15 @@ class TestCostOptimizerCompareApi:
                             "max_tokens": 800,
                             "temperature": 0.1,
                         },
+                        "knowledge": {
+                            "knowledge_base_ids": [str(candidate_kb_id)],
+                            "top_k": 5,
+                            "score_threshold": 0.65,
+                            "dedupe_retrieved_context": True,
+                            "retrieved_context_max_chars": 6000,
+                            "retrieved_context_compression": "light",
+                            "answer_grounding_check": "basic",
+                        },
                     },
                 },
             )
@@ -1029,6 +1235,13 @@ class TestCostOptimizerCompareApi:
         )
         get_baseline.assert_called_once_with(
             db, workflow, "llm-triage", str(baseline_id)
+        )
+        has_kb_permission.assert_called_once_with(
+            db,
+            user_id,
+            str(candidate_kb_id),
+            "use",
+            organization_id,
         )
         assert len(sent_tasks) == 1
         assert sent_tasks[0]["name"] == "workflow.execute"
@@ -1054,6 +1267,15 @@ class TestCostOptimizerCompareApi:
         assert patched_node["data"]["model_id"] == "gpt-4.1-mini"
         assert patched_node["data"]["system_prompt"] == "candidate system"
         assert patched_node["data"]["user_prompt"] == "candidate user {{message}}"
+        assert patched_node["data"]["knowledgeBases"] == [
+            {"id": str(candidate_kb_id), "name": ""}
+        ]
+        assert patched_node["data"]["topK"] == 5
+        assert patched_node["data"]["scoreThreshold"] == 0.65
+        assert patched_node["data"]["dedupeRetrievedContext"] is True
+        assert patched_node["data"]["retrievedContextMaxChars"] == 6000
+        assert patched_node["data"]["retrievedContextCompression"] == "light"
+        assert patched_node["data"]["answerGroundingCheck"] == "basic"
         assert patched_node["data"]["referenced_variables"] == [
             {
                 "name": "message",
@@ -2317,6 +2539,115 @@ class TestCostOptimizerApplyApi:
         assert target_data["answerGroundingCheck"] == "basic"
         assert db.commit.called
         assert response.json()["applied"] is True
+
+    def test_fr8_apply_candidate_without_knowledge_preserves_existing_rag_selection(
+        self,
+    ):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        app_id = uuid4()
+        user_id = uuid4()
+        knowledge_base_id = uuid4()
+        comparison_id = uuid4()
+        db = MagicMock()
+        candidate_settings = {
+            "label": "B",
+            "model_id": "gpt-4.1-mini",
+            "parameters": {"max_tokens": 800, "temperature": 0.2},
+        }
+        request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
+            **candidate_settings
+        )
+        _configure_cost_optimizer_experiment_query(
+            db,
+            SimpleNamespace(
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[
+                    SimpleNamespace(
+                        experiment_id=comparison_id,
+                        candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                            request_candidate
+                        ),
+                        status="success",
+                        schema_status="pass",
+                        downstream_compatibility={"state": "compatible"},
+                    )
+                ],
+            ),
+        )
+        workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            graph={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "position": {"x": 100, "y": 120},
+                        "data": {
+                            "title": "티켓 처리 판단",
+                            "model_id": "gpt-4.1",
+                            "parameters": {"temperature": 0.7, "max_tokens": 1200},
+                            "knowledgeBases": [
+                                {"id": str(knowledge_base_id), "name": "제품 정책"}
+                            ],
+                            "topK": 4,
+                            "scoreThreshold": 0.6,
+                            "dedupeRetrievedContext": True,
+                            "retrievedContextMaxChars": 4000,
+                            "retrievedContextCompression": "light",
+                            "answerGroundingCheck": "basic",
+                        },
+                    }
+                ],
+                "edges": [],
+                "viewport": {"x": 0, "y": 0, "zoom": 1},
+            },
+        )
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-4.1-mini"),
+            ),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply",
+                json={
+                    "comparison_id": str(comparison_id),
+                    "candidate_settings": candidate_settings,
+                },
+            )
+
+        assert response.status_code == 200, response.json()
+        target_data = workflow.graph["nodes"][0]["data"]
+        assert target_data["model_id"] == "gpt-4.1-mini"
+        assert target_data["parameters"] == {
+            "temperature": 0.2,
+            "max_tokens": 800,
+        }
+        assert target_data["knowledgeBases"] == [
+            {"id": str(knowledge_base_id), "name": "제품 정책"}
+        ]
+        assert target_data["topK"] == 4
+        assert target_data["scoreThreshold"] == 0.6
+        assert target_data["dedupeRetrievedContext"] is True
+        assert target_data["retrievedContextMaxChars"] == 4000
+        assert target_data["retrievedContextCompression"] == "light"
+        assert target_data["answerGroundingCheck"] == "basic"
+        assert db.commit.called
 
     def test_fr8_fr9_apply_marks_matching_candidate_as_applied(self):
         workflow_id = uuid4()

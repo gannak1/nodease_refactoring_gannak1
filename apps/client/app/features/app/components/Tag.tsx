@@ -14,6 +14,7 @@ export function Tag({ label, type }: TagProps) {
     workflow_node: 'bg-teal-100 text-teal-700',
     webhook: 'bg-orange-100 text-orange-700',
     schedule: 'bg-indigo-100 text-indigo-700',
+    chatbot: 'bg-cyan-100 text-cyan-700',
     undeployed: 'bg-gray-100 text-gray-600',
   };
 

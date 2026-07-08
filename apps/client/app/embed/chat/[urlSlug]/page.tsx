@@ -46,6 +46,29 @@ export default function EmbedChatPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 방문자별 대화 격리용 conversation_id (브라우저 localStorage에 유지)
+  const [conversationId, setConversationId] = useState('');
+
+  useEffect(() => {
+    if (!urlSlug) return;
+    const key = `nodease_chat_conv_${urlSlug}`;
+    const genId = () =>
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let cid = '';
+    try {
+      cid = localStorage.getItem(key) || '';
+      if (!cid) {
+        cid = genId();
+        localStorage.setItem(key, cid);
+      }
+    } catch {
+      // localStorage 접근 불가(프라이빗 모드 등) 시 세션 한정 임시 id
+      cid = genId();
+    }
+    setConversationId(cid);
+  }, [urlSlug]);
 
   // 배포 정보 가져오기
   useEffect(() => {
@@ -103,25 +126,33 @@ export default function EmbedChatPage() {
     setSending(true);
 
     try {
+      const inputs: Record<string, unknown> =
+        deploymentInfo?.input_schema?.variables.reduce(
+          (acc, variable) => {
+            // 첫 번째 input 변수에 사용자 메시지 매핑
+            // TODO: 추후 다중 입력 변수 지원 시 개선 필요
+            if (Object.keys(acc).length === 0) {
+              acc[variable.name] = currentInput;
+            }
+            return acc;
+          },
+          {} as Record<string, unknown>,
+        ) ?? {};
+
+      // 챗봇 배포: 기억모드 항상 ON + 방문자별 대화 격리 키 전송.
+      // 두 값 모두 서버(run_deployment)에서 pop되어 워크플로우 입력에는 포함되지 않는다.
+      inputs.memory_mode = true;
+      if (conversationId) {
+        inputs.conversation_id = conversationId;
+      }
+
       // 실제 API 호출
       const response = await fetch(`/api/v1/run-public/${urlSlug}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          inputs: deploymentInfo?.input_schema?.variables.reduce(
-            (acc, variable) => {
-              // 첫 번째 input 변수에 사용자 메시지 매핑
-              // TODO: 추후 다중 입력 변수 지원 시 개선 필요
-              if (Object.keys(acc).length === 0) {
-                acc[variable.name] = currentInput;
-              }
-              return acc;
-            },
-            {} as Record<string, string>,
-          ),
-        }),
+        body: JSON.stringify({ inputs }),
       });
 
       if (!response.ok) {

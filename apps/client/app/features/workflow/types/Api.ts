@@ -163,6 +163,10 @@ export interface CostOptimizerApplyRequest {
   acknowledge_downstream_warning?: boolean;
 }
 
+export interface CostOptimizerRecommendationApplyRequest {
+  recommendation_ids: string[];
+}
+
 export interface CostOptimizerDownstreamCompatibility {
   state: string;
   label?: string;
@@ -300,6 +304,30 @@ export interface CostOptimizerExperimentListResponse {
   limit: number;
   offset: number;
   items: CostOptimizerExperimentSummary[];
+}
+
+export interface CostOptimizerParameterRecommendation {
+  recommendation_type: 'llm_parameter' | string;
+  parameter_key: string;
+  current_value?: unknown;
+  suggested_value?: unknown;
+  confidence?: 'low' | 'medium' | 'high' | string;
+  risk?: 'low' | 'medium' | 'high' | string;
+  reason?: string;
+  evidence?: Record<string, unknown>;
+  apply_mode?: 'experiment_required' | string;
+  candidate_patch?: Record<string, unknown>;
+}
+
+export interface CostOptimizerParameterRecommendationsResponse {
+  analysis_stage: 'insufficient_logs' | 'recommendations_available' | string;
+  policy_version: string;
+  recommendations: CostOptimizerParameterRecommendation[];
+  warnings?: Array<{
+    code?: string;
+    message?: string;
+  }>;
+  profile?: Record<string, unknown>;
 }
 
 // 로그 관련 타입 (Backend Schemas와 일치)

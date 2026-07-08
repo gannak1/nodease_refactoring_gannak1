@@ -75,3 +75,77 @@ def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch
         "type": "user",
         "id": str(current_user.id),
     }
+
+
+def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):
+    workflow_id = str(uuid.uuid4())
+    app_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = str(uuid.uuid4())
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    workflow = SimpleNamespace(id=workflow_id, app_id=app_id, organization_id=organization_id)
+    celery = FakeCeleryApp()
+    draft_graph = {
+        "nodes": [
+            {
+                "id": "llm-1",
+                "type": "llmNode",
+                "position": {"x": 100, "y": 120},
+                "data": {
+                    "title": "LLM",
+                    "provider": "openai",
+                    "model_id": "gpt-4o",
+                    "user_prompt": "query",
+                    "knowledgeBases": [
+                        {"id": knowledge_base_id, "name": "제품 정책"}
+                    ],
+                    "topK": 4,
+                    "scoreThreshold": 0.6,
+                },
+            }
+        ],
+        "edges": [],
+    }
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": f"/api/v1/workflows/{workflow_id}/execute",
+            "headers": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "get_draft",
+        lambda *args, **kwargs: draft_graph,
+    )
+    monkeypatch.setattr(workflow_endpoint, "celery_app", celery)
+
+    asyncio.run(
+        workflow_endpoint.execute_workflow(
+            workflow_id,
+            request,
+            user_input={"message": "hello"},
+            db=FakeNoBudgetDb(),
+            current_user=current_user,
+        )
+    )
+
+    dispatched_graph = celery.calls[0]["args"][0]
+    dispatched_context = celery.calls[0]["args"][2]
+
+    assert dispatched_graph["nodes"][0]["data"]["knowledgeBases"] == [
+        {"id": knowledge_base_id, "name": "제품 정책"}
+    ]
+    assert dispatched_graph["nodes"][0]["data"]["topK"] == 4
+    assert dispatched_graph["nodes"][0]["data"]["scoreThreshold"] == 0.6
+    assert dispatched_context["execution_subject"] == {
+        "type": "user",
+        "id": str(current_user.id),
+    }

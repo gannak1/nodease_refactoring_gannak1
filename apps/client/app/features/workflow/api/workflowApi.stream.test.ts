@@ -1,0 +1,77 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { workflowApi } from './workflowApi';
+import { setActiveOrganizationId } from '@/lib/activeOrganization';
+
+const streamResponse = (chunks: string[], status = 200): Response => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+
+  return new Response(body, { status });
+};
+
+afterEach(() => {
+  setActiveOrganizationId(null);
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe('workflowApi.executeWorkflowStream', () => {
+  it('sends the active organization header through the Next stream proxy', async () => {
+    setActiveOrganizationId('org-1');
+    const events: unknown[] = [];
+    const fetchMock = vi.fn(async () =>
+      streamResponse(['data: {"type":"workflow_finish"}\n\n']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await workflowApi.executeWorkflowStream(
+      'workflow-1',
+      { question: 'hello' },
+      (event) => events.push(event),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/stream-api\/workflows\/workflow-1$/),
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'include',
+        headers: expect.any(Headers),
+        body: JSON.stringify({
+          inputs: { question: 'hello' },
+          graph_snapshot: undefined,
+        }),
+      }),
+    );
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(headers.get('Content-Type')).toBe('application/json');
+    expect(headers.get('X-Organization-Id')).toBe('org-1');
+    expect(events).toEqual([{ type: 'workflow_finish' }]);
+  });
+
+  it('does not set Content-Type manually for FormData stream requests', async () => {
+    setActiveOrganizationId('org-1');
+    const fetchMock = vi.fn(async () =>
+      streamResponse(['data: {"type":"workflow_finish"}\n\n']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const formData = new FormData();
+    formData.set('file', new Blob(['demo']), 'demo.txt');
+
+    await workflowApi.executeWorkflowStream('workflow-1', formData);
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(headers.has('Content-Type')).toBe(false);
+    expect(headers.get('X-Organization-Id')).toBe('org-1');
+    expect(init.body).toBe(formData);
+  });
+});

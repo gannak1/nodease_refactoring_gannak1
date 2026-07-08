@@ -9,8 +9,6 @@ Workflow feature는 사용자가 업무 절차를 노드 그래프로 구성하�
 워크플로우 생성, 편집, 테스트 실행, 배포의 기본 사용자 흐름을 제공한다. 빌더는 캔버스에서 노드를 조합하고, 테스트 실행으로 각 노드가 정상 동작하는지 확인한 뒤 배포로 이어간다.
 MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 위해 테스트 실행 UX를 먼저 정리한다. 테스트 버튼을 눌렀을 때 테스트 실행 사이드바에서 각 노드의 실행 상태, 소요 시간, 비용, 토큰 사용량을 한눈에 확인할 수 있어야 한다.
 
-**문서 내에 미반영 섹션이 있는데 이 부분 밑의 문단들은 사우이 폴더 내 다른 문서에 적용 및 구현이 안되어있을 확률이 매우 높음
-
 
 ## User Stories
 
@@ -22,7 +20,6 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 빌더로서, 향후 모델/프롬프트 A/B 비교를 붙이기 전에 기본 단일 실행 결과부터 명확하게 보고 싶다.
 
 
-(루트 폴더 문서 내 미반영된 3개 항)
 - 빌더로서, 배포 전에 필요한 credential과 권한 누락을 확인하고 싶다.
 - 운영자로서, schedule/webhook/API trigger로 실행된 workflow가 명시 실행 주체 권한 또는 anonymous public-only 경계 중 무엇으로 RAG retrieval을 수행했는지 추적하고 싶다.
 - 감사자로서, workflow owner와 실제 execution subject를 구분해 audit/trace에서 확인하고 싶다.
@@ -42,12 +39,11 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 빌더로서, 과거 실행 기록을 참고하되 현재 노드 설정값과 과거 input/output을 혼동하지 않기를 원한다.
 
 ## Functional Requirements
-(밑에 fr이거 다 루트 폴더 문서에 미반영)
 - FR-001: Workflow run context는 organization, workflow, workflow version, run id, node id, trigger mode, actor 또는 service account 정보를 전달한다.
 - FR-002: Interactive 실행은 요청 사용자를 execution subject로 사용할 수 있다.
 - FR-003: Schedule, webhook, API trigger처럼 요청 사용자가 명확하지 않은 실행은 MVP에서 `execution_subject` 없이 anonymous public-only RAG로 실행한다. Private KB access가 필요한 자동 실행은 후속 service account, assigned operator, 또는 별도 정책으로 확정된 execution subject 기능이 필요하다.
 - FR-004: RAG 옵션이 켜진 LLM node가 Knowledge retrieval을 호출할 때 workflow runtime은 로그인 interactive 실행에서는 `execution_subject=current_user`를 전달한다. 비로그인/자동 실행처럼 `execution_subject`가 없으면 anonymous public-only로 처리한다.
-- FR-005: `execution_subject`가 없을 때 Workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 조용히 fallback하지 않는다. Subject 부재는 private retrieval 실패가 아니라 public collection/KB 후보만 허용하는 anonymous public-only 실행이다. 모호하거나 지원하지 않는 subject는 private retrieval fail-closed로 처리한다.
+- FR-005: `execution_subject`가 없을 때 Workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 조용히 fallback하지 않는다. Subject 부재는 private retrieval 실패가 아니라 anonymous public-only gate를 통과한 public collection/KB 후보만 허용하는 실행이다. Source-managed KB는 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. 모호하거나 지원하지 않는 subject는 private retrieval fail-closed로 처리한다.
 - FR-006: Workflow owner, deployment owner, execution subject는 audit/trace에서 구분할 수 있어야 한다. Owner는 소유권과 관리 표시에는 사용할 수 있지만, 명시 정책 없이 실행 시점 data access 권한으로 사용하지 않는다.
 - FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
 - FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포에서 private KB access가 필요하면 후속 intended execution subject/audience 기준 runtime availability preflight를 수행해야 한다. MVP에서는 subject 없는 배포 실행을 public-only로 낮춘다.
@@ -83,6 +79,12 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 
 ### 3. 워크플로우 조작 편의성
 
+- 사용자가 캔버스에서 노드를 선택한 상태로 왼쪽 노드 패널의 노드 항목을 클릭하면, 기본 후보 동작은 선택된 노드 뒤에 새 노드를 추가하는 것이다.
+- 왼쪽 노드 패널의 노드 항목은 일반 추가와 `뒤에 추가` 액션을 구분해서 제공해야 한다. 일반 추가는 기존 자유 배치 또는 캔버스 추가 흐름을 유지하고, `뒤에 추가`는 선택된 노드 오른쪽에 새 노드를 배치한 뒤 edge를 자동 생성한다.
+- 선택된 노드가 없고 graph에 terminal node가 하나뿐이면 `뒤에 추가`는 해당 terminal node 뒤에 새 노드를 연결할 수 있다. terminal node가 여러 개면 임의로 마지막 노드를 고르지 않고 액션을 비활성화하거나 연결 대상 선택 UI를 요구한다.
+- terminal node 개수 계산에서는 sticky note처럼 workflow 실행 graph에 포함되지 않는 보조 노드를 제외한다.
+- 새 노드 자동 배치는 전체 graph를 재정렬하지 않고, 기준 노드 오른쪽의 local placement만 수행해야 한다. 사용자가 이미 만든 배치를 망가뜨리면 안 된다.
+- condition, switch, loop처럼 여러 handle 또는 분기 의미가 있는 노드 뒤에 추가할 때는 연결할 handle이 명확한 경우에만 자동 연결한다. 애매하면 handle 선택 UI를 요구하거나 `뒤에 추가`를 제한한다.
 - 사용자는 캔버스에서 노드를 선택한 뒤 Backspace 또는 Delete 키로 해당 노드를 삭제할 수 있어야 한다.
 - 삭제 대상 노드에 들어오는 edge와 나가는 edge가 모두 있으면, 삭제 후 가능한 경우 upstream 노드와 downstream 노드를 자동으로 다시 연결해야 한다.
 - 자동 재연결은 기존 edge 방향을 보존한다. 삭제된 노드의 upstream source는 downstream target으로 연결된다.
@@ -125,6 +127,10 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 
 ### 3. 워크플로우 조작 편의성
 
+- `뒤에 추가`는 노드 생성, local placement, edge 생성이 하나의 graph edit 동작으로 처리되어야 하며 undo 한 번으로 되돌릴 수 있어야 한다.
+- `뒤에 추가` edge 생성은 일반 edge 연결과 같은 validation 경로를 사용해야 한다. 검증에 실패하면 노드와 edge를 모두 만들지 않는다.
+- 자동 배치 위치는 선택된 노드 오른쪽을 기본으로 하되, 기존 노드와 겹치면 같은 흐름을 해치지 않는 범위에서 아래 또는 오른쪽으로 밀어 배치한다.
+- `뒤에 추가`는 사용자 편의를 위한 graph edit 동작이며 API를 호출하지 않는다. 저장은 기존 workflow draft sync 경로를 따른다.
 - 키보드 삭제는 캔버스가 shortcut scope일 때만 동작한다. 입력창, textarea, select, contenteditable 내부에서는 Backspace/Delete가 노드 삭제로 해석되면 안 된다.
 - 레이아웃 최적화는 하단 툴바의 레이아웃 최적화 버튼으로 실행할 수 있어야 한다.
 - 시작 트리거 노드처럼 삭제가 제한된 노드가 있다면 기존 삭제 가능 정책을 우선한다.
@@ -138,11 +144,13 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 현재 node_id 기록이 없는 workflow run은 목록에서 제외하거나, 표시하더라도 `이 실행에서 현재 노드 기록 없음`으로 명확히 구분한다.
 - 최신 기록 불러오기는 workflow의 최신 run 1개가 아니라, 현재 node_id 기록이 존재하는 최신 run을 대상으로 한다.
 
-(미반영 항목들)
+### 5. 교차 도메인 실행 경계
+
 - 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
 - Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
+- Anonymous public-only gate에서 source-managed KB는 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다 ([ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)).
 - 별도 RAG node를 만들지 않는다. Knowledge retrieval은 LLM node의 RAG option/runtime path로 연결한다 ([ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)).
 - Skill이 workflow generation이나 실행 시점 RAG procedure를 안내하더라도, skill은 data access 권한을 부여하지 않는다. 실제 evidence retrieval은 Knowledge permission helper 결과로만 수행한다.
 - Code-bearing skill은 별도 sandbox/approval/egress/resource-cap gate 전까지 workflow runtime에서 실행하지 않는다.
@@ -168,7 +176,7 @@ Open Question 중요도는 다음 3단계로 나눈다.
 | 3 | 실행 편의성 | A/B 비교 실행 결과를 테스트 실행 사이드바 안에서 확장할지, 별도 비교 패널로 분리할지 여부 | 현재 단일 테스트 실행 UX를 막지는 않지만, 이후 비용/품질 비교 UI 구조에 영향을 준다. | 현재 TestSidebar는 단일 실행 결과만 다루고 A/B 비교 UI는 별도 후속 설계로 둔다. |
 | 3 | 노드 조작 편의성 | 패널 비율을 사용자별 preference로 영구 저장할지 여부 | 반복 작업 편의성에는 도움이 되지만 현재 리사이즈 기능 구현을 막지는 않는다. | 현재 편집 세션 안에서만 유지하고 저장하지 않는다. |
 
-(미반영 open question들)
+후속 확장 open question:
 - Service account의 데이터 접근 범위와 승인 절차를 Auth/RBAC에서 어떤 table과 helper로 표현할지.
 - Schedule/webhook/API trigger에서 private KB access가 필요할 때 `execution_subject` resolution reason enum과 audit action 이름을 어떻게 둘지.
 - Workflow runtime outbound egress guard를 Knowledge source egress guard와 통합할지 별도 runtime ADR로 둘지.

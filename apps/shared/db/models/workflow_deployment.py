@@ -23,6 +23,7 @@ class DeploymentType(str, Enum):
     )
     SCHEDULE = "schedule"  # 스케줄 트리거 배포 (알람)
     WEBHOOK = "webhook"  # 웹훅 트리거 배포
+    CHATBOT = "chatbot"  # 챗봇으로 배포 (공개 채팅 웹페이지, 기억모드 항상 ON)
 
 
 class WorkflowDeployment(Base):

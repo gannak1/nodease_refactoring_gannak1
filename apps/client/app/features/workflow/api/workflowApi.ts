@@ -1,5 +1,8 @@
 import axios from 'axios';
-import { attachActiveOrganizationHeader } from '@/lib/activeOrganization';
+import {
+  attachActiveOrganizationHeader,
+  getStoredActiveOrganizationId,
+} from '@/lib/activeOrganization';
 import { WorkflowDraftRequest } from '../types/Workflow';
 import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
 import {
@@ -15,6 +18,8 @@ import {
   CostOptimizerExperimentListParams,
   CostOptimizerExperimentListResponse,
   CostOptimizerLatestBaselineResponse,
+  CostOptimizerParameterRecommendationsResponse,
+  CostOptimizerRecommendationApplyRequest,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -163,9 +168,18 @@ export const workflowApi = {
       });
     }
 
+    const activeOrganizationId = getStoredActiveOrganizationId();
+    const headers = new Headers();
+    if (!isFormData) {
+      headers.set('Content-Type', 'application/json');
+    }
+    if (activeOrganizationId) {
+      headers.set('X-Organization-Id', activeOrganizationId);
+    }
+
     const response = await fetch(fetchUrl, {
       method: 'POST',
-      headers: isFormData ? {} : { 'Content-Type': 'application/json' },
+      headers,
       credentials: 'include', // 쿠키 인증 포함
       body,
       signal: options?.signal,
@@ -312,6 +326,18 @@ export const workflowApi = {
     return response.data;
   },
 
+  applyCostOptimizerRecommendations: async (
+    workflowId: string,
+    nodeId: string,
+    data: CostOptimizerRecommendationApplyRequest,
+  ): Promise<CostOptimizerApplyResponse> => {
+    const response = await api.patch(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/apply-recommendations`,
+      data,
+    );
+    return response.data;
+  },
+
   listCostOptimizerExperiments: async (
     workflowId: string,
     nodeId: string,
@@ -320,6 +346,16 @@ export const workflowApi = {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments`,
       { params },
+    );
+    return response.data;
+  },
+
+  getCostOptimizerParameterRecommendations: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<CostOptimizerParameterRecommendationsResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/parameter-recommendations`,
     );
     return response.data;
   },

@@ -39,6 +39,10 @@ from apps.workflow_engine.services.llm_service import (
     LLMCredentialNotAvailableError,
     LLMService,
 )
+from apps.workflow_engine.services.model_router import (
+    ModelRouter,
+    ModelRoutingUnavailableError,
+)
 from apps.workflow_engine.services.retrieval import RetrievalService
 
 from ..base.node import Node
@@ -60,12 +64,40 @@ RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 10.0
 MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
 QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
 SUMMARY_MODEL_PREFS = {
-    "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-3.5-turbo"],
+    "openai": ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o-mini"],
     "google": ["gemini-3.1-flash-lite", "gemini-2.5-flash"],
     "anthropic": ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
 }
 
 SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
+
+JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX = (
+    "응답은 반드시 아래 JSON schema를 만족하는 JSON object 하나만 반환하세요."
+)
+
+
+def _build_json_output_schema_instruction(
+    output_format: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(output_format, dict):
+        return None
+    if output_format.get("type") != "json":
+        return None
+
+    schema = output_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        return (
+            "응답은 반드시 JSON object 하나만 반환하세요. "
+            "설명 문장, markdown, code fence는 포함하지 마세요."
+        )
+
+    schema_text = json.dumps(schema, ensure_ascii=False, sort_keys=True)
+    return (
+        f"{JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX}\n"
+        "설명 문장, markdown, code fence는 포함하지 마세요.\n\n"
+        f"JSON schema:\n{schema_text}"
+    )
+
 
 RAG_NO_EVIDENCE_MESSAGE = "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
 RAG_INSUFFICIENT_EVIDENCE_MESSAGE = "확인된 문서 기준으로는 답변 근거가 부족합니다."
@@ -297,6 +329,71 @@ class LLMNode(Node[LLMNodeData]):
 
     node_type = "llmNode"
 
+    def _resolve_model_routing_policy(
+        self, inputs: Dict[str, Any]
+    ) -> tuple[str, Optional[str], Optional[dict]]:
+        """저장된 active policy snapshot으로 실행 모델을 결정한다.
+
+        Judge LLM은 정책 갱신 단계에서만 호출되어야 하므로, 런타임은 이미
+        저장된 policy rule만 읽고 safe summary metadata를 남긴다.
+        """
+        selected_model_id = self.data.model_id
+        fallback_model_id = self.data.fallback_model_id
+        if not self.data.auto_model_routing:
+            return selected_model_id, fallback_model_id, None
+
+        policy = self.data.model_routing_policy or {}
+        if not isinstance(policy, dict):
+            return selected_model_id, fallback_model_id, {
+                "enabled": True,
+                "decision_source": "stored_model",
+                "reason_code": "policy_unavailable",
+                "judge_called": False,
+            }
+
+        active_policy = policy.get("active_policy")
+        if not isinstance(active_policy, dict):
+            return selected_model_id, fallback_model_id, {
+                "enabled": True,
+                "policy_id": policy.get("policy_id"),
+                "policy_version": policy.get("policy_version"),
+                "decision_source": "stored_model",
+                "reason_code": "active_policy_unavailable",
+                "judge_called": False,
+            }
+
+        try:
+            decision = ModelRouter.resolve_policy(
+                policy,
+                inputs=inputs,
+                node_data=self.data,
+            )
+            selected_model_id = decision.selected_model_id
+            fallback_model_id = decision.fallback_model_id
+            matched_rule_id = decision.matched_rule_id
+            reason_code = decision.reason_code
+            routing_context = decision.runtime_context.as_metadata()
+        except ModelRoutingUnavailableError:
+            matched_rule_id = None
+            reason_code = "policy_unavailable"
+            routing_context = None
+
+        if fallback_model_id == selected_model_id:
+            fallback_model_id = None
+
+        return selected_model_id, fallback_model_id, {
+            "enabled": True,
+            "policy_id": policy.get("policy_id"),
+            "policy_version": policy.get("policy_version"),
+            "selected_model": selected_model_id,
+            "fallback_model": fallback_model_id,
+            "decision_source": "active_policy",
+            "matched_rule_id": matched_rule_id,
+            "reason_code": reason_code,
+            "runtime_context": routing_context,
+            "judge_called": False,
+        }
+
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
         LLM 노드의 실제 실행 로직 구현.
@@ -318,7 +415,9 @@ class LLMNode(Node[LLMNodeData]):
         temp_session = None
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
-        selected_model_id = self.data.model_id
+        selected_model_id, fallback_model_id, model_routing_metadata = (
+            self._resolve_model_routing_policy(inputs)
+        )
 
         if not client_override or self.data.knowledgeBases:
             db_session, should_close_session = self._borrow_db_session()
@@ -343,14 +442,14 @@ class LLMNode(Node[LLMNodeData]):
                         "LLM 노드 실행에 유효한 user_id가 필요합니다."
                     ) from exc
                 organization_id = self._require_runtime_organization_id(
-                    user_id, self.data.model_id
+                    user_id, selected_model_id
                 )
 
                 try:
                     runtime_selection = LLMService.get_runtime_client_for_user(
                         db_session,
                         user_id=user_id,
-                        model_id=self.data.model_id,
+                        model_id=selected_model_id,
                         organization_id=organization_id,
                     )
                     client = runtime_selection.client
@@ -365,14 +464,13 @@ class LLMNode(Node[LLMNodeData]):
                     ):
                         self._record_llm_runtime_permission_denied(
                             user_id=user_id,
-                            model_id=self.data.model_id,
+                            model_id=selected_model_id,
                             organization_id=None,
                             error=primary_client_error,
                         )
                         raise
 
                     # [FIX] API 키 조회 실패 시 fallback 모델로 시도
-                    fallback_model_id = self.data.fallback_model_id
                     if fallback_model_id:
                         logger.warning(
                             f"[LLMNode] Primary model client failed: {primary_client_error}. "
@@ -405,7 +503,7 @@ class LLMNode(Node[LLMNodeData]):
                         )
                         self._record_llm_runtime_permission_denied(
                             user_id=user_id,
-                            model_id=self.data.model_id,
+                            model_id=selected_model_id,
                             organization_id=organization_id,
                             error=primary_client_error,
                         )
@@ -518,6 +616,11 @@ class LLMNode(Node[LLMNodeData]):
             system_parts = [SAFETY_SYSTEM_PROMPT]
             if system_content:
                 system_parts.append(system_content)
+            json_schema_instruction = _build_json_output_schema_instruction(
+                self.data.output_format
+            )
+            if json_schema_instruction:
+                system_parts.append(json_schema_instruction)
             messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
             for untrusted_block in privileged_untrusted_blocks:
@@ -564,7 +667,6 @@ class LLMNode(Node[LLMNodeData]):
                 # [GEVENT] invoke_sync 사용
                 response = client.invoke_sync(messages=messages, **llm_params)
             except Exception as primary_error:
-                fallback_model_id = self.data.fallback_model_id
                 if not fallback_model_id:
                     raise
                 logger.error(
@@ -703,7 +805,7 @@ class LLMNode(Node[LLMNodeData]):
             self._trace_payloads = [
                 {
                     "payload_kind": "prompt",
-                    "payload": {"messages": messages},
+                    "payload": self._prompt_trace_payload(messages),
                     "scope": "span",
                 },
                 {
@@ -731,6 +833,7 @@ class LLMNode(Node[LLMNodeData]):
                 "model": used_model_id,
                 "cost": cost,
                 "metadata": {
+                    "model_routing": model_routing_metadata,
                     "knowledge_search": knowledge_metadata
                     if knowledge_metadata
                     else None,
@@ -746,6 +849,30 @@ class LLMNode(Node[LLMNodeData]):
             # [FIX] 세션은 메서드 종료 시 닫음 (기존: 클라이언트 생성 직후)
             if temp_session is not None:
                 temp_session.close()
+
+    def _prompt_trace_payload(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Durable prompt trace에서 RAG evidence 원문을 중복 저장하지 않는다."""
+        return {
+            "messages": [
+                {
+                    "role": message.get("role"),
+                    "content": self._trace_safe_prompt_content(
+                        str(message.get("content") or "")
+                    ),
+                }
+                for message in messages
+            ]
+        }
+
+    @staticmethod
+    def _trace_safe_prompt_content(content: str) -> str:
+        if "[BEGIN KNOWLEDGE - UNTRUSTED]" not in content:
+            return content
+        return (
+            "[BEGIN KNOWLEDGE - UNTRUSTED]\n"
+            "[REDACTED: knowledge context omitted from prompt trace]\n"
+            "[END KNOWLEDGE]"
+        )
 
     def _render_prompt(self, template: Optional[str], inputs: Dict[str, Any]) -> str:
         """
@@ -857,14 +984,22 @@ class LLMNode(Node[LLMNodeData]):
 
         try:
             current_run_id = self.execution_context.get("workflow_run_id")
+            conversation_id = self.execution_context.get("conversation_id")
             # 최근 실행 N건 조회 (본 실행 제외)
+            # conversation_id가 있으면(챗봇 공개 실행 등) 방문자별 대화로 기억을 격리한다.
+            # 공개 실행은 user_id가 앱 소유자로 고정되어 격리 기준이 될 수 없으므로,
+            # conversation_id가 있을 때는 user_id 필터를 사용하지 않는다.
+            run_filters = [
+                WorkflowRun.workflow_id == workflow_id,
+                WorkflowRun.status == RunStatus.SUCCESS,
+            ]
+            if conversation_id:
+                run_filters.append(WorkflowRun.conversation_id == conversation_id)
+            else:
+                run_filters.append(WorkflowRun.user_id == user_id)
             run_query = (
                 db_session.query(WorkflowRun)
-                .filter(
-                    WorkflowRun.workflow_id == workflow_id,
-                    WorkflowRun.user_id == user_id,
-                    WorkflowRun.status == RunStatus.SUCCESS,
-                )
+                .filter(*run_filters)
                 .order_by(WorkflowRun.started_at.desc())
                 .limit(MEMORY_RUN_LIMIT + 1)
             )
@@ -1021,16 +1156,37 @@ class LLMNode(Node[LLMNodeData]):
             organization_id=organization_uuid,
             knowledge_base_ids=kb_ids,
         )
+        query_vectors_by_kb, embedding_failed_count, precomputed_vectors = (
+            self._precompute_rag_query_vectors_by_kb(
+                db_session,
+                query=search_query,
+                user_id=credential_user_id,
+                organization_id=organization_uuid,
+                knowledge_base_ids=authorized_kb_ids,
+            )
+        )
+        fanout_kb_ids = authorized_kb_ids
+        if precomputed_vectors:
+            fanout_kb_ids = [
+                kb_id for kb_id in authorized_kb_ids if kb_id in query_vectors_by_kb
+            ]
 
         fanout = self._run_rag_retrieval_fanout(
             query=search_query,
             fallback_db_session=db_session,
             user_id=credential_user_id,
             organization_id=organization_uuid,
-            knowledge_base_ids=authorized_kb_ids,
+            knowledge_base_ids=fanout_kb_ids,
             top_k=top_k,
             threshold=threshold,
+            query_vectors_by_kb=query_vectors_by_kb if precomputed_vectors else None,
         )
+        if embedding_failed_count:
+            fanout = WorkflowRAGFanoutResult(
+                results=fanout.results,
+                failed_count=fanout.failed_count + embedding_failed_count,
+                timeout_count=fanout.timeout_count,
+            )
 
         for kb_id, chunks in fanout.results:
             rag_result_counts.append((kb_id, len(chunks)))
@@ -1180,9 +1336,26 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_ids: List[str],
         top_k: int,
         threshold: float,
+        query_vectors_by_kb: Optional[Dict[str, List[float]]] = None,
     ) -> WorkflowRAGFanoutResult:
         if not knowledge_base_ids:
             return WorkflowRAGFanoutResult(results=[], failed_count=0)
+
+        if query_vectors_by_kb is not None:
+            logger.info(
+                "[LLMNode] RAG fanout uses precomputed query vectors: kb_count=%s",
+                len(knowledge_base_ids),
+            )
+            return self._run_rag_retrieval_fanout_sequential(
+                query=query,
+                db_session=fallback_db_session,
+                user_id=user_id,
+                organization_id=organization_id,
+                knowledge_base_ids=knowledge_base_ids,
+                top_k=top_k,
+                threshold=threshold,
+                query_vectors_by_kb=query_vectors_by_kb,
+            )
 
         gevent_modules = self._rag_gevent_modules()
         if gevent_modules is None:
@@ -1194,6 +1367,7 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_ids=knowledge_base_ids,
                 top_k=top_k,
                 threshold=threshold,
+                query_vectors_by_kb=query_vectors_by_kb,
             )
 
         gevent, pool_cls = gevent_modules
@@ -1207,6 +1381,9 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_id=kb_id,
                 top_k=top_k,
                 threshold=threshold,
+                query_vector=query_vectors_by_kb.get(kb_id)
+                if query_vectors_by_kb
+                else None,
             ): kb_id
             for kb_id in knowledge_base_ids
         }
@@ -1251,6 +1428,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_ids: List[str],
         top_k: int,
         threshold: float,
+        query_vectors_by_kb: Optional[Dict[str, List[float]]] = None,
     ) -> WorkflowRAGFanoutResult:
         retrieval = RetrievalService(
             db_session,
@@ -1268,6 +1446,9 @@ class LLMNode(Node[LLMNodeData]):
                     knowledge_base_id=kb_id,
                     top_k=top_k,
                     threshold=threshold,
+                    query_vector=query_vectors_by_kb.get(kb_id)
+                    if query_vectors_by_kb
+                    else None,
                 )
             except Exception as exc:
                 if self.data.ragFailurePolicy == "fail_node":
@@ -1292,6 +1473,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         top_k: int,
         threshold: float,
+        query_vector: Optional[List[float]] = None,
     ) -> List[ChunkPreview]:
         session = SessionLocal()
         try:
@@ -1306,6 +1488,7 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_id=knowledge_base_id,
                 top_k=top_k,
                 threshold=threshold,
+                query_vector=query_vector,
             )
         finally:
             session.close()
@@ -1318,6 +1501,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         top_k: int,
         threshold: float,
+        query_vector: Optional[List[float]] = None,
     ) -> List[ChunkPreview]:
         gevent_modules = self._rag_gevent_modules()
         if gevent_modules is None:
@@ -1334,6 +1518,7 @@ class LLMNode(Node[LLMNodeData]):
                 knowledge_base_id=knowledge_base_id,
                 top_k=top_k,
                 threshold=threshold,
+                query_vector=query_vector,
             )
         except gevent.Timeout as exc:
             if exc is timer:
@@ -1350,6 +1535,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         top_k: int,
         threshold: float,
+        query_vector: Optional[List[float]] = None,
     ) -> List[ChunkPreview]:
         return retrieval.search_documents_sync(
             query,
@@ -1358,7 +1544,89 @@ class LLMNode(Node[LLMNodeData]):
             threshold=threshold,
             hierarchy_mode="auto",
             source_tier_policy=getattr(self.data, "sourceTierPolicy", "tie_break"),
+            query_vector=query_vector,
         )
+
+    def _precompute_rag_query_vectors_by_kb(
+        self,
+        db_session,
+        *,
+        query: str,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        knowledge_base_ids: List[str],
+    ) -> tuple[Dict[str, List[float]], int, bool]:
+        if not knowledge_base_ids:
+            return {}, 0, False
+
+        try:
+            parsed_ids = [uuid.UUID(str(kb_id)) for kb_id in knowledge_base_ids]
+            rows = (
+                db_session.query(KnowledgeBase)
+                .filter(
+                    KnowledgeBase.id.in_(parsed_ids),
+                    KnowledgeBase.organization_id == organization_id,
+                    KnowledgeBase.lifecycle_state == "active",
+                )
+                .all()
+            )
+        except Exception as exc:
+            logger.warning(
+                "[LLMNode] RAG query vector precompute skipped: %s",
+                exc.__class__.__name__,
+            )
+            return {}, 0, False
+
+        if any(not hasattr(row, "embedding_model") for row in rows):
+            logger.info(
+                "[LLMNode] RAG query vector precompute skipped: missing embedding model attribute"
+            )
+            return {}, 0, False
+
+        kb_by_id = {str(row.id): row for row in rows}
+        model_to_kb_ids: Dict[str, List[str]] = {}
+        failed_count = 0
+        for kb_id in knowledge_base_ids:
+            kb = kb_by_id.get(str(kb_id))
+            if kb is None or not getattr(kb, "embedding_model", None):
+                failed_count += 1
+                continue
+            model_to_kb_ids.setdefault(kb.embedding_model, []).append(str(kb_id))
+
+        query_vectors_by_kb: Dict[str, List[float]] = {}
+        for embedding_model, grouped_kb_ids in model_to_kb_ids.items():
+            try:
+                model_info = (
+                    db_session.query(LLMModel)
+                    .filter(LLMModel.model_id_for_api_call == embedding_model)
+                    .first()
+                )
+                if model_info and model_info.type != "embedding":
+                    failed_count += len(grouped_kb_ids)
+                    continue
+                embed_client = LLMService.get_client_for_user(
+                    db_session,
+                    user_id,
+                    embedding_model,
+                    organization_id=organization_id,
+                )
+                query_vector = embed_client.embed_sync(query)
+            except Exception:
+                if self.data.ragFailurePolicy == "fail_node":
+                    raise
+                failed_count += len(grouped_kb_ids)
+                continue
+            for kb_id in grouped_kb_ids:
+                query_vectors_by_kb[kb_id] = query_vector
+
+        logger.info(
+            "[LLMNode] RAG query vector precompute completed: kb_count=%s model_count=%s vector_kb_count=%s failed_count=%s",
+            len(knowledge_base_ids),
+            len(model_to_kb_ids),
+            len(query_vectors_by_kb),
+            failed_count,
+        )
+        return query_vectors_by_kb, failed_count, True
 
     def _rewrite_rag_query(self, query: str) -> tuple[str, bool, str]:
         mode = getattr(self.data, "queryRewriteMode", "off")
@@ -1516,6 +1784,7 @@ class LLMNode(Node[LLMNodeData]):
             .filter(
                 KnowledgeBase.id.in_(parsed_ids),
                 KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
             )
             .all()
         )
@@ -1575,8 +1844,11 @@ class LLMNode(Node[LLMNodeData]):
             .all()
         )
         public_kb_ids: set[uuid.UUID] = set()
-        for item, collection, _kb in rows:
+        for item, collection, kb in rows:
             safe_metadata = getattr(collection, "safe_metadata", None) or {}
+            # Public Exposure Policy Store가 연결되기 전까지 source-managed KB는 fail-closed다.
+            if getattr(kb, "source_identity_id", None) is not None:
+                continue
             if safe_metadata.get("visibility") == "public":
                 public_kb_ids.add(item.knowledge_base_id)
 

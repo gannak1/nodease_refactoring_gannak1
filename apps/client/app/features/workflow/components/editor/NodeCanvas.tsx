@@ -55,13 +55,10 @@ import { TestSidebar } from './TestSidebar';
 import { NodeFullscreenEditor } from './NodeFullscreenEditor';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
+import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
-const DEFAULT_NODE_SIZE = {
-  width: 420,
-  height: 150,
-};
 
 export default function NodeCanvas() {
   const {
@@ -257,6 +254,7 @@ export default function NodeCanvas() {
     handlePublishAsRestAPI,
     handlePublishAsWebApp,
     handlePublishAsWidget,
+    handlePublishAsChatbot,
     handlePublishAsWorkflowNode,
     handlePublishAsSchedule,
     handlePublishAsWebhook,
@@ -306,7 +304,11 @@ export default function NodeCanvas() {
   });
 
   // Node creation hook
-  const { onDrop, handleAddNodeFromLibrary } = useNodeCreation({
+  const {
+    onDrop,
+    handleAddNodeFromLibrary,
+    handleAddNodeAfterSelected,
+  } = useNodeCreation({
     edges,
     setEdges,
     previewState,
@@ -559,11 +561,11 @@ export default function NodeCanvas() {
       const nodeWidth =
         measuredNode.measured?.width ??
         measuredNode.width ??
-        DEFAULT_NODE_SIZE.width;
+        WORKFLOW_NODE_SIZE.width;
       const nodeHeight =
         measuredNode.measured?.height ??
         measuredNode.height ??
-        DEFAULT_NODE_SIZE.height;
+        WORKFLOW_NODE_SIZE.height;
       const nodeCenter = {
         x: hoveredNode.position.x + nodeWidth / 2,
         y: hoveredNode.position.y + nodeHeight / 2,
@@ -1019,6 +1021,18 @@ export default function NodeCanvas() {
                     </button>
                     <div className="my-1 border-t border-gray-100" />
                     <button
+                      onClick={handlePublishAsChatbot}
+                      className="w-full px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                    >
+                      <div className="font-medium text-gray-900">
+                        챗봇 배포
+                      </div>
+                      <div className="mt-1 text-sm text-gray-500">
+                        대화 맥락을 기억하는 공개 채팅 페이지 제공
+                      </div>
+                    </button>
+                    <div className="my-1 border-t border-gray-100" />
+                    <button
                       onClick={handlePublishAsWidget}
                       className="w-full px-4 py-3 text-left transition-colors hover:bg-gray-50"
                     >
@@ -1111,6 +1125,7 @@ export default function NodeCanvas() {
                   isOpen={isNodeLibraryOpen}
                   onToggle={() => setIsNodeLibraryOpen(!isNodeLibraryOpen)}
                   onAddNode={handleAddNodeFromLibrary}
+                  onAddNodeAfterSelected={handleAddNodeAfterSelected}
                   onOpenAppSearch={() =>
                     setSearchModalContext({ isOpen: true })
                   }
