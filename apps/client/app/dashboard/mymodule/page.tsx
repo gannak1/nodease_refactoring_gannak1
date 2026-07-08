@@ -202,10 +202,17 @@ const parameterRecommendationLabelOf = (parameterKey: string) =>
     'rag.top_k': '검색 문서 개수 줄이기',
     'rag.retrieved_context_max_chars': '검색 문서 길이 제한하기',
     'rag.retrieved_context_compression': '검색 문서 압축 켜기',
+    'model_routing.enable': '자동 모델 라우팅 켜기',
+    'model_routing.refresh_interval_shorten': '정책 점검 주기 단축',
+    'model_routing.refresh_interval_relax': '정책 점검 주기 완화',
   })[parameterKey] || parameterKey;
 
 const parameterRecommendationTargetOf = (parameterKey: string) =>
-  parameterKey.startsWith('rag.') ? '지식 베이스' : '고급 설정';
+  parameterKey.startsWith('rag.')
+    ? '지식 베이스'
+    : parameterKey.startsWith('model_routing.')
+      ? '모델 라우팅'
+      : '고급 설정';
 
 const formatRecommendationValue = (
   value: unknown,
@@ -243,6 +250,10 @@ const evidenceLabelOf = (key: string) =>
     repetition_rate: '반복률',
     model_family: '모델 계열',
     compatibility: '호환성',
+    current_auto_model_routing: '현재 자동 라우팅',
+    current_refresh_every_runs: '현재 점검 주기',
+    recommended_min: '권장 최소 주기',
+    recommended_max: '권장 최대 주기',
   })[key] || key;
 
 const formatEvidenceValue = (key: string, value: unknown) => {
@@ -1129,6 +1140,10 @@ function OptimizationRecommendationModal({
     selectedRecommendations.length > 0 &&
     !isLoadingRecommendations &&
     !isApplyingRecommendations;
+  const canApplyDirect = selectedRecommendations.every(
+    (recommendation) => recommendation.apply_mode === 'direct_policy_update',
+  );
+  const canApplyAction = canRunAction && canApplyDirect;
 
   const handleTestRecommendations = () => {
     if (!row.app.workflow_id || !selectedNodeId) return;
@@ -1150,6 +1165,12 @@ function OptimizationRecommendationModal({
 
   const handleApplyRecommendations = async () => {
     if (!row.app.workflow_id || !selectedNodeId) return;
+    if (!canApplyDirect) {
+      setActionError(
+        'A/B 검증이 필요한 추천은 테스트하기로 먼저 후보 결과를 확인해야 합니다.',
+      );
+      return;
+    }
     setActionError('');
     setIsApplyingRecommendations(true);
     try {
@@ -1405,8 +1426,13 @@ function OptimizationRecommendationModal({
           </button>
           <button
             type="button"
-            disabled={!canRunAction}
+            disabled={!canApplyAction}
             onClick={handleApplyRecommendations}
+            title={
+              canApplyDirect
+                ? undefined
+                : 'A/B 검증이 필요한 추천은 테스트하기로 먼저 확인해야 합니다.'
+            }
             className="inline-flex items-center gap-2 rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <Wand2 className="h-4 w-4" />

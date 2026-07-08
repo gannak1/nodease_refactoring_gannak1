@@ -91,9 +91,95 @@ def test_fr12_returns_insufficient_logs_until_deployed_samples_reach_threshold()
     )
 
     assert response["analysis_stage"] == "insufficient_logs"
-    assert response["recommendations"] == []
+    assert [
+        recommendation["parameter_key"]
+        for recommendation in response["recommendations"]
+    ] == ["model_routing.enable"]
     assert response["profile"]["sample_count"] == 19
     assert response["warnings"][0]["code"] == "operation_logs_insufficient"
+
+
+def test_fr12_recommends_enabling_model_routing_even_with_insufficient_logs():
+    workflow_id = uuid4()
+    db = _RecommendationDb(workflow_runs=[], node_runs=[], usage_logs=[])
+
+    response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=_workflow(
+            workflow_id,
+            auto_model_routing=False,
+            refresh_every_runs=100,
+        ),
+        node_id="llm-triage",
+    )
+
+    routing = _recommendation(response, "model_routing.enable")
+    shorten = _recommendation(response, "model_routing.refresh_interval_shorten")
+    assert response["analysis_stage"] == "insufficient_logs"
+    assert routing["recommendation_type"] == "model_routing_policy"
+    assert routing["current_value"] is False
+    assert routing["suggested_value"] is True
+    assert routing["apply_mode"] == "direct_policy_update"
+    assert routing["candidate_patch"] == {"auto_model_routing": True}
+    assert shorten["suggested_value"] == 20
+
+
+def test_fr12_recommends_model_routing_refresh_interval_changes():
+    workflow_id = uuid4()
+    run_ids = [uuid4() for _ in range(20)]
+    db = _RecommendationDb(
+        workflow_runs=[
+            _workflow_run(workflow_id, run_id, deployment_id=uuid4())
+            for run_id in run_ids
+        ],
+        node_runs=[
+            _node_run(run_id, completion_tokens=500, finish_reason="stop")
+            for run_id in run_ids
+        ],
+        usage_logs=[
+            _usage_log(workflow_id, run_id, completion_tokens=500)
+            for run_id in run_ids
+        ],
+    )
+
+    shorten_response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=_workflow(
+            workflow_id,
+            auto_model_routing=True,
+            refresh_every_runs=100,
+        ),
+        node_id="llm-triage",
+    )
+    relax_response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=_workflow(
+            workflow_id,
+            auto_model_routing=True,
+            refresh_every_runs=5,
+        ),
+        node_id="llm-triage",
+    )
+
+    shorten = _recommendation(
+        shorten_response,
+        "model_routing.refresh_interval_shorten",
+    )
+    relax = _recommendation(
+        relax_response,
+        "model_routing.refresh_interval_relax",
+    )
+
+    assert shorten["current_value"] == 100
+    assert shorten["suggested_value"] == 20
+    assert shorten["candidate_patch"] == {
+        "model_routing_policy": {"refresh": {"refresh_every_runs": 20}}
+    }
+    assert relax["current_value"] == 5
+    assert relax["suggested_value"] == 20
+    assert relax["candidate_patch"] == {
+        "model_routing_policy": {"refresh": {"refresh_every_runs": 20}}
+    }
 
 
 def test_fr12_lowers_confidence_when_finish_reason_is_unknown():
@@ -352,6 +438,8 @@ def _workflow(
     max_tokens=2048,
     temperature=0.2,
     model_id="gpt-4.1-mini",
+    auto_model_routing=None,
+    refresh_every_runs=None,
     output_format=None,
     user_prompt="",
     knowledge=None,
@@ -367,6 +455,12 @@ def _workflow(
         "user_prompt": user_prompt,
         "assistant_prompt": "",
     }
+    if auto_model_routing is not None:
+        data["auto_model_routing"] = auto_model_routing
+    if refresh_every_runs is not None:
+        data["model_routing_policy"] = {
+            "refresh": {"refresh_every_runs": refresh_every_runs}
+        }
     if knowledge:
         data.update(knowledge)
     return SimpleNamespace(

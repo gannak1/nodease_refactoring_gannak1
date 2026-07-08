@@ -72,22 +72,24 @@ SUMMARY_MODEL_PREFS = {
 SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
 
 JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX = (
-    "응답은 반드시 아래 JSON schema를 만족하는 JSON object 하나만 반환하세요."
+    "응답은 반드시 아래 json schema를 만족하는 json object 하나만 반환하세요."
 )
 
 
 def _build_json_output_schema_instruction(
     output_format: Optional[Dict[str, Any]],
+    *,
+    force_json_object: bool = False,
 ) -> Optional[str]:
-    if not isinstance(output_format, dict):
+    if not force_json_object and not isinstance(output_format, dict):
         return None
-    if output_format.get("type") != "json":
+    if isinstance(output_format, dict) and output_format.get("type") != "json":
         return None
 
-    schema = output_format.get("schema")
+    schema = output_format.get("schema") if isinstance(output_format, dict) else None
     if not isinstance(schema, dict) or not schema:
         return (
-            "응답은 반드시 JSON object 하나만 반환하세요. "
+            "응답은 반드시 json object 하나만 반환하세요. "
             "설명 문장, markdown, code fence는 포함하지 마세요."
         )
 
@@ -95,8 +97,15 @@ def _build_json_output_schema_instruction(
     return (
         f"{JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX}\n"
         "설명 문장, markdown, code fence는 포함하지 마세요.\n\n"
-        f"JSON schema:\n{schema_text}"
+        f"json schema:\n{schema_text}"
     )
+
+
+def _response_format_requires_json_instruction(response_format: Any) -> bool:
+    if not isinstance(response_format, dict):
+        return False
+    response_format_type = response_format.get("type")
+    return response_format_type in {"json_object", "json_schema"}
 
 
 RAG_NO_EVIDENCE_MESSAGE = "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
@@ -612,12 +621,29 @@ class LLMNode(Node[LLMNodeData]):
                     "프롬프트 렌더링 결과가 모두 비어있습니다. 입력 변수가 올바르게 전달되었는지 확인해주세요."
                 )
 
+            # 파라미터 전처리: JSON 응답 모드와 stop 리스트를 provider 호출 전에 정리한다.
+            llm_params = dict(self.data.parameters or {})
+            output_format = self.data.output_format or {}
+            if (
+                isinstance(output_format, dict)
+                and output_format.get("type") == "json"
+                and "response_format" not in llm_params
+            ):
+                llm_params["response_format"] = {"type": "json_object"}
+            if "stop" in llm_params and isinstance(llm_params["stop"], list):
+                llm_params["stop"] = [s for s in llm_params["stop"] if s and s.strip()]
+                if not llm_params["stop"]:
+                    del llm_params["stop"]
+
             # 안전 가드는 단일 system 메시지에 합쳐 provider별 system 처리 차이를 피한다.
             system_parts = [SAFETY_SYSTEM_PROMPT]
             if system_content:
                 system_parts.append(system_content)
             json_schema_instruction = _build_json_output_schema_instruction(
-                self.data.output_format
+                self.data.output_format,
+                force_json_object=_response_format_requires_json_instruction(
+                    llm_params.get("response_format")
+                ),
             )
             if json_schema_instruction:
                 system_parts.append(json_schema_instruction)
@@ -648,20 +674,6 @@ class LLMNode(Node[LLMNodeData]):
                 )
 
             # STEP 4. LLM 호출 ----------------------------------------------------
-            # 파라미터 전처리: stop 리스트에서 빈 문자열 제거
-            llm_params = dict(self.data.parameters or {})
-            output_format = self.data.output_format or {}
-            if (
-                isinstance(output_format, dict)
-                and output_format.get("type") == "json"
-                and "response_format" not in llm_params
-            ):
-                llm_params["response_format"] = {"type": "json_object"}
-            if "stop" in llm_params and isinstance(llm_params["stop"], list):
-                llm_params["stop"] = [s for s in llm_params["stop"] if s and s.strip()]
-                if not llm_params["stop"]:
-                    del llm_params["stop"]
-
             used_model_id = selected_model_id
             try:
                 # [GEVENT] invoke_sync 사용

@@ -10,6 +10,12 @@ export type JsonSchemaField = {
   type: JsonSchemaFieldType;
   required: boolean;
 };
+type CandidateNumberParameterKey =
+  | 'max_tokens'
+  | 'temperature'
+  | 'top_p'
+  | 'presence_penalty'
+  | 'frequency_penalty';
 
 export type CandidateDraft = {
   model_id: string;
@@ -25,6 +31,7 @@ export type CandidateDraft = {
   presence_penalty: number;
   frequency_penalty: number;
   stop: string[];
+  removed_parameter_keys?: string[];
   output_format: 'text' | 'json';
   json_schema_fields: JsonSchemaField[];
   knowledgeBases: KnowledgeBaseSelection[];
@@ -356,6 +363,7 @@ export const candidateFromOptions = (
     stop: Array.isArray(params.stop)
       ? params.stop.filter((item): item is string => typeof item === 'string')
       : [],
+    removed_parameter_keys: [],
     output_format: outputFormat === 'json' ? 'json' : 'text',
     json_schema_fields: schemaFieldsFromOutputFormat(data.output_format),
     knowledgeBases: safeKnowledgeBaseSelections(data.knowledgeBases),
@@ -391,21 +399,27 @@ export const applyCandidatePatchToDraft = (
   const parameters = isRecord(patch.parameters) ? patch.parameters : {};
   const knowledge = isRecord(patch.knowledge) ? patch.knowledge : {};
 
-  if (typeof parameters.max_tokens === 'number') {
-    next.max_tokens = parameters.max_tokens;
-  }
-  if (typeof parameters.temperature === 'number') {
-    next.temperature = parameters.temperature;
-  }
-  if (typeof parameters.top_p === 'number') {
-    next.top_p = parameters.top_p;
-  }
-  if (typeof parameters.presence_penalty === 'number') {
-    next.presence_penalty = parameters.presence_penalty;
-  }
-  if (typeof parameters.frequency_penalty === 'number') {
-    next.frequency_penalty = parameters.frequency_penalty;
-  }
+  const setNumberParameter = (key: CandidateNumberParameterKey) => {
+    if (!(key in parameters)) return;
+    if (parameters[key] === null) {
+      next.removed_parameter_keys = [
+        ...new Set([...(next.removed_parameter_keys || []), key]),
+      ];
+      return;
+    }
+    if (typeof parameters[key] === 'number') {
+      next[key] = parameters[key];
+      next.removed_parameter_keys = (next.removed_parameter_keys || []).filter(
+        (removedKey) => removedKey !== key,
+      );
+    }
+  };
+
+  setNumberParameter('max_tokens');
+  setNumberParameter('temperature');
+  setNumberParameter('top_p');
+  setNumberParameter('presence_penalty');
+  setNumberParameter('frequency_penalty');
   if (Array.isArray(parameters.stop)) {
     next.stop = parameters.stop.filter(
       (item): item is string => typeof item === 'string',
@@ -465,76 +479,92 @@ export const baselineOptionsOf = (
 export const llmDataFromCandidate = (
   candidate: CandidateDraft,
   title = 'B candidate',
-): LLMNodeData => ({
-  title,
-  provider: '',
-  model_id: candidate.model_id,
-  fallback_model_id: candidate.fallback_model_id,
-  task_type: candidate.task_type,
-  system_prompt: candidate.system_prompt,
-  user_prompt: candidate.user_prompt,
-  assistant_prompt: candidate.assistant_prompt,
-  referenced_variables: candidate.referenced_variables,
-  parameters: {
+) => {
+  const removedParameters = new Set(candidate.removed_parameter_keys || []);
+  const parameters: Record<string, unknown> = {
     max_tokens: candidate.max_tokens,
     temperature: candidate.temperature,
     top_p: candidate.top_p,
     presence_penalty: candidate.presence_penalty,
     frequency_penalty: candidate.frequency_penalty,
     stop: candidate.stop,
-  },
-  output_format: {
-    type: candidate.output_format,
-    schema:
-      candidate.output_format === 'json'
-        ? outputSchemaFromFields(candidate.json_schema_fields)
-        : undefined,
-  },
-  knowledgeBases: candidate.knowledgeBases,
-  topK: candidate.topK,
-  scoreThreshold: candidate.scoreThreshold,
-  dedupeRetrievedContext: candidate.dedupeRetrievedContext,
-  retrievedContextMaxChars: candidate.retrievedContextMaxChars ?? undefined,
-  retrievedContextCompression: candidate.retrievedContextCompression,
-  answerGroundingCheck: candidate.answerGroundingCheck,
-});
+  };
+  removedParameters.forEach((key) => {
+    delete parameters[key];
+  });
+
+  return {
+    title,
+    provider: '',
+    model_id: candidate.model_id,
+    fallback_model_id: candidate.fallback_model_id,
+    task_type: candidate.task_type,
+    system_prompt: candidate.system_prompt,
+    user_prompt: candidate.user_prompt,
+    assistant_prompt: candidate.assistant_prompt,
+    referenced_variables: candidate.referenced_variables,
+    parameters,
+    output_format: {
+      type: candidate.output_format,
+      schema:
+        candidate.output_format === 'json'
+          ? outputSchemaFromFields(candidate.json_schema_fields)
+          : undefined,
+    },
+    knowledgeBases: candidate.knowledgeBases,
+    topK: candidate.topK,
+    scoreThreshold: candidate.scoreThreshold,
+    dedupeRetrievedContext: candidate.dedupeRetrievedContext,
+    retrievedContextMaxChars: candidate.retrievedContextMaxChars ?? undefined,
+    retrievedContextCompression: candidate.retrievedContextCompression,
+    answerGroundingCheck: candidate.answerGroundingCheck,
+  };
+};
 
 export const compareRequestCandidateFromDraft = (
   candidate: CandidateDraft,
   label = 'B',
-): CostOptimizerCandidateRequest => ({
-  label,
-  model_id: candidate.model_id,
-  fallback_model_id: candidate.fallback_model_id || null,
-  task_type: candidate.task_type,
-  system_prompt: candidate.system_prompt,
-  user_prompt: candidate.user_prompt,
-  assistant_prompt: candidate.assistant_prompt,
-  referenced_variables: candidate.referenced_variables,
-  parameters: {
+): CostOptimizerCandidateRequest => {
+  const removedParameters = new Set(candidate.removed_parameter_keys || []);
+  const parameters: Record<string, unknown> = {
     max_tokens: candidate.max_tokens,
     temperature: candidate.temperature,
     top_p: candidate.top_p,
     presence_penalty: candidate.presence_penalty,
     frequency_penalty: candidate.frequency_penalty,
     stop: candidate.stop,
-  },
-  output_format: {
-    type: candidate.output_format,
-    schema:
-      candidate.output_format === 'json'
-        ? outputSchemaFromFields(candidate.json_schema_fields)
-        : undefined,
-  },
-  knowledge: {
-    knowledge_base_ids: knowledgeBaseIdsFromSelections(
-      candidate.knowledgeBases,
-    ),
-    top_k: candidate.topK,
-    score_threshold: candidate.scoreThreshold,
-    dedupe_retrieved_context: candidate.dedupeRetrievedContext,
-    retrieved_context_max_chars: candidate.retrievedContextMaxChars,
-    retrieved_context_compression: candidate.retrievedContextCompression,
-    answer_grounding_check: candidate.answerGroundingCheck,
-  },
-});
+  };
+  removedParameters.forEach((key) => {
+    delete parameters[key];
+  });
+
+  return {
+    label,
+    model_id: candidate.model_id,
+    fallback_model_id: candidate.fallback_model_id || null,
+    task_type: candidate.task_type,
+    system_prompt: candidate.system_prompt,
+    user_prompt: candidate.user_prompt,
+    assistant_prompt: candidate.assistant_prompt,
+    referenced_variables: candidate.referenced_variables,
+    parameters,
+    output_format: {
+      type: candidate.output_format,
+      schema:
+        candidate.output_format === 'json'
+          ? outputSchemaFromFields(candidate.json_schema_fields)
+          : undefined,
+    },
+    knowledge: {
+      knowledge_base_ids: knowledgeBaseIdsFromSelections(
+        candidate.knowledgeBases,
+      ),
+      top_k: candidate.topK,
+      score_threshold: candidate.scoreThreshold,
+      dedupe_retrieved_context: candidate.dedupeRetrievedContext,
+      retrieved_context_max_chars: candidate.retrievedContextMaxChars,
+      retrieved_context_compression: candidate.retrievedContextCompression,
+      answer_grounding_check: candidate.answerGroundingCheck,
+    },
+  };
+};
