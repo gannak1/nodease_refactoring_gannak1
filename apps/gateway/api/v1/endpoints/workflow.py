@@ -40,6 +40,10 @@ from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import workflow_auth_state_allows
+from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
+from apps.workflow_engine.services.model_routing_policy_refresh import (
+    ModelRoutingPolicyRefreshService,
+)
 
 # [NEW] 로깅 모델 및 스키마
 from apps.shared.db.models.workflow_run import (
@@ -412,6 +416,34 @@ def _cost_optimizer_available_model_ids(db: Session, current_user: User) -> list
     return available_model_ids
 
 
+def _cost_optimizer_available_model_candidates(
+    db: Session,
+    current_user: User,
+) -> list[ModelCandidate]:
+    candidates_by_id: dict[str, ModelCandidate] = {}
+    fallback_models: list[Any] = []
+    for model in LLMService.get_my_available_models(db, current_user.id):
+        model_id = _cost_optimizer_model_id_from_option(model)
+        if not model_id:
+            continue
+        if ModelRouter.is_workflow_chat_model(model):
+            candidates_by_id[model_id] = ModelCandidate.from_model(model)
+        else:
+            fallback_models.append(model)
+
+    if candidates_by_id:
+        return list(candidates_by_id.values())
+
+    # 테스트 fixture나 오래된 DB row에 type/name metadata가 비어 있어도,
+    # 권한이 확인된 모델이면 cold-start 기본 정책 생성에는 사용할 수 있게 한다.
+    for model in fallback_models:
+        model_id = _cost_optimizer_model_id_from_option(model)
+        if not model_id:
+            continue
+        candidates_by_id[model_id] = ModelCandidate.from_model(model)
+    return list(candidates_by_id.values())
+
+
 def _candidate_model_routing_active_policy(
     candidate: CostOptimizerCandidateRequest,
 ) -> dict[str, Any] | None:
@@ -468,69 +500,33 @@ def _candidate_requested_model_ids(
     return requested_model_ids
 
 
-def _first_available_candidate_model_id(
-    available_model_ids: list[str],
-    *preferred_model_ids: Any,
-    exclude: str | None = None,
-) -> str | None:
-    available_lookup = {model_id.lower(): model_id for model_id in available_model_ids}
-    normalized_exclude = (exclude or "").lower()
-    for model_id in preferred_model_ids:
-        if not isinstance(model_id, str) or not model_id.strip():
-            continue
-        normalized = model_id.strip().lower()
-        if normalized_exclude and normalized == normalized_exclude:
-            continue
-        if normalized in available_lookup:
-            return available_lookup[normalized]
-
-    for model_id in available_model_ids:
-        if normalized_exclude and model_id.lower() == normalized_exclude:
-            continue
-        return model_id
-    return None
+def _candidate_refresh_every_runs(candidate: CostOptimizerCandidateRequest) -> int:
+    policy = candidate.model_routing_policy
+    if not isinstance(policy, dict):
+        return 20
+    refresh = policy.get("refresh")
+    if not isinstance(refresh, dict):
+        return 20
+    try:
+        parsed = int(refresh.get("refresh_every_runs"))
+    except (TypeError, ValueError):
+        parsed = 20
+    return max(5, min(100, parsed))
 
 
 def _default_cost_optimizer_model_routing_policy(
     candidate: CostOptimizerCandidateRequest,
-    available_model_ids: list[str],
+    candidate_models: list[ModelCandidate],
 ) -> dict[str, Any]:
-    default_model_id = _first_available_candidate_model_id(
-        available_model_ids,
-        candidate.model_id,
-    )
-    if not default_model_id:
+    if not candidate_models:
         raise HTTPException(status_code=422, detail="cost_optimizer.model_unavailable")
 
-    fallback_model_id = _first_available_candidate_model_id(
-        available_model_ids,
-        candidate.fallback_model_id,
-        exclude=default_model_id,
+    return ModelRoutingPolicyRefreshService.default_rule_policy(
+        policy_id="cost-optimizer-cold-start-default",
+        policy_version="gateway-cold-start-v1",
+        candidate_models=candidate_models,
+        refresh_every_runs=_candidate_refresh_every_runs(candidate),
     )
-
-    return {
-        "status": "active",
-        "policy_id": "cost-optimizer-cold-start-default",
-        "policy_version": "gateway-cold-start-v1",
-        "active_policy": {
-            "default_model_id": default_model_id,
-            "fallback_model_id": fallback_model_id,
-            "rules": [
-                {
-                    "id": "cold-start-default",
-                    "priority": 1000,
-                    "when": {},
-                    "selected_model_id": default_model_id,
-                    "fallback_model_id": fallback_model_id,
-                    "reason_code": "cold_start_default_policy",
-                }
-            ],
-        },
-        "refresh": {
-            "last_refresh_result": "default_policy",
-            "last_refresh_trigger": "cost_optimizer_candidate",
-        },
-    }
 
 
 def _materialize_cost_optimizer_candidate_model_routing_policy(
@@ -543,10 +539,10 @@ def _materialize_cost_optimizer_candidate_model_routing_policy(
     if _candidate_has_active_model_routing_policy(candidate):
         return candidate
 
-    available_model_ids = _cost_optimizer_available_model_ids(db, current_user)
+    candidate_models = _cost_optimizer_available_model_candidates(db, current_user)
     default_policy = _default_cost_optimizer_model_routing_policy(
         candidate,
-        available_model_ids,
+        candidate_models,
     )
     existing_policy = (
         candidate.model_routing_policy

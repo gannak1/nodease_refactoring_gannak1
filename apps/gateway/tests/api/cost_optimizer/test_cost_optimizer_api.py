@@ -30,11 +30,24 @@ def _workflow_with_nodes(workflow_id, organization_id, nodes):
     )
 
 
+def _available_model_option(
+    model_id,
+    *,
+    input_price_1k=None,
+    output_price_1k=None,
+):
+    return SimpleNamespace(
+        model_id_for_api_call=model_id,
+        name=model_id,
+        type="chat",
+        is_active=True,
+        input_price_1k=input_price_1k,
+        output_price_1k=output_price_1k,
+    )
+
+
 def _available_model_options(*model_ids):
-    return [
-        SimpleNamespace(model_id_for_api_call=model_id)
-        for model_id in model_ids
-    ]
+    return [_available_model_option(model_id) for model_id in model_ids]
 
 
 def _configure_cost_optimizer_experiment_query(db, experiment):
@@ -437,7 +450,23 @@ class TestCostOptimizerAvailabilityApi:
             return_value=service_payload,
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
-            return_value=_available_model_options("gpt-4.1-mini", "gpt-4.1"),
+            return_value=[
+                _available_model_option(
+                    "gpt-4.1-mini",
+                    input_price_1k=0.0001,
+                    output_price_1k=0.0004,
+                ),
+                _available_model_option(
+                    "gpt-5-mini",
+                    input_price_1k=0.001,
+                    output_price_1k=0.004,
+                ),
+                _available_model_option(
+                    "gpt-4.1",
+                    input_price_1k=0.01,
+                    output_price_1k=0.03,
+                ),
+            ],
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -520,7 +549,23 @@ class TestCostOptimizerAvailabilityApi:
             return_value=service_payload,
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
-            return_value=_available_model_options("gpt-4.1-mini", "gpt-4.1"),
+            return_value=[
+                _available_model_option(
+                    "gpt-4.1-mini",
+                    input_price_1k=0.0001,
+                    output_price_1k=0.0004,
+                ),
+                _available_model_option(
+                    "gpt-5-mini",
+                    input_price_1k=0.001,
+                    output_price_1k=0.004,
+                ),
+                _available_model_option(
+                    "gpt-4.1",
+                    input_price_1k=0.01,
+                    output_price_1k=0.03,
+                ),
+            ],
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -546,7 +591,7 @@ class TestCostOptimizerAvailabilityApi:
         )
         assert (
             node_data["model_routing_policy"]["active_policy"]["default_model_id"]
-            == "gpt-4.1-mini"
+            == "gpt-5-mini"
         )
         assert (
             node_data["model_routing_policy"]["active_policy"]["fallback_model_id"]
@@ -1255,7 +1300,23 @@ class TestCostOptimizerCompareApi:
             ),
             patch(
                 "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
-                return_value=_available_model_options("gpt-5-mini", "gpt-4.1"),
+                return_value=[
+                    _available_model_option(
+                        "gpt-4.1-mini",
+                        input_price_1k=0.0001,
+                        output_price_1k=0.0004,
+                    ),
+                    _available_model_option(
+                        "gpt-5-mini",
+                        input_price_1k=0.001,
+                        output_price_1k=0.004,
+                    ),
+                    _available_model_option(
+                        "gpt-4.1",
+                        input_price_1k=0.01,
+                        output_price_1k=0.03,
+                    ),
+                ],
             ),
             patch(
                 "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
@@ -1287,8 +1348,16 @@ class TestCostOptimizerCompareApi:
         assert policy["policy_version"] == "gateway-cold-start-v1"
         assert policy["active_policy"]["default_model_id"] == "gpt-5-mini"
         assert policy["active_policy"]["fallback_model_id"] == "gpt-4.1"
-        assert policy["active_policy"]["rules"][0]["reason_code"] == (
-            "cold_start_default_policy"
+        rules_by_id = {
+            rule["id"]: rule for rule in policy["active_policy"]["rules"]
+        }
+        assert (
+            rules_by_id["short-json-no-knowledge"]["selected_model_id"]
+            == "gpt-4.1-mini"
+        )
+        assert (
+            rules_by_id["short-json-no-knowledge"]["reason_code"]
+            == "short_structured_input_uses_low_cost_model"
         )
 
     def test_fr3_compare_rejects_unusable_knowledge_base_before_running_task(self):
