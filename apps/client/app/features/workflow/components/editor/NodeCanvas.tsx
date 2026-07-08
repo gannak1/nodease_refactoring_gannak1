@@ -1249,7 +1249,7 @@ export default function NodeCanvas() {
             ? '결과'
             : testExecutionStatus === 'failure'
               ? '실패'
-              : '테스트'}
+              : '테스트 실행'}
       </button>
     </>
   );

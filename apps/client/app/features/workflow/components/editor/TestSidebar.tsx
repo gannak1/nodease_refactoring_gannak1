@@ -54,6 +54,11 @@ const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 type PreflightStatus = 'idle' | 'validating' | 'saving';
 
+export const TEST_INPUT_CLASS_NAME =
+  'w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500';
+const testTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[100px]`;
+const testJsonTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[200px] font-mono text-sm`;
+
 const cloneDraft = (value: WorkflowDraftRequest): WorkflowDraftRequest => {
   if (typeof structuredClone === 'function') {
     return structuredClone(value);
@@ -781,7 +786,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-blue-600 mb-4">
               <Loader2 className="w-5 h-5 animate-spin" />
-              <h3 className="text-sm font-medium">실행 중...</h3>
+              <h3 className="text-sm font-medium">테스트 실행 중...</h3>
             </div>
             {nodeExecutionSummaries.length > 0 ? (
               nodeExecutionSummaries.map(renderNodeExecutionSummary)
@@ -854,7 +859,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                       onChange={(e) =>
                         handleChange('__json_payload__', e.target.value)
                       }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[200px] font-mono text-sm dark:bg-gray-800 dark:border-gray-700"
+                      className={testJsonTextAreaClassName}
                       placeholder='webhook payload: {"user": "john", "action": "signup"}'
                     />
                   </div>
@@ -893,7 +898,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                             onChange={(e) =>
                               handleChange(variable.name, e.target.value)
                             }
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-800 dark:border-gray-700"
+                            className={TEST_INPUT_CLASS_NAME}
                           >
                             {variable.options?.map((option) => (
                               <option key={option.value} value={option.value}>
@@ -919,7 +924,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                                 [variable.name]: file,
                               }));
                             }}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
+                            className={TEST_INPUT_CLASS_NAME}
                           />
                         </>
                       ) : (
@@ -936,7 +941,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                               onChange={(e) =>
                                 handleChange(variable.name, e.target.value)
                               }
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[100px] dark:bg-gray-800 dark:border-gray-700"
+                              className={testTextAreaClassName}
                               placeholder={variable.placeholder}
                             />
                           ) : (
@@ -953,7 +958,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                                     : e.target.value,
                                 )
                               }
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700"
+                              className={TEST_INPUT_CLASS_NAME}
                               placeholder={variable.placeholder}
                             />
                           )}
@@ -1042,12 +1047,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                     ? '검증 중...'
                     : preflightStatus === 'saving'
                       ? '저장 중...'
-                      : '실행 중...'}
+                      : '테스트 실행 중...'}
               </>
             ) : (
               <>
                 <Play className="w-4 h-4" />
-                {canExecute ? '실행하기' : '실행 권한 없음'}
+                {canExecute ? '테스트 실행하기' : '테스트 실행 권한 없음'}
               </>
             )}
           </button>

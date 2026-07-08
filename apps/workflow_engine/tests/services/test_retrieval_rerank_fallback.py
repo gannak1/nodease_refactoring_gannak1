@@ -1,3 +1,5 @@
+import builtins
+import logging
 import pathlib
 import sys
 import uuid
@@ -15,6 +17,93 @@ from apps.shared.db.models.knowledge import KnowledgeBase  # noqa: E402
 from apps.shared.db.models.llm import LLMModel  # noqa: E402
 from apps.workflow_engine.services.retrieval import RetrievalService  # noqa: E402
 from apps.workflow_engine.services.llm_service import LLMService  # noqa: E402
+
+
+def test_rerank_is_disabled_by_default_and_does_not_load_model(monkeypatch):
+    monkeypatch.delenv("RAG_CROSS_ENCODER_RERANK_ENABLED", raising=False)
+
+    def fail_model_lookup():
+        raise AssertionError("disabled reranker must not load CrossEncoder")
+
+    monkeypatch.setattr(
+        RetrievalService,
+        "_get_cross_encoder_model",
+        staticmethod(fail_model_lookup),
+    )
+    service = RetrievalService(db=None, user_id=None)
+    candidates = [
+        {"chunk": SimpleNamespace(content="first")},
+        {"chunk": SimpleNamespace(content="second")},
+    ]
+
+    assert service._rerank("query", candidates, top_k=1) == candidates[:1]
+
+
+def test_rerank_missing_dependency_warns_and_falls_back(monkeypatch, caplog):
+    monkeypatch.setenv("RAG_CROSS_ENCODER_RERANK_ENABLED", "true")
+    original_import = builtins.__import__
+    RetrievalService._cross_encoder_model = None
+    RetrievalService._cross_encoder_model_name = None
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sentence_transformers":
+            raise ImportError("No module named 'sentence_transformers'")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    service = RetrievalService(db=None, user_id=None)
+    candidates = [
+        {"chunk": SimpleNamespace(content="first")},
+        {"chunk": SimpleNamespace(content="second")},
+    ]
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="apps.workflow_engine.services.retrieval",
+    ):
+        result = service._rerank("query", candidates, top_k=1)
+
+    assert result == candidates[:1]
+    assert any(
+        "Reranker dependency unavailable" in record.message
+        for record in caplog.records
+    )
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+def test_rerank_enabled_reuses_cross_encoder_model(monkeypatch):
+    monkeypatch.setenv("RAG_CROSS_ENCODER_RERANK_ENABLED", "true")
+    monkeypatch.setenv("RAG_CROSS_ENCODER_MODEL", "cross-encoder/test-model")
+    RetrievalService._cross_encoder_model = None
+    RetrievalService._cross_encoder_model_name = None
+    original_import = builtins.__import__
+    init_calls = []
+
+    class FakeCrossEncoder:
+        def __init__(self, model_name, max_length):
+            init_calls.append((model_name, max_length))
+
+        def predict(self, pairs):
+            return [0.1, 0.9][: len(pairs)]
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sentence_transformers":
+            return SimpleNamespace(CrossEncoder=FakeCrossEncoder)
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    service = RetrievalService(db=None, user_id=None)
+    candidates = [
+        {"chunk": SimpleNamespace(content="first")},
+        {"chunk": SimpleNamespace(content="second")},
+    ]
+
+    first = service._rerank("query", candidates, top_k=1)
+    second = service._rerank("query", candidates, top_k=1)
+
+    assert first == [candidates[1]]
+    assert second == [candidates[1]]
+    assert init_calls == [("cross-encoder/test-model", 512)]
 
 
 def test_sync_search_threshold_uses_score_when_rerank_falls_back(monkeypatch):

@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 
 from sqlalchemy import and_, bindparam, or_, select
@@ -34,13 +35,47 @@ from apps.workflow_engine.utils.encryption import encryption_manager
 
 logger = logging.getLogger(__name__)
 
+RAG_RERANK_ENABLED_ENV = "RAG_CROSS_ENCODER_RERANK_ENABLED"
+RAG_RERANK_MODEL_ENV = "RAG_CROSS_ENCODER_MODEL"
+DEFAULT_RAG_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 
 class RetrievalService:
+    _cross_encoder_model = None
+    _cross_encoder_model_name = None
+
     def __init__(self, db: Session, user_id, organization_id=None):
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
         self.llm_client = None
+
+    @classmethod
+    def _is_cross_encoder_rerank_enabled(cls) -> bool:
+        return _env_flag(RAG_RERANK_ENABLED_ENV, default=False)
+
+    @classmethod
+    def _get_cross_encoder_model(cls):
+        from sentence_transformers import CrossEncoder
+
+        model_name = os.getenv(RAG_RERANK_MODEL_ENV, DEFAULT_RAG_RERANK_MODEL).strip()
+        if not model_name:
+            model_name = DEFAULT_RAG_RERANK_MODEL
+
+        if (
+            cls._cross_encoder_model is None
+            or cls._cross_encoder_model_name != model_name
+        ):
+            cls._cross_encoder_model = CrossEncoder(model_name, max_length=512)
+            cls._cross_encoder_model_name = model_name
+        return cls._cross_encoder_model
 
     def _get_efficient_rewrite_model(self) -> str:
         """
@@ -412,7 +447,11 @@ class RetrievalService:
             method = "multi_query"
         else:
             method = "vector"
-        return f"{method}+rerank" if use_rerank else method
+        rerank_requested = use_rerank and _env_flag(
+            RAG_RERANK_ENABLED_ENV,
+            default=False,
+        )
+        return f"{method}+rerank" if rerank_requested else method
 
     def _rrf_fusion(
         self,
@@ -523,13 +562,14 @@ class RetrievalService:
         if not candidates:
             return candidates
 
-        try:
-            from sentence_transformers import CrossEncoder
-
-            model = CrossEncoder(
-                "cross-encoder/ms-marco-MiniLM-L-12-v2", max_length=512
+        if not self._is_cross_encoder_rerank_enabled():
+            logger.debug(
+                "CrossEncoder reranker disabled; falling back to original order"
             )
+            return candidates[:top_k]
 
+        try:
+            model = self._get_cross_encoder_model()
             pairs = [(query, item["chunk"].content) for item in candidates]
             scores = model.predict(pairs)
 
@@ -546,8 +586,17 @@ class RetrievalService:
             )
             return reranked[:top_k]
 
-        except Exception as e:
-            logger.error(f"Falling back to original order: {e}")
+        except ImportError as exc:
+            logger.warning(
+                "Reranker dependency unavailable; falling back to original order: %s",
+                exc,
+            )
+            return candidates[:top_k]
+        except Exception:
+            logger.warning(
+                "Reranking failed; falling back to original order",
+                exc_info=True,
+            )
             return candidates[:top_k]
 
     async def search_documents(
