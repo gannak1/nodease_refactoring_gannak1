@@ -1,6 +1,7 @@
 export type DeploymentType =
   | 'api'
   | 'widget'
+  | 'chatbot'
   | 'webapp'
   | 'workflow_node'
   | 'schedule'

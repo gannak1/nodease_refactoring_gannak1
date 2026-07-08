@@ -16,6 +16,7 @@ class DeploymentType(str, Enum):
     API = "api"  # REST API / 웹훅 배포
     WEBAPP = "webapp"  # 웹 앱으로 배포 (공개)
     WIDGET = "widget"  # 웹 위젯 임베딩 배포 (공개)
+    CHATBOT = "chatbot"  # 공개 챗봇 배포
     MCP = "mcp"  # Model Context Protocol
     WORKFLOW_NODE = (
         "workflow_node"  # 워크플로우 노드로 배포 (다른 워크플로우에서 재사용)
