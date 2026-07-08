@@ -105,6 +105,13 @@ Status: Draft
 - DB source sync 또는 shared vector save path가 같은 KB/document chunks를 동시에 교체하려 할 때 advisory lock 또는 versioned chunk set이 lost update를 막는다.
 - Document/KB delete는 DB commit 전에 object storage 또는 raw artifact를 먼저 삭제하지 않는다. Physical cleanup은 outbox/reconciler가 idempotent하게 수행한다.
 
+## Client/UI Tests
+
+- Source upload 성공 후 create modal은 KB 상세 source list로 돌아가며, 등록된 `pending` source가 목록의 처리 CTA를 통해 document settings 화면으로 이동할 수 있어야 한다.
+- KB 상세 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 안내를 표시한다.
+- KB 상세 source 목록은 `failed` document에 `재처리` action을 표시하고, `completed` document에는 처리 시작 CTA를 표시하지 않는다.
+- Pending/failed processing CTA는 document settings 화면으로 이동하며 raw file path, source title, hidden KB id를 새로 노출하지 않는다.
+
 ## Retrieval And Agent Tests
 
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.

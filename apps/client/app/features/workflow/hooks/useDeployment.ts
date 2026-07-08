@@ -126,6 +126,8 @@ export function useDeployment({
 
         const result: DeploymentResult = {
           success: true,
+          deploymentId: response.id,
+          appId: response.app_id,
           url_slug: response.url_slug ?? null,
           auth_secret: response.auth_secret ?? null,
           version: response.version,
@@ -137,9 +139,13 @@ export function useDeployment({
         if (deploymentType === 'webapp') {
           result.webAppUrl = `${window.location.origin}/shared/${response.url_slug}`;
         } else if (deploymentType === 'chatbot') {
-          // 챗봇 배포: 공개 채팅 웹페이지 공유 링크 (임베드 챗 페이지 재사용).
-          // webAppUrl로 넘겨 SuccessStep이 복사 가능한 공유 링크로 렌더하도록 한다.
-          result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+          if (response.url_slug) {
+            // 공개 챗봇 링크는 무인증 public-only RAG 경계를 사용한다.
+            result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+          }
+          if (activeWorkflow.id) {
+            result.internalRunUrl = `${window.location.origin}/modules/${activeWorkflow.id}/run?deploymentId=${response.id}`;
+          }
         } else if (deploymentType === 'widget') {
           result.embedUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
         } else if (deploymentType === 'workflow_node') {
@@ -164,7 +170,7 @@ export function useDeployment({
         };
       }
     },
-    [deploymentType, activeWorkflow?.appId, nodes],
+    [deploymentType, activeWorkflow?.appId, activeWorkflow?.id, nodes],
   );
 
   return {

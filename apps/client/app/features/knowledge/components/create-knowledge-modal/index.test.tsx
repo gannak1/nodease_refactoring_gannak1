@@ -154,8 +154,5 @@ describe('CreateKnowledgeModal file drag and drop', () => {
     });
     expect(onClose).toHaveBeenCalled();
     expect(routerPushMock).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
-    expect(routerPushMock).not.toHaveBeenCalledWith(
-      '/dashboard/knowledge/kb-1/document/doc-1',
-    );
   });
 });

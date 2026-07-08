@@ -577,8 +577,9 @@ export default function CreateKnowledgeModal({
       // 성공 시 모달 닫기
       onClose();
 
-      // Opening document detail immediately can trigger the original file preview
-      // and download attachment responses. Keep the user on the source list.
+      toast.success(
+        '소스가 등록되었습니다. 소스 목록에서 처리 시작을 눌러주세요.',
+      );
       router.push(`/dashboard/knowledge/${response.knowledge_base_id}`);
     } catch (error: any) {
       console.group('[CreateKnowledgeModal] Submission failed');

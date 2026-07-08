@@ -134,4 +134,116 @@ describe('llmKnowledgeBaseSelection', () => {
       ),
     ).toEqual([]);
   });
+
+  it('excludes empty or not-ready knowledge bases from selectable RAG candidates', async () => {
+    vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
+      {
+        id: 'kb-completed',
+        name: '완료 KB',
+        description: 'ready',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+      {
+        id: 'kb-pending',
+        name: '처리 전 KB',
+        description: 'pending',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+      {
+        id: 'kb-failed',
+        name: '실패 KB',
+        description: 'failed',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+      {
+        id: 'kb-empty',
+        name: '빈 KB',
+        description: 'empty',
+        document_count: 0,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+    ]);
+    vi.mocked(knowledgeApi.getKnowledgeBase)
+      .mockResolvedValueOnce({
+        id: 'kb-completed',
+        name: '완료 KB',
+        description: 'ready',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+        documents: [
+          {
+            id: 'doc-completed',
+            filename: 'ready.md',
+            status: 'completed',
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: '2026-07-01T00:00:00Z',
+            chunk_count: 2,
+            token_count: 40,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'kb-pending',
+        name: '처리 전 KB',
+        description: 'pending',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+        documents: [
+          {
+            id: 'doc-pending',
+            filename: 'pending.md',
+            status: 'pending',
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: '2026-07-01T00:00:00Z',
+            chunk_count: 0,
+            token_count: 0,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'kb-failed',
+        name: '실패 KB',
+        description: 'failed',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+        documents: [
+          {
+            id: 'doc-failed',
+            filename: 'failed.md',
+            status: 'failed',
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: '2026-07-01T00:00:00Z',
+            chunk_count: 0,
+            token_count: 0,
+          },
+        ],
+      });
+
+    const result = await fetchEligibleKnowledgeBases();
+
+    expect(knowledgeApi.getKnowledgeBase).toHaveBeenCalledTimes(3);
+    expect(result.bases.map((base) => base.id)).toEqual(['kb-completed']);
+    expect(Object.keys(result.detailsById)).toEqual(['kb-completed']);
+    expect(
+      sanitizeSelectedKnowledgeBases(
+        [
+          { id: 'kb-completed', name: '이전 완료 KB' },
+          { id: 'kb-pending', name: '처리 전 KB' },
+          { id: 'kb-failed', name: '실패 KB' },
+          { id: 'kb-empty', name: '빈 KB' },
+        ],
+        result.bases,
+      ),
+    ).toEqual([{ id: 'kb-completed', name: '완료 KB' }]);
+  });
 });
