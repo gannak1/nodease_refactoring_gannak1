@@ -317,6 +317,38 @@ def test_failed_indexing_version_is_recorded_after_rollback_context():
     assert db.flush_count == 1
 
 
+def test_content_scan_timeout_records_failed_non_retrieval_visible_version():
+    now = datetime(2026, 7, 4, tzinfo=timezone.utc)
+    kb = SimpleNamespace(id=KB_ID, organization_id=ORG_ID)
+    db = FakeDb(kb=kb, max_version_number=4)
+    finalizer = KnowledgeIngestionFinalizer(db)
+
+    version = finalizer.record_failed_indexing_version(
+        organization_id=ORG_ID,
+        knowledge_base_id=KB_ID,
+        legacy_document_id=DOC_ID,
+        source_identity_id=None,
+        content_hash="hash-after-scan",
+        chunking_fingerprint=None,
+        embedding_model="text-embedding-3-small",
+        safe_reason_code="content_scan.timeout",
+        safe_metadata={
+            "source_type": "FILE",
+            "content_scan_state": "unknown",
+            "risk_tier": "high",
+        },
+        fencing_token="worker-token",
+        now=now,
+    )
+
+    assert version.status == "failed"
+    assert version.ready_at is None
+    assert version.error_code == "content_scan.timeout"
+    assert version.safe_metadata["content_scan_state"] == "unknown"
+    assert "worker-token" not in str(version.safe_metadata)
+    assert db.added == [version]
+
+
 def test_outbox_retry_and_dead_letter_status_are_explicit():
     service = KnowledgeIngestionOutboxService(SimpleNamespace())
     now = datetime(2026, 7, 4, tzinfo=timezone.utc)
@@ -1263,6 +1295,9 @@ def test_ingestion_error_message_does_not_store_raw_exception_detail():
 
     assert orchestrator._safe_ingestion_error_message(
         RuntimeError("postgres://internal-host/secret-table")
+    ) == "문서 처리에 실패했습니다."
+    assert orchestrator._safe_ingestion_error_message(
+        RuntimeError("AutoOpen macro http://internal-host/token parser traceback")
     ) == "문서 처리에 실패했습니다."
     assert orchestrator._safe_ingestion_error_message(
         KnowledgeIngestionFinalizationError("version_has_no_chunks")
