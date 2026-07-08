@@ -11,6 +11,9 @@ from apps.workflow_engine.services.model_router import ModelCandidate, ModelRout
 
 POLICY_JUDGE_PROMPT_VERSION = "model-routing-policy-judge-v1"
 ALLOWED_REFRESH_STATUSES = {"applied", "kept_current", "pending_review", "failed"}
+STRUCTURED_OUTPUT_RISKY_MODEL_KEYWORDS = (
+    "nano",
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,11 @@ class ModelRoutingPolicyRefreshService:
         refresh_every_runs: int = 20,
     ) -> dict[str, Any]:
         cheap, mid, high = cls._tier_models(candidate_models)
+        structured_cheap = cls._structured_output_model(candidate_models, fallback=cheap)
+        structured_fallback = cls._first_distinct_model(
+            [mid, high, cheap],
+            exclude=structured_cheap.model_id,
+        )
         return {
             "status": "active",
             "policy_id": policy_id,
@@ -154,8 +162,12 @@ class ModelRoutingPolicyRefreshService:
                             "knowledge_enabled": False,
                             "input_length_bucket": "short",
                         },
-                        "selected_model_id": cheap.model_id,
-                        "fallback_model_id": mid.model_id,
+                        "selected_model_id": structured_cheap.model_id,
+                        "fallback_model_id": (
+                            structured_fallback.model_id
+                            if structured_fallback is not None
+                            else None
+                        ),
                         "reason_code": "short_structured_input_uses_low_cost_model",
                     },
                 ],
@@ -376,6 +388,35 @@ class ModelRoutingPolicyRefreshService:
         high = sorted_candidates[-1]
         mid = sorted_candidates[len(sorted_candidates) // 2]
         return cheap, mid, high
+
+    @classmethod
+    def _structured_output_model(
+        cls,
+        candidates: list[ModelCandidate],
+        *,
+        fallback: ModelCandidate,
+    ) -> ModelCandidate:
+        """JSON schema 출력은 최저가보다 안정적인 텍스트 생성 가능성을 우선한다."""
+        for candidate in sorted(candidates, key=lambda item: item.price_score):
+            normalized_id = candidate.model_id.lower()
+            if any(
+                keyword in normalized_id
+                for keyword in STRUCTURED_OUTPUT_RISKY_MODEL_KEYWORDS
+            ):
+                continue
+            return candidate
+        return fallback
+
+    @staticmethod
+    def _first_distinct_model(
+        candidates: list[ModelCandidate],
+        *,
+        exclude: str,
+    ) -> Optional[ModelCandidate]:
+        for candidate in candidates:
+            if candidate.model_id != exclude:
+                return candidate
+        return None
 
     @staticmethod
     def _next_policy_version(previous_version: str) -> str:

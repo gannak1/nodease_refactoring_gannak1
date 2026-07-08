@@ -282,6 +282,7 @@ def update_run_log_finish(self, data: Dict[str, Any]):
 
         run_log.status = RunStatus.SUCCESS
         run_log.outputs = data["outputs"]
+        run_log.error_message = None
         run_log.redaction_applied = run_log.redaction_applied or bool(
             data.get("redaction_applied")
         )

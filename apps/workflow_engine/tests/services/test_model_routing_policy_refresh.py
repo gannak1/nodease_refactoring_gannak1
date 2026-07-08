@@ -66,6 +66,33 @@ def _request(current_policy=None):
     )
 
 
+def test_default_rule_policy_avoids_nano_for_short_json_schema_rule():
+    """짧은 JSON 출력 rule은 최저가 nano보다 안정적인 텍스트 출력 모델을 선택한다."""
+    policy = ModelRoutingPolicyRefreshService.default_rule_policy(
+        policy_id="policy-1",
+        policy_version="router-policy-v1",
+        candidate_models=[
+            _candidate("gpt-5-nano", 0.00045),
+            _candidate("gpt-4o-mini", 0.00075),
+            _candidate("gpt-4.1-mini", 0.002),
+            _candidate("gpt-4.1", 0.01),
+        ],
+    )
+
+    rules_by_id = {
+        rule["id"]: rule for rule in policy["active_policy"]["rules"]
+    }
+
+    assert (
+        rules_by_id["short-json-no-knowledge"]["selected_model_id"]
+        == "gpt-4o-mini"
+    )
+    assert (
+        rules_by_id["short-json-no-knowledge"]["fallback_model_id"]
+        == "gpt-4.1-mini"
+    )
+
+
 def test_policy_refresh_accepts_judge_generated_rule_set():
     """judge가 만든 rule set은 후보 모델 검증 후 active policy로 정규화된다."""
     judge = _JudgeClient(
