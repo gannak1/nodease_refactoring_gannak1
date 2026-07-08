@@ -190,7 +190,7 @@ def test_list_normalizes_source_types_and_uses_latest_document_update():
         kb_updated_at,
         2,
         doc_updated_at,
-        [SourceType.FILE, "API", None, SourceType.FILE],
+        [SourceType.FILE, " API ", None, '"CSV"', "'EMAIL'", SourceType.FILE],
     )
 
     response = KnowledgeBaseQueryService(FakeKnowledgeDb([row])).list(
@@ -203,7 +203,7 @@ def test_list_normalizes_source_types_and_uses_latest_document_update():
     assert response[0].document_count == 2
     assert response[0].created_at == created_at
     assert response[0].updated_at == doc_updated_at
-    assert response[0].source_types == ["FILE", "API"]
+    assert response[0].source_types == ["FILE", "API", "CSV", "EMAIL"]
     assert response[0].embedding_model == "custom-embedding"
 
 

@@ -110,7 +110,7 @@ def _clean_source_types(source_types) -> list[str]:
         value = getattr(source_type, "value", source_type)
         if value is None:
             continue
-        value = str(value)
+        value = str(value).strip().strip('"').strip("'")
         if not value or value in seen:
             continue
         seen.add(value)

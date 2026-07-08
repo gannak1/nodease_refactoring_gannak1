@@ -2,7 +2,6 @@ import gzip
 import json
 
 import pytest
-
 from apps.shared.db import demo_seed
 from scripts import seed_demo as seed_demo_script
 
