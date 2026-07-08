@@ -10,10 +10,23 @@ const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerAvailability: vi.fn(),
   compareCostOptimizerCandidate: vi.fn(),
 }));
+const baselineNodeOptionsMock = vi.hoisted(() => ({
+  current: {
+    model_id: 'gpt-4.1',
+    provider: 'openai',
+    system_prompt: 'baseline system',
+    user_prompt: 'baseline user',
+    assistant_prompt: '',
+    parameters: { max_tokens: 800, temperature: 0.2, stop: ['END'] },
+    knowledgeBases: [],
+    retrievedContextMaxChars: 6000,
+  } as Record<string, unknown>,
+}));
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'workflow-1', nodeId: 'llm-1' }),
   useRouter: () => routerMock,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('../../api/workflowApi', () => ({
@@ -38,16 +51,7 @@ vi.mock('../../components/costOptimizer/CostOptimizerBaselineSelection', () => (
           input_preview: '{"message":"baseline input"}',
           output_preview: '{"text":"baseline output"}',
           has_trace: true,
-          node_options: {
-            model_id: 'gpt-4.1',
-            provider: 'openai',
-            system_prompt: 'baseline system',
-            user_prompt: 'baseline user',
-            assistant_prompt: '',
-            parameters: { max_tokens: 800, temperature: 0.2, stop: ['END'] },
-            knowledgeBases: [],
-            retrievedContextMaxChars: 6000,
-          },
+          node_options: baselineNodeOptionsMock.current,
         })
       }
     >
@@ -105,6 +109,16 @@ const loadPlaygroundPage = async () => {
 describe('FR-004/FR-005 Cost Optimizer hybrid compare flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    baselineNodeOptionsMock.current = {
+      model_id: 'gpt-4.1',
+      provider: 'openai',
+      system_prompt: 'baseline system',
+      user_prompt: 'baseline user',
+      assistant_prompt: '',
+      parameters: { max_tokens: 800, temperature: 0.2, stop: ['END'] },
+      knowledgeBases: [],
+      retrievedContextMaxChars: 6000,
+    };
     global.ResizeObserver = class ResizeObserver {
       observe = vi.fn();
       unobserve = vi.fn();
@@ -209,12 +223,109 @@ describe('FR-004/FR-005 Cost Optimizer hybrid compare flow', () => {
     const requestBody =
       workflowApiMock.compareCostOptimizerCandidate.mock.calls[0][2];
     expect(requestBody).not.toHaveProperty('inputs');
-    expect(screen.getByText('A baseline 결과')).toBeInTheDocument();
+    expect(screen.getByText('A baseline 출력')).toBeInTheDocument();
     expect(screen.getByText(/baseline output/)).toBeInTheDocument();
     expect(screen.queryByText('A baseline 실행 중')).not.toBeInTheDocument();
     expect(await screen.findByText('candidate output')).toBeInTheDocument();
-    expect(screen.getByText('128')).toBeInTheDocument();
-    expect(screen.getByText('$0.00042')).toBeInTheDocument();
+    expect(screen.getAllByText('128').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('$0.00042').length).toBeGreaterThan(0);
+  });
+
+  it('B candidate 자동 라우팅은 모델 id가 비어 있어도 compare API로 실행된다', async () => {
+    workflowApiMock.compareCostOptimizerCandidate.mockResolvedValueOnce({
+      comparison_id: 'comparison-1',
+      workflow_id: 'workflow-1',
+      node_id: 'llm-1',
+      baseline: {
+        baseline_id: 'baseline-1',
+        usage: { total_tokens: 249, total_cost: 0.0012, latency_ms: 1600 },
+      },
+      candidate: {
+        label: 'B',
+        status: 'success',
+        output: {
+          text: 'candidate output',
+          model: 'gpt-5-mini',
+          metadata: {
+            model_routing: {
+              decision_source: 'active_policy',
+              selected_model: 'gpt-5-mini',
+              fallback_model: 'gpt-4.1',
+              reason_code: 'policy_default',
+            },
+          },
+        },
+        usage: { total_tokens: 128, total_cost: 0.00042 },
+        latency_ms: 940,
+        trace: {
+          model_routing: {
+            decision_source: 'active_policy',
+            selected_model: 'gpt-5-mini',
+            fallback_model: 'gpt-4.1',
+            reason_code: 'policy_default',
+          },
+        },
+        error_message: null,
+      },
+      diff: {},
+      downstream_compatibility: {
+        state: 'unknown',
+        label: '판정 전',
+        message: 'downstream compatibility is not evaluated yet',
+      },
+    });
+    baselineNodeOptionsMock.current = {
+      model_id: '',
+      provider: 'openai',
+      auto_model_routing: true,
+      model_routing_policy: {
+        status: 'active',
+        policy_version: 'policy-v1',
+        active_policy: {
+          default_model_id: 'gpt-5-mini',
+          fallback_model_id: 'gpt-4.1',
+        },
+      },
+      system_prompt: 'baseline system',
+      user_prompt: 'baseline user',
+      assistant_prompt: '',
+      parameters: { max_tokens: 800, temperature: 0.2 },
+      knowledgeBases: [],
+    };
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '테스트 baseline 선택' }));
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.compareCostOptimizerCandidate).toHaveBeenCalled();
+    });
+
+    const requestBody =
+      workflowApiMock.compareCostOptimizerCandidate.mock.calls[0][2];
+    expect(requestBody.candidate).toEqual(
+      expect.objectContaining({
+        model_id: '',
+        auto_model_routing: true,
+        model_routing_policy: baselineNodeOptionsMock.current
+          .model_routing_policy,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '근거/Trace' }));
+
+    expect(await screen.findByText('자동 라우팅')).toBeInTheDocument();
+    expect(screen.getByText('gpt-5-mini')).toBeInTheDocument();
+    expect(screen.getByText('active_policy')).toBeInTheDocument();
+    expect(screen.getByText('policy_default')).toBeInTheDocument();
   });
 
   it('고급 설정에서 stop sequence를 모두 삭제하면 B 실행 request에도 빈 stop 배열을 보낸다', async () => {

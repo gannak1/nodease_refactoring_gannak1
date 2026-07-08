@@ -54,6 +54,8 @@ const baseData: LLMNodeData = {
 const baseDraft: CandidateDraft = {
   model_id: 'gpt-4.1',
   fallback_model_id: '',
+  auto_model_routing: false,
+  model_routing_policy: undefined,
   task_type: 'generate',
   system_prompt: 'system',
   user_prompt: 'user',

@@ -128,6 +128,8 @@ export interface CostOptimizerCandidateRequest {
   label?: string;
   model_id: string;
   fallback_model_id?: string | null;
+  auto_model_routing?: boolean | null;
+  model_routing_policy?: Record<string, unknown> | null;
   task_type?: string | null;
   system_prompt?: string | null;
   user_prompt?: string | null;

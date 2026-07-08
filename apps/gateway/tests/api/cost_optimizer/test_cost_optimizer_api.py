@@ -539,7 +539,19 @@ class TestCostOptimizerAvailabilityApi:
         assert (
             node_data["model_routing_policy"]["refresh"]["refresh_every_runs"] == 20
         )
-        assert node_data["model_routing_policy"]["status"] == "collecting"
+        assert node_data["model_routing_policy"]["status"] == "active"
+        assert (
+            node_data["model_routing_policy"]["policy_version"]
+            == "gateway-cold-start-v1"
+        )
+        assert (
+            node_data["model_routing_policy"]["active_policy"]["default_model_id"]
+            == "gpt-4.1-mini"
+        )
+        assert (
+            node_data["model_routing_policy"]["active_policy"]["fallback_model_id"]
+            == "gpt-4.1"
+        )
         assert node_data["model_id"] == "gpt-4.1-mini"
         assert node_data["fallback_model_id"] == "gpt-4.1"
         db.commit.assert_called_once()
@@ -1065,6 +1077,219 @@ class TestCostOptimizerCompareApi:
 
         assert response.status_code == 200
         send_task.assert_called_once()
+
+    def test_fr3_compare_allows_auto_routing_candidate_with_active_policy(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        baseline_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"model_id": ""},
+                }
+            ],
+        )
+        baseline = _baseline_row(
+            baseline_id=baseline_id,
+            input_available=True,
+            compare_available=True,
+        )
+        baseline["input"] = {"message": "baseline input"}
+
+        class FakeTask:
+            def get(self, timeout):
+                return {
+                    "status": "success",
+                    "result": {
+                        "result": {"text": "candidate output"},
+                        "node_results": {
+                            "llm-triage": {
+                                "status": "success",
+                                "result": {
+                                    "text": "candidate output",
+                                    "model": "gpt-5-mini",
+                                    "metadata": {
+                                        "model_routing": {
+                                            "decision_source": "active_policy",
+                                            "selected_model": "gpt-5-mini",
+                                            "fallback_model": "gpt-4.1",
+                                            "reason_code": "policy_default",
+                                        }
+                                    },
+                                },
+                                "duration_ms": 1200,
+                            }
+                        },
+                    },
+                }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.get_cost_optimizer_baseline_by_id",
+                return_value=baseline,
+                create=True,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options(
+                    "gpt-5-mini",
+                    "gpt-4.1",
+                    "gpt-4.1-mini",
+                ),
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
+                return_value=FakeTask(),
+            ) as send_task,
+        ):
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/compare",
+                json={
+                    "baseline_id": str(baseline_id),
+                    "candidate": {
+                        "model_id": "",
+                        "auto_model_routing": True,
+                        "model_routing_policy": {
+                            "status": "active",
+                            "policy_version": "policy-v1",
+                            "active_policy": {
+                                "default_model_id": "gpt-5-mini",
+                                "fallback_model_id": "gpt-4.1",
+                                "rules": [
+                                    {
+                                        "id": "short-json",
+                                        "when": {"output_format": "json"},
+                                        "selected_model_id": "gpt-4.1-mini",
+                                        "fallback_model_id": "gpt-4.1",
+                                    }
+                                ],
+                            },
+                        },
+                        "parameters": {"max_tokens": 800, "temperature": 0.1},
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        send_task.assert_called_once()
+
+    def test_fr3_compare_materializes_default_policy_without_active_policy(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        baseline_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"model_id": ""},
+                }
+            ],
+        )
+        baseline = _baseline_row(
+            baseline_id=baseline_id,
+            input_available=True,
+            compare_available=True,
+        )
+        baseline["input"] = {"message": "baseline input"}
+
+        class FakeTask:
+            def get(self, timeout):
+                return {
+                    "status": "success",
+                    "result": {
+                        "result": {"text": "candidate output"},
+                        "node_results": {
+                            "llm-triage": {
+                                "status": "success",
+                                "result": {
+                                    "text": "candidate output",
+                                    "model": "gpt-5-mini",
+                                    "metadata": {
+                                        "model_routing": {
+                                            "decision_source": "active_policy",
+                                            "selected_model": "gpt-5-mini",
+                                            "fallback_model": "gpt-4.1",
+                                            "reason_code": "cold_start_default_policy",
+                                        }
+                                    },
+                                },
+                                "duration_ms": 1200,
+                            }
+                        },
+                    },
+                }
+
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.get_cost_optimizer_baseline_by_id",
+                return_value=baseline,
+                create=True,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-5-mini", "gpt-4.1"),
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
+                return_value=FakeTask(),
+            ) as send_task,
+        ):
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/compare",
+                json={
+                    "baseline_id": str(baseline_id),
+                    "candidate": {
+                        "model_id": "",
+                        "auto_model_routing": True,
+                        "model_routing_policy": {"status": "collecting"},
+                        "parameters": {"max_tokens": 800, "temperature": 0.1},
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        send_task.assert_called_once()
+        sent_graph = send_task.call_args.kwargs["args"][0]
+        sent_llm_node = next(
+            node for node in sent_graph["nodes"] if node["id"] == "llm-triage"
+        )
+        policy = sent_llm_node["data"]["model_routing_policy"]
+        assert policy["status"] == "active"
+        assert policy["policy_version"] == "gateway-cold-start-v1"
+        assert policy["active_policy"]["default_model_id"] == "gpt-5-mini"
+        assert policy["active_policy"]["fallback_model_id"] == "gpt-4.1"
+        assert policy["active_policy"]["rules"][0]["reason_code"] == (
+            "cold_start_default_policy"
+        )
 
     def test_fr3_compare_rejects_unusable_knowledge_base_before_running_task(self):
         workflow_id = uuid4()

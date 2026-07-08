@@ -216,6 +216,36 @@ export function NodeSettingsComparisonPanel({
     });
   }, [fallbackCandidates, draft.model_id, selectedModel]);
   const fallbackDisabled = !draft.model_id?.trim();
+  const routingPolicySummary = useMemo(() => {
+    const policy = draft.model_routing_policy;
+    const activePolicy = policy?.active_policy;
+    const firstRule = activePolicy?.rules?.find(Boolean);
+    const selectedModelId =
+      firstRule?.selected_model_id ||
+      activePolicy?.default_model_id ||
+      draft.model_id ||
+      '';
+    const fallbackModelId =
+      firstRule?.fallback_model_id ||
+      activePolicy?.fallback_model_id ||
+      draft.fallback_model_id ||
+      '';
+    const status =
+      policy?.status ||
+      (activePolicy ? 'active' : draft.auto_model_routing ? 'collecting' : 'off');
+
+    return {
+      status,
+      selectedModelId,
+      fallbackModelId,
+      policyVersion: policy?.policy_version || '정책 없음',
+    };
+  }, [
+    draft.auto_model_routing,
+    draft.fallback_model_id,
+    draft.model_id,
+    draft.model_routing_policy,
+  ]);
   const promptTokenLabels = useMemo(() => {
     const labels: Record<string, string> = {};
     for (const reference of draft.referenced_variables || []) {
@@ -447,59 +477,129 @@ export function NodeSettingsComparisonPanel({
         <div className="grid gap-5 p-5">
           {tab === 'basic' ? (
             <>
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
-                <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
-                  <span>기본 모델</span>
-                  {readOnly ? (
-                    <input
-                      value={draft.model_id}
-                      readOnly
-                      className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
-                      placeholder="모델 없음"
-                    />
-                  ) : loadingModels ? (
-                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-400">
-                      모델 로딩 중...
-                    </div>
-                  ) : (
-                    <ModelSelectDropdown
-                      value={draft.model_id || ''}
-                      onChange={handleModelChange}
-                      models={chatModelOptions}
-                      groupedModels={groupedModelOptions}
-                      placeholder="모델을 선택하세요"
-                    />
-                  )}
-                </label>
-                <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
-                  <span>대체 모델</span>
-                  {readOnly ? (
-                    <input
-                      value={draft.fallback_model_id}
-                      readOnly
-                      className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
-                      placeholder="선택 없음"
-                    />
-                  ) : loadingModels ? (
-                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-400">
-                      모델 로딩 중...
-                    </div>
-                  ) : (
-                    <ModelSelectDropdown
-                      value={draft.fallback_model_id || ''}
-                      onChange={(value) => onChange('fallback_model_id', value)}
-                      models={fallbackCandidates}
-                      groupedModels={groupedFallbackOptions}
-                      disabled={fallbackDisabled}
-                      placeholder={
-                        fallbackDisabled
-                          ? '먼저 모델을 선택하세요'
-                          : '대체 모델을 선택하세요'
-                      }
-                    />
-                  )}
+              <div className="rounded-lg border border-emerald-100 bg-emerald-50/50 p-3">
+                <label className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(draft.auto_model_routing)}
+                    disabled={readOnly}
+                    onChange={(event) =>
+                      onChange('auto_model_routing', event.target.checked)
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span>
+                    <span className="block text-xs font-bold text-emerald-900">
+                      자동 모델 라우팅
+                    </span>
+                    <span className="mt-0.5 block text-[11px] leading-relaxed text-emerald-700">
+                      ON이면 B 후보 실행 시 직접 모델 선택 대신 라우팅 정책을
+                      candidate 설정으로 보냅니다.
+                    </span>
+                  </span>
                 </label>
               </div>
+
+              {draft.auto_model_routing ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-800">
+                        자동 라우팅 사용 중
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                        B candidate는 현재 라우팅 정책을 기준으로 모델을
+                        선택합니다. 수동 기본/대체 모델 선택은 숨겨집니다.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                      {routingPolicySummary.status}
+                    </span>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-3">
+                    <div className="rounded border border-slate-100 bg-white p-2">
+                      <dt className="font-semibold text-slate-500">
+                        선택 모델
+                      </dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.selectedModelId || '정책 대기 중'}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-white p-2">
+                      <dt className="font-semibold text-slate-500">
+                        Fallback 모델
+                      </dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.fallbackModelId || '없음'}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-white p-2">
+                      <dt className="font-semibold text-slate-500">
+                        정책 버전
+                      </dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.policyVersion}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              ) : (
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+                  <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
+                    <span>기본 모델</span>
+                    {readOnly ? (
+                      <input
+                        value={draft.model_id}
+                        readOnly
+                        className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
+                        placeholder="모델 없음"
+                      />
+                    ) : loadingModels ? (
+                      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+                        모델 로딩 중...
+                      </div>
+                    ) : (
+                      <ModelSelectDropdown
+                        value={draft.model_id || ''}
+                        onChange={handleModelChange}
+                        models={chatModelOptions}
+                        groupedModels={groupedModelOptions}
+                        placeholder="모델을 선택하세요"
+                      />
+                    )}
+                  </label>
+                  <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-600">
+                    <span>대체 모델</span>
+                    {readOnly ? (
+                      <input
+                        value={draft.fallback_model_id}
+                        readOnly
+                        className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
+                        placeholder="선택 없음"
+                      />
+                    ) : loadingModels ? (
+                      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+                        모델 로딩 중...
+                      </div>
+                    ) : (
+                      <ModelSelectDropdown
+                        value={draft.fallback_model_id || ''}
+                        onChange={(value) =>
+                          onChange('fallback_model_id', value)
+                        }
+                        models={fallbackCandidates}
+                        groupedModels={groupedFallbackOptions}
+                        disabled={fallbackDisabled}
+                        placeholder={
+                          fallbackDisabled
+                            ? '먼저 모델을 선택하세요'
+                            : '대체 모델을 선택하세요'
+                        }
+                      />
+                    )}
+                  </label>
+                </div>
+              )}
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <div className="mb-3 flex items-center gap-2 text-sm font-bold">

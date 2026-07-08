@@ -159,6 +159,59 @@ const readNumber = (
   return null;
 };
 
+type ModelRoutingSummary = {
+  selectedModel?: string;
+  fallbackModel?: string;
+  decisionSource?: string;
+  reasonCode?: string;
+  policyVersion?: string;
+  matchedRuleId?: string;
+};
+
+const isUnknownRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const stringValue = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+
+const modelRoutingSummaryOf = (
+  output: unknown,
+  trace: Record<string, unknown> | undefined,
+): ModelRoutingSummary | null => {
+  const traceRouting = isUnknownRecord(trace?.model_routing)
+    ? trace?.model_routing
+    : isUnknownRecord(trace?.model_routing_metadata)
+      ? trace?.model_routing_metadata
+      : null;
+  const outputRecord = isUnknownRecord(output) ? output : null;
+  const metadata = isUnknownRecord(outputRecord?.metadata)
+    ? outputRecord?.metadata
+    : null;
+  const outputRouting = isUnknownRecord(metadata?.model_routing)
+    ? metadata?.model_routing
+    : isUnknownRecord(metadata?.model_routing_metadata)
+      ? metadata?.model_routing_metadata
+      : null;
+  const routing = traceRouting || outputRouting;
+  if (!routing) return null;
+
+  const summary = {
+    selectedModel:
+      stringValue(routing.selected_model) || stringValue(outputRecord?.model),
+    fallbackModel: stringValue(routing.fallback_model),
+    decisionSource: stringValue(routing.decision_source),
+    reasonCode: stringValue(routing.reason_code),
+    policyVersion: stringValue(routing.policy_version),
+    matchedRuleId: stringValue(routing.matched_rule_id),
+  };
+
+  return summary.selectedModel || summary.decisionSource || summary.reasonCode
+    ? summary
+    : null;
+};
+
 const formatJsonSchemaSummary = (candidate: CandidateDraft) => {
   if (candidate.output_format !== 'json') return '사용 안 함';
   if (candidate.json_schema_fields.length === 0) return '정의된 필드 없음';
@@ -224,6 +277,8 @@ const compareCandidateErrorMessages: Record<string, string> = {
     '선택한 기준 실행의 입력값을 사용할 수 없습니다. 다른 성공 로그를 선택해 주세요.',
   'cost_optimizer.invalid_candidate':
     '후보 설정 값이 유효하지 않습니다. 모델, 프롬프트, 출력 형식, 파라미터를 확인해 주세요.',
+  'cost_optimizer.model_routing_policy_unavailable':
+    '자동 라우팅 정책이 없습니다. 먼저 LLM 노드의 자동 라우팅 정책을 생성하거나 모델을 직접 선택해 주세요.',
   'permission.denied':
     'B 후보 실행 권한이 없습니다. builder 이상 권한이 필요합니다.',
 };
@@ -921,8 +976,13 @@ export default function CostOptimizerPlaygroundPage() {
     setApplySuccess(false);
   };
 
+  const canRunCandidate =
+    Boolean(baseline) &&
+    (candidate.auto_model_routing || Boolean(candidate.model_id)) &&
+    !isRunningCandidate;
+
   const handleRunCandidate = async () => {
-    if (!baseline || !candidate.model_id || isRunningCandidate) return;
+    if (!canRunCandidate) return;
 
     setIsRunningCandidate(true);
     setCandidateError('');
@@ -1048,6 +1108,10 @@ export default function CostOptimizerPlaygroundPage() {
   const candidateSchemaValidation = candidateResult?.schema_validation;
   const candidateSchemaErrors = schemaErrorsOf(
     candidateSchemaValidation?.errors,
+  );
+  const candidateModelRoutingSummary = modelRoutingSummaryOf(
+    candidateResult?.output,
+    candidateResult?.trace,
   );
   const baselineRetrievalSummary = retrievalSummaryOf(
     compareResult?.baseline?.trace,
@@ -1699,14 +1763,14 @@ export default function CostOptimizerPlaygroundPage() {
                 </div>
                 <button
                   type="button"
-                  disabled={!candidate.model_id || isRunningCandidate}
+                  disabled={!canRunCandidate}
                   onClick={handleRunCandidate}
                   aria-label={isRunningCandidate ? 'B 실행 중' : 'B 후보 실행'}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
                   title={
-                    candidate.model_id
+                    candidate.auto_model_routing || candidate.model_id
                       ? 'A baseline 입력으로 B 후보만 실행합니다.'
-                      : 'B 후보 모델을 먼저 선택하세요.'
+                      : 'B 후보 모델을 선택하거나 자동 라우팅을 켜세요.'
                   }
                 >
                   {isRunningCandidate ? (
@@ -2506,6 +2570,53 @@ export default function CostOptimizerPlaygroundPage() {
                                 : formatMetric(candidateTotalTokens)}
                             </dd>
                           </div>
+                          {candidateModelRoutingSummary ? (
+                            <div className="grid gap-2 rounded-md border border-emerald-100 bg-emerald-50 p-2 text-emerald-950">
+                              <dt className="font-bold text-emerald-700">
+                                자동 라우팅
+                              </dt>
+                              <dd>
+                                <dl className="grid gap-1">
+                                  <div className="flex justify-between gap-3">
+                                    <dt className="text-emerald-700">
+                                      선택 모델
+                                    </dt>
+                                    <dd className="font-semibold">
+                                      {candidateModelRoutingSummary.selectedModel ||
+                                        '-'}
+                                    </dd>
+                                  </div>
+                                  <div className="flex justify-between gap-3">
+                                    <dt className="text-emerald-700">
+                                      판단 기준
+                                    </dt>
+                                    <dd className="font-semibold">
+                                      {candidateModelRoutingSummary.decisionSource ||
+                                        '-'}
+                                    </dd>
+                                  </div>
+                                  <div className="flex justify-between gap-3">
+                                    <dt className="text-emerald-700">
+                                      근거 코드
+                                    </dt>
+                                    <dd className="font-semibold">
+                                      {candidateModelRoutingSummary.reasonCode ||
+                                        '-'}
+                                    </dd>
+                                  </div>
+                                  <div className="flex justify-between gap-3">
+                                    <dt className="text-emerald-700">
+                                      Fallback
+                                    </dt>
+                                    <dd className="font-semibold">
+                                      {candidateModelRoutingSummary.fallbackModel ||
+                                        '-'}
+                                    </dd>
+                                  </div>
+                                </dl>
+                              </dd>
+                            </div>
+                          ) : null}
                         </dl>
                       ) : (
                         <p className="mt-2 text-xs leading-relaxed text-slate-500">

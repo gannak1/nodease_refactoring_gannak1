@@ -61,6 +61,51 @@ const cloneDraft = (value: WorkflowDraftRequest): WorkflowDraftRequest => {
   return JSON.parse(JSON.stringify(value)) as WorkflowDraftRequest;
 };
 
+type ModelRoutingSummary = {
+  selectedModel?: string;
+  fallbackModel?: string;
+  decisionSource?: string;
+  reasonCode?: string;
+  policyVersion?: string;
+  matchedRuleId?: string;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const stringValue = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+
+const modelRoutingSummaryOf = (
+  output: unknown,
+): ModelRoutingSummary | null => {
+  if (!isRecord(output)) return null;
+  const metadata = isRecord(output.metadata) ? output.metadata : null;
+  const routing =
+    metadata && isRecord(metadata.model_routing)
+      ? metadata.model_routing
+      : metadata && isRecord(metadata.model_routing_metadata)
+        ? metadata.model_routing_metadata
+      : null;
+  if (!routing) return null;
+
+  const summary = {
+    selectedModel:
+      stringValue(routing.selected_model) || stringValue(output.model),
+    fallbackModel: stringValue(routing.fallback_model),
+    decisionSource: stringValue(routing.decision_source),
+    reasonCode: stringValue(routing.reason_code),
+    policyVersion: stringValue(routing.policy_version),
+    matchedRuleId: stringValue(routing.matched_rule_id),
+  };
+
+  return summary.selectedModel || summary.decisionSource || summary.reasonCode
+    ? summary
+    : null;
+};
+
 export function FinalResponseCard({
   preview,
 }: {
@@ -367,6 +412,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         title: data.title || data.name || getNodeDisplayName(node.id),
         status,
         output,
+        modelRouting: modelRoutingSummaryOf(output),
         latencyMs: data.observability?.latency_ms,
         totalTokens: data.observability?.total_tokens ?? readTokenUsage(output),
         totalCost: data.observability?.total_cost ?? readCost(output),
@@ -469,6 +515,42 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             </dd>
           </div>
         </dl>
+        {summary.modelRouting ? (
+          <dl className="grid gap-2 border-t border-gray-100 bg-emerald-50/50 px-4 py-3 text-xs dark:border-gray-800 dark:bg-emerald-950/20 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <dt className="font-semibold text-emerald-700 dark:text-emerald-200">
+                자동 라우팅
+              </dt>
+              <dd className="mt-1 text-gray-700 dark:text-gray-200">
+                실제 실행에서 선택된 모델과 라우팅 근거입니다.
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">선택 모델</dt>
+              <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                {summary.modelRouting.selectedModel || '-'}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">판단 기준</dt>
+              <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                {summary.modelRouting.decisionSource || '-'}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">근거 코드</dt>
+              <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                {summary.modelRouting.reasonCode || '-'}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">Fallback</dt>
+              <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                {summary.modelRouting.fallbackModel || '-'}
+              </dd>
+            </div>
+          </dl>
+        ) : null}
         {summary.output !== undefined && (
           <div className="max-h-40 overflow-x-auto border-t border-gray-100 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
             <pre className="text-xs font-mono text-gray-600 dark:text-gray-300">

@@ -20,6 +20,8 @@ type CandidateNumberParameterKey =
 export type CandidateDraft = {
   model_id: string;
   fallback_model_id: string;
+  auto_model_routing: boolean;
+  model_routing_policy?: LLMNodeData['model_routing_policy'];
   task_type: string;
   system_prompt: string;
   user_prompt: string;
@@ -344,6 +346,10 @@ export const candidateFromOptions = (
   return {
     model_id: data.model_id || '',
     fallback_model_id: data.fallback_model_id || '',
+    auto_model_routing: Boolean(data.auto_model_routing),
+    model_routing_policy: isRecord(data.model_routing_policy)
+      ? data.model_routing_policy
+      : undefined,
     task_type: data.task_type || 'generate',
     system_prompt: data.system_prompt || '',
     user_prompt: data.user_prompt || '',
@@ -398,6 +404,16 @@ export const applyCandidatePatchToDraft = (
   const next = { ...draft };
   const parameters = isRecord(patch.parameters) ? patch.parameters : {};
   const knowledge = isRecord(patch.knowledge) ? patch.knowledge : {};
+
+  if (typeof patch.auto_model_routing === 'boolean') {
+    next.auto_model_routing = patch.auto_model_routing;
+  }
+  if (isRecord(patch.model_routing_policy)) {
+    next.model_routing_policy = {
+      ...(next.model_routing_policy || {}),
+      ...patch.model_routing_policy,
+    } as LLMNodeData['model_routing_policy'];
+  }
 
   const setNumberParameter = (key: CandidateNumberParameterKey) => {
     if (!(key in parameters)) return;
@@ -498,6 +514,8 @@ export const llmDataFromCandidate = (
     provider: '',
     model_id: candidate.model_id,
     fallback_model_id: candidate.fallback_model_id,
+    auto_model_routing: candidate.auto_model_routing,
+    model_routing_policy: candidate.model_routing_policy,
     task_type: candidate.task_type,
     system_prompt: candidate.system_prompt,
     user_prompt: candidate.user_prompt,
@@ -542,6 +560,8 @@ export const compareRequestCandidateFromDraft = (
     label,
     model_id: candidate.model_id,
     fallback_model_id: candidate.fallback_model_id || null,
+    auto_model_routing: candidate.auto_model_routing,
+    model_routing_policy: candidate.model_routing_policy,
     task_type: candidate.task_type,
     system_prompt: candidate.system_prompt,
     user_prompt: candidate.user_prompt,

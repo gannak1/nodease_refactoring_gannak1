@@ -145,6 +145,8 @@ vi.mock(
 const baseDraft: CandidateDraft = {
   model_id: '',
   fallback_model_id: '',
+  auto_model_routing: false,
+  model_routing_policy: undefined,
   task_type: 'generate',
   system_prompt: '시스템 프롬프트',
   user_prompt: '사용자 프롬프트',
@@ -225,6 +227,59 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
 
     expect(onChange).toHaveBeenCalledWith('model_id', 'gpt-4.1-mini');
     expect(screen.getByLabelText('먼저 모델을 선택하세요')).toBeDisabled();
+  });
+
+  it('B 후보 자동 라우팅을 켜면 모델 선택 UI를 숨기고 candidate 요청에 라우팅 정책을 포함한다', () => {
+    const onChange = vi.fn();
+    const routingDraft: CandidateDraft = {
+      ...baseDraft,
+      auto_model_routing: true,
+      model_id: '',
+      fallback_model_id: '',
+      model_routing_policy: {
+        status: 'active',
+        policy_version: 'policy-v1',
+        active_policy: {
+          default_model_id: 'gpt-5-mini',
+          fallback_model_id: 'gpt-4.1',
+        },
+      },
+    };
+
+    render(
+      <NodeSettingsComparisonPanel
+        title="B Candidate"
+        nodeId="llm-1"
+        tab="basic"
+        onTabChange={vi.fn()}
+        draft={routingDraft}
+        onChange={onChange}
+      />,
+    );
+
+    expect(
+      screen.getByRole('checkbox', { name: /자동 모델 라우팅/i }),
+    ).toBeChecked();
+    expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
+    expect(screen.getByText('gpt-5-mini')).toBeInTheDocument();
+    expect(screen.getByText('gpt-4.1')).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText('모델을 선택하세요'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /자동 모델 라우팅/i }));
+
+    expect(onChange).toHaveBeenCalledWith('auto_model_routing', false);
+
+    const request = compareRequestCandidateFromDraft(routingDraft);
+    expect(request).toEqual(
+      expect.objectContaining({
+        model_id: '',
+        fallback_model_id: null,
+        auto_model_routing: true,
+        model_routing_policy: routingDraft.model_routing_policy,
+      }),
+    );
   });
 
   it('모델 후보 목록에서는 비활성 모델, 날짜 버전, workflow LLM 외 용도 모델을 제외한다', async () => {
