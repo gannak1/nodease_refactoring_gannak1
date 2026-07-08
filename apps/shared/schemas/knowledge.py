@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 SourceAclState = Literal[
@@ -23,6 +23,12 @@ RequesterSourceAuthorization = Literal[
 ]
 ResourceVisibility = Literal["visible", "resource_hidden", "hidden", "admin_visible"]
 RuntimeAvailability = Literal["available", "warning", "unavailable", "unknown"]
+KnowledgeRAGRecommendationStatus = Literal[
+    "recommended",
+    "clarification_required",
+    "no_candidate",
+    "unavailable",
+]
 KnowledgeCandidateType = Literal["knowledge_base", "collection"]
 KnowledgeCandidateResolutionMode = Literal["explicit_kb", "auto_collection"]
 KnowledgeCandidatePurpose = Literal[
@@ -219,8 +225,21 @@ def normalize_recommendation_text(value: str | None) -> str | None:
 
 
 class KnowledgeRAGRecommendationRequest(BaseModel):
-    workflow_intent: str = Field(..., min_length=1, max_length=4000)
-    node_purpose: str | None = Field(default=None, max_length=1000)
+    workflow_intent: str = Field(
+        ...,
+        min_length=1,
+        max_length=4000,
+        validation_alias=AliasChoices("workflow_intent", "intent_summary"),
+    )
+    node_purpose: str | None = Field(
+        default=None,
+        max_length=1000,
+        validation_alias=AliasChoices("node_purpose", "node_purpose_summary"),
+    )
+    knowledge_requirement: dict | None = None
+    pending_resolution_ref: str | None = Field(default=None, max_length=255)
+    authorized_safe_candidate_set_ref: str | None = Field(default=None, max_length=255)
+    safe_workflow_context_summary: dict | None = None
     mode: KnowledgeRAGRecommendationMode = "auto"
     collection_ids: list[UUID] = Field(default_factory=list)
     knowledge_base_ids: list[UUID] = Field(default_factory=list)
@@ -279,9 +298,14 @@ class KnowledgeRAGRecommendation(BaseModel):
     recommendation_id: str
     recommendation_mode: KnowledgeRAGRecommendationResolvedMode
     candidate_type: KnowledgeRAGCandidateType = "knowledge_base"
-    candidate_id: UUID
+    candidate_id: str
+    candidate_handle: str | None = None
     safe_label: str | None = None
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: Literal["high", "medium", "low"]
+    confidence_label: Literal["high", "medium", "low"] | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reason_category: str | None = None
+    threshold_result: str | None = None
     safe_reason_code: str
     recommended_options: KnowledgeRAGRecommendedOptions
     materialized_knowledge_bases: list[KnowledgeBaseOptionRef] = Field(
@@ -302,8 +326,14 @@ class KnowledgeRAGRecommendationSummary(BaseModel):
 
 
 class KnowledgeRAGRecommendationResponse(BaseModel):
+    status: KnowledgeRAGRecommendationStatus = "recommended"
+    resolution_id: str | None = None
+    requirement_id: str | None = None
     recommendations: list[KnowledgeRAGRecommendation] = Field(default_factory=list)
+    clarification_options: list[dict] = Field(default_factory=list)
+    fallback_reason: str | None = None
     summary: KnowledgeRAGRecommendationSummary = Field(
         default_factory=KnowledgeRAGRecommendationSummary
     )
     reason_code: str | None = None
+    user_safe_warning: str | None = None

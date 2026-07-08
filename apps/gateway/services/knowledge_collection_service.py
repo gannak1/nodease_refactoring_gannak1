@@ -50,6 +50,7 @@ from apps.gateway.services.knowledge_collection_policy import (
     sanitize_safe_metadata_value,
 )
 
+GENERIC_KB_LABEL = "Knowledge Base"
 LINK_CANDIDATE_SCAN_LIMIT = 5000
 
 
@@ -367,7 +368,7 @@ class KnowledgeCollectionService:
                 candidates.append(
                     KnowledgeCollectionLinkCandidate(
                         knowledge_base_id=kb.id,
-                        safe_label=kb.name,
+                        safe_label=self._kb_safe_label(kb),
                         disabled=False,
                         safe_reason_code=None,
                     )
@@ -681,7 +682,7 @@ class KnowledgeCollectionService:
         return KnowledgeCollectionItemResponse(
             item_id=item.id,
             knowledge_base_id=kb.id,
-            safe_label=kb.name,
+            safe_label=self._kb_safe_label(kb),
             lifecycle_state=kb.lifecycle_state,
             sync_state=kb.sync_state,
             rank=item.rank,
@@ -760,6 +761,16 @@ class KnowledgeCollectionService:
             "manage",
             organization_id=self.organization_id,
         )
+
+    def _kb_safe_label(self, kb: KnowledgeBase) -> str:
+        source_identity = getattr(kb, "source_identity", None)
+        if source_identity is not None:
+            if getattr(source_identity, "display_policy_state", None) == "approved":
+                safe_display_name = getattr(source_identity, "safe_display_name", None)
+                if safe_display_name:
+                    return str(safe_display_name)
+            return GENERIC_KB_LABEL
+        return str(getattr(kb, "name", None) or GENERIC_KB_LABEL)
 
     def _collection_or_hidden(self, collection_id: uuid.UUID) -> KnowledgeCollection:
         collection = (

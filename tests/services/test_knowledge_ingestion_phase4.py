@@ -4,7 +4,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from apps.gateway.services.ingestion.service import IngestionOrchestrator
+from apps.gateway.services.ingestion import service as ingestion_service_module
+from apps.gateway.services.ingestion.service import (
+    ACTIVE_PROCESSING_STALL_TIMEOUT_MESSAGE,
+    IngestionOrchestrator,
+    PROCESSING_START_TIMEOUT_MESSAGE,
+    finalize_stale_processing_start,
+    mark_document_processing_queued,
+    recover_timed_out_document_with_artifacts,
+)
 from apps.shared.db.models.knowledge import Document, DocumentVersion, KnowledgeBase
 from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
@@ -614,6 +622,514 @@ def test_update_status_can_clear_active_fencing_hash_on_completed_paths():
     assert ACTIVE_FENCING_TOKEN_HASH_KEY not in document.meta_info
     assert document.meta_info["keep"] == "value"
     assert service.db.commit_count == 1
+
+
+def test_document_processing_lock_falls_back_when_redis_lock_unavailable(monkeypatch):
+    class BrokenDistributedLock:
+        def __init__(self, *_args, **_kwargs):
+            raise ConnectionError("redis unavailable")
+
+    monkeypatch.setattr(
+        ingestion_service_module,
+        "DistributedLock",
+        BrokenDistributedLock,
+    )
+    service = IngestionOrchestrator(FakeDb())
+
+    with service._document_processing_lock(DOC_ID) as acquired:  # noqa: SLF001
+        assert acquired is True
+
+
+def test_lock_not_acquired_before_start_timeout_keeps_document_queued(monkeypatch):
+    queued_at = datetime.now(timezone.utc)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={"processing_enqueued_at": queued_at.isoformat()},
+        error_message=None,
+        updated_at=queued_at,
+        created_at=queued_at,
+    )
+
+    class FakeLockFailureSession:
+        def __init__(self):
+            self.commits = 0
+            self.rollbacks = 0
+            self.closed = False
+
+        def query(self, model):
+            if model is not Document:
+                return FakeNoArtifactQuery()
+            return self
+
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+        def close(self):
+            self.closed = True
+
+    class FakeNoArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return None
+
+    session = FakeLockFailureSession()
+    progress_updates = []
+    service = IngestionOrchestrator(FakeDb())
+    monkeypatch.setattr(ingestion_service_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(ingestion_service_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        service,
+        "_update_progress_redis",
+        lambda document_id, progress, expire=False: progress_updates.append(
+            (document_id, progress, expire)
+        ),
+    )
+
+    service._handle_lock_not_acquired(DOC_ID)  # noqa: SLF001
+
+    assert document.status == "indexing"
+    assert document.error_message is None
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    assert session.closed is True
+    assert progress_updates == []
+
+
+def test_lock_not_acquired_after_start_timeout_finalizes_failed(monkeypatch):
+    queued_at = datetime.now(timezone.utc) - timedelta(seconds=600)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={"processing_enqueued_at": queued_at.isoformat()},
+        error_message=None,
+        updated_at=queued_at,
+        created_at=queued_at,
+    )
+
+    class FakeLockFailureSession:
+        def __init__(self):
+            self.commits = 0
+            self.rollbacks = 0
+            self.closed = False
+
+        def query(self, model):
+            if model is not Document:
+                return FakeNoArtifactQuery()
+            return self
+
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+        def close(self):
+            self.closed = True
+
+    class FakeNoArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return None
+
+    session = FakeLockFailureSession()
+    progress_updates = []
+    service = IngestionOrchestrator(FakeDb())
+    monkeypatch.setattr(ingestion_service_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(ingestion_service_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        service,
+        "_update_progress_redis",
+        lambda document_id, progress, expire=False: progress_updates.append(
+            (document_id, progress, expire)
+        ),
+    )
+
+    service._handle_lock_not_acquired(DOC_ID)  # noqa: SLF001
+
+    assert document.status == "failed"
+    assert document.meta_info["progress"] == 0
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY not in document.meta_info
+    assert "did not start" in document.error_message
+    assert session.commits == 1
+    assert session.rollbacks == 0
+    assert session.closed is True
+    assert progress_updates == [(DOC_ID, 0, True)]
+
+
+def test_stale_processing_start_without_active_fencing_finalizes_failed():
+    queued_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = queued_at + timedelta(seconds=61)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={"processing_enqueued_at": queued_at.isoformat()},
+        error_message=None,
+        updated_at=queued_at,
+        created_at=queued_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeNoArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return None
+
+    class FakeStaleDb:
+        commit_count = 0
+
+        def query(self, model):
+            if model is not Document:
+                return FakeNoArtifactQuery()
+            return FakeDocumentQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeStaleDb()
+
+    assert (
+        finalize_stale_processing_start(
+            db,
+            DOC_ID,
+            timeout_seconds=60,
+            now=checked_at,
+        )
+        is True
+    )
+    assert document.status == "failed"
+    assert document.meta_info["progress"] == 0
+    assert document.meta_info["processing_current_step"] == (
+        "Processing did not start in time."
+    )
+    assert "did not start" in document.error_message
+    assert document.updated_at == checked_at
+    assert db.commit_count == 1
+
+
+def test_stale_processing_start_keeps_document_with_chunks():
+    queued_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = queued_at + timedelta(seconds=600)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={"processing_enqueued_at": queued_at.isoformat()},
+        error_message=None,
+        updated_at=queued_at,
+        created_at=queued_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return object()
+
+    class FakeArtifactDb:
+        commit_count = 0
+
+        def query(self, model):
+            if model is Document:
+                return FakeDocumentQuery()
+            return FakeArtifactQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeArtifactDb()
+
+    assert finalize_stale_processing_start(db, DOC_ID, now=checked_at) is False
+    assert document.status == "indexing"
+    assert document.error_message is None
+    assert db.commit_count == 0
+
+
+def test_timed_out_failed_document_with_chunks_recovers_completed():
+    failed_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = failed_at + timedelta(seconds=30)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="failed",
+        meta_info={
+            "progress": 0,
+            "processing_current_step": "Processing did not start in time.",
+        },
+        error_message=PROCESSING_START_TIMEOUT_MESSAGE,
+        updated_at=failed_at,
+        created_at=failed_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return object()
+
+    class FakeRecoveryDb:
+        commit_count = 0
+
+        def query(self, model):
+            if model is Document:
+                return FakeDocumentQuery()
+            return FakeArtifactQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeRecoveryDb()
+
+    assert (
+        recover_timed_out_document_with_artifacts(
+            db,
+            DOC_ID,
+            now=checked_at,
+        )
+        is True
+    )
+    assert document.status == "completed"
+    assert document.error_message is None
+    assert document.meta_info["progress"] == 100
+    assert document.meta_info["processing_recovered_from_timeout"] is True
+    assert document.updated_at == checked_at
+    assert db.commit_count == 1
+
+
+def test_stale_processing_start_keeps_active_fencing_document():
+    queued_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = queued_at + timedelta(seconds=600)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={
+            "processing_enqueued_at": queued_at.isoformat(),
+            ACTIVE_FENCING_TOKEN_HASH_KEY: "active-hash",
+        },
+        error_message=None,
+        updated_at=queued_at,
+        created_at=queued_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeActiveDb:
+        commit_count = 0
+
+        def query(self, model):
+            assert model is Document
+            return FakeDocumentQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeActiveDb()
+
+    assert (
+        finalize_stale_processing_start(db, DOC_ID, now=checked_at) is False
+    )
+    assert document.status == "indexing"
+    assert document.error_message is None
+    assert db.commit_count == 0
+
+
+def test_stale_active_processing_without_artifacts_finalizes_failed():
+    started_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = started_at + timedelta(seconds=901)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={
+            "processing_enqueued_at": started_at.isoformat(),
+            "processing_started_at": started_at.isoformat(),
+            ACTIVE_FENCING_TOKEN_HASH_KEY: "active-hash",
+        },
+        error_message=None,
+        updated_at=started_at,
+        created_at=started_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeNoArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return None
+
+    class FakeStaleActiveDb:
+        commit_count = 0
+
+        def query(self, model):
+            if model is Document:
+                return FakeDocumentQuery()
+            return FakeNoArtifactQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeStaleActiveDb()
+
+    assert finalize_stale_processing_start(db, DOC_ID, now=checked_at) is True
+    assert document.status == "failed"
+    assert document.error_message == ACTIVE_PROCESSING_STALL_TIMEOUT_MESSAGE
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY not in document.meta_info
+    assert document.meta_info["processing_current_step"] == (
+        "Processing did not complete in time."
+    )
+    assert db.commit_count == 1
+
+
+def test_stale_active_processing_with_recent_progress_heartbeat_keeps_document():
+    started_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = started_at + timedelta(seconds=901)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={
+            "processing_enqueued_at": started_at.isoformat(),
+            "processing_started_at": started_at.isoformat(),
+            "processing_progress_updated_at": (
+                checked_at - timedelta(seconds=30)
+            ).isoformat(),
+            ACTIVE_FENCING_TOKEN_HASH_KEY: "active-hash",
+        },
+        error_message=None,
+        updated_at=started_at,
+        created_at=started_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeActiveDb:
+        commit_count = 0
+
+        def query(self, model):
+            assert model is Document
+            return FakeDocumentQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeActiveDb()
+
+    assert finalize_stale_processing_start(db, DOC_ID, now=checked_at) is False
+    assert document.status == "indexing"
+    assert document.error_message is None
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY in document.meta_info
+    assert db.commit_count == 0
+
+
+def test_stale_active_processing_with_chunks_keeps_document_indexing():
+    started_at = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    checked_at = started_at + timedelta(seconds=901)
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        meta_info={
+            "processing_enqueued_at": started_at.isoformat(),
+            "processing_started_at": started_at.isoformat(),
+            ACTIVE_FENCING_TOKEN_HASH_KEY: "active-hash",
+        },
+        error_message=None,
+        updated_at=started_at,
+        created_at=started_at,
+    )
+
+    class FakeDocumentQuery:
+        def get(self, value):
+            assert value == DOC_ID
+            return document
+
+    class FakeArtifactQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return object()
+
+    class FakeArtifactDb:
+        commit_count = 0
+
+        def query(self, model):
+            if model is Document:
+                return FakeDocumentQuery()
+            return FakeArtifactQuery()
+
+        def commit(self):
+            self.commit_count += 1
+
+    db = FakeArtifactDb()
+
+    assert finalize_stale_processing_start(db, DOC_ID, now=checked_at) is False
+    assert document.status == "indexing"
+    assert document.error_message is None
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY in document.meta_info
+    assert db.commit_count == 0
+
+
+def test_mark_document_processing_queued_records_progress_and_timestamp():
+    document = SimpleNamespace(
+        status="failed",
+        meta_info={
+            ACTIVE_FENCING_TOKEN_HASH_KEY: "stale-hash",
+            "processing_started_at": "2026-07-04T12:00:00+00:00",
+            "processing_recovered_from_timeout": True,
+        },
+        error_message="old error",
+    )
+
+    mark_document_processing_queued(document)
+
+    assert document.status == "indexing"
+    assert document.error_message is None
+    assert document.meta_info["progress"] == 0
+    assert "processing_enqueued_at" in document.meta_info
+    assert document.meta_info["processing_current_step"] == "Processing queued."
+    assert ACTIVE_FENCING_TOKEN_HASH_KEY not in document.meta_info
+    assert "processing_started_at" not in document.meta_info
+    assert "processing_recovered_from_timeout" not in document.meta_info
 
 
 def test_content_cursor_advances_only_after_active_ready_version():

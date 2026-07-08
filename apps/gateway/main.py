@@ -111,6 +111,17 @@ async def audit_permission_denied(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_failed(request: Request, exc: RequestValidationError):
+    def _strip_validation_input(value):
+        if isinstance(value, dict):
+            return {
+                key: _strip_validation_input(item)
+                for key, item in value.items()
+                if key != "input"
+            }
+        if isinstance(value, list):
+            return [_strip_validation_input(item) for item in value]
+        return value
+
     return JSONResponse(
         status_code=422,
         content={
@@ -118,7 +129,7 @@ async def validation_failed(request: Request, exc: RequestValidationError):
                 "code": "validation.failed",
                 "message": "Request validation failed.",
                 "request_id": getattr(request.state, "request_id", None),
-                "details": {"errors": jsonable_encoder(exc.errors())},
+                "details": {"errors": _strip_validation_input(jsonable_encoder(exc.errors()))},
             }
         },
     )

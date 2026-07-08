@@ -56,6 +56,7 @@ export interface DocumentResponse {
   status:
     | 'pending'
     | 'indexing'
+    | 'processing'
     | 'completed'
     | 'failed'
     | 'waiting_for_approval';

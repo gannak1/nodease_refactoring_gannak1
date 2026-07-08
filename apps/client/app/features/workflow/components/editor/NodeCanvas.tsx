@@ -28,9 +28,12 @@ import {
   ReactFlow,
   Background,
   BackgroundVariant,
+  Handle,
+  Position,
   useReactFlow,
   type Viewport,
   type NodeTypes,
+  type NodeProps,
 } from '@xyflow/react';
 
 import '@xyflow/react/dist/style.css';
@@ -56,9 +59,43 @@ import { NodeFullscreenEditor } from './NodeFullscreenEditor';
 import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
 import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
+import { AgentBuilderPanel } from '../agentBuilder/AgentBuilderPanel';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
+
+function AgentBuilderPreviewNode({ data, type }: NodeProps) {
+  const title = typeof data?.title === 'string' ? data.title : type;
+  const displayType =
+    typeof data?.original_type === 'string' ? data.original_type : type;
+  return (
+    <div className="min-w-[220px] rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm shadow-sm">
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!h-2.5 !w-2.5 !border-slate-400 !bg-white"
+      />
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {displayType}
+      </div>
+      <div className="mt-1 font-semibold text-slate-900">{title}</div>
+      <div className="mt-2 text-xs text-slate-500">읽기 전용 도안</div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!h-2.5 !w-2.5 !border-slate-400 !bg-white"
+      />
+    </div>
+  );
+}
+
+const agentBuilderPreviewNodeTypes = {
+  ...Object.fromEntries(
+    Object.keys(coreNodeTypes).map((type) => [type, AgentBuilderPreviewNode]),
+  ),
+  agentBuilderPreviewNode: AgentBuilderPreviewNode,
+  note: AgentBuilderPreviewNode,
+} as unknown as NodeTypes;
 
 export default function NodeCanvas() {
   const {
@@ -94,6 +131,8 @@ export default function NodeCanvas() {
     syncNodeFullscreenFromUrl,
     testExecutionStatus,
     isTestUploading,
+    hasUnsavedChanges,
+    agentBuilderPreview,
   } = useWorkflowStore();
 
   const {
@@ -104,6 +143,9 @@ export default function NodeCanvas() {
     deleteElements,
   } = useReactFlow();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string | null>(
+    null,
+  );
   const [, setSelectedNodeType] = useState<string | null>(null);
   const [searchModalContext, setSearchModalContext] = useState<{
     isOpen: boolean;
@@ -138,7 +180,7 @@ export default function NodeCanvas() {
 
   const connectNumberTarget = useCallback(
     (targetNodeId: string) => {
-      if (!numberConnection) return;
+      if (agentBuilderPreview || !numberConnection) return;
       onConnect({
         source: numberConnection.sourceNodeId,
         sourceHandle: numberConnection.sourceHandleId,
@@ -146,7 +188,7 @@ export default function NodeCanvas() {
         targetHandle: 'target',
       });
     },
-    [numberConnection, onConnect],
+    [agentBuilderPreview, numberConnection, onConnect],
   );
 
   // Drag connection preview
@@ -168,12 +210,16 @@ export default function NodeCanvas() {
   } = useMemoryMode(router, toast);
 
   // Publish state
-  const canPublish = useWorkflowStore((state) => state.canPublish());
+  const rawCanPublish = useWorkflowStore((state) => state.canPublish());
   const isReadOnly = workflowAccess?.can_write === false;
   const canExecute = workflowAccess?.can_execute !== false;
+  const isAgentBuilderPreviewMode = agentBuilderPreview !== null;
+  const canPublish = rawCanPublish && !isAgentBuilderPreviewMode;
+  const displayedNodes = agentBuilderPreview?.previewGraph.nodes ?? nodes;
+  const displayedEdges = agentBuilderPreview?.previewGraph.edges ?? edges;
 
   useEffect(() => {
-    if (!numberConnection) return;
+    if (!numberConnection || isAgentBuilderPreviewMode) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
@@ -238,6 +284,7 @@ export default function NodeCanvas() {
   }, [
     cancelNumberConnection,
     connectNumberTarget,
+    isAgentBuilderPreviewMode,
     numberConnection,
     numberConnectionCandidates,
     updateNumberConnectionInput,
@@ -302,6 +349,14 @@ export default function NodeCanvas() {
     triggerWorkflowRun: useWorkflowStore.getState().triggerWorkflowRun,
     setSearchModalContext,
   });
+
+  useEffect(() => {
+    if (!isAgentBuilderPreviewMode) return;
+    handleCloseContextMenu();
+    cancelNumberConnection();
+    setSearchModalContext({ isOpen: false });
+    setIsNodeLibraryOpen(false);
+  }, [cancelNumberConnection, handleCloseContextMenu, isAgentBuilderPreviewMode]);
 
   // Node creation hook
   const {
@@ -432,6 +487,7 @@ export default function NodeCanvas() {
 
   const handleCanvasNodesChange = useCallback(
     (changes: Parameters<typeof onNodesChange>[0]) => {
+      if (isAgentBuilderPreviewMode) return;
       if (isReadOnly) {
         const selectionChanges = changes.filter(
           (change) => change.type === 'select',
@@ -443,11 +499,12 @@ export default function NodeCanvas() {
       }
       onNodesChange(changes);
     },
-    [isReadOnly, onNodesChange],
+    [isAgentBuilderPreviewMode, isReadOnly, onNodesChange],
   );
 
   const handleCanvasEdgesChange = useCallback(
     (changes: Parameters<typeof onEdgesChange>[0]) => {
+      if (isAgentBuilderPreviewMode) return;
       if (isReadOnly) {
         const selectionChanges = changes.filter(
           (change) => change.type === 'select',
@@ -459,34 +516,41 @@ export default function NodeCanvas() {
       }
       onEdgesChange(changes);
     },
-    [isReadOnly, onEdgesChange],
+    [isAgentBuilderPreviewMode, isReadOnly, onEdgesChange],
   );
 
   const handleCanvasConnect = useCallback(
     (...args: Parameters<typeof onConnect>) => {
-      if (isReadOnly) return;
+      if (isReadOnly || isAgentBuilderPreviewMode) return;
       onConnect(...args);
     },
-    [isReadOnly, onConnect],
+    [isAgentBuilderPreviewMode, isReadOnly, onConnect],
   );
 
   const handleCanvasDrop = useCallback(
     (event: React.DragEvent) => {
-      if (isReadOnly) return;
+      if (isReadOnly || isAgentBuilderPreviewMode) return;
       onDrop(event);
     },
-    [isReadOnly, onDrop],
+    [isAgentBuilderPreviewMode, isReadOnly, onDrop],
   );
 
   const nodeTypes = useMemo(
-    () => ({
-      ...coreNodeTypes,
-      note: NotePost,
-    }),
-    [],
+    () =>
+      isAgentBuilderPreviewMode
+        ? agentBuilderPreviewNodeTypes
+        : ({
+            ...coreNodeTypes,
+            note: NotePost,
+          } as unknown as NodeTypes),
+    [isAgentBuilderPreviewMode],
   ) as unknown as NodeTypes;
 
   const edgeTypes = useMemo(() => ({ puzzle: PuzzleEdge }), []);
+  const selectedEdgeId = useMemo(
+    () => edges.find((edge) => edge.selected)?.id ?? null,
+    [edges],
+  );
   const defaultEdgeOptions = useMemo(
     () => ({
       type: 'puzzle',
@@ -509,11 +573,30 @@ export default function NodeCanvas() {
     }
   }, [activeWorkflowId, workflows, setViewport]);
 
+  useEffect(() => {
+    if (!agentBuilderPreview) return;
+    if (agentBuilderPreview.previewGraph.viewport) {
+      setViewport(agentBuilderPreview.previewGraph.viewport);
+    }
+    const fitTimer = window.setTimeout(() => {
+      fitView({ padding: 0.25, duration: 300, maxZoom: 1 });
+    }, 0);
+    return () => window.clearTimeout(fitTimer);
+  }, [
+    agentBuilderPreview?.draftId,
+    agentBuilderPreview?.previewGraph.viewport,
+    fitView,
+    setViewport,
+  ]);
+
   const handleMoveEnd = useCallback(
     (_event: unknown, viewport: Viewport) => {
+      if (isAgentBuilderPreviewMode) {
+        return;
+      }
       updateWorkflowViewport(activeWorkflowId, viewport);
     },
-    [activeWorkflowId, updateWorkflowViewport],
+    [activeWorkflowId, isAgentBuilderPreviewMode, updateWorkflowViewport],
   );
 
   const handleNodeMouseEnter = useCallback(
@@ -534,6 +617,7 @@ export default function NodeCanvas() {
 
   const handleNodeWheelZoom = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
+      if (isAgentBuilderPreviewMode) return;
       const hoveredNodeId = hoveredNodeIdRef.current;
       if (!hoveredNodeId) return;
 
@@ -591,7 +675,14 @@ export default function NodeCanvas() {
       setViewport(nextViewport, { duration: 80 });
       updateWorkflowViewport(activeWorkflowId, nextViewport);
     },
-    [activeWorkflowId, getViewport, nodes, setViewport, updateWorkflowViewport],
+    [
+      activeWorkflowId,
+      getViewport,
+      isAgentBuilderPreviewMode,
+      nodes,
+      setViewport,
+      updateWorkflowViewport,
+    ],
   );
 
   useEffect(() => {
@@ -604,6 +695,10 @@ export default function NodeCanvas() {
 
   const handleNodeClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
+      if (isAgentBuilderPreviewMode) {
+        setSelectedPreviewNodeId(node.id);
+        return;
+      }
       if (node.type && node.type !== 'note') {
         if (isVersionHistoryOpen) {
           toggleVersionHistory();
@@ -617,7 +712,7 @@ export default function NodeCanvas() {
 
         // 메인 노드 클릭 시 내부 노드 선택 해제
         clearInnerNodeSelection();
-        setSelectedNodeId(null);
+        setSelectedNodeId(node.id);
         setSelectedNodeType(null);
         setIsParamPanelOpen(false);
         setIsRefPanelOpen(false);
@@ -631,6 +726,7 @@ export default function NodeCanvas() {
       isTestPanelOpen,
       toggleTestPanel,
       clearInnerNodeSelection,
+      isAgentBuilderPreviewMode,
     ],
   );
 
@@ -776,7 +872,7 @@ export default function NodeCanvas() {
   ]);
 
   useCanvasKeyboardShortcuts({
-    isEnabled: !isReadOnly,
+    isEnabled: !isReadOnly && !isAgentBuilderPreviewMode,
     isShortcutScopeBlocked: isCanvasShortcutScopeBlocked,
     closeMenus: closeCanvasMenus,
     closePanels: closeCanvasPanels,
@@ -787,6 +883,14 @@ export default function NodeCanvas() {
     const activeWorkflow = workflows.find((w) => w.id === activeWorkflowId);
     return activeWorkflow?.appId;
   }, [workflows, activeWorkflowId]);
+  const selectedPreviewNode = useMemo(() => {
+    if (!agentBuilderPreview || !selectedPreviewNodeId) return null;
+    return (
+      agentBuilderPreview.nodeDetailPreviews.find(
+        (item) => item.node_id === selectedPreviewNodeId,
+      ) ?? null
+    );
+  }, [agentBuilderPreview, selectedPreviewNodeId]);
 
   // 노드 우클릭 핸들러
   const onNodeContextMenu = useCallback(
@@ -848,10 +952,29 @@ export default function NodeCanvas() {
     useState<HTMLElement | null>(null);
   const searchParams = useSearchParams();
   const ndvNodeParam = searchParams.get('node');
+  const clearNodeQueryParam = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('node')) return;
+    url.searchParams.delete('node');
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, []);
 
   // useEffect for tabParam removed
 
   useEffect(() => {
+    if (isAgentBuilderPreviewMode) {
+      clearNodeQueryParam();
+      if (fullscreenNodeId) {
+        syncNodeFullscreenFromUrl(null);
+      }
+      return;
+    }
+
     const currentNodeParam =
       typeof window !== 'undefined'
         ? new URLSearchParams(window.location.search).get('node')
@@ -868,10 +991,22 @@ export default function NodeCanvas() {
     if (hasTargetNode && fullscreenNodeId !== currentNodeParam) {
       syncNodeFullscreenFromUrl(currentNodeParam);
     }
-  }, [fullscreenNodeId, ndvNodeParam, nodes, syncNodeFullscreenFromUrl]);
+  }, [
+    fullscreenNodeId,
+    clearNodeQueryParam,
+    isAgentBuilderPreviewMode,
+    ndvNodeParam,
+    nodes,
+    syncNodeFullscreenFromUrl,
+  ]);
 
   useEffect(() => {
     const handlePopState = () => {
+      if (isAgentBuilderPreviewMode) {
+        clearNodeQueryParam();
+        syncNodeFullscreenFromUrl(null);
+        return;
+      }
       const nodeId = new URLSearchParams(window.location.search).get('node');
       if (!nodeId) {
         syncNodeFullscreenFromUrl(null);
@@ -885,7 +1020,7 @@ export default function NodeCanvas() {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [nodes, syncNodeFullscreenFromUrl]);
+  }, [clearNodeQueryParam, isAgentBuilderPreviewMode, nodes, syncNodeFullscreenFromUrl]);
 
   useEffect(() => {
     setHeaderActionsRoot(
@@ -906,16 +1041,26 @@ export default function NodeCanvas() {
         </div>
         <div className="mx-1 h-4 w-px bg-slate-200" />
         <button
-          onClick={toggleSettings}
-          className="flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950"
+          onClick={isAgentBuilderPreviewMode ? undefined : toggleSettings}
+          disabled={isAgentBuilderPreviewMode}
+          className={`flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold transition-colors ${
+            isAgentBuilderPreviewMode
+              ? 'cursor-not-allowed text-slate-300'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+          }`}
         >
           <Settings className="h-4 w-4" />
           <span>설정</span>
         </button>
         <div className="mx-1 h-4 w-px bg-slate-200" />
         <button
-          onClick={toggleVersionHistory}
-          className="flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950"
+          onClick={isAgentBuilderPreviewMode ? undefined : toggleVersionHistory}
+          disabled={isAgentBuilderPreviewMode}
+          className={`flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold transition-colors ${
+            isAgentBuilderPreviewMode
+              ? 'cursor-not-allowed text-slate-300'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+          }`}
         >
           <ClockIcon className="h-4 w-4" />
           <span>버전</span>
@@ -923,9 +1068,15 @@ export default function NodeCanvas() {
         <div className="mx-1 h-4 w-px bg-slate-200" />
         <button
           onClick={() =>
+            !isAgentBuilderPreviewMode &&
             router.push(`/modules/${activeWorkflowId}/report?tab=logs`)
           }
-          className="flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-950"
+          disabled={isAgentBuilderPreviewMode}
+          className={`flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold transition-colors ${
+            isAgentBuilderPreviewMode
+              ? 'cursor-not-allowed text-slate-300'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+          }`}
         >
           <BarChart3 className="h-4 w-4" />
           <span>보고</span>
@@ -1064,9 +1215,15 @@ export default function NodeCanvas() {
       </div>
 
       <button
-        onClick={canExecute ? toggleTestPanel : undefined}
-        disabled={!canExecute}
-        title={canExecute ? '테스트 실행' : '현재 권한으로는 실행할 수 없습니다'}
+        onClick={canExecute && !isAgentBuilderPreviewMode ? toggleTestPanel : undefined}
+        disabled={!canExecute || isAgentBuilderPreviewMode}
+        title={
+          isAgentBuilderPreviewMode
+            ? '도안 보기 중에는 실행할 수 없습니다'
+            : canExecute
+              ? '테스트 실행'
+              : '현재 권한으로는 실행할 수 없습니다'
+        }
         className={`flex h-9 items-center gap-1.5 rounded-lg px-4 text-[13px] font-semibold text-white shadow-sm transition-colors ${
           !canExecute
             ? 'cursor-not-allowed bg-gray-300 text-gray-500'
@@ -1116,13 +1273,13 @@ export default function NodeCanvas() {
             <div className="flex h-full flex-col py-3 pl-3">
               <div
                 className={`z-20 flex-1 rounded-lg bg-white transition-all duration-300 ease-in-out ${
-                  isNodeLibraryOpen
+                  isNodeLibraryOpen && !isAgentBuilderPreviewMode
                     ? 'w-64 border border-slate-200 shadow-sm'
                     : 'w-0 border-none'
                 }`}
               >
                 <NodeLibrarySidebar
-                  isOpen={isNodeLibraryOpen}
+                  isOpen={isNodeLibraryOpen && !isAgentBuilderPreviewMode}
                   onToggle={() => setIsNodeLibraryOpen(!isNodeLibraryOpen)}
                   onAddNode={handleAddNodeFromLibrary}
                   onAddNodeAfterSelected={handleAddNodeAfterSelected}
@@ -1153,8 +1310,8 @@ export default function NodeCanvas() {
                 onWheelCapture={handleNodeWheelZoom}
               >
                 <ReactFlow
-                  nodes={nodes}
-                  edges={edges}
+                  nodes={displayedNodes}
+                  edges={displayedEdges}
                   onNodesChange={handleCanvasNodesChange}
                   onEdgesChange={handleCanvasEdgesChange}
                   onConnect={handleCanvasConnect}
@@ -1162,11 +1319,19 @@ export default function NodeCanvas() {
                   onNodeClick={handleNodeClick}
                   onNodeMouseEnter={handleNodeMouseEnter}
                   onNodeMouseLeave={handleNodeMouseLeave}
-                  onPaneContextMenu={isReadOnly ? undefined : onPaneContextMenu}
-                  onNodeContextMenu={onNodeContextMenu}
-                  onEdgeContextMenu={onEdgeContextMenu}
-                  nodesDraggable={!isReadOnly}
-                  nodesConnectable={!isReadOnly}
+                  onPaneContextMenu={
+                    isReadOnly || isAgentBuilderPreviewMode
+                      ? undefined
+                      : onPaneContextMenu
+                  }
+                  onNodeContextMenu={
+                    isAgentBuilderPreviewMode ? undefined : onNodeContextMenu
+                  }
+                  onEdgeContextMenu={
+                    isAgentBuilderPreviewMode ? undefined : onEdgeContextMenu
+                  }
+                  nodesDraggable={!isReadOnly && !isAgentBuilderPreviewMode}
+                  nodesConnectable={!isReadOnly && !isAgentBuilderPreviewMode}
                   nodeTypes={nodeTypes}
                   edgeTypes={edgeTypes}
                   defaultEdgeOptions={defaultEdgeOptions}
@@ -1191,6 +1356,45 @@ export default function NodeCanvas() {
                   <div className="absolute left-4 top-4 z-30 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 shadow-sm">
                     {workflowAccess?.auth_state || 'viewer'} · 읽기 전용
                   </div>
+                )}
+
+                {isAgentBuilderPreviewMode && (
+                  <div className="absolute left-4 top-4 z-30 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800 shadow-sm">
+                    Agent Builder 도안 보기 · 실제 editor graph와 분리된 읽기 전용 미리보기
+                  </div>
+                )}
+
+                {selectedPreviewNode && (
+                  <aside className="absolute left-4 top-16 z-40 max-h-[calc(100%-5rem)] w-80 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-xl">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-slate-900">
+                        Node Detail
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPreviewNodeId(null)}
+                        className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+                      >
+                        닫기
+                      </button>
+                    </div>
+                    <dl className="mt-3 space-y-2">
+                      {Object.entries(selectedPreviewNode).map(([key, value]) => (
+                        <div key={key}>
+                          <dt className="text-xs font-medium uppercase text-slate-400">
+                            {key}
+                          </dt>
+                          <dd className="mt-0.5 break-words text-slate-700">
+                            {typeof value === 'string' ||
+                            typeof value === 'number' ||
+                            typeof value === 'boolean'
+                              ? String(value)
+                              : JSON.stringify(value)}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </aside>
                 )}
 
                 {numberConnection && (
@@ -1220,16 +1424,18 @@ export default function NodeCanvas() {
                 />
 
                 {/* 플로팅 하단 패널 */}
-                <BottomPanel
-                  onCenterNodes={handleAutoLayout}
-                  isPanelOpen={false}
-                  onOpenAppSearch={() =>
-                    setSearchModalContext({ isOpen: true })
-                  }
-                />
+                {!isAgentBuilderPreviewMode && (
+                  <BottomPanel
+                    onCenterNodes={handleAutoLayout}
+                    isPanelOpen={false}
+                    onOpenAppSearch={() =>
+                      setSearchModalContext({ isOpen: true })
+                    }
+                  />
+                )}
 
                 {/* Context Menu UI */}
-                {contextMenu && !isReadOnly && (
+                {contextMenu && !isReadOnly && !isAgentBuilderPreviewMode && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[180px]"
                     style={{ top: contextMenu.y, left: contextMenu.x }}
@@ -1261,7 +1467,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* 노드 우클릭 삭제 메뉴 */}
-                {nodeContextMenu && !isReadOnly && (
+                {nodeContextMenu && !isReadOnly && !isAgentBuilderPreviewMode && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
                     style={{ top: nodeContextMenu.y, left: nodeContextMenu.x }}
@@ -1278,7 +1484,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* Edge 우클릭 삭제 메뉴 */}
-                {edgeContextMenu && !isReadOnly && (
+                {edgeContextMenu && !isReadOnly && !isAgentBuilderPreviewMode && (
                   <div
                     className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[140px]"
                     style={{ top: edgeContextMenu.y, left: edgeContextMenu.x }}
@@ -1295,7 +1501,7 @@ export default function NodeCanvas() {
                 )}
 
                 {/* Context Menu Node Selector Modal */}
-                {isContextNodeSelectorOpen && !isReadOnly && (
+                {isContextNodeSelectorOpen && !isReadOnly && !isAgentBuilderPreviewMode && (
                   <div
                     className="fixed z-50"
                     style={{
@@ -1332,11 +1538,11 @@ export default function NodeCanvas() {
       </div>
       {/* Sidebars */}
       <SettingsSidebar />
-      <VersionHistorySidebar />
+      {!isAgentBuilderPreviewMode && <VersionHistorySidebar />}
       <TestSidebar appendMemoryFlag={appendMemoryFlag} />
 
       {/* 노드 전체화면 설정(NDV) */}
-      <NodeFullscreenEditor />
+      {!isAgentBuilderPreviewMode && <NodeFullscreenEditor />}
 
       {/* Deployment Flow Modal */}
       <DeploymentFlowModal
@@ -1345,6 +1551,19 @@ export default function NodeCanvas() {
         deploymentType={deploymentType}
         onDeploy={handleDeploy}
       />
+
+      {!isReadOnly && (
+        <AgentBuilderPanel
+          key={`${activeWorkflowId}:${currentAppId ?? 'none'}`}
+          workflowId={activeWorkflowId}
+          appId={currentAppId}
+          nodes={nodes}
+          edges={edges}
+          hasUnsavedChanges={hasUnsavedChanges}
+          selectedNodeId={isAgentBuilderPreviewMode ? null : selectedNodeId}
+          selectedEdgeId={isAgentBuilderPreviewMode ? null : selectedEdgeId}
+        />
+      )}
 
       {/* Memory Mode Modals */}
       {memoryModeModals}

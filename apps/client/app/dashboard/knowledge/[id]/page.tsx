@@ -96,9 +96,9 @@ export default function KnowledgeDetailPage() {
 
   // 문서 상태 자동 갱신 (Polling)
   useEffect(() => {
-    // 처리 중(indexing, processing, pending)인 자료가 존재하는지 확인
+    // 처리 중(indexing, processing)인 자료가 존재하는지 확인
     const hasProcessingDocs = knowledgeBase?.documents.some((doc) =>
-      ['indexing', 'processing', 'pending'].includes(doc.status),
+      ['indexing', 'processing'].includes(doc.status),
     );
 
     // 처리 중인 자료가 있다면 3초마다 상태 갱신
@@ -546,6 +546,7 @@ export default function KnowledgeDetailPage() {
                       <div className="flex items-center gap-2">
                         <Link
                           href={`/dashboard/knowledge/${knowledgeBase.id}/document/${doc.id}`}
+                          prefetch={false}
                           className="hover:text-blue-600 hover:underline truncate"
                           title={doc.filename}
                         >

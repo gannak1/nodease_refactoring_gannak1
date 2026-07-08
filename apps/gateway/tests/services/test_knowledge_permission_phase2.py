@@ -33,22 +33,23 @@ def _kb(
     *,
     source_managed=False,
     source_tier: str | None = None,
-    version_status: str = "ready",
+    version_status: str | None = "ready",
+    sync_state: str = "synced",
 ):
     return SimpleNamespace(
         id=kb_id or uuid.uuid4(),
         organization_id=ORG_ID,
         name="Manual KB",
         lifecycle_state="active",
-        sync_state="synced",
+        sync_state=sync_state,
         source_identity_id=uuid.uuid4() if source_managed else None,
         source_identity=None,
-        active_document_version=SimpleNamespace(
+        active_document_version=None
+        if version_status is None
+        else SimpleNamespace(
             status=version_status,
             source_tier=source_tier,
-        )
-        if source_tier is not None
-        else None,
+        ),
     )
 
 
@@ -172,6 +173,9 @@ class FakeResolver(KnowledgeCandidateResolver):
             if kb_id in self._fake_kbs
         }
 
+    def _direct_knowledge_bases(self, max_candidate_kbs):
+        return list(self._fake_kbs.values())[:max_candidate_kbs]
+
 
 def test_collection_read_does_not_allow_route():
     collection = _collection(actions={"read"})
@@ -239,6 +243,7 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     collection = _collection(
         safe_metadata={
             "safe_label": "HR 정책",
+            "topics": ["사내 문서", "휴가 정책"],
             "raw_source_url": "https://internal.example/private",
         }
     )
@@ -261,12 +266,42 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     candidate_metadata = result.candidates[0].safe_metadata
     assert candidate_metadata["collection_id"] == str(collection.id)
     assert candidate_metadata["collection_safe_label"] == "HR 정책"
+    assert candidate_metadata["collection_safe_topics"] == ["사내 문서", "휴가 정책"]
     assert candidate_metadata["route_scope_type"] == "auto_collection"
     assert candidate_metadata["linked_kb_count_bucket"] == "1"
     assert "raw_source_url" not in candidate_metadata
 
 
-def test_candidate_carries_source_tier_from_active_ready_version_only():
+def test_auto_collection_without_collection_candidate_falls_back_to_direct_authorized_kb():
+    collection = _collection()
+    direct_kb = _kb()
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[],
+        kbs=[direct_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        direct_kb.id
+    ]
+    assert resolver.requested_item_collection_ids == {collection.id}
+
+
+def test_explicit_empty_collection_scope_does_not_fall_back_to_direct_kb():
+    direct_kb = _kb()
+    helper = FakePermissionHelper()
+    resolver = FakeResolver(helper=helper, kbs=[direct_kb])
+
+    result = resolver.resolve_auto_collection_candidates(collection_ids=[])
+
+    assert result.candidates == []
+
+
+def test_candidate_excludes_kb_without_active_ready_version_and_carries_ready_source_tier():
     collection = _collection()
     ready_kb = _kb(source_tier="company_policy")
     staging_kb = _kb(source_tier="conversation_or_thread", version_status="indexing")
@@ -294,7 +329,62 @@ def test_candidate_carries_source_tier_from_active_ready_version_only():
         for candidate in result.candidates
     }
     assert metadata_by_kb_id[ready_kb.id]["source_tier"] == "company_policy"
-    assert "source_tier" not in metadata_by_kb_id[staging_kb.id]
+    assert staging_kb.id not in metadata_by_kb_id
+    assert result.unavailable_candidate_count_bucket == "1"
+
+
+def test_candidate_excludes_source_deleted_kb():
+    collection = _collection()
+    active_kb = _kb()
+    deleted_kb = _kb(sync_state="source_deleted")
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=active_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=deleted_kb.id,
+            ),
+        ],
+        kbs=[active_kb, deleted_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [active_kb.id]
+    assert result.unavailable_candidate_count_bucket == "1"
+
+
+def test_candidate_excludes_kb_without_active_document_version():
+    collection = _collection()
+    active_kb = _kb()
+    missing_version_kb = _kb(version_status=None)
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=active_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=missing_version_kb.id,
+            ),
+        ],
+        kbs=[active_kb, missing_version_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [active_kb.id]
+    assert result.unavailable_candidate_count_bucket == "1"
 
 
 def test_auto_collection_summary_count_uses_authorized_candidate_subset():

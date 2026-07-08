@@ -61,6 +61,14 @@ class FakeResolver:
         return self.resolution
 
 
+class FailingResolver:
+    def resolve_explicit_kbs(self, knowledge_base_ids):
+        raise RuntimeError("resolver unavailable")
+
+    def resolve_auto_collection_candidates(self, **kwargs):
+        raise RuntimeError("resolver unavailable")
+
+
 def _service(resolver: FakeResolver) -> KnowledgeRAGRecommendationService:
     return KnowledgeRAGRecommendationService(
         None,
@@ -99,13 +107,15 @@ def test_recommendation_returns_kb_item_and_collection_summary_only():
             node_purpose="HR policy answer",
             mode="auto",
             collection_ids=[collection_id],
-        )
+        ),
+        include_materialized_refs=True,
     )
 
     assert resolver.auto_calls
     recommendation = result.recommendations[0]
     assert recommendation.candidate_type == "knowledge_base"
-    assert recommendation.candidate_id == kb_id
+    assert recommendation.candidate_id == recommendation.recommendation_id
+    assert recommendation.candidate_handle == recommendation.recommendation_id
     assert recommendation.recommendation_id.startswith("rec-")
     assert str(kb_id) not in recommendation.recommendation_id
     assert recommendation.materialized_knowledge_bases[0].id == kb_id
@@ -130,7 +140,8 @@ def test_recommendation_uses_generic_label_without_raw_kb_name():
             workflow_intent="계약 검토",
             mode="explicit_kb",
             knowledge_base_ids=[kb_id],
-        )
+        ),
+        include_materialized_refs=True,
     )
 
     recommendation = result.recommendations[0]
@@ -158,6 +169,136 @@ def test_high_risk_domain_only_changes_recommended_options():
     assert recommendation.runtime_availability == "available"
 
 
+def test_threshold_result_uses_documented_values():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000011"),
+                    safe_label="unmatched",
+                ),
+                _candidate(
+                    candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000012"),
+                    safe_label="contract review",
+                ),
+            ]
+        )
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="contract review",
+            max_recommendations=2,
+        )
+    )
+
+    values = {item.threshold_result for item in result.recommendations}
+    assert values <= {"high_confidence", "close_score", "below_threshold"}
+    assert "medium_confidence" not in values
+    assert "low_confidence" not in values
+
+
+def test_threshold_result_can_emit_all_documented_buckets():
+    service = _service(FakeResolver(KnowledgeCandidateResolution(candidates=[])))
+    request = KnowledgeRAGRecommendationRequest(workflow_intent="policy")
+    candidate = _candidate(runtime_availability="available")
+
+    values = {
+        service._recommendation(candidate, 0.8, ["policy"], ["metadata"], request).threshold_result,  # noqa: SLF001
+        service._recommendation(candidate, 0.5, ["policy"], ["metadata"], request).threshold_result,  # noqa: SLF001
+        service._recommendation(candidate, 0.1, [], ["metadata"], request).threshold_result,  # noqa: SLF001
+    }
+
+    assert values == {"high_confidence", "close_score", "below_threshold"}
+
+
+def test_recommendation_returns_unavailable_when_resolver_fails():
+    result = _service(FailingResolver()).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            intent_summary="휴가 정책",
+            node_purpose_summary="정책 요약",
+            pending_resolution_ref="res-kb-1",
+            knowledge_requirement={"requirement_id": "kr-1"},
+        )
+    )
+
+    assert result.status == "unavailable"
+    assert result.resolution_id == "res-kb-1"
+    assert result.requirement_id == "kr-1"
+    assert result.fallback_reason == "adapter_unavailable"
+    assert result.recommendations == []
+    assert result.user_safe_warning
+
+
+def test_recommendation_falls_back_to_clarification_when_ranker_fails_with_candidates():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[_candidate(safe_label="휴가 규정")])
+    )
+    service = _service(resolver)
+
+    def fail_rank(*_args, **_kwargs):
+        raise RuntimeError("ranker unavailable")
+
+    service._rank_candidates = fail_rank  # type: ignore[method-assign]  # noqa: SLF001
+
+    result = service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 정책",
+            pending_resolution_ref="res-kb-1",
+            knowledge_requirement={"requirement_id": "kr-1"},
+        )
+    )
+
+    assert result.status == "clarification_required"
+    assert result.resolution_id == "res-kb-1"
+    assert result.requirement_id == "kr-1"
+    assert result.fallback_reason == "adapter_unavailable"
+    assert result.recommendations == []
+    assert result.clarification_options
+    option = result.clarification_options[0]
+    assert option["candidate_id"].startswith("rec-")
+    assert option["confidence"] == "low"
+    assert option["score"] == 0.0
+    assert option["threshold_result"] == "adapter_unavailable"
+    assert result.user_safe_warning
+
+
+def test_materialize_candidate_handles_does_not_depend_on_top_n_ranking():
+    lower = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+        safe_label="복지 안내",
+        runtime_availability="unknown",
+    )
+    higher = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        safe_label="휴가 정책",
+        runtime_availability="available",
+        safe_metadata={"source_tier": "company_policy"},
+    )
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[lower, higher]))
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="휴가 정책",
+        max_recommendations=1,
+    )
+    recommended = service.recommend_for_builder(request)
+    lower_handle = service._recommendation_id(lower)  # noqa: SLF001
+
+    assert recommended.recommendations[0].candidate_handle != lower_handle
+    materialized = service.materialize_candidate_handles_for_builder(
+        request,
+        {lower_handle},
+    )
+
+    assert materialized == [
+        {
+            "safe_handle": lower_handle,
+            "knowledge_base_id": str(lower.candidate_id),
+            "name": "복지 안내",
+        }
+    ]
+
+
 def test_intended_subject_absence_keeps_runtime_availability_unknown_warning():
     resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[_candidate()]))
 
@@ -168,6 +309,37 @@ def test_intended_subject_absence_keeps_runtime_availability_unknown_warning():
     recommendation = result.recommendations[0]
     assert recommendation.runtime_availability == "unknown"
     assert "runtime_availability_unknown" in recommendation.warnings
+
+
+def test_recommendation_keeps_stale_or_failed_sync_candidates_with_safe_warning():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    safe_label="휴가 규정",
+                    runtime_availability="available",
+                    safe_metadata={"sync_state": "stale"},
+                ),
+                _candidate(
+                    safe_label="인사 규정",
+                    runtime_availability="available",
+                    safe_metadata={"sync_state": "failed"},
+                ),
+            ]
+        )
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 인사 규정",
+            max_recommendations=2,
+        )
+    )
+
+    warnings = {warning for item in result.recommendations for warning in item.warnings}
+    assert result.status == "recommended"
+    assert "kb_sync_state_stale" in warnings
+    assert "kb_sync_state_failed" in warnings
 
 
 def test_request_normalizes_control_characters_and_rejects_blank_text():
@@ -205,11 +377,17 @@ def test_recommendation_cap_and_stable_ranking():
         KnowledgeRAGRecommendationRequest(
             workflow_intent="휴가 정책",
             max_recommendations=1,
-        )
+        ),
+        include_materialized_refs=True,
     )
 
     assert len(result.recommendations) == 1
-    assert result.recommendations[0].candidate_id == higher.candidate_id
+    assert result.recommendations[0].candidate_id == (
+        result.recommendations[0].recommendation_id
+    )
+    assert result.recommendations[0].materialized_knowledge_bases[0].id == (
+        higher.candidate_id
+    )
     assert result.summary.recommendation_count_bucket == "1"
 
 

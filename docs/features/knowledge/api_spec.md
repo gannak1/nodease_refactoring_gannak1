@@ -57,6 +57,8 @@ Response는 safe candidate list와 summary만 포함한다. 각 candidate는 `ca
 
 Request body는 raw user input 전체가 아니라 Agent Builder가 구조화한 safe summary로 간주한다. Raw natural language 전체, raw prompt, hidden source 정보는 이 endpoint 입력이 아니다.
 
+Public HTTP boundary에서는 client가 raw KB id를 보내 `explicit_kb` mode로 recommendation scope를 여는 요청을 허용하지 않는다. `explicit_kb`는 Agent Builder backend 또는 Knowledge domain 내부 service call처럼 safe handle, authorized picker, server-resolved context를 이미 통과한 trusted boundary에서만 사용할 수 있다. Public HTTP request에서 `mode=explicit_kb`가 오면 safe validation error로 닫고, `mode=auto`에 raw KB/collection id가 섞여 있으면 권한 판단에 사용하지 않고 무시한다.
+
 | 필드 | 규칙 |
 | --- | --- |
 | `intent_summary` | 필수. `StructuredRequest`에서 만든 redaction-safe intent summary. 길이 cap과 control character normalization을 적용한다 |
@@ -66,9 +68,9 @@ Request body는 raw user input 전체가 아니라 Agent Builder가 구조화한
 | `knowledge_requirement` | `requirement_id`, `query_topics`, `expected_evidence_type`, `required` 같은 지식 요구사항 |
 | `pending_resolution_ref` | `resolution_id`, `slot_type=knowledge_base`, `slot_key`, `blocking` 같은 unresolved slot reference |
 | `authorized_safe_candidate_set_ref` | 선택. KnowledgeCandidateResolver가 만든 safe candidate set의 server-issued reference. 없으면 Knowledge domain이 아래 scope hint를 기준으로 candidate resolver를 먼저 수행하고, recommendation ranking은 그 결과만 사용한다 |
-| `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환한다 |
-| `collection_ids` | 선택. 서버가 active organization과 actor 권한 기준으로 해석한 route scope hint. Field를 생략하면 actor가 route할 수 있는 서버 정책상 collection subset을 사용한다. 명시적으로 `[]`를 보내면 빈 scope로 해석해 recommendation을 만들지 않는다. Collection은 recommendation item으로 반환하지 않고 safe summary로만 제공한다 |
-| `knowledge_base_ids` | 선택. 서버가 safe handle, authorized picker, 또는 trusted backend context에서 해석한 explicit KB 후보. Agent Builder client가 보낸 raw KB id를 그대로 전달하는 값이 아니다 |
+| `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환한다. Public HTTP boundary에서 `explicit_kb`는 허용하지 않으며 trusted backend/internal service boundary에서만 사용할 수 있다 |
+| `collection_ids` | 선택. 서버가 active organization과 actor 권한 기준으로 해석한 route scope hint. Agent Builder client가 HTTP body로 보낸 raw collection id는 권한/scope 판단에 사용하지 않고 무시한다. Field 생략은 trusted backend/service boundary에서 actor가 route할 수 있는 서버 정책상 collection subset을 뜻하며, 같은 trusted boundary에서 명시적으로 `[]`를 전달한 경우에만 빈 scope로 해석해 recommendation을 만들지 않는다. Collection은 recommendation item으로 반환하지 않고 safe summary로만 제공한다 |
+| `knowledge_base_ids` | 선택. 서버가 safe handle, authorized picker, 또는 trusted backend context에서 해석한 explicit KB 후보. Public HTTP `explicit_kb` 요청은 거부하고, Agent Builder client가 HTTP body로 보낸 raw KB id는 그대로 전달하거나 권한 판단에 사용하지 않고 무시한다 |
 | `intended_execution_subject_id` | 선택. Runtime availability warning 계산용. 실행 권한 보장이 아니며 runtime은 다시 검증한다 |
 | `max_recommendations` | 서버 cap. 초기 기본값은 5, 최대 20 |
 | `max_collections` | Auto collection 후보 탐색 cap. 서버 기본값 20, 최대 100 |
@@ -92,7 +94,9 @@ Response는 Agent Builder 내부 adapter 계약과 같은 top-level envelope를 
 
 Adapter가 unavailable이지만 권한 확인된 safe 후보 선택지를 제공할 수 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환한다. Safe 후보 선택지도 제공할 수 없으면 `status=unavailable`, `fallback_reason=adapter_unavailable` 또는 동등한 safe reason code를 반환한다.
 
-Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다. 현재 Workflow LLM node는 `knowledgeBases`를 실행 입력으로 사용하므로 recommendation result는 `materialized_knowledge_bases`를 통해 LLM node `knowledgeBases`로 변환한다.
+Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 반환한다. Collection label과 linked KB count는 `source_collection_summary` safe metadata로만 제공한다. 현재 Workflow LLM node는 `knowledgeBases`를 실행 입력으로 사용하므로 Agent Builder backend 내부 service call은 recommendation result를 runtime KB reference로 materialize할 수 있다. 단, HTTP 또는 serialized boundary의 response는 safe handle과 safe metadata만 반환하며 raw runtime KB id를 담은 materialized reference를 노출하지 않는다.
+
+Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과를 다시 소비하는 방식이 아니라, 이전에 발급한 safe candidate handle을 KnowledgeCandidateResolver의 권한 확인 candidate set 안에서 직접 재검증하고 runtime KB reference로 해석하는 backend/internal service boundary여야 한다. Ranking 변화 때문에 여전히 권한상 유효한 handle이 top-N 밖으로 밀렸다는 이유만으로 저장을 차단하지 않는다.
 
 허용 response field:
 
@@ -103,7 +107,7 @@ Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 
 | `candidate_type` | 초기 구현은 `knowledge_base`만 허용 |
 | `candidate_id` | Agent Builder-facing server-issued safe candidate handle. Raw source id/path/url/title 또는 client-stable raw KB id를 직접 노출하지 않는다 |
 | `safe_label` | Display-policy-approved label. 없으면 raw KB name fallback 금지, `null` 또는 generic label만 허용 |
-| `materialized_knowledge_bases` | backend가 현재 LLM node `knowledgeBases`로 변환 가능한 권한 확인 safe KB ref list. `MAX_RAG_RETRIEVAL_KBS=20` 이하 |
+| `materialized_knowledge_bases` | HTTP response에서는 empty/suppressed여야 한다. 같은 backend 내부 service call에서만 LLM node `knowledgeBases`로 변환 가능한 권한 확인 runtime KB ref list를 포함할 수 있으며, `MAX_RAG_RETRIEVAL_KBS=20` 이하로 제한한다 |
 | `score` | Recommendation ranking에 사용한 normalized score. Raw retrieval/provider score를 직접 노출하지 않는다 |
 | `confidence` | `high`, `medium`, `low` 중 하나. 후보 1개 high confidence 자동 해결과 clarification 분기를 구분한다 |
 | `reason_category` | 추천 근거의 safe category. 예: topic keyword match, metadata match, collection context match |
@@ -116,9 +120,19 @@ Recommendation item은 초기 구현에서 `candidate_type="knowledge_base"`만 
 | `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
 
+KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active ready document version과 legacy unversioned retrieval-visible chunk가 모두 없는 KB는 recommendation candidate에서 제외한다. Active document version이 있으나 `ready`가 아니고 legacy retrieval-visible artifact도 없는 KB는 selectable ready candidate가 아니며, response는 이를 권한 없음이나 hidden resource로 표현하지 않고 safe `candidate_not_ready` 또는 `indexing_in_progress` warning/fallback reason으로 표시할 수 있어야 한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
+
+Auto recommendation에서 route-allowed collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, resolver는 같은 active organization 안의 직접 권한 확인된 retrieval-visible KB를 safe candidate set fallback으로 평가할 수 있다. 명시적으로 빈 collection scope는 후보 없음으로 유지하며 direct KB fallback을 적용하지 않는다.
+
 금지: raw workflow intent, raw node purpose, raw natural language 전체, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
 
 Validation 실패 응답도 같은 금지선을 따른다. Safe summary 입력이라도 Pydantic/FastAPI validation detail의 `input` 값으로 echo하지 않고, field path/type/message 수준의 sanitized error만 반환한다.
+
+## Document Processing Status
+
+Document processing status endpoints, including `GET /api/v1/knowledge/{kb_id}/documents/{document_id}` and `GET /api/v1/rag/document/{document_id}/progress`, must surface stale processing recovery. If a queued document never starts before the start timeout, the response eventually returns `status=failed` with a safe retryable message. If active processing has an active fencing token but no recent DB progress heartbeat, retrieval-visible chunk, or ready document version after the active stall timeout, the response also returns `status=failed`.
+
+Redis progress and Redis lock availability are not part of the public contract. The API must not require Redis to avoid infinite `processing`; Redis unavailable paths either continue through local processing fallback or become a safe terminal failure.
 
 ## Request Model
 

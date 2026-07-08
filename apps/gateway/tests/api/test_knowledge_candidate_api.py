@@ -132,14 +132,22 @@ def test_knowledge_rag_recommendation_route_uses_server_context(monkeypatch):
         def recommend_for_builder(self, recommendation_request):
             captured["workflow_intent"] = recommendation_request.workflow_intent
             captured["has_body_actor"] = hasattr(recommendation_request, "actor_user_id")
+            captured["model_fields_set"] = set(recommendation_request.model_fields_set)
+            captured["knowledge_base_ids"] = recommendation_request.knowledge_base_ids
+            captured["collection_ids"] = recommendation_request.collection_ids
+            captured["intended_execution_subject_id"] = (
+                recommendation_request.intended_execution_subject_id
+            )
             return KnowledgeRAGRecommendationResponse(
                 recommendations=[
                     KnowledgeRAGRecommendation(
-                        recommendation_id=f"rec-{uuid.uuid4()}",
+                        recommendation_id="rec-safe-handle-1",
                         recommendation_mode="auto_collection",
-                        candidate_id=kb_id,
+                        candidate_id="rec-safe-handle-1",
+                        candidate_handle="rec-safe-handle-1",
                         safe_label=None,
-                        confidence=0.4,
+                        confidence="medium",
+                        score=0.4,
                         safe_reason_code="safe_candidate_available",
                         recommended_options=KnowledgeRAGRecommendedOptions(),
                         materialized_knowledge_bases=[
@@ -172,6 +180,8 @@ def test_knowledge_rag_recommendation_route_uses_server_context(monkeypatch):
                 "workflow_intent": "휴가\x00 규정 답변",
                 "node_purpose": "HR policy",
                 "mode": "auto",
+                "knowledge_base_ids": [str(uuid.uuid4())],
+                "collection_ids": [str(uuid.uuid4())],
                 "actor_user_id": str(uuid.uuid4()),
                 "organization_id": str(uuid.uuid4()),
             },
@@ -186,13 +196,111 @@ def test_knowledge_rag_recommendation_route_uses_server_context(monkeypatch):
     assert captured["organization_id"] == organization_id
     assert captured["workflow_intent"] == "휴가 규정 답변"
     assert captured["has_body_actor"] is False
+    assert captured["intended_execution_subject_id"] == user_id
+    assert "knowledge_base_ids" not in captured["model_fields_set"]
+    assert "collection_ids" not in captured["model_fields_set"]
+    assert captured["knowledge_base_ids"] == []
+    assert captured["collection_ids"] == []
     assert body["recommendations"][0]["candidate_type"] == "knowledge_base"
+    assert body["recommendations"][0]["candidate_id"] == "rec-safe-handle-1"
     assert str(kb_id) not in body["recommendations"][0]["recommendation_id"]
+    assert body["recommendations"][0]["materialized_knowledge_bases"] == []
     assert body["recommendations"][0]["safe_label"] is None
-    assert body["recommendations"][0]["materialized_knowledge_bases"][0]["name"] == (
-        "Knowledge Base"
-    )
     assert "raw_source_url" not in str(body)
+
+
+def test_knowledge_rag_recommendation_route_drops_unsafe_public_refs(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    captured = {}
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, recommendation_request):
+            captured["pending_resolution_ref"] = (
+                recommendation_request.pending_resolution_ref
+            )
+            captured["knowledge_requirement"] = (
+                recommendation_request.knowledge_requirement
+            )
+            return KnowledgeRAGRecommendationResponse(
+                status="unavailable",
+                recommendations=[],
+                resolution_id=recommendation_request.pending_resolution_ref,
+                requirement_id=(
+                    recommendation_request.knowledge_requirement or {}
+                ).get("requirement_id"),
+                fallback_reason="adapter_unavailable",
+            )
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge/rag-recommendations",
+            json={
+                "workflow_intent": "휴가 정책",
+                "pending_resolution_ref": "https://internal.example/raw/path",
+                "knowledge_requirement": {
+                    "requirement_id": "secret-token-123",
+                    "topic": "휴가",
+                },
+            },
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    body_text = response.text
+    assert captured["pending_resolution_ref"] is None
+    assert captured["knowledge_requirement"]["requirement_id"] is None
+    assert "internal.example" not in body_text
+    assert "secret-token-123" not in body_text
+
+
+def test_knowledge_rag_recommendation_route_rejects_public_explicit_kb_mode(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge/rag-recommendations",
+            json={
+                "workflow_intent": "휴가 정책",
+                "mode": "explicit_kb",
+                "knowledge_base_ids": [str(kb_id)],
+            },
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == (
+        "knowledge.rag_recommendations.explicit_ids_not_allowed"
+    )
 
 
 def test_knowledge_rag_recommendation_validation_does_not_echo_raw_input():

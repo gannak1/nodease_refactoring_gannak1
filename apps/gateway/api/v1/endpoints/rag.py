@@ -27,6 +27,8 @@ from apps.gateway.core.config import settings
 # from services.ingestion_local_service import IngestionService
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
+    finalize_stale_processing_start,
+    recover_timed_out_document_with_artifacts,
 )
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
@@ -697,11 +699,18 @@ async def get_document_progress(
     async def event_generator():
         while True:
             # 1. DB에서 문서 상태 조회 (Polling)
+            db.expire_all()
             doc = db.query(Document).get(document_id)
 
             if not doc:
                 yield 'data: {"error": "Document not found"}\n\n'
                 break
+
+            if finalize_stale_processing_start(
+                db,
+                document_id,
+            ) or recover_timed_out_document_with_artifacts(db, document_id):
+                db.refresh(doc)
 
             status = doc.status
 
