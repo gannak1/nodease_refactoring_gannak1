@@ -135,6 +135,76 @@ describe('llmKnowledgeBaseSelection', () => {
     ).toEqual([]);
   });
 
+  it('preserves selected knowledge bases on timeout and rate limit detail failures', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
+      {
+        id: 'kb-timeout',
+        name: '타임아웃 KB',
+        description: 'timeout',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+      {
+        id: 'kb-rate-limit',
+        name: '레이트리밋 KB',
+        description: 'rate limit',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+    ]);
+    vi.mocked(knowledgeApi.getKnowledgeBase)
+      .mockRejectedValueOnce({ response: { status: 408 } })
+      .mockRejectedValueOnce({ response: { status: 429 } });
+
+    const result = await fetchEligibleKnowledgeBases();
+
+    expect(result.bases).toEqual([]);
+    expect(result.preserveSelectionIds).toEqual(['kb-timeout', 'kb-rate-limit']);
+    expect(
+      sanitizeSelectedKnowledgeBases(
+        [
+          { id: 'kb-timeout', name: '타임아웃 KB' },
+          { id: 'kb-rate-limit', name: '레이트리밋 KB' },
+        ],
+        result.bases,
+        { preserveMissingIds: result.preserveSelectionIds },
+      ),
+    ).toEqual([
+      { id: 'kb-timeout', name: '타임아웃 KB' },
+      { id: 'kb-rate-limit', name: '레이트리밋 KB' },
+    ]);
+  });
+
+  it('treats malformed detail document payload as not ready without crashing', async () => {
+    vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
+      {
+        id: 'kb-malformed',
+        name: '잘못된 상세 KB',
+        description: 'malformed',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+    ]);
+    vi.mocked(knowledgeApi.getKnowledgeBase).mockResolvedValueOnce({
+      id: 'kb-malformed',
+      name: '잘못된 상세 KB',
+      description: 'malformed',
+      document_count: 1,
+      created_at: '2026-07-01T00:00:00Z',
+      embedding_model: 'text-embedding-3-small',
+      documents: 'not-an-array',
+    } as never);
+
+    const result = await fetchEligibleKnowledgeBases();
+
+    expect(result.bases).toEqual([]);
+    expect(result.detailsById).toEqual({});
+  });
+
   it('excludes empty or not-ready knowledge bases from selectable RAG candidates', async () => {
     vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
       {
