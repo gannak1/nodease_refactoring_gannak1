@@ -19,6 +19,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import or_, text
+from sqlalchemy.orm import Session
+
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import (
@@ -84,9 +88,6 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.services.password_hashing import hash_password
-from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import or_, text
-from sqlalchemy.orm import Session
 
 DEMO_SEED_VERSION = "final-demo-2026-07"
 DEMO_PASSWORD = "123123"
