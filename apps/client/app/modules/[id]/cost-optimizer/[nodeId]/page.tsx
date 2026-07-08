@@ -982,7 +982,14 @@ export default function CostOptimizerPlaygroundPage() {
     !isRunningCandidate;
 
   const handleRunCandidate = async () => {
-    if (!canRunCandidate) return;
+    const selectedBaseline = baseline;
+    if (
+      !selectedBaseline ||
+      !(candidate.auto_model_routing || Boolean(candidate.model_id)) ||
+      isRunningCandidate
+    ) {
+      return;
+    }
 
     setIsRunningCandidate(true);
     setCandidateError('');
@@ -993,7 +1000,7 @@ export default function CostOptimizerPlaygroundPage() {
         workflowId,
         nodeId,
         {
-          baseline_id: baseline.baseline_id,
+          baseline_id: selectedBaseline.baseline_id,
           candidate: compareRequestCandidateFromDraft(
             candidate,
             testName.trim() || 'B',
