@@ -624,6 +624,57 @@ def test_update_status_can_clear_active_fencing_hash_on_completed_paths():
     assert service.db.commit_count == 1
 
 
+def test_finalize_indexing_version_marks_document_completed_after_finalizer_refresh(
+    monkeypatch,
+):
+    document = SimpleNamespace(
+        id=DOC_ID,
+        status="indexing",
+        error_message="old-error",
+        updated_at=None,
+        meta_info={ACTIVE_FENCING_TOKEN_HASH_KEY: "old-hash"},
+    )
+
+    class CommitCountingDb(FakeDb):
+        def __init__(self):
+            super().__init__(legacy_document=document)
+            self.commit_count = 0
+
+        def commit(self):
+            self.commit_count += 1
+
+    class RefreshingFinalizer:
+        def __init__(self, db):
+            self.db = db
+
+        def finalize_active_version(self, document_version, *, expected_fencing_token):
+            assert document_version.id == NEW_VERSION_ID
+            assert expected_fencing_token == "worker-token"
+            # Simulates populate_existing() refreshing the same Document identity
+            # before the final transaction commits.
+            document.status = "indexing"
+            document.error_message = "old-error"
+
+    db = CommitCountingDb()
+    service = IngestionOrchestrator(db)
+    monkeypatch.setattr(
+        ingestion_service_module,
+        "KnowledgeIngestionFinalizer",
+        RefreshingFinalizer,
+    )
+
+    service._finalize_indexing_version(  # noqa: SLF001
+        document,
+        SimpleNamespace(id=NEW_VERSION_ID),
+        fencing_token="worker-token",
+    )
+
+    assert document.status == "completed"
+    assert document.error_message is None
+    assert document.updated_at is not None
+    assert db.commit_count == 1
+
+
 def test_document_processing_lock_falls_back_when_redis_lock_unavailable(monkeypatch):
     class BrokenDistributedLock:
         def __init__(self, *_args, **_kwargs):

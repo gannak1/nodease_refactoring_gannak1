@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect, DragEvent } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import {
@@ -16,6 +17,14 @@ import {
   Check,
   AlertTriangle,
 } from 'lucide-react';
+import { toast } from 'sonner';
+import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
+import DBConnectionForm from './DBConnectionForm';
+import {
+  DBConfig,
+  SUPPORTED_DB_TYPES,
+} from '@/app/features/knowledge/types/DB';
+import { connectorApi } from '@/app/features/knowledge/api/connectorApi';
 
 interface SelectOption {
   value: string;
@@ -174,14 +183,6 @@ function CustomSelect({
     </div>
   );
 }
-import { toast } from 'sonner';
-import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
-import DBConnectionForm from './DBConnectionForm';
-import {
-  DBConfig,
-  SUPPORTED_DB_TYPES,
-} from '@/app/features/knowledge/types/DB';
-import { connectorApi } from '@/app/features/knowledge/api/connectorApi';
 
 interface CreateKnowledgeModalProps {
   isOpen: boolean;
@@ -386,12 +387,23 @@ export default function CreateKnowledgeModal({
     }
   };
 
-  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+  const hasDraggedFiles = (e: ReactDragEvent<HTMLElement>) =>
+    Array.from(e.dataTransfer.types).includes('Files');
+
+  const preventModalFileDropDefaults = (e: ReactDragEvent<HTMLElement>) => {
+    if (!hasDraggedFiles(e)) return;
+
     e.preventDefault();
   };
 
-  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+  const stopFileDragDefaults = (e: ReactDragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleDrop = (e: ReactDragEvent<HTMLDivElement>) => {
+    stopFileDragDefaults(e);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const droppedFile = e.dataTransfer.files[0];
       if (droppedFile.size > MAX_FILE_SIZE) {
@@ -565,15 +577,9 @@ export default function CreateKnowledgeModal({
       // 성공 시 모달 닫기
       onClose();
 
-      // 문서 ID가 있으면 문서 상세로 이동
-      if (response.document_id) {
-        router.push(
-          `/dashboard/knowledge/${response.knowledge_base_id}/document/${response.document_id}`,
-        );
-      } else {
-        // 혹시 모르니 KB 상세로
-        router.push(`/dashboard/knowledge/${response.knowledge_base_id}`);
-      }
+      // Opening document detail immediately can trigger the original file preview
+      // and download attachment responses. Keep the user on the source list.
+      router.push(`/dashboard/knowledge/${response.knowledge_base_id}`);
     } catch (error: any) {
       console.group('[CreateKnowledgeModal] Submission failed');
       console.error('Error object:', error);
@@ -740,7 +746,11 @@ export default function CreateKnowledgeModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md p-4 animate-in fade-in duration-200">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md p-4 animate-in fade-in duration-200"
+      onDragOverCapture={preventModalFileDropDefaults}
+      onDropCapture={preventModalFileDropDefaults}
+    >
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-gray-100 dark:border-gray-700 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
@@ -831,7 +841,9 @@ export default function CreateKnowledgeModal({
               {sourceType === 'FILE' && (
                 <>
                   <div
-                    onDragOver={handleDragOver}
+                    onDragEnter={stopFileDragDefaults}
+                    onDragOver={stopFileDragDefaults}
+                    onDragLeave={stopFileDragDefaults}
                     onDrop={handleDrop}
                     className="border-2 border-dashed border-gray-200 dark:border-gray-600 rounded-xl p-10 text-center hover:border-blue-500 hover:bg-blue-50/50 dark:hover:border-blue-400 dark:hover:bg-blue-900/10 transition-all cursor-pointer group"
                     onClick={() => fileInputRef.current?.click()}
