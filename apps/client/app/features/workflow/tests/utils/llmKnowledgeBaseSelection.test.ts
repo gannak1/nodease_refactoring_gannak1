@@ -162,6 +162,14 @@ describe('llmKnowledgeBaseSelection', () => {
         embedding_model: 'text-embedding-3-small',
       },
       {
+        id: 'kb-completed-empty',
+        name: '청크 없는 완료 KB',
+        description: 'completed but empty',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+      {
         id: 'kb-empty',
         name: '빈 KB',
         description: 'empty',
@@ -227,11 +235,30 @@ describe('llmKnowledgeBaseSelection', () => {
             token_count: 0,
           },
         ],
+      })
+      .mockResolvedValueOnce({
+        id: 'kb-completed-empty',
+        name: '청크 없는 완료 KB',
+        description: 'completed but empty',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+        documents: [
+          {
+            id: 'doc-completed-empty',
+            filename: 'empty-completed.md',
+            status: 'completed',
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: '2026-07-01T00:00:00Z',
+            chunk_count: 0,
+            token_count: 0,
+          },
+        ],
       });
 
     const result = await fetchEligibleKnowledgeBases();
 
-    expect(knowledgeApi.getKnowledgeBase).toHaveBeenCalledTimes(3);
+    expect(knowledgeApi.getKnowledgeBase).toHaveBeenCalledTimes(4);
     expect(result.bases.map((base) => base.id)).toEqual(['kb-completed']);
     expect(Object.keys(result.detailsById)).toEqual(['kb-completed']);
     expect(
@@ -240,10 +267,62 @@ describe('llmKnowledgeBaseSelection', () => {
           { id: 'kb-completed', name: '이전 완료 KB' },
           { id: 'kb-pending', name: '처리 전 KB' },
           { id: 'kb-failed', name: '실패 KB' },
+          { id: 'kb-completed-empty', name: '청크 없는 완료 KB' },
           { id: 'kb-empty', name: '빈 KB' },
         ],
         result.bases,
       ),
     ).toEqual([{ id: 'kb-completed', name: '완료 KB' }]);
+  });
+
+  it('removes selected knowledge bases when detail lookup is forbidden', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
+      {
+        id: 'kb-forbidden',
+        name: '권한 회수 KB',
+        description: 'forbidden',
+        document_count: 1,
+        created_at: '2026-07-01T00:00:00Z',
+        embedding_model: 'text-embedding-3-small',
+      },
+    ]);
+    vi.mocked(knowledgeApi.getKnowledgeBase).mockRejectedValueOnce({
+      response: { status: 403 },
+    });
+
+    const result = await fetchEligibleKnowledgeBases();
+
+    expect(result.bases).toEqual([]);
+    expect(result.preserveSelectionIds).toEqual([]);
+    expect(
+      sanitizeSelectedKnowledgeBases(
+        [{ id: 'kb-forbidden', name: '권한 회수 KB' }],
+        result.bases,
+        { preserveMissingIds: result.preserveSelectionIds },
+      ),
+    ).toEqual([]);
+  });
+
+  it('deduplicates selected knowledge bases and refreshes names from eligible bases', () => {
+    expect(
+      sanitizeSelectedKnowledgeBases(
+        [
+          { id: 'kb-ready', name: '오래된 이름' },
+          { id: 'kb-ready', name: '중복 이름' },
+          { id: 'kb-missing', name: '삭제된 KB' },
+        ],
+        [
+          {
+            id: 'kb-ready',
+            name: '최신 이름',
+            description: 'ready',
+            document_count: 1,
+            created_at: '2026-07-01T00:00:00Z',
+            embedding_model: 'text-embedding-3-small',
+          },
+        ],
+      ),
+    ).toEqual([{ id: 'kb-ready', name: '최신 이름' }]);
   });
 });
