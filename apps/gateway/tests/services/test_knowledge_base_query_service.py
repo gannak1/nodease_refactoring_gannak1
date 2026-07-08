@@ -26,6 +26,9 @@ class FakeKnowledgeQuery:
     def select_from(self, *_args, **_kwargs):
         return self
 
+    def join(self, *_args, **_kwargs):
+        return self
+
     def outerjoin(self, *_args, **_kwargs):
         return self
 
@@ -56,11 +59,19 @@ class FakeDetailQuery:
     def __init__(self, *, first_value=None, all_value=None):
         self.first_value = first_value
         self.all_value = all_value or []
+        self.filters = []
 
     def select_from(self, *_args, **_kwargs):
         return self
 
+    def join(self, *_args, **_kwargs):
+        return self
+
+    def outerjoin(self, *_args, **_kwargs):
+        return self
+
     def filter(self, *_args, **_kwargs):
+        self.filters.extend(_args)
         return self
 
     def order_by(self, *_args, **_kwargs):
@@ -83,15 +94,22 @@ class FakeDetailDb:
         self.chunk_rows = chunk_rows or []
         self.query_count = 0
         self.query_entities = []
+        self.queries = []
 
     def query(self, *entities):
         self.query_count += 1
         self.query_entities.append(entities)
         if self.query_count == 1:
-            return FakeDetailQuery(first_value=self.kb_row)
+            query = FakeDetailQuery(first_value=self.kb_row)
+            self.queries.append(query)
+            return query
         if self.query_count == 2:
-            return FakeDetailQuery(all_value=self.doc_rows)
-        return FakeDetailQuery(all_value=self.chunk_rows)
+            query = FakeDetailQuery(all_value=self.doc_rows)
+            self.queries.append(query)
+            return query
+        query = FakeDetailQuery(all_value=self.chunk_rows)
+        self.queries.append(query)
+        return query
 
 
 class FakeCreateDb:
@@ -189,6 +207,30 @@ def test_list_normalizes_source_types_and_uses_latest_document_update():
     assert response[0].embedding_model == "custom-embedding"
 
 
+def test_list_normalizes_string_array_source_types():
+    kb_id = uuid.uuid4()
+    row = (
+        kb_id,
+        None,
+        "문자열 source type KB",
+        None,
+        None,
+        None,
+        None,
+        2,
+        None,
+        '{"FILE", "API"}',
+    )
+
+    response = KnowledgeBaseQueryService(FakeKnowledgeDb([row])).list(
+        user_id=uuid.uuid4(),
+        organization_scope=None,
+        has_organization_id=False,
+    )
+
+    assert response[0].source_types == ["FILE", "API"]
+
+
 def test_get_detail_maps_documents_without_full_kb_orm_load():
     knowledge_base_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -202,6 +244,7 @@ def test_get_detail_maps_documents_without_full_kb_orm_load():
             "테스트 상세",
             "text-embedding-3-small",
             now,
+            None,
             None,
         ),
         [
@@ -270,6 +313,7 @@ def test_get_detail_uses_chunk_counts_when_chunk_table_is_available():
             "text-embedding-3-small",
             now,
             None,
+            None,
         ),
         [
             (
@@ -328,6 +372,7 @@ def test_get_detail_normalizes_non_dict_meta_info_to_safe_empty_dict():
             "text-embedding-3-small",
             now,
             None,
+            None,
         ),
         [
             (
@@ -359,6 +404,56 @@ def test_get_detail_normalizes_non_dict_meta_info_to_safe_empty_dict():
     assert response.documents[0].meta_info == {}
 
 
+def test_get_detail_counts_only_active_ready_version_chunks_for_selectability():
+    knowledge_base_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    active_version_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    document_id = uuid.uuid4()
+    db = FakeDetailDb(
+        (
+            knowledge_base_id,
+            organization_id,
+            "버전 청크 KB",
+            None,
+            "text-embedding-3-small",
+            now,
+            None,
+            active_version_id,
+        ),
+        [
+            (
+                document_id,
+                "versioned.pdf",
+                "completed",
+                now,
+                None,
+                None,
+                SourceType.FILE,
+                {},
+            ),
+        ],
+        [(document_id, 1)],
+    )
+
+    response = KnowledgeBaseQueryService(
+        db,
+        column_exists=lambda *_args, **_kwargs: True,
+        finalize_processing_start=lambda *_args, **_kwargs: False,
+        recover_processing_timeout=lambda *_args, **_kwargs: False,
+    ).get_detail(
+        knowledge_base_id,
+        user_id=uuid.uuid4(),
+        organization_scope=organization_id,
+        has_organization_id=True,
+    )
+
+    chunk_filter_sql = " ".join(str(item) for item in db.queries[2].filters)
+    assert response.documents[0].chunk_count == 1
+    assert "document_chunks.document_version_id" in chunk_filter_sql
+    assert "document_versions.status" in chunk_filter_sql
+
+
 def test_llm_rag_selectability_requires_completed_document_with_chunks():
     knowledge_base_id = uuid.uuid4()
     now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
@@ -371,6 +466,7 @@ def test_llm_rag_selectability_requires_completed_document_with_chunks():
             None,
             "text-embedding-3-small",
             now,
+            None,
             None,
         ),
         [

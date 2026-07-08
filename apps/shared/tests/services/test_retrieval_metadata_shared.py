@@ -75,6 +75,26 @@ def test_metadata_summary_excludes_raw_source_identity_and_provider_payload():
     }
 
 
+def test_chunk_metadata_ignores_non_dict_metadata_without_crashing():
+    chunk = SimpleNamespace(
+        metadata_="bad chunk metadata",
+        parent_chunk_id=None,
+        token_count=None,
+        chunk_level=None,
+    )
+    doc = SimpleNamespace(
+        source_type="FILE",
+        meta_info=["bad document metadata"],
+    )
+
+    metadata = chunk_metadata(chunk, doc)
+
+    assert metadata == {
+        "source_type": "FILE",
+        "chunk_level": "flat",
+    }
+
+
 def test_hierarchy_path_accepts_string_path_or_heading_fallback():
     assert hierarchy_path({"section_path": "A / B / C"}) == ["A", "B", "C"]
     assert hierarchy_path({"heading": "Only heading"}) == ["Only heading"]

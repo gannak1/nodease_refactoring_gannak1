@@ -21,9 +21,17 @@ METADATA_SUMMARY_ALLOWED_KEYS = {
 }
 
 
+def _safe_metadata_mapping(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
 def chunk_metadata(chunk, doc=None) -> dict:
-    chunk_metadata_ = dict(getattr(chunk, "metadata_", None) or {})
-    document_metadata = dict(getattr(doc, "meta_info", None) or {}) if doc else {}
+    chunk_metadata_ = _safe_metadata_mapping(getattr(chunk, "metadata_", None))
+    document_metadata = (
+        _safe_metadata_mapping(getattr(doc, "meta_info", None)) if doc else {}
+    )
     metadata = dict(chunk_metadata_)
     for key, value in document_metadata.items():
         if value is not None:

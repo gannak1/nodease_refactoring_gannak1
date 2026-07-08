@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Callable
 from uuid import UUID
 
-from sqlalchemy import func, literal
+from sqlalchemy import and_, func, literal
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,12 @@ from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
-from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
+    DocumentVersion,
+    KnowledgeBase,
+)
 from apps.shared.schemas.rag import (
     DocumentResponse,
     KnowledgeBaseCreate,
@@ -94,7 +99,11 @@ def _clean_source_types(source_types) -> list[str]:
     seen: set[str] = set()
     if isinstance(source_types, str):
         stripped = source_types.strip("{}")
-        source_types = [value.strip('"') for value in stripped.split(",") if value]
+        source_types = [
+            value.strip().strip('"').strip("'")
+            for value in stripped.split(",")
+            if value.strip()
+        ]
     for source_type in source_types or []:
         if source_type is None:
             continue
@@ -321,6 +330,15 @@ class KnowledgeBaseQueryService:
             if has_organization_id
             else literal(None).label("organization_id")
         )
+        has_active_document_version_id = self.has_column(
+            "knowledge_bases",
+            "active_document_version_id",
+        )
+        active_document_version_id_column = (
+            KnowledgeBase.active_document_version_id
+            if has_active_document_version_id
+            else literal(None).label("active_document_version_id")
+        )
 
         kb_query = (
             self.db.query(
@@ -331,6 +349,7 @@ class KnowledgeBaseQueryService:
                 KnowledgeBase.embedding_model,
                 KnowledgeBase.created_at,
                 KnowledgeBase.updated_at,
+                active_document_version_id_column,
             )
             .select_from(KnowledgeBase)
             .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == user_id)
@@ -350,6 +369,7 @@ class KnowledgeBaseQueryService:
             embedding_model,
             created_at,
             updated_at,
+            active_document_version_id,
         ) = kb
 
         doc_rows_query = (
@@ -371,7 +391,10 @@ class KnowledgeBaseQueryService:
         if self._recover_document_rows(doc_rows):
             doc_rows = doc_rows_query.all()
 
-        chunk_counts = self._chunk_counts(kb_id)
+        chunk_counts = self._retrieval_visible_chunk_counts(
+            kb_id,
+            active_document_version_id=active_document_version_id,
+        )
         doc_responses = []
         for (
             document_id,
@@ -437,19 +460,54 @@ class KnowledgeBaseQueryService:
                 document_status_changed = True
         return document_status_changed
 
-    def _chunk_counts(self, kb_id: UUID) -> dict[UUID, int]:
+    def _retrieval_visible_chunk_counts(
+        self,
+        kb_id: UUID,
+        *,
+        active_document_version_id: UUID | None,
+    ) -> dict[UUID, int]:
         if not self.has_column("document_chunks", "id"):
             return {}
+        query = (
+            self.db.query(
+                DocumentChunk.document_id,
+                func.count(DocumentChunk.id).label("chunk_count"),
+            )
+            .select_from(DocumentChunk)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .filter(
+                DocumentChunk.knowledge_base_id == kb_id,
+                Document.status == "completed",
+            )
+        )
+        if not self.has_column("document_chunks", "document_version_id"):
+            return {
+                document_id: int(chunk_count or 0)
+                for document_id, chunk_count in query.group_by(
+                    DocumentChunk.document_id
+                ).all()
+            }
+        if active_document_version_id is None:
+            query = query.filter(DocumentChunk.document_version_id.is_(None))
+        else:
+            if not self.has_column("document_versions", "status"):
+                return {}
+            query = (
+                query.outerjoin(
+                    DocumentVersion,
+                    DocumentChunk.document_version_id == DocumentVersion.id,
+                )
+                .filter(
+                    and_(
+                        DocumentChunk.document_version_id
+                        == active_document_version_id,
+                        DocumentVersion.status == "ready",
+                    )
+                )
+            )
         return {
             document_id: int(chunk_count or 0)
             for document_id, chunk_count in (
-                self.db.query(
-                    DocumentChunk.document_id,
-                    func.count(DocumentChunk.id).label("chunk_count"),
-                )
-                .select_from(DocumentChunk)
-                .filter(DocumentChunk.knowledge_base_id == kb_id)
-                .group_by(DocumentChunk.document_id)
-                .all()
+                query.group_by(DocumentChunk.document_id).all()
             )
         }

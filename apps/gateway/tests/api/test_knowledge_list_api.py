@@ -555,6 +555,7 @@ def test_knowledge_detail_uses_scoped_safe_column_query(monkeypatch):
             "text-embedding-3-small",
             now,
             None,
+            None,
         ),
         [
             (
@@ -637,6 +638,7 @@ def test_knowledge_detail_uses_legacy_safe_query_without_organization_column(
             None,
             None,
             now,
+            None,
             None,
         ),
         [
