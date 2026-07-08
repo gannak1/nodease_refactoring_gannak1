@@ -18,6 +18,11 @@ class FakeSchemaInspector:
         return [{"name": name} for name in self.columns_by_table[table_name]]
 
 
+class FailingSchemaInspector:
+    def has_table(self, table_name):
+        raise RuntimeError("secret raw database failure")
+
+
 def write_minimal_demo_fixture(
     fixture_path,
     *,
@@ -225,6 +230,7 @@ def test_schema_readiness_reports_stale_demo_db_columns():
                 "sync_state",
             ],
         },
+        "reason": None,
     }
 
     message = seed_demo_script.format_schema_readiness_error(gaps)
@@ -232,6 +238,23 @@ def test_schema_readiness_reports_stale_demo_db_columns():
     assert "knowledge_bases: embedding_model, organization_id, sync_state" in message
     assert "alembic -c apps/shared/alembic.ini upgrade heads" in message
     assert "--profile demo --reset --drop-existing-data --yes" in message
+
+
+def test_schema_readiness_reports_safe_reason_on_introspection_failure():
+    gaps = seed_demo_script.schema_readiness_gaps(
+        FailingSchemaInspector(),
+        required_columns={"knowledge_bases": {"id", "sync_state"}},
+    )
+
+    assert gaps == {
+        "missing_tables": [],
+        "missing_columns": {},
+        "reason": "schema_introspection_failed",
+    }
+
+    message = seed_demo_script.format_schema_readiness_error(gaps)
+    assert "Readiness check failed: schema_introspection_failed" in message
+    assert "secret raw database failure" not in message
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

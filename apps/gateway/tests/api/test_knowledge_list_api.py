@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
+from apps.gateway.services.knowledge_base_query_service import DEFAULT_EMBEDDING_MODEL
 from apps.shared.db.models.knowledge import SourceType
 
 
@@ -92,6 +93,9 @@ class FakeDetailQuery:
     def first(self):
         return self.first_value
 
+    def get(self, *_args, **_kwargs):
+        return None
+
     def all(self):
         return self.all_value
 
@@ -148,7 +152,7 @@ def test_knowledge_list_handles_documentless_legacy_kb_without_500(monkeypatch):
     assert response[0].organization_id is None
     assert response[0].document_count == 0
     assert response[0].source_types == []
-    assert response[0].embedding_model == knowledge_endpoint.DEFAULT_EMBEDDING_MODEL
+    assert response[0].embedding_model == DEFAULT_EMBEDDING_MODEL
     assert response[0].created_at is not None
     assert response[0].updated_at is not None
 
@@ -232,7 +236,7 @@ def test_knowledge_list_route_returns_legacy_safe_response(monkeypatch):
             "created_at": body[0]["created_at"],
             "updated_at": body[0]["updated_at"],
             "source_types": [],
-            "embedding_model": knowledge_endpoint.DEFAULT_EMBEDDING_MODEL,
+            "embedding_model": DEFAULT_EMBEDDING_MODEL,
         }
     ]
 
@@ -482,10 +486,14 @@ def test_knowledge_create_reports_stale_schema_without_raw_500(monkeypatch):
 
 
 def test_knowledge_schema_missing_columns_raises_on_introspection_failure(monkeypatch):
-    def raise_introspection_error(*_args, **_kwargs):
-        raise RuntimeError("simulated introspection failure")
-
-    monkeypatch.setattr(knowledge_endpoint, "inspect", raise_introspection_error)
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "check_knowledge_schema_readiness",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            missing_columns={},
+            reason="schema_introspection_failed",
+        ),
+    )
 
     with pytest.raises(knowledge_endpoint.KnowledgeSchemaIntrospectionError):
         knowledge_endpoint._knowledge_schema_missing_columns(
@@ -666,7 +674,7 @@ def test_knowledge_detail_uses_legacy_safe_query_without_organization_column(
     body = response.json()
     assert body["id"] == str(knowledge_base_id)
     assert body["organization_id"] is None
-    assert body["embedding_model"] == knowledge_endpoint.DEFAULT_EMBEDDING_MODEL
+    assert body["embedding_model"] == DEFAULT_EMBEDDING_MODEL
     assert body["source_types"] == []
     assert body["documents"][0]["chunk_count"] == 0
     assert body["documents"][0]["source_type"] == "FILE"

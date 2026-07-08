@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
@@ -17,8 +16,6 @@ from fastapi import (
     status,
 )
 from pydantic import ValidationError
-from sqlalchemy import func, inspect, literal
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
@@ -39,6 +36,13 @@ from apps.gateway.services.knowledge_collection_service import (
 from apps.gateway.services.knowledge_document_content_service import (
     KnowledgeDocumentContentService,
 )
+from apps.gateway.services.knowledge_base_query_service import (
+    KNOWLEDGE_BASE_MUTATION_COLUMNS,
+    KnowledgeBaseCreateFailed,
+    KnowledgeBaseNotFound,
+    KnowledgeBaseQueryService,
+    KnowledgeSchemaNotReady,
+)
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
@@ -47,7 +51,7 @@ from apps.gateway.services.organization_context import (
     resolve_active_organization_id,
 )
 from apps.shared.audit.actions import AuditAction
-from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
+from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
@@ -81,19 +85,13 @@ from apps.shared.services.rag_hierarchy import (
     validate_chunking_request,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_schema_readiness import (
+    check_knowledge_schema_readiness,
+    table_has_column,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
-KNOWLEDGE_BASE_MUTATION_COLUMNS = {
-    "knowledge_bases": {
-        "organization_id",
-        "active_document_version_id",
-        "source_identity_id",
-        "sync_state",
-        "lifecycle_state",
-    }
-}
 
 
 class KnowledgeSchemaIntrospectionError(Exception):
@@ -145,41 +143,16 @@ def _knowledge_collection_service(
 
 
 def _table_has_column(db: Session, table_name: str, column_name: str) -> bool:
-    try:
-        return any(
-            column["name"] == column_name
-            for column in inspect(db.get_bind()).get_columns(table_name)
-        )
-    except Exception:
-        logger.warning(
-            "knowledge.list.column_introspection_failed",
-            extra={"table": table_name, "column": column_name},
-            exc_info=True,
-        )
-        return False
+    return table_has_column(db, table_name, column_name)
 
 
 def _knowledge_schema_missing_columns(
     db: Session, required_columns: dict[str, set[str]]
 ) -> dict[str, list[str]]:
-    try:
-        inspector = inspect(db.get_bind())
-        missing: dict[str, list[str]] = {}
-        for table_name, column_names in required_columns.items():
-            if not inspector.has_table(table_name):
-                missing[table_name] = sorted(column_names)
-                continue
-            existing = {column["name"] for column in inspector.get_columns(table_name)}
-            missing_columns = sorted(column_names - existing)
-            if missing_columns:
-                missing[table_name] = missing_columns
-        return missing
-    except Exception:
-        logger.warning(
-            "knowledge.schema.introspection_failed",
-            exc_info=True,
-        )
+    result = check_knowledge_schema_readiness(db, required_columns)
+    if result.reason == "schema_introspection_failed":
         raise KnowledgeSchemaIntrospectionError
+    return result.missing_columns
 
 
 def _raise_knowledge_schema_not_ready(
@@ -270,40 +243,6 @@ def _resolve_read_organization_scope(
     )
 
 
-def _clean_source_types(source_types) -> list[str]:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    if isinstance(source_types, str):
-        stripped = source_types.strip("{}")
-        source_types = [value.strip('"') for value in stripped.split(",") if value]
-    for source_type in source_types or []:
-        if source_type is None:
-            continue
-        value = getattr(source_type, "value", source_type)
-        if value is None:
-            continue
-        value = str(value)
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        cleaned.append(value)
-    return cleaned
-
-
-def _clean_source_type(source_type) -> str:
-    value = getattr(source_type, "value", source_type)
-    if value is None:
-        return "FILE"
-    return str(value)
-
-
-def _max_datetime_or_now(*values):
-    candidates = [value for value in values if value is not None]
-    if candidates:
-        return max(candidates)
-    return datetime.now(timezone.utc)
-
-
 def _raise_collection_service_error(
     request: Request,
     exc: KnowledgeCollectionServiceError,
@@ -315,6 +254,32 @@ def _raise_collection_service_error(
         exc.message,
         exc.details,
     )
+
+
+def _knowledge_base_query_service(db: Session) -> KnowledgeBaseQueryService:
+    return KnowledgeBaseQueryService(db)
+
+
+def _raise_knowledge_query_service_error(
+    request: Request,
+    exc: Exception,
+) -> None:
+    if isinstance(exc, KnowledgeSchemaNotReady):
+        _raise_knowledge_schema_not_ready(
+            request,
+            exc.missing_columns,
+            reason=exc.reason,
+        )
+    if isinstance(exc, KnowledgeBaseCreateFailed):
+        raise_api_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "knowledge.create_failed",
+            "Knowledge base creation failed.",
+        )
+    if isinstance(exc, KnowledgeBaseNotFound):
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+    raise exc
 
 
 @router.post(
@@ -336,6 +301,7 @@ def create_knowledge_base(
         request,
         KNOWLEDGE_BASE_MUTATION_COLUMNS,
     )
+    service = _knowledge_base_query_service(db)
     organization_id = _resolve_create_organization_id(
         db,
         request,
@@ -343,39 +309,15 @@ def create_knowledge_base(
         current_user.id,
         organization_column_ready=True,
     )
-
-    kb = KnowledgeBase(
-        name=kb_in.name,
-        description=kb_in.description,
-        embedding_model=kb_in.embedding_model,
-        organization_id=organization_id,
-        user_id=current_user.id,
-    )
-    db.add(kb)
     try:
-        db.commit()
-        db.refresh(kb)
-    except SQLAlchemyError:
-        db.rollback()
-        logger.exception("knowledge.create.failed")
-        raise_api_error(
-            request,
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            "knowledge.create_failed",
-            "Knowledge base creation failed.",
+        return service.create(
+            kb_in,
+            user_id=current_user.id,
+            organization_id=organization_id,
+            schema_ready=True,
         )
-
-    return KnowledgeBaseResponse(
-        id=kb.id,
-        organization_id=kb.organization_id,
-        name=kb.name,
-        description=kb.description,
-        document_count=0,
-        created_at=kb.created_at,
-        updated_at=kb.updated_at,
-        source_types=[],
-        embedding_model=kb.embedding_model,
-    )
+    except (KnowledgeSchemaNotReady, KnowledgeBaseCreateFailed) as exc:
+        _raise_knowledge_query_service_error(request, exc)
 
 
 @router.get("", response_model=List[KnowledgeBaseResponse])
@@ -389,6 +331,7 @@ def list_knowledge_bases(
     사용자의 자료 목록을 조회합니다.
     각 지식 베이스 그룹에 포함된 문서 개수도 함께 반환합니다.
     """
+    service = _knowledge_base_query_service(db)
     has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
     organization_scope = _resolve_read_organization_scope(
         db,
@@ -397,81 +340,11 @@ def list_knowledge_bases(
         current_user.id,
         has_organization_id=has_organization_id,
     )
-    organization_id_column = (
-        KnowledgeBase.organization_id
-        if has_organization_id
-        else literal(None).label("organization_id")
+    return service.list(
+        user_id=current_user.id,
+        organization_scope=organization_scope,
+        has_organization_id=has_organization_id,
     )
-    group_by_columns = [
-        KnowledgeBase.id,
-        KnowledgeBase.name,
-        KnowledgeBase.description,
-        KnowledgeBase.embedding_model,
-        KnowledgeBase.created_at,
-        KnowledgeBase.updated_at,
-    ]
-    if has_organization_id:
-        group_by_columns.append(KnowledgeBase.organization_id)
-
-    query = (
-        db.query(
-            KnowledgeBase.id,
-            organization_id_column,
-            KnowledgeBase.name,
-            KnowledgeBase.description,
-            KnowledgeBase.embedding_model,
-            KnowledgeBase.created_at,
-            KnowledgeBase.updated_at,
-            func.count(Document.id).label("document_count"),
-            func.max(Document.updated_at).label("last_updated_at"),
-            func.array_agg(Document.source_type).label("source_types"),
-        )
-        .select_from(KnowledgeBase)
-        .outerjoin(Document, KnowledgeBase.id == Document.knowledge_base_id)
-        .filter(KnowledgeBase.user_id == current_user.id)
-    )
-    if organization_scope is not None:
-        query = query.filter(KnowledgeBase.organization_id == organization_scope)
-    results = (
-        query.group_by(*group_by_columns)
-        .order_by(KnowledgeBase.created_at.desc())
-        .all()
-    )
-
-    response = []
-    for (
-        kb_id,
-        organization_id,
-        name,
-        description,
-        embedding_model,
-        created_at,
-        updated_at,
-        doc_count,
-        last_updated_at,
-        source_types,
-    ) in results:
-        clean_source_types = _clean_source_types(source_types)
-
-        # KB 업데이트 시간과 문서 최신 업데이트 시간 중 더 최신을 선택
-        # 문서가 없으면 KB 업데이트 시간 사용
-        created_at = created_at or _max_datetime_or_now(updated_at, last_updated_at)
-        final_updated_at = _max_datetime_or_now(updated_at, last_updated_at, created_at)
-
-        response.append(
-            KnowledgeBaseResponse(
-                id=kb_id,
-                organization_id=organization_id,
-                name=name,
-                description=description,
-                document_count=int(doc_count or 0),
-                created_at=created_at,
-                updated_at=final_updated_at,
-                source_types=clean_source_types,
-                embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
-            )
-        )
-    return response
 
 
 @router.post("/candidates/resolve", response_model=KnowledgeCandidateResolution)
@@ -906,6 +779,7 @@ def get_knowledge_base(
     지식 베이스의 상세 정보를 조회합니다.
     포함된 자료 목록과 각 자료의 상태를 함께 반환합니다.
     """
+    service = _knowledge_base_query_service(db)
     has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
     organization_scope = _resolve_read_organization_scope(
         db,
@@ -914,122 +788,15 @@ def get_knowledge_base(
         current_user.id,
         has_organization_id=has_organization_id,
     )
-    organization_id_column = (
-        KnowledgeBase.organization_id
-        if has_organization_id
-        else literal(None).label("organization_id")
-    )
-
-    kb_query = (
-        db.query(
-            KnowledgeBase.id,
-            organization_id_column,
-            KnowledgeBase.name,
-            KnowledgeBase.description,
-            KnowledgeBase.embedding_model,
-            KnowledgeBase.created_at,
-            KnowledgeBase.updated_at,
+    try:
+        return service.get_detail(
+            kb_id,
+            user_id=current_user.id,
+            organization_scope=organization_scope,
+            has_organization_id=has_organization_id,
         )
-        .select_from(KnowledgeBase)
-        .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == current_user.id)
-    )
-    if organization_scope is not None:
-        kb_query = kb_query.filter(KnowledgeBase.organization_id == organization_scope)
-    kb = kb_query.first()
-
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
-
-    (
-        kb_id,
-        organization_id,
-        name,
-        description,
-        embedding_model,
-        created_at,
-        updated_at,
-    ) = kb
-
-    doc_rows_query = (
-        db.query(
-            Document.id,
-            Document.filename,
-            Document.status,
-            Document.created_at,
-            Document.updated_at,
-            Document.error_message,
-            Document.source_type,
-            Document.meta_info,
-        )
-        .select_from(Document)
-        .filter(Document.knowledge_base_id == kb_id)
-        .order_by(Document.created_at.asc())
-    )
-    doc_rows = doc_rows_query.all()
-    document_status_changed = False
-    for document_id, *_ in doc_rows:
-        if finalize_stale_processing_start(
-            db,
-            document_id,
-        ) or recover_timed_out_document_with_artifacts(db, document_id):
-            document_status_changed = True
-    if document_status_changed:
-        doc_rows = doc_rows_query.all()
-
-    chunk_counts: dict[UUID, int] = {}
-    if _table_has_column(db, "document_chunks", "id"):
-        chunk_counts = {
-            document_id: int(chunk_count or 0)
-            for document_id, chunk_count in (
-                db.query(
-                    DocumentChunk.document_id,
-                    func.count(DocumentChunk.id).label("chunk_count"),
-                )
-                .select_from(DocumentChunk)
-                .filter(DocumentChunk.knowledge_base_id == kb_id)
-                .group_by(DocumentChunk.document_id)
-                .all()
-            )
-        }
-
-    doc_responses = []
-    for (
-        document_id,
-        filename,
-        document_status,
-        document_created_at,
-        document_updated_at,
-        error_message,
-        source_type,
-        meta_info,
-    ) in doc_rows:
-        doc_responses.append(
-            DocumentResponse(
-                id=document_id,
-                filename=filename,
-                status=document_status or "pending",
-                created_at=document_created_at or _max_datetime_or_now(),
-                updated_at=document_updated_at,
-                error_message=error_message,
-                chunk_count=chunk_counts.get(document_id, 0),
-                token_count=0,  # 우선 0으로 반환
-                source_type=_clean_source_type(source_type),
-                meta_info=meta_info or {},
-            )
-        )
-
-    return KnowledgeBaseDetailResponse(
-        id=kb_id,
-        organization_id=organization_id,
-        name=name,
-        description=description,
-        document_count=len(doc_responses),
-        created_at=created_at or _max_datetime_or_now(updated_at),
-        updated_at=updated_at or created_at,
-        source_types=_clean_source_types([row[6] for row in doc_rows]),
-        embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
-        documents=doc_responses,
-    )
+    except KnowledgeBaseNotFound as exc:
+        _raise_knowledge_query_service_error(request, exc)
 
 
 @router.patch("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
