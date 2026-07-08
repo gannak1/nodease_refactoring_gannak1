@@ -128,4 +128,22 @@ describe('LLMNodePanel JSON schema editor', () => {
       },
     });
   });
+
+  it('스키마 필드명을 입력해도 행이 재마운트되지 않아 포커스가 유지된다', () => {
+    render(<LLMNodePanel nodeId="llm-1" data={jsonData()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '스키마 필드 추가' }));
+    const fieldInput = screen.getByPlaceholderText('예: summary');
+
+    fieldInput.focus();
+    fireEvent.change(fieldInput, { target: { value: '긴' } });
+
+    expect(document.activeElement).toBe(screen.getByDisplayValue('긴'));
+
+    fireEvent.change(screen.getByDisplayValue('긴'), {
+      target: { value: '긴급도' },
+    });
+
+    expect(document.activeElement).toBe(screen.getByDisplayValue('긴급도'));
+  });
 });

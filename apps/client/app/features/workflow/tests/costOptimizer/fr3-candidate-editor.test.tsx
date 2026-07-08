@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeSettingsComparisonPanel } from '../../components/costOptimizer/NodeSettingsComparisonPanel';
@@ -428,6 +428,43 @@ describe('FR-003 Cost Optimizer candidate editor', () => {
     expect(onChange).toHaveBeenCalledWith('json_schema_fields', [
       { key: '', type: 'string', required: false },
     ]);
+  });
+
+  it('JSON schema 필드명을 입력해도 후보 편집 행 포커스가 유지된다', () => {
+    const CandidateSchemaEditor = () => {
+      const [draft, setDraft] = useState<CandidateDraft>({
+        ...baseDraft,
+        output_format: 'json',
+        json_schema_fields: [{ key: '', type: 'string', required: false }],
+      });
+
+      return (
+        <NodeSettingsComparisonPanel
+          title="B Candidate"
+          nodeId="llm-1"
+          tab="basic"
+          onTabChange={vi.fn()}
+          draft={draft}
+          onChange={(field, value) =>
+            setDraft((current) => ({ ...current, [field]: value }))
+          }
+        />
+      );
+    };
+
+    render(<CandidateSchemaEditor />);
+
+    const fieldInput = screen.getByPlaceholderText('예: summary');
+    fieldInput.focus();
+    fireEvent.change(fieldInput, { target: { value: '긴' } });
+
+    expect(document.activeElement).toBe(screen.getByDisplayValue('긴'));
+
+    fireEvent.change(screen.getByDisplayValue('긴'), {
+      target: { value: '긴급도' },
+    });
+
+    expect(document.activeElement).toBe(screen.getByDisplayValue('긴급도'));
   });
 
   it('text 출력 형식에서는 JSON schema 편집 UI를 표시하지 않는다', () => {

@@ -554,7 +554,7 @@ export function NodeSettingsComparisonPanel({
                       <div className="grid gap-2">
                         {draft.json_schema_fields.map((field, index) => (
                           <div
-                            key={`${field.key}-${index}`}
+                            key={`json-schema-field-${index}`}
                             className="grid grid-cols-[minmax(120px,1fr)_minmax(110px,140px)_auto_auto] items-center gap-2 rounded-md border border-slate-200 bg-white p-2"
                           >
                             <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
