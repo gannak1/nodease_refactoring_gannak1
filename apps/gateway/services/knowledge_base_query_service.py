@@ -116,6 +116,12 @@ def _clean_source_type(source_type) -> str:
     return str(value)
 
 
+def _safe_meta_info(meta_info) -> dict:
+    if isinstance(meta_info, dict):
+        return meta_info
+    return {}
+
+
 def _max_datetime_or_now(*values):
     candidates = [value for value in values if value is not None]
     if candidates:
@@ -388,7 +394,7 @@ class KnowledgeBaseQueryService:
                     chunk_count=chunk_counts.get(document_id, 0),
                     token_count=0,
                     source_type=_clean_source_type(source_type),
-                    meta_info=meta_info or {},
+                    meta_info=_safe_meta_info(meta_info),
                 )
             )
 

@@ -314,6 +314,51 @@ def test_get_detail_uses_chunk_counts_when_chunk_table_is_available():
     }
 
 
+def test_get_detail_normalizes_non_dict_meta_info_to_safe_empty_dict():
+    knowledge_base_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    document_id = uuid.uuid4()
+    db = FakeDetailDb(
+        (
+            knowledge_base_id,
+            organization_id,
+            "비정상 메타데이터 KB",
+            None,
+            "text-embedding-3-small",
+            now,
+            None,
+        ),
+        [
+            (
+                document_id,
+                "corrupt-meta.pdf",
+                "completed",
+                now,
+                None,
+                None,
+                SourceType.FILE,
+                ["unexpected", "metadata"],
+            ),
+        ],
+        [(document_id, 1)],
+    )
+
+    response = KnowledgeBaseQueryService(
+        db,
+        column_exists=lambda *_args, **_kwargs: True,
+        finalize_processing_start=lambda *_args, **_kwargs: False,
+        recover_processing_timeout=lambda *_args, **_kwargs: False,
+    ).get_detail(
+        knowledge_base_id,
+        user_id=uuid.uuid4(),
+        organization_scope=organization_id,
+        has_organization_id=True,
+    )
+
+    assert response.documents[0].meta_info == {}
+
+
 def test_llm_rag_selectability_requires_completed_document_with_chunks():
     knowledge_base_id = uuid.uuid4()
     now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
