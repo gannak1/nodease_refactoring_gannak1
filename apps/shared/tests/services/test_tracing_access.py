@@ -185,11 +185,18 @@ def test_trace_rbac_service_selects_highest_workflow_auth_state():
             self.organization_id = organization_id
             self.first_values = [
                 SimpleNamespace(id=workflow_id, organization_id=organization_id),
+                SimpleNamespace(id=user_id, deactivated_at=None),
                 SimpleNamespace(
                     id=organization_id,
                     created_by=uuid.uuid4(),
                     managed_by=None,
                     is_active=True,
+                ),
+                SimpleNamespace(
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    membership_state="active",
+                    organization_auth_state="member",
                 ),
             ]
             self.all_values = [

@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from operator import eq
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -221,6 +221,9 @@ class TestPermissionsApi(unittest.TestCase):
             assigned_by=user_id,
         )
         upsert_result.id = existing_permission.id
+        upsert_result.assigned_at = existing_permission.assigned_at + timedelta(
+            seconds=1
+        )
         session = _Session(
             organization=_organization(id=organization_id, created_by=uuid4()),
             membership=_membership(user_id=user_id, organization_id=organization_id),
