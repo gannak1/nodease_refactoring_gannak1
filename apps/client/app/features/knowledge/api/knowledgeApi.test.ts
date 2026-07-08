@@ -246,6 +246,61 @@ describe('knowledgeApi.streamAgentAnswer', () => {
   });
 });
 
+describe('knowledgeApi safe failure logging', () => {
+  it('does not log raw upload errors or response payloads', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = {
+      response: {
+        status: 500,
+        data: { detail: 'raw-response-payload-should-not-be-logged' },
+      },
+      config: {
+        headers: { 'X-Test-Debug': 'request-config-should-not-be-logged' },
+      },
+    };
+    vi.mocked(apiClient.post).mockRejectedValueOnce(error);
+
+    await expect(
+      knowledgeApi.uploadKnowledgeBase({
+        name: '사내 문서',
+        description: '테스트',
+        embeddingModel: 'text-embedding-3-small',
+        topK: 5,
+        similarity: 0.7,
+        chunkSize: 1000,
+        chunkOverlap: 100,
+        apiHeaders: '{"X-Test-Debug":"request-config-should-not-be-logged"}',
+        apiBody: '{"payload":"request-body-should-not-be-logged"}',
+      }),
+    ).rejects.toBe(error);
+
+    expect(warnSpy).toHaveBeenCalledWith('[knowledgeApi] request failed', {
+      operation: 'uploadKnowledgeBase',
+      status: 500,
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), error);
+  });
+
+  it('logs only safe list failure metadata', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = {
+      response: {
+        status: 403,
+        data: { detail: 'hidden-resource-name' },
+      },
+    };
+    vi.mocked(apiClient.get).mockRejectedValueOnce(error);
+
+    await expect(knowledgeApi.getKnowledgeBases()).rejects.toBe(error);
+
+    expect(warnSpy).toHaveBeenCalledWith('[knowledgeApi] request failed', {
+      operation: 'getKnowledgeBases',
+      status: 403,
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), error);
+  });
+});
+
 describe('knowledgeApi collection management', () => {
   it('loads Knowledge Collections from the management endpoint', async () => {
     vi.mocked(apiClient.get).mockResolvedValueOnce({

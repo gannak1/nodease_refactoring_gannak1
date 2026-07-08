@@ -186,6 +186,19 @@ const API_BASE_URL = apiBaseUrl;
 // 공통 API 클라이언트 사용
 const api = apiClient;
 
+const getHttpStatus = (error: unknown): number | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const response = (error as { response?: { status?: unknown } }).response;
+  return typeof response?.status === 'number' ? response.status : undefined;
+};
+
+const logKnowledgeApiFailure = (operation: string, error: unknown) => {
+  console.warn('[knowledgeApi] request failed', {
+    operation,
+    status: getHttpStatus(error),
+  });
+};
+
 const parseSseEvent = (rawEvent: string): RAGAgentStreamEvent | null => {
   const lines = rawEvent.split(/\r?\n/);
   const eventLine = lines.find((line) => line.startsWith('event: '));
@@ -279,12 +292,8 @@ export const knowledgeApi = {
     try {
       const response = await api.post('/rag/upload', formData);
       return response.data;
-    } catch (error: any) {
-      console.group('[knowledgeApi] uploadKnowledgeBase failed');
-      console.error('Error object:', error);
-      console.error('Response data:', error.response?.data);
-      console.error('Response status:', error.response?.status);
-      console.groupEnd();
+    } catch (error) {
+      logKnowledgeApiFailure('uploadKnowledgeBase', error);
       throw error;
     }
   },
@@ -295,7 +304,7 @@ export const knowledgeApi = {
       const response = await api.get('/knowledge');
       return response.data;
     } catch (error) {
-      console.error('[knowledgeApi] Error details:', error);
+      logKnowledgeApiFailure('getKnowledgeBases', error);
       throw error;
     }
   },
