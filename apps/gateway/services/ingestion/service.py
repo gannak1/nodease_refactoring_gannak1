@@ -669,13 +669,13 @@ class IngestionOrchestrator:
         *,
         fencing_token: str,
     ) -> None:
-        doc.status = "completed"
-        doc.error_message = None
-        doc.updated_at = datetime.now(timezone.utc)
         KnowledgeIngestionFinalizer(self.db).finalize_active_version(
             document_version,
             expected_fencing_token=fencing_token,
         )
+        doc.status = "completed"
+        doc.error_message = None
+        doc.updated_at = datetime.now(timezone.utc)
         self.db.commit()
 
     def _handle_processing_failure(

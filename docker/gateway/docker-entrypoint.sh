@@ -42,7 +42,7 @@ echo ""
 echo "Running database migrations..."
 cd /app/apps/shared
 
-if alembic upgrade head; then
+if alembic upgrade heads; then
     echo "✓ Migrations completed successfully"
 else
     echo "✗ Migration failed"
