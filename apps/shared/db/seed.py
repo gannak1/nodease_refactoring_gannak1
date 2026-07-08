@@ -25,6 +25,7 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.services.password_hashing import hash_password
 
 PLACEHOLDER_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 DEV_WORKFLOW_APP_IDS = {
@@ -52,13 +53,11 @@ def seed_placeholder_user(db: Session) -> None:
     if user:
         return
 
-    from services.auth_service import AuthService
-
     dev_user = User(
         id=PLACEHOLDER_USER_ID,
         email="dev@moduly.app",
         name="Dev User",
-        password=AuthService.hash_password("dev-password"),
+        password=hash_password("dev-password"),
         social_provider="none",
     )
     db.add(dev_user)
