@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -743,7 +744,9 @@ class LLMNode(Node[LLMNodeData]):
                 )
             except Exception:
                 text = ""
-            usage = response.get("usage", {}) if isinstance(response, dict) else {}
+            usage = self._safe_usage_metadata(
+                response.get("usage", {}) if isinstance(response, dict) else {}
+            )
             answer_grounding = self._build_answer_grounding_metadata(
                 text, knowledge_context
             )
@@ -885,6 +888,28 @@ class LLMNode(Node[LLMNodeData]):
             "[REDACTED: knowledge context omitted from prompt trace]\n"
             "[END KNOWLEDGE]"
         )
+
+    @staticmethod
+    def _safe_usage_metadata(usage: Any) -> Dict[str, int | float]:
+        if not isinstance(usage, dict):
+            return {}
+
+        allowed_keys = {
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "total_cost",
+            "latency_ms",
+        }
+        safe_usage: Dict[str, int | float] = {}
+        for key in allowed_keys:
+            value = usage.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if not math.isfinite(value) or value < 0:
+                continue
+            safe_usage[key] = value
+        return safe_usage
 
     def _render_prompt(self, template: Optional[str], inputs: Dict[str, Any]) -> str:
         """
