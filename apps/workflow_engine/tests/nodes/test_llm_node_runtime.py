@@ -45,6 +45,7 @@ from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
     MAX_RAG_RETRIEVAL_KBS,
 )
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
+    RAG_NO_EVIDENCE_MESSAGE,
     SAFETY_SYSTEM_PROMPT,
     LLMNode,
     WorkflowRAGFanoutResult,
@@ -284,7 +285,7 @@ def test_llm_node_runs_with_override_client():
 
     # value_selector가 ["some_node", "var"]이므로 some_node의 var 값을 전달
     # [GEVENT] sync 호출
-    result = node.execute({"some_node": {"var": "X"}})
+    node.execute({"some_node": {"var": "X"}})
 
     # 클라이언트 호출 검증
     assert dummy_client.calls
@@ -3425,22 +3426,14 @@ def test_knowledge_search_uses_execution_subject_for_acl_and_actor_for_retrieval
     assert result.evidence_decision.insufficiency_reason == "no_evidence"
 
 
-def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
+def test_knowledge_search_filters_denied_kbs_before_retrieval(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     allowed_kb_id = uuid.uuid4()
     denied_kb_id = uuid.uuid4()
-    retrieval_calls = []
+    fanout_calls = []
     audit_calls = []
     helper_init = {}
-
-    class FakeRetrievalService:
-        def __init__(self, db, user_id, organization_id=None):
-            raise AssertionError("retrieval should not initialize before authorization")
-
-        def search_documents_sync(self, *args, **kwargs):
-            retrieval_calls.append(kwargs["knowledge_base_id"])
-            return []
 
     class FakeQuery:
         def filter(self, *args, **kwargs):
@@ -3480,10 +3473,6 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
             return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
 
     monkeypatch.setattr(
-        "apps.workflow_engine.workflow.nodes.llm.llm_node.RetrievalService",
-        FakeRetrievalService,
-    )
-    monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
         FakeKnowledgePermissionHelper,
     )
@@ -3517,15 +3506,140 @@ def test_knowledge_search_preauthorizes_all_kbs_before_retrieval(monkeypatch):
         },
     )
 
-    with pytest.raises(PermissionError, match="Knowledge Base is unavailable"):
-        node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+    monkeypatch.setattr(
+        node,
+        "_run_rag_retrieval_fanout",
+        lambda **kwargs: fanout_calls.append(kwargs["knowledge_base_ids"])
+        or WorkflowRAGFanoutResult(results=[], failed_count=0),
+    )
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
     assert helper_init["organization_id"] == organization_id
     assert helper_init["user_id"] == user_id
-    assert retrieval_calls == []
+    assert fanout_calls == [[str(allowed_kb_id)]]
+    assert result.answer_override == RAG_NO_EVIDENCE_MESSAGE
     assert audit_calls[0]["resource_id"] == str(denied_kb_id)
     assert audit_calls[0]["effective_auth_state"] == "none"
     assert audit_calls[0]["organization_id"] == organization_id
+
+
+def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denied(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    allowed_kb_id = uuid.uuid4()
+    denied_kb_id = uuid.uuid4()
+    fanout_calls = []
+    denied_audit_calls = []
+    retrieve_audit_calls = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(id=allowed_kb_id),
+                SimpleNamespace(id=denied_kb_id),
+            ]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def evaluate_kb_use(self, kb):
+            if kb.id == allowed_kb_id:
+                return SimpleNamespace(
+                    allowed=True,
+                    external_reason_code="allowed",
+                    effective_auth_state="manager",
+                )
+            if kb.id == denied_kb_id:
+                return SimpleNamespace(
+                    allowed=False,
+                    external_reason_code="permission.denied",
+                    effective_auth_state="none",
+                )
+            raise AssertionError(f"unexpected kb: {kb.id}")
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {kb.id: self.evaluate_kb_use(kb) for kb in kbs}
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
+        lambda **kwargs: denied_audit_calls.append(kwargs),
+    )
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        user_prompt="user",
+        knowledgeBases=[
+            KnowledgeBaseRef(id=str(allowed_kb_id), name="Allowed"),
+            KnowledgeBaseRef(id=str(denied_kb_id), name="Denied"),
+        ],
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+        },
+    )
+
+    def fake_fanout(**kwargs):
+        fanout_calls.append(kwargs["knowledge_base_ids"])
+        return WorkflowRAGFanoutResult(
+            results=[
+                (
+                    str(allowed_kb_id),
+                    [
+                        _chunk_preview(
+                            "개발자 커밋 컨벤션은 feat/fix/docs 타입을 사용합니다.",
+                            filename="commit-convention.md",
+                        )
+                    ],
+                )
+            ],
+            failed_count=0,
+        )
+
+    monkeypatch.setattr(node, "_run_rag_retrieval_fanout", fake_fanout)
+    monkeypatch.setattr(
+        node,
+        "_record_rag_retrieve_audit",
+        lambda *args, **kwargs: retrieve_audit_calls.append(args),
+    )
+
+    result = node._execute_knowledge_search("commit convention", db_session=FakeDb())  # noqa: SLF001
+
+    assert fanout_calls == [[str(allowed_kb_id)]]
+    assert denied_audit_calls[0]["resource_id"] == str(denied_kb_id)
+    assert result.should_invoke_llm is True
+    assert result.answer_override is None
+    assert "커밋 컨벤션" in result.context
+    assert result.trace_summary["authorized_kb_count"] == 1
+    assert result.trace_summary["selected_kb_count"] == 1
+    assert result.metadata[0]["knowledge_base_id"] == str(allowed_kb_id)
+    assert retrieve_audit_calls[0][1] == str(allowed_kb_id)
 
 
 def test_knowledge_search_fails_closed_when_runtime_permission_revoked(monkeypatch):
@@ -3533,6 +3647,7 @@ def test_knowledge_search_fails_closed_when_runtime_permission_revoked(monkeypat
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
     retrieval_calls = []
+    audit_calls = []
 
     class FakeQuery:
         def filter(self, *args, **kwargs):
@@ -3563,6 +3678,10 @@ def test_knowledge_search_fails_closed_when_runtime_permission_revoked(monkeypat
         "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
         FakeKnowledgePermissionHelper,
     )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
     node = LLMNode(
         "llm-1",
         LLMNodeData(
@@ -3584,13 +3703,18 @@ def test_knowledge_search_fails_closed_when_runtime_permission_revoked(monkeypat
     monkeypatch.setattr(
         node,
         "_run_rag_retrieval_fanout",
-        lambda **kwargs: retrieval_calls.append(kwargs["knowledge_base_ids"]),
+        lambda **kwargs: retrieval_calls.append(kwargs["knowledge_base_ids"])
+        or WorkflowRAGFanoutResult(results=[], failed_count=0),
     )
 
-    with pytest.raises(PermissionError, match="Knowledge Base is unavailable"):
-        node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
-    assert retrieval_calls == []
+    assert retrieval_calls == [[]]
+    assert result.should_invoke_llm is False
+    assert result.answer_override == RAG_NO_EVIDENCE_MESSAGE
+    assert audit_calls[0]["resource_id"] == str(kb_id)
+    assert audit_calls[0]["effective_auth_state"] == "revoked"
+    assert audit_calls[0]["organization_id"] == organization_id
 
 
 def test_knowledge_search_excludes_inactive_kbs_before_permission_check(monkeypatch):
@@ -3662,18 +3786,20 @@ def test_knowledge_search_excludes_inactive_kbs_before_permission_check(monkeypa
     monkeypatch.setattr(
         node,
         "_run_rag_retrieval_fanout",
-        lambda **kwargs: retrieval_calls.append(kwargs["knowledge_base_ids"]),
+        lambda **kwargs: retrieval_calls.append(kwargs["knowledge_base_ids"])
+        or WorkflowRAGFanoutResult(results=[], failed_count=0),
     )
     db = FakeDb()
 
-    with pytest.raises(PermissionError, match="Knowledge Base is unavailable"):
-        node._execute_knowledge_search("query", db_session=db)  # noqa: SLF001
+    result = node._execute_knowledge_search("query", db_session=db)  # noqa: SLF001
 
     assert any(
         "knowledge_bases.lifecycle_state" in filter_text
         for filter_text in db.query_obj.filter_texts
     )
-    assert retrieval_calls == []
+    assert retrieval_calls == [[]]
+    assert result.should_invoke_llm is False
+    assert result.answer_override == RAG_NO_EVIDENCE_MESSAGE
 
 
 def test_knowledge_search_rejects_invalid_kb_id_before_retrieval():

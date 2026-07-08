@@ -253,6 +253,28 @@ describe('FR-003 RAG cost optimization options', () => {
     expect(updateNodeDataMock).not.toHaveBeenCalled();
   });
 
+  it('지식 베이스 목록 조회 실패 시 raw 오류 내용을 화면에 노출하지 않는다', async () => {
+    vi.mocked(fetchEligibleKnowledgeBases).mockRejectedValueOnce(
+      new Error('provider failed with api_key=secret-like-value'),
+    );
+
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={baseData}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    expect(
+      await screen.findByText('지식을 불러오지 못했습니다.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/secret-like-value|api_key|provider failed/i),
+    ).not.toBeInTheDocument();
+  });
+
   it('특수문자가 포함된 지식 베이스 이름을 선택 payload에 보존한다', async () => {
     const kbName = 'R&D 정책 / 승인: <Beta>';
     vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
@@ -283,6 +305,75 @@ describe('FR-003 RAG cost optimization options', () => {
     expect(updateNodeDataMock).toHaveBeenCalledWith('llm-1', {
       knowledgeBases: [{ id: 'kb-special', name: kbName }],
     });
+  });
+
+  it('긴 지식 베이스 이름과 문서명을 패널 안에서 줄임 처리한다', async () => {
+    const kbName =
+      '사내문서: 아주 긴 개발팀 커밋 브랜치 PR 컨벤션 문서 제목 '.repeat(
+        4,
+      );
+    const filename =
+      '12345678-1234-1234-1234-123456789abc_' +
+      '매우-긴-파일명-커밋-브랜치-PR-컨벤션-세부-운영-가이드.md'.repeat(
+        3,
+      );
+
+    vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
+      bases: [
+        {
+          id: 'kb-long',
+          name: kbName,
+          description: '긴 표시명 테스트',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+        },
+      ],
+      detailsById: {
+        'kb-long': {
+          id: 'kb-long',
+          name: kbName,
+          description: '긴 표시명 테스트',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+          documents: [
+            {
+              id: 'doc-long',
+              filename,
+              status: 'completed',
+              created_at: '2026-07-01T00:00:00Z',
+              updated_at: '2026-07-01T00:00:00Z',
+              chunk_count: 7,
+              token_count: 700,
+            },
+          ],
+        },
+      },
+    });
+
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={baseData}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    const kbLabel = await screen.findByText((content, element) => {
+      return (
+        element?.tagName === 'SPAN' && content.trim() === kbName.trim()
+      );
+    });
+    expect(kbLabel).toHaveClass('truncate');
+
+    fireEvent.click(screen.getByText('지식 목록 보기'));
+
+    const fileLabel = await screen.findByText(
+      /매우-긴-파일명-커밋-브랜치-PR-컨벤션/,
+    );
+    expect(fileLabel).toHaveClass('truncate');
   });
 
   it('A/B 후보 지식 베이스 탭에서 지식 베이스를 선택한다', async () => {

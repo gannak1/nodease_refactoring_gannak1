@@ -1816,17 +1816,21 @@ class LLMNode(Node[LLMNodeData]):
         for kb_id in parsed_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
-                raise PermissionError("Knowledge Base is unavailable.")
-            decision = decisions[kb.id]
-            if not decision.allowed:
-                if decision.external_reason_code == "permission.denied":
-                    self._record_knowledge_permission_denied(
-                        user_id,
-                        str(kb_id),
-                        decision.effective_auth_state,
-                        organization_id,
-                    )
-                raise PermissionError("Knowledge Base is unavailable.")
+                # Stale deployment snapshots can contain KBs that were later deleted
+                # or made inactive. Hide them from retrieval instead of failing the
+                # whole LLM node and leaking resource state to the user.
+                continue
+            decision = decisions.get(kb.id)
+            if decision is None or not decision.allowed:
+                self._record_knowledge_permission_denied(
+                    user_id,
+                    str(kb_id),
+                    getattr(decision, "effective_auth_state", "unknown")
+                    if decision
+                    else "unknown",
+                    organization_id,
+                )
+                continue
             authorized_ids.append(str(kb_id))
         return authorized_ids
 
