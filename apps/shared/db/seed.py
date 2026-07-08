@@ -11,8 +11,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Iterable
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMProvider
 from apps.shared.db.models.user import User
@@ -26,6 +24,7 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.services.password_hashing import hash_password
+from sqlalchemy.orm import Session
 
 PLACEHOLDER_USER_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 DEV_WORKFLOW_APP_IDS = {

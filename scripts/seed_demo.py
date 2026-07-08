@@ -13,24 +13,24 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text  # noqa: E402
 
-from apps.shared.db.base import Base
-from apps.shared.db.demo_seed import (
+from apps.shared.db.base import Base  # noqa: E402
+from apps.shared.db.demo_seed import (  # noqa: E402
     DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV,
+    DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV,
     demo_summary,
     reset_demo_data,
     reset_test_data,
     seed_demo_data,
     seed_test_data,
-    DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV,
     validate_demo_seed_prerequisites,
 )
-from apps.shared.db.session import SessionLocal, engine
-from apps.shared.services.knowledge_schema_readiness import (
+from apps.shared.db.session import SessionLocal, engine  # noqa: E402
+from apps.shared.services.knowledge_schema_readiness import (  # noqa: E402
     check_knowledge_schema_readiness_with_inspector,
 )
-import apps.shared.db.models  # noqa: F401
+import apps.shared.db.models  # noqa: E402, F401
 
 
 REQUIRED_DEMO_SCHEMA_COLUMNS: dict[str, set[str]] = {
