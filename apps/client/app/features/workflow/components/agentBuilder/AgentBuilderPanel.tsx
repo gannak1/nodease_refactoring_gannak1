@@ -16,6 +16,7 @@ import {
 import { workflowApi } from '../../api/workflowApi';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { Node } from '../../types/Workflow';
+import { calculateAutoLayout } from '../../utils/layoutHelpers';
 
 type Props = {
   workflowId: string;
@@ -30,6 +31,8 @@ type Props = {
 type ConversationItem =
   | { kind: 'user'; id: string; content: string }
   | { kind: 'assistant'; id: string; response: AgentBuilderMessageResponse };
+
+const DEFAULT_WORKFLOW_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 
 const UI_ONLY_NODE_DATA_KEYS = new Set([
   'selected',
@@ -115,14 +118,22 @@ const canonicalEditorGraph = (nodes: Node[], edges: Edge[]) => {
   return { nodes: realNodes, edges: realEdges };
 };
 
-const assistantItemsFromResponses = (
-  responses: AgentBuilderMessageResponse[],
-): ConversationItem[] =>
-  responses.map((response) => ({
-    kind: 'assistant',
-    id: `assistant-${response.request_id}`,
-    response,
-  }));
+const optimizeSavedWorkflowLayout = (workflow: {
+  nodes?: Node[];
+  edges?: Edge[];
+  viewport?: Viewport;
+  features?: Record<string, unknown>;
+}) => {
+  const workflowNodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+  const workflowEdges = Array.isArray(workflow.edges) ? workflow.edges : [];
+
+  return {
+    ...workflow,
+    nodes: calculateAutoLayout(workflowNodes, workflowEdges) as Node[],
+    edges: workflowEdges,
+    viewport: workflow.viewport ?? DEFAULT_WORKFLOW_VIEWPORT,
+  };
+};
 
 const isAgentBuilderMessageResponse = (
   value: unknown,
@@ -175,6 +186,16 @@ const conversationItemsFromSessionMessages = (
   return { responses, conversationItems };
 };
 
+const lastUserMessageFromConversation = (items: ConversationItem[]) => {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind === 'user') {
+      return item.content;
+    }
+  }
+  return '';
+};
+
 const responseFromSessionDraftPreview = (
   draftPreview: AgentBuilderDraftPreview | null | undefined,
 ): AgentBuilderMessageResponse | null => {
@@ -189,7 +210,9 @@ const responseFromSessionDraftPreview = (
     clarification_options: [],
     draft_preview: draftPreview,
     validation_result: draftPreview.validation_result,
-    preview_prompt: draftPreview.validation_result.valid ? '도안 보기' : null,
+    preview_prompt: draftPreview.validation_result.valid
+      ? '도안 생성 미리보기'
+      : null,
     warnings: draftPreview.safety_notices ?? [],
   };
 };
@@ -245,6 +268,7 @@ export function AgentBuilderPanel({
     useState<(AgentBuilderKnowledgeCandidateSelection & { label?: string | null }) | null>(
       null,
     );
+  const [lastSubmittedMessage, setLastSubmittedMessage] = useState('');
   const router = useRouter();
   const { getViewport, setViewport } = useReactFlow();
   const agentBuilderPreview = useWorkflowStore((state) => state.agentBuilderPreview);
@@ -255,14 +279,12 @@ export function AgentBuilderPanel({
     (state) => state.clearAgentBuilderPreview,
   );
   const setWorkflowData = useWorkflowStore((state) => state.setWorkflowData);
+  const setActiveWorkflowIdSafe = useWorkflowStore(
+    (state) => state.setActiveWorkflowIdSafe,
+  );
   const envVariables = useWorkflowStore((state) => state.envVariables);
   const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
 
-  const latestResponse = responses[responses.length - 1];
-  const latestDraftPreview = latestResponse?.draft_preview;
-  const canShowDraftPreviewAction = Boolean(
-    latestDraftPreview?.validation_result.valid,
-  );
   const storageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
   const scopeRef = useRef(storageKey);
 
@@ -303,6 +325,7 @@ export function AgentBuilderPanel({
     setPendingRequestId(null);
     setPrePreviewViewport(null);
     setSelectedKnowledgeCandidate(null);
+    setLastSubmittedMessage('');
     clearAgentBuilderPreview();
   }, [storageKey, clearAgentBuilderPreview]);
 
@@ -342,6 +365,9 @@ export function AgentBuilderPanel({
             : restored.conversationItems;
         setResponses(restoredResponses);
         setConversationItems(restoredConversationItems);
+        setLastSubmittedMessage(
+          lastUserMessageFromConversation(restoredConversationItems),
+        );
         const requestId = session.pending_request?.request_id;
         setPendingRequestId(typeof requestId === 'string' ? requestId : null);
       })
@@ -385,7 +411,7 @@ export function AgentBuilderPanel({
         setViewport(prePreviewViewport);
         setPrePreviewViewport(null);
       }
-      setApplyNotice('새 요청을 보내 이전 도안 보기를 종료했습니다.');
+      setApplyNotice('새 요청을 보내 이전 도안 생성 미리보기를 종료했습니다.');
     }
     setIsSubmitting(true);
     setConversationItems((items) => [
@@ -417,6 +443,7 @@ export function AgentBuilderPanel({
       });
       appendResponse(response);
       setPendingRequestId(null);
+      setLastSubmittedMessage(trimmedMessage);
       setSelectedKnowledgeCandidate(null);
       if (options?.clearInput !== false) {
         setInput('');
@@ -430,14 +457,11 @@ export function AgentBuilderPanel({
   };
 
   const submit = async () => {
-    await submitAgentBuilderMessage(input, { clearInput: true });
-  };
-
-  const confirmKnowledgeCandidate = async () => {
-    if (!selectedKnowledgeCandidate) return;
-    await submitAgentBuilderMessage('선택한 Knowledge Base로 도안을 생성해줘', {
-      selectedKnowledgeCandidate,
-      clearInput: false,
+    const message =
+      input.trim() || (selectedKnowledgeCandidate ? lastSubmittedMessage : '');
+    await submitAgentBuilderMessage(message, {
+      selectedKnowledgeCandidate: selectedKnowledgeCandidate ?? undefined,
+      clearInput: true,
     });
   };
 
@@ -483,22 +507,23 @@ export function AgentBuilderPanel({
     }
   };
 
-  const openPreview = async () => {
-    const preview = latestDraftPreview;
+  const openPreview = async (
+    preview: AgentBuilderDraftPreview | null | undefined,
+  ) => {
     if (!preview) return;
     if (agentBuilderPreview) return;
     if (hasUnsavedChanges) {
-      toast.warning('저장되지 않은 변경이 있어 도안 보기를 열 수 없습니다.');
+      toast.warning('저장되지 않은 변경이 있어 도안 생성 미리보기를 열 수 없습니다.');
       return;
     }
     if (!preview.validation_result.valid) {
-      toast.warning('검증을 통과한 초안만 도안 보기로 열 수 있습니다.');
+      toast.warning('검증을 통과한 초안만 도안 생성 미리보기로 열 수 있습니다.');
       return;
     }
     try {
       await agentBuilderApi.recordPreviewOpened(preview.draft_id);
     } catch {
-      toast.error('도안 보기 audit 기록에 실패해 미리보기를 열 수 없습니다. 다시 시도해주세요.');
+      toast.error('도안 생성 미리보기 audit 기록에 실패해 미리보기를 열 수 없습니다. 다시 시도해주세요.');
       return;
     }
     setIsOpen(true);
@@ -551,12 +576,26 @@ export function AgentBuilderPanel({
           workflowApi.getWorkflow(savedWorkflowId),
         ]);
         const isSameWorkflow = savedWorkflowId === workflowId;
+        const savedEnvVariables = isSameWorkflow ? envVariables : [];
+        const savedRuntimeVariables = isSameWorkflow ? runtimeVariables : [];
+        const optimizedWorkflow = optimizeSavedWorkflowLayout(savedWorkflow);
+        await workflowApi.syncDraftWorkflow(savedWorkflowId, {
+          nodes: optimizedWorkflow.nodes,
+          edges: optimizedWorkflow.edges,
+          viewport: optimizedWorkflow.viewport,
+          features: optimizedWorkflow.features,
+          envVariables: savedEnvVariables,
+          runtimeVariables: savedRuntimeVariables,
+        });
+        if (!isSameWorkflow) {
+          setActiveWorkflowIdSafe(savedWorkflowId);
+        }
         setWorkflowData(
           {
-            ...savedWorkflow,
+            ...optimizedWorkflow,
             appId: savedWorkflowMeta.app_id,
-            envVariables: isSameWorkflow ? envVariables : [],
-            runtimeVariables: isSameWorkflow ? runtimeVariables : [],
+            envVariables: savedEnvVariables,
+            runtimeVariables: savedRuntimeVariables,
           },
           savedWorkflowId,
         );
@@ -592,14 +631,14 @@ export function AgentBuilderPanel({
           response.notices[0] ??
           response.block_reason ??
           response.failure_reason ??
-          '도안 보기 취소를 기록하지 못했습니다.';
+          '도안 생성 미리보기 취소를 기록하지 못했습니다.';
         setApplyNotice(notice);
         toast.warning(notice);
         return;
       }
     } catch {
-      setApplyNotice('도안 보기 취소 기록에 실패했습니다.');
-      toast.error('도안 보기 취소 기록에 실패했습니다.');
+      setApplyNotice('도안 생성 미리보기 취소 기록에 실패했습니다.');
+      toast.error('도안 생성 미리보기 취소 기록에 실패했습니다.');
       return;
     }
     setApplyNotice(null);
@@ -609,6 +648,10 @@ export function AgentBuilderPanel({
       setPrePreviewViewport(null);
     }
   };
+
+  const canSubmitMessage = Boolean(
+    input.trim() || (selectedKnowledgeCandidate && lastSubmittedMessage),
+  );
 
   return (
     <div className="fixed bottom-[72px] right-5 z-50 flex flex-col items-end gap-3">
@@ -630,7 +673,7 @@ export function AgentBuilderPanel({
               }}
               disabled={Boolean(agentBuilderPreview)}
               className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
-              aria-label="Agent Builder 닫기"
+              aria-label="Close Agent Builder"
             >
               <X className="h-4 w-4" />
             </button>
@@ -641,7 +684,7 @@ export function AgentBuilderPanel({
               <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
-                  저장되지 않은 변경이 있어 초안 생성, 도안 보기, 적용 및 저장이 차단됩니다.
+                  저장되지 않은 변경이 있어 초안 생성, 도안 생성 미리보기, 적용 및 저장이 차단됩니다.
                 </span>
               </div>
             )}
@@ -682,10 +725,23 @@ export function AgentBuilderPanel({
                     {response.status}
                   </div>
                   {response.draft_preview ? (
-                    <p className="mt-2 text-slate-700">
-                      workflow 초안이 생성되었습니다. 도안 보기에서 실제 editor graph와
-                      분리된 preview를 확인할 수 있습니다.
-                    </p>
+                    <>
+                      <p className="mt-2 text-slate-700">
+                        workflow 초안이 생성되었습니다. 도안 생성 미리보기에서
+                        실제 editor graph와 분리된 preview를 확인할 수 있습니다.
+                      </p>
+                      {response.draft_preview.validation_result.valid ? (
+                        <button
+                          type="button"
+                          onClick={() => openPreview(response.draft_preview)}
+                          disabled={hasUnsavedChanges || Boolean(agentBuilderPreview)}
+                          className="mt-2 inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          <Eye className="h-4 w-4" />
+                          도안 생성 미리보기
+                        </button>
+                      ) : null}
+                    </>
                   ) : null}
                   {response.clarification_questions?.map((question) => (
                     <p key={question} className="mt-2 text-slate-700">
@@ -743,16 +799,6 @@ export function AgentBuilderPanel({
                           </button>
                         );
                       })}
-                      {selectedKnowledgeCandidate && (
-                        <button
-                          type="button"
-                          onClick={confirmKnowledgeCandidate}
-                          disabled={isSubmitting || Boolean(pendingRequestId)}
-                          className="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                        >
-                          이 Knowledge Base로 도안 생성
-                        </button>
-                      )}
                     </div>
                   ) : null}
                   {response.validation_result?.issues?.map((issue) => (
@@ -771,17 +817,6 @@ export function AgentBuilderPanel({
           </div>
 
           <div className="border-t border-slate-200 p-3">
-            {canShowDraftPreviewAction && (
-              <button
-                type="button"
-                onClick={openPreview}
-                disabled={hasUnsavedChanges || Boolean(agentBuilderPreview)}
-                className="mb-2 flex w-full items-center justify-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                <Eye className="h-4 w-4" />
-                도안 보기
-              </button>
-            )}
             {agentBuilderPreview && applyNotice && (
               <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {applyNotice}
@@ -819,7 +854,7 @@ export function AgentBuilderPanel({
                 type="button"
                 onClick={submit}
                 disabled={
-                  !input.trim() ||
+                  !canSubmitMessage ||
                   hasUnsavedChanges ||
                   isSubmitting ||
                   Boolean(pendingRequestId)
@@ -830,7 +865,10 @@ export function AgentBuilderPanel({
                 {isSubmitting ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Send className="h-4 w-4" />
+                  <>
+                    <Send className="h-4 w-4" />
+                    <span className="sr-only">요청 보내기</span>
+                  </>
                 )}
               </button>
             </div>

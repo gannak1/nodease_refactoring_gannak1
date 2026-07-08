@@ -50,7 +50,18 @@ from apps.shared.services.permission_audit import record_resource_permission_den
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
-MVP_SUPPORTED_NODE_TYPES = {"startNode", "llmNode", "answerNode", "slackPostNode"}
+MVP_SUPPORTED_NODE_TYPES = {
+    "startNode",
+    "webhookTrigger",
+    "llmNode",
+    "answerNode",
+    "slackPostNode",
+}
+NO_KB_CANDIDATE_ID = "__agent_builder_no_kb__"
+NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
+NO_KB_CANDIDATE_WARNING = (
+    "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
+)
 SAFE_SIDE_EFFECT_NOTICE = (
     "초안 생성, 미리보기, 적용 및 저장 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않습니다."
@@ -163,8 +174,9 @@ SIMPLE_INPUT_OUTPUT_RE = re.compile(
     r"((출력|output)\s*(?:-|←|<-)?\s*(입력|input))",
     re.IGNORECASE,
 )
+WEBHOOK_TRIGGER_RE = re.compile(r"(webhook|web\s*hook|웹훅)", re.IGNORECASE)
 APPROVED_DRAFT_MODEL_ENV = "AGENT_BUILDER_DRAFT_MODEL_ID"
-SAFE_TRIGGER_TYPES = {"manual", "schedule", "api"}
+SAFE_TRIGGER_TYPES = {"manual", "schedule", "api", "webhook"}
 
 
 def _safe_display_label(value: Any, *, fallback: str = "Knowledge Base") -> str:
@@ -212,6 +224,10 @@ def _message_looks_like_workflow_request(message: str) -> bool:
 
 def _message_requests_simple_input_output(message: str) -> bool:
     return bool(SIMPLE_INPUT_OUTPUT_RE.search(message or ""))
+
+
+def _message_requests_webhook_trigger(message: str) -> bool:
+    return bool(WEBHOOK_TRIGGER_RE.search(message or ""))
 
 
 def _redact_kb_refs(value: Any) -> list[dict[str, Any]]:
@@ -909,7 +925,7 @@ class AgentBuilderService:
             structured_request=structured,
             draft_preview=preview,
             validation_result=draft_validation,
-            preview_prompt="도안 보기",
+            preview_prompt="도안 생성 미리보기",
             warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
         )
         if self._finish_request(request_row, response) is not False:
@@ -1175,7 +1191,7 @@ class AgentBuilderService:
                 block_reason="USER_CANCELED",
                 audit_recorded=True,
                 notices=[
-                    "도안 보기를 닫았습니다. 실제 workflow graph는 변경되지 않았습니다."
+                    "도안 생성 미리보기를 닫았습니다. 실제 workflow graph는 변경되지 않았습니다."
                 ],
             )
 
@@ -1421,6 +1437,7 @@ class AgentBuilderService:
                     "permission_recheck_outcome": "allowed",
                     "stale_state": "not_stale",
                     "validation_state": "valid",
+                    "layout_optimization_applied": True,
                     "audit_durability": "same_transaction_audit_log",
                 },
             )
@@ -1440,6 +1457,7 @@ class AgentBuilderService:
                 permission_recheck_outcome="allowed",
                 validation_state="valid",
                 audit_recorded=True,
+                layout_optimization_applied=True,
                 notices=[
                     "도안을 workflow graph로 저장했습니다. 실행은 별도 사용자 동작으로만 시작됩니다."
                 ],
@@ -1639,6 +1657,7 @@ class AgentBuilderService:
             for token in ["정책", "규정", "내규", "문서", "자료", "근거", "찾아", "검색", "Knowledge", "KB"]
         )
         wants_slack = "slack" in text or "슬랙" in request.message
+        wants_webhook = _message_requests_webhook_trigger(request.message)
         simple_input_output = _message_requests_simple_input_output(request.message)
         knowledge_requirements: list[AgentBuilderKnowledgeRequirement] = []
         pending_resolution: list[AgentBuilderPendingResolution] = []
@@ -1687,15 +1706,18 @@ class AgentBuilderService:
         draft_mode = (
             "modify_workflow" if targeted_modify else "new_workflow"
         )
+        entry_capability = "webhook_trigger" if wants_webhook else "start_input"
         planned_steps = [
             AgentBuilderPlannedStep(
                 step_id="step_input",
-                capability="start_input",
-                purpose="사용자 입력을 받습니다.",
+                capability=entry_capability,
+                purpose="웹훅 payload를 받습니다."
+                if wants_webhook
+                else "사용자 입력을 받습니다.",
             )
         ]
         answer_depends_on = ["step_input"]
-        required_capabilities = ["start_input", "answer"]
+        required_capabilities = [entry_capability, "answer"]
         risk_flags: list[str] = []
         if not simple_input_output:
             planned_steps.append(
@@ -1826,6 +1848,12 @@ class AgentBuilderService:
             if item.slot_type == "knowledge_base"
         }
         for requirement in structured.knowledge_requirements:
+            if (
+                selected_candidate_handles
+                and NO_KB_CANDIDATE_ID in selected_candidate_handles
+            ):
+                warnings.append(NO_KB_CANDIDATE_WARNING)
+                continue
             response = service.recommend_for_builder(
                 KnowledgeRAGRecommendationRequest(
                     workflow_intent=structured.intent_summary,
@@ -1921,6 +1949,41 @@ class AgentBuilderService:
                 ]
                 if selected_recommendations:
                     recommendations = selected_recommendations
+                    for selected in recommendations:
+                        binding_base = {
+                            "safe_handle": (
+                                selected.candidate_handle
+                                or selected.recommendation_id
+                            ),
+                            "name": _safe_display_label(selected.safe_label),
+                            "confidence": selected.confidence or "medium",
+                            "score": selected.score,
+                            "reason_category": (
+                                selected.reason_category
+                                or selected.safe_reason_code
+                                or "user_selected"
+                            ),
+                            "threshold_result": (
+                                selected.threshold_result or "user_selected"
+                            ),
+                        }
+                        if include_materialized_refs:
+                            for ref in selected.materialized_knowledge_bases:
+                                bindings.append(
+                                    {
+                                        **binding_base,
+                                        "knowledge_base_id": str(ref.id),
+                                        "name": _safe_display_label(ref.name),
+                                    }
+                                )
+                        else:
+                            bindings.append(binding_base)
+                        warnings.extend(selected.warnings)
+                    if bindings:
+                        warnings.append(
+                            "사용자가 선택한 Knowledge Base 후보로 초안을 생성합니다."
+                        )
+                        continue
                 else:
                     if not include_materialized_refs:
                         selected_option = next(
@@ -1991,7 +2054,12 @@ class AgentBuilderService:
                 len(recommendations) == 1
                 or top_score - second_score >= 0.1
             )
-            if not high_confidence:
+            single_clear_candidate = (
+                len(recommendations) == 1
+                and top.threshold_result in {"high_confidence", "close_score"}
+                and top_score >= 0.45
+            )
+            if not (high_confidence or single_clear_candidate):
                 return {
                     "status": "clarification_required",
                     "bindings": [],
@@ -2059,7 +2127,7 @@ class AgentBuilderService:
         requirement: AgentBuilderKnowledgeRequirement,
         resolution_id: str | None,
     ) -> list[dict[str, Any]]:
-        return [
+        contextualized = [
             {
                 **option,
                 "requirement_id": option.get("requirement_id")
@@ -2068,6 +2136,26 @@ class AgentBuilderService:
             }
             for option in options
         ]
+        if not any(
+            str(option.get("candidate_id")) == NO_KB_CANDIDATE_ID
+            for option in contextualized
+        ):
+            contextualized.append(
+                {
+                    "type": "no_knowledge_base",
+                    "candidate_id": NO_KB_CANDIDATE_ID,
+                    "label": NO_KB_CANDIDATE_LABEL,
+                    "safe_label": NO_KB_CANDIDATE_LABEL,
+                    "confidence": "user_choice",
+                    "score": None,
+                    "reason_category": "user_selected_no_kb",
+                    "threshold_result": "user_selected",
+                    "runtime_availability": "not_applicable",
+                    "requirement_id": requirement.requirement_id,
+                    "resolution_id": resolution_id,
+                }
+            )
+        return contextualized
 
     def _safe_kb_bindings(self, bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
@@ -2183,11 +2271,17 @@ class AgentBuilderService:
             draft.preview_graph,
             runtime_kb_bindings,
         )
+        generated_node_ids = list(
+            (draft.draft_metadata or {}).get("generated_node_ids") or []
+        )
         if workflow is None or draft.draft_mode == "replace_workflow":
-            return materialized_preview
+            return self._layout_graph_for_apply_save(
+                materialized_preview,
+                generated_node_ids=generated_node_ids,
+            )
 
         save_graph = copy.deepcopy(workflow.graph or _empty_graph())
-        generated_node_ids = set((draft.draft_metadata or {}).get("generated_node_ids") or [])
+        generated_node_id_set = set(generated_node_ids)
         generated_edge_ids = set((draft.draft_metadata or {}).get("generated_edge_ids") or [])
         target_resolution = (draft.draft_metadata or {}).get("target_resolution") or {}
         selected_edge_id = target_resolution.get("selected_edge_id")
@@ -2200,7 +2294,7 @@ class AgentBuilderService:
         save_graph["nodes"] = (save_graph.get("nodes") or []) + [
             node
             for node in materialized_preview.get("nodes") or []
-            if str(node.get("id")) in generated_node_ids
+            if str(node.get("id")) in generated_node_id_set
             and str(node.get("id")) not in existing_node_ids
         ]
         if selected_edge_id:
@@ -2215,8 +2309,31 @@ class AgentBuilderService:
             if str(edge.get("id")) in generated_edge_ids
             and str(edge.get("id")) not in existing_edge_ids
         ]
-        save_graph.setdefault("viewport", workflow.graph.get("viewport") if workflow.graph else None)
-        return save_graph
+        save_graph.setdefault(
+            "viewport",
+            workflow.graph.get("viewport") if workflow.graph else None,
+        )
+        return self._layout_graph_for_apply_save(
+            save_graph,
+            generated_node_ids=generated_node_ids,
+        )
+
+    def _layout_graph_for_apply_save(
+        self,
+        graph: dict[str, Any],
+        *,
+        generated_node_ids: list[str],
+    ) -> dict[str, Any]:
+        layout_node_ids = generated_node_ids or [
+            str(node.get("id"))
+            for node in graph.get("nodes") or []
+            if node.get("id") and node.get("type") != "note"
+        ]
+        return _layout_generated_preview_nodes(
+            graph,
+            layout_node_ids,
+            anchor_node_id=None,
+        )
 
     def _build_preview_graph(
         self,
@@ -2233,6 +2350,15 @@ class AgentBuilderService:
         existing_ids = _graph_node_ids(graph)
         suffix = uuid.uuid4().hex[:8]
         input_id = self._unique_node_id("agent-input", existing_ids, suffix)
+        uses_webhook_trigger = (
+            "webhook_trigger" in structured.required_capabilities
+            or any(
+                step.capability == "webhook_trigger"
+                for step in structured.planned_steps
+            )
+        )
+        input_output_key = "payload" if uses_webhook_trigger else "question"
+        input_output_label = "웹훅 페이로드" if uses_webhook_trigger else "질문"
         uses_llm = "llm" in structured.required_capabilities or any(
             step.capability in {"llm", "knowledge_backed_llm"}
             for step in structured.planned_steps
@@ -2259,31 +2385,50 @@ class AgentBuilderService:
             "agent-answer", reserved_ids, suffix
         )
         model_id = self._default_model_id() if llm_id else None
-        kb_refs = [
-            {
-                "id": item["safe_handle"],
-                "name": _safe_display_label(item.get("name")),
-                "reference_type": "safe_candidate_handle",
-            }
-            for item in kb_bindings
-        ] if llm_id else []
+        kb_refs = (
+            [
+                {
+                    "id": item["safe_handle"],
+                    "name": _safe_display_label(item.get("name")),
+                    "reference_type": "safe_candidate_handle",
+                }
+                for item in kb_bindings
+            ]
+            if llm_id
+            else []
+        )
         generated_nodes = [
             {
                 "id": input_id,
-                "type": "startNode",
+                "type": "webhookTrigger" if uses_webhook_trigger else "startNode",
                 "position": {"x": 0, "y": 0},
                 "data": {
-                    "title": "입력",
-                    "triggerType": "manual",
-                    "variables": [
+                    **(
                         {
-                            "id": "question",
-                            "name": "question",
-                            "label": "질문",
-                            "type": "paragraph",
-                            "required": True,
+                            "title": "웹훅 입력",
+                            "provider": "custom",
+                            "variable_mappings": [
+                                {
+                                    "variable_name": input_output_key,
+                                    "json_path": "$",
+                                }
+                            ],
                         }
-                    ],
+                        if uses_webhook_trigger
+                        else {
+                            "title": "입력",
+                            "triggerType": "manual",
+                            "variables": [
+                                {
+                                    "id": input_output_key,
+                                    "name": input_output_key,
+                                    "label": input_output_label,
+                                    "type": "paragraph",
+                                    "required": True,
+                                }
+                            ],
+                        }
+                    )
                 },
             },
         ]
@@ -2299,11 +2444,11 @@ class AgentBuilderService:
                         "model_id": model_id,
                         "task_type": "answer",
                         "system_prompt": "사용자 질문에 안전하게 답변합니다.",
-                        "user_prompt": "{{question}}",
+                        "user_prompt": f"{{{{{input_output_key}}}}}",
                         "referenced_variables": [
                             {
-                                "name": "question",
-                                "value_selector": [input_id, "question"],
+                                "name": input_output_key,
+                                "value_selector": [input_id, input_output_key],
                             }
                         ],
                         "parameters": {},
@@ -2326,7 +2471,7 @@ class AgentBuilderService:
                             "variable": "answer",
                             "value_selector": [llm_id, "text"]
                             if llm_id
-                            else [input_id, "question"],
+                            else [input_id, input_output_key],
                         }
                     ],
                 },

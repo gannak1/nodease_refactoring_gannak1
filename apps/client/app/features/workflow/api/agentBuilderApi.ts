@@ -86,6 +86,7 @@ export type AgentBuilderApplyResponse = {
   permission_recheck_outcome: string;
   validation_state: string;
   audit_recorded: boolean;
+  layout_optimization_applied: boolean;
   notices: string[];
 };
 

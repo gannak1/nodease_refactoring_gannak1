@@ -120,11 +120,19 @@ Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과�
 | `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
 
-KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active document version이 없는 KB, active document version이 `ready`가 아닌 KB는 recommendation candidate에서 제외한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
+KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active ready document version과 legacy unversioned retrieval-visible chunk가 모두 없는 KB는 recommendation candidate에서 제외한다. Active document version이 있으나 `ready`가 아니고 legacy retrieval-visible artifact도 없는 KB는 selectable ready candidate가 아니며, response는 이를 권한 없음이나 hidden resource로 표현하지 않고 safe `candidate_not_ready` 또는 `indexing_in_progress` warning/fallback reason으로 표시할 수 있어야 한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
+
+Auto recommendation에서 route-allowed collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, resolver는 같은 active organization 안의 직접 권한 확인된 retrieval-visible KB를 safe candidate set fallback으로 평가할 수 있다. 명시적으로 빈 collection scope는 후보 없음으로 유지하며 direct KB fallback을 적용하지 않는다.
 
 금지: raw workflow intent, raw node purpose, raw natural language 전체, raw source id/url/path/title, raw ACL fact, raw principal, raw skill body, hidden KB id/name, exact denied/hidden count, raw prompt/completion/provider response.
 
 Validation 실패 응답도 같은 금지선을 따른다. Safe summary 입력이라도 Pydantic/FastAPI validation detail의 `input` 값으로 echo하지 않고, field path/type/message 수준의 sanitized error만 반환한다.
+
+## Document Processing Status
+
+Document processing status endpoints, including `GET /api/v1/knowledge/{kb_id}/documents/{document_id}` and `GET /api/v1/rag/document/{document_id}/progress`, must surface stale processing recovery. If a queued document never starts before the start timeout, the response eventually returns `status=failed` with a safe retryable message. If active processing has an active fencing token but no recent DB progress heartbeat, retrieval-visible chunk, or ready document version after the active stall timeout, the response also returns `status=failed`.
+
+Redis progress and Redis lock availability are not part of the public contract. The API must not require Redis to avoid infinite `processing`; Redis unavailable paths either continue through local processing fallback or become a safe terminal failure.
 
 ## Request Model
 

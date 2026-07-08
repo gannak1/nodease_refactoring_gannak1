@@ -179,7 +179,7 @@ export function LLMReferenceSidePanel({
       className={
         embedded
           ? 'flex h-full min-h-0 flex-col bg-white'
-          : 'absolute right-[400px] top-14 bottom-0 w-[360px] bg-white shadow-xl z-40 flex flex-col border-l border-gray-200'
+          : 'absolute right-[400px] top-14 bottom-0 z-40 flex max-h-[calc(100vh-3.5rem)] min-h-0 w-[360px] flex-col border-l border-gray-200 bg-white shadow-xl'
       }
       style={{ transition: 'transform 0.3s ease-in-out' }}
     >

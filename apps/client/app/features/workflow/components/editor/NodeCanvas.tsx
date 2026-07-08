@@ -90,11 +90,10 @@ function AgentBuilderPreviewNode({ data, type }: NodeProps) {
 }
 
 const agentBuilderPreviewNodeTypes = {
+  ...Object.fromEntries(
+    Object.keys(coreNodeTypes).map((type) => [type, AgentBuilderPreviewNode]),
+  ),
   agentBuilderPreviewNode: AgentBuilderPreviewNode,
-  startNode: AgentBuilderPreviewNode,
-  llmNode: AgentBuilderPreviewNode,
-  answerNode: AgentBuilderPreviewNode,
-  slackPostNode: AgentBuilderPreviewNode,
   note: AgentBuilderPreviewNode,
 } as unknown as NodeTypes;
 
@@ -1366,7 +1365,7 @@ export default function NodeCanvas() {
                 )}
 
                 {selectedPreviewNode && (
-                  <aside className="absolute right-4 top-4 z-40 w-80 rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-xl">
+                  <aside className="absolute left-4 top-16 z-40 max-h-[calc(100%-5rem)] w-80 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-xl">
                     <div className="flex items-center justify-between">
                       <h3 className="font-semibold text-slate-900">
                         Node Detail

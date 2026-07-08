@@ -1,3 +1,4 @@
+import copy
 import uuid
 from types import SimpleNamespace
 
@@ -269,7 +270,7 @@ def test_finish_request_does_not_overwrite_canceled_request():
     response = AgentBuilderMessageResponse(
         request_id=request_id,
         status="draft_ready",
-        preview_prompt="도안 보기",
+        preview_prompt="도안 생성 미리보기",
         warnings=["ready"],
     )
     svc = AgentBuilderService(
@@ -537,6 +538,42 @@ def test_input_output_request_builds_without_llm_model_route(monkeypatch):
     assert preview_graph["edges"][0]["target"].startswith("agent-answer")
 
 
+def test_webhook_request_builds_webhook_trigger_preview(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘"
+        ),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    nodes_by_type = {node["type"]: node for node in preview_graph["nodes"]}
+    assert structured.planned_steps[0].capability == "webhook_trigger"
+    assert "webhook_trigger" in structured.required_capabilities
+    assert "webhookTrigger" in nodes_by_type
+    webhook_node = nodes_by_type["webhookTrigger"]
+    assert webhook_node["data"]["variable_mappings"] == [
+        {"variable_name": "payload", "json_path": "$"}
+    ]
+    llm_node = nodes_by_type["llmNode"]
+    assert llm_node["data"]["user_prompt"] == "{{payload}}"
+    assert llm_node["data"]["referenced_variables"] == [
+        {"name": "payload", "value_selector": [webhook_node["id"], "payload"]}
+    ]
+    assert svc.validate_preview_graph(preview_graph).valid is True
+
+
 def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warning():
     svc = AgentBuilderService(
         FakeDb(),
@@ -772,6 +809,81 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
             "requirement_id": "kr_1",
             "resolution_id": "res_kb_1",
         },
+        {
+            "type": "no_knowledge_base",
+            "candidate_id": service_module.NO_KB_CANDIDATE_ID,
+            "label": service_module.NO_KB_CANDIDATE_LABEL,
+            "safe_label": service_module.NO_KB_CANDIDATE_LABEL,
+            "confidence": "user_choice",
+            "score": None,
+            "reason_category": "user_selected_no_kb",
+            "threshold_result": "user_selected",
+            "runtime_availability": "not_applicable",
+            "requirement_id": "kr_1",
+            "resolution_id": "res_kb_1",
+        },
+    ]
+
+
+def test_agent_builder_single_close_score_kb_candidate_is_bound(monkeypatch):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                recommendations=[
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-1",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-1",
+                        candidate_handle="safe-rec-1",
+                        safe_label="사내 문서",
+                        confidence="medium",
+                        score=0.5,
+                        threshold_result="close_score",
+                        safe_reason_code="intent_matches_safe_metadata",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        materialized_knowledge_bases=[],
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="intent_matches_safe_metadata",
+                        ),
+                        runtime_availability="available",
+                    )
+                ],
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="1",
+                    recommendation_count_bucket="1",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="사내 문서를 찾아 답변 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
+
+    assert result["status"] == "recommended"
+    assert result["bindings"] == [
+        {
+            "safe_handle": "safe-rec-1",
+            "name": "사내 문서",
+            "confidence": "medium",
+            "score": 0.5,
+            "reason_category": "intent_matches_safe_metadata",
+            "threshold_result": "close_score",
+        }
     ]
 
 
@@ -863,6 +975,152 @@ def test_agent_builder_selected_kb_candidate_uses_selected_safe_handle(monkeypat
             "knowledge_base_id": str(kb_id_b),
         }
     ]
+
+
+def test_agent_builder_selected_low_score_kb_candidate_does_not_repeat_clarification(
+    monkeypatch,
+):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                recommendations=[
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-1",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-1",
+                        candidate_handle="safe-rec-1",
+                        safe_label="Knowledge Base",
+                        confidence="low",
+                        score=0.33,
+                        threshold_result="below_threshold",
+                        safe_reason_code="intent_matches_safe_metadata",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        materialized_knowledge_bases=[],
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="intent_matches_safe_metadata",
+                        ),
+                        runtime_availability="available",
+                    )
+                ],
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="1",
+                    recommendation_count_bucket="1",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Knowledge Base로 답변 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(  # noqa: SLF001
+        structured,
+        selected_candidate_handles={"safe-rec-1"},
+    )
+
+    assert result["status"] == "recommended"
+    assert result["bindings"] == [
+        {
+            "safe_handle": "safe-rec-1",
+            "name": "Knowledge Base",
+            "confidence": "low",
+            "score": 0.33,
+            "reason_category": "intent_matches_safe_metadata",
+            "threshold_result": "below_threshold",
+        }
+    ]
+    assert "사용자가 선택한 Knowledge Base 후보" in result["warnings"][0]
+
+
+def test_agent_builder_selected_no_kb_option_skips_kb_binding(monkeypatch):
+    service_called = False
+
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            nonlocal service_called
+            service_called = True
+            return KnowledgeRAGRecommendationResponse(
+                recommendations=[
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-1",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-1",
+                        candidate_handle="safe-rec-1",
+                        safe_label="Knowledge Base",
+                        confidence="low",
+                        score=0.33,
+                        threshold_result="below_threshold",
+                        safe_reason_code="intent_matches_safe_metadata",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        materialized_knowledge_bases=[],
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="intent_matches_safe_metadata",
+                        ),
+                        runtime_availability="available",
+                    )
+                ],
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="1",
+                    recommendation_count_bucket="1",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="Use a Knowledge policy document in this workflow",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["policy"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+
+    result = svc._resolve_knowledge_requirements(  # noqa: SLF001
+        structured,
+        selected_candidate_handles={service_module.NO_KB_CANDIDATE_ID},
+    )
+
+    assert result["status"] == "recommended"
+    assert result["bindings"] == []
+    assert "Knowledge Base 없이" in result["warnings"][0]
+    assert service_called is False
 
 
 def test_agent_builder_kb_recommendation_adapter_unavailable_with_options_requires_clarification(monkeypatch):
@@ -1594,6 +1852,7 @@ def test_agent_builder_apply_commit_success_refresh_failure_still_returns_saved(
     assert response.outcome == "saved"
     assert response.saved_workflow_id == workflow_id
     assert response.audit_recorded is True
+    assert response.layout_optimization_applied is True
     assert db.rollbacks == 0
 
 
@@ -1877,6 +2136,122 @@ def test_agent_builder_save_graph_removes_selected_edge_when_spliced():
     assert "edge-start-answer" not in edge_ids
     assert "edge-start-agent-input" in edge_ids
     assert "edge-agent-answer-answer" in edge_ids
+
+
+def test_agent_builder_graph_for_apply_optimizes_layout_before_save():
+    preview_graph = {
+        "nodes": [
+            {"id": "agent-input", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {}},
+            {"id": "agent-llm", "type": "llmNode", "position": {"x": 0, "y": 0}, "data": {}},
+            {"id": "agent-answer", "type": "answerNode", "position": {"x": 0, "y": 0}, "data": {}},
+        ],
+        "edges": [
+            {"id": "edge-agent-input-agent-llm", "source": "agent-input", "target": "agent-llm"},
+            {"id": "edge-agent-llm-agent-answer", "source": "agent-llm", "target": "agent-answer"},
+        ],
+    }
+    draft = SimpleNamespace(
+        preview_graph=preview_graph,
+        draft_mode="new_workflow",
+        draft_metadata={
+            "generated_node_ids": ["agent-input", "agent-llm", "agent-answer"]
+        },
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    save_graph = svc._graph_for_apply(  # noqa: SLF001
+        draft,
+        None,
+        runtime_kb_bindings=[],
+    )
+
+    positions = {node["id"]: node["position"] for node in save_graph["nodes"]}
+    assert positions["agent-input"]["x"] < positions["agent-llm"]["x"]
+    assert positions["agent-llm"]["x"] < positions["agent-answer"]["x"]
+    assert {
+        positions["agent-input"]["y"],
+        positions["agent-llm"]["y"],
+        positions["agent-answer"]["y"],
+    } == {0}
+
+
+def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
+    db = FakeDb()
+    workflow_id = uuid.uuid4()
+    base_graph = {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}
+    preview_graph = {
+        "nodes": [
+            {"id": "agent-input", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {}},
+            {
+                "id": "agent-llm",
+                "type": "llmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"model_id": "model-1"},
+            },
+            {"id": "agent-answer", "type": "answerNode", "position": {"x": 0, "y": 0}, "data": {}},
+        ],
+        "edges": [
+            {"id": "edge-agent-input-agent-llm", "source": "agent-input", "target": "agent-llm"},
+            {"id": "edge-agent-llm-agent-answer", "source": "agent-llm", "target": "agent-answer"},
+        ],
+    }
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        graph=copy.deepcopy(base_graph),
+        updated_at=None,
+        app_id=uuid.uuid4(),
+        updated_by=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="modify_workflow",
+        base_graph_hash=calculate_graph_hash(base_graph),
+        base_workflow_updated_at=None,
+        preview_graph=preview_graph,
+        status="ready",
+        workflow_id=workflow_id,
+        app_id=None,
+        draft_metadata={
+            "workflow_id": str(workflow_id),
+            "generated_node_ids": ["agent-input", "agent-llm", "agent-answer"],
+            "generated_edge_ids": [
+                "edge-agent-input-agent-llm",
+                "edge-agent-llm-agent-answer",
+            ],
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
+    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(preview_graph),
+            client_latest_graph_hash=calculate_graph_hash(base_graph),
+        ),
+    )
+
+    assert response.outcome == "saved"
+    assert response.layout_optimization_applied is True
+    positions = {node["id"]: node["position"] for node in workflow.graph["nodes"]}
+    assert positions["agent-input"]["x"] < positions["agent-llm"]["x"]
+    assert positions["agent-llm"]["x"] < positions["agent-answer"]["x"]
+    assert {position["y"] for position in positions.values()} == {0}
 
 
 def test_agent_builder_model_route_requires_explicit_approved_env(monkeypatch):

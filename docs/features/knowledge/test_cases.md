@@ -71,6 +71,23 @@ Status: Draft
 
 - Sync lease는 두 worker가 같은 source item을 동시에 finalize하지 못하게 한다.
 - 같은 document-level KB에 대한 concurrent ingestion은 하나의 finalization만 성공한다.
+- A document moved to queued `indexing`/`processing` state must become `failed`
+  with safe progress metadata only when no active fencing token and no
+  processing progress/chunk/version artifact appears before the processing-start
+  timeout.
+- A document with an active fencing token must also become `failed` after the
+  active processing stall timeout when no processing progress/chunk/version
+  artifact exists, so crashed workers cannot leave the UI in processing forever.
+- Redis lock/progress storage unavailable must not leave a document in infinite
+  `indexing`/`processing`. Processing either continues through the local fallback
+  lock path or closes with a safe failed state.
+- Active processing with a recent DB progress heartbeat must remain in progress,
+  but an old active fencing token with only a pre-finalized
+  `DocumentVersion(status=indexing)` and no chunk/ready version must become
+  `failed` after the active stall timeout.
+- A document incorrectly marked failed with the processing-start timeout message
+  must recover to completed when retrieval-visible chunks or a ready document
+  version already exists.
 - `content_hash`, chunking fingerprint, embedding model은 chunk/index artifact finalization 성공 전에는 새 processed state로 commit되지 않는다.
 - Finalization 실패 뒤 다음 retry는 stale `content_hash` 때문에 skip하지 않고 다시 처리한다.
 - Content cursor는 active version finalization 이후에만 전진하고, ACL/permission watermark는 source ACL state와 candidate cache invalidation commit 이후에만 전진한다.
@@ -107,7 +124,9 @@ Status: Draft
 - Recommendation ranking은 `KnowledgeCandidateResolver`가 만든 server-issued reference 또는 같은 backend 내부 service call의 safe candidate set만 사용해야 하며, raw KB id나 raw source metadata로 권한 후보를 직접 만들지 않아야 한다. HTTP 또는 serialized boundary에서는 full candidate set 객체가 아니라 reference만 사용해야 한다.
 - Recommendation response item은 `score`, `confidence`, `reason_category`, `threshold_result`를 포함해야 하며 raw retrieval/provider score나 hidden resource identity를 노출하지 않아야 한다.
 - Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
-- Recommendation candidate set은 `source_deleted` KB, active document version이 없는 KB, active version이 `ready`가 아닌 KB를 제외해야 한다.
+- Recommendation candidate set은 `source_deleted` KB, active ready document version과 legacy unversioned retrieval-visible chunk가 모두 없는 KB를 selectable ready 후보에서 제외해야 한다.
+- 권한 확인된 KB에 document row나 pre-finalized chunk artifact가 있지만 active ready version 또는 legacy retrieval-visible chunk가 없으면, Recommendation/Builder picker는 이를 권한 없음이나 숨겨진 KB처럼 조용히 숨기지 않고 `candidate_not_ready` 또는 `indexing_in_progress` 수준의 safe warning/disabled option으로 표시해야 한다.
+- Auto mode에서 route-allowed collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, resolver는 직접 권한 확인된 retrieval-visible KB를 fallback 후보로 반환할 수 있다. 명시적으로 빈 collection scope를 보낸 경우에는 direct fallback을 적용하지 않고 후보 없음으로 유지해야 한다.
 - 기존 active ready version은 유지되지만 sync state가 `stale` 또는 `failed`인 KB는 후보로 남을 수 있으며, safe warning과 score penalty 또는 낮은 confidence가 함께 반환되어야 한다.
 - Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환해야 한다. Safe 후보 선택지도 없으면 `status=unavailable`과 safe fallback reason으로 닫아야 한다.
 - Recommendation provenance는 `recommendation_strategy`, `safe_reason_code`, `used_signals`, safe matched terms, bucketed counts 같은 allowlist만 포함하고 raw source title/path/url, hidden id/name, exact denied count를 포함하지 않는다.

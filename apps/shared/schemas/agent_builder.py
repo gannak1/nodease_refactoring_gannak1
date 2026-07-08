@@ -195,6 +195,7 @@ class AgentBuilderApplyResponse(BaseModel):
     permission_recheck_outcome: str = "not_checked"
     validation_state: str = "not_checked"
     audit_recorded: bool = False
+    layout_optimization_applied: bool = False
     notices: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

@@ -47,10 +47,14 @@ Status: Draft
 - Recommendation `candidate_id`는 raw source id/path/url/title이 아니라 server-issued safe handle이어야 한다.
 - Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다.
 - Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
+- LLM node Knowledge Base picker와 Agent Builder KB recommendation은 같은 후보 판정 기준을 사용한다. Active ready document version이 있거나 legacy unversioned retrieval-visible chunk가 있는 권한 확인 KB는 후보가 될 수 있다.
+- 권한 확인된 KB에 문서 row나 chunk artifact가 있어도 아직 indexing/not-ready 상태라 retrieval-visible artifact가 없으면 selectable ready KB로 표시하지 않는다. 대신 "인덱싱 중/사용 준비 전" safe warning 또는 disabled option을 표시하고, 빈 목록이나 "권한 확인된 KB 후보 없음"으로만 조용히 닫지 않는다.
+- Auto mode에서 route-allowed collection 후보가 비어 있고 client가 collection scope를 명시하지 않은 경우, 같은 active organization의 직접 권한 확인된 retrieval-visible KB를 safe candidate set fallback으로 평가할 수 있다. 명시적으로 빈 collection scope를 보낸 경우에는 direct fallback을 적용하지 않는다.
 - Draft metadata에는 safe handle과 structured request safe context만 저장되고 runtime KB id mapping은 저장되지 않는다.
 - Apply/save 직전에 backend가 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석한다.
 - 권한 없는 KB는 recommendation, preview, prompt, trace에 나타나지 않는다.
 - 후보 1개 high confidence이면 KB pending resolution이 resolved 처리된다.
+- 후보 1개가 `close_score` 이상이면 자동 resolved 처리될 수 있고, `below_threshold` 단일 후보는 clarification으로 남는다.
 - 후보 여러 개 또는 점수 근접이면 질문만 표시하지 않고 safe label, candidate safe handle, confidence, score, reason category를 포함한 clarification option이 표시된다.
 - 사용자가 clarification option 중 하나를 선택하면 client는 safe candidate handle과 선택적 resolution/requirement reference만 제출하고, backend는 원 clarification option과 같은 session/context인지 검증한 뒤 pending KB resolution을 resolved 처리한다.
 - 원 clarification context와 맞지 않는 candidate handle, 만료된 option, 또는 apply/save 직전 materialization 실패는 draft 확정이나 저장으로 이어지지 않는다.
@@ -60,6 +64,8 @@ Status: Draft
 - 추천 결과는 LLM node의 `knowledgeBases`로 materialize 가능해야 한다.
 - Collection은 preview 설명용 safe summary로만 표시되고 workflow runtime field로 저장되지 않는다.
 - MVP에서 RAG retrieval signal과 LLM reranker는 비활성이다.
+
+- KB 후보 clarification에는 `Knowledge Base 없이 생성` safe option이 표시되어야 한다. 사용자가 이 option을 선택하면 client는 `selected_knowledge_candidate.candidate_id=__agent_builder_no_kb__`와 선택적 resolution/requirement reference만 다시 보내고, backend는 같은 prior clarification context인지 검증한 뒤 `knowledgeBases=[]`인 LLM node draft를 생성해야 한다.
 
 ## Runtime RAG Boundary Tests
 
@@ -76,10 +82,10 @@ Status: Draft
 
 - Draft 생성 시 workflow graph 저장, Knowledge Base retrieval, Slack 전송, workflow 실행, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
 - Draft preview는 생성/변경될 step, target 위치, missing info, validation result, warning을 표시한다.
-- Validation 실패 draft에는 `도안 보기` 또는 `적용 및 저장` action이 표시되지 않는다.
+- Validation 실패 draft에는 `도안 생성 미리보기` 또는 `적용 및 저장` action이 표시되지 않는다.
 - Guardrail node 자동 생성 요청은 MBA-145 MVP에서 unsupported 또는 후속 기능 안내로 닫히며, Start/LLM/Answer 같은 다른 draft로 silent success 처리되지 않는다.
-- Chatbot panel의 `도안 보기`를 선택하면 Preview Mode가 열리고, actual editor graph는 변경되지 않는다.
-- `도안 보기`를 선택하면 `DraftPreviewOpened` 또는 동등한 preview-opened audit event가 safe metadata로 기록된다.
+- Chatbot panel의 `도안 생성 미리보기`를 선택하면 Preview Mode가 열리고, actual editor graph는 변경되지 않는다.
+- `도안 생성 미리보기`를 선택하면 `DraftPreviewOpened` 또는 동등한 preview-opened audit event가 safe metadata로 기록된다.
 - `DraftPreviewOpened` audit 기록에 실패하면 Preview Mode에 진입하지 않고 재시도 안내를 표시한다.
 - draft 상태, 만료, validation, 또는 scope 재확인 실패로 preview-opened가 차단되면 `DraftPreviewBlocked` 또는 동등한 audit-safe event를 기록하고 Preview Mode에 진입하지 않는다.
 - Preview Mode는 agent draft graph를 `previewGraph`로 렌더링하고 actual editor graph와 분리한다.
@@ -88,8 +94,10 @@ Status: Draft
 - workflow/app route scope가 바뀌면 이전 scope의 Agent Builder session, pending state, preview graph가 새 scope로 이어지지 않는다.
 - Refresh 후 session 복구는 redaction된 사용자 message summary와 assistant response를 함께 복구하고, secret-like user input 원문을 다시 표시하지 않는다.
 - Preview Mode에서 node를 클릭하면 Node Detail Panel에 node type, 주요 설정, KB/Slack binding, credential 참조 상태, input/output mapping, validation 상태가 읽기 전용으로 표시된다.
+- Preview Mode의 Node Detail Panel은 canvas 왼쪽 영역에 표시되어 우측 또는 우측 하단 Agent Builder chat panel, `적용 및 저장`, `취소` action을 가리지 않는다.
+- Preview Mode의 Answer/Output 계열 node card는 output variable 목록이나 value selector mapping을 카드 본문에 직접 표시하지 않는다. 해당 정보는 Node Detail Panel 또는 기존 node 설정 패널에서 확인되며, canvas card 내용이 node border 밖으로 넘치지 않는다.
 - Preview Mode의 Node Detail Panel에서는 node 설정, credential, KB, edge, delete action을 수정할 수 없다.
-- `취소`를 선택하면 server-side apply/save audit에 canceled outcome이 기록되고 Preview Mode만 종료되며, actual editor graph는 Preview Mode 진입 전 상태를 유지한다. 이는 draft metadata terminal 폐기를 의미하지 않으며, 직전 draft가 만료되거나 새 draft로 대체되지 않았다면 사용자는 같은 draft를 다시 `도안 보기`로 열 수 있다.
+- `취소`를 선택하면 server-side apply/save audit에 canceled outcome이 기록되고 Preview Mode만 종료되며, actual editor graph는 Preview Mode 진입 전 상태를 유지한다. 이는 draft metadata terminal 폐기를 의미하지 않으며, 직전 draft가 만료되거나 새 draft로 대체되지 않았다면 사용자는 같은 draft를 다시 `도안 생성 미리보기`로 열 수 있다.
 - `적용 및 저장` 이후 backend는 draft metadata 조회, 권한 재확인, stale check, validation 재확인을 수행한다.
 - Stale check는 base graph hash와 latest graph hash를 비교하고, workflow version 또는 updated_at도 함께 비교한다.
 - Base graph hash가 같아도 workflow version 또는 updated_at이 달라지면 stale draft로 저장되지 않는다.
@@ -106,6 +114,9 @@ Status: Draft
 - `SAVE_FAILED`는 `outcome=failed`와 `failure_reason`으로 한국어 실패 안내를 표시한다.
 - `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용되지 않는다.
 - workflow graph 저장 시도 후 apply/save audit 기록이 실패하면 `SAVE_FAILED` 또는 동등한 safe failure로 처리되고 Preview Mode가 유지되며 actual editor graph는 변경되지 않는다.
+- `적용 및 저장`이 저장으로 이어지면 저장 전에 기존 Workflow Editor 레이아웃 최적화 UI 버튼과 동등한 자동 레이아웃 로직이 적용된다.
+- 저장된 workflow graph의 node position은 자동 레이아웃 최적화 결과와 일치해야 하며, 저장 성공 후 editor가 다시 조회하거나 reconcile해 표시하는 최신 graph도 같은 position을 사용해야 한다.
+- 자동 레이아웃 최적화는 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 발생시키지 않는다.
 - 저장 성공 시 Preview Mode가 종료되고 editor는 저장된 최신 workflow graph를 표시한다.
 - 저장 성공 후 client는 local `previewGraph`를 actual editor graph로 직접 승격하지 않고, 저장된 workflow id를 기준으로 서버 최신 graph를 다시 조회하거나 동등한 서버 반환 graph로 reconcile해 표시한다.
 - 저장 차단 또는 실패 시 Preview Mode가 유지되고 actual editor graph는 변경되지 않는다.
@@ -121,11 +132,11 @@ Status: Draft
 4. Agent Builder가 `[입력] -> [Knowledge Base-backed LLM] -> [응답]` draft preview를 생성한다.
 5. KB 후보가 하나이면 safe recommendation 근거와 함께 draft에 표시된다.
 6. KB 후보가 여러 개이면 draft를 확정하지 않고 선택 질문을 표시한다.
-7. Validation을 통과한 draft에만 `도안 보기` action이 표시된다.
-8. 사용자가 `도안 보기`를 선택하면 Workflow Editor가 Preview Mode로 전환된다.
+7. Validation을 통과한 draft에만 `도안 생성 미리보기` action이 표시된다.
+8. 사용자가 `도안 생성 미리보기`를 선택하면 Workflow Editor가 Preview Mode로 전환된다.
 9. Preview Mode에서 draft graph가 읽기 전용으로 표시되고, 사용자는 node를 클릭해 Node Detail Panel에서 내부 설정을 확인한다.
 10. 사용자가 `적용 및 저장`을 선택하면 backend가 draft metadata, 권한, stale, validation을 재확인한다.
-11. 재확인을 통과하고 apply/save audit 기록까지 성공하면 workflow graph가 저장 성공으로 완료되고 audit-safe apply/save success event가 기록된다.
+11. 재확인을 통과하면 저장 전에 자동 레이아웃 최적화가 적용되고, apply/save audit 기록까지 성공하면 최적화된 node position이 포함된 workflow graph가 저장 성공으로 완료되며 audit-safe apply/save success event가 기록된다.
 12. Preview Mode가 종료되고 editor는 저장된 최신 workflow graph를 표시한다.
 13. 이 시점에도 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경은 발생하지 않는다.
 

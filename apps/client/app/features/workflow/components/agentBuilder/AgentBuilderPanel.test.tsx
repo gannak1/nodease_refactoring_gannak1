@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+﻿import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentBuilderPanel } from './AgentBuilderPanel';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { agentBuilderApi } from '../../api/agentBuilderApi';
 import { workflowApi } from '../../api/workflowApi';
-import type { Node } from '../../types/Workflow';
+import type { Edge, Node } from '../../types/Workflow';
 
 const routerPush = vi.fn();
 const setViewport = vi.fn();
@@ -48,6 +48,7 @@ vi.mock('../../api/agentBuilderApi', () => ({
 
 vi.mock('../../api/workflowApi', () => ({
   workflowApi: {
+    syncDraftWorkflow: vi.fn(),
     getDraftWorkflow: vi.fn(),
     getWorkflow: vi.fn(),
   },
@@ -63,13 +64,13 @@ const node = (id: string, type = 'startNode'): Node =>
     data: { title: id, triggerType: 'manual', variables: [] },
   }) as Node;
 
-const setPreviewState = (nodes: Node[]) => {
+const setPreviewState = (nodes: Node[], edges: Edge[] = []) => {
   useWorkflowStore.setState({
     agentBuilderPreview: {
       draftId: 'draft-new',
       previewGraph: {
         nodes,
-        edges: [],
+        edges,
         viewport: { x: 10, y: 10, zoom: 1 },
       },
       nodeDetailPreviews: [],
@@ -85,6 +86,7 @@ describe('AgentBuilderPanel', () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     useWorkflowStore.setState(initialState, true);
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({});
     vi.mocked(agentBuilderApi.cancelDraft).mockResolvedValue({
       apply_id: 'apply-cancel',
       outcome: 'canceled',
@@ -93,13 +95,24 @@ describe('AgentBuilderPanel', () => {
       permission_recheck_outcome: 'not_checked',
       validation_state: 'not_checked',
       audit_recorded: true,
-      notices: ['도안 보기를 닫았습니다. 실제 workflow graph는 변경되지 않았습니다.'],
+      layout_optimization_applied: false,
+      notices: [
+        '도안 생성 미리보기를 닫았습니다. 실제 workflow graph는 변경되지 않았습니다.',
+      ],
     });
   });
 
-  it('새 workflow 저장 직후 현재 editor graph를 새 graph로 덮어쓰지 않는다', async () => {
+  it('loads the saved graph when Agent Builder creates a new workflow', async () => {
     const oldNodes = [node('old-node')];
-    const newNodes = [node('new-node')];
+    const newNodes = [
+      node('new-input'),
+      node('new-llm', 'llmNode'),
+      node('new-answer', 'answerNode'),
+    ];
+    const newEdges: Edge[] = [
+      { id: 'edge-input-llm', source: 'new-input', target: 'new-llm' },
+      { id: 'edge-llm-answer', source: 'new-llm', target: 'new-answer' },
+    ];
 
     useWorkflowStore.setState({
       activeWorkflowId: 'workflow-old',
@@ -118,7 +131,7 @@ describe('AgentBuilderPanel', () => {
       features: { nextNodeDisplayNumber: 2 },
       hasUnsavedChanges: false,
     });
-    setPreviewState(newNodes);
+    setPreviewState(newNodes, newEdges);
 
     vi.mocked(agentBuilderApi.applyDraft).mockResolvedValue({
       apply_id: 'apply-1',
@@ -129,11 +142,12 @@ describe('AgentBuilderPanel', () => {
       permission_recheck_outcome: 'allowed',
       validation_state: 'valid',
       audit_recorded: true,
+      layout_optimization_applied: true,
       notices: [],
     });
     vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
       nodes: newNodes,
-      edges: [],
+      edges: newEdges,
       viewport: { x: 10, y: 10, zoom: 1 },
       features: { nextNodeDisplayNumber: 2 },
     });
@@ -162,14 +176,45 @@ describe('AgentBuilderPanel', () => {
       clientPreviewGraphHash: expect.any(String),
       clientLatestGraphHash: expect.any(String),
     });
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'workflow-new',
+      expect.objectContaining({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'new-llm',
+            position: expect.objectContaining({ x: expect.any(Number) }),
+          }),
+        ]),
+        edges: newEdges,
+        envVariables: [],
+        runtimeVariables: [],
+      }),
+    );
+
+    const syncedGraph =
+      vi.mocked(workflowApi.syncDraftWorkflow).mock.calls[0]?.[1];
+    expect(syncedGraph).toBeDefined();
+    if (!syncedGraph) {
+      throw new Error('Expected optimized graph to be synced');
+    }
+    const syncedXPositions = syncedGraph.nodes.map((item) => item.position.x);
+    expect(syncedXPositions[0]).toBe(0);
+    expect(syncedXPositions[1]).toBeGreaterThan(syncedXPositions[0]);
+    expect(syncedXPositions[2]).toBeGreaterThan(syncedXPositions[1]);
 
     const state = useWorkflowStore.getState();
-    expect(state.activeWorkflowId).toBe('workflow-old');
-    expect(state.nodes[0].id).toBe('old-node');
+    expect(state.activeWorkflowId).toBe('workflow-new');
+    expect(state.nodes.map((item) => item.id)).toEqual([
+      'new-input',
+      'new-llm',
+      'new-answer',
+    ]);
+    expect(state.nodes.map((item) => item.position.x)).toEqual(syncedXPositions);
     expect(
-      state.workflows.find((workflow) => workflow.id === 'workflow-new')?.nodes[0]
-        .id,
-    ).toBe('new-node');
+      state.workflows.find((workflow) => workflow.id === 'workflow-new')?.nodes.map(
+        (item) => item.position.x,
+      ),
+    ).toEqual(syncedXPositions);
   });
 
   it('workflow scope가 바뀌면 기존 preview 상태를 제거한다', async () => {
@@ -455,7 +500,7 @@ describe('AgentBuilderPanel', () => {
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
     fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '휴가 정책을 찾아서 요약해줘' },
+      target: { value: 'Find the policy knowledge base and summarize it' },
     });
     fireEvent.keyDown(screen.getByRole('textbox'), {
       key: 'Enter',
@@ -463,15 +508,102 @@ describe('AgentBuilderPanel', () => {
     });
 
     fireEvent.click(await screen.findByRole('button', { name: /휴가 정책/ }));
-    fireEvent.click(screen.getByRole('button', { name: '이 Knowledge Base로 도안 생성' }));
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
 
     await waitFor(() => {
       expect(agentBuilderApi.sendMessage).toHaveBeenLastCalledWith(
         'session-kb-confirm',
         expect.objectContaining({
-          message: '선택한 Knowledge Base로 도안을 생성해줘',
+          message: 'Find the policy knowledge base and summarize it',
           selectedKnowledgeCandidate: {
             candidate_id: 'safe-rec-1',
+            resolution_id: 'resolve-kb-1',
+            requirement_id: 'kr-1',
+          },
+        }),
+      );
+    });
+  });
+
+  it('Knowledge Base 없이 생성 선택도 safe handle로 도안 생성을 요청한다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-none',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+      draft_preview: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage)
+      .mockResolvedValueOnce({
+        request_id: 'request-kb-none-clarify',
+        status: 'clarification_required',
+        structured_request: null,
+        clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+        clarification_options: [
+          {
+            type: 'no_knowledge_base',
+            candidate_id: '__agent_builder_no_kb__',
+            resolution_id: 'resolve-kb-1',
+            requirement_id: 'kr-1',
+            label: 'Knowledge Base 없이 생성',
+            safe_label: 'Knowledge Base 없이 생성',
+            confidence: 'user_choice',
+            score: null,
+            reason_category: 'user_selected_no_kb',
+            threshold_result: 'user_selected',
+            runtime_availability: 'not_applicable',
+          },
+        ],
+        draft_preview: null,
+        validation_result: null,
+        preview_prompt: null,
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        request_id: 'request-kb-none-draft',
+        status: 'draft_ready',
+        structured_request: null,
+        clarification_questions: [],
+        clarification_options: [],
+        draft_preview: null,
+        validation_result: { valid: true, issues: [] },
+        preview_prompt: null,
+        warnings: [],
+      });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Find the policy knowledge base and summarize it' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: 'Enter',
+      code: 'Enter',
+    });
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Knowledge Base 없이 생성/ }),
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenLastCalledWith(
+        'session-kb-none',
+        expect.objectContaining({
+          message: 'Find the policy knowledge base and summarize it',
+          selectedKnowledgeCandidate: {
+            candidate_id: '__agent_builder_no_kb__',
             resolution_id: 'resolve-kb-1',
             requirement_id: 'kr-1',
           },
@@ -533,7 +665,7 @@ describe('AgentBuilderPanel', () => {
     expect(screen.getByText('사용할 Knowledge Base를 선택해주세요.')).toBeTruthy();
   });
 
-  it('validation을 통과하지 못한 draft에는 도안 보기 버튼을 노출하지 않는다', async () => {
+  it('validation을 통과하지 못한 draft에는 도안 생성 미리보기 버튼을 노출하지 않는다', async () => {
     window.localStorage.setItem(
       'agent-builder:workflow-old:app-1',
       'session-1',
@@ -587,10 +719,12 @@ describe('AgentBuilderPanel', () => {
     await waitFor(() => {
       expect(agentBuilderApi.getSession).toHaveBeenCalledWith('session-1');
     });
-    expect(screen.queryByRole('button', { name: '도안 보기' })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: '도안 생성 미리보기' }),
+    ).toBeNull();
   });
 
-  it('도안 보기 중에는 버튼을 비활성화하고 취소 후 같은 도안을 다시 열 수 있다', async () => {
+  it('도안 생성 미리보기 중에는 버튼을 비활성화하고 취소 후 같은 도안을 다시 열 수 있다', async () => {
     window.localStorage.setItem(
       'agent-builder:workflow-old:app-1',
       'session-reopen',
@@ -640,30 +774,36 @@ describe('AgentBuilderPanel', () => {
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
 
     const previewButton = await screen.findByRole('button', {
-      name: '도안 보기',
+      name: '도안 생성 미리보기',
     });
     fireEvent.click(previewButton);
 
     await waitFor(() => {
       expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByRole('button', { name: '도안 보기' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: '도안 생성 미리보기' }),
+    ).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '도안 보기' })).not.toBeDisabled();
+      expect(
+        screen.getByRole('button', { name: '도안 생성 미리보기' }),
+      ).not.toBeDisabled();
     });
     expect(agentBuilderApi.cancelDraft).toHaveBeenCalledWith('draft-reopen');
 
-    fireEvent.click(screen.getByRole('button', { name: '도안 보기' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '도안 생성 미리보기' }),
+    );
 
     await waitFor(() => {
       expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledTimes(2);
     });
   });
 
-  it('session top-level draft_preview만 있어도 도안 보기를 복구한다', async () => {
+  it('session top-level draft_preview만 있어도 도안 생성 미리보기를 복구한다', async () => {
     window.localStorage.setItem(
       'agent-builder:workflow-old:app-1',
       'session-top-level-draft',
@@ -704,7 +844,7 @@ describe('AgentBuilderPanel', () => {
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
 
     const previewButton = await screen.findByRole('button', {
-      name: '도안 보기',
+      name: '도안 생성 미리보기',
     });
     fireEvent.click(previewButton);
 

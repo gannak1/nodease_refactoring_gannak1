@@ -2,7 +2,9 @@ import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -46,6 +48,203 @@ from apps.shared.services.rag_hierarchy import (
 )
 
 logger = logging.getLogger(__name__)
+PROCESSING_START_TIMEOUT_SECONDS = 60
+ACTIVE_PROCESSING_STALL_TIMEOUT_SECONDS = 900
+PROCESSING_START_TIMEOUT_MESSAGE = (
+    "Document processing did not start in time. Please retry."
+)
+ACTIVE_PROCESSING_STALL_TIMEOUT_MESSAGE = (
+    "Document processing did not complete in time. Please retry."
+)
+
+
+def _aware_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    return None
+
+
+def mark_document_processing_queued(doc: Document) -> None:
+    meta_info = dict(doc.meta_info or {})
+    meta_info.pop(ACTIVE_FENCING_TOKEN_HASH_KEY, None)
+    meta_info.pop("processing_started_at", None)
+    meta_info.pop("processing_recovered_from_timeout", None)
+    meta_info["progress"] = 0
+    meta_info["processing_enqueued_at"] = datetime.now(timezone.utc).isoformat()
+    meta_info["processing_current_step"] = "Processing queued."
+    doc.meta_info = meta_info
+    doc.status = "indexing"
+    doc.error_message = None
+
+
+def _has_document_processing_artifacts(db: Session, doc: Document) -> bool:
+    meta_info = dict(doc.meta_info or {})
+    progress = meta_info.get("progress")
+    if isinstance(progress, (int, float)) and progress > 0:
+        return True
+
+    if _has_document_chunks(db, doc):
+        return True
+
+    return _has_document_version_with_status(
+        db,
+        doc,
+        ("indexing", "staging", "ready"),
+    )
+
+
+def _has_document_completion_artifacts(db: Session, doc: Document) -> bool:
+    if _has_document_chunks(db, doc):
+        return True
+    return _has_document_version_with_status(db, doc, ("ready",))
+
+
+def _has_document_chunks(db: Session, doc: Document) -> bool:
+    if (
+        db.query(DocumentChunk.id)
+        .filter(DocumentChunk.document_id == doc.id)
+        .first()
+        is not None
+    ):
+        return True
+    return False
+
+
+def _has_document_version_with_status(
+    db: Session,
+    doc: Document,
+    statuses: tuple[str, ...],
+) -> bool:
+    return (
+        db.query(DocumentVersion.id)
+        .filter(
+            DocumentVersion.legacy_document_id == doc.id,
+            DocumentVersion.status.in_(statuses),
+        )
+        .first()
+        is not None
+    )
+
+
+def finalize_stale_processing_start(
+    db: Session,
+    document_id: UUID,
+    *,
+    timeout_seconds: int = PROCESSING_START_TIMEOUT_SECONDS,
+    active_timeout_seconds: int = ACTIVE_PROCESSING_STALL_TIMEOUT_SECONDS,
+    now: Optional[datetime] = None,
+) -> bool:
+    doc = db.query(Document).get(document_id)
+    if not doc or doc.status not in {"indexing", "processing"}:
+        return False
+
+    meta_info = dict(doc.meta_info or {})
+    checked_at = _aware_datetime(now) or datetime.now(timezone.utc)
+    queued_at = (
+        _aware_datetime(meta_info.get("processing_enqueued_at"))
+        or _aware_datetime(getattr(doc, "updated_at", None))
+        or _aware_datetime(getattr(doc, "created_at", None))
+    )
+    if queued_at is None:
+        return False
+
+    active_fencing_token = meta_info.get(ACTIVE_FENCING_TOKEN_HASH_KEY)
+    if active_fencing_token:
+        started_at = (
+            _aware_datetime(meta_info.get("processing_started_at"))
+            or _aware_datetime(getattr(doc, "updated_at", None))
+            or queued_at
+        )
+        if (checked_at - started_at).total_seconds() < active_timeout_seconds:
+            return False
+        progress_updated_at = _aware_datetime(
+            meta_info.get("processing_progress_updated_at")
+        )
+        if (
+            progress_updated_at
+            and (checked_at - progress_updated_at).total_seconds()
+            < active_timeout_seconds
+        ):
+            return False
+        if _has_document_completion_artifacts(db, doc):
+            return False
+
+        meta_info.pop(ACTIVE_FENCING_TOKEN_HASH_KEY, None)
+        meta_info["progress"] = 0
+        meta_info["processing_current_step"] = (
+            "Processing did not complete in time."
+        )
+        doc.meta_info = meta_info
+        doc.status = "failed"
+        doc.error_message = ACTIVE_PROCESSING_STALL_TIMEOUT_MESSAGE
+        doc.updated_at = checked_at
+        db.commit()
+        return True
+
+    if (checked_at - queued_at).total_seconds() < timeout_seconds:
+        return False
+    if _has_document_processing_artifacts(db, doc):
+        return False
+
+    meta_info.pop(ACTIVE_FENCING_TOKEN_HASH_KEY, None)
+    meta_info["progress"] = 0
+    meta_info["processing_current_step"] = "Processing did not start in time."
+    doc.meta_info = meta_info
+    doc.status = "failed"
+    doc.error_message = PROCESSING_START_TIMEOUT_MESSAGE
+    doc.updated_at = checked_at
+    db.commit()
+    return True
+
+
+def recover_timed_out_document_with_artifacts(
+    db: Session,
+    document_id: UUID,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    doc = db.query(Document).get(document_id)
+    if (
+        not doc
+        or doc.status != "failed"
+        or doc.error_message
+        not in {
+            PROCESSING_START_TIMEOUT_MESSAGE,
+            ACTIVE_PROCESSING_STALL_TIMEOUT_MESSAGE,
+        }
+    ):
+        return False
+
+    if not (
+        _has_document_chunks(db, doc)
+        or _has_document_version_with_status(db, doc, ("ready",))
+    ):
+        return False
+
+    checked_at = _aware_datetime(now) or datetime.now(timezone.utc)
+    meta_info = dict(doc.meta_info or {})
+    meta_info.pop(ACTIVE_FENCING_TOKEN_HASH_KEY, None)
+    meta_info["progress"] = 100
+    meta_info["processing_current_step"] = "Processing completed."
+    meta_info["processing_recovered_from_timeout"] = True
+    doc.meta_info = meta_info
+    doc.status = "completed"
+    doc.error_message = None
+    doc.updated_at = checked_at
+    db.commit()
+    return True
 
 
 @dataclass(frozen=True)
@@ -153,13 +352,12 @@ class IngestionOrchestrator:
 
     def process_document(self, document_id: UUID):
         # 락 획득 시도 (2분 TTL)
-        lock = DistributedLock(f"doc_processing:{document_id}", ttl=120)
-
-        with lock.lock() as acquired:
+        with self._document_processing_lock(document_id) as acquired:
             if not acquired:
                 logger.error(
                     f"[IngestionOrchestrator] Document {document_id} is already being processed by another worker"
                 )
+                self._handle_lock_not_acquired(document_id)
                 return
 
             session = SessionLocal()
@@ -257,16 +455,58 @@ class IngestionOrchestrator:
                 if session:
                     session.close()
 
+    @contextmanager
+    def _document_processing_lock(self, document_id: UUID):
+        lock_context = None
+        try:
+            lock = DistributedLock(f"doc_processing:{document_id}", ttl=120)
+            lock_context = lock.lock()
+            acquired = lock_context.__enter__()
+        except Exception as exc:
+            logger.warning(
+                "Document processing distributed lock unavailable; continuing without Redis lock - ID: %s, error_type: %s",
+                document_id,
+                type(exc).__name__,
+            )
+            yield True
+            return
+
+        try:
+            yield acquired
+        finally:
+            if lock_context is not None:
+                lock_context.__exit__(None, None, None)
+
+    def _handle_lock_not_acquired(self, document_id: UUID) -> None:
+        time.sleep(1)
+        session = SessionLocal()
+        try:
+            if finalize_stale_processing_start(session, document_id):
+                self._update_progress_redis(document_id, 0, expire=True)
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "Failed to finalize document after lock acquisition failure: %s",
+                document_id,
+            )
+        finally:
+            session.close()
+
     def _mark_document_indexing(
         self, document_id: UUID, ingestion_fencing_token: str
     ) -> None:
         self._update_progress_redis(document_id, 0)
+        processing_started_at = datetime.now(timezone.utc).isoformat()
         self._update_status(
             document_id,
             "indexing",
-            meta_updates=KnowledgeIngestionFencing.active_document_meta_update(
-                ingestion_fencing_token
-            ),
+            meta_updates={
+                **KnowledgeIngestionFencing.active_document_meta_update(
+                    ingestion_fencing_token
+                ),
+                "processing_started_at": processing_started_at,
+                "processing_current_step": "Processing started.",
+            },
         )
 
     def _extract_raw_blocks(self, doc: Document) -> List[Dict[str, Any]]:
@@ -470,6 +710,7 @@ class IngestionOrchestrator:
             document_id,
             "failed",
             self._safe_ingestion_error_message(error),
+            progress=0,
             meta_updates={ACTIVE_FENCING_TOKEN_HASH_KEY: None},
         )
         self._update_progress_redis(document_id, 0, expire=True)
@@ -527,19 +768,57 @@ class IngestionOrchestrator:
             redis_client.set(key, str(progress), ex=600)
         except Exception as e:
             logger.warning(f"Failed to update progress in Redis: {e}")
+        finally:
+            self._update_progress_metadata(document_id, progress)
+
+    def _update_progress_metadata(self, document_id: UUID, progress: int) -> None:
+        session = SessionLocal()
+        try:
+            doc = session.query(Document).get(document_id)
+            if not doc or doc.status not in {"indexing", "processing"}:
+                return
+            meta_info = dict(doc.meta_info or {})
+            current_progress = meta_info.get("progress")
+            if (
+                isinstance(current_progress, (int, float))
+                and progress < current_progress
+            ):
+                return
+            meta_info["progress"] = progress
+            meta_info["processing_progress"] = progress
+            meta_info["processing_progress_updated_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+            doc.meta_info = meta_info
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.warning(
+                "Failed to update document processing progress metadata: %s",
+                document_id,
+            )
+        finally:
+            session.close()
 
     def resume_processing(self, document_id: UUID, strategy: str):
         """
         사용자 승인 후 파싱 재개
         """
-        doc = self.db.query(Document).get(document_id)
-        if not doc:
-            return
+        session = SessionLocal()
+        try:
+            doc = session.query(Document).get(document_id)
+            if not doc:
+                return
 
-        new_meta = dict(doc.meta_info or {})
-        new_meta["strategy"] = strategy
-        doc.meta_info = new_meta
-        self.db.commit()
+            new_meta = dict(doc.meta_info or {})
+            new_meta["strategy"] = strategy
+            doc.meta_info = new_meta
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
         self.process_document(document_id)
 

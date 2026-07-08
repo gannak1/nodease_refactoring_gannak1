@@ -27,6 +27,9 @@ from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
+    finalize_stale_processing_start,
+    mark_document_processing_queued,
+    recover_timed_out_document_with_artifacts,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
 from apps.gateway.services.knowledge_collection_service import (
@@ -947,7 +950,7 @@ def get_knowledge_base(
         updated_at,
     ) = kb
 
-    doc_rows = (
+    doc_rows_query = (
         db.query(
             Document.id,
             Document.filename,
@@ -961,8 +964,18 @@ def get_knowledge_base(
         .select_from(Document)
         .filter(Document.knowledge_base_id == kb_id)
         .order_by(Document.created_at.asc())
-        .all()
     )
+    doc_rows = doc_rows_query.all()
+    document_status_changed = False
+    for document_id, *_ in doc_rows:
+        if finalize_stale_processing_start(
+            db,
+            document_id,
+        ) or recover_timed_out_document_with_artifacts(db, document_id):
+            document_status_changed = True
+    if document_status_changed:
+        doc_rows = doc_rows_query.all()
+
     chunk_counts: dict[UUID, int] = {}
     if _table_has_column(db, "document_chunks", "id"):
         chunk_counts = {
@@ -1135,6 +1148,12 @@ def get_document(
             status_code=400, detail="Document does not belong to this Knowledge Base"
         )
 
+    if finalize_stale_processing_start(
+        db,
+        doc.id,
+    ) or recover_timed_out_document_with_artifacts(db, doc.id):
+        db.refresh(doc)
+
     return DocumentResponse(
         id=doc.id,
         filename=doc.filename,
@@ -1251,9 +1270,7 @@ async def process_document(
             )
 
     # 상태 업데이트 (처리 시작 전)
-    doc.status = (
-        "indexing"  # IngestionService가 실행되기 전부터 UI에서 처리중으로 표시하기 위함
-    )
+    mark_document_processing_queued(doc)
     db.commit()
 
     # 3. 백그라운드 작업 시작
@@ -1382,7 +1399,7 @@ async def sync_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     # 상태 업데이트
-    doc.status = "indexing"
+    mark_document_processing_queued(doc)
     db.commit()
 
     # 2. 백그라운드 작업 시작

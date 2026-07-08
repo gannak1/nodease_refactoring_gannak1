@@ -114,7 +114,8 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - Explicit KB mode는 collection.route를 생략할 수 있지만 KB helper/source ACL/final evidence gate를 생략할 수 없다. Explicit KB id가 scope 밖, organization mismatch, deleted/archived, requester source authorization denied, source ACL stale/unmapped/ambiguous/unverified/revoked, permission-unverified인 경우의 응답 shape와 answer-run/audit 생성 여부는 ADR-0017 resource hiding baseline을 따른다.
 - Organization manager remediation/admin view는 읽을 수 없는 source-managed KB에 대해 기본적으로 safe metadata와 remediation reason code만 표시한다. Raw title/path/url/content/source principal 표시에는 별도 display/raw-access policy gate가 필요하다.
 - Active version finalization은 indexing 성공 전 기존 active version을 비활성화하지 않는다. Crash/recovery/outbox/fencing token 계약은 ADR-0017 baseline에 따라 구현한다.
-- Builder/recommendation 후보는 retrieval-visible active version 경계를 따른다. `source_deleted` KB, active document version이 없는 KB, active version이 `ready`가 아닌 KB는 후보에서 제외한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다.
+- Builder/recommendation 후보는 retrieval-visible active version 경계를 따른다. `source_deleted` KB, active ready document version이 없는 KB는 기본적으로 후보에서 제외하지만, 전환기 legacy unversioned retrieval-visible chunk가 있는 KB는 후보로 유지할 수 있다. Active document version이 있으나 `ready`가 아니고 legacy retrieval-visible artifact도 없는 KB는 selectable ready 후보가 아니며, Builder/Recommendation surface는 이를 숨겨진 KB나 권한 없음으로 표현하지 않고 safe `indexing/not-ready` warning 또는 disabled option으로 표시해야 한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다.
+- Builder/recommendation auto mode에서 route-allowed collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, resolver는 같은 active organization 안의 직접 권한 확인된 retrieval-visible KB도 safe candidate set으로 평가할 수 있다. 명시적으로 빈 collection scope를 보낸 경우에는 direct KB fallback을 적용하지 않는다.
 - Destructive reset/reindex, legacy multi-document KB split/backfill, existing `team_knowledge_permissions`/RAG answer reference handling은 G1 data-preservation gate 승인 후에만 진행한다.
 - A/B 테스트나 비용 최적화 UI에서 `general RAG` baseline을 보여줄 때도 권한 없는 문서가 prompt, citation, trace, audit에 들어가면 안 된다. 보안상 안전하지 않은 baseline은 운영 실행이 아니라 historical, simulated, admin-only, 또는 이미 execution subject에게 허용된 resource 안의 비교로 제한한다.
 - 일반 사용자와 workflow 작성자 화면에는 권한/정책상 제외된 문서명, KB id, source path/url/title, 정확한 제외 개수를 표시하지 않는다. 필요한 경우 `권한/정책상 제외된 내부 문서 일부`, bucketed count, safe reason summary 같은 낮은 해상도의 표현만 사용한다.
@@ -133,6 +134,14 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - Ingestion lock은 단순 key 존재 여부만으로 release하면 안 된다. Lock release는 owner token을 비교해야 하며, 장기 작업은 TTL renew 또는 fencing token으로 stale worker finalization을 차단해야 한다.
 - Content identity와 retrieval artifact identity는 같은 finalization boundary에서 움직인다. `content_hash` 또는 fingerprint가 새 값으로 보이면 해당 값에 대응하는 redacted canonical text, chunks, embeddings, index namespace, active version이 모두 commit된 상태여야 한다.
 - Storage object, raw artifact, vector/index cleanup은 retry 가능한 outbox 작업으로 다룬다. Cleanup 실패는 safe audit/metric으로 남기고, DB rollback된 resource를 가리키는 scheduler나 storage side effect가 남지 않도록 idempotency key를 사용한다.
+
+## Processing Recovery Contract
+
+- Document ingestion status must not remain in `indexing` or `processing` forever after worker crash, Redis lock unavailable, or background task start failure.
+- Processing recovery uses processing queue/start timestamps, active fencing token, DB `meta_info.progress`, `processing_progress_updated_at`, retrieval-visible chunks, and ready document versions to decide whether work is still alive.
+- Redis progress and Redis lock are operational helpers, not correctness requirements. If Redis is unavailable, local processing may continue through a fallback lock path, and public status APIs must still eventually return `completed` or a safe `failed` state.
+- Active processing with a recent DB progress heartbeat can remain in progress. Active processing with no recent heartbeat, no retrieval-visible chunk, and no ready document version after the active stall timeout must become `failed` with a safe retryable message.
+- `DocumentVersion(status=indexing)` without chunks or a ready version is not enough to treat processing as alive or completed.
 
 ## MBA-105 Implementation Baseline
 

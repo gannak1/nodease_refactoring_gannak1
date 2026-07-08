@@ -114,6 +114,10 @@ MVP adapter는 keyword/metadata 기반 deterministic ranking만 사용한다. RA
 
 Recommendation item은 score, confidence, reason category, threshold result를 포함해야 한다. 이 값은 후보 1개 high confidence 자동 해결, 후보 여러 개 또는 점수 근접 clarification을 일관되게 판정하기 위한 safe metadata이며 raw retrieval score나 provider raw response를 노출하지 않는다.
 
+Agent Builder의 KB 추천과 LLM node Knowledge Base picker는 동일한 retrieval-visible 후보 판정 기준을 사용해야 한다. 사용 가능한 후보는 Knowledge side가 권한 확인을 끝낸 safe candidate set 중 active ready document version이 있거나, 전환기 legacy unversioned retrieval-visible chunk가 있는 KB로 제한한다. 권한 확인된 KB에 문서 row나 chunk artifact가 있지만 아직 indexing/not-ready 상태라 retrieval-visible artifact가 없으면, 이를 조용히 숨기거나 "권한 확인된 KB 후보가 없음"으로만 표현하지 말고 safe warning 또는 disabled option으로 "아직 인덱싱 중/사용 준비 전" 상태를 표시해야 한다.
+
+Auto scope에서 collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, Adapter는 같은 active organization 안의 직접 권한 확인된 retrieval-visible KB도 safe candidate set으로 평가할 수 있다. 이 fallback은 KB use 권한과 safe metadata 경계를 그대로 적용하며, raw KB name/source/document 정보를 표시하거나 명시적으로 비운 collection scope를 우회하지 않는다.
+
 Agent Builder가 자연어 workflow 생성 중 LLM node RAG 옵션을 제안할 때는 Knowledge RAG Recommendation Adapter를 사용한다. Builder는 Knowledge DB, permission row, source ACL row를 직접 조합하지 않는다.
 
 Recommendation candidate 식별자는 raw source id, raw source path, raw source URL, raw document title이 아니라 server-issued safe handle이어야 한다. Draft preview와 clarification에는 safe metadata만 표시한다. Draft metadata에는 runtime KB id mapping을 저장하지 않고 safe handle과 structured request safe context만 보존한다. Agent Builder가 apply/save로 workflow graph를 저장하기 직전 backend는 candidate handle을 권한 확인된 runtime Knowledge Base reference로 다시 해석해야 하며, 이 재해석은 현재 recommendation top-N ranking 결과에 의존하지 않고 권한 확인된 후보 집합 안에서 safe handle을 직접 materialize해야 한다. Handle이 만료되었거나 권한 확인을 통과하지 못하면 validation failure 또는 재선택 질문으로 닫아야 한다.
@@ -129,14 +133,18 @@ Knowledge Skill을 prompt context로 직접 사용하는 기능은 MBA-145 MVP �
 KB recommendation 결과는 다음 중 하나여야 한다.
 
 - 후보 1개 high confidence: 해당 pending KB resolution을 resolved 처리하고 draft 추천값으로 사용
+- 후보 1개이고 `close_score` 이상이면 safe warning 없이 자동 해결할 수 있다. `below_threshold` 단일 후보는 사용자 확인으로 남긴다.
 - 후보 여러 개 또는 점수 근접: 사용자에게 KB 선택 clarification을 제공하고, safe label, candidate safe handle, confidence, score, reason category를 포함한 `clarification_options`를 함께 표시
 - 후보 0개: 권한 확인된 KB 후보가 없다는 경고를 표시하고, Knowledge Base binding이 비어 있는 LLM node draft를 생성할 수 있음
+- 권한 확인된 KB는 있지만 indexing/not-ready 상태라 retrieval-visible 후보가 0개: 사용 준비 전 경고를 표시하고, 자동 선택하지 않음
 - adapter unavailable: 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`로 fallback clarification을 반환하고, safe 후보 선택지도 없으면 validation failure
 - optional KB requirement unresolved: warning과 함께 KB 없는 draft 가능
 
 Builder가 adapter unavailable 같은 recommendation 실패를 받으면 기본적으로 사용자 확인 필요 또는 validation failure 상태로 둔다. 다만 adapter가 정상 동작했고 권한 확인된 후보가 0개인 경우는 fail-open 권한 확장이 아니라 preview-only KB binding 미설정 상태로 보며, 한국어 경고와 함께 RAG 없는 LLM node draft를 생성할 수 있다. 이 draft는 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
 
 KB 선택 clarification을 받은 사용자가 후보를 선택하면 Agent Builder는 safe handle과 선택적 resolution/requirement reference만 서버에 다시 보낸다. Backend는 같은 authenticated user, active organization, workflow/app scope, agent panel session의 원 clarification option 안에 있던 후보인지 검증해야 하며, 통과한 경우에만 해당 pending KB resolution을 resolved 처리한다. 선택이 원 clarification context와 맞지 않거나 만료되었거나 apply/save 직전 runtime KB reference로 다시 해석되지 않으면 draft 확정 또는 저장으로 이어지면 안 된다.
+
+KB 선택 clarification은 항상 `Knowledge Base 없이 생성` safe option을 포함해야 한다. 사용자가 이 option을 선택하면 Agent Builder는 이전 clarification context에 있던 server-issued no-KB safe handle인지 검증한 뒤, Knowledge Base binding을 비운 LLM node draft를 생성하고 safe warning을 표시한다. 이 선택은 raw KB id fallback, hidden KB 접근, runtime retrieval을 수행하지 않는다.
 
 ### AB-FR-009: Draft Generation
 
@@ -159,15 +167,21 @@ Validation은 최소한 다음을 확인해야 한다.
 
 ### AB-FR-011: Draft Preview Mode And Apply Save
 
-Agent Builder는 validation을 통과한 draft에 대해 사용자가 저장 전 확인할 수 있는 Draft Preview를 제공해야 한다. 이 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따른다. Chatbot panel은 요약과 `도안 보기` 진입점을 제공하고, 상세 검토는 Workflow Editor의 Preview Mode에서 수행한다.
+Agent Builder는 validation을 통과한 draft에 대해 사용자가 저장 전 확인할 수 있는 Draft Preview를 제공해야 한다. 이 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따른다. Chatbot panel은 요약과 `도안 생성 미리보기` 진입점을 제공하고, 상세 검토는 Workflow Editor의 Preview Mode에서 수행한다.
 
 Preview Mode는 현재 editor graph를 덮어쓰지 않고, agent가 생성한 `previewGraph`를 실제 editor graph와 분리된 읽기 전용 graph로 렌더링해야 한다. 사용자는 preview graph의 node와 edge를 확인하고, node를 선택해 Node Detail Panel에서 node type, 주요 설정, Knowledge Base binding, Slack channel binding, credential 참조 상태, input/output mapping, validation 상태를 확인할 수 있어야 한다.
 
+Preview Mode에서 Node Detail Panel은 canvas 왼쪽 영역에 표시해야 한다. Agent Builder chatbot panel과 apply/save action이 우측 또는 우측 하단에 머무를 수 있으므로, node detail을 우측에 열어 chat panel과 겹치게 해서는 안 된다. 좁은 viewport에서는 왼쪽 drawer 또는 non-overlapping responsive layout을 사용해 node detail, chat panel, apply/save action 경로가 서로 가려지지 않게 해야 한다.
+
+Preview Mode의 canvas node card는 workflow 구조를 빠르게 파악하기 위한 요약 표면이다. Answer/Output 계열 node card는 내부 output variable 목록이나 value selector mapping을 카드 본문에 직접 렌더링하지 않아야 하며, 해당 상세 정보는 Node Detail Panel 또는 기존 node 설정 패널에서 확인해야 한다.
+
 Preview Mode의 Node Detail Panel은 편집을 허용하지 않는다. 사용자가 draft 내용을 바꾸려면 채팅 후속 요청으로 수정해야 한다. Preview Mode에는 이 graph가 아직 저장되지 않은 도안이라는 안내와 `적용 및 저장`, `취소` action을 항상 접근 가능한 위치에 표시해야 한다. MVP에서는 이 action을 canvas banner/action bar 또는 Preview Mode 동안 닫을 수 없는 Agent Builder panel에 둘 수 있지만, 사용자가 panel을 닫아 적용/취소 경로를 잃게 해서는 안 된다.
 
-`취소`를 선택하면 현재 Preview Mode를 종료하고 기존 editor state로 돌아간다. 이 event는 server-side apply/save audit에 `canceled` outcome으로 기록할 수 있어야 하지만, draft metadata 자체를 terminal 폐기한다는 뜻은 아니다. Validation을 통과한 직전 draft는 만료되거나 새 draft로 대체되기 전까지 다시 `도안 보기`로 열 수 있다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
+`취소`를 선택하면 현재 Preview Mode를 종료하고 기존 editor state로 돌아간다. 이 event는 server-side apply/save audit에 `canceled` outcome으로 기록할 수 있어야 하지만, draft metadata 자체를 terminal 폐기한다는 뜻은 아니다. Validation을 통과한 직전 draft는 만료되거나 새 draft로 대체되기 전까지 다시 `도안 생성 미리보기`로 열 수 있다. 기존 editor graph는 preview 진입만으로 변경되지 않았어야 하므로 rollback이 필요한 방식으로 구현하지 않는다.
 
 `적용 및 저장`을 선택하면 backend는 원 draft metadata 조회, 요청 유형별 권한 재확인, stale check, validation 재확인을 통과한 경우에만 workflow graph를 저장한다. 기존 workflow 수정 draft는 workflow read/write 권한을 재확인하고, 새 workflow draft는 app 또는 workflow 생성 scope 권한을 재확인한다. 전체 교체 draft는 기존 workflow read/write 권한과 교체 validation을 모두 만족해야 한다.
+
+`적용 및 저장`이 저장으로 이어지는 경우, Agent Builder는 workflow graph를 저장하기 전에 기존 Workflow Editor의 레이아웃 최적화 UI 버튼과 동등한 자동 레이아웃 최적화 로직을 draft graph에 적용해야 한다. 저장된 workflow graph의 node position은 이 최적화 결과를 반영해야 하며, 저장 성공 후 사용자가 보는 최신 graph도 같은 position을 표시해야 한다. 이 자동 레이아웃은 graph 배치만 조정하며 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
 
 Stale check는 draft 생성 시점의 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 저장하고, 적용 및 저장 시점의 최신 graph hash와 최신 version/updated_at을 함께 비교한다. `base_graph_hash` 또는 version/updated_at 중 하나라도 달라지면 stale로 간주하고 저장을 차단한다. `base_graph_hash`에는 node id, node type, node data/config, edge source/target/handle처럼 workflow 의미에 영향을 주는 값만 포함하고, viewport, selection, panel state, preview state, timestamp, UI-only metadata, note/memo node와 해당 note/memo node에만 연결된 non-runtime edge는 포함하지 않는다.
 
@@ -202,7 +216,7 @@ Pending request가 있으면 중복 submit을 막고 cancel을 제공한다. Can
 - KB 후보가 권한 확인된 safe metadata 안에서만 추천된다.
 - 후보가 모호하면 임의 선택하지 않고 질문한다.
 - `적용 및 저장` 전에는 workflow 저장, workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경이 발생하지 않는다.
-- Demo happy path에서 draft preview, Preview Mode, 읽기 전용 Node Detail 확인, backend 재검사, workflow graph 저장, apply/save audit 기록 성공, Preview Mode 종료, 저장된 최신 graph 표시를 확인할 수 있다.
+- Demo happy path에서 draft preview, Preview Mode, 읽기 전용 Node Detail 확인, backend 재검사, 자동 레이아웃 최적화가 반영된 workflow graph 저장, apply/save audit 기록 성공, Preview Mode 종료, 저장된 최신 graph 표시를 확인할 수 있다.
 
 ## Edge Cases
 

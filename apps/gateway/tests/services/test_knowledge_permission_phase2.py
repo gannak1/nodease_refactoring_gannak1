@@ -173,6 +173,9 @@ class FakeResolver(KnowledgeCandidateResolver):
             if kb_id in self._fake_kbs
         }
 
+    def _direct_knowledge_bases(self, max_candidate_kbs):
+        return list(self._fake_kbs.values())[:max_candidate_kbs]
+
 
 def test_collection_read_does_not_allow_route():
     collection = _collection(actions={"read"})
@@ -240,6 +243,7 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     collection = _collection(
         safe_metadata={
             "safe_label": "HR 정책",
+            "topics": ["사내 문서", "휴가 정책"],
             "raw_source_url": "https://internal.example/private",
         }
     )
@@ -262,9 +266,39 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     candidate_metadata = result.candidates[0].safe_metadata
     assert candidate_metadata["collection_id"] == str(collection.id)
     assert candidate_metadata["collection_safe_label"] == "HR 정책"
+    assert candidate_metadata["collection_safe_topics"] == ["사내 문서", "휴가 정책"]
     assert candidate_metadata["route_scope_type"] == "auto_collection"
     assert candidate_metadata["linked_kb_count_bucket"] == "1"
     assert "raw_source_url" not in candidate_metadata
+
+
+def test_auto_collection_without_collection_candidate_falls_back_to_direct_authorized_kb():
+    collection = _collection()
+    direct_kb = _kb()
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[],
+        kbs=[direct_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates()
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [
+        direct_kb.id
+    ]
+    assert resolver.requested_item_collection_ids == {collection.id}
+
+
+def test_explicit_empty_collection_scope_does_not_fall_back_to_direct_kb():
+    direct_kb = _kb()
+    helper = FakePermissionHelper()
+    resolver = FakeResolver(helper=helper, kbs=[direct_kb])
+
+    result = resolver.resolve_auto_collection_candidates(collection_ids=[])
+
+    assert result.candidates == []
 
 
 def test_candidate_excludes_kb_without_active_ready_version_and_carries_ready_source_tier():
