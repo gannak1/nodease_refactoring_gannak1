@@ -186,7 +186,11 @@ def _validate_create_input(kb_in: KnowledgeBaseCreate) -> tuple[str, str | None,
         raise KnowledgeValidationError("name_required")
     if len(name) > KNOWLEDGE_BASE_NAME_MAX_LENGTH:
         raise KnowledgeValidationError("name_too_long")
-    embedding_model = (kb_in.embedding_model or DEFAULT_EMBEDDING_MODEL).strip()
+    embedding_model = (
+        DEFAULT_EMBEDDING_MODEL
+        if kb_in.embedding_model is None
+        else kb_in.embedding_model.strip()
+    )
     if (
         not embedding_model
         or len(embedding_model) > EMBEDDING_MODEL_MAX_LENGTH

@@ -634,6 +634,8 @@ def test_create_rolls_back_on_write_failure():
     [
         ("   ", "text-embedding-3-small", "name_required"),
         ("가" * 256, "text-embedding-3-small", "name_too_long"),
+        ("정책 KB", "", "embedding_model_invalid"),
+        ("정책 KB", "   ", "embedding_model_invalid"),
         ("정책 KB", "sk-secret-like-model", "embedding_model_invalid"),
         ("정책 KB", "../bad model", "embedding_model_invalid"),
     ],

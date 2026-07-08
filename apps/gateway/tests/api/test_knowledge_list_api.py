@@ -525,6 +525,40 @@ def test_knowledge_create_validation_error_does_not_echo_raw_input(monkeypatch):
     assert fake_db.committed is False
 
 
+def test_knowledge_create_rejects_empty_embedding_model(monkeypatch):
+    fake_db = FakeCreateKnowledgeDb()
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        lambda _db, _required: {},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_user_primary_organization_id",
+        lambda _db, _user_id: uuid.uuid4(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge",
+            json={
+                "name": "빈 임베딩 모델 KB",
+                "description": "테스트",
+                "embedding_model": "   ",
+            },
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "knowledge.validation_failed"
+    assert body["error"]["details"] == {"reason": "embedding_model_invalid"}
+    assert fake_db.added is None
+    assert fake_db.committed is False
+
+
 def test_knowledge_schema_missing_columns_raises_on_introspection_failure(monkeypatch):
     monkeypatch.setattr(
         knowledge_endpoint,
