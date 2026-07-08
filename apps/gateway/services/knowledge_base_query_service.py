@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
@@ -24,6 +27,7 @@ from apps.shared.schemas.rag import (
     KnowledgeBaseDetailResponse,
     KnowledgeBaseResponse,
 )
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.knowledge_schema_readiness import (
     check_knowledge_schema_readiness,
     table_has_column,
@@ -32,6 +36,13 @@ from apps.shared.services.knowledge_schema_readiness import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+KNOWLEDGE_BASE_NAME_MAX_LENGTH = 255
+EMBEDDING_MODEL_MAX_LENGTH = 128
+SAFE_EMBEDDING_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+UNSAFE_EMBEDDING_MODEL_RE = re.compile(
+    r"(api[_-]?key|token|secret|password|credential|authorization|sk-)",
+    re.IGNORECASE,
+)
 KNOWLEDGE_BASE_MUTATION_COLUMNS = {
     "knowledge_bases": {
         "organization_id",
@@ -44,6 +55,7 @@ KNOWLEDGE_BASE_MUTATION_COLUMNS = {
 
 ColumnExistsFn = Callable[[Session, str, str], bool]
 DocumentRecoveryFn = Callable[[Session, UUID], bool]
+PermissionHelperFactory = Callable[..., KnowledgePermissionHelper]
 
 
 class KnowledgeBaseQueryServiceError(Exception):
@@ -75,7 +87,9 @@ class KnowledgeBaseHiddenOrForbidden(KnowledgeBaseNotFound):
 
 
 class KnowledgeValidationError(KnowledgeBaseQueryServiceError):
-    pass
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__("Knowledge base request validation failed.")
 
 
 class KnowledgeConflict(KnowledgeBaseQueryServiceError):
@@ -170,6 +184,27 @@ def evaluate_llm_rag_selectability(
     )
 
 
+def _validate_create_input(kb_in: KnowledgeBaseCreate) -> tuple[str, str | None, str]:
+    name = kb_in.name.strip()
+    if not name:
+        raise KnowledgeValidationError("name_required")
+    if len(name) > KNOWLEDGE_BASE_NAME_MAX_LENGTH:
+        raise KnowledgeValidationError("name_too_long")
+    embedding_model = (
+        DEFAULT_EMBEDDING_MODEL
+        if kb_in.embedding_model is None
+        else kb_in.embedding_model.strip()
+    )
+    if (
+        not embedding_model
+        or len(embedding_model) > EMBEDDING_MODEL_MAX_LENGTH
+        or not SAFE_EMBEDDING_MODEL_RE.fullmatch(embedding_model)
+        or UNSAFE_EMBEDDING_MODEL_RE.search(embedding_model)
+    ):
+        raise KnowledgeValidationError("embedding_model_invalid")
+    return name, kb_in.description, embedding_model
+
+
 class KnowledgeBaseQueryService:
     def __init__(
         self,
@@ -180,11 +215,13 @@ class KnowledgeBaseQueryService:
         recover_processing_timeout: DocumentRecoveryFn = (
             recover_timed_out_document_with_artifacts
         ),
+        permission_helper_factory: PermissionHelperFactory = KnowledgePermissionHelper,
     ):
         self.db = db
         self._column_exists = column_exists
         self._finalize_processing_start = finalize_processing_start
         self._recover_processing_timeout = recover_processing_timeout
+        self._permission_helper_factory = permission_helper_factory
 
     def has_column(self, table_name: str, column_name: str) -> bool:
         return self._column_exists(self.db, table_name, column_name)
@@ -207,10 +244,11 @@ class KnowledgeBaseQueryService:
     ) -> KnowledgeBaseResponse:
         if not schema_ready:
             self.ensure_schema_ready(KNOWLEDGE_BASE_MUTATION_COLUMNS)
+        name, description, embedding_model = _validate_create_input(kb_in)
         kb = KnowledgeBase(
-            name=kb_in.name,
-            description=kb_in.description,
-            embedding_model=kb_in.embedding_model,
+            name=name,
+            description=description,
+            embedding_model=embedding_model,
             organization_id=organization_id,
             user_id=user_id,
         )
@@ -449,6 +487,107 @@ class KnowledgeBaseQueryService:
             has_organization_id=has_organization_id,
         )
         return evaluate_llm_rag_selectability(detail)
+
+    def list_llm_selectable(
+        self,
+        *,
+        user_id: UUID,
+        organization_id: UUID,
+        schema_ready: bool = False,
+    ) -> list[KnowledgeBaseDetailResponse]:
+        if not schema_ready:
+            self.ensure_schema_ready(KNOWLEDGE_BASE_MUTATION_COLUMNS)
+        kbs = (
+            self.db.query(KnowledgeBase)
+            .filter(
+                KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
+            )
+            .order_by(KnowledgeBase.created_at.desc())
+            .all()
+        )
+        if not kbs:
+            return []
+
+        permission_helper = self._permission_helper_factory(
+            self.db,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        decisions = permission_helper.bulk_evaluate_kb_use(kbs)
+
+        selectable: list[KnowledgeBaseDetailResponse] = []
+        for kb in kbs:
+            decision = decisions.get(kb.id)
+            if decision is None or not decision.allowed:
+                continue
+            detail = self._detail_response_from_kb(kb)
+            if evaluate_llm_rag_selectability(detail).available:
+                selectable.append(detail)
+        return selectable
+
+    def _detail_response_from_kb(self, kb: KnowledgeBase) -> KnowledgeBaseDetailResponse:
+        doc_rows_query = (
+            self.db.query(
+                Document.id,
+                Document.filename,
+                Document.status,
+                Document.created_at,
+                Document.updated_at,
+                Document.error_message,
+                Document.source_type,
+                Document.meta_info,
+            )
+            .select_from(Document)
+            .filter(Document.knowledge_base_id == kb.id)
+            .order_by(Document.created_at.asc())
+        )
+        doc_rows = doc_rows_query.all()
+        if self._recover_document_rows(doc_rows):
+            doc_rows = doc_rows_query.all()
+
+        chunk_counts = self._retrieval_visible_chunk_counts(
+            kb.id,
+            active_document_version_id=getattr(kb, "active_document_version_id", None),
+        )
+        doc_responses = []
+        for (
+            document_id,
+            filename,
+            document_status,
+            document_created_at,
+            document_updated_at,
+            error_message,
+            source_type,
+            meta_info,
+        ) in doc_rows:
+            doc_responses.append(
+                DocumentResponse(
+                    id=document_id,
+                    filename=filename,
+                    status=document_status or "pending",
+                    created_at=document_created_at or _max_datetime_or_now(),
+                    updated_at=document_updated_at,
+                    error_message=error_message,
+                    chunk_count=chunk_counts.get(document_id, 0),
+                    token_count=0,
+                    source_type=_clean_source_type(source_type),
+                    meta_info=_safe_meta_info(meta_info),
+                )
+            )
+
+        return KnowledgeBaseDetailResponse(
+            id=kb.id,
+            organization_id=getattr(kb, "organization_id", None),
+            name=kb.name,
+            description=kb.description,
+            document_count=len(doc_responses),
+            created_at=kb.created_at or _max_datetime_or_now(kb.updated_at),
+            updated_at=kb.updated_at or kb.created_at,
+            source_types=_clean_source_types([row[6] for row in doc_rows]),
+            embedding_model=kb.embedding_model or DEFAULT_EMBEDDING_MODEL,
+            documents=doc_responses,
+        )
 
     def _recover_document_rows(self, doc_rows) -> bool:
         document_status_changed = False

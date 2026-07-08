@@ -135,7 +135,7 @@ apps/gateway/.venv/bin/python scripts/seed_demo.py --profile test --reset --drop
 
 `scripts/seed_demo.py`는 빈 로컬 DB 편의를 위해 `Base.metadata.create_all()`을 호출하지만, 이 경로는 기존 테이블에 새 컬럼을 `ALTER`하지 않는다. 오래된 로컬 DB에 최신 demo seed를 그대로 실행하면 seed가 일부 성공한 것처럼 보여도 다른 Knowledge/RAG API나 runtime 경로가 뒤늦게 500으로 실패할 수 있다.
 
-그래서 demo profile seed는 데이터 쓰기 전에 Knowledge/RAG 데모 흐름이 의존하는 필수 테이블과 컬럼을 확인한다. 누락이 있으면 seed를 중단하고 다음 중 하나를 선택하도록 안내한다.
+그래서 demo profile seed는 데이터 쓰기 전에 Knowledge/RAG 데모 흐름이 의존하는 필수 테이블/컬럼과 Alembic migration readiness를 확인한다. `alembic_version` table이 없거나, DB revision이 코드의 단일 head와 맞지 않거나, 코드 migration graph에 head가 여러 개이면 seed를 중단하고 다음 중 하나를 선택하도록 안내한다.
 
 기존 로컬 데이터를 보존해야 하는 경우 migration을 먼저 적용한다.
 
@@ -250,7 +250,7 @@ Private 사내문서 자료:
 
 작성자/관리자가 workflow draft를 검증할 때는 편집기 우측 테스트 패널의 입력 변수 `question`에 넣는다.
 
-일반 사용자의 실행 흐름을 보여줄 때는 `/dashboard/mymodule`의 `사내 문서 질문 응답 봇` row에서 `실행` 버튼을 누른다. 이 경로는 `/modules/{workflow_id}/run?deploymentId={deployment_id}`로 이동하며, 공개 챗봇 URL이 아니라 로그인 사용자의 workflow `execute` 권한과 RAG `execution_subject`를 적용한다.
+일반 사용자의 실행 흐름을 보여줄 때는 챗봇 배포 성공 화면에서 생성된 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다. 이 경로는 공개 챗봇 URL이 아니라 로그인 사용자의 workflow `execute` 권한과 RAG `execution_subject`를 적용한다. `/dashboard/mymodule`은 작성자/관리자가 운영 현황과 비용/최적화 신호를 보는 화면이므로, 실행 전용 일반 사용자 시연 경로로 사용하지 않는다.
 
 공개 공유 URL(`/run-public`, `/embed/chat`)은 anonymous public-only RAG 경계 확인용이다. 사내 private 문서 접근 시연에는 사용하지 않는다.
 

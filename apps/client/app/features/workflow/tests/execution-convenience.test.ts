@@ -86,6 +86,33 @@ describe('workflow test cases: 실행 편의성', () => {
     });
   });
 
+  it('node_finish malformed usage와 비정상 표준 필드는 표시 요약에서 제외한다', () => {
+    const summary = readNodeFinishExecutionSummary(
+      {
+        output: {
+          usage: {
+            prompt_tokens: 40,
+            completion_tokens: 2,
+            total_tokens: 'secret-like-token-count',
+            total_cost: 'secret-like-cost',
+          },
+          cost: 'secret-like-direct-cost',
+        },
+        latency_ms: 'secret-like-latency',
+        total_tokens: 'secret-like-total',
+        total_cost: 'secret-like-cost',
+      },
+      250,
+    );
+
+    expect(summary).toEqual({
+      latencyMs: 250,
+      totalTokens: 42,
+      totalCost: undefined,
+    });
+    expect(JSON.stringify(summary)).not.toContain('secret-like');
+  });
+
   it('전체 테스트 실행 완료 시 전체 시간, 비용, 토큰 사용량을 계산한다', () => {
     const summary = summarizeWorkflowExecution(
       [
@@ -154,6 +181,21 @@ describe('workflow test cases: 실행 편의성', () => {
       totalCost: 0.0842,
     });
     expect(formatLatency(summary.serverDurationMs)).toBe('3.4s');
+  });
+
+  it('workflow_finish duration이 음수이면 0ms로 보정하고 malformed usage는 버린다', () => {
+    const summary = readWorkflowFinishExecutionSummary({
+      duration: -3.4,
+      total_tokens: 'secret-like-total',
+      total_cost: 'secret-like-cost',
+    });
+
+    expect(summary).toEqual({
+      serverDurationMs: 0,
+      totalTokens: undefined,
+      totalCost: undefined,
+    });
+    expect(JSON.stringify(summary)).not.toContain('secret-like');
   });
 
   it('workflow_finish 서버 실행 시간이 없으면 노드별 latency 합산을 fallback으로 사용한다', () => {

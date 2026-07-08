@@ -41,6 +41,17 @@ Status: Draft
 - 다른 organization KB id의 response shape, audit behavior, answer-run 생성 여부는 ADR-0017 resource-hiding baseline에 따라 hidden identity를 만들지 않는다.
 - Visible resource 확인 이후 same-scope KB use denial은 승인된 resource-hiding/API matrix를 따른다. Matrix가 resource visible 상태를 유지한다고 결정한 경우에만 `403 permission.denied`를 허용한다.
 
+## Knowledge Base API Tests
+
+- KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
+- KB create는 255자를 초과하는 name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
+- KB create는 empty, secret-like, token-like, allowlist 밖 `embedding_model`을 DB insert 전에 거부한다.
+- KB create validation failure는 partial KB row를 만들지 않고 raw request value, stack trace, SQL, credential을 response, audit, log에 노출하지 않는다.
+- KB create는 trimming 후 저장되는 name과 `embedding_model`이 기존 API response shape를 깨뜨리지 않는다.
+- 같은 organization 안에서 동일한 KB `name` create는 이름만으로 conflict 처리하지 않는다. KB name은 display label이며 identity가 아니므로 `knowledge_base_id`, source identity, sync/lifecycle state, safe metadata로 구분한다.
+- 동일 문서의 version은 여러 개를 동시에 retrieval-visible 후보로 만들지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization 이후 최신 active ready version만 검색 노출한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 evidence 후보가 아니다.
+- Source-managed KB의 동일 source item 중복은 KB `name`이 아니라 protected source identity/source sync lineage invariant로 검증한다.
+
 ## Connector And Egress Tests
 
 - Connector preview/test/fetch는 승인된 outbound guard factory 밖의 raw socket, ad hoc HTTP client, custom dialer를 사용할 수 없다.

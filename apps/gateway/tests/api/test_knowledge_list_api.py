@@ -266,6 +266,11 @@ def test_knowledge_list_scopes_to_active_organization_header(monkeypatch):
     )
     monkeypatch.setattr(
         knowledge_endpoint,
+        "get_user_primary_organization_id",
+        lambda _db, _user_id: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
         "_table_has_column",
         lambda _db, table_name, column_name: (
             table_name == "knowledge_bases" and column_name == "organization_id"
@@ -296,6 +301,113 @@ def test_knowledge_list_scopes_to_active_organization_header(monkeypatch):
     }
     assert len(response) == 1
     assert response[0].organization_id == organization_id
+
+
+def test_llm_selectable_knowledge_route_uses_active_org_and_service(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    captured = {}
+
+    class FakeLLMSelectableService:
+        def list_llm_selectable(self, *, user_id, organization_id, schema_ready):
+            captured["user_id"] = user_id
+            captured["organization_id"] = organization_id
+            captured["schema_ready"] = schema_ready
+            return [
+                {
+                    "id": kb_id,
+                    "organization_id": organization_id,
+                    "name": "권한 있는 조직 KB",
+                    "description": None,
+                    "document_count": 1,
+                    "created_at": now,
+                    "updated_at": now,
+                    "source_types": ["FILE"],
+                    "embedding_model": "text-embedding-3-small",
+                    "documents": [
+                        {
+                            "id": doc_id,
+                            "filename": "ready.md",
+                            "status": "completed",
+                            "created_at": now,
+                            "updated_at": now,
+                            "error_message": None,
+                            "chunk_count": 2,
+                            "token_count": 32,
+                            "source_type": "FILE",
+                            "meta_info": {},
+                        }
+                    ],
+                }
+            ]
+
+    def fake_resolve_active_organization_id(db, request, raw, current_user_id):
+        captured["raw"] = raw
+        captured["current_user_id"] = current_user_id
+        return organization_id
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        fake_resolve_active_organization_id,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        lambda _db, _required: {},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_base_query_service",
+        lambda _db: FakeLLMSelectableService(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).get(
+            "/api/v1/knowledge/llm-selectable",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert captured == {
+        "raw": str(organization_id),
+        "current_user_id": user_id,
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "schema_ready": True,
+    }
+    assert response.json()[0]["id"] == str(kb_id)
+    assert response.json()[0]["documents"][0]["chunk_count"] == 2
+
+
+def test_llm_selectable_knowledge_route_reports_stale_schema(monkeypatch):
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        lambda _db, _required: {"knowledge_bases": ["lifecycle_state"]},
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).get(
+            "/api/v1/knowledge/llm-selectable",
+            headers={"X-Organization-Id": str(uuid.uuid4())},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "knowledge.schema_not_ready"
+    assert body["error"]["details"]["missing_columns"] == {
+        "knowledge_bases": ["lifecycle_state"]
+    }
 
 
 def test_knowledge_create_uses_active_organization_header(monkeypatch):
@@ -483,6 +595,75 @@ def test_knowledge_create_reports_stale_schema_without_raw_500(monkeypatch):
         "knowledge_bases": ["sync_state"]
     }
     assert fake_db.added is None
+
+
+def test_knowledge_create_validation_error_does_not_echo_raw_input(monkeypatch):
+    fake_db = FakeCreateKnowledgeDb()
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        lambda _db, _required: {},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_user_primary_organization_id",
+        lambda _db, _user_id: uuid.uuid4(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge",
+            json={
+                "name": "민감 모델 KB",
+                "description": "테스트",
+                "embedding_model": "sk-secret-like-model-value",
+            },
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "knowledge.validation_failed"
+    assert body["error"]["details"] == {"reason": "embedding_model_invalid"}
+    assert "sk-secret-like-model-value" not in response.text
+    assert fake_db.added is None
+    assert fake_db.committed is False
+
+
+def test_knowledge_create_rejects_empty_embedding_model(monkeypatch):
+    fake_db = FakeCreateKnowledgeDb()
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        lambda _db, _required: {},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_user_primary_organization_id",
+        lambda _db, _user_id: uuid.uuid4(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge",
+            json={
+                "name": "빈 임베딩 모델 KB",
+                "description": "테스트",
+                "embedding_model": "   ",
+            },
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "knowledge.validation_failed"
+    assert body["error"]["details"] == {"reason": "embedding_model_invalid"}
+    assert fake_db.added is None
+    assert fake_db.committed is False
 
 
 def test_knowledge_schema_missing_columns_raises_on_introspection_failure(monkeypatch):

@@ -92,6 +92,15 @@ describe('AuthenticatedDeploymentRunPage', () => {
     expect(screen.getByText('최종 답변')).toBeVisible();
   });
 
+  it('내부 실행 화면의 뒤로가기는 운영 현황이 아닌 대시보드로 이동한다', async () => {
+    render(<AuthenticatedDeploymentRunPage />);
+
+    await screen.findByRole('heading', { name: '사내 문서 질문 응답 봇' });
+    fireEvent.click(screen.getByRole('button', { name: '대시보드로 돌아가기' }));
+
+    expect(routerPush).toHaveBeenCalledWith('/dashboard');
+  });
+
   it('URL workflow와 run-info workflow가 다르면 실행을 막는다', async () => {
     mockedWorkflowApi.getDeploymentRunInfo.mockResolvedValueOnce({
       deployment_id: 'deployment-1',

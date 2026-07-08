@@ -42,6 +42,7 @@ from apps.gateway.services.knowledge_base_query_service import (
     KnowledgeBaseNotFound,
     KnowledgeBaseQueryService,
     KnowledgeSchemaNotReady,
+    KnowledgeValidationError,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
@@ -277,6 +278,14 @@ def _raise_knowledge_query_service_error(
             "knowledge.create_failed",
             "Knowledge base creation failed.",
         )
+    if isinstance(exc, KnowledgeValidationError):
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "knowledge.validation_failed",
+            "Knowledge base request validation failed.",
+            {"reason": exc.reason},
+        )
     if isinstance(exc, KnowledgeBaseNotFound):
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
     raise exc
@@ -316,7 +325,11 @@ def create_knowledge_base(
             organization_id=organization_id,
             schema_ready=True,
         )
-    except (KnowledgeSchemaNotReady, KnowledgeBaseCreateFailed) as exc:
+    except (
+        KnowledgeSchemaNotReady,
+        KnowledgeBaseCreateFailed,
+        KnowledgeValidationError,
+    ) as exc:
         _raise_knowledge_query_service_error(request, exc)
 
 
@@ -344,6 +357,37 @@ def list_knowledge_bases(
         user_id=current_user.id,
         organization_scope=organization_scope,
         has_organization_id=has_organization_id,
+    )
+
+
+@router.get("/llm-selectable", response_model=List[KnowledgeBaseDetailResponse])
+def list_llm_selectable_knowledge_bases(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    LLM 노드 RAG picker에서 선택 가능한 Knowledge Base 후보를 조회합니다.
+    일반 관리 목록과 달리 owner filter가 아니라 active organization, KB use 권한,
+    retrieval-visible completed chunk 기준으로 후보를 제한합니다.
+    """
+    _ensure_knowledge_schema_columns(
+        db,
+        request,
+        KNOWLEDGE_BASE_MUTATION_COLUMNS,
+    )
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    service = _knowledge_base_query_service(db)
+    return service.list_llm_selectable(
+        user_id=current_user.id,
+        organization_id=organization_id,
+        schema_ready=True,
     )
 
 

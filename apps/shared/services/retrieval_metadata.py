@@ -19,6 +19,8 @@ METADATA_SUMMARY_ALLOWED_KEYS = {
     "hierarchy_fallback",
     "source_tier",
 }
+MAX_METADATA_SUMMARY_STRING_LENGTH = 200
+MAX_METADATA_SUMMARY_LIST_ITEMS = 20
 
 
 def _safe_metadata_mapping(value) -> dict:
@@ -66,11 +68,31 @@ def chunk_metadata(chunk, doc=None) -> dict:
 def metadata_summary(metadata: dict | None) -> dict:
     if not metadata:
         return {}
-    return {
-        key: metadata[key]
-        for key in METADATA_SUMMARY_ALLOWED_KEYS
-        if key in metadata
-    }
+    summary = {}
+    for key in METADATA_SUMMARY_ALLOWED_KEYS:
+        if key not in metadata:
+            continue
+        value = _safe_summary_value(key, metadata[key])
+        if value is not None:
+            summary[key] = value
+    return summary
+
+
+def _safe_summary_value(key, value, *, nested: bool = False):
+    if key == "tags" and not nested and not isinstance(value, list):
+        return None
+    if isinstance(value, str):
+        return value[:MAX_METADATA_SUMMARY_STRING_LENGTH]
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, list):
+        safe_items = []
+        for item in value[:MAX_METADATA_SUMMARY_LIST_ITEMS]:
+            safe_item = _safe_summary_value(key, item, nested=True)
+            if safe_item is not None:
+                safe_items.append(safe_item)
+        return safe_items
+    return None
 
 
 def hierarchy_path(metadata: dict | None) -> list[str] | None:

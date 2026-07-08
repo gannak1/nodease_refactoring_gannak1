@@ -148,7 +148,7 @@ Side effects:
 
 ### GET /apps, GET /apps/operations (확장)
 
-내 워크플로우 목록/운영 현황 원천인 operations row의 `app` summary와 기존 `AppResponse`에 additive 필드 `budget_status`를 추가한다. `/dashboard/mymodule`의 FR-052 예산 상태 표시는 `GET /apps/operations`의 `app.budget_status`를 사용한다. `GET /apps`는 dashboard 홈, 설정, 관리자 보조 화면 등 기존 App 목록 소비자에게 같은 member 표면 요약을 제공한다.
+내 워크플로우 목록/운영 현황 원천인 operations row의 `app` summary와 기존 `AppResponse`에 additive 필드 `budget_status`를 추가한다. `/dashboard/mymodule`의 FR-052 예산 상태 표시는 `GET /apps/operations`의 `app.budget_status`를 사용한다. `GET /apps`는 dashboard 홈, 설정, 관리자 보조 화면 등 기존 App 목록 소비자에게 같은 안전 요약을 제공한다.
 
 ```json
 {
@@ -162,7 +162,7 @@ Side effects:
 
 - App의 primary workflow(`apps.workflow_id`) 기준이다. 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
 - 같은 `app_id`에 연결된 과거/보조 Workflow row는 `budget_status` 후보가 아니다. `apps.workflow_id`가 null이거나 해당 workflow에 활성 예산이 없으면, 다른 Workflow row에 활성 예산이 있어도 `budget_status`는 null이다.
-- member 표면이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022~023).
+- 안전 요약이므로 예산 금액과 비용 원문은 포함하지 않는다 (BGT-REQ-022~023). `GET /apps/operations` row는 organization manager 또는 workflow `write` 이상 권한을 가진 운영 사용자에게만 반환한다.
 - `usage_ratio`와 `status`의 판정은 관리자 예산 블록과 동일하게 당월(KST) 비용 합계와 반올림 전 값을 사용한다.
 - 당월 비용 합계는 실행 차단 판정과 동일하게 `workflow_id`와 KST 월 경계 기준으로 계산한다. 예산 row는 organization scope로 조회하지만, 사용량 합산에서는 `llm_usage_logs.organization_id`를 필수 조건으로 요구하지 않는다. `workflow_id`가 일치하는 기존/마이그레이션 로그는 `organization_id`가 NULL이어도 포함한다.
 - 목록 전체의 사용률 계산은 현재 응답 App의 primary workflow id를 모아 workflow별 당월 비용을 grouped query로 조회한다 (N+1 금지). 누락 복구를 위해 `workflows.app_id`로 workflow 후보를 확장하지 않는다.

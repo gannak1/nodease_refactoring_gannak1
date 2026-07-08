@@ -75,6 +75,32 @@ def test_metadata_summary_excludes_raw_source_identity_and_provider_payload():
     }
 
 
+def test_metadata_summary_caps_large_values_and_drops_nested_objects():
+    summary = metadata_summary(
+        {
+            "classification": "internal-" + ("x" * 300),
+            "tags": [f"tag-{index}" for index in range(25)],
+            "source_tier": {"raw": "nested-object"},
+            "hierarchy_fallback": True,
+            "token_count": 12,
+        }
+    )
+
+    assert summary["classification"] == "internal-" + ("x" * 191)
+    assert summary["tags"] == [f"tag-{index}" for index in range(20)]
+    assert "source_tier" not in summary
+    assert summary["hierarchy_fallback"] is True
+    assert summary["token_count"] == 12
+
+
+def test_metadata_summary_drops_non_list_tags():
+    assert metadata_summary({"tags": "internal"}) == {}
+    assert metadata_summary({"tags": {"raw": "object"}}) == {}
+    assert metadata_summary({"tags": ["internal", "engineering"]}) == {
+        "tags": ["internal", "engineering"]
+    }
+
+
 def test_chunk_metadata_ignores_non_dict_metadata_without_crashing():
     chunk = SimpleNamespace(
         metadata_="bad chunk metadata",
