@@ -813,6 +813,7 @@ export default function CostOptimizerPlaygroundPage() {
           workflowId,
           nodeId,
           {
+            baseline_id: baseline.baseline_id,
             date_from: historyDateFrom
               ? `${historyDateFrom}T00:00:00`
               : undefined,
@@ -2402,6 +2403,8 @@ export default function CostOptimizerPlaygroundPage() {
                         selectedHistoryRow || baseline
                           ? {
                               cost: baselineCost,
+                              prompt_tokens: activeBaselinePromptTokens,
+                              completion_tokens: activeBaselineCompletionTokens,
                               total_tokens: baselineTotalTokens,
                               latency_ms: activeBaselineLatency,
                             }

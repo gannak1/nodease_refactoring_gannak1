@@ -8,6 +8,7 @@ const getAvailabilityMock = vi.hoisted(() => vi.fn());
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('../../api/workflowApi', () => ({

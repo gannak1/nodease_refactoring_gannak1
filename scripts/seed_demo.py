@@ -13,21 +13,24 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text  # noqa: E402
 
-from apps.shared.db.base import Base
-from apps.shared.db.demo_seed import (
+from apps.shared.db.base import Base  # noqa: E402
+from apps.shared.db.demo_seed import (  # noqa: E402
     DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV,
+    DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV,
     demo_summary,
     reset_demo_data,
     reset_test_data,
     seed_demo_data,
     seed_test_data,
-    DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV,
     validate_demo_seed_prerequisites,
 )
-from apps.shared.db.session import SessionLocal, engine
-import apps.shared.db.models  # noqa: F401
+from apps.shared.db.session import SessionLocal, engine  # noqa: E402
+from apps.shared.services.knowledge_schema_readiness import (  # noqa: E402
+    check_knowledge_schema_readiness_with_inspector,
+)
+import apps.shared.db.models  # noqa: E402, F401
 
 
 REQUIRED_DEMO_SCHEMA_COLUMNS: dict[str, set[str]] = {
@@ -174,29 +177,30 @@ def schema_readiness_gaps(
 ) -> dict[str, object]:
     """Return missing table/column gaps for the current demo seed contract."""
     required = required_columns or REQUIRED_DEMO_SCHEMA_COLUMNS
-    missing_tables: list[str] = []
-    missing_columns: dict[str, list[str]] = {}
-
-    for table_name in sorted(required):
-        if not schema_inspector.has_table(table_name):
-            missing_tables.append(table_name)
-            continue
-
-        actual_columns = {
-            column["name"] for column in schema_inspector.get_columns(table_name)
-        }
-        missing = sorted(required[table_name] - actual_columns)
-        if missing:
-            missing_columns[table_name] = missing
+    result = check_knowledge_schema_readiness_with_inspector(
+        schema_inspector,
+        required,
+    )
+    missing_tables = sorted(result.missing_tables)
+    missing_columns = {
+        table_name: result.missing_columns[table_name]
+        for table_name in sorted(result.missing_columns)
+        if table_name not in result.missing_tables
+    }
 
     return {
         "missing_tables": missing_tables,
         "missing_columns": missing_columns,
+        "reason": result.reason,
     }
 
 
 def _schema_has_gaps(gaps: Mapping[str, object]) -> bool:
-    return bool(gaps["missing_tables"] or gaps["missing_columns"])
+    return bool(
+        gaps.get("missing_tables")
+        or gaps.get("missing_columns")
+        or gaps.get("reason")
+    )
 
 
 def format_schema_readiness_error(gaps: Mapping[str, object]) -> str:
@@ -219,6 +223,11 @@ def format_schema_readiness_error(gaps: Mapping[str, object]) -> str:
         lines.append("Missing columns:")
         for table_name, columns in missing_columns.items():
             lines.append(f"- {table_name}: {', '.join(columns)}")
+
+    reason = gaps.get("reason")
+    if reason:
+        lines.append("")
+        lines.append(f"Readiness check failed: {reason}")
 
     lines.extend(
         [

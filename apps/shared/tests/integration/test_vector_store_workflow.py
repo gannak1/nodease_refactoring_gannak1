@@ -116,17 +116,27 @@ def mock_db_processor():
 
 
 def test_full_sync_workflow_integration(
-    fake_db, mock_encryption, mock_embedding_service, mock_db_processor
+    fake_db,
+    mock_encryption,
+    mock_embedding_service,
+    mock_db_processor,
+    monkeypatch,
 ):
     """
     [Integration] SyncService -> VectorStoreService -> DB(Fake) 전체 파이프라인 검증
     """
     user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
     doc_id = uuid.uuid4()
 
     # 1. Setup Data in FakeDB
-    kb = KnowledgeBase(id=kb_id, name="TestKB", embedding_model="model-v3")
+    kb = KnowledgeBase(
+        id=kb_id,
+        organization_id=organization_id,
+        name="TestKB",
+        embedding_model="model-v3",
+    )
     fake_db.add(kb)
 
     doc = Document(
@@ -136,13 +146,21 @@ def test_full_sync_workflow_integration(
         meta_info={"connection_id": "conn1"},
     )
     fake_db.add(doc)
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.sync_service.has_knowledge_base_permission",
+        lambda *_args, **_kwargs: True,
+    )
 
     # 2. Init Services
     # Real VectorStoreService + Real SyncService
     vector_store_service = VectorStoreService(db=fake_db, user_id=user_id)
     # Inject Mock EmbeddingService (created by fixture patch)
 
-    sync_service = SyncService(db=fake_db, user_id=user_id)
+    sync_service = SyncService(
+        db=fake_db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     sync_service.vector_store_service = vector_store_service  # Use REAL service
     sync_service.db_processor = (
         mock_db_processor  # Use MOCK processor (external interaction)

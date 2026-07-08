@@ -22,6 +22,7 @@ const workflowApiMock = vi.hoisted(() => ({
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'workflow-1', nodeId: 'llm-1' }),
   useRouter: () => routerMock,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('../../api/workflowApi', () => ({

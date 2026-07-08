@@ -1,6 +1,4 @@
-import hashlib
 import os
-import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +14,10 @@ from apps.shared.schemas.auth import (
     SessionInfo,
     SignupRequest,
     UserResponse,
+)
+from apps.shared.services.password_hashing import (
+    hash_password as hash_password_value,
+    verify_password as verify_password_value,
 )
 
 
@@ -72,18 +74,11 @@ class AuthService:
 
     @staticmethod
     def hash_password(password: str) -> str:
-        salt = secrets.token_hex(16)
-        hashed = hashlib.sha256((password + salt).encode()).hexdigest()
-        return f"{salt}${hashed}"
+        return hash_password_value(password)
 
     @staticmethod
     def verify_password(password: str, hashed_password: str) -> bool:
-        try:
-            salt, stored_hash = hashed_password.split("$")
-            new_hash = hashlib.sha256((password + salt).encode()).hexdigest()
-            return new_hash == stored_hash
-        except ValueError:
-            return False
+        return verify_password_value(password, hashed_password)
 
     @staticmethod
     def ensure_user_active(user: User) -> None:

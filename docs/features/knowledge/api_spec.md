@@ -275,6 +275,12 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 
 ## Response Model
 
+### Knowledge Base Detail
+
+`GET /api/v1/knowledge/{kb_id}`의 `documents[].chunk_count`는 물리적으로 저장된 모든 chunk row 수가 아니라, LLM RAG 후보 판단에 사용할 수 있는 retrieval-visible chunk 수다. Document-level KB에서 active ready document version이 있으면 해당 version에 연결된 chunk만 센다. Active version pointer가 아직 없는 전환기 legacy KB는 `document_chunks.document_version_id IS NULL`인 legacy unversioned chunk만 fallback으로 셀 수 있다. `documents.status`가 `completed`가 아니거나 active version이 `ready`가 아닌 pre-finalized/indexing/failed/superseded artifact는 `chunk_count`와 selectable-ready 판단의 근거가 아니다.
+
+이 값은 KB 상세 화면과 LLM node Knowledge Base picker가 같은 ready/not-ready 경계를 쓰도록 제공하는 safe availability signal이다. Raw source title/path/url, hidden document count, 권한 없는 document 존재 여부, non-allowlisted metadata는 포함하지 않는다.
+
 ### Citation Identity
 
 목표 citation field:

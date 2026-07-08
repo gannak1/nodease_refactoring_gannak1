@@ -6,6 +6,7 @@ import type { AppNode, LLMNodeData } from '../../types/Nodes';
 
 const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerAvailability: vi.fn(),
+  getCostOptimizerParameterRecommendations: vi.fn(),
   getCostOptimizerLatestBaseline: vi.fn(),
   listCostOptimizerBaselines: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock('../../api/workflowApi', () => ({
 
 vi.mock('next/navigation', () => ({
   useRouter: () => routerMock,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -130,6 +132,13 @@ describe('FR-002 Cost Optimizer 진입-playground 연결', () => {
         required_auth_state: 'builder',
       },
     });
+    workflowApiMock.getCostOptimizerParameterRecommendations.mockResolvedValue({
+      analysis_stage: 'recommendations_available',
+      policy_version: 'test',
+      recommendations: [],
+      warnings: [],
+      profile: {},
+    });
   });
 
   afterEach(() => {
@@ -137,15 +146,16 @@ describe('FR-002 Cost Optimizer 진입-playground 연결', () => {
     vi.restoreAllMocks();
   });
 
-  it('모델 라우팅 최적화 클릭 시 해당 workflow/node 전용 추천 화면으로 이동한다', () => {
+  it('모델 라우팅 최적화 클릭 시 해당 workflow/node 전용 추천 모달을 연다', async () => {
     render(<NodeInlinePanel node={createLlmNode()} />);
 
     fireEvent.click(
       screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     );
 
-    expect(routerMock.push).toHaveBeenCalledWith(
-      '/modules/workflow-1/model-routing/llm-1',
-    );
+    expect(
+      await screen.findByRole('dialog', { name: /LLM 노드 설정 추천/i }),
+    ).toBeInTheDocument();
+    expect(routerMock.push).not.toHaveBeenCalled();
   });
 });
