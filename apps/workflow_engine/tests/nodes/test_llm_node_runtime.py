@@ -308,6 +308,55 @@ def test_llm_node_runs_with_override_client():
     }
 
 
+@pytest.mark.parametrize(
+    ("raw_usage", "expected_usage"),
+    [
+        ("api_key=secret-like-provider-payload", {}),
+        (
+            {
+                "prompt_tokens": 12,
+                "completion_tokens": 8,
+                "total_tokens": "20",
+                "total_cost": float("inf"),
+                "latency_ms": -1,
+                "api_key": "secret-like-provider-payload",
+            },
+            {"prompt_tokens": 12, "completion_tokens": 8},
+        ),
+    ],
+)
+def test_llm_node_drops_malformed_provider_usage_without_crashing(
+    raw_usage,
+    expected_usage,
+):
+    class MalformedUsageClient:
+        def invoke_sync(self, messages, **kwargs):
+            return {
+                "choices": [{"message": {"content": "safe answer"}}],
+                "usage": raw_usage,
+            }
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode("llm-usage", data)
+    node._client_override = MalformedUsageClient()  # noqa: SLF001 - 테스트용
+
+    result = node.execute({})
+
+    assert result["text"] == "safe answer"
+    assert result["usage"] == expected_usage
+    assert "secret-like-provider-payload" not in str(result)
+
+
 def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatch):
     """자동 라우팅 policy가 아직 없으면 런타임은 저장 모델을 쓰고 judge를 호출하지 않는다."""
     user_id = uuid.uuid4()
@@ -3714,6 +3763,94 @@ def test_knowledge_search_fails_closed_when_runtime_permission_revoked(monkeypat
     assert result.answer_override == RAG_NO_EVIDENCE_MESSAGE
     assert audit_calls[0]["resource_id"] == str(kb_id)
     assert audit_calls[0]["effective_auth_state"] == "revoked"
+    assert audit_calls[0]["organization_id"] == organization_id
+
+
+@pytest.mark.parametrize(
+    ("external_reason_code", "effective_auth_state"),
+    [
+        ("source.stale", "stale"),
+        ("source.unmapped", "unmapped"),
+        ("source.ambiguous", "ambiguous"),
+        ("source.unverified", "unverified"),
+    ],
+)
+def test_knowledge_search_fails_closed_for_unfresh_source_acl_states(
+    monkeypatch,
+    external_reason_code,
+    effective_auth_state,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    retrieval_calls = []
+    audit_calls = []
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [SimpleNamespace(id=kb_id)]
+
+    class FakeDb:
+        def query(self, *args, **kwargs):
+            return FakeQuery()
+
+    class FakeKnowledgePermissionHelper:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(
+                    allowed=False,
+                    external_reason_code=external_reason_code,
+                    effective_auth_state=effective_auth_state,
+                )
+                for kb in kbs
+            }
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.KnowledgePermissionHelper",
+        FakeKnowledgePermissionHelper,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="user",
+            knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_run_rag_retrieval_fanout",
+        lambda **kwargs: retrieval_calls.append(kwargs["knowledge_base_ids"])
+        or WorkflowRAGFanoutResult(results=[], failed_count=0),
+    )
+
+    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+
+    assert retrieval_calls == [[]]
+    assert result.should_invoke_llm is False
+    assert result.answer_override == RAG_NO_EVIDENCE_MESSAGE
+    assert audit_calls[0]["resource_id"] == str(kb_id)
+    assert audit_calls[0]["effective_auth_state"] == effective_auth_state
     assert audit_calls[0]["organization_id"] == organization_id
 
 

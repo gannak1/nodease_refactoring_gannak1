@@ -441,6 +441,72 @@ def test_list_llm_selectable_uses_kb_use_permission_and_ready_boundary(monkeypat
     assert [item.id for item in response] == [ready_allowed_id]
 
 
+def test_list_llm_selectable_excludes_completed_document_without_visible_chunks(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    kb_id = uuid.uuid4()
+    kb = SimpleNamespace(
+        id=kb_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        source_identity_id=None,
+        name="완료됐지만 검색 불가 KB",
+        description=None,
+        embedding_model="text-embedding-3-small",
+        created_at=now,
+        updated_at=now,
+    )
+
+    class FakePermissionHelper:
+        def __init__(self, _db, *, user_id, organization_id):
+            pass
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {item.id: SimpleNamespace(allowed=True) for item in kbs}
+
+    service = KnowledgeBaseQueryService(
+        FakeSelectableDb([kb]),
+        permission_helper_factory=FakePermissionHelper,
+    )
+    monkeypatch.setattr(
+        service,
+        "_detail_response_from_kb",
+        lambda _kb: service_module.KnowledgeBaseDetailResponse(
+            id=kb_id,
+            organization_id=organization_id,
+            name="완료됐지만 검색 불가 KB",
+            description=None,
+            document_count=1,
+            created_at=now,
+            updated_at=now,
+            source_types=["FILE"],
+            embedding_model="text-embedding-3-small",
+            documents=[
+                service_module.DocumentResponse(
+                    id=uuid.uuid4(),
+                    filename="empty-ready.md",
+                    status="completed",
+                    created_at=now,
+                    updated_at=now,
+                    chunk_count=0,
+                    token_count=0,
+                )
+            ],
+        ),
+    )
+
+    response = service.list_llm_selectable(
+        user_id=user_id,
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+
+    assert response == []
+
+
 def test_get_detail_raises_not_found_for_missing_or_hidden_kb():
     db = FakeDetailDb(None, [])
 
@@ -831,3 +897,39 @@ def test_create_trims_name_and_embedding_model_before_insert():
     assert response.embedding_model == "text-embedding-3-small"
     assert db.added.name == "정책 KB"
     assert db.added.embedding_model == "text-embedding-3-small"
+
+
+def test_create_allows_duplicate_display_names_with_distinct_ids():
+    class TrackingCreateDb(FakeCreateDb):
+        def __init__(self):
+            super().__init__()
+            self.added_items = []
+
+        def add(self, item):
+            self.added_items.append(item)
+            self.added = item
+
+    db = TrackingCreateDb()
+    service = KnowledgeBaseQueryService(db)
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+
+    first = service.create(
+        service_module.KnowledgeBaseCreate(name="중복 표시명 KB"),
+        user_id=user_id,
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+    second = service.create(
+        service_module.KnowledgeBaseCreate(name="중복 표시명 KB"),
+        user_id=user_id,
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+
+    assert first.name == second.name == "중복 표시명 KB"
+    assert first.id != second.id
+    assert [item.name for item in db.added_items] == [
+        "중복 표시명 KB",
+        "중복 표시명 KB",
+    ]

@@ -177,6 +177,64 @@ describe('FR-003 RAG cost optimization options', () => {
     });
   });
 
+  it('일반 LLM 노드 지식 베이스 탭에서 여러 RAG 연결을 유지한다', async () => {
+    vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValue({
+      bases: [
+        {
+          id: 'kb-1',
+          name: '제품 정책',
+          description: '제품 정책 문서',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+        },
+        {
+          id: 'kb-2',
+          name: '개발팀 규칙',
+          description: '개발팀 운영 문서',
+          document_count: 2,
+          created_at: '2026-07-02T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+        },
+      ],
+      detailsById: {},
+    });
+
+    const { rerender } = render(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={baseData}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /제품 정책/ }));
+    expect(updateNodeDataMock).toHaveBeenLastCalledWith('llm-1', {
+      knowledgeBases: [{ id: 'kb-1', name: '제품 정책' }],
+    });
+
+    rerender(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={{
+          ...baseData,
+          knowledgeBases: [{ id: 'kb-1', name: '제품 정책' }],
+        }}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /개발팀 규칙/ }));
+    expect(updateNodeDataMock).toHaveBeenLastCalledWith('llm-1', {
+      knowledgeBases: [
+        { id: 'kb-1', name: '제품 정책' },
+        { id: 'kb-2', name: '개발팀 규칙' },
+      ],
+    });
+  });
+
   it('완료된 문서가 있는 KB가 없으면 RAG 선택 후보를 비워 안내한다', async () => {
     vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
       bases: [],
@@ -374,6 +432,95 @@ describe('FR-003 RAG cost optimization options', () => {
       /매우-긴-파일명-커밋-브랜치-PR-컨벤션/,
     );
     expect(fileLabel).toHaveClass('truncate');
+  });
+
+  it('모바일 폭에서도 다국어 지식 라벨은 키보드 포커스와 줄임 처리를 유지한다', async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 360,
+    });
+    const kbName =
+      '社内規程 개발팀 onboarding policy длинное-название '.repeat(3);
+    const filename =
+      '12345678-1234-1234-1234-123456789abc_' +
+      '온보딩-規程-commit-convention-branch-review-long-name.md'.repeat(2);
+
+    vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
+      bases: [
+        {
+          id: 'kb-i18n',
+          name: kbName,
+          description: '다국어 표시명 테스트',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+        },
+      ],
+      detailsById: {
+        'kb-i18n': {
+          id: 'kb-i18n',
+          name: kbName,
+          description: '다국어 표시명 테스트',
+          document_count: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          embedding_model: 'text-embedding-3-small',
+          documents: [
+            {
+              id: 'doc-i18n',
+              filename,
+              status: 'completed',
+              created_at: '2026-07-01T00:00:00Z',
+              updated_at: '2026-07-01T00:00:00Z',
+              chunk_count: 2,
+              token_count: 220,
+            },
+          ],
+        },
+      },
+    });
+
+    try {
+      render(
+        <LLMReferenceSidePanel
+          nodeId="llm-1"
+          data={baseData}
+          onClose={vi.fn()}
+          embedded
+        />,
+      );
+
+      const checkbox = await screen.findByRole('checkbox', {
+        name: /社内規程 개발팀 onboarding policy/,
+      });
+      checkbox.focus();
+      expect(checkbox).toHaveFocus();
+
+      const kbLabel = await screen.findByText((content, element) => {
+        return (
+          element?.tagName === 'SPAN' &&
+          content.includes('社内規程 개발팀 onboarding policy')
+        );
+      });
+      expect(kbLabel).toHaveClass('truncate');
+      expect(kbLabel.closest('.min-w-0')).not.toBeNull();
+
+      const expandButton = screen.getByRole('button', {
+        name: /지식 목록 보기/,
+      });
+      expandButton.focus();
+      expect(expandButton).toHaveFocus();
+      fireEvent.click(expandButton);
+
+      const fileLabel = await screen.findByText(/온보딩-規程/);
+      expect(fileLabel).toHaveClass('truncate');
+      expect(fileLabel).toHaveClass('flex-1');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+    }
   });
 
   it('A/B 후보 지식 베이스 탭에서 지식 베이스를 선택한다', async () => {
