@@ -1,7 +1,6 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: feature/mba-162 @ 419df74
 
 ## Test File Mapping
 
@@ -10,6 +9,7 @@ Verified Against: feature/mba-162 @ 419df74
 - 워크플로우 조작 편의성: `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx`
 - 노드 실행 기록 패널 추가: `apps/client/app/features/workflow/tests/node-execution-log-panel.todo.test.ts`
 - 공통 그래프 검증: `apps/client/app/features/workflow/tests/utils/validateWorkflowGraph.test.ts`
+- 인증 배포 실행/RAG 경계: `apps/gateway/tests/services/test_chatbot_deployment_run.py`, `apps/gateway/tests/api/test_deployment_permissions.py`, `apps/client/app/features/app/tests/moduleRunNavigation.test.ts`, `apps/client/app/features/workflow/tests/deploymentRunResult.test.ts`
 - 동시성 처리: TBD. 구현/API 경계 확정 후 `apps/client/app/features/workflow/tests/workflow-concurrency.test.ts` 또는 Gateway integration test로 분리한다.
 
 `*.todo.test.ts`의 `it.todo` 항목은 아직 대응 구현 또는 API 계약이 없는 테스트 케이스다. 구현 시 같은 파일에서 실제 assertion 테스트로 전환한다.
@@ -376,6 +376,10 @@ Verified Against: feature/mba-162 @ 419df74
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.
+- 인증 배포 실행 화면은 `GET /deployments/{deployment_id}/run-info` safe metadata만 사용하고, `auth_secret` 또는 `graph_snapshot`을 받지 않는다.
+- 로그인 사용자의 배포 실행 요청(`/deployments/{deployment_id}/run`)은 workflow `execute` 권한을 재검증하고, active deployment snapshot을 `execution_subject=current_user`로 실행한다.
+- 인증 배포 실행의 `conversation_id`는 서버에서 deployment와 execution subject 기준으로 namespace 처리되어 다른 사용자 memory context와 섞이지 않는다.
+- `/run-public/{url_slug}` 공개 실행은 `execution_subject`를 주입하지 않으며 workflow owner 권한으로 private RAG를 fallback하지 않는다.
 - Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.

@@ -1,5 +1,6 @@
 """Deployment Service - 배포 관련 비즈니스 로직"""
 
+import hashlib
 import logging
 import secrets
 import uuid
@@ -372,38 +373,139 @@ class DeploymentService:
                 )
         # require_auth가 False면 인증 스킵 (웹 앱/위젯)
 
-        # 4-1. 예산 초과 차단 — 아래 dispatch try 블록 밖이어야 429가
+        return await DeploymentService._execute_deployment_snapshot(
+            db=db,
+            app=app,
+            deployment=deployment,
+            user_inputs=user_inputs,
+            trigger_mode=trigger_mode,
+            actor_user_id=None,
+            execution_subject_user_id=None,
+        )
+
+    @staticmethod
+    async def run_authenticated_deployment(
+        db: Session,
+        deployment_id: uuid.UUID | str,
+        user_inputs: Dict[str, Any],
+        current_user_id: uuid.UUID | str,
+        request_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        로그인 사용자의 권한 주체로 활성 배포 snapshot을 실행합니다.
+
+        공개 실행(`/run-public`)은 anonymous public-only RAG 경계를 유지해야 하므로
+        이 메서드에서만 execution_subject를 주입합니다.
+        """
+        deployment, app = DeploymentService._get_active_deployment_and_app(
+            db,
+            deployment_id,
+        )
+
+        return await DeploymentService._execute_deployment_snapshot(
+            db=db,
+            app=app,
+            deployment=deployment,
+            user_inputs=user_inputs,
+            trigger_mode="app",
+            actor_user_id=current_user_id,
+            execution_subject_user_id=current_user_id,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+
+    @staticmethod
+    def get_deployment_run_info(
+        db: Session,
+        deployment_id: uuid.UUID | str,
+    ) -> Dict[str, Any]:
+        deployment, app = DeploymentService._get_active_deployment_and_app(
+            db,
+            deployment_id,
+        )
+        return {
+            "deployment_id": deployment.id,
+            "app_id": app.id,
+            "workflow_id": app.workflow_id,
+            "name": app.name,
+            "description": app.description or deployment.description,
+            "version": deployment.version,
+            "type": deployment.type.value,
+            "input_schema": deployment.input_schema,
+            "output_schema": deployment.output_schema,
+        }
+
+    @staticmethod
+    def _get_active_deployment_and_app(
+        db: Session,
+        deployment_id: uuid.UUID | str,
+    ) -> tuple[WorkflowDeployment, App]:
+        deployment = (
+            db.query(WorkflowDeployment)
+            .filter(WorkflowDeployment.id == deployment_id)
+            .first()
+        )
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+
+        app = db.query(App).filter(App.id == deployment.app_id).first()
+        if not app or not app.workflow_id:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        if app.active_deployment_id != deployment.id or not deployment.is_active:
+            raise HTTPException(status_code=404, detail="Deployment is inactive")
+        return deployment, app
+
+    @staticmethod
+    async def _execute_deployment_snapshot(
+        db: Session,
+        app: App,
+        deployment: WorkflowDeployment,
+        user_inputs: Dict[str, Any],
+        trigger_mode: str,
+        actor_user_id: uuid.UUID | str | None,
+        execution_subject_user_id: uuid.UUID | str | None,
+        request_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        # 예산 초과 차단 — 아래 dispatch try 블록 밖이어야 429가
         # "Engine Execution failed" 500으로 감싸이지 않는다 (BGT-REQ-030~031).
         WorkflowBudgetService.ensure_workflow_budget_allows_execution(
             db,
             workflow_id=app.workflow_id,
             trigger_mode=trigger_mode,
-            actor_id=None,
+            actor_id=actor_user_id,
         )
 
-        # 5. 그래프 데이터 준비
         graph_data = deployment.graph_snapshot
 
-        # 6. 워크플로우 실행 (Celery 태스크로 위임)
         try:
             # 로깅을 위한 컨텍스트 주입
             # memory_mode 추가 (챗봇 기억 모드 지원)
-            memory_mode_enabled = user_inputs.pop("memory_mode", False)
+            dispatch_inputs = dict(user_inputs or {})
+            memory_mode_enabled = dispatch_inputs.pop("memory_mode", False)
             if isinstance(memory_mode_enabled, str):
                 memory_mode_enabled = memory_mode_enabled.lower() == "true"
 
             # 방문자별 대화 격리용 conversation_id (챗봇 멀티턴 기억).
             # memory_mode와 동일하게 dispatch 전에 pop하여 워크플로우 입력 오염을 막는다.
-            conversation_id = user_inputs.pop("conversation_id", None)
+            conversation_id = dispatch_inputs.pop("conversation_id", None)
             if conversation_id is not None:
                 conversation_id = str(conversation_id)
+                if execution_subject_user_id:
+                    conversation_id = DeploymentService._authenticated_conversation_id(
+                        deployment_id=deployment.id,
+                        subject_id=execution_subject_user_id,
+                        client_conversation_id=conversation_id,
+                    )
 
             # 챗봇 배포는 기억모드가 항상 켜져 있어야 한다 (클라이언트 값과 무관하게 서버가 강제).
             if deployment.type == DeploymentType.CHATBOT:
                 memory_mode_enabled = True
 
             execution_context = {
-                "user_id": str(app.created_by),  # UUID를 문자열로 변환 (JSON 직렬화)
+                "user_id": str(actor_user_id or app.created_by),
                 "workflow_id": str(app.workflow_id) if app.workflow_id else None,
                 "organization_id": (
                     str(app.organization_id) if app.organization_id else None
@@ -415,11 +517,20 @@ class DeploymentService:
                 "memory_mode": memory_mode_enabled,  # 기억 모드 추가
                 "conversation_id": conversation_id,  # 방문자별 대화 격리 키
             }
+            if request_id:
+                execution_context["request_id"] = request_id
+            if correlation_id:
+                execution_context["correlation_id"] = correlation_id
+            if execution_subject_user_id:
+                execution_context["execution_subject"] = {
+                    "type": "user",
+                    "id": str(execution_subject_user_id),
+                }
 
             # Celery 태스크 호출 (workflow.execute)
             task = celery_app.send_task(
                 "workflow.execute",
-                args=[graph_data, user_inputs, execution_context],
+                args=[graph_data, dispatch_inputs, execution_context],
                 kwargs={"is_deployed": True},
             )
 
@@ -454,21 +565,55 @@ class DeploymentService:
                 raise HTTPException(status_code=500, detail="Workflow execution failed")
 
         except TimeoutError as e:
-            raise HTTPException(status_code=504, detail=str(e))
+            logger.warning(
+                "[Deployment] engine execution timed out: deployment_id=%s error_type=%s",
+                deployment.id,
+                type(e).__name__,
+            )
+            raise HTTPException(
+                status_code=504, detail="Workflow execution timed out"
+            )
 
         except ValueError as e:
-            # 필수 노드 누락 등 검증 에러
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.warning(
+                "[Deployment] engine validation failed: deployment_id=%s error_type=%s",
+                deployment.id,
+                type(e).__name__,
+            )
+            raise HTTPException(status_code=400, detail="Workflow validation failed")
 
         except NotImplementedError as e:
-            # 지원하지 않는 기능 에러
-            raise HTTPException(status_code=501, detail=str(e))
+            logger.warning(
+                "[Deployment] unsupported engine feature: deployment_id=%s error_type=%s",
+                deployment.id,
+                type(e).__name__,
+            )
+            raise HTTPException(
+                status_code=501, detail="Workflow feature is not supported"
+            )
+
+        except HTTPException:
+            raise
 
         except Exception as e:
-            # 기타 서버 에러
-            raise HTTPException(
-                status_code=500, detail=f"Engine Execution failed: {str(e)}"
+            logger.error(
+                "[Deployment] engine execution failed: deployment_id=%s error_type=%s",
+                deployment.id,
+                type(e).__name__,
             )
+            raise HTTPException(status_code=500, detail="Workflow execution failed")
+
+    @staticmethod
+    def _authenticated_conversation_id(
+        *,
+        deployment_id: uuid.UUID | str,
+        subject_id: uuid.UUID | str,
+        client_conversation_id: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{deployment_id}:{subject_id}:{client_conversation_id}".encode("utf-8")
+        ).hexdigest()
+        return f"auth:{digest}"
 
     @staticmethod
     def _extract_input_schema(graph_snapshot: dict) -> dict | None:

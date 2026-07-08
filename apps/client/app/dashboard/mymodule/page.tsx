@@ -34,6 +34,11 @@ import {
   type ModuleOperationsListParams,
   type ModuleRunState,
 } from '@/app/features/app/api/moduleOperationsApi';
+import {
+  buildModuleRunHref,
+  canRunDeployedModule,
+  getModuleRunDisabledReason,
+} from '@/app/features/app/utils/moduleRunNavigation';
 import { apiClient } from '@/lib/apiClient';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import type {
@@ -478,6 +483,13 @@ export default function MyModulePage() {
     router.push(`/modules/${targetId}`);
   };
 
+  const handleRunModule = (row: ModuleOperationRow) => {
+    if (!canRunDeployedModule(row)) return;
+    const href = buildModuleRunHref(row);
+    if (!href) return;
+    router.push(href);
+  };
+
   const handleEditApp = async (row: ModuleOperationRow) => {
     if (!canEditApp(row, isOrgManager)) return;
     try {
@@ -697,13 +709,13 @@ export default function MyModulePage() {
               <table className="min-w-full table-fixed divide-y divide-slate-100">
                 <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                   <tr>
-                    <th className="w-[24%] px-5 py-3">워크플로우</th>
+                    <th className="w-[21%] px-5 py-3">워크플로우</th>
                     <th className="w-[13%] px-4 py-3">월 예상 비용</th>
                     <th className="w-[13%] px-4 py-3">증가 추세</th>
                     <th className="w-[14%] px-4 py-3">예산 사용률</th>
-                    <th className="w-[15%] px-4 py-3">최적화</th>
+                    <th className="w-[14%] px-4 py-3">최적화</th>
                     <th className="w-[11%] px-4 py-3">상태</th>
-                    <th className="w-[10%] px-5 py-3 text-right">작업</th>
+                    <th className="w-[14%] px-5 py-3 text-right">작업</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
@@ -711,6 +723,7 @@ export default function MyModulePage() {
                     <ModuleOperationTableRow
                       key={row.app.id}
                       row={row}
+                      onRun={() => handleRunModule(row)}
                       onOpen={() => handleModuleClick(row)}
                       onEdit={() => handleEditApp(row)}
                       onToggleDeployment={() => handleToggleDeployment(row)}
@@ -824,6 +837,7 @@ function FilterSelect({
 
 function ModuleOperationTableRow({
   row,
+  onRun,
   onOpen,
   onEdit,
   onToggleDeployment,
@@ -833,6 +847,7 @@ function ModuleOperationTableRow({
   isOrgManager,
 }: {
   row: ModuleOperationRow;
+  onRun: () => void;
   onOpen: () => void;
   onEdit: () => void;
   onToggleDeployment: () => void;
@@ -845,6 +860,7 @@ function ModuleOperationTableRow({
   const canEdit = canEditApp(row, isOrgManager);
   const canToggle = canToggleDeployment(row);
   const runBlockMessage = budgetRunBlockMessage(row.app.budget_status);
+  const runDisabledReason = getModuleRunDisabledReason(row);
   const costSignal = costSignalOf(row);
   const budgetPercent =
     costSignal.budgetUsageRatio == null
@@ -1021,7 +1037,14 @@ function ModuleOperationTableRow({
       <td className="px-5 py-4 align-top">
         <div className="flex justify-end gap-2">
           <IconButton
-            label={canOpenModule(row) ? '열기' : '조회 권한 확인 필요'}
+            label={runDisabledReason || '배포 실행'}
+            onClick={onRun}
+            disabled={Boolean(runDisabledReason)}
+          >
+            <Play className="h-4 w-4" />
+          </IconButton>
+          <IconButton
+            label={canOpenModule(row) ? '편집기 열기' : '조회 권한 확인 필요'}
             onClick={onOpen}
             disabled={!canOpenModule(row)}
           >

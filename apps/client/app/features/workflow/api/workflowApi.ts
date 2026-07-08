@@ -4,7 +4,11 @@ import {
   getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
 import { WorkflowDraftRequest } from '../types/Workflow';
-import { DeploymentCreate, DeploymentResponse } from '../types/Deployment';
+import {
+  DeploymentCreate,
+  DeploymentResponse,
+  DeploymentRunInfoResponse,
+} from '../types/Deployment';
 import {
   WorkflowCreateRequest,
   WorkflowCompareResponse,
@@ -446,6 +450,21 @@ export const workflowApi = {
   getDeployment: async (deploymentId: string) => {
     const response = await api.get(`/deployments/${deploymentId}`);
     return response.data as DeploymentResponse;
+  },
+
+  getDeploymentRunInfo: async (deploymentId: string) => {
+    const response = await api.get(`/deployments/${deploymentId}/run-info`);
+    return response.data as DeploymentRunInfoResponse;
+  },
+
+  runDeployment: async (
+    deploymentId: string,
+    inputs: Record<string, unknown>,
+  ) => {
+    const response = await api.post(`/deployments/${deploymentId}/run`, {
+      inputs,
+    });
+    return response.data as { status: string; results?: unknown };
   },
 
   listWorkflowNodes: async (excludedAppId?: string) => {

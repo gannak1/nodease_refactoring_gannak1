@@ -61,8 +61,9 @@ vi.mock('../store/useWorkflowStore', () => {
     failTestExecution: vi.fn(),
     resetTestExecution: vi.fn(),
   };
-  const useWorkflowStore = vi.fn(() => state);
-  useWorkflowStore.getState = vi.fn(() => state);
+  const useWorkflowStore = Object.assign(vi.fn(() => state), {
+    getState: vi.fn(() => state),
+  });
   return { useWorkflowStore };
 });
 

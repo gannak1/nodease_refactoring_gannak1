@@ -49,3 +49,17 @@ class DeploymentInfoResponse(BaseModel):
     type: str
     input_schema: Optional[dict] = None
     output_schema: Optional[dict] = None
+
+
+class DeploymentRunInfoResponse(BaseModel):
+    """인증된 내부 실행 화면용 safe 배포 정보 응답"""
+
+    deployment_id: UUID
+    app_id: UUID
+    workflow_id: UUID
+    name: str
+    version: int
+    description: Optional[str] = None
+    type: str
+    input_schema: Optional[dict] = None
+    output_schema: Optional[dict] = None
