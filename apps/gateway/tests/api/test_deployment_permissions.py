@@ -191,6 +191,59 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
     assert captured["request_id"] == "req-1"
 
 
+def test_run_authenticated_deployment_forwards_middleware_request_id(
+    monkeypatch,
+):
+    workflow_id = uuid.uuid4()
+    deployment = WorkflowDeployment(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        version=1,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    app = App(
+        id=deployment.app_id,
+        workflow_id=workflow_id,
+        active_deployment_id=deployment.id,
+        created_by=uuid.uuid4(),
+    )
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    monkeypatch.setattr(
+        deployment_endpoint,
+        "ensure_workflow_permission",
+        lambda db, user, checked_workflow_id, action: None,
+    )
+
+    async def run_service(**kwargs):
+        captured.update(kwargs)
+        return {"status": "success", "results": {"answer": "ok"}}
+
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "run_authenticated_deployment",
+        run_service,
+    )
+
+    asyncio.run(
+        deployment_endpoint.run_authenticated_deployment(
+            deployment_id=str(deployment.id),
+            request=SimpleNamespace(
+                headers={},
+                state=SimpleNamespace(request_id="middleware-req-1"),
+            ),
+            request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
+            db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
+            current_user=current_user,
+        )
+    )
+
+    assert captured["request_id"] == "middleware-req-1"
+
+
 def test_get_authenticated_deployment_run_info_authorizes_execute(monkeypatch):
     workflow_id = uuid.uuid4()
     deployment = WorkflowDeployment(

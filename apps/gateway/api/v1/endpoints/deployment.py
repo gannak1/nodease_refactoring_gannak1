@@ -25,6 +25,12 @@ from apps.shared.schemas.deployment import (
 router = APIRouter()
 
 
+def _request_id_from_request(request: Request) -> str | None:
+    return getattr(
+        getattr(request, "state", None), "request_id", None
+    ) or request.headers.get("x-request-id")
+
+
 def _deployment_app_and_workflow_id(db: Session, deployment_id: str):
     deployment = (
         db.query(WorkflowDeployment)
@@ -247,7 +253,7 @@ async def run_authenticated_deployment(
         deployment_id=deployment_id,
         user_inputs=inputs,
         current_user_id=current_user.id,
-        request_id=request.headers.get("x-request-id"),
+        request_id=_request_id_from_request(request),
         correlation_id=request.headers.get("x-correlation-id"),
     )
 

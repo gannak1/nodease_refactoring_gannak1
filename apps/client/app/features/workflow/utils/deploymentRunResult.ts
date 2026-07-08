@@ -19,7 +19,10 @@ export const getDeploymentRunFinalPreview = (
 
   if (isRecord(workflowResult)) {
     for (const output of deployment?.output_schema?.outputs || []) {
-      if (workflowResult[output.variable] !== undefined) {
+      if (
+        workflowResult[output.variable] !== undefined &&
+        workflowResult[output.variable] !== null
+      ) {
         return buildFinalResponsePreview(
           workflowResult[output.variable],
           output.label || '워크플로우 최종 출력',

@@ -42,4 +42,29 @@ describe('deployment run final preview', () => {
     expect(preview.text).toBe('최종 사용자 답변');
     expect(preview.sourceLabel).toBe('최종 답변');
   });
+
+  it('output schema의 앞 출력이 null이면 다음 출력 후보를 표시한다', () => {
+    const preview = getDeploymentRunFinalPreview(
+      {
+        ...deployment,
+        output_schema: {
+          outputs: [
+            { variable: 'empty_answer', label: '빈 답변' },
+            { variable: 'final_answer', label: '최종 답변' },
+          ],
+        },
+      },
+      {
+        status: 'success',
+        results: {
+          empty_answer: null,
+          final_answer: '실제 최종 사용자 답변',
+        },
+      },
+    );
+
+    expect(preview.kind).toBe('text');
+    expect(preview.text).toBe('실제 최종 사용자 답변');
+    expect(preview.sourceLabel).toBe('최종 답변');
+  });
 });

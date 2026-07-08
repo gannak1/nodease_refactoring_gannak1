@@ -64,6 +64,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
     expect(
       await screen.findByRole('heading', { name: '사내 문서 질문 응답 봇' }),
     ).toBeVisible();
+    expect(screen.getByRole('main')).toHaveClass('h-full', 'overflow-y-auto');
     expect(mockedWorkflowApi.getDeploymentRunInfo).toHaveBeenCalledWith(
       'deployment-1',
     );

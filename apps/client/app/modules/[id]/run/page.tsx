@@ -175,7 +175,7 @@ export default function AuthenticatedDeploymentRunPage() {
   const title = deployment?.name || '배포된 워크플로우 실행';
 
   return (
-    <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-900">
+    <main className="h-full overflow-y-auto bg-slate-50 px-6 py-8 text-slate-900">
       <div className="mx-auto flex max-w-5xl flex-col gap-6">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
