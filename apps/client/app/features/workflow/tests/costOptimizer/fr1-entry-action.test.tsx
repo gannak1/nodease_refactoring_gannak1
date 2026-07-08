@@ -11,6 +11,7 @@ const workflowApiMock = vi.hoisted(() => ({
   listWorkflowsByApp: vi.fn(),
   getWorkflowPermission: vi.fn(),
   getCostOptimizerAvailability: vi.fn(),
+  getCostOptimizerParameterRecommendations: vi.fn(),
 }));
 
 const routerMock = vi.hoisted(() => ({
@@ -23,6 +24,7 @@ vi.mock('../../api/workflowApi', () => ({
 
 vi.mock('next/navigation', () => ({
   useRouter: () => routerMock,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -149,6 +151,13 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
         required_auth_state: 'builder',
       },
     });
+    workflowApiMock.getCostOptimizerParameterRecommendations.mockResolvedValue({
+      analysis_stage: 'recommendations_available',
+      policy_version: 'test',
+      recommendations: [],
+      warnings: [],
+      profile: {},
+    });
     global.fetch = vi.fn(async () => ({
       ok: true,
       json: async () => [],
@@ -186,15 +195,16 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     ).toBeDisabled();
   });
 
-  it('모델 라우팅 최적화 클릭 시 모델 추천 화면을 연다', async () => {
+  it('모델 라우팅 최적화 클릭 시 모델 추천 모달을 연다', async () => {
     renderPanel(createLlmNode());
     fireEvent.click(
       screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
     );
 
-    expect(routerMock.push).toHaveBeenCalledWith(
-      '/modules/workflow-1/model-routing/llm-1',
-    );
+    expect(
+      await screen.findByRole('dialog', { name: /LLM 노드 설정 추천/i }),
+    ).toBeInTheDocument();
+    expect(routerMock.push).not.toHaveBeenCalled();
   });
 
   it('저장되지 않은 draft가 있으면 저장 후 비교를 시작해야 한다는 안내를 표시한다', async () => {

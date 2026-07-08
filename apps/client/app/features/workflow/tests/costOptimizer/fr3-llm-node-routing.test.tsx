@@ -74,6 +74,7 @@ vi.mock('../../api/workflowApi', () => ({
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 const initialState = useWorkflowStore.getState();
