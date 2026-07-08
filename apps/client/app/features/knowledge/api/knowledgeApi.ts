@@ -309,6 +309,19 @@ export const knowledgeApi = {
     }
   },
 
+  // LLM 노드 RAG picker에서 선택 가능한 지식 목록 조회
+  getLLMSelectableKnowledgeBases: async (): Promise<
+    KnowledgeBaseDetailResponse[]
+  > => {
+    try {
+      const response = await api.get('/knowledge/llm-selectable');
+      return response.data;
+    } catch (error) {
+      logKnowledgeApiFailure('getLLMSelectableKnowledgeBases', error);
+      throw error;
+    }
+  },
+
   // 지식 상세 조회
   getKnowledgeBase: async (
     id: string,

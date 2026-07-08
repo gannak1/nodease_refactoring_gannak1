@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -54,6 +55,16 @@ class FakeKnowledgeDb:
     def query(self, *entities):
         self.query_entities.append(entities)
         return FakeKnowledgeQuery(self.rows)
+
+
+class FakeSelectableDb:
+    def __init__(self, kbs):
+        self.kbs = kbs
+        self.query_entities = []
+
+    def query(self, *entities):
+        self.query_entities.append(entities)
+        return FakeKnowledgeQuery(self.kbs)
 
 
 class FakeDetailQuery:
@@ -285,6 +296,149 @@ def test_get_detail_maps_documents_without_full_kb_orm_load():
     assert response.source_types == ["FILE"]
     assert response.documents[0].id == doc_id
     assert response.documents[0].chunk_count == 0
+
+
+def test_list_llm_selectable_uses_kb_use_permission_and_ready_boundary(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    ready_allowed_id = uuid.uuid4()
+    ready_denied_id = uuid.uuid4()
+    not_ready_allowed_id = uuid.uuid4()
+    kbs = [
+        SimpleNamespace(
+            id=ready_allowed_id,
+            organization_id=organization_id,
+            lifecycle_state="active",
+            source_identity_id=None,
+            name="권한 있는 완료 KB",
+            description=None,
+            embedding_model="text-embedding-3-small",
+            created_at=now,
+            updated_at=now,
+        ),
+        SimpleNamespace(
+            id=ready_denied_id,
+            organization_id=organization_id,
+            lifecycle_state="active",
+            source_identity_id=None,
+            name="권한 없는 완료 KB",
+            description=None,
+            embedding_model="text-embedding-3-small",
+            created_at=now,
+            updated_at=now,
+        ),
+        SimpleNamespace(
+            id=not_ready_allowed_id,
+            organization_id=organization_id,
+            lifecycle_state="active",
+            source_identity_id=None,
+            name="권한 있는 처리 전 KB",
+            description=None,
+            embedding_model="text-embedding-3-small",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    captured = {}
+
+    class FakePermissionHelper:
+        def __init__(self, _db, *, user_id, organization_id):
+            captured["user_id"] = user_id
+            captured["organization_id"] = organization_id
+
+        def bulk_evaluate_kb_use(self, kbs):
+            return {
+                kb.id: SimpleNamespace(allowed=kb.id != ready_denied_id)
+                for kb in kbs
+            }
+
+    service = KnowledgeBaseQueryService(
+        FakeSelectableDb(kbs),
+        permission_helper_factory=FakePermissionHelper,
+    )
+    detail_by_id = {
+        ready_allowed_id: service_module.KnowledgeBaseDetailResponse(
+            id=ready_allowed_id,
+            organization_id=organization_id,
+            name="권한 있는 완료 KB",
+            description=None,
+            document_count=1,
+            created_at=now,
+            updated_at=now,
+            source_types=["FILE"],
+            embedding_model="text-embedding-3-small",
+            documents=[
+                service_module.DocumentResponse(
+                    id=uuid.uuid4(),
+                    filename="ready.md",
+                    status="completed",
+                    created_at=now,
+                    updated_at=now,
+                    chunk_count=1,
+                    token_count=10,
+                )
+            ],
+        ),
+        ready_denied_id: service_module.KnowledgeBaseDetailResponse(
+            id=ready_denied_id,
+            organization_id=organization_id,
+            name="권한 없는 완료 KB",
+            description=None,
+            document_count=1,
+            created_at=now,
+            updated_at=now,
+            source_types=["FILE"],
+            embedding_model="text-embedding-3-small",
+            documents=[
+                service_module.DocumentResponse(
+                    id=uuid.uuid4(),
+                    filename="denied.md",
+                    status="completed",
+                    created_at=now,
+                    updated_at=now,
+                    chunk_count=1,
+                    token_count=10,
+                )
+            ],
+        ),
+        not_ready_allowed_id: service_module.KnowledgeBaseDetailResponse(
+            id=not_ready_allowed_id,
+            organization_id=organization_id,
+            name="권한 있는 처리 전 KB",
+            description=None,
+            document_count=1,
+            created_at=now,
+            updated_at=now,
+            source_types=["FILE"],
+            embedding_model="text-embedding-3-small",
+            documents=[
+                service_module.DocumentResponse(
+                    id=uuid.uuid4(),
+                    filename="pending.md",
+                    status="pending",
+                    created_at=now,
+                    updated_at=now,
+                    chunk_count=0,
+                    token_count=0,
+                )
+            ],
+        ),
+    }
+    monkeypatch.setattr(
+        service,
+        "_detail_response_from_kb",
+        lambda kb: detail_by_id[kb.id],
+    )
+
+    response = service.list_llm_selectable(
+        user_id=user_id,
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+
+    assert captured == {"user_id": user_id, "organization_id": organization_id}
+    assert [item.id for item in response] == [ready_allowed_id]
 
 
 def test_get_detail_raises_not_found_for_missing_or_hidden_kb():

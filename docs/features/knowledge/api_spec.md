@@ -8,6 +8,7 @@ Status: Draft
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 `knowledge_bases.organization_id`로 범위를 좁힌다. Header가 없으면 기존 owner-only 동작을 유지한다 |
+| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. 일반 관리 목록의 owner filtering을 사용하지 않고 active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | `X-Organization-Id`가 있으면 active organization validation 후 해당 organization에 귀속한다. Header가 없으면 기존 primary organization fallback을 유지한다. 최신 Knowledge schema 필수 컬럼이 없거나 schema introspection이 실패하면 500 대신 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 같은 organization KB만 반환한다. Detail 응답은 최신 `KnowledgeBase` ORM 전체 로드에 의존하지 않아 stale local DB에서 신규 lifecycle/sync 컬럼 누락으로 500이 나지 않아야 한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
