@@ -153,7 +153,7 @@ echo -e "${GREEN}🖥️ Gateway API 서버 시작...${NC}"
     else
         VENV_PYTHON="apps/gateway/.venv/bin/python"
     fi
-    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m uvicorn apps.gateway.main:app --reload --port 8000
+    AGENT_BUILDER_DRAFT_MODEL_ID="${AGENT_BUILDER_DRAFT_MODEL_ID:-gpt-5-mini}" PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m uvicorn apps.gateway.main:app --reload --port 8000
 ) &
 FASTAPI_PID=$!
 
