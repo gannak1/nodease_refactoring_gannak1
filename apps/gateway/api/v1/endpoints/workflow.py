@@ -40,6 +40,10 @@ from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import workflow_auth_state_allows
+from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
+from apps.workflow_engine.services.model_routing_policy_refresh import (
+    ModelRoutingPolicyRefreshService,
+)
 
 # [NEW] 로깅 모델 및 스키마
 from apps.shared.db.models.workflow_run import (
@@ -198,7 +202,7 @@ def _validate_cost_optimizer_candidate_shape(
     candidate: CostOptimizerCandidateRequest,
 ) -> None:
     model_id = (candidate.model_id or "").strip()
-    if not model_id:
+    if not model_id and not _candidate_has_active_model_routing_policy(candidate):
         _raise_invalid_cost_optimizer_candidate()
 
     fallback_model_id = (
@@ -206,7 +210,7 @@ def _validate_cost_optimizer_candidate_shape(
         if isinstance(candidate.fallback_model_id, str)
         else None
     )
-    if fallback_model_id and fallback_model_id == model_id:
+    if model_id and fallback_model_id and fallback_model_id == model_id:
         _raise_invalid_cost_optimizer_candidate()
 
     if candidate.task_type is not None:
@@ -400,22 +404,168 @@ def _cost_optimizer_model_id_from_option(model: Any) -> str | None:
     return value.strip()
 
 
+def _cost_optimizer_available_model_ids(db: Session, current_user: User) -> list[str]:
+    available_model_ids: list[str] = []
+    seen_model_ids: set[str] = set()
+    for model in LLMService.get_my_available_models(db, current_user.id):
+        model_id = _cost_optimizer_model_id_from_option(model)
+        if not model_id or model_id in seen_model_ids:
+            continue
+        available_model_ids.append(model_id)
+        seen_model_ids.add(model_id)
+    return available_model_ids
+
+
+def _cost_optimizer_available_model_candidates(
+    db: Session,
+    current_user: User,
+) -> list[ModelCandidate]:
+    candidates_by_id: dict[str, ModelCandidate] = {}
+    fallback_models: list[Any] = []
+    for model in LLMService.get_my_available_models(db, current_user.id):
+        model_id = _cost_optimizer_model_id_from_option(model)
+        if not model_id:
+            continue
+        if ModelRouter.is_workflow_chat_model(model):
+            candidates_by_id[model_id] = ModelCandidate.from_model(model)
+        else:
+            fallback_models.append(model)
+
+    if candidates_by_id:
+        return list(candidates_by_id.values())
+
+    # 테스트 fixture나 오래된 DB row에 type/name metadata가 비어 있어도,
+    # 권한이 확인된 모델이면 cold-start 기본 정책 생성에는 사용할 수 있게 한다.
+    for model in fallback_models:
+        model_id = _cost_optimizer_model_id_from_option(model)
+        if not model_id:
+            continue
+        candidates_by_id[model_id] = ModelCandidate.from_model(model)
+    return list(candidates_by_id.values())
+
+
+def _candidate_model_routing_active_policy(
+    candidate: CostOptimizerCandidateRequest,
+) -> dict[str, Any] | None:
+    if candidate.auto_model_routing is not True:
+        return None
+    policy = candidate.model_routing_policy
+    if not isinstance(policy, dict):
+        return None
+    active_policy = policy.get("active_policy")
+    return active_policy if isinstance(active_policy, dict) else None
+
+
+def _candidate_has_active_model_routing_policy(
+    candidate: CostOptimizerCandidateRequest,
+) -> bool:
+    active_policy = _candidate_model_routing_active_policy(candidate)
+    if active_policy is None:
+        return False
+    default_model_id = active_policy.get("default_model_id")
+    return isinstance(default_model_id, str) and bool(default_model_id.strip())
+
+
+def _candidate_requested_model_ids(
+    candidate: CostOptimizerCandidateRequest,
+) -> set[str]:
+    requested_model_ids: set[str] = set()
+    active_policy = _candidate_model_routing_active_policy(candidate)
+    if active_policy is not None:
+        for key in ("default_model_id", "fallback_model_id"):
+            value = active_policy.get(key)
+            if isinstance(value, str) and value.strip():
+                requested_model_ids.add(value.strip())
+
+        rules = active_policy.get("rules")
+        if isinstance(rules, list):
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                for key in ("selected_model_id", "fallback_model_id"):
+                    value = rule.get(key)
+                    if isinstance(value, str) and value.strip():
+                        requested_model_ids.add(value.strip())
+
+        return requested_model_ids
+
+    model_id = (candidate.model_id or "").strip()
+    if model_id:
+        requested_model_ids.add(model_id)
+    if candidate.fallback_model_id:
+        fallback_model_id = candidate.fallback_model_id.strip()
+        if fallback_model_id:
+            requested_model_ids.add(fallback_model_id)
+
+    return requested_model_ids
+
+
+def _candidate_refresh_every_runs(candidate: CostOptimizerCandidateRequest) -> int:
+    policy = candidate.model_routing_policy
+    if not isinstance(policy, dict):
+        return 20
+    refresh = policy.get("refresh")
+    if not isinstance(refresh, dict):
+        return 20
+    try:
+        parsed = int(refresh.get("refresh_every_runs"))
+    except (TypeError, ValueError):
+        parsed = 20
+    return max(5, min(100, parsed))
+
+
+def _default_cost_optimizer_model_routing_policy(
+    candidate: CostOptimizerCandidateRequest,
+    candidate_models: list[ModelCandidate],
+) -> dict[str, Any]:
+    if not candidate_models:
+        raise HTTPException(status_code=422, detail="cost_optimizer.model_unavailable")
+
+    return ModelRoutingPolicyRefreshService.default_rule_policy(
+        policy_id="cost-optimizer-cold-start-default",
+        policy_version="gateway-cold-start-v1",
+        candidate_models=candidate_models,
+        refresh_every_runs=_candidate_refresh_every_runs(candidate),
+    )
+
+
+def _materialize_cost_optimizer_candidate_model_routing_policy(
+    db: Session,
+    current_user: User,
+    candidate: CostOptimizerCandidateRequest,
+) -> CostOptimizerCandidateRequest:
+    if candidate.auto_model_routing is not True:
+        return candidate
+    if _candidate_has_active_model_routing_policy(candidate):
+        return candidate
+
+    candidate_models = _cost_optimizer_available_model_candidates(db, current_user)
+    default_policy = _default_cost_optimizer_model_routing_policy(
+        candidate,
+        candidate_models,
+    )
+    existing_policy = (
+        candidate.model_routing_policy
+        if isinstance(candidate.model_routing_policy, dict)
+        else {}
+    )
+    candidate_data = candidate.model_dump(mode="python")
+    candidate_data["model_routing_policy"] = _deep_merge_dict(
+        existing_policy,
+        default_policy,
+    )
+    return CostOptimizerCandidateRequest(**candidate_data)
+
+
 def _ensure_cost_optimizer_candidate_models_available(
     db: Session,
     current_user: User,
     candidate: CostOptimizerCandidateRequest,
 ) -> None:
-    available_model_ids = {
-        model_id
-        for model_id in (
-            _cost_optimizer_model_id_from_option(model)
-            for model in LLMService.get_my_available_models(db, current_user.id)
-        )
-        if model_id
-    }
-    requested_model_ids = {(candidate.model_id or "").strip()}
-    if candidate.fallback_model_id:
-        requested_model_ids.add(candidate.fallback_model_id.strip())
+    available_model_ids = set(_cost_optimizer_available_model_ids(db, current_user))
+    requested_model_ids = _candidate_requested_model_ids(candidate)
+    if not requested_model_ids:
+        _raise_invalid_cost_optimizer_candidate()
     if not requested_model_ids.issubset(available_model_ids):
         raise HTTPException(
             status_code=422,
@@ -1708,11 +1858,20 @@ def _build_cost_optimizer_candidate_trace(output: dict[str, Any]) -> dict[str, A
     rag_summary = rag_summary if isinstance(rag_summary, dict) else None
     rag_summary = _safe_cost_optimizer_rag_summary(rag_summary)
     rag_summary = rag_summary if isinstance(rag_summary, dict) else None
+    model_routing = metadata.get("model_routing") or metadata.get(
+        "model_routing_metadata"
+    )
+    model_routing = (
+        _safe_cost_optimizer_value(model_routing)
+        if isinstance(model_routing, dict)
+        else None
+    )
     return {
         "input_preview": "",
         "output_preview": _preview_baseline_payload(safe_output.get("text", safe_output)),
         "messages_preview": [],
         "rag_summary": rag_summary,
+        "model_routing": model_routing,
         "error_message": None,
     }
 
@@ -2964,6 +3123,11 @@ def apply_cost_optimizer_recommendations(
             allowed_apply_modes={"direct_policy_update"},
         )
     )
+    candidate_settings = _materialize_cost_optimizer_candidate_model_routing_policy(
+        db,
+        current_user,
+        candidate_settings,
+    )
     _validate_cost_optimizer_candidate_shape(candidate_settings)
     _ensure_cost_optimizer_candidate_knowledge_available(
         db,
@@ -3030,7 +3194,6 @@ def compare_cost_optimizer_candidate(
     """
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
     _ensure_cost_optimizer_llm_node(workflow, node_id)
-    _validate_cost_optimizer_candidate_shape(request_body.candidate)
     baseline = get_cost_optimizer_baseline_by_id(
         db,
         workflow,
@@ -3043,23 +3206,29 @@ def compare_cost_optimizer_candidate(
             detail="cost_optimizer.baseline_input_unavailable",
         )
 
+    candidate = _materialize_cost_optimizer_candidate_model_routing_policy(
+        db,
+        current_user,
+        request_body.candidate,
+    )
+    _validate_cost_optimizer_candidate_shape(candidate)
     _ensure_cost_optimizer_candidate_knowledge_available(
         db,
         current_user,
         workflow,
-        request_body.candidate,
+        candidate,
     )
     _ensure_cost_optimizer_candidate_models_available(
         db,
         current_user,
-        request_body.candidate,
+        candidate,
     )
     experiment, candidate_row = _create_cost_optimizer_comparison(
         db=db,
         workflow=workflow,
         node_id=node_id,
         baseline=baseline,
-        candidate=request_body.candidate,
+        candidate=candidate,
         current_user=current_user,
     )
 
@@ -3067,7 +3236,7 @@ def compare_cost_optimizer_candidate(
         workflow=workflow,
         node_id=node_id,
         baseline=baseline,
-        candidate=request_body.candidate,
+        candidate=candidate,
         cost_optimizer_candidate_id=candidate_row.id,
         current_user=current_user,
         request=request,
@@ -3085,7 +3254,7 @@ def compare_cost_optimizer_candidate(
         db=db,
         experiment=experiment,
         candidate_row=candidate_row,
-        candidate=request_body.candidate,
+        candidate=candidate,
         candidate_result=candidate_result,
         diff=diff,
         downstream_compatibility=downstream_compatibility,
@@ -3123,17 +3292,22 @@ def apply_cost_optimizer_candidate(
     """
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
     _ensure_cost_optimizer_llm_node(workflow, node_id)
-    _validate_cost_optimizer_candidate_shape(request_body.candidate_settings)
+    candidate_settings = _materialize_cost_optimizer_candidate_model_routing_policy(
+        db,
+        current_user,
+        request_body.candidate_settings,
+    )
+    _validate_cost_optimizer_candidate_shape(candidate_settings)
     _ensure_cost_optimizer_candidate_knowledge_available(
         db,
         current_user,
         workflow,
-        request_body.candidate_settings,
+        candidate_settings,
     )
     _ensure_cost_optimizer_candidate_models_available(
         db,
         current_user,
-        request_body.candidate_settings,
+        candidate_settings,
     )
     applied_candidate_row, comparison_candidate_rows = (
         _ensure_cost_optimizer_candidate_apply_allowed(
@@ -3141,7 +3315,7 @@ def apply_cost_optimizer_candidate(
             workflow,
             node_id,
             request_body.comparison_id,
-            request_body.candidate_settings,
+            candidate_settings,
             request_body.acknowledge_downstream_warning,
         )
     )
@@ -3154,7 +3328,7 @@ def apply_cost_optimizer_candidate(
     workflow.graph = _patch_cost_optimizer_candidate_graph(
         current_graph,
         node_id,
-        request_body.candidate_settings,
+        candidate_settings,
     )
     if applied_candidate_row is not None:
         applied_at = datetime.now(timezone.utc)

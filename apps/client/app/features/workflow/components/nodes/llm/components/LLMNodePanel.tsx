@@ -1218,7 +1218,7 @@ export function LLMNodePanel({
                 <div className="grid gap-2">
                   {draftJsonSchemaFields.map((field, index) => (
                     <div
-                      key={`${field.key}-${index}`}
+                      key={`json-schema-field-${index}`}
                       className="grid grid-cols-[minmax(120px,1fr)_minmax(110px,140px)_auto_auto] items-center gap-2 rounded-md border border-gray-200 bg-white p-2"
                     >
                       <label className="grid gap-1 text-[11px] font-semibold text-gray-500">

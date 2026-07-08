@@ -618,6 +618,96 @@ def test_openai_invoke_sync_responses_malformed_json_is_parse_error(monkeypatch)
         client.invoke_sync([{"role": "user", "content": "hi"}])
 
 
+def test_openai_invoke_sync_responses_empty_output_is_error(monkeypatch):
+    """Responses 호출이 200이어도 visible output text가 없으면 성공으로 변환하지 않는다."""
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary": [],
+                    }
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 30},
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="사용할 수 있는 텍스트가 없습니다"):
+        client.invoke_sync([{"role": "user", "content": "Return a json object."}])
+
+
+def test_openai_invoke_sync_responses_incomplete_status_is_error(monkeypatch):
+    """Responses status가 incomplete면 부분 text가 있어도 성공으로 취급하지 않는다."""
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "error": None,
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": '{"partial": true}',
+                "usage": {"input_tokens": 12, "output_tokens": 30},
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(ValueError, match="응답이 완료되지 않았습니다"):
+        client.invoke_sync([{"role": "user", "content": "Return a json object."}])
+
+
 def test_openai_invoke_sync_legacy_model_uses_base_sync_wrapper(monkeypatch):
     """Responses 전용이 아닌 모델은 기존 Base sync wrapper 경로를 유지한다."""
     calls = []

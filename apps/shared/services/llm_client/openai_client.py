@@ -150,6 +150,14 @@ class OpenAIClient(BaseLLMClient):
         if "choices" in data:
             return data
 
+        response_status = data.get("status")
+        if response_status in {"incomplete", "failed", "cancelled"}:
+            raise ValueError(
+                "OpenAI Responses 응답이 완료되지 않았습니다: "
+                f"status={response_status}, "
+                f"summary={self._summarize_responses_response(data)}"
+            )
+
         usage = data.get("usage", {})
         if not isinstance(usage, dict):
             usage = {}
@@ -185,6 +193,12 @@ class OpenAIClient(BaseLLMClient):
                             text += str(content.get("text", ""))
                     elif isinstance(content, str):
                         text += content
+
+        if not text.strip():
+            raise ValueError(
+                "OpenAI Responses 응답에 사용할 수 있는 텍스트가 없습니다: "
+                f"summary={self._summarize_responses_response(data)}"
+            )
 
         finish_reason = None
         output_items = data.get("output") or []
