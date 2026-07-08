@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, Bot, Eye, Loader2, Send, X } from 'lucide-react';
+import { AlertCircle, Bot, Eye, Loader2, Minus, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useReactFlow, type Edge, type Viewport } from '@xyflow/react';
 import {
@@ -255,12 +255,13 @@ export function AgentBuilderPanel({
   selectedEdgeId,
 }: Props) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [applyNotice, setApplyNotice] = useState<string | null>(null);
-  const [responses, setResponses] = useState<AgentBuilderMessageResponse[]>([]);
+  const [, setResponses] = useState<AgentBuilderMessageResponse[]>([]);
   const [conversationItems, setConversationItems] = useState<ConversationItem[]>([]);
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
   const [prePreviewViewport, setPrePreviewViewport] = useState<Viewport | null>(null);
@@ -318,6 +319,7 @@ export function AgentBuilderPanel({
     setSessionId(null);
     setInput('');
     setIsSubmitting(false);
+    setIsMinimized(false);
     setIsApplying(false);
     setApplyNotice(null);
     setResponses([]);
@@ -653,9 +655,18 @@ export function AgentBuilderPanel({
     input.trim() || (selectedKnowledgeCandidate && lastSubmittedMessage),
   );
 
+  const toggleAgentBuilder = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      setIsOpen(true);
+      return;
+    }
+    setIsOpen((value) => (agentBuilderPreview ? true : !value));
+  };
+
   return (
     <div className="fixed bottom-[72px] right-5 z-50 flex flex-col items-end gap-3">
-      {isOpen && (
+      {isOpen && !isMinimized && (
         <section className="flex h-[520px] w-[380px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
           <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <div className="flex items-center gap-2">
@@ -664,19 +675,30 @@ export function AgentBuilderPanel({
                 Agent Builder
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (!agentBuilderPreview) {
-                  setIsOpen(false);
-                }
-              }}
-              disabled={Boolean(agentBuilderPreview)}
-              className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
-              aria-label="Close Agent Builder"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setIsMinimized(true)}
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-100"
+                aria-label="Agent Builder 최소화"
+              >
+                <Minus className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!agentBuilderPreview) {
+                    setIsOpen(false);
+                    setIsMinimized(false);
+                  }
+                }}
+                disabled={Boolean(agentBuilderPreview)}
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+                aria-label="Close Agent Builder"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </header>
 
           <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
@@ -878,11 +900,9 @@ export function AgentBuilderPanel({
 
       <button
         type="button"
-        onClick={() =>
-          setIsOpen((value) => (agentBuilderPreview ? true : !value))
-        }
+        onClick={toggleAgentBuilder}
         className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-950 text-white shadow-lg transition-colors hover:bg-slate-800"
-        aria-label="Agent Builder 열기"
+        aria-label={isMinimized ? 'Agent Builder 펼치기' : 'Agent Builder 열기'}
       >
         <Bot className="h-5 w-5" />
       </button>

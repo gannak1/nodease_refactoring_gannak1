@@ -102,6 +102,27 @@ describe('AgentBuilderPanel', () => {
     });
   });
 
+  it('Agent Builder 패널을 최소화했다가 다시 펼친다', () => {
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    expect(screen.getByText('Agent Builder')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 최소화'));
+    expect(screen.queryByText('Agent Builder')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 펼치기'));
+    expect(screen.getByText('Agent Builder')).toBeInTheDocument();
+  });
+
   it('loads the saved graph when Agent Builder creates a new workflow', async () => {
     const oldNodes = [node('old-node')];
     const newNodes = [
