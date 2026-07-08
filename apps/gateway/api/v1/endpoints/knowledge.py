@@ -17,6 +17,7 @@ from fastapi import (
 )
 from pydantic import ValidationError
 from sqlalchemy import func, inspect, literal
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
@@ -42,7 +43,7 @@ from apps.gateway.services.organization_context import (
     resolve_active_organization_id,
 )
 from apps.shared.audit.actions import AuditAction
-from apps.shared.db.models.knowledge import Document, KnowledgeBase
+from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
 from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
@@ -80,6 +81,19 @@ from apps.shared.services.knowledge_permission_service import KnowledgePermissio
 logger = logging.getLogger(__name__)
 router = APIRouter()
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+KNOWLEDGE_BASE_MUTATION_COLUMNS = {
+    "knowledge_bases": {
+        "organization_id",
+        "active_document_version_id",
+        "source_identity_id",
+        "sync_state",
+        "lifecycle_state",
+    }
+}
+
+
+class KnowledgeSchemaIntrospectionError(Exception):
+    """Raised when schema readiness cannot be verified safely."""
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -123,6 +137,117 @@ def _table_has_column(db: Session, table_name: str, column_name: str) -> bool:
         return False
 
 
+def _knowledge_schema_missing_columns(
+    db: Session, required_columns: dict[str, set[str]]
+) -> dict[str, list[str]]:
+    try:
+        inspector = inspect(db.get_bind())
+        missing: dict[str, list[str]] = {}
+        for table_name, column_names in required_columns.items():
+            if not inspector.has_table(table_name):
+                missing[table_name] = sorted(column_names)
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            missing_columns = sorted(column_names - existing)
+            if missing_columns:
+                missing[table_name] = missing_columns
+        return missing
+    except Exception:
+        logger.warning(
+            "knowledge.schema.introspection_failed",
+            exc_info=True,
+        )
+        raise KnowledgeSchemaIntrospectionError
+
+
+def _raise_knowledge_schema_not_ready(
+    request: Request,
+    missing_columns: dict[str, list[str]],
+    *,
+    reason: str | None = None,
+) -> None:
+    details: dict[str, object] = {"missing_columns": missing_columns}
+    if reason is not None:
+        details["reason"] = reason
+    raise_api_error(
+        request,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "knowledge.schema_not_ready",
+        "Knowledge database schema is not ready for this operation.",
+        details,
+    )
+
+
+def _ensure_knowledge_schema_columns(
+    db: Session,
+    request: Request,
+    required_columns: dict[str, set[str]],
+) -> None:
+    try:
+        missing = _knowledge_schema_missing_columns(db, required_columns)
+    except KnowledgeSchemaIntrospectionError:
+        _raise_knowledge_schema_not_ready(
+            request,
+            {},
+            reason="schema_introspection_failed",
+        )
+    if missing:
+        _raise_knowledge_schema_not_ready(request, missing)
+
+
+def _resolve_create_organization_id(
+    db: Session,
+    request: Request,
+    raw_organization_id: str | None,
+    user_id: UUID,
+    *,
+    organization_column_ready: bool = False,
+) -> UUID | None:
+    if raw_organization_id is not None:
+        if not organization_column_ready:
+            _ensure_knowledge_schema_columns(
+                db,
+                request,
+                {"knowledge_bases": {"organization_id"}},
+            )
+        return resolve_active_organization_id(
+            db,
+            request,
+            raw_organization_id,
+            user_id,
+        )
+    return get_user_primary_organization_id(db, user_id)
+
+
+def _resolve_read_organization_scope(
+    db: Session,
+    request: Request,
+    raw_organization_id: str | None,
+    user_id: UUID,
+    *,
+    has_organization_id: bool | None = None,
+) -> UUID | None:
+    if raw_organization_id is None:
+        return None
+    if has_organization_id is False:
+        _raise_knowledge_schema_not_ready(
+            request,
+            {"knowledge_bases": ["organization_id"]},
+        )
+    if has_organization_id is None:
+        _ensure_knowledge_schema_columns(
+            db,
+            request,
+            {"knowledge_bases": {"organization_id"}},
+        )
+    return resolve_active_organization_id(
+        db,
+        request,
+        raw_organization_id,
+        user_id,
+    )
+
+
 def _clean_source_types(source_types) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -141,6 +266,13 @@ def _clean_source_types(source_types) -> list[str]:
         seen.add(value)
         cleaned.append(value)
     return cleaned
+
+
+def _clean_source_type(source_type) -> str:
+    value = getattr(source_type, "value", source_type)
+    if value is None:
+        return "FILE"
+    return str(value)
 
 
 def _max_datetime_or_now(*values):
@@ -169,23 +301,47 @@ def _raise_collection_service_error(
 @audit(AuditAction.KNOWLEDGE_CREATE)
 def create_knowledge_base(
     kb_in: KnowledgeBaseCreate,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     빈 지식 베이스를 생성합니다. (소스 없음)
     """
-    # 임베딩 모델 유효성 검사 등은 생략하거나 추후 추가
+    _ensure_knowledge_schema_columns(
+        db,
+        request,
+        KNOWLEDGE_BASE_MUTATION_COLUMNS,
+    )
+    organization_id = _resolve_create_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+        organization_column_ready=True,
+    )
+
     kb = KnowledgeBase(
         name=kb_in.name,
         description=kb_in.description,
         embedding_model=kb_in.embedding_model,
-        organization_id=get_user_primary_organization_id(db, current_user.id),
+        organization_id=organization_id,
         user_id=current_user.id,
     )
     db.add(kb)
-    db.commit()
-    db.refresh(kb)
+    try:
+        db.commit()
+        db.refresh(kb)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("knowledge.create.failed")
+        raise_api_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "knowledge.create_failed",
+            "Knowledge base creation failed.",
+        )
 
     return KnowledgeBaseResponse(
         id=kb.id,
@@ -202,6 +358,8 @@ def create_knowledge_base(
 
 @router.get("", response_model=List[KnowledgeBaseResponse])
 def list_knowledge_bases(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -210,6 +368,13 @@ def list_knowledge_bases(
     각 지식 베이스 그룹에 포함된 문서 개수도 함께 반환합니다.
     """
     has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
+    organization_scope = _resolve_read_organization_scope(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+        has_organization_id=has_organization_id,
+    )
     organization_id_column = (
         KnowledgeBase.organization_id
         if has_organization_id
@@ -226,7 +391,7 @@ def list_knowledge_bases(
     if has_organization_id:
         group_by_columns.append(KnowledgeBase.organization_id)
 
-    results = (
+    query = (
         db.query(
             KnowledgeBase.id,
             organization_id_column,
@@ -242,7 +407,11 @@ def list_knowledge_bases(
         .select_from(KnowledgeBase)
         .outerjoin(Document, KnowledgeBase.id == Document.knowledge_base_id)
         .filter(KnowledgeBase.user_id == current_user.id)
-        .group_by(*group_by_columns)
+    )
+    if organization_scope is not None:
+        query = query.filter(KnowledgeBase.organization_id == organization_scope)
+    results = (
+        query.group_by(*group_by_columns)
         .order_by(KnowledgeBase.created_at.desc())
         .all()
     )
@@ -674,6 +843,8 @@ def update_knowledge_collection_visibility(
 @router.get("/{kb_id}", response_model=KnowledgeBaseDetailResponse)
 def get_knowledge_base(
     kb_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -681,42 +852,118 @@ def get_knowledge_base(
     지식 베이스의 상세 정보를 조회합니다.
     포함된 자료 목록과 각 자료의 상태를 함께 반환합니다.
     """
-    kb = (
-        db.query(KnowledgeBase)
-        .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == current_user.id)
-        .first()
+    has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
+    organization_scope = _resolve_read_organization_scope(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+        has_organization_id=has_organization_id,
     )
+    organization_id_column = (
+        KnowledgeBase.organization_id
+        if has_organization_id
+        else literal(None).label("organization_id")
+    )
+
+    kb_query = (
+        db.query(
+            KnowledgeBase.id,
+            organization_id_column,
+            KnowledgeBase.name,
+            KnowledgeBase.description,
+            KnowledgeBase.embedding_model,
+            KnowledgeBase.created_at,
+            KnowledgeBase.updated_at,
+        )
+        .select_from(KnowledgeBase)
+        .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == current_user.id)
+    )
+    if organization_scope is not None:
+        kb_query = kb_query.filter(KnowledgeBase.organization_id == organization_scope)
+    kb = kb_query.first()
 
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
 
-    # 문서 목록 변환
+    (
+        kb_id,
+        organization_id,
+        name,
+        description,
+        embedding_model,
+        created_at,
+        updated_at,
+    ) = kb
+
+    doc_rows = (
+        db.query(
+            Document.id,
+            Document.filename,
+            Document.status,
+            Document.created_at,
+            Document.updated_at,
+            Document.error_message,
+            Document.source_type,
+            Document.meta_info,
+        )
+        .select_from(Document)
+        .filter(Document.knowledge_base_id == kb_id)
+        .order_by(Document.created_at.asc())
+        .all()
+    )
+    chunk_counts: dict[UUID, int] = {}
+    if _table_has_column(db, "document_chunks", "id"):
+        chunk_counts = {
+            document_id: int(chunk_count or 0)
+            for document_id, chunk_count in (
+                db.query(
+                    DocumentChunk.document_id,
+                    func.count(DocumentChunk.id).label("chunk_count"),
+                )
+                .select_from(DocumentChunk)
+                .filter(DocumentChunk.knowledge_base_id == kb_id)
+                .group_by(DocumentChunk.document_id)
+                .all()
+            )
+        }
+
     doc_responses = []
-    for doc in kb.documents:
-        # TODO: 청크 개수나 토큰 수는 별도 쿼리로 최적화 필요 (현재는 Lazy Loading)
+    for (
+        document_id,
+        filename,
+        document_status,
+        document_created_at,
+        document_updated_at,
+        error_message,
+        source_type,
+        meta_info,
+    ) in doc_rows:
         doc_responses.append(
             DocumentResponse(
-                id=doc.id,
-                filename=doc.filename,
-                status=doc.status,
-                created_at=doc.created_at,
-                updated_at=doc.updated_at,
-                error_message=doc.error_message,
-                chunk_count=len(doc.chunks),  # N+1 발생 가능, 추후 최적화
+                id=document_id,
+                filename=filename,
+                status=document_status or "pending",
+                created_at=document_created_at or _max_datetime_or_now(),
+                updated_at=document_updated_at,
+                error_message=error_message,
+                chunk_count=chunk_counts.get(document_id, 0),
                 token_count=0,  # 우선 0으로 반환
-                source_type=doc.source_type,
-                meta_info=doc.meta_info,
+                source_type=_clean_source_type(source_type),
+                meta_info=meta_info or {},
             )
         )
 
     return KnowledgeBaseDetailResponse(
-        id=kb.id,
-        organization_id=kb.organization_id,
-        name=kb.name,
-        description=kb.description,
+        id=kb_id,
+        organization_id=organization_id,
+        name=name,
+        description=description,
         document_count=len(doc_responses),
-        created_at=kb.created_at,
-        embedding_model=kb.embedding_model,
+        created_at=created_at or _max_datetime_or_now(updated_at),
+        updated_at=updated_at or created_at,
+        source_types=_clean_source_types([row[6] for row in doc_rows]),
+        embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
         documents=doc_responses,
     )
 

@@ -23,6 +23,31 @@ from apps.shared.db.seed import (
 from apps.shared.db.session import engine
 
 
+def _sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _ensure_deployment_type_enum_values() -> None:
+    """create_all() 기반 로컬 DB의 PostgreSQL enum 값을 모델과 맞춘다."""
+
+    if engine.dialect.name != "postgresql":
+        return
+
+    from apps.shared.db.models.workflow_deployment import DeploymentType
+
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        if conn.execute(text("SELECT to_regtype('deploymenttype')")).scalar() is None:
+            return
+
+        for deployment_type in DeploymentType:
+            conn.execute(
+                text(
+                    "ALTER TYPE deploymenttype ADD VALUE IF NOT EXISTS "
+                    f"{_sql_string_literal(deployment_type.name)}"
+                )
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 0. 감사(Audit) 데이터 변경 이력 리스너 등록 (계층 B)
@@ -35,6 +60,7 @@ async def lifespan(app: FastAPI):
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
     Base.metadata.create_all(bind=engine)
+    _ensure_deployment_type_enum_values()
 
     # 2. 기본 LLM 프로바이더 시드 (멱등성 보장)
     from apps.shared.db.session import SessionLocal

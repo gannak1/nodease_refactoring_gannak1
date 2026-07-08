@@ -175,7 +175,7 @@ export function UsageTab() {
         </div>
       ) : items.length === 0 ? (
         <p className="px-5 py-12 text-center text-sm text-slate-500">
-          해당 기간의 LLM 사용량이 없습니다.
+          표시할 워크플로우가 없습니다.
         </p>
       ) : (
         <>

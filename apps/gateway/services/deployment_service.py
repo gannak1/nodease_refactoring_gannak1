@@ -391,7 +391,17 @@ class DeploymentService:
             memory_mode_enabled = user_inputs.pop("memory_mode", False)
             if isinstance(memory_mode_enabled, str):
                 memory_mode_enabled = memory_mode_enabled.lower() == "true"
-            
+
+            # 방문자별 대화 격리용 conversation_id (챗봇 멀티턴 기억).
+            # memory_mode와 동일하게 dispatch 전에 pop하여 워크플로우 입력 오염을 막는다.
+            conversation_id = user_inputs.pop("conversation_id", None)
+            if conversation_id is not None:
+                conversation_id = str(conversation_id)
+
+            # 챗봇 배포는 기억모드가 항상 켜져 있어야 한다 (클라이언트 값과 무관하게 서버가 강제).
+            if deployment.type == DeploymentType.CHATBOT:
+                memory_mode_enabled = True
+
             execution_context = {
                 "user_id": str(app.created_by),  # UUID를 문자열로 변환 (JSON 직렬화)
                 "workflow_id": str(app.workflow_id) if app.workflow_id else None,
@@ -403,6 +413,7 @@ class DeploymentService:
                 "deployment_id": str(deployment.id),
                 "workflow_version": deployment.version,
                 "memory_mode": memory_mode_enabled,  # 기억 모드 추가
+                "conversation_id": conversation_id,  # 방문자별 대화 격리 키
             }
 
             # Celery 태스크 호출 (workflow.execute)

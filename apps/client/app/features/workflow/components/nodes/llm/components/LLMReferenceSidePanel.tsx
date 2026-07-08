@@ -55,6 +55,7 @@ export function LLMReferenceSidePanel({
   );
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [hasLoadedBases, setHasLoadedBases] = useState(false);
+  const [preserveSelectionIds, setPreserveSelectionIds] = useState<string[]>([]);
 
   // Selected knowledge bases from LLM node data
   const selectedKnowledgeBases = useMemo(
@@ -66,8 +67,14 @@ export function LLMReferenceSidePanel({
     return sanitizeSelectedKnowledgeBases(
       selectedKnowledgeBases,
       knowledgeBases,
+      { preserveMissingIds: preserveSelectionIds },
     );
-  }, [hasLoadedBases, knowledgeBases, selectedKnowledgeBases]);
+  }, [
+    hasLoadedBases,
+    knowledgeBases,
+    preserveSelectionIds,
+    selectedKnowledgeBases,
+  ]);
   const selectedIds = useMemo(
     () => new Set(effectiveSelectedKnowledgeBases.map((kb) => kb.id)),
     [effectiveSelectedKnowledgeBases],
@@ -89,13 +96,19 @@ export function LLMReferenceSidePanel({
       setLoading(true);
       setError(null);
       try {
-        const { bases, detailsById } = await fetchEligibleKnowledgeBases();
+        const {
+          bases,
+          detailsById,
+          preserveSelectionIds: nextPreserveSelectionIds = [],
+        } = await fetchEligibleKnowledgeBases();
         setKnowledgeBases(bases);
         setDetails((prev) => ({ ...prev, ...detailsById }));
+        setPreserveSelectionIds(nextPreserveSelectionIds);
         setHasLoadedBases(true);
         const nextSelected = sanitizeSelectedKnowledgeBases(
           selectedKnowledgeBases,
           bases,
+          { preserveMissingIds: nextPreserveSelectionIds },
         );
         if (
           !readOnly &&

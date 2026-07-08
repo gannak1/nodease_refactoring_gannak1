@@ -17,6 +17,7 @@ export const useAutoSync = () => {
   const params = useParams(); // 주소창의 파라미터 읽기
   const workflowId = params.id as string;
   const { getViewport, setViewport } = useReactFlow(); // React Flow 인스턴스 접근
+  const setViewportRef = useRef(setViewport);
 
   // Zustand Store에서 상태들을 가져오기
   const nodes = useWorkflowStore((state) => state.nodes);
@@ -32,6 +33,10 @@ export const useAutoSync = () => {
 
   // 로딩 완료 여부 체크
   const isLoadedRef = useRef(false);
+
+  useEffect(() => {
+    setViewportRef.current = setViewport;
+  }, [setViewport]);
 
   // 1. 초기 데이터 로딩 (페이지 진입 시 1회 실행)
   useEffect(() => {
@@ -82,7 +87,9 @@ export const useAutoSync = () => {
                 workflowId,
                 buildWorkflowDraftPayload(
                   cleanupResult.graph,
-                  cleanupResult.graph.viewport || data.viewport || getViewport(),
+                  cleanupResult.graph.viewport ||
+                    data.viewport ||
+                    { x: 0, y: 0, zoom: 1 },
                 ),
               );
             } catch {
@@ -92,7 +99,7 @@ export const useAutoSync = () => {
 
           // 저장된 viewport를 React Flow에 적용
           if (cleanupResult.graph.viewport) {
-            setViewport(cleanupResult.graph.viewport);
+            setViewportRef.current(cleanupResult.graph.viewport);
           }
         }
 
@@ -104,7 +111,7 @@ export const useAutoSync = () => {
 
     isLoadedRef.current = false; // 다른 워크플로우로 이동했을 때를 대비해 초기화
     loadWorkflow();
-  }, [workflowId, setWorkflowData, setViewport, getViewport]);
+  }, [workflowId, setWorkflowData]);
 
   // 2. 자동 저장 (Debounce)
   const debouncedSync = useMemo(
@@ -153,8 +160,7 @@ export const useAutoSync = () => {
         1000, // 1초 동안 추가 입력이 없으면 저장
         { maxWait: 300000 }, // 5분이 지나면 강제로 한 번 저장
       ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workflowId, workflowAccess?.can_write, setHasUnsavedChanges],
+    [workflowId, workflowAccess?.can_write, setHasUnsavedChanges, getViewport],
   );
 
   // debouncedSync가 변경되면 ref 업데이트

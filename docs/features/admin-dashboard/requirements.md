@@ -1,7 +1,7 @@
 # Admin Dashboard Requirements
 
 Status: Draft
-Related Features: auth, organization, audit-tracing, cost-optimizer
+Related Features: auth, organization, audit-tracing, budget-management, cost-optimizer
 
 ## Purpose
 
@@ -21,7 +21,7 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 ## Functional Requirements
 
 - FR-011: audit log를 행위자, action, 대상, 기간으로 검색/필터링하고, 개별 로그의 actor, action, target, status, timestamp를 상세 조회한다. action은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)의 canonical action을 기준으로 하며, "workflow 차단" 같은 사용자 친화 라벨이 필요하면 canonical action에서 파생해 표시한다.
-- FR-012: workflow별 LLM 사용량/비용을 집계해 표시한다. 원천은 `llm_usage_logs`다. 기본 조회 기간은 이번 달이고, 시작/끝 기간 필터를 제공한다. 목록은 비용 내림차순 정렬을 제공해 비용이 큰 workflow를 바로 찾을 수 있게 한다. 비용 집계 표시까지가 이 feature의 범위이며, 모델 비교/최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/requirements.md) 범위다 — 대시보드는 해당 workflow로 이동하는 진입만 제공한다.
+- FR-012: workflow별 LLM 사용량/비용을 집계해 표시한다. 목록 기준은 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체이며, 사용량 원천은 `llm_usage_logs`다. 기간 안에 usage row가 없는 workflow도 응답에 포함하고 prompt/completion tokens, `call_count`, `total_cost`는 0으로 반환한다. usage row의 `total_cost`가 NULL인 경우도 0으로 합산한다. 기본 조회 기간은 이번 달이고, 시작/끝 기간 필터를 제공한다. 목록은 비용 내림차순 정렬을 제공해 비용이 큰 workflow를 바로 찾을 수 있게 하며, 비용이 같은 row는 workflow 이름과 id로 안정적으로 정렬한다. 비용 집계 표시까지가 이 feature의 범위이며, 모델 비교/최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/requirements.md) 범위다 — 대시보드는 해당 workflow로 이동하는 진입만 제공한다.
 - FR-013 (후순위): 차단 이벤트를 비정상 접근 시도로 표시한다. 현재 데모 시나리오에서 사용하지 않으며, 구현이 완료되면 PRD 시나리오 2와 함께 복원한다. 복원 시 두 단계로 구현한다.
   - 1단계: `permission.denied`, `auth.permission_denied` 등 차단 이벤트를 판정 로직 없이 목록으로 나열한다. 조직 scope 밖 접근은 404로 숨기고 audit을 기록하지 않으므로 목록에 포함되지 않는다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
   - 2단계: 관리자 페이지 기능(FR-011, FR-012, FR-014, FR-015) 구현이 완료된 뒤 횟수 임계값/패턴 기반 판정으로 고도화한다.
@@ -46,11 +46,11 @@ Related Features: auth, organization, audit-tracing, cost-optimizer
 - 예산이 설정되지 않은 workflow는 예산 위험/초과 판정 대상에서 제외한다. 예산이 0 이하인 경우도 미설정으로 취급한다.
 - 시간대 규칙: 저장은 UTC(timestamptz) 그대로 두고, "이번 달" 경계와 예산 위험/초과 판정 같은 집계 경계는 KST(Asia/Seoul) 고정으로 계산한다. FR-011/FR-012의 기간 필터 입력도 KST 기준으로 해석한다. 개별 timestamp의 화면 표시만 사용자 로컬 시간대로 렌더링한다.
 - 기간 필터와 집계 경계는 반개구간 `[start, end)`로 판정한다. 시작 시각과 정확히 같은 row는 포함하고, 끝 시각과 정확히 같은 row는 제외한다. 연속한 두 기간을 이어 붙여도 row가 중복되거나 누락되지 않는다.
-- 검색 결과가 없는 기간/필터 조합은 빈 목록 정상 응답으로 처리한다.
+- 비용 탭은 기간 안의 usage 존재 여부와 무관하게 App primary workflow 전체를 반환한다. 기간 안에 사용량이 없는 workflow는 사용량 0으로 표시한다. organization scope 안에 표시할 primary workflow 자체가 없을 때만 빈 목록 정상 응답으로 처리한다.
 - 비용 통화는 USD다 (LLM provider 크레딧이 USD 기준). 예산(PRD FR-051)의 통화도 USD를 전제하며, 이 전제는 예산 관리 feature 문서 작성 시 함께 확정한다.
 - 비용 표시 자릿수: 노드/단건 상세는 소수점 6자리, workflow별 집계와 조직 합계는 소수점 2자리로 표시한다. 집계는 원본 정밀도(`NUMERIC(10,6)`)로 합산하고 반올림은 표시 직전에 한 번만 적용한다. 예산 사용률의 위험/초과 판정(FR-015)은 반올림 전 값으로 계산한다.
-- 비용 집계에서 `total_cost`가 NULL인 row는 0으로 합산한다. 현재 기록 경로는 비용을 산정하지 못해도 NULL이 아니라 `0.0`을 기록하므로, NULL 처리는 legacy/예외 row 방어 목적이다.
-- 알려진 한계 (수용): 가격 정보가 없는 모델의 호출은 `total_cost=0.0`으로 기록되어 "실제 비용 0"과 "가격 미산정"이 구분되지 않고, `llm_models`에 등록되지 않은 모델의 호출은 usage log 자체가 남지 않는다. 두 경우 모두 비용 합계가 실제보다 낮게 표시될 수 있다. 미산정 구분 기록(기록 경로 변경)은 이 feature 범위 밖이다.
+- 비용 집계에서 usage row가 없거나 `total_cost`가 NULL인 row는 0으로 합산한다. 현재 기록 경로는 비용을 산정하지 못해도 NULL이 아니라 `0.0`을 기록하므로, NULL 처리는 legacy/예외 row 방어 목적이다.
+- 알려진 한계 (수용): 가격 정보가 없는 모델의 호출은 `total_cost=0.0`으로 기록되어 "실제 비용 0"과 "가격 미산정"이 구분되지 않고, `llm_models`에 등록되지 않은 모델의 호출은 usage log 자체가 남지 않는다. usage log가 남지 않아도 workflow row는 비용 탭에 표시되지만 비용 합계는 0 또는 실제보다 낮은 값으로 보일 수 있다. 미산정 구분 기록(기록 경로 변경)은 이 feature 범위 밖이다.
 
 ## Open Questions
 

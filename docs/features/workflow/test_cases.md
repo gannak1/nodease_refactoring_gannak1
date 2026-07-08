@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: feature/mba-102 @ 968c8df
+Verified Against: feature/mba-162 @ 419df74
 
 ## Test File Mapping
 
@@ -41,6 +41,8 @@ Verified Against: feature/mba-102 @ 968c8df
 | 1 | 실행 편의성 | 노드별 실행 상태, 시간, 비용, 토큰 표시 | 통과 | node summary parser와 `TestSidebar` 표시 경로 구현 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | `node_finish` 표준 필드 `latency_ms`, `total_tokens`, `total_cost` 우선 표시 | 통과 | 프론트 summary parser unit test 완료. Gateway/engine API contract test는 별도 API test infra에서 다룬다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | 최종 서버 실행 시간, 화면 완료 시간, 비용, 토큰 요약 표시 | 통과 | workflow-level summary 우선 사용과 node 합산 fallback unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
+| 1 | 실행 편의성 | 테스트 성공 후 최종 사용자가 받는 `최종 응답` 카드 표시 | 통과 | workflow output, answer/response node, LLM output fallback helper와 카드 render test 완료 | `apps/client/app/features/workflow/tests/testExecutionFinalResponse.test.ts`, `apps/client/app/features/workflow/tests/test-sidebar-final-response-card.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | JSON/긴/빈/정책 차단성 최종 응답 preview 처리 | 통과 | JSON key/value preview, empty state, 긴 응답 보존, 민감 key redaction unit test 완료 | `apps/client/app/features/workflow/tests/testExecutionFinalResponse.test.ts`, `apps/client/app/features/workflow/tests/test-sidebar-final-response-card.test.tsx` |
 | 1 | 실행 편의성 | 서버 실행 시간과 화면 완료 시간을 서로 다른 라벨로 표시 | 통과 | `TestSidebar`가 `서버 실행`/`화면 완료` 라벨을 분리하고 summary unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 테스트 실행 중복 클릭 방지 또는 기존 stream 정리 | 통과 | 실행 중/업로드/저장 중/권한 없음 disabled 조건 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | stream 실패 시 사용자에게 실패 상태 표시 | 통과 | 실패 상태 store transition unit test와 `TestSidebar` 실패 UI 구현 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
@@ -173,6 +175,10 @@ Verified Against: feature/mba-102 @ 968c8df
 - 전체 테스트 실행 완료 시 화면 완료 시간, 전체 비용, 전체 토큰 사용량이 계산된다.
 - `workflow_finish`가 서버 실행 시간 summary를 제공하면 최종 요약은 서버 실행 시간을 주 지표로 표시한다.
 - `workflow_finish`가 서버 실행 시간 summary를 제공하지 않으면 최종 요약은 서버 실행 시간 fallback과 화면 완료 시간을 함께 표시한다.
+- 최종 응답 helper는 `workflow_finish.output`, answer/response node output, LLM node text 계열 output 순서로 preview 후보를 선택한다.
+- JSON 최종 응답은 raw dump 대신 key/value preview로 요약한다.
+- 권한/정책 차단성 최종 응답은 사용자 메시지를 표시하되 hidden KB id, source path/url/title, credential, raw trace payload를 preview에서 제외한다.
+- 빈 최종 응답은 empty state로 표시할 수 있는 값을 반환한다.
 
 ### 2. 노드 조작 편의성
 
@@ -256,6 +262,8 @@ Verified Against: feature/mba-102 @ 968c8df
 - 빌더가 워크플로우 테스트를 실행하면 테스트 실행 사이드바에 노드별 상태가 표시된다.
 - 실행 중인 노드는 `실행 중`, 완료된 노드는 `성공`, 실패한 노드는 `실패`로 표시된다.
 - `node_finish` 이벤트에 토큰/비용 표준 필드가 있으면 테스트 실행 사이드바에 토큰 수와 비용이 표시된다.
+- 테스트 성공 후 테스트 실행 사이드바 상단에 최종 사용자가 받는 `최종 응답` 카드가 표시된다.
+- JSON 최종 응답은 카드에서 읽기 쉬운 preview로 표시되고, 원본 JSON은 노드별 실행 결과 상세 영역에 유지된다.
 - 테스트 완료 후 테스트 실행 사이드바 마지막 영역에 서버 실행 시간, 화면 완료 시간, 전체 비용, 전체 토큰 사용량이 표시된다.
 - 서버 실행 시간과 화면 완료 시간은 `서버 실행`, `화면 완료`처럼 서로 다른 라벨로 구분된다.
 - 캔버스에는 별도 테스트 실행 요약 패널이 표시되지 않는다.

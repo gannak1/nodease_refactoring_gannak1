@@ -303,7 +303,7 @@ workflow 단위 월간 LLM 예산 ([features/budget-management](features/budget-
 | id | UUID | PK |
 | app_id | UUID | NOT NULL, FK→apps.id (CASCADE) |
 | version | INTEGER | NOT NULL |
-| type | VARCHAR(13) | NOT NULL — deployment type (schedule 포함) |
+| type | VARCHAR(13) | NOT NULL — deployment type (api/webapp/widget/mcp/workflow_node/schedule/webhook/chatbot) |
 | graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본 |
 | config / input_schema / output_schema | JSONB | NULL |
 | description | VARCHAR | NULL |
@@ -347,6 +347,7 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | duration | FLOAT | NULL |
 | meta_info | JSONB | NULL |
 | correlation_id / request_id | VARCHAR(255) | NULL, INDEX |
+| conversation_id | VARCHAR(255) | NULL, INDEX — 챗봇 배포의 방문자별 대화 격리 키 ([chatbot-deployment](features/chatbot-deployment/requirements.md)) |
 | workflow_task_id | VARCHAR(255) | NULL — Celery task id |
 | trace_metadata | JSONB | NULL — redaction-safe summary만 |
 | redaction_applied / pii_detected | BOOLEAN | NOT NULL |

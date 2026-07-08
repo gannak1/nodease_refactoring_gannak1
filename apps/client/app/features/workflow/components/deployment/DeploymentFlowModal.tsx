@@ -97,6 +97,8 @@ export function DeploymentFlowModal({
         return '웹 앱';
       case 'widget':
         return '웹사이트 위젯';
+      case 'chatbot':
+        return '챗봇';
       case 'workflow_node':
         return '서브 모듈';
       default:

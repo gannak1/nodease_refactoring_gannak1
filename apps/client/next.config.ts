@@ -1,7 +1,14 @@
 import type { NextConfig } from 'next';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const clientRoot = dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  turbopack: {
+    root: clientRoot,
+  },
 
   async headers() {
     return [

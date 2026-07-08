@@ -5,6 +5,9 @@
 
 set -e
 
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
 # 색상 정의
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -109,7 +112,7 @@ docker compose -f dev/docker-compose.yml logs -f postgres redis sandbox &
 DOCKER_PID=$!
 
 # 2. Celery Worker (Log-System)
-# macOS에서 fork() 호환성 문제 해결을 위해 solo pool 사용 및 환경변수 설정
+# 로그 시스템은 로컬 안정성을 위해 solo pool을 사용한다.
 echo -e "${GREEN}📝 Log-System Celery Worker 시작...${NC}"
 (
     # OS별 Python 경로 설정
@@ -135,7 +138,7 @@ echo -e "${GREEN}⚙️ Workflow-Engine Celery Worker 시작...${NC}"
         VENV_PYTHON="apps/workflow_engine/.venv/bin/python"
     fi
     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.workflow_engine.main worker -n workflow@%h -Q workflow -l info -P solo --concurrency=1 --without-gossip --without-mingle --without-heartbeat
+    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.workflow_engine.main worker -n workflow@%h -Q workflow -l info -P gevent --concurrency="${WORKFLOW_CELERY_CONCURRENCY:-100}" --without-gossip --without-mingle --without-heartbeat
 ) &
 WORKFLOW_CELERY_PID=$!
 

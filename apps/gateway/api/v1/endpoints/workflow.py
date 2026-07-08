@@ -150,6 +150,36 @@ def _raise_invalid_cost_optimizer_candidate() -> None:
     raise HTTPException(status_code=400, detail="cost_optimizer.invalid_candidate")
 
 
+def _request_id_from_request(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None) or request.headers.get(
+        "x-request-id"
+    )
+
+
+def _ensure_workflow_matches_active_organization(
+    db: Session,
+    request: Request,
+    current_user: User,
+    workflow: Workflow,
+    raw_organization_id: str | None,
+) -> None:
+    if not isinstance(raw_organization_id, str):
+        return
+
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        raw_organization_id,
+        current_user.id,
+    )
+    workflow_organization_id = getattr(workflow, "organization_id", None)
+    if (
+        workflow_organization_id is not None
+        and str(workflow_organization_id) != str(organization_id)
+    ):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -3765,6 +3795,7 @@ async def execute_workflow(
     workflow_id: str,
     request: Request,
     user_input: dict = {},
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3773,6 +3804,13 @@ async def execute_workflow(
     """
     # 1. 권한 확인
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
+    _ensure_workflow_matches_active_organization(
+        db,
+        request,
+        current_user,
+        workflow,
+        x_organization_id,
+    )
 
     # 1-1. 예산 초과 차단 — dispatch try 블록 밖이어야 429가 500으로 감싸이지 않는다.
     WorkflowBudgetService.ensure_workflow_budget_allows_execution(
@@ -3808,7 +3846,7 @@ async def execute_workflow(
             ),
             "app_id": str(workflow.app_id),
             "memory_mode": memory_mode_enabled,
-            "request_id": request.headers.get("x-request-id"),
+            "request_id": _request_id_from_request(request),
             "correlation_id": request.headers.get("x-correlation-id"),
         }
 
@@ -3829,6 +3867,8 @@ async def execute_workflow(
 
     except celery_app.backend.TimeoutError:
         raise HTTPException(status_code=504, detail="Workflow execution timed out")
+    except HTTPException:
+        raise
     except ValueError as e:
         # 노드 검증 실패 등의 입력 오류
         raise HTTPException(status_code=400, detail=str(e))
@@ -3844,6 +3884,7 @@ async def execute_workflow(
 async def stream_workflow(
     workflow_id: str,
     request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3862,6 +3903,13 @@ async def stream_workflow(
     memory_mode_enabled = False
     # 1. 권한 확인
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
+    _ensure_workflow_matches_active_organization(
+        db,
+        request,
+        current_user,
+        workflow,
+        x_organization_id,
+    )
 
     # 1-1. 예산 초과 차단 — SSE 스트림이 시작되기 전에 429로 끝낸다 (BGT-REQ-030).
     WorkflowBudgetService.ensure_workflow_budget_allows_execution(
@@ -3946,7 +3994,7 @@ async def stream_workflow(
         "app_id": str(workflow.app_id),
         "memory_mode": memory_mode_enabled,
         "trigger_mode": "manual",  # 테스트 실행
-        "request_id": request.headers.get("x-request-id"),
+        "request_id": _request_id_from_request(request),
         "correlation_id": request.headers.get("x-correlation-id"),
     }
 

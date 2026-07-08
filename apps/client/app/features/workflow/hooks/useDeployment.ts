@@ -10,7 +10,8 @@ type DeploymentType =
   | 'widget'
   | 'workflow_node'
   | 'schedule'
-  | 'webhook';
+  | 'webhook'
+  | 'chatbot';
 
 interface UseDeploymentProps {
   nodes: AppNode[]; // 시작 노드 타입 확인 및 graph_snapshot용
@@ -83,6 +84,12 @@ export function useDeployment({
     setShowDeployDropdown(false);
   }, []);
 
+  const handlePublishAsChatbot = useCallback(() => {
+    setDeploymentType('chatbot');
+    setShowDeployFlowModal(true);
+    setShowDeployDropdown(false);
+  }, []);
+
   const handlePublishAsWorkflowNode = useCallback(() => {
     setDeploymentType('workflow_node');
     setShowDeployFlowModal(true);
@@ -129,6 +136,10 @@ export function useDeployment({
 
         if (deploymentType === 'webapp') {
           result.webAppUrl = `${window.location.origin}/shared/${response.url_slug}`;
+        } else if (deploymentType === 'chatbot') {
+          // 챗봇 배포: 공개 채팅 웹페이지 공유 링크 (임베드 챗 페이지 재사용).
+          // webAppUrl로 넘겨 SuccessStep이 복사 가능한 공유 링크로 렌더하도록 한다.
+          result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
         } else if (deploymentType === 'widget') {
           result.embedUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
         } else if (deploymentType === 'workflow_node') {
@@ -166,6 +177,7 @@ export function useDeployment({
     handlePublishAsRestAPI,
     handlePublishAsWebApp,
     handlePublishAsWidget,
+    handlePublishAsChatbot,
     handlePublishAsWorkflowNode,
     handlePublishAsSchedule,
     handlePublishAsWebhook,

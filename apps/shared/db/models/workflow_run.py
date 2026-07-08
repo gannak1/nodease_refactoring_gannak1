@@ -128,6 +128,11 @@ class WorkflowRun(Base):
     correlation_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, index=True
     )
+    # 챗봇 배포 등 멀티턴 대화에서 방문자별 대화를 격리하기 위한 식별자.
+    # 공개 실행은 user_id가 앱 소유자로 고정되므로, 기억 조회는 이 값으로 스코프한다.
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, index=True
+    )
     request_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, index=True
     )

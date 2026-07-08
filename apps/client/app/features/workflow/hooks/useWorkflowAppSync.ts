@@ -10,13 +10,17 @@ export const useWorkflowAppSync = () => {
   const params = useParams();
   const workflowId = params.id as string;
   const [currentAppId, setCurrentAppId] = useState<string>('');
-  const {
-    loadWorkflowsByApp,
-    setProjectInfo,
-    setActiveWorkflowIdSafe,
-    setProjectApp,
-    setWorkflowAccess,
-  } = useWorkflowStore();
+  const loadWorkflowsByApp = useWorkflowStore(
+    (state) => state.loadWorkflowsByApp,
+  );
+  const setProjectInfo = useWorkflowStore((state) => state.setProjectInfo);
+  const setActiveWorkflowIdSafe = useWorkflowStore(
+    (state) => state.setActiveWorkflowIdSafe,
+  );
+  const setProjectApp = useWorkflowStore((state) => state.setProjectApp);
+  const setWorkflowAccess = useWorkflowStore(
+    (state) => state.setWorkflowAccess,
+  );
 
   useEffect(() => {
     let active = true;
