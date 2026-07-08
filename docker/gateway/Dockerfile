@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
 # 공통 패키지 복사 및 설치
 COPY apps/shared /build/apps/shared
 COPY apps/gateway /build/apps/gateway
+COPY apps/workflow_engine /build/apps/workflow_engine
 
 # pyproject.toml 기반으로 설치
 RUN pip install --no-cache-dir --prefix=/install \
@@ -44,6 +45,7 @@ COPY --from=builder /install /usr/local
 # 앱 코드 복사 (모노레포 구조 유지)
 COPY apps/shared /app/apps/shared
 COPY apps/gateway /app/apps/gateway
+COPY apps/workflow_engine /app/apps/workflow_engine
 
 # Entrypoint 스크립트 복사
 COPY docker/gateway/docker-entrypoint.sh /docker-entrypoint.sh
