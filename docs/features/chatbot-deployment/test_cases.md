@@ -29,6 +29,12 @@ Status: Draft
 - `create_run_log`가 `data.conversation_id`를 `WorkflowRun.conversation_id`로 저장한다.
 - `conversation_id`가 없으면 None으로 저장한다.
 
+### Client — deployment success links
+
+- `useDeployment`의 챗봇 배포 결과는 `${origin}/embed/chat/{url_slug}` 공개 링크와 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 내부 실행 링크를 분리해서 만든다.
+- `SuccessStep`은 챗봇 배포 성공 시 공개 챗봇 공유 링크가 anonymous public-only RAG임을 표시하고, 사내 인증 실행 링크가 로그인 사용자 권한 실행임을 별도 표시한다.
+- 공개 챗봇 공유 링크 설명은 private Knowledge 접근을 암시하지 않는다.
+
 ## API Tests
 
 - `POST /deployments`에 `type: "chatbot"`으로 배포 생성 → 활성 배포 및 `url_slug` 반환.

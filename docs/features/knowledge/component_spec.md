@@ -51,6 +51,16 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Audit/Citation Detail | Redaction-safe citation과 retrieval summary를 표시한다. Raw content는 별도 raw/compliance surface에서만 사용한다 |
 | RAG A/B Compare | LLM node 단위 RAG strategy, token, cost, citation summary를 비교한다 |
 
+### KB Detail Source Processing UI
+
+`POST /api/v1/rag/upload`로 등록된 source document는 초기 상태가 `pending`일 수 있으며, chunk/embedding 생성이 끝나기 전까지 RAG 검색 대상이 아니다.
+
+- KB 상세의 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 safe 안내를 표시한다.
+- `failed` document는 같은 document settings 화면으로 들어가는 `재처리` action을 제공한다.
+- Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
+- 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
+- `completed` document만 workflow builder/RAG 선택과 runtime retrieval에서 ready evidence 후보가 될 수 있다.
+
 ### Knowledge Collection Management UI
 
 Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리 영역에 둔다.

@@ -142,12 +142,12 @@ ${authHeader}  -d '{
           <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
             <label className="block text-sm font-semibold text-blue-900 mb-2">
               {deploymentType === 'chatbot'
-                ? '챗봇 공유 링크'
+                ? '공개 챗봇 공유 링크'
                 : '웹 앱 공유 링크'}
             </label>
             <p className="text-xs text-blue-700 mb-3">
               {deploymentType === 'chatbot'
-                ? '이 링크를 공유하면 누구나 대화 맥락을 기억하는 챗봇과 대화할 수 있습니다!'
+                ? '인증 없이 접근하는 공개 링크입니다. 공개 Collection에 연결된 지식만 검색됩니다.'
                 : '이 링크를 공유하면 누구나 워크플로우를 사용할 수 있습니다!'}
             </p>
             <div className="flex gap-2">
@@ -157,6 +157,37 @@ ${authHeader}  -d '{
               <button
                 onClick={() => handleCopy(result.webAppUrl!)}
                 className="px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors whitespace-nowrap h-fit"
+              >
+                복사
+              </button>
+            </div>
+          </div>
+        )}
+
+        {deploymentType === 'chatbot' && result.internalRunUrl && (
+          <div className="border-2 border-emerald-200 rounded-lg p-4 bg-emerald-50">
+            <label className="block text-sm font-semibold text-emerald-900 mb-2">
+              사내 인증 실행 링크
+            </label>
+            <p className="text-xs text-emerald-700 mb-3">
+              로그인한 사용자 권한으로 실행됩니다. 사내 private Knowledge/RAG는
+              이 링크에서 검증하세요.
+            </p>
+            <div className="flex gap-2">
+              <code className="flex-1 p-3 bg-white border border-emerald-300 rounded text-sm text-emerald-800 font-mono break-all leading-relaxed">
+                {result.internalRunUrl}
+              </code>
+              <a
+                href={result.internalRunUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-2 text-sm font-medium text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-100 rounded transition-colors whitespace-nowrap h-fit"
+              >
+                열기
+              </a>
+              <button
+                onClick={() => handleCopy(result.internalRunUrl!)}
+                className="px-3 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded transition-colors whitespace-nowrap h-fit"
               >
                 복사
               </button>

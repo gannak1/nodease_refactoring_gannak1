@@ -376,6 +376,7 @@ Status: Draft
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.
+- LLM node RAG 선택 UI는 completed retrieval-visible document가 있는 KB만 선택 후보로 표시하고, 빈 KB 또는 `pending`/`failed` 문서만 있는 KB는 경고 없이 선택 가능한 후보로 노출하지 않는다. 후보가 없으면 "완료된 문서가 있는 지식 베이스가 없습니다." 같은 safe 안내를 표시한다.
 - 인증 배포 실행 화면은 `GET /deployments/{deployment_id}/run-info` safe metadata만 사용하고, `auth_secret` 또는 `graph_snapshot`을 받지 않는다.
 - 로그인 사용자의 배포 실행 요청(`/deployments/{deployment_id}/run`)은 workflow `execute` 권한을 재검증하고, active deployment snapshot을 `execution_subject=current_user`로 실행한다.
 - 인증 배포 실행의 `conversation_id`는 서버에서 deployment와 execution subject 기준으로 namespace 처리되어 다른 사용자 memory context와 섞이지 않는다.

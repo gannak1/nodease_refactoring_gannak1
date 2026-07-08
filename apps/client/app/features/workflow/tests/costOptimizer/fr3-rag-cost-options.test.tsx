@@ -177,6 +177,27 @@ describe('FR-003 RAG cost optimization options', () => {
     });
   });
 
+  it('완료된 문서가 있는 KB가 없으면 RAG 선택 후보를 비워 안내한다', async () => {
+    vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
+      bases: [],
+      detailsById: {},
+      preserveSelectionIds: [],
+    });
+
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-1"
+        data={baseData}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    expect(
+      await screen.findByText('완료된 문서가 있는 지식 베이스가 없습니다.'),
+    ).toBeInTheDocument();
+  });
+
   it('읽기 전용 LLM 노드에서는 RAG 연결 선택을 변경하지 않는다', async () => {
     vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
       bases: [

@@ -12,6 +12,8 @@ import {
   Clock,
   Settings,
   Trash2,
+  Play,
+  RefreshCw,
   // RotateCw,
   Bot,
   FolderOpen,
@@ -218,6 +220,13 @@ export default function KnowledgeDetailPage() {
             승인 대기
           </span>
         );
+      case 'pending':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+            <Clock className="w-3.5 h-3.5" />
+            처리 전
+          </span>
+        );
       default:
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-400">
@@ -231,6 +240,12 @@ export default function KnowledgeDetailPage() {
   const handleDeleteDocument = async (documentId: string) => {
     setDeleteTargetDocId(documentId);
     setIsSourceDeleteModalOpen(true);
+  };
+
+  const openDocumentSettings = (documentId: string) => {
+    router.push(
+      `/dashboard/knowledge/${knowledgeBase?.id || id}/document/${documentId}`,
+    );
   };
 
   const confirmDeleteDocument = async () => {
@@ -572,6 +587,11 @@ export default function KnowledgeDetailPage() {
                           {doc.error_message}
                         </p>
                       )}
+                      {doc.status === 'pending' && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                          처리 시작 전에는 RAG 검색에 사용되지 않습니다.
+                        </p>
+                      )}
                     </td>
                     <td className="px-5 py-2.5">
                       <div className="flex items-center gap-1.5">
@@ -604,14 +624,37 @@ export default function KnowledgeDetailPage() {
                     >
                       {formatRelativeTime(doc.updated_at || doc.created_at)}
                     </td>
-                    <td className="px-5 py-2.5 text-right">
-                      <button
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all"
-                        onClick={() => handleDeleteDocument(doc.id)}
-                        title="삭제"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                    <td className="px-5 py-2.5">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {(doc.status === 'pending' ||
+                          doc.status === 'failed') && (
+                          <button
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
+                            onClick={() => openDocumentSettings(doc.id)}
+                            title={
+                              doc.status === 'failed'
+                                ? '재처리 설정으로 이동'
+                                : '처리 설정으로 이동'
+                            }
+                          >
+                            {doc.status === 'failed' ? (
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            ) : (
+                              <Play className="h-3.5 w-3.5" />
+                            )}
+                            <span>
+                              {doc.status === 'failed' ? '재처리' : '처리 시작'}
+                            </span>
+                          </button>
+                        )}
+                        <button
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all"
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          title="삭제"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
