@@ -14,6 +14,31 @@ class FakeBind:
         return [(revision,) for revision in self.revisions]
 
 
+class FakeConnection:
+    def __init__(self, revisions):
+        self.revisions = revisions
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        return False
+
+    def execute(self, _stmt):
+        return self
+
+    def fetchall(self):
+        return [(revision,) for revision in self.revisions]
+
+
+class FakeEngineBind:
+    def __init__(self, revisions):
+        self.revisions = revisions
+
+    def connect(self):
+        return FakeConnection(self.revisions)
+
+
 class FakeInspector:
     def __init__(self, *, has_version_table=True, revisions=None):
         self.has_version_table = has_version_table
@@ -22,6 +47,12 @@ class FakeInspector:
     def has_table(self, table_name):
         assert table_name == "alembic_version"
         return self.has_version_table
+
+
+class FakeEngineInspector(FakeInspector):
+    def __init__(self, *, has_version_table=True, revisions=None):
+        super().__init__(has_version_table=has_version_table, revisions=revisions)
+        self.bind = FakeEngineBind(revisions or [])
 
 
 class FailingInspector:
@@ -92,6 +123,16 @@ def test_evaluate_alembic_readiness_reports_unknown_database_revision():
 def test_check_alembic_readiness_with_inspector_reads_version_rows():
     result = readiness.check_alembic_readiness_with_inspector(
         FakeInspector(revisions=["head-1"]),
+        code_heads=["head-1"],
+        known_revisions=["head-1"],
+    )
+
+    assert result.ready is True
+
+
+def test_check_alembic_readiness_with_engine_bind_reads_version_rows():
+    result = readiness.check_alembic_readiness_with_inspector(
+        FakeEngineInspector(revisions=["head-1"]),
         code_heads=["head-1"],
         known_revisions=["head-1"],
     )

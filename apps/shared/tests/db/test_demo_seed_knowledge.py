@@ -378,6 +378,21 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "ai_builder_onboarding",
         "operator",
     ) in permission_specs
+    assert (
+        "internal_privacy_hr_records",
+        "ai_builder_onboarding",
+        "operator",
+    ) not in permission_specs
+    assert (
+        "internal_privacy_hr_records",
+        "platform_admin",
+        "manager",
+    ) in permission_specs
+    assert (
+        "internal_privacy_hr_records",
+        "hr_knowledge_users",
+        "operator",
+    ) in permission_specs
 
     collection_permission_specs = set(
         demo_seed._demo_team_knowledge_collection_permission_specs()

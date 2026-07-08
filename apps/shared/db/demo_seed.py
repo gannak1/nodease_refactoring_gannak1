@@ -2055,7 +2055,6 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
         [
             ("internal_privacy_hr_records", "platform_admin", "manager"),
             ("internal_privacy_hr_records", "hr_knowledge_users", "operator"),
-            ("internal_privacy_hr_records", "ai_builder_onboarding", "operator"),
             ("internal_compensation_access_policy", "platform_admin", "manager"),
             ("internal_compensation_access_policy", "hr_knowledge_users", "operator"),
             ("internal_compensation_access_policy", "ai_builder_onboarding", "operator"),

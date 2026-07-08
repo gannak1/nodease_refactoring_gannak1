@@ -100,7 +100,12 @@ def check_alembic_readiness_with_inspector(
                 has_version_table=False,
             )
         bind = schema_inspector.bind
-        rows = bind.execute(text(f"SELECT version_num FROM {version_table}")).fetchall()
+        statement = text(f"SELECT version_num FROM {version_table}")
+        if hasattr(bind, "execute"):
+            rows = bind.execute(statement).fetchall()
+        else:
+            with bind.connect() as connection:
+                rows = connection.execute(statement).fetchall()
         database_revisions = [row[0] for row in rows]
         return evaluate_alembic_readiness(
             code_heads=code_heads,
