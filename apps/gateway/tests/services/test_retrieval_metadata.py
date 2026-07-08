@@ -1,4 +1,6 @@
 import asyncio
+import builtins
+import logging
 import uuid
 from types import SimpleNamespace
 
@@ -11,6 +13,55 @@ from apps.shared.services.rag_source_tier import (
 )
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.retrieval import RetrievalService
+
+
+def test_rerank_is_disabled_by_default_and_does_not_load_model(monkeypatch):
+    monkeypatch.delenv("RAG_CROSS_ENCODER_RERANK_ENABLED", raising=False)
+
+    def fail_model_lookup():
+        raise AssertionError("disabled reranker must not load CrossEncoder")
+
+    monkeypatch.setattr(
+        RetrievalService,
+        "_get_cross_encoder_model",
+        staticmethod(fail_model_lookup),
+    )
+    service = RetrievalService(db=None, user_id=None)
+    candidates = [
+        {"chunk": SimpleNamespace(content="first")},
+        {"chunk": SimpleNamespace(content="second")},
+    ]
+
+    assert service._rerank("query", candidates, top_k=1) == candidates[:1]
+
+
+def test_rerank_missing_dependency_warns_and_falls_back(monkeypatch, caplog):
+    monkeypatch.setenv("RAG_CROSS_ENCODER_RERANK_ENABLED", "true")
+    original_import = builtins.__import__
+    RetrievalService._cross_encoder_model = None
+    RetrievalService._cross_encoder_model_name = None
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sentence_transformers":
+            raise ImportError("No module named 'sentence_transformers'")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    service = RetrievalService(db=None, user_id=None)
+    candidates = [
+        {"chunk": SimpleNamespace(content="first")},
+        {"chunk": SimpleNamespace(content="second")},
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="apps.gateway.services.retrieval"):
+        result = service._rerank("query", candidates, top_k=1)
+
+    assert result == candidates[:1]
+    assert any(
+        "Reranker dependency unavailable" in record.message
+        for record in caplog.records
+    )
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
 
 class _FakeQuery:
@@ -172,7 +223,17 @@ def test_metadata_summary_preserves_hierarchy_fallback_flag():
     assert "content" not in summary
 
 
-def test_search_method_labels_hierarchical_paths():
+def test_search_method_labels_hierarchical_paths(monkeypatch):
+    monkeypatch.delenv("RAG_CROSS_ENCODER_RERANK_ENABLED", raising=False)
+    assert (
+        RetrievalService._search_method(
+            use_hierarchy=True,
+            hybrid_search=True,
+            use_rerank=True,
+        )
+        == "hierarchical_hybrid"
+    )
+    monkeypatch.setenv("RAG_CROSS_ENCODER_RERANK_ENABLED", "true")
     assert (
         RetrievalService._search_method(
             use_hierarchy=True,
