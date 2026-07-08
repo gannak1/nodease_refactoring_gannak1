@@ -10,10 +10,10 @@ export function Tag({ label, type }: TagProps) {
     api: 'bg-blue-100 text-blue-700',
     webapp: 'bg-purple-100 text-purple-700',
     widget: 'bg-green-100 text-green-700',
+    chatbot: 'bg-cyan-100 text-cyan-700',
     workflow_node: 'bg-teal-100 text-teal-700',
     webhook: 'bg-orange-100 text-orange-700',
     schedule: 'bg-indigo-100 text-indigo-700',
-    chatbot: 'bg-cyan-100 text-cyan-700',
     undeployed: 'bg-gray-100 text-gray-600',
   };
 

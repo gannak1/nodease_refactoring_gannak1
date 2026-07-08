@@ -1,7 +1,7 @@
 # Admin Dashboard Test Cases
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-147 @ e1a04e9
 
 [requirements.md](requirements.md)의 FR-011~FR-015와 [api_spec.md](api_spec.md), [component_spec.md](component_spec.md)를 검증한다. 신청 제출 측(FR-041)의 인수 조건은 [organization](../organization/requirements.md) 범위이며, 여기서는 관리자 측 흐름과 E2E 연결만 다룬다.
 
@@ -18,8 +18,10 @@ Verified Against: TBD
 ### AC-2. workflow별 비용 집계 (FR-012)
 
 - Given 기간 미지정 조회, When `GET /admin/usage/workflows`를 호출하면, Then 이번 달(KST 달력 월) 기준으로 집계된다.
+- Given 조직 A에 App primary workflow가 여러 개 있다, When `GET /admin/usage/workflows`를 호출하면, Then 기간 안의 usage 존재 여부와 무관하게 조직 A의 App primary workflow 전체가 반환된다.
+- Given 기간 안에 usage row가 없는 workflow, When 집계를 조회하면, Then 해당 workflow는 응답에 포함되고 prompt/completion tokens, `call_count`, `total_cost`가 모두 0이다.
 - Given 조직 A의 `llm_usage_logs`, When 집계를 조회하면, Then workflow별 합계(prompt/completion tokens, call_count, total_cost)가 원천 row 합산과 일치하고, `total_cost`가 NULL인 row는 0으로 합산된다.
-- Given 집계 결과, Then 목록은 `total_cost` 내림차순이고, 비용 값은 반올림 없이 원본 정밀도로 반환된다.
+- Given 집계 결과, Then 목록은 `total_cost` 내림차순이고, 비용이 같은 row는 workflow 이름/id 순서로 안정 정렬되며, 비용 값은 반올림 없이 원본 정밀도로 반환된다.
 - Given 조직 B의 usage 데이터, When 조직 A로 조회하면, Then 조직 B의 workflow는 응답에 포함되지 않는다.
 
 ### AC-3. 권한 신청 목록/승인/거절 (FR-014)
@@ -119,13 +121,15 @@ Verified Against: TBD
   - Given `None`, When 비용을 합산 전 정규화하면, Then `Decimal("0")`을 반환한다.
   - Given `Decimal("12.345678")`, When 정규화하면, Then 반올림 없이 같은 값을 반환한다.
 - `aggregate_workflow_usage(db, organization_id, period, page, limit)`
+  - Given organization scope 안의 App primary workflow 여러 개, When 집계하면, Then usage row 유무와 무관하게 전체 primary workflow가 응답 대상이 된다.
   - Given workflow별 usage row 여러 개, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost가 원천 row 합산과 일치한다.
-  - Given workflow가 App에 연결되어 있을 때, When 집계 응답 item을 만들면, Then `workflow_name`은 `Workflow.app_id`로 연결된 `App.name`이다.
+  - Given usage row가 없는 workflow, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost는 모두 0이다.
+  - Given App primary workflow가 있을 때, When 집계 응답 item을 만들면, Then `workflow_name`은 primary workflow를 가리키는 `App.name`이다.
   - Given `total_cost`가 `NULL`인 row, When 집계하면, Then 0으로 합산한다.
-  - Given 조직 B의 usage row, When 조직 A로 조회하면, Then 응답에 포함하지 않는다.
-  - Given 집계 결과, When 정렬하면, Then `total_cost` 내림차순이다.
+  - Given 조직 B의 workflow 또는 usage row, When 조직 A로 조회하면, Then 응답에 포함하지 않는다.
+  - Given 집계 결과, When 정렬하면, Then `total_cost` 내림차순이고 동률은 workflow 이름/id 오름차순이다.
   - Given 비용 값 `12.345678`, When 응답 모델을 만들면, Then service 응답은 `12.345678` 원본 정밀도를 유지한다.
-  - Given page/limit, When 응답을 만들면, Then `total`은 전체 workflow 집계 건수이고 `items`는 page slice다.
+  - Given page/limit, When 응답을 만들면, Then `total`은 usage row가 있는 workflow 수가 아니라 응답 대상 App primary workflow 전체 건수이고 `items`는 page slice다.
 - `get_organization_summary(db, organization_id, now)`
   - Given 이번 달 usage row, When summary를 조회하면, Then 조직 월간 `total_cost` 합계를 반환한다.
   - Given `total_cost`가 `NULL`인 row, When summary를 조회하면, Then 0으로 합산한다.
@@ -187,7 +191,7 @@ Verified Against: TBD
 
 - (FR-011) 검색 필터가 각각, 그리고 조합(AND)으로 동작한다. 정렬은 `occurred_at` 내림차순, pagination은 `page`/`limit`(최대 100)과 `{total, items}` 형식을 따른다.
 - (FR-011) 상세 응답에 allowlist metadata만 포함되고 raw payload/secret 값이 없다.
-- (FR-012) 기간 미지정 시 이번 달(KST) 기본, 응답의 `period`가 적용 기간을 반환한다. 목록은 비용 내림차순이다.
+- (FR-012) 기간 미지정 시 이번 달(KST) 기본, 응답의 `period`가 적용 기간을 반환한다. 목록은 App primary workflow 전체를 반환하고, usage가 없는 workflow는 0 row로 포함하며, 정렬은 비용 내림차순과 동률 안정 정렬을 따른다.
 - (FR-014) 목록 기본 status 필터가 `pending`이고, `approved`/`rejected` 필터가 동작한다.
 - (FR-014) 승인 성공 응답에 `status`, `decided_by`, `decided_at`이 포함된다. 승인/거절의 side effect(AC-3)가 DB와 audit에 반영된다.
 - (FR-014) 이미 처리된 신청 재처리 → `409`. 동시 승인/거절 경합은 한쪽만 성공하고 나머지는 `409`를 받는다 (중복 부여 없음).
@@ -196,7 +200,7 @@ Verified Against: TBD
 - (FR-014 회수) 이미 회수됐거나 타 조직의 `permission_id` → `404`.
 - 공통: `X-Organization-Id` 누락/invalid → `400`, `endAt ≤ startAt` → `400`, `limit > 100` → `422`, 미인증 → `401`.
 - Usage 집계: `startAt`/`endAt` 중 한쪽만 제공 → `400`.
-- 공통: 검색 결과 없음은 `{ "total": 0, "items": [] }` 정상 응답이다.
+- 공통: 검색 결과 없음은 `{ "total": 0, "items": [] }` 정상 응답이다. 단, usage 조회는 기간 안의 usage 존재 여부가 아니라 App primary workflow 존재 여부가 빈 목록 기준이다.
 
 ## E2E Tests
 
@@ -220,7 +224,8 @@ Verified Against: TBD
 
 ## Edge Cases
 
-- 검색 결과가 없는 기간/필터 조합 → 빈 목록 정상 응답, UI는 empty state 표시.
+- audit/permission 검색 결과가 없는 기간/필터 조합 → 빈 목록 정상 응답, UI는 empty state 표시.
+- usage 조회에서 기간 안에 사용량이 없는 workflow → 빈 목록이 아니라 사용량 0 row로 표시. App primary workflow 자체가 없을 때만 empty state 표시.
 - `audit_metadata`에 저장된 secret 계열 값이 목록/상세 어디에도 노출되지 않는다 (NFR-004).
 - 가격 미등록 모델의 usage(`total_cost=0.0`)는 집계에 0으로 반영된다 — "미산정 구분 불가"는 수용된 한계이며 테스트는 0 합산 동작만 검증한다.
 - 예산 `budget` null 상태에서 UI 요약 카드가 "예산 미설정"을 표시한다 (오류 아님).

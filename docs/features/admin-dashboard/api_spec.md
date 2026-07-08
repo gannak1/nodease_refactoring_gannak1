@@ -1,7 +1,7 @@
 # Admin Dashboard API Spec
 
 Status: Draft
-Verified Against: feature/mba-132 @ a843ec7
+Verified Against: feature/mba-147 @ e1a04e9
 
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.
 
@@ -91,9 +91,11 @@ Response `200`:
 }
 ```
 
-- 정렬은 `total_cost` 내림차순 고정 (FR-012 비용 큰 workflow 탐색).
-- `total_cost`가 NULL인 row는 0으로 합산한다.
-- `workflow_name`은 `workflows.app_id`로 연결된 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
+- 목록 기준은 요청 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체다. 기간 안에 `llm_usage_logs` row가 없는 workflow도 응답 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
+- `total`은 기간 안에 usage가 있는 workflow 수가 아니라 organization scope 안의 응답 대상 App primary workflow 수다.
+- `total_cost`가 NULL인 usage row는 0으로 합산한다.
+- `workflow_name`은 primary workflow를 가리키는 App의 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
+- 정렬은 `total_cost` 내림차순 고정이며, 비용이 같은 row는 `workflow_name` 오름차순과 `workflow_id` 오름차순으로 안정적으로 정렬한다 (FR-012 비용 큰 workflow 탐색).
 - 항목에서 해당 workflow 화면으로 이동하는 진입은 클라이언트 라우팅이며, 비교/최적화 실행 API는 [cost-optimizer](../cost-optimizer/api_spec.md) 범위다.
 - workflow별 예산/사용률 필드는 [budget-management api_spec](../budget-management/api_spec.md)의 `budget` 블록 정의를 따른다. 활성 예산이 없으면 `budget`은 null이다.
 
@@ -228,7 +230,7 @@ Side effects ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-cre
 | 409 | 이미 처리된(approved/rejected) 신청에 대한 approve/reject 재요청. 승인 시점에 신청자가 조직의 active member가 아닌 경우(제거/정지)의 approve |
 | 422 | request 형식 오류 |
 
-- 검색 결과 없음은 오류가 아니라 `{ "total": 0, "items": [] }` 정상 응답이다.
+- 검색 결과 없음은 오류가 아니라 `{ "total": 0, "items": [] }` 정상 응답이다. 단, `GET /admin/usage/workflows`는 기간 안의 usage 존재 여부가 아니라 App primary workflow 존재 여부가 빈 목록 기준이다.
 - 동시 승인/거절 경합은 한쪽만 성공하고 나머지는 409를 받는다 (중복 부여 방지, ADR-0016 후속 검토).
 
 ## Permissions

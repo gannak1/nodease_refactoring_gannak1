@@ -407,7 +407,14 @@ def test_workflow_usage_items_include_current_month_budget_block():
                 id=workflow_id, app_id=app_id, organization_id=organization_id
             )
         ],
-        apps=[SimpleNamespace(id=app_id, name="예산 워크플로우")],
+        apps=[
+            SimpleNamespace(
+                id=app_id,
+                name="예산 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        ],
         budgets=[
             _budget_row(organization_id, workflow_id, Decimal("100.00")),
         ],
@@ -456,7 +463,14 @@ def test_workflow_usage_item_without_budget_returns_null_block():
                 id=workflow_id, app_id=app_id, organization_id=organization_id
             )
         ],
-        apps=[SimpleNamespace(id=app_id, name="예산 없는 워크플로우")],
+        apps=[
+            SimpleNamespace(
+                id=app_id,
+                name="예산 없는 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        ],
         budgets=[],
     )
     july = AdminUsagePeriod(
@@ -474,6 +488,61 @@ def test_workflow_usage_item_without_budget_returns_null_block():
     )
 
     assert result.items[0].budget is None
+
+
+def test_workflow_usage_zero_usage_item_keeps_budget_block_with_normal_status():
+    # 활성 예산 workflow는 당월 usage row가 없어도 목록에 0 row로 남고
+    # budget 블록은 current_month_cost=0, usage_ratio=0, normal이다
+    # (BGT-REQ-020, 예산 설정 진입 누락 방지).
+    AdminUsageService = _admin_usage_service()
+    from apps.gateway.services.admin_usage_service import AdminUsagePeriod
+
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    app_id = uuid4()
+    db = _UsageDb(
+        usage_logs=[],
+        workflows=[
+            SimpleNamespace(
+                id=workflow_id, app_id=app_id, organization_id=organization_id
+            )
+        ],
+        apps=[
+            SimpleNamespace(
+                id=app_id,
+                name="예산만 있는 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        ],
+        budgets=[
+            _budget_row(organization_id, workflow_id, Decimal("100.00")),
+        ],
+    )
+    july = AdminUsagePeriod(
+        start_at=datetime(2026, 7, 1, 0, 0, tzinfo=KST),
+        end_at=datetime(2026, 8, 1, 0, 0, tzinfo=KST),
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=july,
+        page=1,
+        limit=20,
+        now=datetime(2026, 7, 15, 9, 0, tzinfo=KST),
+    )
+
+    assert result.total == 1
+    item = result.items[0]
+    assert item.workflow_id == workflow_id
+    assert item.call_count == 0
+    assert item.total_cost == 0
+    assert item.budget is not None
+    assert item.budget.monthly_budget_usd == pytest.approx(100.0)
+    assert item.budget.current_month_cost == pytest.approx(0.0)
+    assert item.budget.usage_ratio == pytest.approx(0.0)
+    assert item.budget.status == "normal"
 
 
 # --- fakes -------------------------------------------------------------------

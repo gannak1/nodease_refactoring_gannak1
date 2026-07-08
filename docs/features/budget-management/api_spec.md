@@ -1,7 +1,7 @@
 # Budget Management API Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-147 @ e1a04e9
 
 예산 관리 전용 API는 admin-dashboard와 같은 `/api/v1/admin/*` prefix를 사용한다. 모든 admin endpoint는 인증과 `X-Organization-Id` header를 요구하고, 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)).
 
@@ -119,8 +119,11 @@ Side effects:
 }
 ```
 
+- 응답 item은 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체를 대상으로 한다. 기간 안에 usage row가 없는 workflow도 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
+- `total`은 기간 안에 usage row가 있는 workflow 수가 아니라 응답 대상 App primary workflow 수다.
 - `budget`은 활성 예산(`is_enabled=true` ∧ `monthly_budget_usd > 0`)이 없으면 null이다.
 - `budget` 블록은 query의 `startAt`/`endAt` 기간 필터와 무관하게 항상 당월(KST) 기준으로 계산한다 (BGT-REQ-020). `total_cost`는 기존대로 조회 기간 기준이다.
+- 활성 예산이 있고 당월 usage row가 없으면 `budget.current_month_cost=0`, `usage_ratio=0`, `status="normal"`이다.
 
 ### GET /admin/summary (확장)
 

@@ -1,7 +1,7 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: feature/mba-132 @ a843ec7
+Verified Against: feature/mba-147 @ e1a04e9
 
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
@@ -74,7 +74,8 @@ Verified Against: feature/mba-132 @ a843ec7
 ### UsageTab (FR-012)
 
 - 기간 필터: 기본 이번 달(KST), `startAt`/`endAt` 지정 가능.
-- 테이블 컬럼: workflow 이름, 호출 수, prompt/completion tokens, 비용(USD 2자리), 예산. 비용 내림차순 고정 정렬.
+- 테이블 row 기준: organization scope 안의 App primary workflow 전체. 기간 안에 사용량이 없는 workflow도 표시하고 호출 수, prompt/completion tokens, 비용은 0으로 보여준다.
+- 테이블 컬럼: workflow 이름, 호출 수, prompt/completion tokens, 비용(USD 2자리), 예산. 비용 내림차순 고정 정렬이며 같은 비용에서는 workflow 이름/id 순서로 안정적으로 보인다.
 - 예산 컬럼은 활성 예산이 있으면 예산 금액(USD 2자리), 사용률(%), 상태 배지(`BudgetStatusBadge`)를 표시한다. `budget` null이면 "미설정"을 표시한다.
 - 모든 행에 `예산 설정` 버튼을 제공하고, 클릭 시 `BudgetEditModal`을 열어 `GET/PUT /admin/workflow-budgets/{workflow_id}`로 조회/저장한다. 저장 성공 시 비용 목록과 요약 카드를 다시 조회한다.
 - 행에 해당 workflow로 이동하는 링크/버튼을 둔다 — 비용 최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/component_spec.md) 범위이며 이 탭은 진입만 제공한다.
@@ -83,7 +84,7 @@ Verified Against: feature/mba-132 @ a843ec7
 ## States
 
 - 각 탭 공통: 로딩(스켈레톤 또는 스피너), 빈 목록(안내 문구 포함 empty state), 오류(재시도 버튼).
-- 검색 결과 없음은 오류가 아니라 빈 목록 상태다 (`{total: 0}`).
+- 비용 탭의 빈 목록은 organization scope 안에 표시할 App primary workflow가 없을 때만 사용한다. 기간 안에 usage가 없는 workflow는 빈 목록이 아니라 사용량 0 row로 표시한다.
 - 권한 신청 처리 중: 해당 행 버튼 비활성화(중복 클릭 방지). 409 응답(이미 처리된 신청)은 "이미 처리된 신청입니다" toast 후 목록 갱신.
 - 권한 회수 처리 중: 확인 다이얼로그의 버튼을 비활성화한다(중복 클릭 방지, modal이 행 버튼 접근을 막는다). 404 응답(이미 회수된 권한)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
 - 요약 카드의 `budget` null 상태: "예산 미설정" 표시 (오류 아님).
