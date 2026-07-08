@@ -13,6 +13,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from alembic.config import Config  # noqa: E402
+from alembic.script import ScriptDirectory  # noqa: E402
 from sqlalchemy import inspect, text  # noqa: E402
 
 from apps.shared.db.base import Base  # noqa: E402
@@ -29,6 +31,9 @@ from apps.shared.db.demo_seed import (  # noqa: E402
 from apps.shared.db.session import SessionLocal, engine  # noqa: E402
 from apps.shared.services.knowledge_schema_readiness import (  # noqa: E402
     check_knowledge_schema_readiness_with_inspector,
+)
+from apps.shared.services.alembic_readiness import (  # noqa: E402
+    check_alembic_readiness_with_inspector,
 )
 import apps.shared.db.models  # noqa: E402, F401
 
@@ -195,7 +200,51 @@ def schema_readiness_gaps(
     }
 
 
+def _alembic_script_directory() -> ScriptDirectory:
+    config = Config(str(ROOT_DIR / "apps" / "shared" / "alembic.ini"))
+    config.set_main_option(
+        "script_location",
+        str(ROOT_DIR / "apps" / "shared" / "alembic"),
+    )
+    return ScriptDirectory.from_config(config)
+
+
+def alembic_readiness_gaps(
+    schema_inspector,
+    *,
+    code_heads: list[str] | None = None,
+    known_revisions: list[str] | None = None,
+) -> dict[str, object]:
+    script = None
+    if code_heads is None or known_revisions is None:
+        script = _alembic_script_directory()
+    code_heads = code_heads if code_heads is not None else list(script.get_heads())
+    known_revisions = (
+        known_revisions
+        if known_revisions is not None
+        else [revision.revision for revision in script.walk_revisions()]
+    )
+    result = check_alembic_readiness_with_inspector(
+        schema_inspector,
+        code_heads=code_heads,
+        known_revisions=known_revisions,
+    )
+    return {
+        "ready": result.ready,
+        "missing_version_table": result.missing_version_table,
+        "database_behind": result.database_behind,
+        "split_heads": result.split_heads,
+        "code_heads": result.code_heads,
+        "database_revisions": result.database_revisions,
+        "unknown_database_revisions": result.unknown_database_revisions,
+        "reason": result.reason,
+    }
+
+
 def _schema_has_gaps(gaps: Mapping[str, object]) -> bool:
+    migration = gaps.get("migration")
+    if isinstance(migration, Mapping) and not migration.get("ready", True):
+        return True
     return bool(
         gaps.get("missing_tables")
         or gaps.get("missing_columns")
@@ -229,6 +278,35 @@ def format_schema_readiness_error(gaps: Mapping[str, object]) -> str:
         lines.append("")
         lines.append(f"Readiness check failed: {reason}")
 
+    migration = gaps.get("migration")
+    if isinstance(migration, Mapping) and not migration.get("ready", True):
+        lines.append("")
+        lines.append("Migration readiness:")
+        if migration.get("missing_version_table"):
+            lines.append("- alembic_version table is missing.")
+        if migration.get("database_behind"):
+            code_heads = ", ".join(migration.get("code_heads") or [])
+            database_revisions = ", ".join(
+                migration.get("database_revisions") or []
+            )
+            lines.append(
+                "- DB revision does not match code head"
+                f" (db={database_revisions or 'none'}, code={code_heads or 'none'})."
+            )
+        if migration.get("split_heads"):
+            lines.append(
+                "- Alembic migration graph has multiple code heads; merge heads first."
+            )
+        unknown_database_revisions = migration.get("unknown_database_revisions") or []
+        if unknown_database_revisions:
+            lines.append(
+                "- DB has revisions not found in code: "
+                + ", ".join(unknown_database_revisions)
+            )
+        migration_reason = migration.get("reason")
+        if migration_reason:
+            lines.append(f"- Migration readiness check failed: {migration_reason}")
+
     lines.extend(
         [
             "",
@@ -243,7 +321,9 @@ def format_schema_readiness_error(gaps: Mapping[str, object]) -> str:
 
 
 def check_demo_schema_readiness() -> None:
-    gaps = schema_readiness_gaps(inspect(engine))
+    schema_inspector = inspect(engine)
+    gaps = schema_readiness_gaps(schema_inspector)
+    gaps["migration"] = alembic_readiness_gaps(schema_inspector)
     if _schema_has_gaps(gaps):
         raise DemoSchemaReadinessError(format_schema_readiness_error(gaps))
 
