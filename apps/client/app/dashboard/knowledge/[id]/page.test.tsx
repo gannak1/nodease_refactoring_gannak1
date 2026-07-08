@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import KnowledgeDetailPage from './page';
@@ -46,54 +53,57 @@ vi.mock('sonner', () => ({
 
 const mockedKnowledgeApi = vi.mocked(knowledgeApi);
 
+const knowledgeBaseFixture = {
+  id: 'kb-1',
+  name: '사내 문서',
+  description: '온보딩 자료',
+  document_count: 3,
+  created_at: '2026-07-08T00:00:00Z',
+  embedding_model: 'text-embedding-3-small',
+  documents: [
+    {
+      id: 'doc-pending',
+      filename: 'commit-convention.md',
+      status: 'pending',
+      created_at: '2026-07-08T00:00:00Z',
+      updated_at: '2026-07-08T00:00:00Z',
+      chunk_count: 0,
+      token_count: 0,
+      source_type: 'FILE',
+    },
+    {
+      id: 'doc-failed',
+      filename: 'salary-policy.md',
+      status: 'failed',
+      created_at: '2026-07-08T00:00:00Z',
+      updated_at: '2026-07-08T00:00:00Z',
+      error_message: '처리 실패',
+      chunk_count: 0,
+      token_count: 0,
+      source_type: 'FILE',
+    },
+    {
+      id: 'doc-completed',
+      filename: 'onboarding.md',
+      status: 'completed',
+      created_at: '2026-07-08T00:00:00Z',
+      updated_at: '2026-07-08T00:00:00Z',
+      chunk_count: 3,
+      token_count: 120,
+      source_type: 'FILE',
+    },
+  ],
+};
+
 describe('KnowledgeDetailPage source processing actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValue({
-      id: 'kb-1',
-      name: '사내 문서',
-      description: '온보딩 자료',
-      document_count: 3,
-      created_at: '2026-07-08T00:00:00Z',
-      embedding_model: 'text-embedding-3-small',
-      documents: [
-        {
-          id: 'doc-pending',
-          filename: 'commit-convention.md',
-          status: 'pending',
-          created_at: '2026-07-08T00:00:00Z',
-          updated_at: '2026-07-08T00:00:00Z',
-          chunk_count: 0,
-          token_count: 0,
-          source_type: 'FILE',
-        },
-        {
-          id: 'doc-failed',
-          filename: 'salary-policy.md',
-          status: 'failed',
-          created_at: '2026-07-08T00:00:00Z',
-          updated_at: '2026-07-08T00:00:00Z',
-          error_message: '처리 실패',
-          chunk_count: 0,
-          token_count: 0,
-          source_type: 'FILE',
-        },
-        {
-          id: 'doc-completed',
-          filename: 'onboarding.md',
-          status: 'completed',
-          created_at: '2026-07-08T00:00:00Z',
-          updated_at: '2026-07-08T00:00:00Z',
-          chunk_count: 3,
-          token_count: 120,
-          source_type: 'FILE',
-        },
-      ],
-    });
+    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValue(knowledgeBaseFixture);
   });
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
   });
 
   it('shows processing CTAs for pending and failed sources only', async () => {
@@ -124,5 +134,69 @@ describe('KnowledgeDetailPage source processing actions', () => {
       expect(screen.getAllByTitle('삭제')).toHaveLength(3);
     });
     expect(screen.getByText('완료')).toBeVisible();
+  }, 10000);
+
+  it('shows a safe not-found state for hidden or missing knowledge bases', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    mockedKnowledgeApi.getKnowledgeBase.mockRejectedValueOnce({
+      response: { status: 404, data: { detail: 'raw hidden detail' } },
+    });
+
+    render(<KnowledgeDetailPage />);
+
+    expect(
+      await screen.findByRole('heading', {
+        name: '자료 그룹을 찾을 수 없습니다',
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByText('삭제되었거나 현재 계정으로 접근할 수 없는 자료 그룹입니다.'),
+    ).toBeVisible();
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  it('keeps the current page when background polling fails', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    let poll: (() => void) | undefined;
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(
+      (handler: TimerHandler) => {
+        if (typeof handler === 'function') {
+          poll = handler as () => void;
+        }
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      },
+    );
+    mockedKnowledgeApi.getKnowledgeBase
+      .mockResolvedValueOnce({
+        ...knowledgeBaseFixture,
+        documents: [
+          {
+            ...knowledgeBaseFixture.documents[0],
+            status: 'processing',
+          },
+        ],
+      })
+      .mockRejectedValueOnce({
+        response: { status: 500, data: { detail: 'transient failure' } },
+      });
+
+    render(<KnowledgeDetailPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: '사내 문서' }),
+    ).toBeVisible();
+
+    expect(poll).toBeDefined();
+    await act(async () => {
+      poll?.();
+    });
+
+    await waitFor(() => {
+      expect(mockedKnowledgeApi.getKnowledgeBase).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByRole('heading', { name: '사내 문서' })).toBeVisible();
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(routerPush).not.toHaveBeenCalled();
   });
 });

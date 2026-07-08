@@ -26,6 +26,24 @@ import {
 } from '@/app/features/knowledge/types/DB';
 import { connectorApi } from '@/app/features/knowledge/api/connectorApi';
 
+const getHttpStatus = (error: unknown): number | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const response = (error as { response?: { status?: unknown } }).response;
+  return typeof response?.status === 'number' ? response.status : undefined;
+};
+
+const logCreateKnowledgeModalFailure = (operation: string, error: unknown) => {
+  console.warn('[CreateKnowledgeModal] request failed', {
+    operation,
+    status: getHttpStatus(error),
+  });
+};
+
+const safeFailureMessage = (message: string, error: unknown) => {
+  const status = getHttpStatus(error);
+  return status ? `${message} (HTTP ${status})` : message;
+};
+
 interface SelectOption {
   value: string;
   label: string;
@@ -301,10 +319,13 @@ export default function CreateKnowledgeModal({
             }));
           }
         } else {
-          console.error('Failed to fetch embedding models');
+          console.warn('[CreateKnowledgeModal] request failed', {
+            operation: 'fetchEmbeddingModels',
+            status: res.status,
+          });
         }
       } catch (err) {
-        console.error('Error fetching embedding models', err);
+        logCreateKnowledgeModalFailure('fetchEmbeddingModels', err);
       } finally {
         setLoadingModels(false);
       }
@@ -425,10 +446,10 @@ export default function CreateKnowledgeModal({
         toast.error(result.message || 'DB 연결에 실패했습니다.');
         return false;
       }
-    } catch (err: any) {
-      console.error('DB Connection Test Error', err);
+    } catch (err) {
+      logCreateKnowledgeModalFailure('testDbConnection', err);
       toast.error(
-        err.message || 'DB 연결 테스트 중 알 수 없는 오류가 발생했습니다.',
+        safeFailureMessage('DB 연결 테스트 중 오류가 발생했습니다.', err),
       );
       return false;
     }
@@ -499,17 +520,16 @@ export default function CreateKnowledgeModal({
           if (connectorRes.success && connectorRes.id) {
             connectionId = connectorRes.id;
           } else {
-            console.error('Connector creation failed:', connectorRes.message);
             toast.error(
               connectorRes.message || 'DB 연결 정보 저장에 실패했습니다.',
             );
             setIsLoading(false);
             return;
           }
-        } catch (err: any) {
-          console.error('Connector creation error:', err);
+        } catch (err) {
+          logCreateKnowledgeModalFailure('createConnector', err);
           toast.error(
-            err.message || 'DB 연결 정보 저장 중 오류가 발생했습니다.',
+            safeFailureMessage('DB 연결 정보 저장 중 오류가 발생했습니다.', err),
           );
           setIsLoading(false);
           return;
@@ -539,9 +559,9 @@ export default function CreateKnowledgeModal({
             s3FileUrl = presignedData.upload_url.split('?')[0]; // Query string 제거
             s3FileKey = presignedData.s3_key;
           }
-        } catch (err: any) {
-          console.error('[S3 Upload] Failed:', err);
-          toast.error(`S3 업로드 실패: ${err.message}`);
+        } catch (err) {
+          logCreateKnowledgeModalFailure('uploadToS3', err);
+          toast.error(safeFailureMessage('S3 업로드에 실패했습니다.', err));
           setIsLoading(false);
           return;
         }
@@ -581,17 +601,12 @@ export default function CreateKnowledgeModal({
         '소스가 등록되었습니다. 소스 목록에서 처리 시작을 눌러주세요.',
       );
       router.push(`/dashboard/knowledge/${response.knowledge_base_id}`);
-    } catch (error: any) {
-      console.group('[CreateKnowledgeModal] Submission failed');
-      console.error('Error object:', error);
-      if (error.response) {
-        console.error('Response data:', error.response.data);
-        console.error('Response status:', error.response.status);
-      }
-      console.groupEnd();
-      console.error('Failed to create/upload knowledge base:', error);
-      alert(
-        `요청 처리에 실패했습니다: ${error.response?.data?.detail || error.message}`,
+    } catch (error) {
+      const status = getHttpStatus(error);
+      toast.error(
+        status
+          ? `요청 처리에 실패했습니다. (HTTP ${status})`
+          : '요청 처리에 실패했습니다.',
       );
     } finally {
       setIsLoading(false);
@@ -652,9 +667,9 @@ export default function CreateKnowledgeModal({
       );
       setApiPreviewData(data.data);
       toast.success('데이터를 성공적으로 불러왔습니다.');
-    } catch (error: any) {
-      console.error('API Fetch Error:', error);
-      toast.error(`API 호출 실패: ${error.message || '알 수 없는 오류'}`);
+    } catch (error) {
+      logCreateKnowledgeModalFailure('proxyApiPreview', error);
+      toast.error(safeFailureMessage('API 호출에 실패했습니다.', error));
     } finally {
       setIsFetchingApi(false);
     }

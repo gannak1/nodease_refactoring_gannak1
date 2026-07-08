@@ -33,6 +33,12 @@ import ChangeEmbeddingModelModal from '@/app/features/knowledge/components/chang
 import { toast } from 'sonner';
 import Link from 'next/link';
 
+const getHttpStatus = (error: unknown): number | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const response = (error as { response?: { status?: unknown } }).response;
+  return typeof response?.status === 'number' ? response.status : undefined;
+};
+
 export default function KnowledgeDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -41,6 +47,7 @@ export default function KnowledgeDetailPage() {
   const [knowledgeBase, setKnowledgeBase] =
     useState<KnowledgeBaseDetailResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [fetchErrorStatus, setFetchErrorStatus] = useState<number | null>(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
 
@@ -71,6 +78,7 @@ export default function KnowledgeDetailPage() {
         if (!isBackground) setIsLoading(true);
         const data = await knowledgeApi.getKnowledgeBase(id);
         setKnowledgeBase(data);
+        setFetchErrorStatus(null);
 
         // 수정 중이 아닐 때만 필드 업데이트
         if (!isEditingName) {
@@ -80,14 +88,15 @@ export default function KnowledgeDetailPage() {
           setEditDesc(data.description || '');
         }
       } catch (error) {
-        console.error('Failed to fetch knowledge base', error);
-        alert('자료 그룹을 불러오는데 실패했습니다.');
-        router.push('/dashboard/knowledge');
+        if (!isBackground) {
+          setKnowledgeBase(null);
+          setFetchErrorStatus(getHttpStatus(error) ?? 0);
+        }
       } finally {
         setIsLoading(false);
       }
     },
-    [id, isEditingName, isEditingDesc, router],
+    [id, isEditingName, isEditingDesc],
   );
 
   useEffect(() => {
@@ -257,31 +266,12 @@ export default function KnowledgeDetailPage() {
       toast.success('소스가 삭제되었습니다.');
       setIsSourceDeleteModalOpen(false);
       setDeleteTargetDocId(null);
-    } catch (error) {
-      console.error('Failed to delete document:', error);
+    } catch {
       toast.error('소스 삭제에 실패했습니다.');
     } finally {
       setIsDeletingSource(false);
     }
   };
-
-  // const handleSyncDocument = async (
-  //   documentId: string,
-  //   sourceType: SourceType,
-  // ) => {
-  //   try {
-  //     await knowledgeApi.syncDocument(id, documentId);
-  //     fetchKnowledgeBase();
-  //     const message =
-  //       sourceType === 'DB'
-  //         ? 'DB 동기화가 시작되었습니다.'
-  //         : 'API 동기화가 시작되었습니다.';
-  //     toast.success(message);
-  //   } catch (error) {
-  //     console.error('Failed to sync document:', error);
-  //     toast.error('동기화 실패');
-  //   }
-  // };
 
   const handleNameUpdate = async () => {
     if (!editName.trim()) {
@@ -327,8 +317,7 @@ export default function KnowledgeDetailPage() {
       await knowledgeApi.deleteKnowledgeBase(id);
       toast.success('자료 그룹이 삭제되었습니다.');
       router.push('/dashboard/knowledge');
-    } catch (error) {
-      console.error('Failed to delete kb:', error);
+    } catch {
       toast.error('자료 그룹 삭제 실패');
       setIsDeleting(false);
     }
@@ -341,16 +330,53 @@ export default function KnowledgeDetailPage() {
       toast.success('임베딩 모델이 변경되었습니다. 재인덱싱이 시작됩니다.');
       fetchKnowledgeBase();
     } catch (error) {
-      console.error('Failed to update embedding model:', error);
       toast.error('모델 변경 실패');
       throw error;
     }
   };
 
-  if (isLoading || !knowledgeBase) {
+  if (isLoading) {
     return (
       <div className="flex justify-center items-center h-screen">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  if (!knowledgeBase) {
+    const isNotFoundOrHidden =
+      fetchErrorStatus === 403 || fetchErrorStatus === 404;
+    return (
+      <div className="min-h-full bg-gray-50/30 dark:bg-gray-900 p-8">
+        <div className="mx-auto flex max-w-xl flex-col items-center justify-center rounded-lg border border-gray-200 bg-white px-8 py-12 text-center shadow-sm dark:border-gray-700 dark:bg-gray-800">
+          <FolderOpen className="mb-4 h-10 w-10 text-gray-400" />
+          <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+            {isNotFoundOrHidden
+              ? '자료 그룹을 찾을 수 없습니다'
+              : '자료 그룹을 불러오지 못했습니다'}
+          </h1>
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+            {isNotFoundOrHidden
+              ? '삭제되었거나 현재 계정으로 접근할 수 없는 자료 그룹입니다.'
+              : '일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.'}
+          </p>
+          <div className="mt-6 flex gap-2">
+            <button
+              onClick={() => router.push('/dashboard/knowledge')}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              목록으로 이동
+            </button>
+            {!isNotFoundOrHidden && (
+              <button
+                onClick={() => fetchKnowledgeBase()}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              >
+                다시 시도
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     );
   }

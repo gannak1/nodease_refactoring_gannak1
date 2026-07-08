@@ -7,6 +7,7 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CreateKnowledgeModal from './index';
+import { toast } from 'sonner';
 
 const routerPushMock = vi.hoisted(() => vi.fn());
 const knowledgeApiMock = vi.hoisted(() => ({
@@ -154,5 +155,42 @@ describe('CreateKnowledgeModal file drag and drop', () => {
     });
     expect(onClose).toHaveBeenCalled();
     expect(routerPushMock).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
+  });
+
+  it('shows a sanitized upload failure message', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 500,
+        data: { detail: 'raw-response-payload-should-not-be-logged' },
+      },
+      config: {
+        headers: { 'X-Test-Debug': 'request-config-should-not-be-logged' },
+      },
+    });
+    const { container } = renderOpenFileSourceModal();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const fileInput = container.querySelector('input[type="file"]');
+    const upload = new File(['hello'], 'guide.md', {
+      type: 'text/markdown',
+    });
+    fireEvent.change(fileInput!, {
+      target: { files: [upload] },
+    });
+
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        '요청 처리에 실패했습니다. (HTTP 500)',
+      );
+    });
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 });

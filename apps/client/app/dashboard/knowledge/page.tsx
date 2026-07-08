@@ -25,6 +25,7 @@ export default function KnowledgePage() {
     [],
   );
   const [isLoading, setIsLoading] = useState(true);
+  const [hasFetchError, setHasFetchError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [initialTab, setInitialTab] = useState<
@@ -37,8 +38,10 @@ export default function KnowledgePage() {
       setIsLoading(true);
       const data = await knowledgeApi.getKnowledgeBases();
       setKnowledgeBases(data);
-    } catch (error) {
-      console.error('Failed to fetch knowledge bases', error);
+      setHasFetchError(false);
+    } catch {
+      setKnowledgeBases([]);
+      setHasFetchError(true);
     } finally {
       setIsLoading(false);
     }
@@ -121,7 +124,22 @@ export default function KnowledgePage() {
       ) : (
         // List View
         <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-          {filteredKnowledge.length === 0 ? (
+          {hasFetchError ? (
+            <div className="p-8 text-center text-gray-500 dark:text-gray-400">
+              <p className="font-medium text-gray-700 dark:text-gray-200">
+                지식 베이스 목록을 불러오지 못했습니다.
+              </p>
+              <p className="mt-1 text-sm">
+                일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.
+              </p>
+              <button
+                onClick={fetchKnowledgeBases}
+                className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              >
+                다시 시도
+              </button>
+            </div>
+          ) : filteredKnowledge.length === 0 ? (
             <div className="p-8 text-center text-gray-500 dark:text-gray-400">
               등록된 지식 베이스가 없습니다.
             </div>
