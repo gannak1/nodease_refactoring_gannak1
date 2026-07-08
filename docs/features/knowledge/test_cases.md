@@ -41,6 +41,14 @@ Status: Draft
 - 다른 organization KB id의 response shape, audit behavior, answer-run 생성 여부는 ADR-0017 resource-hiding baseline에 따라 hidden identity를 만들지 않는다.
 - Visible resource 확인 이후 same-scope KB use denial은 승인된 resource-hiding/API matrix를 따른다. Matrix가 resource visible 상태를 유지한다고 결정한 경우에만 `403 permission.denied`를 허용한다.
 
+## Knowledge Base API Tests
+
+- KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
+- KB create는 255자를 초과하는 name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
+- KB create는 empty, secret-like, token-like, allowlist 밖 `embedding_model`을 DB insert 전에 거부한다.
+- KB create validation failure는 partial KB row를 만들지 않고 raw request value, stack trace, SQL, credential을 response, audit, log에 노출하지 않는다.
+- KB create는 trimming 후 저장되는 name과 `embedding_model`이 기존 API response shape를 깨뜨리지 않는다.
+
 ## Connector And Egress Tests
 
 - Connector preview/test/fetch는 승인된 outbound guard factory 밖의 raw socket, ad hoc HTTP client, custom dialer를 사용할 수 없다.

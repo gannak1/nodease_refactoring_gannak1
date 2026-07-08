@@ -42,6 +42,7 @@ from apps.gateway.services.knowledge_base_query_service import (
     KnowledgeBaseNotFound,
     KnowledgeBaseQueryService,
     KnowledgeSchemaNotReady,
+    KnowledgeValidationError,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
@@ -277,6 +278,14 @@ def _raise_knowledge_query_service_error(
             "knowledge.create_failed",
             "Knowledge base creation failed.",
         )
+    if isinstance(exc, KnowledgeValidationError):
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "knowledge.validation_failed",
+            "Knowledge base request validation failed.",
+            {"reason": exc.reason},
+        )
     if isinstance(exc, KnowledgeBaseNotFound):
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
     raise exc
@@ -316,7 +325,11 @@ def create_knowledge_base(
             organization_id=organization_id,
             schema_ready=True,
         )
-    except (KnowledgeSchemaNotReady, KnowledgeBaseCreateFailed) as exc:
+    except (
+        KnowledgeSchemaNotReady,
+        KnowledgeBaseCreateFailed,
+        KnowledgeValidationError,
+    ) as exc:
         _raise_knowledge_query_service_error(request, exc)
 
 

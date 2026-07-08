@@ -11,6 +11,7 @@ from apps.gateway.services.knowledge_base_query_service import (
     KnowledgeBaseNotFound,
     KnowledgeBaseQueryService,
     KnowledgeSchemaNotReady,
+    KnowledgeValidationError,
     evaluate_llm_rag_selectability,
 )
 from apps.shared.db.models.knowledge import SourceType
@@ -626,3 +627,51 @@ def test_create_rolls_back_on_write_failure():
         )
 
     assert db.rolled_back is True
+
+
+@pytest.mark.parametrize(
+    ("name", "embedding_model", "reason"),
+    [
+        ("   ", "text-embedding-3-small", "name_required"),
+        ("가" * 256, "text-embedding-3-small", "name_too_long"),
+        ("정책 KB", "sk-secret-like-model", "embedding_model_invalid"),
+        ("정책 KB", "../bad model", "embedding_model_invalid"),
+    ],
+)
+def test_create_validates_request_before_db_write(name, embedding_model, reason):
+    db = FakeCreateDb()
+
+    with pytest.raises(KnowledgeValidationError) as exc_info:
+        KnowledgeBaseQueryService(db).create(
+            service_module.KnowledgeBaseCreate(
+                name=name,
+                embedding_model=embedding_model,
+            ),
+            user_id=uuid.uuid4(),
+            organization_id=uuid.uuid4(),
+            schema_ready=True,
+        )
+
+    assert exc_info.value.reason == reason
+    assert db.added is None
+    assert db.committed is False
+    assert db.rolled_back is False
+
+
+def test_create_trims_name_and_embedding_model_before_insert():
+    db = FakeCreateDb()
+
+    response = KnowledgeBaseQueryService(db).create(
+        service_module.KnowledgeBaseCreate(
+            name="  정책 KB  ",
+            embedding_model=" text-embedding-3-small ",
+        ),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        schema_ready=True,
+    )
+
+    assert response.name == "정책 KB"
+    assert response.embedding_model == "text-embedding-3-small"
+    assert db.added.name == "정책 KB"
+    assert db.added.embedding_model == "text-embedding-3-small"

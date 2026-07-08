@@ -1,4 +1,5 @@
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
@@ -32,6 +33,13 @@ from apps.shared.services.knowledge_schema_readiness import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+KNOWLEDGE_BASE_NAME_MAX_LENGTH = 255
+EMBEDDING_MODEL_MAX_LENGTH = 128
+SAFE_EMBEDDING_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+UNSAFE_EMBEDDING_MODEL_RE = re.compile(
+    r"(api[_-]?key|token|secret|password|credential|authorization|sk-)",
+    re.IGNORECASE,
+)
 KNOWLEDGE_BASE_MUTATION_COLUMNS = {
     "knowledge_bases": {
         "organization_id",
@@ -75,7 +83,9 @@ class KnowledgeBaseHiddenOrForbidden(KnowledgeBaseNotFound):
 
 
 class KnowledgeValidationError(KnowledgeBaseQueryServiceError):
-    pass
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__("Knowledge base request validation failed.")
 
 
 class KnowledgeConflict(KnowledgeBaseQueryServiceError):
@@ -170,6 +180,23 @@ def evaluate_llm_rag_selectability(
     )
 
 
+def _validate_create_input(kb_in: KnowledgeBaseCreate) -> tuple[str, str | None, str]:
+    name = kb_in.name.strip()
+    if not name:
+        raise KnowledgeValidationError("name_required")
+    if len(name) > KNOWLEDGE_BASE_NAME_MAX_LENGTH:
+        raise KnowledgeValidationError("name_too_long")
+    embedding_model = (kb_in.embedding_model or DEFAULT_EMBEDDING_MODEL).strip()
+    if (
+        not embedding_model
+        or len(embedding_model) > EMBEDDING_MODEL_MAX_LENGTH
+        or not SAFE_EMBEDDING_MODEL_RE.fullmatch(embedding_model)
+        or UNSAFE_EMBEDDING_MODEL_RE.search(embedding_model)
+    ):
+        raise KnowledgeValidationError("embedding_model_invalid")
+    return name, kb_in.description, embedding_model
+
+
 class KnowledgeBaseQueryService:
     def __init__(
         self,
@@ -207,10 +234,11 @@ class KnowledgeBaseQueryService:
     ) -> KnowledgeBaseResponse:
         if not schema_ready:
             self.ensure_schema_ready(KNOWLEDGE_BASE_MUTATION_COLUMNS)
+        name, description, embedding_model = _validate_create_input(kb_in)
         kb = KnowledgeBase(
-            name=kb_in.name,
-            description=kb_in.description,
-            embedding_model=kb_in.embedding_model,
+            name=name,
+            description=description,
+            embedding_model=embedding_model,
             organization_id=organization_id,
             user_id=user_id,
         )

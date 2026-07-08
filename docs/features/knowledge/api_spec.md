@@ -18,6 +18,8 @@ Status: Draft
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
 
+현재 `POST /api/v1/knowledge`는 공백뿐인 `name`, 255자를 초과하는 `name`, 비어 있거나 secret-like/token-like 또는 allowlist 밖 문자를 포함한 `embedding_model`을 DB insert 전에 safe validation error로 거부한다. Validation error response는 raw request value를 echo하지 않고 reason code만 반환한다.
+
 그 외 `/api/v1/knowledge/*` KB/list/detail/document/process/sync surface, `/api/v1/rag/upload/presigned-url`, `/api/v1/rag/document/*`, `/api/v1/rag/proxy/preview` 계열은 현재 동작 경로로 읽는다. 특정 endpoint가 helper 기반 KB permission enforcement를 명시하지 않는 한, 현재 `/api/v1/knowledge/*` endpoint는 owner/current-behavior filtered surface다. Document content/download/preview surface는 현재 raw 또는 source-derived content를 노출할 수 있으므로, KB 통합 cutover 전 target raw/compliance access 또는 redacted-preview policy로 재분류해야 한다. URL/proxy preview surface는 목표 `OutboundEgressGuard` 정렬 대상이며, 구현이 갱신되기 전에는 target egress 계약을 만족한다고 보지 않는다.
 
 ## Target Endpoint Groups

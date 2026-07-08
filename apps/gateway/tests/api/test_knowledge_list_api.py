@@ -266,6 +266,11 @@ def test_knowledge_list_scopes_to_active_organization_header(monkeypatch):
     )
     monkeypatch.setattr(
         knowledge_endpoint,
+        "get_user_primary_organization_id",
+        lambda _db, _user_id: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
         "_table_has_column",
         lambda _db, table_name, column_name: (
             table_name == "knowledge_bases" and column_name == "organization_id"
@@ -483,6 +488,41 @@ def test_knowledge_create_reports_stale_schema_without_raw_500(monkeypatch):
         "knowledge_bases": ["sync_state"]
     }
     assert fake_db.added is None
+
+
+def test_knowledge_create_validation_error_does_not_echo_raw_input(monkeypatch):
+    fake_db = FakeCreateKnowledgeDb()
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_schema_missing_columns",
+        lambda _db, _required: {},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_user_primary_organization_id",
+        lambda _db, _user_id: uuid.uuid4(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
+    try:
+        response = TestClient(app).post(
+            "/api/v1/knowledge",
+            json={
+                "name": "민감 모델 KB",
+                "description": "테스트",
+                "embedding_model": "sk-secret-like-model-value",
+            },
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "knowledge.validation_failed"
+    assert body["error"]["details"] == {"reason": "embedding_model_invalid"}
+    assert "sk-secret-like-model-value" not in response.text
+    assert fake_db.added is None
+    assert fake_db.committed is False
 
 
 def test_knowledge_schema_missing_columns_raises_on_introspection_failure(monkeypatch):
