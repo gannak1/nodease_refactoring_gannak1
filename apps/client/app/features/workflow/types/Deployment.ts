@@ -32,7 +32,7 @@ export interface OutputSchema {
 export interface DeploymentBase {
   type: DeploymentType;
   url_slug?: string;
-  description?: string;
+  description?: string | null;
   config?: Record<string, any>;
   is_active: boolean;
 }
@@ -51,6 +51,18 @@ export interface DeploymentResponse extends DeploymentBase {
   created_by: string;
   created_at: string;
   graph_snapshot: Record<string, any>;
+  input_schema?: InputSchema | null;
+  output_schema?: OutputSchema | null;
+}
+
+export interface DeploymentRunInfoResponse {
+  deployment_id: string;
+  app_id: string;
+  workflow_id: string;
+  name: string;
+  version: number;
+  description?: string;
+  type: DeploymentType;
   input_schema?: InputSchema | null;
   output_schema?: OutputSchema | null;
 }

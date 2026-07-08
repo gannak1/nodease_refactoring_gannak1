@@ -1,11 +1,12 @@
 import uuid
-from typing import List
+from typing import Any, List
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
 from apps.shared.audit.actions import AuditAction
@@ -15,9 +16,19 @@ from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.session import get_db
-from apps.shared.schemas.deployment import DeploymentCreate, DeploymentResponse
+from apps.shared.schemas.deployment import (
+    DeploymentCreate,
+    DeploymentResponse,
+    DeploymentRunInfoResponse,
+)
 
 router = APIRouter()
+
+
+def _request_id_from_request(request: Request) -> str | None:
+    return getattr(
+        getattr(request, "state", None), "request_id", None
+    ) or request.headers.get("x-request-id")
 
 
 def _deployment_app_and_workflow_id(db: Session, deployment_id: str):
@@ -37,6 +48,29 @@ def _deployment_app_and_workflow_id(db: Session, deployment_id: str):
 def _deployment_workflow_id(db: Session, deployment_id: str):
     _, _, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
     return workflow_id
+
+
+def _ensure_app_matches_active_organization(
+    db: Session,
+    request: Request,
+    current_user: User,
+    app: App,
+    raw_organization_id: str | None,
+) -> None:
+    if not isinstance(raw_organization_id, str):
+        return
+
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        raw_organization_id,
+        current_user.id,
+    )
+    app_organization_id = getattr(app, "organization_id", None)
+    if app_organization_id is not None and str(app_organization_id) != str(
+        organization_id
+    ):
+        raise HTTPException(status_code=404, detail="Deployment not found")
 
 
 def _deployment_toggle_audit_action(
@@ -161,6 +195,66 @@ def list_workflow_nodes(
     """
     return DeploymentService.list_workflow_node_deployments(
         db, current_user.id, excluded_app_id=excluded_app_id
+    )
+
+
+@router.get("/{deployment_id}/run-info", response_model=DeploymentRunInfoResponse)
+def get_authenticated_deployment_run_info(
+    deployment_id: str,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    로그인 사용자 실행 화면에 필요한 safe 배포 정보를 조회합니다.
+    """
+    _, app, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
+    _ensure_app_matches_active_organization(
+        db,
+        request,
+        current_user,
+        app,
+        x_organization_id,
+    )
+    ensure_workflow_permission(db, current_user, workflow_id, "execute")
+    return DeploymentService.get_deployment_run_info(db, deployment_id)
+
+
+@router.post("/{deployment_id}/run")
+async def run_authenticated_deployment(
+    deployment_id: str,
+    request: Request,
+    request_body: dict[str, Any] | None = Body(default=None),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    로그인 사용자의 권한 주체로 활성 배포 snapshot을 실행합니다.
+    """
+    _, app, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
+    _ensure_app_matches_active_organization(
+        db,
+        request,
+        current_user,
+        app,
+        x_organization_id,
+    )
+    ensure_workflow_permission(db, current_user, workflow_id, "execute")
+
+    request_body = request_body or {}
+    inputs = request_body.get("inputs", {})
+    if not isinstance(inputs, dict):
+        raise HTTPException(status_code=400, detail="inputs must be an object")
+
+    return await DeploymentService.run_authenticated_deployment(
+        db=db,
+        deployment_id=deployment_id,
+        user_inputs=inputs,
+        current_user_id=current_user.id,
+        request_id=_request_id_from_request(request),
+        correlation_id=request.headers.get("x-correlation-id"),
     )
 
 

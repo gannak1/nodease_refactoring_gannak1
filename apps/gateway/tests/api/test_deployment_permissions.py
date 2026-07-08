@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from types import SimpleNamespace
 
@@ -5,6 +6,8 @@ import pytest
 from fastapi import HTTPException
 
 from apps.gateway.api.v1.endpoints import deployment as deployment_endpoint
+from apps.shared.db.models.app import App
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 
 
 class FakeQuery:
@@ -24,6 +27,14 @@ class FakeDb:
 
     def query(self, *args, **kwargs):
         return FakeQuery(self.app)
+
+
+class FakeModelDb:
+    def __init__(self, rows_by_model):
+        self.rows_by_model = rows_by_model
+
+    def query(self, model, *args, **kwargs):
+        return FakeQuery(self.rows_by_model.get(model))
 
 
 def test_get_deployments_authorizes_app_workflow_when_app_and_workflow_supplied(
@@ -117,6 +128,252 @@ def test_get_deployments_accepts_equivalent_workflow_uuid_text(monkeypatch):
     )
 
     assert result == ["deployment"]
+
+
+def test_authenticated_run_routes_are_registered_before_deployment_detail():
+    paths = [getattr(route, "path", "") for route in deployment_endpoint.router.routes]
+
+    assert paths.index("/{deployment_id}/run-info") < paths.index("/{deployment_id}")
+    assert paths.index("/{deployment_id}/run") < paths.index("/{deployment_id}")
+
+
+def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
+    monkeypatch,
+):
+    workflow_id = uuid.uuid4()
+    deployment = WorkflowDeployment(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        version=1,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    app = App(
+        id=deployment.app_id,
+        workflow_id=workflow_id,
+        active_deployment_id=deployment.id,
+        created_by=uuid.uuid4(),
+    )
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    checked = []
+    captured = {}
+
+    def allow(db, user, checked_workflow_id, action):
+        checked.append((user.id, checked_workflow_id, action))
+
+    async def run_service(**kwargs):
+        captured.update(kwargs)
+        return {"status": "success", "results": {"answer": "ok"}}
+
+    monkeypatch.setattr(deployment_endpoint, "ensure_workflow_permission", allow)
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "run_authenticated_deployment",
+        run_service,
+    )
+
+    result = asyncio.run(
+        deployment_endpoint.run_authenticated_deployment(
+            deployment_id=str(deployment.id),
+            request=SimpleNamespace(headers={"x-request-id": "req-1"}),
+            request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
+            db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
+            current_user=current_user,
+        )
+    )
+
+    assert result["status"] == "success"
+    assert checked == [(current_user.id, workflow_id, "execute")]
+    assert captured["deployment_id"] == str(deployment.id)
+    assert captured["user_inputs"] == {"question": "개발팀 커밋 컨벤션은?"}
+    assert captured["current_user_id"] == current_user.id
+    assert captured["request_id"] == "req-1"
+
+
+def test_run_authenticated_deployment_forwards_middleware_request_id(
+    monkeypatch,
+):
+    workflow_id = uuid.uuid4()
+    deployment = WorkflowDeployment(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        version=1,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    app = App(
+        id=deployment.app_id,
+        workflow_id=workflow_id,
+        active_deployment_id=deployment.id,
+        created_by=uuid.uuid4(),
+    )
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    monkeypatch.setattr(
+        deployment_endpoint,
+        "ensure_workflow_permission",
+        lambda db, user, checked_workflow_id, action: None,
+    )
+
+    async def run_service(**kwargs):
+        captured.update(kwargs)
+        return {"status": "success", "results": {"answer": "ok"}}
+
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "run_authenticated_deployment",
+        run_service,
+    )
+
+    asyncio.run(
+        deployment_endpoint.run_authenticated_deployment(
+            deployment_id=str(deployment.id),
+            request=SimpleNamespace(
+                headers={},
+                state=SimpleNamespace(request_id="middleware-req-1"),
+            ),
+            request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
+            db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
+            current_user=current_user,
+        )
+    )
+
+    assert captured["request_id"] == "middleware-req-1"
+
+
+def test_get_authenticated_deployment_run_info_authorizes_execute(monkeypatch):
+    workflow_id = uuid.uuid4()
+    deployment = WorkflowDeployment(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        version=1,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    app = App(
+        id=deployment.app_id,
+        workflow_id=workflow_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=deployment.id,
+        created_by=uuid.uuid4(),
+    )
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    checked = []
+
+    def allow(db, user, checked_workflow_id, action):
+        checked.append((user.id, checked_workflow_id, action))
+
+    monkeypatch.setattr(deployment_endpoint, "ensure_workflow_permission", allow)
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "get_deployment_run_info",
+        lambda db, deployment_id: {
+            "deployment_id": deployment_id,
+            "name": "safe run info",
+            "input_schema": {"variables": []},
+        },
+    )
+
+    result = deployment_endpoint.get_authenticated_deployment_run_info(
+        deployment_id=str(deployment.id),
+        request=SimpleNamespace(headers={}),
+        db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
+        current_user=current_user,
+    )
+
+    assert result["name"] == "safe run info"
+    assert checked == [(current_user.id, workflow_id, "execute")]
+
+
+def test_run_authenticated_deployment_rejects_non_object_inputs(monkeypatch):
+    workflow_id = uuid.uuid4()
+    deployment = WorkflowDeployment(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        version=1,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    app = App(
+        id=deployment.app_id,
+        workflow_id=workflow_id,
+        active_deployment_id=deployment.id,
+        created_by=uuid.uuid4(),
+    )
+
+    monkeypatch.setattr(
+        deployment_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: None,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            deployment_endpoint.run_authenticated_deployment(
+                deployment_id=str(deployment.id),
+                request=SimpleNamespace(headers={}),
+                request_body={"inputs": "not-an-object"},
+                db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_run_authenticated_deployment_masks_active_organization_mismatch(
+    monkeypatch,
+):
+    workflow_id = uuid.uuid4()
+    active_organization_id = uuid.uuid4()
+    app_organization_id = uuid.uuid4()
+    deployment = WorkflowDeployment(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        version=1,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    app = App(
+        id=deployment.app_id,
+        workflow_id=workflow_id,
+        organization_id=app_organization_id,
+        active_deployment_id=deployment.id,
+        created_by=uuid.uuid4(),
+    )
+
+    monkeypatch.setattr(
+        deployment_endpoint,
+        "resolve_active_organization_id",
+        lambda *args, **kwargs: active_organization_id,
+    )
+    monkeypatch.setattr(
+        deployment_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("permission check should not run after org mismatch")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            deployment_endpoint.run_authenticated_deployment(
+                deployment_id=str(deployment.id),
+                request=SimpleNamespace(headers={}),
+                request_body={"inputs": {}},
+                x_organization_id=str(active_organization_id),
+                db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+            )
+        )
+
+    assert exc_info.value.status_code == 404
 
 
 def test_toggle_audit_action_marks_previous_activation():

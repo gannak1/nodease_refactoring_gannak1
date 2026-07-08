@@ -8,10 +8,12 @@ docs/features/chatbot-deployment/test_cases.md:
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.sql.operators import eq
 
 from apps.shared.db.models.app import App
@@ -37,6 +39,34 @@ def _run_public(db, url_slug, user_inputs, monkeypatch, trigger_mode="app"):
             trigger_mode=trigger_mode,
             auth_token=None,
             require_auth=False,
+        )
+    )
+    return celery, result
+
+
+def _run_authenticated(
+    db,
+    deployment_id,
+    user_id,
+    user_inputs,
+    monkeypatch,
+    async_result_cls=None,
+):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    celery = _CaptureCelery()
+    monkeypatch.setattr(deployment_module, "celery_app", celery)
+    monkeypatch.setattr(
+        "celery.result.AsyncResult",
+        async_result_cls or _FakeAsyncResult,
+    )
+
+    result = asyncio.run(
+        deployment_module.DeploymentService.run_authenticated_deployment(
+            db=db,
+            deployment_id=deployment_id,
+            user_inputs=user_inputs,
+            current_user_id=user_id,
         )
     )
     return celery, result
@@ -118,6 +148,143 @@ def test_missing_conversation_id_is_none(monkeypatch):
     assert _captured_context(celery)["conversation_id"] is None
 
 
+def test_public_run_does_not_fallback_to_owner_execution_subject(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+
+    celery, _ = _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    ctx = _captured_context(celery)
+    assert ctx["user_id"] == str(app_row.created_by)
+    assert "execution_subject" not in ctx
+
+
+def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    current_user_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+    budget_calls = []
+
+    def capture_budget_call(db, **kwargs):
+        budget_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        deployment_module.WorkflowBudgetService,
+        "ensure_workflow_budget_allows_execution",
+        capture_budget_call,
+    )
+
+    celery, result = _run_authenticated(
+        db,
+        deployment_row.id,
+        current_user_id,
+        {"question": "안녕", "conversation_id": "internal-conv"},
+        monkeypatch,
+    )
+
+    ctx = _captured_context(celery)
+    sent_inputs = _captured_inputs(celery)
+
+    assert ctx["user_id"] == str(current_user_id)
+    assert ctx["execution_subject"] == {
+        "type": "user",
+        "id": str(current_user_id),
+    }
+    assert ctx["memory_mode"] is True
+    assert ctx["conversation_id"].startswith("auth:")
+    assert "internal-conv" not in ctx["conversation_id"]
+    assert sent_inputs == {"question": "안녕"}
+    assert budget_calls == [
+        {
+            "workflow_id": app_row.workflow_id,
+            "trigger_mode": "app",
+            "actor_id": current_user_id,
+        }
+    ]
+    assert result["status"] == "success"
+
+
+def test_authenticated_run_rejects_inactive_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WEBAPP)
+    deployment_row.is_active = False
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_authenticated_run_rejects_stale_non_active_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WEBAPP)
+    app_row.active_deployment_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_deployment_run_info_excludes_secret_and_graph_snapshot():
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    deployment_row.input_schema = {"variables": [{"name": "question"}]}
+    deployment_row.output_schema = {"outputs": [{"variable": "answer"}]}
+    db = _Db(rows=[app_row, deployment_row])
+
+    result = deployment_module.DeploymentService.get_deployment_run_info(
+        db,
+        deployment_row.id,
+    )
+
+    assert result["deployment_id"] == deployment_row.id
+    assert result["workflow_id"] == app_row.workflow_id
+    assert result["name"] == app_row.name
+    assert result["input_schema"] == deployment_row.input_schema
+    assert "auth_secret" not in result
+    assert "graph_snapshot" not in result
+
+
+def test_engine_failure_detail_does_not_expose_secret_like_exception(
+    monkeypatch, caplog
+):
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+    caplog.set_level(logging.ERROR, logger="apps.gateway.services.deployment_service")
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+            async_result_cls=_SecretFailureAsyncResult,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Workflow execution failed"
+    assert "sk-test-secret" not in str(exc_info.value.detail)
+    assert "RuntimeError" in caplog.text
+    assert "sk-test-secret" not in caplog.text
+
+
 # --- fakes -------------------------------------------------------------------
 
 
@@ -171,6 +338,21 @@ class _FakeAsyncResult:
     @property
     def result(self):
         return {"status": "success", "result": {"answer": "ok"}}
+
+
+class _SecretFailureAsyncResult:
+    def __init__(self, task_id, app=None):
+        self._task_id = task_id
+
+    def ready(self):
+        return True
+
+    def failed(self):
+        return True
+
+    @property
+    def result(self):
+        return RuntimeError("provider failed with api_key=sk-test-secret")
 
 
 class _Query:
