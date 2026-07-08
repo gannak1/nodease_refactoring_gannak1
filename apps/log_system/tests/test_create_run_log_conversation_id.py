@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from apps.log_system import tasks as log_tasks
-from apps.shared.db.models.workflow_run import WorkflowRun
+from apps.shared.db.models.workflow_run import RunStatus, RunTriggerMode, WorkflowRun
 
 
 def _base_data(**overrides):
@@ -82,3 +82,69 @@ def test_conversation_id_is_persisted(monkeypatch):
 def test_missing_conversation_id_is_none(monkeypatch):
     run = _run_create_run_log(_base_data(), monkeypatch)
     assert run.conversation_id is None
+
+
+class _QuerySession:
+    def __init__(self, run):
+        self.run = run
+        self.committed = False
+
+    def query(self, *entities):
+        return _Query(entities[0] if entities else None, self.run)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _Query:
+    def __init__(self, entity, run):
+        self.entity = entity
+        self.run = run
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        if self.entity is WorkflowRun:
+            return self.run
+        return None
+
+
+def test_update_run_finish_clears_previous_error_message(monkeypatch):
+    run = WorkflowRun(
+        id=uuid4(),
+        workflow_id=uuid4(),
+        user_id=uuid4(),
+        trigger_mode=RunTriggerMode.MANUAL,
+        status=RunStatus.FAILED,
+        outputs={},
+        error_message="이전 retry 실패 메시지",
+        started_at=datetime.now(timezone.utc),
+    )
+    session = _QuerySession(run)
+    monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(log_tasks, "_insert_trace_payloads", lambda *a, **k: None)
+    monkeypatch.setattr(log_tasks, "_record_workflow_execute_audit", lambda *a, **k: None)
+
+    result = log_tasks.update_run_log_finish.__wrapped__(
+        {
+            "run_id": str(run.id),
+            "outputs": {"ok": True},
+            "redaction_applied": False,
+            "pii_detected": False,
+            "payload_storage_mode": "redacted_only",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "trace_payloads": [],
+        }
+    )
+
+    assert result["status"] == "success"
+    assert session.committed is True
+    assert run.status == RunStatus.SUCCESS
+    assert run.error_message is None

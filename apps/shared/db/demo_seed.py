@@ -1652,10 +1652,15 @@ def _ticket_ops_graph() -> dict[str, Any]:
                     "provider": "openai",
                     "model_id": DEMO_CHAT_MODEL,
                     "system_prompt": (
-                        "고객지원 티켓을 처리하는 AI로서, 각 티켓의 긴급도를 true/false로 판별하고 "
-                        "정책에 기반하여 다음 정보를 JSON 형식으로 분류합니다: 긴급도, 답변 초안."
+                        "고객지원 티켓을 처리하는 AI입니다. 반드시 JSON object 하나만 출력하세요. "
+                        "필드는 \"긴급도\" boolean, \"답변 초안\" string 두 개만 사용합니다. "
+                        "답변 초안은 고객에게 보낼 수 있는 3문장 이내의 간결한 문장으로 작성하세요."
                     ),
-                    "user_prompt": "고객 등급: {{ customerTier }}\n문의: {{ message }}",
+                    "user_prompt": (
+                        "고객 등급: {{ customerTier }}\n"
+                        "문의: {{ message }}\n"
+                        "승인 필요 여부와 고객 답변 초안을 작성하세요."
+                    ),
                     "referenced_variables": [
                         {
                             "name": "customerTier",
@@ -1672,7 +1677,18 @@ def _ticket_ops_graph() -> dict[str, Any]:
                             "name": "사내 인사·복지 지식베이스",
                         }
                     ],
-                    "parameters": {"temperature": 0.2, "max_tokens": 2000},
+                    "parameters": {"temperature": 0.2, "max_tokens": 700},
+                    "output_format": {
+                        "type": "json",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "긴급도": {"type": "boolean"},
+                                "답변 초안": {"type": "string"},
+                            },
+                            "required": ["긴급도", "답변 초안"],
+                        },
+                    },
                 },
             ),
             _node(
