@@ -56,6 +56,9 @@ const getDisplayFilename = (filename: string): string => {
   return filename;
 };
 
+const isActiveProcessingStatus = (value: string) =>
+  value === 'indexing' || value === 'processing';
+
 export default function DocumentSettingsPage() {
   const params = useParams();
   const router = useRouter();
@@ -121,14 +124,15 @@ export default function DocumentSettingsPage() {
 
   // SSE 연결 (Indexing 상태일 때)
   useEffect(() => {
-    if (status !== 'indexing' || !documentId) return;
+    if (!isActiveProcessingStatus(status) || !documentId) return;
     const url = knowledgeApi.getProgressUrl(documentId);
     const eventSource = new EventSource(url, { withCredentials: true });
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.error) {
+        if (data.error && data.status !== 'completed') {
           eventSource.close();
+          setProgress(0);
           setStatus('failed');
           toast.error(data.error);
           return;
@@ -136,13 +140,17 @@ export default function DocumentSettingsPage() {
         setProgress(data.progress);
         if (data.status === 'completed' || data.progress >= 100) {
           eventSource.close();
+          setProgress(100);
           setStatus('completed');
           toast.success('문서 처리가 완료되었습니다!');
         }
         if (data.status === 'failed') {
           eventSource.close();
+          setProgress(0);
           setStatus('failed');
-          toast.error(data.message || '처리 중 오류가 발생했습니다.');
+          toast.error(
+            data.error || data.message || 'Processing failed.',
+          );
         }
       } catch (err) {
         console.error('SSE Parse Error:', err);
@@ -174,6 +182,17 @@ export default function DocumentSettingsPage() {
         if (targetDoc) {
           setDocument(targetDoc);
           setStatus(targetDoc.status);
+          const savedProgress =
+            typeof targetDoc.meta_info?.progress === 'number'
+              ? targetDoc.meta_info.progress
+              : targetDoc.meta_info?.processing_progress;
+          if (targetDoc.status === 'completed') {
+            setProgress(100);
+          } else if (targetDoc.status === 'failed') {
+            setProgress(0);
+          } else if (typeof savedProgress === 'number') {
+            setProgress(savedProgress);
+          }
           setErrorMessage(targetDoc.error_message || null); // [추가] 초기 에러 메시지 로드
           setChunkSize(targetDoc.chunk_size || 1000);
           setChunkOverlap(targetDoc.chunk_overlap || 200);
@@ -334,7 +353,7 @@ export default function DocumentSettingsPage() {
   // 상태 폴링
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
-    if (status === 'indexing' || status === 'waiting_for_approval') {
+    if (isActiveProcessingStatus(status) || status === 'waiting_for_approval') {
       intervalId = setInterval(async () => {
         try {
           const doc = await knowledgeApi.getDocument(
@@ -361,6 +380,7 @@ export default function DocumentSettingsPage() {
 
           if (doc.status === 'completed' || doc.status === 'failed') {
             clearInterval(intervalId);
+            setProgress(doc.status === 'completed' ? 100 : 0);
             // completed/failed 모두 error_message 업데이트 (경고성 메시지 포함)
             setErrorMessage(doc.error_message || null);
             if (doc.status === 'failed') {
@@ -369,8 +389,10 @@ export default function DocumentSettingsPage() {
           }
 
           // SSE가 연결된 상태(indexing)에서는 Polling으로 진행률을 덮어쓰지 않음
-          if (doc.status !== 'indexing' && doc.meta_info) {
-            if (typeof doc.meta_info.processing_progress === 'number') {
+          if (!isActiveProcessingStatus(doc.status) && doc.meta_info) {
+            if (typeof doc.meta_info.progress === 'number') {
+              setProgress(doc.meta_info.progress);
+            } else if (typeof doc.meta_info.processing_progress === 'number') {
               setProgress(doc.meta_info.processing_progress);
             }
           }
@@ -623,7 +645,7 @@ export default function DocumentSettingsPage() {
             )}
 
             {/* 진행률 표시 */}
-            {status === 'indexing' && (
+            {isActiveProcessingStatus(status) && (
               <div className="flex flex-col items-end mr-4 min-w-[120px]">
                 <div className="flex items-center gap-2 mb-1">
                   <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
@@ -646,16 +668,16 @@ export default function DocumentSettingsPage() {
                 isActionDisabled ||
                 isAnalyzing ||
                 status === 'completed' ||
-                status === 'indexing'
+                isActiveProcessingStatus(status)
               }
               className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
-              {analyzingAction === 'save' || status === 'indexing' ? (
+              {analyzingAction === 'save' || isActiveProcessingStatus(status) ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <Save className="w-4 h-4" />
               )}
-              {status === 'indexing'
+              {isActiveProcessingStatus(status)
                 ? '처리 중...'
                 : status === 'pending'
                   ? '처리 시작'

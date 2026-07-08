@@ -106,7 +106,17 @@ def test_metadata_summary_preserves_hierarchy_fallback_flag():
     assert "content" not in summary
 
 
-def test_search_method_labels_hierarchical_paths():
+def test_search_method_labels_hierarchical_paths(monkeypatch):
+    monkeypatch.delenv("RAG_CROSS_ENCODER_RERANK_ENABLED", raising=False)
+    assert (
+        RetrievalService._search_method(
+            use_hierarchy=True,
+            hybrid_search=True,
+            use_rerank=True,
+        )
+        == "hierarchical_hybrid"
+    )
+    monkeypatch.setenv("RAG_CROSS_ENCODER_RERANK_ENABLED", "true")
     assert (
         RetrievalService._search_method(
             use_hierarchy=True,

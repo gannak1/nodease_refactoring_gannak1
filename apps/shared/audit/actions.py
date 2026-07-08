@@ -45,6 +45,20 @@ class AuditAction:
     WORKFLOW_BUDGET_CREATED = "workflow_budget.created"
     WORKFLOW_BUDGET_UPDATED = "workflow_budget.updated"
 
+    # Agent Builder draft/preview/apply-save lifecycle.
+    AGENT_BUILDER_SESSION_CREATED = "agent_builder_session.created"
+    AGENT_BUILDER_REQUEST_SUBMITTED = "agent_builder_request.submitted"
+    AGENT_BUILDER_REQUEST_CANCELED = "agent_builder_request.canceled"
+    AGENT_BUILDER_REQUEST_FAILED = "agent_builder_request.failed"
+    AGENT_BUILDER_DRAFT_CREATED = "agent_builder_draft.created"
+    AGENT_BUILDER_PREVIEW_OPENED = "agent_builder_preview.opened"
+    AGENT_BUILDER_PREVIEW_BLOCKED = "agent_builder_preview.blocked"
+    AGENT_BUILDER_APPLY_SAVE_REQUESTED = "agent_builder_apply_save.requested"
+    AGENT_BUILDER_APPLY_SAVE_SUCCEEDED = "agent_builder_apply_save.succeeded"
+    AGENT_BUILDER_APPLY_SAVE_BLOCKED = "agent_builder_apply_save.blocked"
+    AGENT_BUILDER_APPLY_SAVE_FAILED = "agent_builder_apply_save.failed"
+    AGENT_BUILDER_APPLY_SAVE_CANCELED = "agent_builder_apply_save.canceled"
+
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_ACTIVATE_PREVIOUS = "deployment.activate_previous"
     DEPLOYMENT_DELETE = "deployment.delete"

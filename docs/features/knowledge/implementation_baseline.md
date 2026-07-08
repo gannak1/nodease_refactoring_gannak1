@@ -309,6 +309,7 @@ Hidden/resource-hidden path의 external `reason_code`는 항상 `resource.hidden
 - Legal/regulatory evidence는 strict use 전에 jurisdiction, effective date, version, review-required state를 가져야 한다.
 - Query rewrite 기본값은 `off`다. MBA-105 runtime은 deterministic/template rewrite를 opt-in으로 구현하고, LLM-assisted rewrite는 LLMOps/cost/security gate가 닫히기 전까지 범위 밖이다.
 - Raw rewritten query는 raw prompt와 같은 민감 입력으로 보고 durable audit, trace, usage, cache key, summary에 저장하지 않는다.
+- CrossEncoder rerank는 기본값 `off`다. Worker image에서 reranker dependency를 포함하려면 `INSTALL_RAG_RERANKER=true` build arg를 명시하고, runtime에서 `RAG_CROSS_ENCODER_RERANK_ENABLED=true`를 설정해야 한다. dependency가 없거나 model load/predict가 실패하면 retrieval은 원래 candidate 순서로 fallback하며, 이 fallback은 operational error가 아니라 degraded ranking path로 기록한다. 기본 local/demo/production path는 cold start와 image size를 피하기 위해 reranker를 로드하지 않는다.
 
 Slack/meeting source item의 effective ACL baseline:
 

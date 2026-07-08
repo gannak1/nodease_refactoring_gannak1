@@ -1139,7 +1139,7 @@ class LLMNode(Node[LLMNodeData]):
         KnowledgeNode 로직을 재사용.
         """
         execution_subject_user_id = self._resolve_rag_execution_subject()
-        credential_user_id = execution_subject_user_id or self._resolve_rag_actor_user()
+        credential_user_id = self._resolve_rag_actor_user()
         if credential_user_id is None:
             raise PermissionError("RAG retrieval requires a valid credential user context.")
         organization_id = self.execution_context.get("organization_id")
@@ -1740,6 +1740,8 @@ class LLMNode(Node[LLMNodeData]):
     def _resolve_rag_execution_subject(self) -> uuid.UUID | None:
         # Workflow owner나 builder 권한으로 조용히 대체하지 않는다.
         # 현재 runtime은 user execution subject만 지원하며 service account는 후속 gate다.
+        if "execution_subject" not in self.execution_context:
+            return None
         subject = self.execution_context.get("execution_subject")
         if isinstance(subject, dict):
             subject_type = subject.get("subject_type") or subject.get("type") or "user"
@@ -1753,7 +1755,7 @@ class LLMNode(Node[LLMNodeData]):
                     "RAG retrieval requires a valid execution subject."
                 ) from exc
 
-        return None
+        raise PermissionError("RAG retrieval requires a valid execution subject.")
 
     def _resolve_rag_actor_user(self) -> uuid.UUID | None:
         user_id_str = self.execution_context.get("user_id")
@@ -1858,10 +1860,12 @@ class LLMNode(Node[LLMNodeData]):
         public_kb_ids: set[uuid.UUID] = set()
         for item, collection, kb in rows:
             safe_metadata = getattr(collection, "safe_metadata", None) or {}
-            # Public Exposure Policy Store가 연결되기 전까지 source-managed KB는 fail-closed다.
-            if getattr(kb, "source_identity_id", None) is not None:
-                continue
-            if safe_metadata.get("visibility") == "public":
+            source_identity_id = getattr(kb, "source_identity_id", None)
+            # ADR-0018/ADR-0020 require source-managed KB public runtime exposure
+            # to pass a separate source/connector approval gate. Until that
+            # approval primitive exists in runtime, fail closed for anonymous
+            # public-only runs.
+            if safe_metadata.get("visibility") == "public" and source_identity_id is None:
                 public_kb_ids.add(item.knowledge_base_id)
 
         return [str(kb_id) for kb_id in knowledge_base_ids if kb_id in public_kb_ids]

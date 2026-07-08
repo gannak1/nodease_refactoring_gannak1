@@ -5,6 +5,8 @@ from collections.abc import Iterable
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
     KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
@@ -78,6 +80,9 @@ class KnowledgeCandidateResolver:
         for kb_id in requested_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
+                continue
+            if self._kb_candidate_exclusion_reason(kb):
+                unavailable_count += 1
                 continue
             decision = kb_decisions[kb.id]
             if decision.allowed:
@@ -167,6 +172,9 @@ class KnowledgeCandidateResolver:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 continue
+            if self._kb_candidate_exclusion_reason(kb):
+                unavailable_count += 1
+                continue
             decision = kb_decisions[kb.id]
             if decision.allowed:
                 allowed_pairs.append((kb, decision))
@@ -180,6 +188,13 @@ class KnowledgeCandidateResolver:
             collections_by_id,
             allowed_kb_ids={kb.id for kb, _decision in allowed_pairs},
         )
+        if requested_collection_ids is None and not allowed_pairs:
+            direct_allowed_pairs, direct_unavailable_count, direct_hidden_count = (
+                self._direct_authorized_kb_pairs(max_candidate_kbs)
+            )
+            allowed_pairs = direct_allowed_pairs
+            unavailable_count += direct_unavailable_count
+            hidden_count += direct_hidden_count
         runtime_decisions = self._bulk_runtime_kb_decisions(
             [kb for kb, _decision in allowed_pairs]
         )
@@ -268,6 +283,52 @@ class KnowledgeCandidateResolver:
         )
         return {row.id: row for row in rows}
 
+    def _direct_knowledge_bases(
+        self,
+        max_candidate_kbs: int,
+    ) -> list[KnowledgeBase]:
+        if self.db is None:
+            return []
+        return (
+            self.db.query(KnowledgeBase)
+            .options(
+                joinedload(KnowledgeBase.source_identity),
+                joinedload(KnowledgeBase.active_document_version),
+            )
+            .filter(
+                KnowledgeBase.organization_id == self.organization_id,
+                KnowledgeBase.lifecycle_state == "active",
+            )
+            .order_by(KnowledgeBase.created_at.desc(), KnowledgeBase.id.asc())
+            .limit(max_candidate_kbs)
+            .all()
+        )
+
+    def _direct_authorized_kb_pairs(
+        self,
+        max_candidate_kbs: int,
+    ) -> tuple[list[tuple[KnowledgeBase, KnowledgePermissionDecision]], int, int]:
+        kbs = self._direct_knowledge_bases(max_candidate_kbs)
+        if not kbs:
+            return [], 0, 0
+
+        unavailable_count = 0
+        hidden_count = 0
+        allowed_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
+        kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs)
+        for kb in kbs:
+            if self._kb_candidate_exclusion_reason(kb):
+                unavailable_count += 1
+                continue
+            decision = kb_decisions[kb.id]
+            if decision.allowed:
+                allowed_pairs.append((kb, decision))
+            elif decision.external_reason_code == "resource.hidden":
+                hidden_count += 1
+            else:
+                unavailable_count += 1
+        return allowed_pairs[:max_candidate_kbs], unavailable_count, hidden_count
+
     def _kb_candidate(
         self,
         kb: KnowledgeBase,
@@ -315,7 +376,7 @@ class KnowledgeCandidateResolver:
     def _kb_safe_label(self, kb: KnowledgeBase) -> str | None:
         source_identity = getattr(kb, "source_identity", None)
         if source_identity is None:
-            return kb.name
+            return None
         if getattr(source_identity, "display_policy_state", None) == "approved":
             return getattr(source_identity, "safe_display_name", None)
         return None
@@ -325,11 +386,39 @@ class KnowledgeCandidateResolver:
         # Adapter가 DocumentVersion을 직접 조회하지 않게 하여 permission/candidate 경계를 유지한다.
         version = getattr(kb, "active_document_version", None)
         if version is None or getattr(version, "status", None) != "ready":
-            return {}
+            return {"active_document_version_status": "missing"}
         source_tier = getattr(version, "source_tier", None)
+        metadata = {"active_document_version_status": "ready"}
         if not isinstance(source_tier, str) or not source_tier.strip():
-            return {}
-        return {"source_tier": source_tier.strip()}
+            return metadata
+        return {**metadata, "source_tier": source_tier.strip()}
+
+    def _kb_candidate_exclusion_reason(self, kb: KnowledgeBase) -> str | None:
+        sync_state = str(getattr(kb, "sync_state", "") or "").lower()
+        if sync_state == "source_deleted":
+            return "source_deleted"
+        version = getattr(kb, "active_document_version", None)
+        if version is None or getattr(version, "status", None) != "ready":
+            if self._has_legacy_retrieval_visible_chunks(kb):
+                return None
+            return "no_active_ready_version"
+        return None
+
+    def _has_legacy_retrieval_visible_chunks(self, kb: KnowledgeBase) -> bool:
+        if self.db is None:
+            return False
+        return (
+            self.db.query(DocumentChunk.id)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .filter(
+                DocumentChunk.knowledge_base_id == kb.id,
+                DocumentChunk.document_version_id.is_(None),
+                Document.status == "completed",
+            )
+            .limit(1)
+            .first()
+            is not None
+        )
 
     def _collection_context_by_kb_id(
         self,
@@ -361,6 +450,9 @@ class KnowledgeCandidateResolver:
             safe_label = self._collection_safe_label(collection)
             if safe_label:
                 metadata["collection_safe_label"] = safe_label
+            safe_topics = self._collection_safe_topics(collection)
+            if safe_topics:
+                metadata["collection_safe_topics"] = safe_topics
             context_by_kb_id[item.knowledge_base_id] = metadata
         return context_by_kb_id
 
@@ -373,6 +465,17 @@ class KnowledgeCandidateResolver:
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
+
+    def _collection_safe_topics(self, collection: KnowledgeCollection) -> list[str]:
+        metadata = getattr(collection, "safe_metadata", None) or {}
+        raw_topics = metadata.get("topics") or metadata.get("safe_topics")
+        if not isinstance(raw_topics, (list, tuple, set)):
+            return []
+        topics = []
+        for value in raw_topics:
+            if isinstance(value, str) and value.strip():
+                topics.append(value.strip())
+        return topics[:10]
 
     def _dedupe_ids(self, values: Iterable[uuid.UUID]) -> list[uuid.UUID]:
         result: list[uuid.UUID] = []

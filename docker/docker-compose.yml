@@ -77,6 +77,9 @@ services:
       # Python
       PYTHONUNBUFFERED: 1
       PYTHONPATH: /app
+
+      # Agent Builder
+      AGENT_BUILDER_DRAFT_MODEL_ID: ${AGENT_BUILDER_DRAFT_MODEL_ID:-gpt-5-mini}
     # Gateway는 Nginx를 통해서만 접근 (포트 노출 제거)
     # ports:
     #   - "8000:8000"
