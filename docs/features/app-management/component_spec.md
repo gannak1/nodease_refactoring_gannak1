@@ -7,7 +7,7 @@ Verified Against: feature/mba-132 @ a843ec7
 
 ### `/dashboard/mymodule` — 내 모듈 운영 현황
 
-내가 접근할 수 있는 App/Workflow의 권한, 배포 상태, 최근 실행 상태를 표시한다. 데이터 원천은 `GET /apps/operations`다.
+내가 운영할 수 있는 App/Workflow의 권한, 배포 상태, 최근 실행 상태를 표시한다. 데이터 원천은 `GET /apps/operations`다. 이 화면은 작성자/관리자 운영 표면이며, 배포된 workflow를 실행만 하는 일반 사용자의 최종 실행 화면이 아니다.
 
 Budget Management 확장:
 
@@ -18,6 +18,7 @@ Budget Management 확장:
 - `operation_metrics`가 null이거나 `trend_percent`가 null이면 클라이언트는 더미 비용/추세를 만들지 않고 "운영 비용 없음" 또는 "비교 데이터 없음"으로 표시한다.
 - `budget_status`는 예산 사용률/상태 전용이고, `operation_metrics`는 `/dashboard/mymodule` 운영 비용 지표 전용이다. 두 필드를 합쳐서 해석하지 않는다.
 - 현재 화면의 "열기"는 조회/편집 진입이므로 예산 초과 상태에서도 차단하지 않는다. 실제 실행 차단은 Gateway 실행 경로와 Workflow 편집 화면의 429 처리에서 보장한다.
+- 일반 사용자의 실행 흐름은 챗봇 배포 링크 또는 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다. 내부 실행 화면의 뒤로가기는 운영 현황이 아니라 기본 대시보드로 돌아간다.
 
 ## Components
 

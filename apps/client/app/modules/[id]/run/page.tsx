@@ -181,11 +181,11 @@ export default function AuthenticatedDeploymentRunPage() {
           <div className="min-w-0">
             <button
               type="button"
-              onClick={() => router.push('/dashboard/mymodule')}
+              onClick={() => router.push('/dashboard')}
               className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900"
             >
               <ArrowLeft className="h-4 w-4" />
-              내 모듈로 돌아가기
+              대시보드로 돌아가기
             </button>
             <p className="text-xs font-semibold text-emerald-700">
               내부 배포 실행

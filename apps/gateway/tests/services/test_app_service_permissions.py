@@ -137,7 +137,7 @@ def test_app_operations_read_denies_marketplace_app_without_workflow_read(
     assert AppService.can_read_app_operations(SimpleNamespace(), app, user_id) is False
 
 
-def test_app_operations_read_allows_primary_workflow_reader(monkeypatch):
+def test_app_operations_read_allows_primary_workflow_builder(monkeypatch):
     app = SimpleNamespace(
         organization_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
@@ -152,3 +152,42 @@ def test_app_operations_read_allows_primary_workflow_reader(monkeypatch):
     monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: True)
 
     assert AppService.can_read_app_operations(SimpleNamespace(), app, user_id) is True
+
+
+def test_app_operations_read_allows_organization_manager(monkeypatch):
+    app = SimpleNamespace(
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+        is_market=False,
+    )
+    user_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: True
+    )
+    monkeypatch.setattr(app_service, "has_workflow_permission", lambda *a, **k: False)
+
+    assert AppService.can_read_app_operations(SimpleNamespace(), app, user_id) is True
+
+
+def test_app_operations_read_denies_execute_only_workflow_user(monkeypatch):
+    app = SimpleNamespace(
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+        is_market=False,
+    )
+    user_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        app_service, "has_organization_manager_permission", lambda *a: False
+    )
+
+    def has_workflow_permission(*args, **kwargs):
+        return args[3] in {"read", "execute"}
+
+    monkeypatch.setattr(app_service, "has_workflow_permission", has_workflow_permission)
+
+    assert AppService.can_read_app(SimpleNamespace(), app, user_id) is True
+    assert AppService.can_read_app_operations(SimpleNamespace(), app, user_id) is False

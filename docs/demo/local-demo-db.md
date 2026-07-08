@@ -250,7 +250,7 @@ Private 사내문서 자료:
 
 작성자/관리자가 workflow draft를 검증할 때는 편집기 우측 테스트 패널의 입력 변수 `question`에 넣는다.
 
-일반 사용자의 실행 흐름을 보여줄 때는 `/dashboard/mymodule`의 `사내 문서 질문 응답 봇` row에서 `실행` 버튼을 누른다. 이 경로는 `/modules/{workflow_id}/run?deploymentId={deployment_id}`로 이동하며, 공개 챗봇 URL이 아니라 로그인 사용자의 workflow `execute` 권한과 RAG `execution_subject`를 적용한다.
+일반 사용자의 실행 흐름을 보여줄 때는 챗봇 배포 성공 화면에서 생성된 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다. 이 경로는 공개 챗봇 URL이 아니라 로그인 사용자의 workflow `execute` 권한과 RAG `execution_subject`를 적용한다. `/dashboard/mymodule`은 작성자/관리자가 운영 현황과 비용/최적화 신호를 보는 화면이므로, 실행 전용 일반 사용자 시연 경로로 사용하지 않는다.
 
 공개 공유 URL(`/run-public`, `/embed/chat`)은 anonymous public-only RAG 경계 확인용이다. 사내 private 문서 접근 시연에는 사용하지 않는다.
 
