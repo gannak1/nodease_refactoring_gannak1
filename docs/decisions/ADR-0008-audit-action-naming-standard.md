@@ -62,7 +62,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 
 - Resource permission helper는 RBAC 거부를 `permission.denied`로 기록한다.
 - 전역 HTTP 401/403 handler는 helper에서 이미 기록하지 않은 인증/권한 실패를 `auth.permission_denied`로 기록한다.
-- 현재 등록된 `/api/v1/permissions/*` router의 team/user permission grant/update/revoke 흐름은 permission row별 data-change action인 `team_workflow_permission.created/updated/deleted`, `user_workflow_permission.created/updated/deleted`, `team_llm_permission.created/updated/deleted`, `user_llm_permission.created/updated/deleted`를 기록한다.
+- 현재 등록된 `/api/v1/permissions/*` router의 team/user permission grant/update/revoke 흐름은 permission row별 data-change action인 `team_workflow_permission.created/updated/deleted`, `user_workflow_permission.created/updated/deleted`, `team_knowledge_permission.created/updated/deleted`, `user_knowledge_permission.created/updated/deleted`, `team_llm_permission.created/updated/deleted`, `user_llm_permission.created/updated/deleted`를 기록한다.
 - Organization member invite/accept/update/remove 흐름은 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove`를 기록한다. Member 제거에 따른 permission cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'` metadata를 남긴다.
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.

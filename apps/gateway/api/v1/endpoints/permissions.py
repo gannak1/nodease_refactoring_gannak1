@@ -278,7 +278,7 @@ def _record_team_knowledge_permission_audit(
 
 def _record_team_knowledge_permission_delete_audit(
     current_user: User,
-    permission: TeamKnowledgePermission,
+    permission_id: UUID,
     before: dict,
 ) -> None:
     """team-KB 권한 회수 감사를 직접 남긴다."""
@@ -295,7 +295,7 @@ def _record_team_knowledge_permission_delete_audit(
         actor_id=str(current_user.id),
         actor_type="user",
         target_type="team_knowledge_permission",
-        target_id=permission.id,
+        target_id=permission_id,
         before=before,
         after=None,
         metadata=metadata,
@@ -469,7 +469,7 @@ def _record_user_knowledge_permission_audit(
 
 def _record_user_knowledge_permission_delete_audit(
     current_user: User,
-    permission: UserKnowledgePermission,
+    permission_id: UUID,
     before: dict,
 ) -> None:
     """user-KB 직접 권한 회수 감사를 직접 남긴다."""
@@ -486,7 +486,7 @@ def _record_user_knowledge_permission_delete_audit(
         actor_id=str(current_user.id),
         actor_type="user",
         target_type="user_knowledge_permission",
-        target_id=permission.id,
+        target_id=permission_id,
         before=before,
         after=None,
         metadata=metadata,
@@ -2298,15 +2298,24 @@ def delete_team_knowledge_permission(
             "Team knowledge permission not found.",
         )
 
+    permission_id = permission.id
     before = _permission_audit_columns(permission)
-    db.delete(permission)
+    (
+        db.query(TeamKnowledgePermission)
+        .filter(
+            TeamKnowledgePermission.grantee_organization_id == organization_id,
+            TeamKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            TeamKnowledgePermission.team_id == team_id,
+        )
+        .delete(synchronize_session=False)
+    )
     db.commit()
     _record_team_knowledge_permission_delete_audit(
         current_user,
-        permission,
+        permission_id,
         before,
     )
-    return {"message": "Team knowledge permission deleted", "id": str(permission.id)}
+    return {"message": "Team knowledge permission deleted", "id": str(permission_id)}
 
 
 @router.delete("/llm-credentials/{credential_id}/teams/{team_id}")
@@ -2459,15 +2468,24 @@ def delete_user_knowledge_permission(
             "User knowledge permission not found.",
         )
 
+    permission_id = permission.id
     before = _permission_audit_columns(permission)
-    db.delete(permission)
+    (
+        db.query(UserKnowledgePermission)
+        .filter(
+            UserKnowledgePermission.grantee_organization_id == organization_id,
+            UserKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            UserKnowledgePermission.user_id == user_id,
+        )
+        .delete(synchronize_session=False)
+    )
     db.commit()
     _record_user_knowledge_permission_delete_audit(
         current_user,
-        permission,
+        permission_id,
         before,
     )
-    return {"message": "User knowledge permission deleted", "id": str(permission.id)}
+    return {"message": "User knowledge permission deleted", "id": str(permission_id)}
 
 
 @router.delete("/llm-credentials/{credential_id}/users/{user_id}")

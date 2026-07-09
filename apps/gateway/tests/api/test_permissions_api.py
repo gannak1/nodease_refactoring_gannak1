@@ -457,7 +457,8 @@ class TestPermissionsApi(unittest.TestCase):
                 "id": str(existing_permission.id),
             },
         )
-        self.assertEqual(session.deleted, [existing_permission])
+        self.assertEqual(session.deleted, [])
+        self.assertEqual(session.bulk_deleted, [existing_permission])
         self.assertTrue(session.committed)
         self.permission_audit.assert_called_once()
         audit = self.permission_audit.call_args.kwargs
@@ -505,6 +506,54 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.assertIsNone(session.lock_statement)
         self.permission_audit.assert_not_called()
+
+    def test_delete_team_knowledge_permission_deletes_row_for_organization_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        existing_permission = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="operator",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+            existing_knowledge_permission=existing_permission,
+        )
+
+        response = self._delete_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "Team knowledge permission deleted",
+                "id": str(existing_permission.id),
+            },
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertEqual(session.bulk_deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        self.permission_audit.assert_called_once()
+        audit = self.permission_audit.call_args.kwargs
+        self.assertEqual(audit["action"], "team_knowledge_permission.deleted")
+        self.assertEqual(audit["target_type"], "team_knowledge_permission")
+        self.assertEqual(audit["target_id"], existing_permission.id)
 
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
         # organization manager가 아니어도 대상 workflow의 manager 권한이 있으면 기존 row를 수정할 수 있다.
@@ -3379,12 +3428,14 @@ class _Query:
         items=None,
         apply_filters=False,
         project_auth_state=False,
+        delete_sink=None,
     ):
         """first/all 결과와 필터 적용 여부를 받아 fake query를 구성한다."""
         self.first_result = first_result
         self.items = items or []
         self.apply_filters = apply_filters
         self.project_auth_state = project_auth_state
+        self.delete_sink = delete_sink
         self.join_values = []
         self.filter_expressions = []
         self.options_values = []
@@ -3436,6 +3487,16 @@ class _Query:
         if self.project_auth_state:
             return [item.auth_state for item in rows]
         return rows
+
+    def delete(self, synchronize_session=False):
+        """SQLAlchemy bulk delete 경로를 기록한다."""
+        if self.first_result is not None:
+            rows = [self.first_result] if self.first() is not None else []
+        else:
+            rows = self.all()
+        if self.delete_sink is not None:
+            self.delete_sink.extend(rows)
+        return len(rows)
 
 
 class _ScalarResult:
@@ -3558,6 +3619,7 @@ class _Session:
         self.query_calls = []
         self.added = []
         self.deleted = []
+        self.bulk_deleted = []
         self.scalars_called = False
         self.committed = False
         self.refreshed = False
@@ -3648,6 +3710,7 @@ class _Session:
             return _Query(
                 first_result=self.existing_knowledge_permission,
                 apply_filters=True,
+                delete_sink=self.bulk_deleted,
             )
         if model is TeamKnowledgePermission.auth_state:
             self.knowledge_permission_query_count += 1
@@ -3764,6 +3827,7 @@ class _Session:
             return _Query(
                 first_result=self.existing_user_knowledge_permission,
                 apply_filters=True,
+                delete_sink=self.bulk_deleted,
             )
         if model is UserKnowledgePermission.auth_state:
             self.user_knowledge_permission_query_count += 1
