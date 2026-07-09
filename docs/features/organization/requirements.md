@@ -66,7 +66,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-038: permission 조회/변경은 organization manager 또는 대상 workflow/KB/LLM credential의 `manage` 권한 보유자만 수행할 수 있어야 한다.
 - ORG-REQ-039: permission 부여는 active team 또는 active organization member user만 grantee로 허용해야 한다.
 - ORG-REQ-040: permission 부여 요청은 canonical resource `auth_state`만 허용해야 한다. legacy 값(`read/write/execute/admin`)은 기존 row 해석에만 사용하고 신규 요청에서는 거부해야 한다.
-- ORG-REQ-041: permission upsert/delete는 row 단위 data-change audit(`team_workflow_permission.created`, `team_workflow_permission.updated`, `team_workflow_permission.deleted`, `team_knowledge_permission.*`, `team_llm_permission.*`, `user_workflow_permission.*`, `user_knowledge_permission.*`, `user_llm_permission.*`)을 기록해야 한다.
+- ORG-REQ-041: permission upsert/delete는 row 단위 data-change audit(`team_workflow_permission.created`, `team_workflow_permission.updated`, `team_workflow_permission.deleted`, `team_knowledge_permission.*`, `team_llm_permission.*`, `user_workflow_permission.*`, `user_knowledge_permission.*`, `user_llm_permission.*`)을 기록해야 한다. KB permission API는 grant/revoke mutation과 같은 DB transaction에서 audit row를 기록해야 하며, Core upsert/bulk delete 경로도 audit을 정확히 한 번 남겨야 한다.
 - ORG-REQ-042: organization scope 밖 resource는 `404 resource.not_found`로 숨기고, scope 안 권한 부족은 `403 permission.denied`로 응답해야 한다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
 - ORG-REQ-043: 클라이언트는 active organization id를 localStorage의 `moduly_active_organization_id`에 저장하고, `apiClient` 요청에 `X-Organization-Id` header를 자동 첨부해야 한다.
 - ORG-REQ-044: dashboard layout은 active organization을 확인하고, 하나뿐이면 자동 선택하며, 여러 개면 사용자가 선택하도록 해야 한다.

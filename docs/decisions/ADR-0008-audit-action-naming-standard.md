@@ -21,10 +21,10 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | RBAC/resource permission 부족 | `permission.denied` | MVP 1 |
 | team/user resource permission row 생성/수정 | `team_workflow_permission.created/updated`, `user_workflow_permission.created/updated`, `team_llm_permission.created/updated`, `user_llm_permission.created/updated` | MVP 1 현재 구현 |
 | team/user resource permission row 회수 | `team_workflow_permission.deleted`, `user_workflow_permission.deleted`, `team_llm_permission.deleted`, `user_llm_permission.deleted` | MVP 1 현재 구현 |
-| team knowledge base permission row 생성/수정 | `team_knowledge_permission.created/updated` | 현재 table/listener 기준. KB permission API/enforcement 연결은 MVP 2 범위 |
-| team knowledge base permission row 회수 | `team_knowledge_permission.deleted` | 현재 table/listener 기준. KB permission API/enforcement 연결은 MVP 2 범위 |
-| user knowledge base permission row 생성/수정 | `user_knowledge_permission.created/updated` | MVP 2 user direct table/API 구현 시 고정 |
-| user knowledge base permission row 회수 | `user_knowledge_permission.deleted` | MVP 2 user direct table/API 구현 시 고정 |
+| team knowledge base permission row 생성/수정 | `team_knowledge_permission.created/updated` | KB permission API/enforcement 현재 구현 |
+| team knowledge base permission row 회수 | `team_knowledge_permission.deleted` | KB permission API/enforcement 현재 구현 |
+| user knowledge base permission row 생성/수정 | `user_knowledge_permission.created/updated` | user direct KB permission API/enforcement 현재 구현 |
+| user knowledge base permission row 회수 | `user_knowledge_permission.deleted` | user direct KB permission API/enforcement 현재 구현 |
 | organization member 초대 생성 | `organization.invite` | MVP 2.0 organization membership 현재 구현 |
 | organization member 초대 수락 | `organization.member.accept` | MVP 2.0 organization membership 현재 구현 |
 | organization member 상태 또는 organization auth_state 변경 | `organization.member.update` | MVP 2.0 organization membership 현재 구현 |
@@ -63,6 +63,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Resource permission helper는 RBAC 거부를 `permission.denied`로 기록한다.
 - 전역 HTTP 401/403 handler는 helper에서 이미 기록하지 않은 인증/권한 실패를 `auth.permission_denied`로 기록한다.
 - 현재 등록된 `/api/v1/permissions/*` router의 team/user permission grant/update/revoke 흐름은 permission row별 data-change action인 `team_workflow_permission.created/updated/deleted`, `user_workflow_permission.created/updated/deleted`, `team_knowledge_permission.created/updated/deleted`, `user_knowledge_permission.created/updated/deleted`, `team_llm_permission.created/updated/deleted`, `user_llm_permission.created/updated/deleted`를 기록한다.
+- KB permission API의 Core upsert와 bulk delete 경로는 ORM listener에만 의존하지 않고, 권한 row mutation과 같은 DB transaction에 `team_knowledge_permission.*`/`user_knowledge_permission.*` data-change audit row를 추가한다.
 - Organization member invite/accept/update/remove 흐름은 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove`를 기록한다. Member 제거에 따른 permission cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'` metadata를 남긴다.
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.

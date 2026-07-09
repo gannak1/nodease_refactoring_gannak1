@@ -83,6 +83,7 @@ Grant request:
 - 요청자는 organization manager 또는 해당 KB `manage` 권한을 가져야 한다.
 - `X-Organization-Id`는 KB의 organization과 일치해야 한다. 다른 organization KB, hidden/deleted/archived KB, 존재를 드러내면 안 되는 대상은 safe 404/resource-hidden 계약을 따른다.
 - User grant 대상은 같은 active organization member여야 한다. invited/suspended/removed/non-member 사용자에게는 grant를 생성하지 않는다.
+- Grant/revoke 성공은 permission row 변경과 같은 DB transaction 안에 `team_knowledge_permission.*` 또는 `user_knowledge_permission.*` data-change audit row를 정확히 한 번 기록해야 한다. Core upsert와 bulk delete 경로는 ORM listener에만 의존하지 않는다.
 - Effective KB permission은 organization manager override와 team/user direct grant 중 가장 강한 additive allow다. 직접 grant는 team grant를 낮추거나 deny할 수 없다.
 - Source-managed KB retrieval에서는 KB `use` grant가 있어도 source ACL/requester authorization gate와 final evidence policy를 다시 통과해야 한다.
 

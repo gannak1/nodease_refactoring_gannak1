@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.auth_service import AuthService
+from apps.gateway.services.audit_records import add_data_change_audit
 from apps.gateway.utils.api_errors import (
     auth_error_code,
     auth_error_message,
@@ -240,6 +241,7 @@ def _record_team_llm_permission_delete_audit(
 
 
 def _record_team_knowledge_permission_audit(
+    db: Session,
     current_user: User,
     permission: TeamKnowledgePermission,
     before: dict | None,
@@ -263,11 +265,10 @@ def _record_team_knowledge_permission_audit(
             return
         action = "team_knowledge_permission.updated"
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action=action,
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="team_knowledge_permission",
         target_id=permission.id,
         before=audit_before,
@@ -277,6 +278,7 @@ def _record_team_knowledge_permission_audit(
 
 
 def _record_team_knowledge_permission_delete_audit(
+    db: Session,
     current_user: User,
     permission_id: UUID,
     before: dict,
@@ -289,11 +291,10 @@ def _record_team_knowledge_permission_delete_audit(
         "name": getattr(current_user, "name", None),
     }
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action="team_knowledge_permission.deleted",
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="team_knowledge_permission",
         target_id=permission_id,
         before=before,
@@ -431,6 +432,7 @@ def _record_user_llm_permission_delete_audit(
 
 
 def _record_user_knowledge_permission_audit(
+    db: Session,
     current_user: User,
     permission: UserKnowledgePermission,
     before: dict | None,
@@ -454,11 +456,10 @@ def _record_user_knowledge_permission_audit(
             return
         action = "user_knowledge_permission.updated"
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action=action,
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="user_knowledge_permission",
         target_id=permission.id,
         before=audit_before,
@@ -468,6 +469,7 @@ def _record_user_knowledge_permission_audit(
 
 
 def _record_user_knowledge_permission_delete_audit(
+    db: Session,
     current_user: User,
     permission_id: UUID,
     before: dict,
@@ -480,11 +482,10 @@ def _record_user_knowledge_permission_delete_audit(
         "name": getattr(current_user, "name", None),
     }
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action="user_knowledge_permission.deleted",
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="user_knowledge_permission",
         target_id=permission_id,
         before=before,
@@ -1525,13 +1526,14 @@ def _upsert_team_knowledge_permission(
     if permission is None:
         permission = existing_permission
     after = _permission_audit_columns(permission)
-    db.commit()
     _record_team_knowledge_permission_audit(
+        db,
         current_user,
         permission,
         before,
         after,
     )
+    db.commit()
     return permission
 
 
@@ -1738,13 +1740,14 @@ def _upsert_user_knowledge_permission(
     if permission is None:
         permission = existing_permission
     after = _permission_audit_columns(permission)
-    db.commit()
     _record_user_knowledge_permission_audit(
+        db,
         current_user,
         permission,
         before,
         after,
     )
+    db.commit()
     return permission
 
 
@@ -2309,12 +2312,13 @@ def delete_team_knowledge_permission(
         )
         .delete(synchronize_session=False)
     )
-    db.commit()
     _record_team_knowledge_permission_delete_audit(
+        db,
         current_user,
         permission_id,
         before,
     )
+    db.commit()
     return {"message": "Team knowledge permission deleted", "id": str(permission_id)}
 
 
@@ -2479,12 +2483,13 @@ def delete_user_knowledge_permission(
         )
         .delete(synchronize_session=False)
     )
-    db.commit()
     _record_user_knowledge_permission_delete_audit(
+        db,
         current_user,
         permission_id,
         before,
     )
+    db.commit()
     return {"message": "User knowledge permission deleted", "id": str(permission_id)}
 
 

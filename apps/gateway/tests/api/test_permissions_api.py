@@ -11,6 +11,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import is_
 
 from apps.gateway.main import app
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.organization import Organization
@@ -400,12 +401,19 @@ class TestPermissionsApi(unittest.TestCase):
             "ON CONFLICT (grantee_organization_id, user_id, knowledge_base_id)",
             compiled,
         )
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "user_knowledge_permission.created")
-        self.assertEqual(audit["target_type"], "user_knowledge_permission")
-        self.assertEqual(audit["target_id"], upsert_result.id)
-        self.assertEqual(audit["after"]["knowledge_base_id"], knowledge_base_id)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_knowledge_permission.created")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.actor_type, "user")
+        self.assertEqual(audit.target_type, "user_knowledge_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertIsNone(audit.before)
+        self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
+        self.assertIsInstance(audit.after["assigned_at"], str)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
 
     def test_put_team_knowledge_permission_rejects_none_auth_state(self):
         response = self._put_knowledge_permission(
@@ -460,11 +468,18 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(session.deleted, [])
         self.assertEqual(session.bulk_deleted, [existing_permission])
         self.assertTrue(session.committed)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "user_knowledge_permission.deleted")
-        self.assertEqual(audit["target_type"], "user_knowledge_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_knowledge_permission.deleted")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.target_type, "user_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["id"], str(existing_permission.id))
+        self.assertEqual(audit.before["user_id"], str(target_user_id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertIsInstance(audit.before["assigned_at"], str)
+        self.assertIsNone(audit.after)
 
     def test_delete_user_knowledge_permission_hides_deleted_knowledge_base(self):
         user_id = uuid4()
@@ -549,11 +564,18 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(session.deleted, [])
         self.assertEqual(session.bulk_deleted, [existing_permission])
         self.assertTrue(session.committed)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "team_knowledge_permission.deleted")
-        self.assertEqual(audit["target_type"], "team_knowledge_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "team_knowledge_permission.deleted")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.target_type, "team_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["id"], str(existing_permission.id))
+        self.assertEqual(audit.before["team_id"], str(team_id))
+        self.assertEqual(audit.before["auth_state"], "operator")
+        self.assertIsInstance(audit.before["assigned_at"], str)
+        self.assertIsNone(audit.after)
 
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
         # organization manager가 아니어도 대상 workflow의 manager 권한이 있으면 기존 row를 수정할 수 있다.
@@ -4248,6 +4270,13 @@ def _team_llm_permission(
         permission.team_organization_id = team_organization_id or organization_id
         permission.team_is_active = team_is_active
     return permission
+
+
+def _single_added_audit(session):
+    audits = [value for value in session.added if isinstance(value, AuditLog)]
+    if len(audits) != 1:
+        raise AssertionError(f"Expected exactly one AuditLog, got {len(audits)}")
+    return audits[0]
 
 
 def _matches_expression(obj, expression):
