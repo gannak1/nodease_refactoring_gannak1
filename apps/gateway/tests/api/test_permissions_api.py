@@ -350,6 +350,117 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.permission_audit.assert_not_called()
 
+    def test_put_team_knowledge_permission_creates_audit_row_for_organization_manager(
+        self,
+    ):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        upsert_result = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="operator",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+            knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            payload={"auth_state": "operator"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["knowledge_base_id"], str(knowledge_base_id))
+        self.assertEqual(response.json()["team_id"], str(team_id))
+        self.assertEqual(response.json()["auth_state"], "operator")
+        self.assertTrue(session.committed)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "team_knowledge_permission.created")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.target_type, "team_knowledge_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertIsNone(audit.before)
+        self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
+        self.assertEqual(audit.after["team_id"], str(team_id))
+        self.assertIsInstance(audit.after["assigned_at"], str)
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_team_knowledge_permission_updates_audit_row_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        previous_assigned_by = uuid4()
+        existing_permission = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="viewer",
+            assigned_by=previous_assigned_by,
+        )
+        upsert_result = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="manager",
+            assigned_by=user_id,
+        )
+        upsert_result.id = existing_permission.id
+        upsert_result.assigned_at = existing_permission.assigned_at + timedelta(
+            seconds=1
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+            existing_knowledge_permission=existing_permission,
+            knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            payload={"auth_state": "manager"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["auth_state"], "manager")
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "team_knowledge_permission.updated")
+        self.assertEqual(audit.target_type, "team_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertEqual(audit.after["auth_state"], "manager")
+        self.assertEqual(audit.before["assigned_by"], str(previous_assigned_by))
+        self.assertEqual(audit.after["assigned_by"], str(user_id))
+        self.assertNotIn("knowledge_base_id", audit.before)
+        _assert_audit_added_before_commit(self, session)
+
     def test_put_user_knowledge_permission_creates_row_for_organization_manager(self):
         user_id = uuid4()
         organization_id = uuid4()
@@ -414,6 +525,125 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertIsInstance(audit.after["assigned_at"], str)
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_user_knowledge_permission_updates_audit_row_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        previous_assigned_by = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=previous_assigned_by,
+        )
+        upsert_result = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=user_id,
+        )
+        upsert_result.id = existing_permission.id
+        upsert_result.assigned_at = existing_permission.assigned_at + timedelta(
+            seconds=1
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            target_user=_user(
+                id=target_user_id,
+                email="target@example.com",
+                name="Target User",
+            ),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_knowledge_permission=existing_permission,
+            user_knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "builder"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["auth_state"], "builder")
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_knowledge_permission.updated")
+        self.assertEqual(audit.target_type, "user_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertEqual(audit.after["auth_state"], "builder")
+        self.assertEqual(audit.before["assigned_by"], str(previous_assigned_by))
+        self.assertEqual(audit.after["assigned_by"], str(user_id))
+        self.assertNotIn("knowledge_base_id", audit.before)
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_user_knowledge_permission_noops_same_auth_state_without_audit(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            target_user=_user(
+                id=target_user_id,
+                email="target@example.com",
+                name="Target User",
+            ),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_knowledge_permission=existing_permission,
+            user_knowledge_upsert_result=None,
+        )
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["auth_state"], "viewer")
+        self.assertTrue(session.committed)
+        self.assertTrue(session.scalars_called)
+        self.permission_audit.assert_not_called()
+        self.assertEqual(
+            [value for value in session.added if isinstance(value, AuditLog)],
+            [],
+        )
 
     def test_put_team_knowledge_permission_rejects_none_auth_state(self):
         response = self._put_knowledge_permission(
@@ -480,6 +710,7 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.before["auth_state"], "viewer")
         self.assertIsInstance(audit.before["assigned_at"], str)
         self.assertIsNone(audit.after)
+        _assert_audit_added_before_commit(self, session)
 
     def test_delete_user_knowledge_permission_hides_deleted_knowledge_base(self):
         user_id = uuid4()
@@ -576,6 +807,7 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.before["auth_state"], "operator")
         self.assertIsInstance(audit.before["assigned_at"], str)
         self.assertIsNone(audit.after)
+        _assert_audit_added_before_commit(self, session)
 
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
         # organization manager가 아니어도 대상 workflow의 manager 권한이 있으면 기존 row를 수정할 수 있다.
@@ -3642,6 +3874,7 @@ class _Session:
         self.added = []
         self.deleted = []
         self.bulk_deleted = []
+        self.operations = []
         self.scalars_called = False
         self.committed = False
         self.refreshed = False
@@ -3914,6 +4147,7 @@ class _Session:
     def add(self, value):
         """ORM insert 경로 사용 여부를 감지하도록 add 호출 값을 기록한다."""
         self.added.append(value)
+        self.operations.append(("add", type(value)))
 
     def delete(self, value):
         """ORM delete 경로 사용 여부를 감지하도록 delete 호출 값을 기록한다."""
@@ -3944,6 +4178,7 @@ class _Session:
     def commit(self):
         """endpoint가 transaction commit까지 도달했는지 표시한다."""
         self.committed = True
+        self.operations.append(("commit", None))
 
     def refresh(self, value):
         """id가 비어 있으면 fake id를 넣고 refresh 호출을 기록한다."""
@@ -4277,6 +4512,15 @@ def _single_added_audit(session):
     if len(audits) != 1:
         raise AssertionError(f"Expected exactly one AuditLog, got {len(audits)}")
     return audits[0]
+
+
+def _assert_audit_added_before_commit(testcase, session):
+    testcase.assertIn(("add", AuditLog), session.operations)
+    testcase.assertIn(("commit", None), session.operations)
+    testcase.assertLess(
+        session.operations.index(("add", AuditLog)),
+        session.operations.index(("commit", None)),
+    )
 
 
 def _matches_expression(obj, expression):
