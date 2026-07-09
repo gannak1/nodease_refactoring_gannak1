@@ -447,6 +447,68 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
     assert audits[0].actor_id is None
 
 
+def test_webhook_rejects_workflow_node_before_budget_or_dispatch():
+    from fastapi import BackgroundTasks
+
+    from apps.gateway.api.v1.endpoints import webhook as webhook_endpoint
+    from apps.shared.db.models.app import App
+    from apps.shared.db.models.workflow_deployment import (
+        DeploymentType,
+        WorkflowDeployment,
+    )
+
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    deployment_id = uuid4()
+    app_row = App(
+        id=uuid4(),
+        name="서브모듈 웹훅 차단",
+        url_slug=f"hook-{uuid4().hex[:8]}",
+        auth_secret="hook-secret",
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        active_deployment_id=deployment_id,
+        created_by=uuid4(),
+    )
+    deployment_row = WorkflowDeployment(
+        id=deployment_id,
+        app_id=app_row.id,
+        version=1,
+        type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid4(),
+    )
+    db = _exceeded_db(workflow_id, organization_id)
+    db.rows.extend([app_row, deployment_row])
+    background_tasks = BackgroundTasks()
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": f"/api/v1/hooks/{app_row.url_slug}",
+        "headers": [(b"x-webhook-secret", b"hook-secret")],
+        "query_string": b"",
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            webhook_endpoint.receive_webhook(
+                app_row.url_slug,
+                Request(scope, receive),
+                background_tasks,
+                db=db,
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
+    assert background_tasks.tasks == []
+    assert db.added_of(AuditLog) == []
+
+
 # --- fakes -------------------------------------------------------------------
 
 

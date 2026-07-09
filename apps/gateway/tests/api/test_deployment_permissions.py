@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from apps.gateway.api.v1.endpoints import deployment as deployment_endpoint
 from apps.shared.db.models.app import App
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.schemas.deployment import (
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
@@ -196,6 +196,35 @@ def test_authenticated_run_routes_are_registered_before_deployment_detail():
 
     assert paths.index("/{deployment_id}/run-info") < paths.index("/{deployment_id}")
     assert paths.index("/{deployment_id}/run") < paths.index("/{deployment_id}")
+
+
+def test_public_deployment_info_rejects_workflow_node_deployment():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        url_slug="module-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint.get_deployment_info_public(
+            app.url_slug,
+            SimpleNamespace(headers={}),
+            db=FakeModelDb({App: app, WorkflowDeployment: deployment}),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
 
 
 def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
