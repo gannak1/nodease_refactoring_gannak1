@@ -50,7 +50,7 @@ class WorkflowNode(Node[WorkflowNodeData]):
                 raise ValueError(f"[WorkflowNode] Target App {target_app_id} not found")
             execution_organization_id = self.execution_context.get("organization_id")
             app_organization_id = getattr(app, "organization_id", None)
-            if app_organization_id and not execution_organization_id:
+            if not execution_organization_id or not app_organization_id:
                 raise ValueError("[WorkflowNode] Target App is unavailable")
             if (
                 execution_organization_id
@@ -64,11 +64,19 @@ class WorkflowNode(Node[WorkflowNodeData]):
                     f"[WorkflowNode] App {app.name} has no active deployment"
                 )
 
-            from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+            from apps.shared.db.models.workflow_deployment import (
+                DeploymentType,
+                WorkflowDeployment,
+            )
 
             deployment = (
                 db.query(WorkflowDeployment)
-                .filter(WorkflowDeployment.id == app.active_deployment_id)
+                .filter(
+                    WorkflowDeployment.id == app.active_deployment_id,
+                    WorkflowDeployment.app_id == app.id,
+                    WorkflowDeployment.is_active.is_(True),
+                    WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE,
+                )
                 .first()
             )
 

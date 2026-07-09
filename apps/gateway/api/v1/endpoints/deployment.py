@@ -164,6 +164,7 @@ def preview_deployment_preflight(
         deployment_type=preflight_in.type,
         graph_snapshot=graph_snapshot,
         audience_hint=preflight_in.audience,
+        is_active=preflight_in.is_active,
     )
 
 

@@ -6,7 +6,7 @@ returns only redaction-safe reason codes and bucketed counts.
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from fastapi import HTTPException
@@ -88,10 +88,16 @@ class KnowledgeDeploymentPreflightService:
         *,
         organization_id: uuid.UUID | None,
         candidate_graphs_by_app_id: dict[uuid.UUID, dict] | None = None,
+        candidate_deployment_types_by_app_id: dict[
+            uuid.UUID, DeploymentType
+        ] | None = None,
     ) -> None:
         self.db = db
         self.organization_id = organization_id
         self.candidate_graphs_by_app_id = candidate_graphs_by_app_id or {}
+        self.candidate_deployment_types_by_app_id = (
+            candidate_deployment_types_by_app_id or {}
+        )
 
     def preview(
         self,
@@ -99,6 +105,7 @@ class KnowledgeDeploymentPreflightService:
         deployment_type: DeploymentType,
         graph_snapshot: dict,
         audience_hint: DeploymentPreflightAudience | None = None,
+        is_active: bool = True,
     ) -> DeploymentPreflightResponse:
         audience = self._effective_audience(deployment_type, audience_hint)
         issues = self._evaluate_graph(
@@ -107,6 +114,8 @@ class KnowledgeDeploymentPreflightService:
             depth=0,
             visited_app_ids=set(self.candidate_graphs_by_app_id.keys()),
         )
+        if not is_active:
+            issues = self._downgrade_blocked_issues(issues)
         return self._response(audience, issues)
 
     def enforce_active_publish(
@@ -306,20 +315,8 @@ class KnowledgeDeploymentPreflightService:
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
-        if target_app_id in visited_app_ids:
-            return [
-                _PreflightIssue(
-                    node_id=node_id,
-                    node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
-                    reason_code="workflow_node_cycle_detected",
-                )
-            ]
-
         target_app = self._target_app(target_app_id)
-        if not target_app or not getattr(target_app, "active_deployment_id", None):
+        if not target_app:
             return [
                 _PreflightIssue(
                     node_id=node_id,
@@ -333,12 +330,61 @@ class KnowledgeDeploymentPreflightService:
 
         candidate_graph = self.candidate_graphs_by_app_id.get(target_app_id)
         if candidate_graph is not None:
+            candidate_deployment_type = self.candidate_deployment_types_by_app_id.get(
+                target_app_id
+            )
+            if candidate_deployment_type != DeploymentType.WORKFLOW_NODE:
+                return [
+                    _PreflightIssue(
+                        node_id=node_id,
+                        node_type=node_type,
+                        severity="blocked"
+                        if audience == "anonymous_public"
+                        else "warning",
+                        reason_code="workflow_node_target_unavailable",
+                    )
+                ]
+            if target_app_id in visited_app_ids:
+                return [
+                    _PreflightIssue(
+                        node_id=node_id,
+                        node_type=node_type,
+                        severity="blocked"
+                        if audience == "anonymous_public"
+                        else "warning",
+                        reason_code="workflow_node_cycle_detected",
+                    )
+                ]
             return self._evaluate_graph(
                 candidate_graph,
                 audience=audience,
                 depth=depth + 1,
                 visited_app_ids={*visited_app_ids, target_app_id},
             )
+
+        if target_app_id in visited_app_ids:
+            return [
+                _PreflightIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    severity="blocked"
+                    if audience == "anonymous_public"
+                    else "warning",
+                    reason_code="workflow_node_cycle_detected",
+                )
+            ]
+
+        if not getattr(target_app, "active_deployment_id", None):
+            return [
+                _PreflightIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    severity="blocked"
+                    if audience == "anonymous_public"
+                    else "warning",
+                    reason_code="workflow_node_target_unavailable",
+                )
+            ]
 
         deployment_id = self._uuid_or_none(target_app.active_deployment_id)
         if deployment_id is None:
@@ -358,6 +404,7 @@ class KnowledgeDeploymentPreflightService:
                 WorkflowDeployment.id == deployment_id,
                 WorkflowDeployment.app_id == target_app.id,
                 WorkflowDeployment.is_active.is_(True),
+                WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE,
             )
             .first()
         )
@@ -514,15 +561,25 @@ class KnowledgeDeploymentPreflightService:
     ) -> list[DeploymentPreflightRequiredAction]:
         actions: dict[str, DeploymentPreflightRequiredAction] = {}
         for issue in issues:
-            mapping = (
-                PUBLIC_REQUIRED_ACTIONS
-                if issue.severity == "blocked"
-                else WARNING_REQUIRED_ACTIONS
-            )
-            action = mapping.get(issue.reason_code)
+            action = (
+                WARNING_REQUIRED_ACTIONS.get(issue.reason_code)
+                if issue.severity == "warning"
+                else None
+            ) or PUBLIC_REQUIRED_ACTIONS.get(issue.reason_code)
             if action is not None:
                 actions[action.action] = action
         return list(actions.values())
+
+    @staticmethod
+    def _downgrade_blocked_issues(
+        issues: list[_PreflightIssue],
+    ) -> list[_PreflightIssue]:
+        return [
+            replace(issue, severity="warning")
+            if issue.severity == "blocked"
+            else issue
+            for issue in issues
+        ]
 
     @staticmethod
     def _extract_knowledge_base_ids(data: dict) -> tuple[list[uuid.UUID], int]:

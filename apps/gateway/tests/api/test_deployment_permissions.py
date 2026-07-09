@@ -188,6 +188,7 @@ def test_preview_deployment_preflight_authorizes_deploy_and_returns_result(monke
     assert captured["preview"]["deployment_type"].value == "chatbot"
     assert captured["preview"]["graph_snapshot"] == graph
     assert captured["preview"]["audience_hint"] == "anonymous_public"
+    assert captured["preview"]["is_active"] is True
 
 
 def test_authenticated_run_routes_are_registered_before_deployment_detail():

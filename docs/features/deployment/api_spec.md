@@ -35,13 +35,15 @@ Request body:
 | Field | Required | Notes |
 | --- | --- | --- |
 | `app_id` | yes | Target app. Server validates active organization and deploy/manage permission |
-| `type` | yes | `api`, `webapp`, `widget`, `chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook` |
+| `type` | no | `api`, `webapp`, `widget`, `chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`. Defaults to `api` |
 | `config` | no | Deployment-specific config. Defaults to `{}` |
 | `is_active` | no | Preview context. Defaults to `true`; inactive create may warn but does not activate |
 | `graph_snapshot` | no | If omitted, server resolves the current app/workflow deployment snapshot candidate |
 | `audience` | no | UI hint only. Security decisions use server-derived audience in create/enable paths |
 
 Preview response uses `200 OK` even when blocked:
+
+When `is_active=false`, preview reflects inactive-save context by returning activation blockers as `status="warning"` while keeping safe reason codes and required actions. Create with `is_active=true` and later activation/toggle still use blocking `409` enforcement.
 
 ```json
 {
@@ -87,6 +89,8 @@ Response는 hidden KB id/name/path, exact denied count, raw source metadata, raw
 
 `is_active=false` 생성은 저장 가능하지만 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않는다.
 
+Schedule records and scheduler jobs are created only for active `type="schedule"` deployments. A `scheduleTrigger` node inside any other deployment type, including `workflow_node`, does not create a schedule surface.
+
 ## Errors
 
 Blocking preflight failure:
@@ -124,3 +128,4 @@ Blocking preflight failure:
 - Preflight preview requires the same active organization and workflow deploy/manage permission as deployment create.
 - Public/API/webhook/schedule/chatbot/mcp surfaces do not receive user KB permission unless a future service account/assigned operator policy explicitly provides an execution subject.
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
+- Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.

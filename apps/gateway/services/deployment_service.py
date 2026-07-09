@@ -181,15 +181,18 @@ class DeploymentService:
         deployment_type: DeploymentType,
         graph_snapshot: dict,
         audience_hint=None,
+        is_active: bool = True,
     ) -> DeploymentPreflightResponse:
         return KnowledgeDeploymentPreflightService(
             db,
             organization_id=app.organization_id,
             candidate_graphs_by_app_id={app.id: graph_snapshot},
+            candidate_deployment_types_by_app_id={app.id: deployment_type},
         ).preview(
             deployment_type=deployment_type,
             graph_snapshot=graph_snapshot,
             audience_hint=audience_hint,
+            is_active=is_active,
         )
 
     @staticmethod
@@ -204,6 +207,7 @@ class DeploymentService:
             db,
             organization_id=app.organization_id,
             candidate_graphs_by_app_id={app.id: graph_snapshot},
+            candidate_deployment_types_by_app_id={app.id: deployment_type},
         ).enforce_active_publish(
             deployment_type=deployment_type,
             graph_snapshot=graph_snapshot,
@@ -778,6 +782,9 @@ class DeploymentService:
         db: Session,
         deployment: WorkflowDeployment,
     ) -> Schedule | None:
+        if deployment.type != DeploymentType.SCHEDULE:
+            return None
+
         schedule_trigger_node = DeploymentService._find_schedule_trigger_node(
             deployment.graph_snapshot
         )
@@ -904,7 +911,13 @@ class DeploymentService:
             db.query(Schedule).filter(Schedule.deployment_id == deployment_id).first()
         )
 
-        if deployment.is_active and not schedule:
+        if deployment.type != DeploymentType.SCHEDULE:
+            if schedule:
+                if scheduler_service:
+                    scheduler_service.remove_schedule(schedule.id)
+                db.delete(schedule)
+            schedule = None
+        elif deployment.is_active and not schedule:
             schedule = DeploymentService._ensure_schedule_record(db, deployment)
 
         if schedule and scheduler_service:

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.workflow import WorkflowNode
 from apps.workflow_engine.workflow.nodes.workflow.entities import (
@@ -183,16 +184,46 @@ def test_workflow_node_error_no_active_deployment():
     mock_app = Mock()
     mock_app.id = "app-1"
     mock_app.name = "Test App"
-    mock_app.organization_id = None
+    mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = None  # 활성 배포 없음
 
     mock_db.query.return_value.filter.return_value.first.return_value = mock_app
 
-    node.execution_context = {"db": mock_db}
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
     # When / Then
     with pytest.raises(ValueError, match="has no active deployment"):
         node.execute({})
+
+
+def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
+    node_data = WorkflowNodeData(
+        title="일반 배포 거부", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Test App"
+    mock_app.organization_id = "org-current"
+    mock_app.active_deployment_id = "deploy-1"
+
+    mock_db.query.return_value.filter.return_value.first.side_effect = [
+        mock_app,
+        None,
+    ]
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
+
+    with pytest.raises(ValueError, match="Active deployment not found"):
+        node.execute({})
+
+    deployment_filter_args = mock_db.query.return_value.filter.call_args_list[1].args
+    assert any(
+        getattr(arg, "right", None).value == DeploymentType.WORKFLOW_NODE
+        for arg in deployment_filter_args
+        if hasattr(getattr(arg, "right", None), "value")
+    )
 
 
 def test_workflow_node_rejects_cross_organization_target():
@@ -230,6 +261,26 @@ def test_workflow_node_rejects_missing_parent_organization_context():
     mock_db.query.return_value.filter.return_value.first.return_value = mock_app
 
     node.execution_context = {"db": mock_db}
+
+    with pytest.raises(ValueError, match="Target App is unavailable"):
+        node.execute({})
+
+
+def test_workflow_node_rejects_target_without_organization_scope():
+    node_data = WorkflowNodeData(
+        title="조직 없는 대상", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Legacy App"
+    mock_app.organization_id = None
+    mock_app.active_deployment_id = "deploy-1"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_app
+
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
     with pytest.raises(ValueError, match="Target App is unavailable"):
         node.execute({})

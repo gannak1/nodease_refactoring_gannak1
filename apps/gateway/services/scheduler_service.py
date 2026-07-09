@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,10 @@ class SchedulerService:
         schedules = (
             db.query(Schedule)
             .join(WorkflowDeployment, Schedule.deployment_id == WorkflowDeployment.id)
-            .filter(WorkflowDeployment.is_active.is_(True))
+            .filter(
+                WorkflowDeployment.is_active.is_(True),
+                WorkflowDeployment.type == DeploymentType.SCHEDULE,
+            )
             .all()
         )
 
@@ -166,6 +169,9 @@ class SchedulerService:
 
             if not deployment.is_active:
                 logger.error(f"Deployment 비활성화됨: {deployment_id}")
+                return
+            if deployment.type != DeploymentType.SCHEDULE:
+                logger.error(f"Deployment is not a schedule deployment: {deployment_id}")
                 return
 
             # App 조회하여 workflow_id 가져오기

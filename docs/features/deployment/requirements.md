@@ -22,13 +22,14 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 - DEP-REQ-001: 배포 생성과 활성화는 workflow graph snapshot, input/output schema, deployment type, active 상태를 기준으로 실행 가능 surface를 만든다.
 - DEP-REQ-002: `DeploymentType`은 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`를 지원한다.
 - DEP-REQ-003: LLM node RAG 옵션이 private KB 후보를 참조하고 실행 표면에 authenticated execution subject가 없으면 해당 활성 배포는 preflight에서 차단해야 한다.
-- DEP-REQ-004: Preflight preview endpoint는 UI가 결과를 렌더링할 수 있도록 blocked 상태도 `200 OK` 응답으로 반환한다.
+- DEP-REQ-004: Preflight preview endpoint는 UI가 결과를 렌더링할 수 있도록 blocked 상태도 `200 OK` 응답으로 반환한다. `is_active=false` preview는 inactive 저장 가능성을 반영해 활성화 blocker를 warning으로 낮출 수 있지만, create(`is_active=true`)와 enable/toggle activation의 blocking preflight는 완화하지 않는다.
 - DEP-REQ-005: 실제 배포를 활성 surface에 올리는 create(`is_active=true`), enable/toggle activation은 blocking preflight 실패 시 `409 deployment.preflight.blocked`로 실패해야 한다.
 - DEP-REQ-006: `is_active=false` 배포 생성은 저장을 허용할 수 있다. 단, inactive 생성은 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않아야 하며, 이후 활성화 시 blocking preflight를 다시 통과해야 한다.
 - DEP-REQ-007: Active deployment 삭제 시 다른 deployment를 자동 승격하지 않는다. 자동 승격을 도입하려면 승격 직전 같은 blocking preflight를 통과해야 한다.
 - DEP-REQ-008: Preflight는 graph snapshot의 LLM node RAG 옵션을 검사하고, explicit KB mode와 materialized recommendation 결과의 KB 후보를 서버 side resolver/helper로 다시 평가해야 한다. Client-supplied KB id나 audience hint만으로 차단을 완화하지 않는다.
 - DEP-REQ-009: Source-managed KB를 anonymous public-only 후보로 포함하려면 collection public visibility와 별도 source/connector public exposure approval이 모두 필요하다. Public exposure approval primitive가 구현되기 전에는 source-managed public 후보를 blocked로 처리한다.
 - DEP-REQ-010: Preflight response는 hidden KB id/name/path, exact denied count, raw source metadata, raw exception을 반환하지 않고 safe reason code, bucketed count, required action만 반환한다.
+- DEP-REQ-011: Schedule record와 scheduler job은 active `type=schedule` deployment에서만 생성/로드/실행한다. `scheduleTrigger` node가 `workflow_node`, `chatbot`, `api` 등 다른 deployment type graph에 포함되어도 schedule 실행 surface를 만들지 않는다.
 
 ## Runtime Audience Matrix
 
@@ -47,9 +48,9 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 
 - Organization membership은 KB 사용 권한이 아니다. Public/automatic deployment surface에서 private KB를 사용하려면 후속 service account 또는 assigned operator 정책이 필요하다.
 - Preview endpoint의 `audience` 필드는 UI 검증용 힌트일 뿐이다. Create/enable/toggle 경로는 서버가 실제 deployment type과 실행 경로에서 audience를 파생해야 하며, client-supplied audience가 보안 차단을 완화할 수 없다.
-- Workflow-node preflight는 node 설정의 `workflowNode.data.appId`를 target app으로 해석하고, target app의 active deployment snapshot을 검사한다. `workflowId`와 혼동하지 않는다.
+- Workflow-node preflight는 node 설정의 `workflowNode.data.appId`를 target app으로 해석하고, target app의 active deployment snapshot을 검사한다. `workflowId`와 혼동하지 않는다. Target active deployment는 target app 소유이고, active 상태이며, `type=workflow_node`여야 한다. Pending active candidate graph도 pending deployment type이 `workflow_node`일 때만 workflow-node target으로 인정한다.
 - `workflow_node` 배포를 단독 reusable module로 활성화할 때는 parent subject가 아직 없으므로 private KB 참조를 warning으로 보고할 수 있다. 단, public/API/webhook 직접 실행은 거부하며, public/non-interactive parent deployment가 해당 module을 참조하면 parent audience 기준 preflight에서 private KB를 blocked로 처리한다.
-- Workflow-node runtime은 parent `execution_context.organization_id`가 있어야 하며, target app organization과 다르거나 parent organization context가 없으면 실행하지 않는다.
+- Workflow-node runtime은 parent `execution_context.organization_id`가 있어야 하며, target app organization이 없거나 target app organization과 다르거나 parent organization context가 없으면 실행하지 않는다. Target active deployment도 target app 소유, active 상태, `type=workflow_node`를 만족해야 한다.
 - Workflow-node nesting은 우선 한 단계 active target 검사를 baseline으로 삼는다. 순환 참조, 과도한 depth, target active deployment 부재는 safe blocked/warning reason으로 낮춘다.
 - `run.py`/`webhook.py` 같은 runtime endpoint는 주체가 없다는 contract verification 대상이다. Preflight의 핵심 차단은 deployment create/toggle service boundary에서 수행하며, delete는 다른 deployment를 자동 승격하지 않아 우회 activation surface를 만들지 않는다.
 - Preflight 예외는 broad catch에서 일반 `400`으로 감싸지 않고 `409 deployment.preflight.blocked` 또는 문서화된 error envelope을 보존해야 한다.

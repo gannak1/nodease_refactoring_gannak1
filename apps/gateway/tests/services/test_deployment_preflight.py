@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy.sql.operators import eq, in_op, is_
+from sqlalchemy.sql.operators import eq, in_op, is_, ne
 
 from apps.gateway.services import deployment_service as deployment_module
 from apps.gateway.services.deployment_service import DeploymentService
@@ -50,6 +50,39 @@ def test_preflight_blocks_private_kb_for_public_surface():
     assert result.safe_summary.blocked_reason == "private_kb_requires_execution_subject"
     assert result.safe_summary.affected_kb_count_bucket == "1"
     assert str(kb_id) not in result.model_dump_json()
+
+
+def test_inactive_preflight_preview_downgrades_public_blockers_to_warning():
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    db = _Db(
+        {
+            KnowledgeBase: [
+                _row(
+                    id=kb_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                )
+            ]
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.CHATBOT,
+        graph_snapshot=_llm_graph(kb_id),
+        is_active=False,
+    )
+
+    assert result.status == "warning"
+    assert result.nodes[0].status == "warning"
+    assert result.warnings == ["private_kb_requires_execution_subject"]
+    assert result.required_actions[0].action == (
+        "remove_private_kb_or_use_authenticated_run"
+    )
 
 
 def test_preflight_allows_public_collection_kb_for_public_surface():
@@ -159,6 +192,7 @@ def test_workflow_node_preflight_uses_data_app_id_for_target_lookup():
                     id=target_deployment_id,
                     app_id=target_app_id,
                     is_active=True,
+                    type=DeploymentType.WORKFLOW_NODE,
                     graph_snapshot=_llm_graph(kb_id),
                 )
             ],
@@ -198,7 +232,44 @@ def test_workflow_node_preflight_uses_data_app_id_for_target_lookup():
     assert result.safe_summary.blocked_reason == "private_kb_requires_execution_subject"
 
 
-def test_workflow_node_preflight_uses_candidate_graph_for_pending_active_deployment():
+def test_workflow_node_preflight_rejects_non_workflow_node_active_deployment():
+    organization_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    target_deployment_id = uuid.uuid4()
+    db = _Db(
+        {
+            App: [
+                _row(
+                    id=target_app_id,
+                    organization_id=organization_id,
+                    active_deployment_id=target_deployment_id,
+                )
+            ],
+            WorkflowDeployment: [
+                _row(
+                    id=target_deployment_id,
+                    app_id=target_app_id,
+                    is_active=True,
+                    type=DeploymentType.API,
+                    graph_snapshot={"nodes": [], "edges": []},
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.CHATBOT,
+        graph_snapshot=_workflow_node_graph(target_app_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_node_target_unavailable"
+
+
+def test_workflow_node_preflight_rejects_non_workflow_node_candidate_target():
     organization_id = uuid.uuid4()
     app_a_id = uuid.uuid4()
     app_b_id = uuid.uuid4()
@@ -222,6 +293,7 @@ def test_workflow_node_preflight_uses_candidate_graph_for_pending_active_deploym
                     id=deployment_b_id,
                     app_id=app_b_id,
                     is_active=True,
+                    type=DeploymentType.WORKFLOW_NODE,
                     graph_snapshot=_workflow_node_graph(app_a_id),
                 )
             ],
@@ -233,12 +305,59 @@ def test_workflow_node_preflight_uses_candidate_graph_for_pending_active_deploym
         db,
         organization_id=organization_id,
         candidate_graphs_by_app_id={app_a_id: candidate_a_graph},
+        candidate_deployment_types_by_app_id={app_a_id: DeploymentType.CHATBOT},
     ).preview(
         deployment_type=DeploymentType.CHATBOT,
         graph_snapshot=candidate_a_graph,
     )
 
     assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_node_target_unavailable"
+
+
+def test_workflow_node_preflight_uses_candidate_graph_for_pending_workflow_node():
+    organization_id = uuid.uuid4()
+    app_a_id = uuid.uuid4()
+    app_b_id = uuid.uuid4()
+    deployment_b_id = uuid.uuid4()
+    db = _Db(
+        {
+            App: [
+                _row(
+                    id=app_a_id,
+                    organization_id=organization_id,
+                    active_deployment_id=uuid.uuid4(),
+                ),
+                _row(
+                    id=app_b_id,
+                    organization_id=organization_id,
+                    active_deployment_id=deployment_b_id,
+                ),
+            ],
+            WorkflowDeployment: [
+                _row(
+                    id=deployment_b_id,
+                    app_id=app_b_id,
+                    is_active=True,
+                    type=DeploymentType.WORKFLOW_NODE,
+                    graph_snapshot=_workflow_node_graph(app_a_id),
+                )
+            ],
+        }
+    )
+    candidate_a_graph = _workflow_node_graph(app_b_id)
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+        candidate_graphs_by_app_id={app_a_id: candidate_a_graph},
+        candidate_deployment_types_by_app_id={app_a_id: DeploymentType.WORKFLOW_NODE},
+    ).preview(
+        deployment_type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot=candidate_a_graph,
+    )
+
+    assert result.status == "warning"
     assert result.safe_summary.blocked_reason == "workflow_node_cycle_detected"
 
 
@@ -448,6 +567,111 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
     assert not db.rows_for(Schedule)
 
 
+def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=None,
+        url_slug="module-slug",
+        auth_secret="existing-secret",
+        created_by=uuid.uuid4(),
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=app.organization_id,
+        app_id=app.id,
+        created_by=app.created_by,
+    )
+    db = _Db({App: [app], Workflow: [workflow], Schedule: []})
+    scheduler = _Scheduler()
+
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.scheduler_service.get_scheduler_service",
+        lambda: scheduler,
+    )
+
+    deployment = DeploymentService.create_deployment(
+        db,
+        DeploymentCreate(
+            app_id=app_id,
+            type=DeploymentType.WORKFLOW_NODE,
+            graph_snapshot={
+                "nodes": [
+                    {
+                        "id": "schedule-1",
+                        "type": "scheduleTrigger",
+                        "data": {"cron_expression": "* * * * *"},
+                    }
+                ],
+                "edges": [],
+            },
+            is_active=True,
+        ),
+        user_id=app.created_by,
+    )
+
+    assert deployment.is_active is True
+    assert app.active_deployment_id == deployment.id
+    assert db.rows_for(Schedule) == []
+    assert scheduler.added == []
+
+
+def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
+    app_id = uuid.uuid4()
+    deployment_id = uuid.uuid4()
+    schedule_id = uuid.uuid4()
+    app = _row(id=app_id, active_deployment_id=None)
+    deployment = _row(
+        id=deployment_id,
+        app_id=app_id,
+        type=DeploymentType.WORKFLOW_NODE,
+        is_active=False,
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "schedule-1",
+                    "type": "scheduleTrigger",
+                    "data": {"cron_expression": "* * * * *"},
+                }
+            ],
+            "edges": [],
+        },
+    )
+    schedule = _row(
+        id=schedule_id,
+        deployment_id=deployment_id,
+        cron_expression="* * * * *",
+        timezone="UTC",
+    )
+    db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: [schedule]})
+    scheduler = _Scheduler()
+
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *a, **k: None,
+    )
+
+    DeploymentService.toggle_deployment(db, deployment_id, scheduler)
+
+    assert deployment.is_active is True
+    assert app.active_deployment_id == deployment_id
+    assert db.rows_for(Schedule) == []
+    assert scheduler.removed == [schedule_id]
+    assert scheduler.added == []
+
+
 def test_delete_active_deployment_does_not_auto_promote_other_deployment():
     app_id = uuid.uuid4()
     deployment_id = uuid.uuid4()
@@ -538,7 +762,9 @@ class _Db:
                 return
 
     def flush(self):
-        pass
+        for deployment in self.rows_by_model.get(WorkflowDeployment, []):
+            if getattr(deployment, "id", None) is None:
+                deployment.id = uuid.uuid4()
 
     def commit(self):
         self.committed = True
@@ -562,6 +788,18 @@ class _ScalarQuery:
 
     def scalar(self):
         return self.value
+
+
+class _Scheduler:
+    def __init__(self):
+        self.added = []
+        self.removed = []
+
+    def add_schedule(self, schedule, db):
+        self.added.append(schedule)
+
+    def remove_schedule(self, schedule_id):
+        self.removed.append(schedule_id)
 
 
 class _Query:
@@ -604,6 +842,8 @@ def _matches_expression(row, expression):
     right_value = _right_value(expression.right)
     if expression.operator is eq:
         return row_value == right_value or str(row_value) == str(right_value)
+    if expression.operator is ne:
+        return row_value != right_value and str(row_value) != str(right_value)
     if expression.operator is in_op:
         return row_value in set(right_value or [])
     if expression.operator is is_:
