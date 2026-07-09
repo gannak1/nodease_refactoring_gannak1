@@ -10,6 +10,9 @@ from fastapi import HTTPException
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.knowledge_deployment_preflight_service import (
+    KnowledgeDeploymentPreflightService,
+)
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.celery_app import celery_app
@@ -17,7 +20,7 @@ from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
-from apps.shared.schemas.deployment import DeploymentCreate
+from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
 
 logger = logging.getLogger(__name__)
@@ -66,7 +69,23 @@ class DeploymentService:
                 detail="You do not have permission to deploy this app.",
             )
 
-        # 4. 첫 배포 시 url_slug, auth_secret 생성
+        # 4. Draft 데이터(Snapshot) 가져오기
+        graph_snapshot = DeploymentService._resolve_graph_snapshot(
+            db,
+            workflow.id,
+            deployment_in.graph_snapshot,
+        )
+
+        if deployment_in.is_active:
+            DeploymentService._enforce_knowledge_preflight(
+                db,
+                app=app,
+                deployment_type=deployment_in.type,
+                graph_snapshot=graph_snapshot,
+            )
+
+        # 5. 첫 배포 시 url_slug, auth_secret 생성. Preflight 실패 시
+        # app 상태가 남지 않도록 active preflight 이후에 수행한다.
         if not app.url_slug:
             from apps.gateway.services.app_service import AppService
 
@@ -76,17 +95,6 @@ class DeploymentService:
             app.auth_secret = secrets.token_urlsafe(32)
 
         db.flush()
-
-        # 5. Draft 데이터(Snapshot) 가져오기
-        graph_snapshot = deployment_in.graph_snapshot
-        if not graph_snapshot:
-            graph_snapshot = WorkflowService.get_draft(db, str(workflow.id))
-
-        if not graph_snapshot:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot deploy workflow without graph data. Please save the workflow first.",
-            )
 
         # 6. 버전 번호 채번 (app_id 기준)
         max_version = (
@@ -130,36 +138,23 @@ class DeploymentService:
                     db, app.id, db_obj.id, scheduler_service
                 )
 
-            # 9. App의 active_deployment_id 업데이트
-            app.active_deployment_id = db_obj.id
+                # 9. App의 active_deployment_id 업데이트
+                app.active_deployment_id = db_obj.id
 
-            # 10. ScheduleTrigger 노드가 있으면 스케줄 생성
-            schedule_trigger_node = DeploymentService._find_schedule_trigger_node(
-                graph_snapshot
-            )
-            if schedule_trigger_node:
-                from apps.gateway.services.scheduler_service import (
-                    get_scheduler_service,
+                # 10. ScheduleTrigger 노드가 있으면 스케줄 생성
+                schedule = DeploymentService._ensure_schedule_record(
+                    db,
+                    db_obj,
                 )
-
-                # Schedule 레코드 생성
-                schedule = Schedule(
-                    deployment_id=db_obj.id,
-                    node_id=schedule_trigger_node["id"],
-                    cron_expression=schedule_trigger_node["data"]["cron_expression"],
-                    timezone=schedule_trigger_node["data"].get("timezone", "UTC"),
-                )
-                db.add(schedule)
-                db.flush()
-
-                # APScheduler에 등록
-                try:
-                    scheduler_service = get_scheduler_service()
-                    scheduler_service.add_schedule(schedule, db)
-                except Exception as e:
-                    logger.warning(f"[Deployment] ✗ 스케줄 등록 실패: {e}")
-                    # 스케줄 등록 실패해도 배포는 성공으로 처리
-                    # (나중에 수동으로 재등록 가능)
+                if schedule:
+                    # APScheduler에 등록
+                    try:
+                        scheduler_service = get_scheduler_service()
+                        scheduler_service.add_schedule(schedule, db)
+                    except Exception as e:
+                        logger.warning(f"[Deployment] ✗ 스케줄 등록 실패: {e}")
+                        # 스케줄 등록 실패해도 배포는 성공으로 처리
+                        # (나중에 수동으로 재등록 가능)
 
             db.commit()
             db.refresh(db_obj)
@@ -171,9 +166,64 @@ class DeploymentService:
 
             return db_obj
 
+        except HTTPException:
+            db.rollback()
+            raise
         except Exception as e:
             db.rollback()
             raise HTTPException(status_code=400, detail=str(e))
+
+    @staticmethod
+    def preview_knowledge_preflight(
+        db: Session,
+        *,
+        app: App,
+        deployment_type: DeploymentType,
+        graph_snapshot: dict,
+        audience_hint=None,
+    ) -> DeploymentPreflightResponse:
+        return KnowledgeDeploymentPreflightService(
+            db,
+            organization_id=app.organization_id,
+            candidate_graphs_by_app_id={app.id: graph_snapshot},
+        ).preview(
+            deployment_type=deployment_type,
+            graph_snapshot=graph_snapshot,
+            audience_hint=audience_hint,
+        )
+
+    @staticmethod
+    def _enforce_knowledge_preflight(
+        db: Session,
+        *,
+        app: App,
+        deployment_type: DeploymentType,
+        graph_snapshot: dict,
+    ) -> DeploymentPreflightResponse:
+        return KnowledgeDeploymentPreflightService(
+            db,
+            organization_id=app.organization_id,
+            candidate_graphs_by_app_id={app.id: graph_snapshot},
+        ).enforce_active_publish(
+            deployment_type=deployment_type,
+            graph_snapshot=graph_snapshot,
+        )
+
+    @staticmethod
+    def _resolve_graph_snapshot(
+        db: Session,
+        workflow_id: uuid.UUID,
+        graph_snapshot: dict | None,
+    ) -> dict:
+        if not graph_snapshot:
+            graph_snapshot = WorkflowService.get_draft(db, str(workflow_id))
+
+        if not graph_snapshot:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot deploy workflow without graph data. Please save the workflow first.",
+            )
+        return graph_snapshot
 
     @staticmethod
     def list_deployments(
@@ -358,6 +408,8 @@ class DeploymentService:
         # 3. 활성상태 체크
         if not deployment.is_active:
             raise HTTPException(status_code=404, detail="Deployment is inactive")
+        if deployment.type == DeploymentType.WORKFLOW_NODE:
+            raise HTTPException(status_code=404, detail="Deployment not found.")
 
         # 4. 인증 검증 (App의 auth_secret 사용)
         if require_auth:
@@ -722,6 +774,35 @@ class DeploymentService:
         return None
 
     @staticmethod
+    def _ensure_schedule_record(
+        db: Session,
+        deployment: WorkflowDeployment,
+    ) -> Schedule | None:
+        schedule_trigger_node = DeploymentService._find_schedule_trigger_node(
+            deployment.graph_snapshot
+        )
+        if not schedule_trigger_node:
+            return None
+
+        existing = (
+            db.query(Schedule)
+            .filter(Schedule.deployment_id == deployment.id)
+            .first()
+        )
+        if existing:
+            return existing
+
+        schedule = Schedule(
+            deployment_id=deployment.id,
+            node_id=schedule_trigger_node["id"],
+            cron_expression=schedule_trigger_node["data"]["cron_expression"],
+            timezone=schedule_trigger_node["data"].get("timezone", "UTC"),
+        )
+        db.add(schedule)
+        db.flush()
+        return schedule
+
+    @staticmethod
     def _deactivate_other_deployments(
         db: Session,
         app_id: uuid.UUID,
@@ -789,8 +870,20 @@ class DeploymentService:
         if not deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
 
+        app = db.query(App).filter(App.id == deployment.app_id).first()
+
         # 2. is_active 토글
         new_state = not deployment.is_active
+        if new_state:
+            if not app:
+                raise HTTPException(status_code=404, detail="App not found")
+            DeploymentService._enforce_knowledge_preflight(
+                db,
+                app=app,
+                deployment_type=deployment.type,
+                graph_snapshot=deployment.graph_snapshot,
+            )
+
         deployment.is_active = new_state
 
         # 3. 활성화하는 경우: 같은 앱의 다른 배포를 모두 비활성화
@@ -800,7 +893,6 @@ class DeploymentService:
             )
 
         # 3.1. App의 active_deployment_id 동기화
-        app = db.query(App).filter(App.id == deployment.app_id).first()
         if app:
             if new_state:
                 app.active_deployment_id = deployment.id
@@ -811,6 +903,9 @@ class DeploymentService:
         schedule = (
             db.query(Schedule).filter(Schedule.deployment_id == deployment_id).first()
         )
+
+        if deployment.is_active and not schedule:
+            schedule = DeploymentService._ensure_schedule_record(db, deployment)
 
         if schedule and scheduler_service:
             if deployment.is_active:
@@ -863,20 +958,8 @@ class DeploymentService:
 
         # 3. App의 active_deployment_id 업데이트
         app = db.query(App).filter(App.id == deployment.app_id).first()
-        if app and app.active_deployment_id == deployment_id:
-            # 다른 활성 배포 찾기 (최신 버전 우선)
-            other_deployment = (
-                db.query(WorkflowDeployment)
-                .filter(
-                    WorkflowDeployment.app_id == app.id,
-                    WorkflowDeployment.id != deployment_id,
-                    WorkflowDeployment.is_active.is_(True),
-                )
-                .order_by(WorkflowDeployment.version.desc())
-                .first()
-            )
-
-            app.active_deployment_id = other_deployment.id if other_deployment else None
+        if app and str(app.active_deployment_id) == str(deployment_id):
+            app.active_deployment_id = None
 
         # 4. 배포 레코드 삭제
         db.delete(deployment)

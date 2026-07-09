@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -151,6 +151,8 @@ async def receive_webhook(
         .first()
     )
     if not deployment:
+        raise HTTPException(status_code=404, detail="Active deployment not found")
+    if deployment.type == DeploymentType.WORKFLOW_NODE:
         raise HTTPException(status_code=404, detail="Active deployment not found")
 
     # 5-1. 예산 초과 차단 — background 예약 전에 429로 끝낸다 (BGT-REQ-030).

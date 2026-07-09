@@ -189,6 +189,26 @@ def test_workflow_node_error_no_active_deployment():
         node.execute({})
 
 
+def test_workflow_node_rejects_cross_organization_target():
+    node_data = WorkflowNodeData(
+        title="조직 불일치", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Test App"
+    mock_app.organization_id = "org-other"
+    mock_app.active_deployment_id = "deploy-1"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_app
+
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
+
+    with pytest.raises(ValueError, match="Target App is unavailable"):
+        node.execute({})
+
+
 def test_workflow_node_nested_value_extraction():
     """중첩된 값 선택자가 올바르게 동작하는지 테스트합니다."""
     # Given

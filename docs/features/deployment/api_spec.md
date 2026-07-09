@@ -9,7 +9,7 @@ Verified Against: TBD
 | --- | --- | --- | --- |
 | POST | `/api/v1/deployments/preflight` | 배포 graph snapshot과 deployment type 기준으로 runtime availability를 검사한다 | 로그인 + workflow deploy/manage 권한 |
 | POST | `/api/v1/deployments` | 배포 생성. `is_active=true`이면 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
-| PATCH | `/api/v1/deployments/{deployment_id}` | 배포 활성/비활성 전환. 활성화 시 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
+| PATCH | `/api/v1/deployments/{deployment_id}/toggle` | 배포 활성/비활성 전환. 활성화 시 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | DELETE | `/api/v1/deployments/{deployment_id}` | 배포 삭제. active 삭제 시 자동 승격하지 않는다 | 로그인 + workflow deploy/manage 권한 |
 
 ## Request And Response Models
@@ -46,6 +46,7 @@ Preview response uses `200 OK` even when blocked:
 ```json
 {
   "status": "blocked",
+  "audience": "anonymous_public",
   "safe_summary": {
     "blocked_reason": "private_kb_requires_execution_subject",
     "affected_node_count": 1,
@@ -57,7 +58,16 @@ Preview response uses `200 OK` even when blocked:
       "label": "Private KB를 제거하거나 인증 실행 경로를 사용하세요"
     }
   ],
-  "warnings": []
+  "warnings": [],
+  "nodes": [
+    {
+      "node_id": "llm-1",
+      "node_type": "llmNode",
+      "status": "blocked",
+      "reason_codes": ["private_kb_requires_execution_subject"],
+      "knowledge_base_count_bucket": "1"
+    }
+  ]
 }
 ```
 
@@ -73,7 +83,7 @@ Response는 hidden KB id/name/path, exact denied count, raw source metadata, raw
 
 ### Create / Activation Blocking
 
-`POST /api/v1/deployments`에서 `is_active=true`이거나, `PATCH /api/v1/deployments/{deployment_id}`가 inactive deployment를 active로 바꾸는 경우 server-derived audience로 blocking preflight를 실행한다.
+`POST /api/v1/deployments`에서 `is_active=true`이거나, `PATCH /api/v1/deployments/{deployment_id}/toggle`이 inactive deployment를 active로 바꾸는 경우 server-derived audience로 blocking preflight를 실행한다.
 
 `is_active=false` 생성은 저장 가능하지만 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않는다.
 
@@ -83,14 +93,24 @@ Blocking preflight failure:
 
 ```json
 {
-  "error": {
-    "code": "deployment.preflight.blocked",
-    "message": "Deployment preflight blocked activation",
-    "reason_code": "private_kb_requires_execution_subject",
-    "required_actions": [
-      "remove_private_kb_or_use_authenticated_run"
-    ],
-    "correlation_id": "request-correlation-id"
+  "detail": {
+    "error": {
+      "code": "deployment.preflight.blocked",
+      "message": "Deployment preflight blocked activation",
+      "reason_code": "private_kb_requires_execution_subject",
+      "required_actions": [
+        "remove_private_kb_or_use_authenticated_run"
+      ],
+      "preflight": {
+        "status": "blocked",
+        "audience": "anonymous_public",
+        "safe_summary": {
+          "blocked_reason": "private_kb_requires_execution_subject",
+          "affected_node_count": 1,
+          "affected_kb_count_bucket": "1"
+        }
+      }
+    }
   }
 }
 ```
@@ -103,4 +123,4 @@ Blocking preflight failure:
 
 - Preflight preview requires the same active organization and workflow deploy/manage permission as deployment create.
 - Public/API/webhook/schedule/chatbot/mcp surfaces do not receive user KB permission unless a future service account/assigned operator policy explicitly provides an execution subject.
-- Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
+- `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.

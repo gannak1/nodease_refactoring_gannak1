@@ -39,17 +39,19 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 | `widget` | Embedded widget surface에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `chatbot` | `/run-public` 공개 실행에는 사용자 subject가 없다. 인증 내부 실행 endpoint만 로그인 사용자를 subject로 사용한다 | 공개 실행은 anonymous public-only. 인증 내부 실행은 current user 권한 |
 | `mcp` | 별도 authenticated operator/service account가 없으면 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
-| `workflow_node` | Parent workflow의 execution context를 상속한다. parent subject가 없으면 anonymous public-only | Parent subject 기준 KB permission/source ACL. Subject 없으면 private KB blocked |
+| `workflow_node` | Public/API/webhook 직접 실행 surface는 지원하지 않는다. Subworkflow 실행은 parent workflow의 execution context를 상속한다 | Parent subject 기준 KB permission/source ACL. Parent subject가 없으면 anonymous public-only로 평가되어 private KB blocked |
 | `schedule` | 예약 실행에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `webhook` | Webhook/app secret 호출에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 
 ## Policies And Edge Cases
 
 - Organization membership은 KB 사용 권한이 아니다. Public/automatic deployment surface에서 private KB를 사용하려면 후속 service account 또는 assigned operator 정책이 필요하다.
-- Preview endpoint의 `audience` 필드는 UI 검증용 힌트일 뿐이다. Create/enable/delete 경로는 서버가 실제 deployment type과 실행 경로에서 audience를 파생해야 하며, client-supplied audience가 보안 차단을 완화할 수 없다.
+- Preview endpoint의 `audience` 필드는 UI 검증용 힌트일 뿐이다. Create/enable/toggle 경로는 서버가 실제 deployment type과 실행 경로에서 audience를 파생해야 하며, client-supplied audience가 보안 차단을 완화할 수 없다.
 - Workflow-node preflight는 node 설정의 `workflowNode.data.appId`를 target app으로 해석하고, target app의 active deployment snapshot을 검사한다. `workflowId`와 혼동하지 않는다.
+- `workflow_node` 배포를 단독 reusable module로 활성화할 때는 parent subject가 아직 없으므로 private KB 참조를 warning으로 보고할 수 있다. 단, public/API/webhook 직접 실행은 거부하며, public/non-interactive parent deployment가 해당 module을 참조하면 parent audience 기준 preflight에서 private KB를 blocked로 처리한다.
+- Workflow-node runtime은 `execution_context.organization_id`와 target app organization이 다르면 실행하지 않는다.
 - Workflow-node nesting은 우선 한 단계 active target 검사를 baseline으로 삼는다. 순환 참조, 과도한 depth, target active deployment 부재는 safe blocked/warning reason으로 낮춘다.
-- `run.py`/`webhook.py` 같은 runtime endpoint는 주체가 없다는 contract verification 대상이다. Preflight의 핵심 차단은 deployment create/toggle/delete service boundary에서 수행한다.
+- `run.py`/`webhook.py` 같은 runtime endpoint는 주체가 없다는 contract verification 대상이다. Preflight의 핵심 차단은 deployment create/toggle service boundary에서 수행하며, delete는 다른 deployment를 자동 승격하지 않아 우회 activation surface를 만들지 않는다.
 - Preflight 예외는 broad catch에서 일반 `400`으로 감싸지 않고 `409 deployment.preflight.blocked` 또는 문서화된 error envelope을 보존해야 한다.
 
 ## Open Questions

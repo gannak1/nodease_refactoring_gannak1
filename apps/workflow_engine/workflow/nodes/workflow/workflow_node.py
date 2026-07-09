@@ -48,6 +48,14 @@ class WorkflowNode(Node[WorkflowNodeData]):
             app = db.query(App).filter(App.id == target_app_id).first()
             if not app:
                 raise ValueError(f"[WorkflowNode] Target App {target_app_id} not found")
+            execution_organization_id = self.execution_context.get("organization_id")
+            app_organization_id = getattr(app, "organization_id", None)
+            if (
+                execution_organization_id
+                and app_organization_id
+                and str(app_organization_id) != str(execution_organization_id)
+            ):
+                raise ValueError("[WorkflowNode] Target App is unavailable")
 
             if not app.active_deployment_id:
                 raise ValueError(

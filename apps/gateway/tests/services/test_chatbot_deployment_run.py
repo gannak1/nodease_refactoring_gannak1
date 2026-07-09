@@ -159,6 +159,17 @@ def test_public_run_does_not_fallback_to_owner_execution_subject(monkeypatch):
     assert "execution_subject" not in ctx
 
 
+def test_public_run_rejects_workflow_node_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
 def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
     from apps.gateway.services import deployment_service as deployment_module
 
