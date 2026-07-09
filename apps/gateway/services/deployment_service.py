@@ -26,6 +26,21 @@ from apps.shared.services.permissions import has_workflow_permission
 logger = logging.getLogger(__name__)
 
 
+def _deployment_type_allowed_for_slug_trigger(
+    deployment_type: DeploymentType,
+    trigger_mode: str,
+) -> bool:
+    allowed_by_trigger = {
+        "api": {DeploymentType.API},
+        "app": {
+            DeploymentType.WEBAPP,
+            DeploymentType.WIDGET,
+            DeploymentType.CHATBOT,
+        },
+    }
+    return deployment_type in allowed_by_trigger.get(trigger_mode, set())
+
+
 class DeploymentService:
     """배포 관련 비즈니스 로직을 담당하는 Service"""
 
@@ -412,7 +427,10 @@ class DeploymentService:
         # 3. 활성상태 체크
         if not deployment.is_active:
             raise HTTPException(status_code=404, detail="Deployment is inactive")
-        if deployment.type == DeploymentType.WORKFLOW_NODE:
+        if not _deployment_type_allowed_for_slug_trigger(
+            deployment.type,
+            trigger_mode,
+        ):
             raise HTTPException(status_code=404, detail="Deployment not found.")
 
         # 4. 인증 검증 (App의 auth_secret 사용)

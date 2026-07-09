@@ -53,6 +53,7 @@ from apps.gateway.services.organization_context import (
 )
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
+from apps.shared.db.models.team import TeamKnowledgePermission, UserKnowledgePermission
 from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
@@ -926,6 +927,17 @@ def delete_knowledge_base(
                     doc.id,
                     type(e).__name__,
                 )
+
+    # KB permission rows do not cascade from knowledge_bases, so remove them
+    # in the same transaction before the hard delete.
+    db.query(UserKnowledgePermission).filter(
+        UserKnowledgePermission.knowledge_base_id == kb.id,
+        UserKnowledgePermission.grantee_organization_id == kb.organization_id,
+    ).delete(synchronize_session=False)
+    db.query(TeamKnowledgePermission).filter(
+        TeamKnowledgePermission.knowledge_base_id == kb.id,
+        TeamKnowledgePermission.grantee_organization_id == kb.organization_id,
+    ).delete(synchronize_session=False)
 
     # DB 삭제 (Cascade로 청크도 같이 삭제됨)
     db.delete(kb)

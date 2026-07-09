@@ -9,12 +9,15 @@ from sqlalchemy.orm import Session, joinedload
 from apps.gateway.auth.permissions import record_permission_denied
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.team import (
     Team,
+    TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserWorkflowPermission,
 )
@@ -27,6 +30,7 @@ from apps.shared.permissions import (
     AUTH_STATE_OPERATOR,
     AUTH_STATE_VIEWER,
     is_canonical_auth_state,
+    knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
     normalize_auth_state,
     workflow_auth_state_allows,
@@ -39,6 +43,7 @@ from apps.shared.schemas.team import (
     TeamUpdateRequest,
 )
 from apps.shared.services.permissions import (
+    get_effective_knowledge_base_auth_state,
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
     has_active_organization_membership,
@@ -188,6 +193,18 @@ def _resource_organization_id(
         if not workflow:
             raise HTTPException(status_code=404, detail="Workflow not found")
         return workflow.organization_id
+    if resource_type == "knowledge_base":
+        knowledge_base = (
+            db.query(KnowledgeBase)
+            .filter(
+                KnowledgeBase.id == resource_id,
+                KnowledgeBase.lifecycle_state == "active",
+            )
+            .first()
+        )
+        if not knowledge_base:
+            raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        return knowledge_base.organization_id
 
     credential = db.query(LLMCredential).filter(LLMCredential.id == resource_id).first()
     if not credential:
@@ -213,6 +230,15 @@ def _ensure_resource_permission_manager(
             organization_id=organization_id,
         )
         if workflow_auth_state_allows(effective_auth_state, "manage"):
+            return
+    elif resource_type == "knowledge_base":
+        effective_auth_state = get_effective_knowledge_base_auth_state(
+            db,
+            current_user.id,
+            resource_id,
+            organization_id=organization_id,
+        )
+        if knowledge_base_auth_state_allows(effective_auth_state, "manage"):
             return
     else:
         effective_auth_state = get_effective_llm_credential_auth_state(
@@ -593,6 +619,12 @@ class TeamService:
                     "workflow_id": request.resource_id,
                     "team_id": request.grantee_id,
                 }
+            elif request.resource_type == "knowledge_base":
+                model = TeamKnowledgePermission
+                filters = {
+                    "knowledge_base_id": request.resource_id,
+                    "team_id": request.grantee_id,
+                }
             else:
                 model = TeamLLMPermission
                 filters = {
@@ -609,6 +641,12 @@ class TeamService:
                 model = UserWorkflowPermission
                 filters = {
                     "workflow_id": request.resource_id,
+                    "user_id": request.grantee_id,
+                }
+            elif request.resource_type == "knowledge_base":
+                model = UserKnowledgePermission
+                filters = {
+                    "knowledge_base_id": request.resource_id,
                     "user_id": request.grantee_id,
                 }
             else:
@@ -673,6 +711,12 @@ class TeamService:
                     "workflow_id": request.resource_id,
                     "team_id": request.grantee_id,
                 }
+            elif request.resource_type == "knowledge_base":
+                model = TeamKnowledgePermission
+                filters = {
+                    "knowledge_base_id": request.resource_id,
+                    "team_id": request.grantee_id,
+                }
             else:
                 model = TeamLLMPermission
                 filters = {
@@ -684,6 +728,12 @@ class TeamService:
                 model = UserWorkflowPermission
                 filters = {
                     "workflow_id": request.resource_id,
+                    "user_id": request.grantee_id,
+                }
+            elif request.resource_type == "knowledge_base":
+                model = UserKnowledgePermission
+                filters = {
+                    "knowledge_base_id": request.resource_id,
                     "user_id": request.grantee_id,
                 }
             else:

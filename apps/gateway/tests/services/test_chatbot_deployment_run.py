@@ -44,6 +44,26 @@ def _run_public(db, url_slug, user_inputs, monkeypatch, trigger_mode="app"):
     return celery, result
 
 
+def _run_api_secret(db, url_slug, user_inputs, monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    celery = _CaptureCelery()
+    monkeypatch.setattr(deployment_module, "celery_app", celery)
+    monkeypatch.setattr("celery.result.AsyncResult", _FakeAsyncResult)
+
+    result = asyncio.run(
+        deployment_module.DeploymentService.run_deployment(
+            db=db,
+            url_slug=url_slug,
+            user_inputs=user_inputs,
+            trigger_mode="api",
+            auth_token="deploy-secret",
+            require_auth=True,
+        )
+    )
+    return celery, result
+
+
 def _run_authenticated(
     db,
     deployment_id,
@@ -165,6 +185,68 @@ def test_public_run_rejects_workflow_node_deployment(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.API,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBHOOK,
+        DeploymentType.WORKFLOW_NODE,
+    ],
+)
+def test_public_slug_run_rejects_non_public_app_deployment_types(
+    monkeypatch,
+    deployment_type,
+):
+    app_row, deployment_row = _deployed_app(deployment_type)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
+def test_api_slug_run_allows_api_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.API)
+    db = _Db(rows=[app_row, deployment_row])
+
+    celery, result = _run_api_secret(
+        db,
+        app_row.url_slug,
+        {"question": "x"},
+        monkeypatch,
+    )
+
+    assert _captured_context(celery)["trigger_mode"] == "api"
+    assert result["status"] == "success"
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.CHATBOT,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBAPP,
+        DeploymentType.WEBHOOK,
+        DeploymentType.WIDGET,
+        DeploymentType.WORKFLOW_NODE,
+    ],
+)
+def test_api_slug_run_rejects_non_api_deployment_types(monkeypatch, deployment_type):
+    app_row, deployment_row = _deployed_app(deployment_type)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_api_secret(db, app_row.url_slug, {"question": "x"}, monkeypatch)
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Deployment not found."
