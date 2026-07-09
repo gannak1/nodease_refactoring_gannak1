@@ -799,6 +799,41 @@ def test_user_knowledge_permission_combines_with_team_permission():
     )
 
 
+def test_non_active_knowledge_base_does_not_grant_effective_permission():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+
+    for lifecycle_state in ("archived", "deleted"):
+        knowledge_base = SimpleNamespace(
+            id=knowledge_base_id,
+            organization_id=organization_id,
+            lifecycle_state=lifecycle_state,
+        )
+        db = FakeDb(
+            first_values=[knowledge_base],
+            all_values=[[("manager",)], [("manager",)]],
+        )
+
+        assert (
+            get_effective_knowledge_base_auth_state(
+                db, user_id, knowledge_base_id, organization_id
+            )
+            == "none"
+        )
+
+        permission_db = FakeDb(
+            first_values=[knowledge_base],
+            all_values=[[("manager",)], [("manager",)]],
+        )
+        assert (
+            has_knowledge_base_permission(
+                permission_db, user_id, knowledge_base_id, "use", organization_id
+            )
+            is False
+        )
+
+
 def test_org_scoped_knowledge_base_requires_knowledge_base_organization_id():
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

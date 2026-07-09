@@ -721,10 +721,14 @@ def _authorize_team_knowledge_permission_change(
         .filter(
             KnowledgeBase.id == knowledge_base_id,
             KnowledgeBase.organization_id == organization_id,
+            KnowledgeBase.lifecycle_state == "active",
         )
         .first()
     )
-    if knowledge_base is None:
+    if (
+        knowledge_base is None
+        or getattr(knowledge_base, "lifecycle_state", "active") != "active"
+    ):
         raise_api_error(
             request,
             404,
@@ -1029,10 +1033,14 @@ def _authorize_user_knowledge_permission_change(
         .filter(
             KnowledgeBase.id == knowledge_base_id,
             KnowledgeBase.organization_id == organization_id,
+            KnowledgeBase.lifecycle_state == "active",
         )
         .first()
     )
-    if knowledge_base is None:
+    if (
+        knowledge_base is None
+        or getattr(knowledge_base, "lifecycle_state", "active") != "active"
+    ):
         raise_api_error(
             request,
             404,
@@ -1276,10 +1284,14 @@ def _authorize_knowledge_permission_read(
         .filter(
             KnowledgeBase.id == knowledge_base_id,
             KnowledgeBase.organization_id == organization_id,
+            KnowledgeBase.lifecycle_state == "active",
         )
         .first()
     )
-    if knowledge_base is None:
+    if (
+        knowledge_base is None
+        or getattr(knowledge_base, "lifecycle_state", "active") != "active"
+    ):
         raise_api_error(
             request,
             404,

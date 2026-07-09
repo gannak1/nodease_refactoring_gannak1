@@ -36,8 +36,8 @@ Request body:
 | --- | --- | --- |
 | `app_id` | yes | Target app. Server validates active organization and deploy/manage permission |
 | `type` | yes | `api`, `webapp`, `widget`, `chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook` |
-| `config` | yes | Deployment-specific config |
-| `is_active` | yes | Preview context. Inactive create may warn but does not activate |
+| `config` | no | Deployment-specific config. Defaults to `{}` |
+| `is_active` | no | Preview context. Defaults to `true`; inactive create may warn but does not activate |
 | `graph_snapshot` | no | If omitted, server resolves the current app/workflow deployment snapshot candidate |
 | `audience` | no | UI hint only. Security decisions use server-derived audience in create/enable paths |
 

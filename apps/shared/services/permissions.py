@@ -274,9 +274,16 @@ def _knowledge_base_scope(
         return None, None
 
     knowledge_base = (
-        db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_uuid).first()
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == knowledge_base_uuid,
+            KnowledgeBase.lifecycle_state == "active",
+        )
+        .first()
     )
     if not knowledge_base:
+        return None, None
+    if getattr(knowledge_base, "lifecycle_state", "active") != "active":
         return None, None
 
     knowledge_base_organization_uuid = coerce_uuid(knowledge_base.organization_id)

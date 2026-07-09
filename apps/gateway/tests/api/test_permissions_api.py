@@ -285,6 +285,70 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertIn(TeamKnowledgePermission, session.query_calls)
         self.assertIn(UserKnowledgePermission, session.query_calls)
 
+    def test_list_knowledge_permissions_hides_archived_knowledge_base(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                lifecycle_state="archived",
+            ),
+        )
+
+        response = self._get_knowledge_permissions(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Knowledge Base not found."),
+        )
+        self.assertNotIn(TeamKnowledgePermission, session.query_calls)
+        self.assertNotIn(UserKnowledgePermission, session.query_calls)
+
+    def test_put_team_knowledge_permission_hides_archived_knowledge_base(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                lifecycle_state="archived",
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+        )
+
+        response = self._put_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            payload={"auth_state": "viewer"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Knowledge Base not found."),
+        )
+        self.assertNotIn(Team, session.query_calls)
+        self.assertFalse(session.scalars_called)
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_not_called()
+
     def test_put_user_knowledge_permission_creates_row_for_organization_manager(self):
         user_id = uuid4()
         organization_id = uuid4()
@@ -400,6 +464,47 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit["action"], "user_knowledge_permission.deleted")
         self.assertEqual(audit["target_type"], "user_knowledge_permission")
         self.assertEqual(audit["target_id"], existing_permission.id)
+
+    def test_delete_user_knowledge_permission_hides_deleted_knowledge_base(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                lifecycle_state="deleted",
+            ),
+            existing_user_knowledge_permission=existing_permission,
+        )
+
+        response = self._delete_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Knowledge Base not found."),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.assertIsNone(session.lock_statement)
+        self.permission_audit.assert_not_called()
 
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
         # organization manager가 아니어도 대상 workflow의 manager 권한이 있으면 기존 row를 수정할 수 있다.
@@ -3794,7 +3899,7 @@ def _workflow(id, organization_id):
     )
 
 
-def _knowledge_base(id, organization_id, user_id):
+def _knowledge_base(id, organization_id, user_id, lifecycle_state="active"):
     """KB scope 검증에 필요한 필드만 채운 KnowledgeBase fixture를 만든다."""
     now = datetime.now(timezone.utc)
     return KnowledgeBase(
@@ -3806,6 +3911,7 @@ def _knowledge_base(id, organization_id, user_id):
         top_k=5,
         similarity_threshold=0.7,
         user_id=user_id,
+        lifecycle_state=lifecycle_state,
         created_at=now,
         updated_at=now,
     )
@@ -4122,6 +4228,7 @@ def _column_value(obj, column):
             "organization_id",
             missing,
         ),
+        "knowledge_bases.lifecycle_state": getattr(obj, "lifecycle_state", missing),
         "llm_credentials.id": getattr(obj, "id", missing),
         "llm_credentials.organization_id": getattr(
             obj,
