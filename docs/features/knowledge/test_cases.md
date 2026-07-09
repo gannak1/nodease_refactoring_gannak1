@@ -119,7 +119,8 @@ Status: Draft
 - External index success 이후 DB finalize failure가 발생하면 이전 active version을 유지하고 orphan cleanup을 queue에 넣는다.
 - DB finalize success 이후 object storage/vector index cleanup failure가 발생하면 새 active version은 유지하고 cleanup을 retry한다.
 - DB source sync 또는 shared vector save path가 같은 KB/document chunks를 동시에 교체하려 할 때 advisory lock 또는 versioned chunk set이 lost update를 막는다.
-- Document/KB delete는 DB commit 전에 object storage 또는 raw artifact를 먼저 삭제하지 않는다. Physical cleanup은 outbox/reconciler가 idempotent하게 수행한다.
+- Target cleanup outbox/reconciler cutover는 Document/KB delete가 DB commit 전에 object storage 또는 raw artifact를 먼저 삭제하지 않고, physical cleanup을 outbox/reconciler가 idempotent하게 수행함을 검증한다.
+- Current hard-delete baseline은 KB delete가 Knowledge lifecycle service boundary를 통과하고, direct KB permission row cleanup이 hard delete와 같은 transaction에서 먼저 일어나며, best-effort storage cleanup 실패가 API 실패나 raw path/raw exception log 노출로 이어지지 않음을 검증한다. 이 baseline은 target cleanup outbox/reconciler cutover를 대체하지 않는다.
 
 ## Client/UI Tests
 
