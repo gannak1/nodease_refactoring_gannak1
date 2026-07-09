@@ -39,6 +39,7 @@ import {
   canRunDeployedModule,
   getModuleRunDisabledReason,
 } from '@/app/features/app/utils/moduleRunNavigation';
+import { deploymentApiErrorMessage } from '@/app/features/workflow/utils/deploymentPreflightMessage';
 import { apiClient } from '@/lib/apiClient';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import type {
@@ -506,8 +507,8 @@ export default function MyModulePage() {
     try {
       await appApi.toggleDeployment(row.deployment.deployment_id);
       loadModules();
-    } catch {
-      alert('배포 상태 변경에 실패했습니다.');
+    } catch (error) {
+      alert(deploymentApiErrorMessage(error, '배포 상태 변경에 실패했습니다.'));
     }
   };
 

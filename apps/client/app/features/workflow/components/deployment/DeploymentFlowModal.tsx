@@ -101,6 +101,12 @@ export function DeploymentFlowModal({
         return '챗봇';
       case 'workflow_node':
         return '서브 모듈';
+      case 'mcp':
+        return 'MCP';
+      case 'schedule':
+        return '알람';
+      case 'webhook':
+        return '웹훅';
       default:
         return '배포';
     }
