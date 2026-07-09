@@ -1,7 +1,7 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
+Verified Against: feature/mba-166 @ 3644be49eb8182b6e76e9f3f25769b66a9da00ad
 
 ## Purpose
 
@@ -9,6 +9,8 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 active policy를 사용해 모델을 선택하고, judge LLM은 정책 갱신 시점에만 호출한다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트와 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다. 모델 라우팅은 LLM 노드 상세 화면의 자동 라우팅 토글, active policy runtime 선택, 20회 운영 로그 누적 갱신, 수동 정책 갱신, metadata redaction을 검증한다.
+
+현재 구현 기준으로 baseline 선택 UI는 최신 baseline을 자동 고정하지 않는다. 테스트는 baseline 목록에서 사용자가 row를 직접 선택한 뒤 B candidate 영역이 열리는 흐름을 기준으로 한다.
 
 ## Test Matrix
 
@@ -24,7 +26,8 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Model routing policy controls | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 정책 갱신 metadata | 미작성 | 미구현 |
+| FR-011 | Model routing policy controls / model-routing route | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 검증된 후보 이력 기반 model-routing 추천 | 작성 완료 | 부분 통과 |
+| FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 
 ## Test Implementation Tracking
 
@@ -60,14 +63,14 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-009 | Shared service | `apps/shared/tests/services/test_cost_optimizer_retention.py` | trace metadata retention 기준 만료일 계산, expired experiment purge, dry run, limit validation | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | builder 미만 진입 액션 disabled, availability 기반 차단, 직접 URL 진입 시 draft 로드 차단 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-010 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | availability, baseline latest/list, experiment history, compare, apply가 builder/write 권한 경계를 사용하고 모델/Knowledge 후보 사용 가능성을 검증 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-011 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | `모델 라우팅 최적화` 진입 버튼, 모델 선택 UI 유지, 자동 라우팅 토글 미노출, task type 선택 미노출 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 통과 |
+| FR-011 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | `모델 라우팅 최적화` 진입 버튼, 자동 라우팅 토글, ON/OFF에 따른 모델 선택 UI 전환, task type 선택 미노출 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 통과 |
 | FR-011 | Frontend route | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | `모델 라우팅 최적화` 버튼이 기존 A/B workspace가 아니라 전용 model-routing route로 이동 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
 | FR-011 | Workflow engine service | `apps/workflow_engine/tests/services/test_model_router.py` | `ModelRouter.resolve_policy()`가 런타임 하드코딩 키워드 없이 active policy rule의 일반 조건과 `keyword_any`만 평가하고, `ModelRouter.resolve()`는 기존 추천 분석 호환 경로를 유지 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_router.py` | 통과 |
 | FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 자동 라우팅 ON 실행이 judge를 호출하지 않고 active policy rule로 모델을 선택하며 safe routing metadata를 남김 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py -k auto_model_routing` | 통과 |
 | FR-011 | Trace metadata | `apps/shared/tests/services/test_tracing_metadata.py` | model routing decision summary가 safe metadata allowlist로 보존되고 raw prompt/secret은 제거됨 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_tracing_metadata.py` | 통과 |
 | FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 완료 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 부분 통과: 로컬 OpenAI dry-run 통과, Anthropic/Google은 API key 부재로 dry-run 실패 기대 |
-| FR-012 | Gateway/service | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 운영 로그/trace 기반 LLM 파라미터 추천 룰셋, safe evidence, A/B 후보 생성 patch | 미작성 | 후속 구현 시 실행 | 미구현 |
-| FR-012 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr12-parameter-recommendations.test.tsx` | 최적화 권장 모달, 추천 row, 후보 실험 만들기 CTA, 직접 적용 금지 | 미작성 | 후속 구현 시 실행 | 미구현 |
+| FR-012 | Gateway/service | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 운영 로그/trace 기반 LLM 파라미터 추천 룰셋, safe evidence, `direct_policy_update` 적용 경계 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 통과 기록 있음 |
+| FR-012 | Frontend component/API client | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 최적화 추천 모달, 추천 row 선택, 테스트하기 CTA, `direct_policy_update`만 직접 적용 | 작성 완료 | 관련 targeted test | 통과 기록 있음 |
 
 ## Model Routing Policy Tests
 
@@ -157,13 +160,13 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 
 ### Component Tests
 
-- baseline 선택 화면은 `최신 실행 로그로 비교하기`와 `이전 실행 로그 선택해서 비교하기`를 제공한다.
-- baseline 선택 화면은 최신 비교 가능 baseline을 미리 조회하고 실행 시각, 모델, 토큰, 비용, 실행 시간, 입력 preview, 출력 preview를 표시한다.
-- `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 최신 성공 실행 로그가 없으면 최신 선택 CTA는 사용할 수 없고 로그 없음 안내가 표시된다.
-- 이전 실행 로그 picker는 실행 시각, 상태, 모델, 비용, 토큰, 실행 시간, 입력 preview, 출력 preview, trace 존재 여부, downstream 상태를 표시한다.
-- 이전 실행 로그 picker는 성공한 LLM node run만 표시하고 실패한 node run은 표시하지 않는다.
-- 이전 실행 로그 picker는 output preview 또는 usage summary가 없는 node run을 표시하지 않는다.
-- 이전 실행 로그 picker는 input 복원 불가 baseline row도 목록에 표시하되 `비교 불가` 상태로 표시한다.
+- baseline 선택 화면은 검색/필터/정렬 가능한 baseline 목록을 바로 제공한다.
+- baseline 선택 화면은 각 baseline row에 실행 시각, 모델, 토큰, 비용, 실행 시간, 입력 preview, 출력 preview를 표시한다.
+- `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 성공 실행 로그가 없으면 baseline 목록은 비어 있고 로그 없음 안내가 표시된다.
+- baseline 목록은 실행 시각, 상태, 모델, 비용, 토큰, 실행 시간, 입력 preview, 출력 preview, trace 존재 여부, downstream 상태를 표시한다.
+- baseline 목록은 성공한 LLM node run만 표시하고 실패한 node run은 표시하지 않는다.
+- baseline 목록은 output preview 또는 usage summary가 없는 node run을 표시하지 않는다.
+- baseline 목록은 input 복원 불가 baseline row도 표시하되 `비교 불가` 상태로 표시한다.
 - picker 검색은 입력/출력 preview 기준으로 동작한다.
 - picker 필터는 모델, 날짜 범위, 비교 가능 여부를 지원한다.
 - picker 정렬은 최신순, 비용 높은순, 비용 낮은순, 토큰 높은순, 실행 시간 긴순을 지원한다.
@@ -185,8 +188,8 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 
 ### Scenario Tests
 
-- 사용자가 최신 실행 로그를 선택하면 가장 최근 비교 가능 baseline이 자동으로 고정되고 A/B compare workspace로 이동한다.
-- 사용자가 이전 로그 picker에서 특정 row를 선택하면 해당 로그가 A baseline으로 고정된다.
+- 사용자가 baseline 목록에서 비교 가능한 row를 직접 선택하면 해당 baseline이 고정되고 A/B compare workspace로 이동한다.
+- 사용자가 baseline 목록에서 특정 row를 선택하면 해당 로그가 A baseline으로 고정된다.
 - 사용자가 `비교 불가` baseline row를 선택하면 A/B compare workspace로 이동하지 않고 input 복원 불가 안내를 본다.
 
 ## FR-003 B 후보 설정 입력
@@ -195,8 +198,8 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 
 - B candidate 영역은 현재 LLM 노드 설정 복사본으로 초기화된다.
 - B candidate 영역은 `후보 옵션` 같은 중복 제목 대신 `테스트명` 입력을 제공한다.
-- 원본 LLM 노드 상세 설정은 자동 라우팅 토글을 제공하지 않는다.
-- 원본 LLM 노드 상세 설정은 기본 모델과 fallback 모델 선택 UI를 항상 표시한다.
+- 원본 LLM 노드 상세 설정은 자동 라우팅 토글을 제공한다.
+- 원본 LLM 노드 상세 설정은 자동 라우팅 OFF일 때 기본 모델과 fallback 모델 선택 UI를 표시하고, ON일 때는 policy 상태 panel을 표시한다.
 - 원본 LLM 노드 상세 설정은 `모델 라우팅 최적화` 진입 버튼을 제공한다.
 - `모델 라우팅 최적화` 진입 버튼은 기존 A/B workspace가 아니라 `/modules/{workflowId}/model-routing/{nodeId}` 전용 추천 화면으로 이동한다.
 - 모델 라우팅 추천 화면의 `후보 실험 만들기` 보조 액션만 기존 `/cost-optimizer/{nodeId}` workspace로 이동한다.

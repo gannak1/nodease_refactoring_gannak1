@@ -35,6 +35,19 @@ Cost Optimizer는 이 질문에 답하기 위한 기능이다.
 - 빌더로서, 선택한 후보의 출력이 다음 노드에서 사용할 수 있는 형태인지 확인하고 싶다.
 - 운영자로서, 비용 최적화 비교 실행에서 발생한 LLM 비용도 일반 실행 비용처럼 기록되기를 원한다.
 
+## Current Implementation Snapshot
+
+현재 구현은 Cost Optimizer를 두 흐름으로 나눈다.
+
+1. `비교 분석 테스트`: 특정 LLM 노드의 과거 `workflow_node_runs.id`를 baseline으로 직접 선택하고, 같은 입력으로 B candidate를 실행해 결과를 비교한다.
+2. `모델 라우팅 최적화`: 최신 baseline과 과거 Cost Optimizer experiment/candidate 이력을 읽어, 사용자가 선택한 전략(`자동 균형`, `비용 우선`, `속도 우선`)에 맞는 검증된 후보가 있는지 보여준다.
+
+baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는다. 사용자는 baseline 목록에서 비교 기준 실행 로그를 직접 선택해야 한다. `GET /baselines/latest` API는 모델 라우팅 추천 화면과 API 호환을 위해 남아 있지만, A/B workspace 진입의 기본 UX는 “선택 없이 최신 baseline 자동 사용”이 아니다.
+
+자동 모델 라우팅은 별도 policy 테이블/API를 source of truth로 쓰는 완성형 구현이 아니라, 현재 LLM node data 또는 Cost Optimizer candidate 안의 `auto_model_routing`, `model_routing_policy`를 기준으로 동작한다. active policy가 없는 Cost Optimizer candidate는 Gateway가 사용 가능한 모델 목록으로 bootstrap policy를 materialize한 뒤 compare/apply를 수행한다.
+
+파라미터 추천은 미구현이 아니다. `GET /cost-optimizer/parameter-recommendations`는 배포 후 운영 로그 기반 추천을 반환하고, `PATCH /cost-optimizer/apply-recommendations`는 현재 `direct_policy_update` 성격의 추천만 즉시 draft에 반영한다. 일반 파라미터 변경 추천은 A/B 후보 실험을 거쳐 검증하는 흐름으로 다룬다.
+
 ## Functional Requirements
 
 Functional Requirement 상태는 다음 기준으로 구분한다.
@@ -60,7 +73,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | ID | 기능명 | 시연 중요도 | 상태 | 상태 상세 | 요약 |
 | --- | --- | --- | --- | --- | --- |
 | FR-001 | LLM 노드 단위 A/B 테스트 진입 | P1 | `구현 완료` | `테스트 통과` | LLM 노드 상세 화면에서 해당 노드 기준 A/B 테스트 진입 액션과 availability 검증을 제공한다. |
-| FR-002 | A baseline 실행 로그 선택 | P1 | `구현 완료` | `테스트 통과` | 최신 실행 로그 또는 사용자가 고른 이전 실행 로그를 A 기준으로 선택하는 API/UI 경로를 제공한다. |
+| FR-002 | A baseline 실행 로그 선택 | P1 | `구현 완료` | `테스트 통과` | baseline 목록에서 사용자가 직접 A 기준 실행 로그를 선택한다. 최신 baseline API는 존재하지만 현재 기본 UX는 자동 선택하지 않는다. |
 | FR-003 | 비교 가능한 옵션 | P1 | `구현 완료` | `테스트 통과` | 모델, fallback 모델, prompt, Knowledge/RAG, 고급 파라미터, 출력 형식을 바꿔 비교한다. 작업 유형은 사용자 선택값으로 노출하지 않는다. |
 | FR-004 | 동일 입력 기준 비교 | P1 | `구현 완료` | `테스트 통과` | A baseline의 target LLM node 입력을 B 후보 실행 입력으로 고정한다. |
 | FR-005 | 하이브리드 비교 | P1 | `구현 완료` | `테스트 통과` | A는 과거 로그로 고정하고 B만 새 설정으로 실행해 비교한다. |
@@ -69,8 +82,8 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `진행중` | `문서화, 구현 필요` | LLM 노드는 자동 모델 라우팅을 켜면 저장된 active policy로 실행 시점 모델을 선택한다. Judge LLM은 매 실행마다 호출하지 않고, 배포 후 운영 로그 20회 누적 또는 사용자의 수동 갱신 요청 시 정책 갱신에만 사용한다. |
-| FR-012 | LLM 파라미터 추천 룰셋 | P2 | `미완료` | `문서화, 구현 필요` | 운영 로그와 trace summary를 기반으로 `max_tokens`, `temperature`, RAG context 같은 후보 조정안을 추천한다. LLM은 후보 생성/품질 평가 보조로만 사용하고, 추천 적용은 A/B 후보 생성 후 사용자 확인을 거친다. |
+| FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `진행중` | `부분 구현, 테스트 있음` | LLM 노드는 `auto_model_routing`과 `model_routing_policy`가 있으면 active policy rule로 실행 모델을 선택한다. 실행 중 judge는 호출하지 않는다. 별도 policy table/API와 background refresh job은 후속 보강 대상이다. |
+| FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
 
@@ -91,14 +104,11 @@ A baseline의 canonical id는 `workflow_node_runs.id`다. `workflow_runs`는 bas
 
 Baseline 후보는 target LLM node가 성공적으로 완료된 `workflow_node_runs` 중 output preview와 usage summary를 모두 제공할 수 있는 기록만 포함한다. 실패한 node run, output preview가 없는 node run, usage summary가 없는 node run은 Cost Optimizer baseline 후보에서 제외하며, 실패 원인 분석이나 불완전한 실행 기록 확인은 실행 로그/trace 화면의 책임으로 둔다.
 
-사용자는 다음 두 방식 중 하나로 A baseline을 정할 수 있어야 한다.
+사용자는 baseline 목록에서 특정 실행 로그를 직접 골라 A baseline을 정한다.
 
-- 최신 실행 로그로 비교하기
-- 이전 실행 로그 선택해서 비교하기
+현재 UI는 `최신 실행 로그로 비교하기` CTA로 baseline을 자동 고정하지 않는다. target LLM node의 성공한 실행 기록 중 가장 최근 비교 가능 baseline을 조회하는 API는 존재하지만, Cost Optimizer workspace는 사용자가 기준 실행을 확인하고 선택한 뒤에만 B candidate 편집 영역을 연다.
 
-`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 `workflow_node_runs`를 A baseline으로 사용한다.
-
-`이전 실행 로그 선택해서 비교하기`는 로그 선택 화면을 열고, 사용자가 특정 실행 로그를 직접 고르게 한다.
+baseline 선택 화면은 로그 선택 화면을 열고, 사용자가 특정 실행 로그를 직접 고르게 한다.
 
 로그 선택 화면은 다음 정보를 제공해야 한다.
 
@@ -422,7 +432,9 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 | `pending_review` | 새 정책안이 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 반영 보류 |
 | `failed` | 정책 갱신 실패 |
 
-정책 저장은 LLM 노드 data JSON이 아니라 별도 정책 테이블을 source of truth로 둔다. 노드 data에는 자동 라우팅 ON/OFF와 현재 정책 참조에 필요한 최소 식별자만 둘 수 있다. 정책 본문, 정책 버전, judge 갱신 이력, 갱신 실패 사유, 보류 정책은 별도 테이블에 저장한다.
+현재 구현의 정책 저장 source of truth는 LLM node data 또는 Cost Optimizer candidate에 포함된 `model_routing_policy` JSON이다. 이 JSON에는 `status`, `policy_id`, `policy_version`, `active_policy`, `refresh`가 들어갈 수 있다.
+
+별도 정책 테이블에 정책 본문, 버전, judge 갱신 이력, 실패 사유, 보류 정책을 저장하는 구조는 후속 확장 설계로 남긴다. 현재 문서에서 별도 table을 언급할 때는 “현재 구현”이 아니라 “후속 persistence 설계”로 해석한다.
 
 자동 라우팅 ON 상태에서 운영 실행은 다음 순서로 동작한다.
 
@@ -536,7 +548,9 @@ gate를 통과하지 못하면 새 정책안은 `pending_review`로 저장하고
 
 ### FR-012. LLM 파라미터 추천 룰셋
 
-Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 후보도 추천할 수 있어야 한다.
+Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 후보도 추천한다.
+
+현재 구현은 `CostOptimizerParameterRecommendationService`와 Gateway의 `GET /cost-optimizer/parameter-recommendations`, `PATCH /cost-optimizer/apply-recommendations`를 통해 일부 추천을 제공한다. 운영 로그가 부족하면 모델 라우팅 enable/refresh 계열 추천만 반환할 수 있고, 충분한 운영 sample이 있으면 `max_tokens`, `temperature`, `top_p`, `frequency_penalty`, RAG context 관련 추천을 만든다.
 
 파라미터 추천의 기본 원칙은 `룰셋 + 운영 로그 통계`다. LLM이 직접 추천 결정을 내리지 않는다. LLM은 프롬프트 축소 후보 생성, 변경안 설명 문장 생성, 샘플 품질 judge 같은 보조 역할로만 사용할 수 있다.
 

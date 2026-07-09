@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
+Verified Against: feature/mba-166 @ 3644be49eb8182b6e76e9f3f25769b66a9da00ad
 
 ## Purpose
 
@@ -10,12 +10,14 @@ FR-011 모델 라우팅은 LLM 노드 상세 화면의 `자동 모델 라우팅`
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
+현재 구현 기준으로 `최적화`와 `비교 분석 테스트`는 LLM 노드 상세 상단의 별도 액션이다. `최적화`는 추천 모달을 열고, 추천 모달의 `테스트하기`는 baseline을 자동 선택하지 않은 채 Cost Optimizer workspace로 이동한다. `비교 분석 테스트`는 사용자가 baseline 목록에서 기준 실행을 직접 선택하는 전용 workspace로 이동한다.
+
 ## FR Mapping
 
 | FR | 화면/컴포넌트 | UI 책임 |
 | --- | --- | --- |
 | FR-001 | LLM node detail action | LLM 노드에서만 A/B 테스트 진입 액션을 제공한다. |
-| FR-002 | Baseline log picker | 최신 실행 로그 또는 이전 실행 로그를 A baseline으로 선택한다. |
+| FR-002 | Baseline log picker | baseline 목록에서 사용자가 A 기준 실행 로그를 직접 선택한다. |
 | FR-003 | Candidate editor | B 후보의 모델, prompt, parameter, 출력 형식을 편집한다. |
 | FR-004 | Baseline input lock display | A baseline 입력이 B 후보 실행 입력으로 고정됨을 보여준다. |
 | FR-005 | Hybrid compare flow | A는 재실행하지 않고 B만 실행하는 비교 흐름을 안내한다. |
@@ -24,8 +26,8 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Model routing policy controls | LLM 노드 상세 화면에서 자동 모델 라우팅 ON/OFF, 정책 상태, 20회 갱신 진행도, 수동 정책 갱신 액션을 제공한다. |
-| FR-012 | Parameter recommendation modal | 워크플로우 최적화 권장 항목에서 LLM 파라미터 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 A/B 후보를 만들 수 있게 한다. |
+| FR-011 | Model routing policy controls / model-routing route | LLM 노드 상세 화면에서 자동 모델 라우팅 ON/OFF와 정책 상태를 표시하고, 전용 model-routing 화면에서 검증된 후보 실험 이력 기반 추천을 보여준다. |
+| FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 
 ## Implementation Tracking
 
@@ -43,8 +45,8 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
 | FR-009 | Cost/usage metric display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-011 | Model routing policy controls | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/ModelRoutingPolicyPanel.tsx` | 미구현 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-model-routing-policy.test.tsx` | 미작성 |
-| FR-012 | Parameter recommendation modal | `apps/client/app/dashboard/mymodule/page.tsx`, 후속 `ParameterRecommendationModal` | 미구현 | `apps/client/app/features/workflow/tests/costOptimizer/fr12-parameter-recommendations.test.tsx` | 미작성 |
+| FR-011 | Model routing policy controls, model-routing recommendation route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 부분 구현 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
+| FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 
 ## Screens
 
@@ -85,18 +87,11 @@ A/B 테스트 진입 액션은 LLM 노드 상세 패널의 상단 헤더 우측 
 
 관련 FR: FR-002, FR-004, FR-005
 
-`A/B 테스트`를 누르면 A baseline 선택 화면을 먼저 연다.
+`비교 분석 테스트` 또는 추천 모달의 `테스트하기`를 누르면 A baseline 선택 화면을 먼저 연다.
 
-화면은 두 가지 선택지를 제공한다.
+현재 baseline 선택 화면은 최신 로그 CTA로 baseline을 자동 고정하지 않는다. 화면은 검색/필터/정렬 가능한 baseline log picker를 바로 보여주고, 사용자가 특정 row를 직접 선택해야 A/B workspace가 열린다.
 
-- `최신 실행 로그로 비교하기`
-- `이전 실행 로그 선택해서 비교하기`
-
-`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 baseline을 자동 선택한다.
-
-baseline 선택 화면은 진입 시 최신 baseline을 미리 조회하고, `최신 실행 로그로 비교하기` CTA 안에 최신 로그 요약을 표시한다. 사용자는 CTA를 누르기 전에 어떤 실행 로그가 A 기준으로 고정될지 확인할 수 있어야 한다.
-
-최신 로그 요약은 다음 정보를 표시한다.
+baseline row는 다음 정보를 표시한다.
 
 - 실행 시각
 - 모델
@@ -105,10 +100,9 @@ baseline 선택 화면은 진입 시 최신 baseline을 미리 조회하고, `�
 - 실행 시간
 - 입력 preview
 - 출력 preview
-
-최신 비교 가능 baseline이 없으면 최신 CTA 영역에 로그 없음 안내를 표시하고, `이전 실행 로그 선택해서 비교하기` 경로를 사용할 수 있게 한다.
-
-`이전 실행 로그 선택해서 비교하기`는 baseline log picker를 연다.
+- trace 존재 여부
+- downstream 호환성 상태
+- 비교 가능 여부
 
 ### Baseline Log Picker
 

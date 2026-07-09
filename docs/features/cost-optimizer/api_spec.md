@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
+Verified Against: feature/mba-166 @ 3644be49eb8182b6e76e9f3f25769b66a9da00ad
 
 ## Purpose
 
@@ -9,6 +9,10 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 저장된 active policy를 사용해 모델을 선택한다. Judge LLM은 매 실행마다 호출하지 않고 정책 갱신 endpoint 또는 background job에서만 호출한다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
+
+현재 구현 기준에서 모델 라우팅 policy 전용 REST API와 별도 policy table은 아직 source of truth가 아니다. 자동 라우팅 설정은 LLM node data 또는 Cost Optimizer candidate의 `auto_model_routing`, `model_routing_policy` JSON을 통해 compare/apply/runtime으로 전달된다. active policy가 없는 Cost Optimizer candidate는 Gateway가 사용 가능한 모델 목록으로 bootstrap policy를 materialize한다.
+
+파라미터 추천 API는 구현되어 있다. `GET /cost-optimizer/parameter-recommendations`는 운영 로그 기반 추천을 반환하고, `PATCH /cost-optimizer/apply-recommendations`는 `direct_policy_update` 추천만 현재 draft에 즉시 반영한다.
 
 ## FR Mapping
 
@@ -24,8 +28,8 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | LLM node별 모델 라우팅 policy 조회/수정/수동 갱신 API를 제공한다. runtime은 active policy를 사용하고, judge 호출은 정책 갱신 작업에서만 수행한다. |
-| FR-012 | 현재 Cost Optimizer API는 LLM 파라미터 추천 endpoint를 제공하지 않는다. 후속 API는 운영 로그와 trace summary를 분석해 파라미터 조정 후보를 반환하고, 직접 적용 대신 compare candidate 생성을 기본으로 한다. |
+| FR-011 | 현재 API는 compare/apply/apply-recommendations 경로에서 `auto_model_routing`과 `model_routing_policy`를 검증하고 materialize한다. runtime은 active policy를 사용하고 judge 호출은 하지 않는다. 전용 policy 조회/수정/refresh API는 후속이다. |
+| FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 
 ## Endpoints
 
@@ -35,11 +39,10 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest` | 최신 baseline 실행 로그 조회 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines` | baseline 실행 로그 목록 검색/필터/정렬 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments` | 과거 experiment/candidate 결과 목록 조회 | FR-006, FR-009, FR-010 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations` | 운영 로그 기반 LLM 파라미터/모델 라우팅 추천 조회 | FR-012 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations` | `direct_policy_update` 추천을 현재 draft에 즉시 적용 | FR-012 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보 실행 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
-| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 모델 라우팅 policy 상태 조회 | FR-011 | builder 이상 |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 policy 설정 수정 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 운영 로그 기반 policy 수동 갱신 요청 | FR-011 | builder 이상 |
 
 ## Implementation Tracking
 
@@ -57,12 +60,23 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | `PATCH apply` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-011 | model routing policy API/runtime contract | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/services/model_routing_policy_service.py`, `apps/shared/db/models/model_routing_policy.py` | 미구현 | `apps/gateway/tests/api/cost_optimizer/test_model_routing_policy_api.py`, `apps/workflow_engine/tests/services/test_model_routing_policy.py` | 미작성 |
-| FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py` 또는 workflow endpoint helper | 미구현 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 미작성 |
+| FR-011 | model routing candidate materialization/runtime contract | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/services/model_router.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 부분 구현 | `apps/workflow_engine/tests/services/test_model_router.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 통과 기록 있음 |
+| FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 
 ## Model Routing Policy Contract
 
 이 섹션은 FR-011 정책 기반 자동 모델 라우팅의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, judge LLM은 호출하지 않는다. Judge LLM 호출은 policy refresh 작업에서만 수행한다.
+
+현재 구현에서 이 계약은 전용 `/model-routing/policy` API가 아니라 다음 경로로 부분 충족된다.
+
+- Cost Optimizer compare/apply request의 `candidate.auto_model_routing`, `candidate.model_routing_policy`
+- LLM node data의 `auto_model_routing`, `model_routing_policy`
+- Gateway의 `_materialize_cost_optimizer_candidate_model_routing_policy()`
+- Workflow Engine의 `ModelRouter.resolve_policy()`
+- Workflow Engine의 `LLMNode._resolve_model_routing_policy()`
+- 정책 JSON 생성/정규화 helper인 `ModelRoutingPolicyRefreshService`
+
+따라서 아래 `GET/PATCH/POST policy` 형태는 후속 전용 API 설계이며, 현재 구현의 public API 계약으로 단정하지 않는다.
 
 Policy refresh는 모델 변경을 의미하지 않는다. `auto_20_runs` 또는 `manual_refresh`는 active policy 재평가 trigger이며, 검증된 저비용 후보가 품질 gate를 통과한 경우에만 active policy를 변경한다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
 
@@ -167,9 +181,19 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 - `pending_review`: 새 정책안은 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 운영에 반영하지 않았다.
 - `failed`: 로그 부족, credential/model 사용 불가, judge 호출 실패 등으로 갱신하지 못했다.
 
-### Persistence Model
+### Current Persistence Boundary
 
-정책 저장 source of truth는 별도 테이블이다.
+현재 구현은 별도 `llm_node_model_routing_policies` 테이블을 사용하지 않는다. policy 본문은 LLM node data 또는 Cost Optimizer candidate settings의 JSON에 포함된다.
+
+현재 candidate가 자동 라우팅을 켰지만 active policy가 없으면 Gateway는 사용 가능한 verified chat model 후보를 조회한 뒤 `ModelRoutingPolicyRefreshService.default_rule_policy()`로 bootstrap policy를 만들어 candidate settings에 병합한다.
+
+이 경계 때문에 현재 API에서 추적 가능한 정보는 candidate settings, workflow graph node data, 실행 trace metadata, Cost Optimizer experiment/candidate row에 남는 값이다. policy refresh 이력 전용 row는 아직 없다.
+
+### Future Persistence Model
+
+다음 persistence model은 후속 확장 설계다. 현재 구현된 DB source of truth가 아니다.
+
+정책 저장 source of truth를 별도 테이블로 분리할 경우 다음 구조를 사용한다.
 
 #### `llm_node_model_routing_policies`
 
