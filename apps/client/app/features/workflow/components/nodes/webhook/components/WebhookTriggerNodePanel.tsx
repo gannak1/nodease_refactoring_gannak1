@@ -118,6 +118,10 @@ export function WebhookTriggerNodePanel({
   // 폴링 interval과 timeout을 저장하기 위한 ref
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const captureSessionRef = useRef<{
+    urlSlug: string;
+    captureId: string;
+  } | null>(null);
 
   // 현재 워크플로우의 appId 가져오기
   const currentWorkflow = workflows.find((w) => w.id === activeWorkflowId);
@@ -164,6 +168,56 @@ export function WebhookTriggerNodePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    return () => {
+      clearCaptureTimers();
+      const session = captureSessionRef.current;
+      captureSessionRef.current = null;
+      if (session) {
+        void webhookApi
+          .cancelCapture(session.urlSlug, session.captureId)
+          .catch((error) => {
+            console.error('Failed to cancel capture on unmount:', error);
+          });
+      }
+    };
+  }, []);
+
+  const toViewerPayload = (payload: unknown): Record<string, unknown> => {
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return payload as Record<string, unknown>;
+    }
+    return { payload };
+  };
+
+  const clearCaptureTimers = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+
+  const cancelActiveCapture = async () => {
+    const session = captureSessionRef.current;
+    captureSessionRef.current = null;
+    clearCaptureTimers();
+    setIsCaptureMode(false);
+
+    if (!session) {
+      return;
+    }
+
+    try {
+      await webhookApi.cancelCapture(session.urlSlug, session.captureId);
+    } catch (error) {
+      console.error('Failed to cancel capture:', error);
+    }
+  };
+
   const handleAddMapping = () => {
     const newMapping: VariableMapping = {
       variable_name: '',
@@ -202,6 +256,10 @@ export function WebhookTriggerNodePanel({
 
     try {
       const capture = await webhookApi.startCapture(urlSlug);
+      captureSessionRef.current = {
+        urlSlug,
+        captureId: capture.capture_id,
+      };
       setIsCaptureMode(true);
 
       // 폴링 시작: 2초마다 상태 확인
@@ -211,9 +269,9 @@ export function WebhookTriggerNodePanel({
             urlSlug,
             capture.capture_id,
           );
-          if (status.status === 'captured' && status.payload) {
+          if (status.status === 'captured' && status.payload !== undefined) {
             // Payload 캡처 성공
-            setCapturedPayload(status.payload);
+            setCapturedPayload(toViewerPayload(status.payload));
 
             // 노드 데이터에 캡처된 Paylaod 저장 (테스트용)
             updateNodeData(nodeId, {
@@ -222,7 +280,9 @@ export function WebhookTriggerNodePanel({
             });
 
             setIsModalOpen(true);
-            handleCancelCapture();
+            captureSessionRef.current = null;
+            clearCaptureTimers();
+            setIsCaptureMode(false);
             toast.success('Webhook Payload가 캡처되었습니다!', {
               duration: 3000,
             });
@@ -234,7 +294,7 @@ export function WebhookTriggerNodePanel({
 
       // 30초 후 자동 취소
       timeoutRef.current = setTimeout(() => {
-        handleCancelCapture();
+        void cancelActiveCapture();
       }, 30000);
     } catch (error) {
       console.error('Failed to start capture:', error);
@@ -243,16 +303,7 @@ export function WebhookTriggerNodePanel({
   };
 
   const handleCancelCapture = () => {
-    // Interval과 timeout 정리
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    setIsCaptureMode(false);
+    void cancelActiveCapture();
   };
 
   const handlePayloadSelect = (path: string) => {
@@ -283,12 +334,18 @@ export function WebhookTriggerNodePanel({
     toast.success(`변수 '${finalVarName}' (경로: ${path}) 추가됨!`);
   };
 
+  const modalPayload =
+    capturedPayload ??
+    (data.captured_payload === undefined
+      ? null
+      : toViewerPayload(data.captured_payload));
+
   return (
     <>
       <PayloadViewerModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        payload={capturedPayload}
+        payload={modalPayload}
         onSelect={handlePayloadSelect}
       />
       <div className="flex flex-col gap-2">

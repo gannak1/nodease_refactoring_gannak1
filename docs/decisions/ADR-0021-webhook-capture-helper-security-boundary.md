@@ -20,17 +20,18 @@ The capture helper is different. `GET /api/v1/hooks/{url_slug}/capture/start` an
 
 ## Decision
 
-Webhook capture start/status requires an authenticated user session and target workflow `deploy` permission. App secret authentication alone cannot start or read capture sessions.
+Webhook capture start/status/cancel requires an authenticated user session and target workflow `deploy` permission. App secret authentication alone cannot start, read, or cancel capture sessions.
 
-Capture sessions use a server-issued `capture_id` nonce and a short TTL. Status polling must provide the nonce and must be performed by the same user that started the session. Captured sessions are deleted after the captured status is read once.
+Capture sessions use a server-issued `capture_id` nonce and a short TTL. Status polling and cancellation must provide the nonce and must be performed by the same user that started the session. Captured sessions are deleted after the captured status is read once. Cancelled sessions are deleted immediately, and later webhooks follow the normal execution path.
 
-The server does not store raw webhook payload in `CAPTURE_SESSIONS`. It stores only a redacted/capped structured preview suitable for workflow test input. Secret-like keys and values are redacted, and nested structures are depth/item/string capped.
+The server does not store raw webhook payload in `CAPTURE_SESSIONS`. It stores only a redacted/capped structured preview suitable for workflow test input. Sensitive keys and known secret-like value patterns are redacted, and nested structures are depth/item/string capped.
 
 ## Rationale
 
 - The app secret is intended for public run/webhook execution, not for reading captured payload.
 - A session user with workflow `deploy` permission is the actor most closely aligned with publishing and debugging the webhook surface.
 - Nonce and TTL reduce stale-session and cross-user polling risk.
+- Explicit cancellation prevents a UI-cancelled capture session from continuing to intercept webhooks.
 - Redacted/capped preview preserves the workflow testing use case without turning capture into raw payload storage.
 
 ## Affected Files

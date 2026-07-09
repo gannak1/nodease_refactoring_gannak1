@@ -16,6 +16,7 @@ Verified Against: TBD
 | POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | App secret via query token, Bearer header, or `X-Webhook-Secret` |
 | GET | `/api/v1/hooks/{url_slug}/capture/start` | Start a short-lived webhook payload capture session | User session + target workflow `deploy` permission |
 | GET | `/api/v1/hooks/{url_slug}/capture/status?capture_id=...` | Poll one capture session and return a redacted preview once captured | User session + same requester + target workflow `deploy` permission + capture nonce |
+| POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
 
 ## Request And Response Models
 
@@ -135,7 +136,17 @@ Captured:
 }
 ```
 
-`payload` is a redacted/capped preview for workflow test input convenience. It is not raw webhook payload storage. Secret-like keys and values are redacted, nested structures are depth/item capped, and the session is deleted after a captured status read.
+`payload` is a redacted/capped preview for workflow test input convenience. It is not raw webhook payload storage. Sensitive keys and known secret-like value patterns are redacted, nested structures are depth/item capped, and the session is deleted after a captured status read.
+
+### Webhook Capture Cancel Response
+
+```json
+{
+  "status": "cancelled"
+}
+```
+
+Cancel deletes the matching capture session immediately. A webhook received after cancellation follows the normal execution path instead of the capture path.
 
 ## Errors
 
@@ -168,8 +179,9 @@ Blocking preflight failure:
 - HTTP status: `409 Conflict`.
 - Broad exception handling must preserve this envelope and must not wrap it as generic `400`.
 - Validation failures unrelated to preflight keep existing validation error semantics.
-- Missing or invalid user session on capture start/status returns `401`.
+- Missing or invalid user session on capture start/status/cancel returns `401`.
 - Missing capture nonce on status returns request validation error.
+- Missing capture nonce on cancel returns request validation error.
 - Missing, expired, wrong, or different-requester capture session returns `404`.
 - Same-scope workflow permission denial returns `403`.
 
@@ -180,4 +192,4 @@ Blocking preflight failure:
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces or authenticated deployment `run`/`run-info` endpoints. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
 - Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.
 - Public webhook trigger execution uses app secret authentication.
-- Webhook capture management uses user session authentication and target workflow `deploy` permission. App secret alone cannot start or read capture sessions.
+- Webhook capture management uses user session authentication and target workflow `deploy` permission. App secret alone cannot start, read, or cancel capture sessions.

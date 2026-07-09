@@ -42,15 +42,31 @@ class TestWebhookApi(unittest.TestCase):
         app.dependency_overrides = {}
         CAPTURE_SESSIONS.clear()
 
-    def _mock_db_with_app(self):
+    def _mock_db_with_app(self, *, active_deployment=False):
         mock_db_session = MagicMock()
         mock_app = MagicMock()
+        mock_app.id = uuid4()
         mock_app.url_slug = self.url_slug
         mock_app.auth_secret = self.auth_secret
         mock_app.workflow_id = self.workflow_id
-        mock_db_session.query.return_value.filter.return_value.first.return_value = (
-            mock_app
-        )
+        mock_app.active_deployment_id = uuid4() if active_deployment else None
+        mock_app.created_by = uuid4()
+        mock_app.organization_id = uuid4()
+
+        mock_deployment = MagicMock()
+        mock_deployment.id = mock_app.active_deployment_id
+
+        def query(model):
+            result = MagicMock()
+            if model is webhook_endpoint.App:
+                result.filter.return_value.first.return_value = mock_app
+            elif model is webhook_endpoint.WorkflowDeployment:
+                result.filter.return_value.first.return_value = mock_deployment
+            else:
+                result.filter.return_value.first.return_value = None
+            return result
+
+        mock_db_session.query.side_effect = query
         return mock_db_session
 
     def _authorize_capture_user(self, mock_db_session):
@@ -121,8 +137,20 @@ class TestWebhookApi(unittest.TestCase):
             webhook_endpoint.ensure_workflow_permission = original_ensure
 
     def test_capture_preview_redacts_sensitive_fields_and_caps_shape(self):
+        github_token = "ghp_" + "a" * 36
+        jwt_token = f"eyJ{'a' * 20}.{'b' * 20}.{'c' * 20}"
+        slack_token = "xoxb-" + "1" * 12
+        aws_access_key = "AKIA" + "A" * 16
+        google_api_key = "AIza" + "a" * 35
+        pem_key = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
         payload = {
             "headers": {"Authorization": "Bearer very-sensitive-token-value"},
+            "github": github_token,
+            "jwt": jwt_token,
+            "slack": slack_token,
+            "aws": aws_access_key,
+            "google": google_api_key,
+            "pem": pem_key,
             "items": list(range(55)),
             "long_text": "x" * 2100,
             "nested": {"a": {"b": {"c": {"d": "hidden by depth cap"}}}},
@@ -138,10 +166,24 @@ class TestWebhookApi(unittest.TestCase):
         self.assertTrue(preview["long_text"].endswith("\n[TRUNCATED]"))
         self.assertEqual(preview["nested"]["a"]["b"]["c"], "[TRUNCATED]")
         self.assertNotIn("very-sensitive-token-value", str(preview))
+        self.assertNotIn(github_token, str(preview))
+        self.assertNotIn(jwt_token, str(preview))
+        self.assertNotIn(slack_token, str(preview))
+        self.assertNotIn(aws_access_key, str(preview))
+        self.assertNotIn(google_api_key, str(preview))
+        self.assertNotIn("BEGIN PRIVATE KEY", str(preview))
+
+    def test_capture_preview_handles_non_object_payloads(self):
+        self.assertEqual(webhook_endpoint._redact_capture_payload(["ok"]), ["ok"])
+        self.assertEqual(
+            webhook_endpoint._redact_capture_payload("xoxb-" + "1" * 12),
+            "[REDACTED: sensitive value]",
+        )
 
     def test_capture_start_requires_login(self):
         start_signature = inspect.signature(webhook_endpoint.start_capture)
         status_signature = inspect.signature(webhook_endpoint.get_capture_status)
+        cancel_signature = inspect.signature(webhook_endpoint.cancel_capture)
 
         self.assertIs(
             start_signature.parameters["current_user"].default.dependency,
@@ -149,6 +191,10 @@ class TestWebhookApi(unittest.TestCase):
         )
         self.assertIs(
             status_signature.parameters["current_user"].default.dependency,
+            get_current_user,
+        )
+        self.assertIs(
+            cancel_signature.parameters["current_user"].default.dependency,
             get_current_user,
         )
 
@@ -245,6 +291,146 @@ class TestWebhookApi(unittest.TestCase):
             self.assertNotIn(self.url_slug, CAPTURE_SESSIONS)
         finally:
             webhook_endpoint.ensure_workflow_permission = original_ensure
+
+    def test_capture_cancel_deletes_waiting_session(self):
+        mock_db_session = self._mock_db_with_app()
+        original_ensure = self._authorize_capture_user(mock_db_session)
+        CAPTURE_SESSIONS[self.url_slug] = {
+            "capture_id": "capture-id",
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=60),
+            "payload": None,
+            "requested_by": str(self.current_user.id),
+            "status": "waiting",
+        }
+        try:
+            response = webhook_endpoint.cancel_capture(
+                self.url_slug,
+                capture_id="capture-id",
+                db=mock_db_session,
+                current_user=self.current_user,
+            )
+
+            self.assertEqual(response["status"], "cancelled")
+            self.assertNotIn(self.url_slug, CAPTURE_SESSIONS)
+        finally:
+            webhook_endpoint.ensure_workflow_permission = original_ensure
+
+    def test_capture_cancel_rejects_wrong_capture_id(self):
+        mock_db_session = self._mock_db_with_app()
+        original_ensure = self._authorize_capture_user(mock_db_session)
+        CAPTURE_SESSIONS[self.url_slug] = {
+            "capture_id": "correct",
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=60),
+            "payload": None,
+            "requested_by": str(self.current_user.id),
+            "status": "waiting",
+        }
+        try:
+            with self.assertRaises(HTTPException) as exc:
+                webhook_endpoint.cancel_capture(
+                    self.url_slug,
+                    capture_id="wrong",
+                    db=mock_db_session,
+                    current_user=self.current_user,
+                )
+
+            self.assertEqual(exc.exception.status_code, 404)
+            self.assertIn(self.url_slug, CAPTURE_SESSIONS)
+        finally:
+            webhook_endpoint.ensure_workflow_permission = original_ensure
+
+    def test_capture_cancel_rejects_different_requester(self):
+        mock_db_session = self._mock_db_with_app()
+        original_ensure = self._authorize_capture_user(mock_db_session)
+        CAPTURE_SESSIONS[self.url_slug] = {
+            "capture_id": "capture-id",
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=60),
+            "payload": None,
+            "requested_by": str(uuid4()),
+            "status": "waiting",
+        }
+        try:
+            with self.assertRaises(HTTPException) as exc:
+                webhook_endpoint.cancel_capture(
+                    self.url_slug,
+                    capture_id="capture-id",
+                    db=mock_db_session,
+                    current_user=self.current_user,
+                )
+
+            self.assertEqual(exc.exception.status_code, 404)
+            self.assertIn(self.url_slug, CAPTURE_SESSIONS)
+        finally:
+            webhook_endpoint.ensure_workflow_permission = original_ensure
+
+    def test_capture_cancel_requires_deploy_permission(self):
+        mock_db_session = self._mock_db_with_app()
+
+        original_ensure = webhook_endpoint.ensure_workflow_permission
+        webhook_endpoint.ensure_workflow_permission = MagicMock(
+            side_effect=HTTPException(status_code=403, detail="Forbidden")
+        )
+        try:
+            with self.assertRaises(HTTPException) as exc:
+                webhook_endpoint.cancel_capture(
+                    self.url_slug,
+                    capture_id="capture-id",
+                    db=mock_db_session,
+                    current_user=self.current_user,
+                )
+
+            self.assertEqual(exc.exception.status_code, 403)
+            webhook_endpoint.ensure_workflow_permission.assert_called_once()
+        finally:
+            webhook_endpoint.ensure_workflow_permission = original_ensure
+
+    def test_cancelled_capture_allows_next_webhook_execution(self):
+        mock_db_session = self._mock_db_with_app(active_deployment=True)
+        original_ensure = self._authorize_capture_user(mock_db_session)
+        original_budget_check = (
+            webhook_endpoint.WorkflowBudgetService
+            .ensure_workflow_budget_allows_execution
+        )
+        webhook_endpoint.WorkflowBudgetService.ensure_workflow_budget_allows_execution = (
+            lambda *args, **kwargs: None
+        )
+        CAPTURE_SESSIONS[self.url_slug] = {
+            "capture_id": "capture-id",
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=60),
+            "payload": None,
+            "requested_by": str(self.current_user.id),
+            "status": "waiting",
+        }
+        try:
+            webhook_endpoint.cancel_capture(
+                self.url_slug,
+                capture_id="capture-id",
+                db=mock_db_session,
+                current_user=self.current_user,
+            )
+            response = asyncio.run(
+                webhook_endpoint.receive_webhook(
+                    self.url_slug,
+                    _FakeRequest(
+                        query_params={"token": self.auth_secret},
+                        payload={"event": "after_cancel"},
+                    ),
+                    BackgroundTasks(),
+                    db=mock_db_session,
+                )
+            )
+
+            self.assertEqual(response["status"], "accepted")
+            self.assertNotIn(self.url_slug, CAPTURE_SESSIONS)
+        finally:
+            webhook_endpoint.ensure_workflow_permission = original_ensure
+            webhook_endpoint.WorkflowBudgetService.ensure_workflow_budget_allows_execution = (
+                original_budget_check
+            )
 
     def test_webhook_invalid_token(self):
         """잘못된 토큰으로 웹훅 수신 시 거부 테스트"""

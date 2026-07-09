@@ -31,8 +31,17 @@ _REDACTED_VALUE = "[REDACTED: sensitive value]"
 _TRUNCATED_VALUE = "[TRUNCATED]"
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SECRET_VALUE_PATTERNS = [
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+    ),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b"),
     re.compile(r"(?i)\b(?:sk|pk|rk|api)[-_][A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 ]
 _SENSITIVE_KEY_PARTS = {
     "api_key",
@@ -155,6 +164,23 @@ def _ensure_capture_access(db: Session, current_user: User, url_slug: str) -> Ap
         raise HTTPException(status_code=404, detail="App not found")
     ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
     return app
+
+
+def _capture_session_for_request(
+    url_slug: str,
+    capture_id: str,
+    current_user: User,
+) -> Dict[str, Any]:
+    _cleanup_expired_capture_session(url_slug)
+    session = CAPTURE_SESSIONS.get(url_slug)
+    if not session:
+        raise HTTPException(status_code=404, detail="No capture session found")
+    if (
+        session.get("capture_id") != capture_id
+        or session.get("requested_by") != str(current_user.id)
+    ):
+        raise HTTPException(status_code=404, detail="No capture session found")
+    return session
 
 
 def verify_webhook_auth(request: Request, app: App) -> bool:
@@ -358,21 +384,12 @@ def get_capture_status(
 ):
     """캡처 상태 조회"""
     _ensure_capture_access(db, current_user, url_slug)
-    _cleanup_expired_capture_session(url_slug)
-    if url_slug not in CAPTURE_SESSIONS:
-        raise HTTPException(status_code=404, detail="No capture session found")
-
-    session = CAPTURE_SESSIONS[url_slug]
-    if (
-        session.get("capture_id") != capture_id
-        or session.get("requested_by") != str(current_user.id)
-    ):
-        raise HTTPException(status_code=404, detail="No capture session found")
+    session = _capture_session_for_request(url_slug, capture_id, current_user)
 
     # 캡처 완료 시 자동 정리
     if session["status"] == "captured":
         payload = session["payload"]
-        del CAPTURE_SESSIONS[url_slug]  # 메모리 정리
+        CAPTURE_SESSIONS.pop(url_slug, None)  # 메모리 정리
         return {
             "status": "captured",
             "payload": payload,
@@ -385,3 +402,17 @@ def get_capture_status(
         "expires_at": session["expires_at"].isoformat(),
         "payload": None,
     }
+
+
+@router.post("/hooks/{url_slug}/capture/cancel")
+def cancel_capture(
+    url_slug: str,
+    capture_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """캡처 세션 취소"""
+    _ensure_capture_access(db, current_user, url_slug)
+    _capture_session_for_request(url_slug, capture_id, current_user)
+    CAPTURE_SESSIONS.pop(url_slug, None)
+    return {"status": "cancelled"}

@@ -36,7 +36,9 @@ Verified Against: TBD
 - Webhook capture start/status rejects unauthenticated requests.
 - Webhook capture start/status rejects authenticated users without target workflow `deploy` permission.
 - Webhook capture status rejects missing, wrong, expired, or different-requester `capture_id`.
-- Webhook capture stores and returns only a redacted/capped payload preview; token, secret, authorization, cookie, password, raw payload/content fields are not returned as raw values.
+- Webhook capture cancel deletes a waiting session, rejects wrong/different-requester `capture_id`, and requires target workflow `deploy` permission.
+- Webhook received after capture cancel follows the normal execution path instead of the capture path.
+- Webhook capture stores and returns only a redacted/capped payload preview; token, secret, authorization, cookie, password, raw payload/content fields and known token patterns such as JWT, GitHub, Slack, AWS, Google API keys, and PEM private keys are not returned as raw values.
 - Webhook capture deletes the session after the captured status is read once.
 
 ## E2E Tests
