@@ -21,6 +21,7 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     TeamMembership,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserWorkflowPermission,
 )
@@ -658,6 +659,14 @@ class OrganizationMemberService:
             )
             .delete(synchronize_session=False)
         )
+        revoked_knowledge_permissions = (
+            db.query(UserKnowledgePermission)
+            .filter(
+                UserKnowledgePermission.grantee_organization_id == organization_id,
+                UserKnowledgePermission.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
         revoked_app_creation_permissions = (
             db.query(UserAppCreationPermission)
             .filter(
@@ -673,7 +682,7 @@ class OrganizationMemberService:
             workflow=revoked_workflow_permissions,
             llm_credential=revoked_llm_permissions,
             app_creation=revoked_app_creation_permissions,
-            knowledge_base=0,
+            knowledge_base=revoked_knowledge_permissions,
             audit=0,
         )
         cleanup = _cleanup_counts(removed_team_memberships, revoked_user_permissions)

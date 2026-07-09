@@ -725,7 +725,7 @@ def test_team_knowledge_permission_grants_use():
             _active_organization(organization_id),
             _organization_member(),
         ],
-        all_values=[[("operator",)]],
+        all_values=[[("operator",)], []],
     )
 
     assert (
@@ -741,7 +741,7 @@ def test_team_knowledge_permission_grants_use():
             _active_organization(organization_id),
             _organization_member(),
         ],
-        all_values=[[("operator",)]],
+        all_values=[[("operator",)], []],
     )
     assert (
         has_knowledge_base_permission(
@@ -766,7 +766,7 @@ def test_knowledge_base_owner_user_id_does_not_grant_without_permission_row():
             _active_organization(organization_id),
             _organization_member(),
         ],
-        all_values=[[]],
+        all_values=[[], []],
     )
 
     assert (
@@ -774,6 +774,28 @@ def test_knowledge_base_owner_user_id_does_not_grant_without_permission_row():
             db, user_id, knowledge_base_id, organization_id
         )
         == "none"
+    )
+
+
+def test_user_knowledge_permission_combines_with_team_permission():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=knowledge_base_id, organization_id=organization_id),
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[[("viewer",)], [("manager",)]],
+    )
+
+    assert (
+        get_effective_knowledge_base_auth_state(
+            db, user_id, knowledge_base_id, organization_id
+        )
+        == "manager"
     )
 
 

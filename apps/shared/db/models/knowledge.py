@@ -46,6 +46,11 @@ class KnowledgeBase(Base):
             "source_identity_id",
             name="uq_knowledge_bases_source_identity_id",
         ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_knowledge_bases_id_organization_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

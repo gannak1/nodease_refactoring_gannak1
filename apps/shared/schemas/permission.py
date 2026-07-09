@@ -42,6 +42,7 @@ AUDIT_AUTH_STATE_RANK = RESOURCE_AUTH_STATE_RANKS["audit"]
 
 WORKFLOW_AUTH_STATES = set(WORKFLOW_AUTH_STATE_RANK)
 KNOWLEDGE_AUTH_STATES = set(KNOWLEDGE_AUTH_STATE_RANK)
+KNOWLEDGE_DIRECT_GRANT_AUTH_STATES = KNOWLEDGE_AUTH_STATES - {"none"}
 LLM_AUTH_STATES = set(LLM_AUTH_STATE_RANK)
 AUDIT_AUTH_STATES = set(AUDIT_AUTH_STATE_RANK)
 
@@ -71,6 +72,15 @@ class KnowledgePermissionGrantRequest(BaseModel):
     @classmethod
     def validate_knowledge_auth_state(cls, value: str) -> str:
         return _normalize_auth_state(value, KNOWLEDGE_AUTH_STATES)
+
+
+class KnowledgeDirectPermissionGrantRequest(BaseModel):
+    auth_state: str
+
+    @field_validator("auth_state")
+    @classmethod
+    def validate_knowledge_direct_auth_state(cls, value: str) -> str:
+        return _normalize_auth_state(value, KNOWLEDGE_DIRECT_GRANT_AUTH_STATES)
 
 
 class LLMPermissionGrantRequest(BaseModel):
@@ -154,6 +164,20 @@ class TeamLLMPermissionResponse(BaseModel):
     flags: int
 
 
+class TeamKnowledgePermissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    grantee_organization_id: UUID
+    knowledge_base_id: UUID
+    team_id: UUID
+    auth_state: str
+    assigned_by: UUID
+    assigned_at: datetime
+    options: dict[str, Any]
+    flags: int
+
+
 class UserWorkflowPermissionResponse(BaseModel):
     """user direct workflow permission upsert 응답 schema."""
 
@@ -162,6 +186,22 @@ class UserWorkflowPermissionResponse(BaseModel):
     id: UUID
     grantee_organization_id: UUID
     workflow_id: UUID
+    user_id: UUID
+    auth_state: str
+    assigned_by: UUID
+    assigned_at: datetime
+    options: dict[str, Any]
+    flags: int
+
+
+class UserKnowledgePermissionResponse(BaseModel):
+    """user direct Knowledge Base permission upsert 응답 schema."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    grantee_organization_id: UUID
+    knowledge_base_id: UUID
     user_id: UUID
     auth_state: str
     assigned_by: UUID

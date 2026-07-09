@@ -13,12 +13,12 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드 기준 활성 테이블은 33개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
+현재 코드 기준 활성 테이블은 34개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
 
 | 도메인 | 테이블 |
 | --- | --- |
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
-| 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_llm_permissions` |
+| 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
@@ -44,6 +44,7 @@ erDiagram
   teams ||--o{ team_llm_permissions : grants
   teams ||--o{ team_audit_permissions : grants
   users ||--o{ user_workflow_permissions : direct_grant
+  users ||--o{ user_knowledge_permissions : direct_grant
   users ||--o{ user_llm_permissions : direct_grant
 
   apps ||--o{ workflows : has
@@ -215,7 +216,7 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 
 #### User direct permission 공통 구조
 
-`user_workflow_permissions`, `user_llm_permissions`. additive allow 전용이다.
+`user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`. additive allow 전용이다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -231,6 +232,7 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | 테이블 | resource 컬럼 | 복합 FK (resource가 grantee org 안임을 강제) | UNIQUE |
 | --- | --- | --- | --- |
 | `user_workflow_permissions` | workflow_id | (workflow_id, grantee_organization_id) → workflows(id, organization_id) | (grantee_organization_id, user_id, workflow_id) |
+| `user_knowledge_permissions` | knowledge_base_id | (knowledge_base_id, grantee_organization_id) → knowledge_bases(id, organization_id) | (grantee_organization_id, user_id, knowledge_base_id) |
 | `user_llm_permissions` | llm_credential_id | (llm_credential_id, grantee_organization_id) → llm_credentials(id, organization_id) | (grantee_organization_id, user_id, llm_credential_id) |
 
 - team permission 테이블에는 `auth_state` CHECK가 없고 user direct 테이블에만 있다. legacy 값(`read/write/execute/admin`)은 application-level에서 normalize한다.
@@ -760,7 +762,6 @@ LLM token/cost/latency 원천.
 
 | 테이블 | 목표 역할 |
 | --- | --- |
-| `user_knowledge_permissions` | 특정 active organization member에게 knowledge base 직접 권한을 부여한다. 구조는 user direct permission 공통 구조와 같고 resource 컬럼은 `knowledge_base_id`, 복합 FK는 `(knowledge_base_id, grantee_organization_id) → knowledge_bases(id, organization_id)`, UNIQUE는 `(grantee_organization_id, user_id, knowledge_base_id)`다. API는 `none` 직접 grant를 받지 않고 DELETE로 회수한다 |
 | `user_audit_permissions` | 특정 user에게 audit visibility 직접 추가 권한 부여 |
 | `permission_requests` | 권한 신청 제출/처리 상태 저장, pending은 조직·사용자·요청 권한당 1건 ([ADR-0016](decisions/ADR-0016-permission-request-and-app-creation-permission.md)) |
 | `user_app_creation_permissions` | 조직 수준 App 생성 능력의 user 부여, row 존재 = 허용 ([ADR-0016](decisions/ADR-0016-permission-request-and-app-creation-permission.md)) |

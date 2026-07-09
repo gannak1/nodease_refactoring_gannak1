@@ -32,6 +32,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     TeamWorkflowPermission,
     UserLLMPermission,
+    UserKnowledgePermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -58,6 +59,7 @@ TRACKED_MODELS = {
     Team: "team",
     TeamMembership: "team_membership",
     TeamWorkflowPermission: "team_workflow_permission",
+    UserKnowledgePermission: "user_knowledge_permission",
     UserLLMPermission: "user_llm_permission",
     UserWorkflowPermission: "user_workflow_permission",
     TeamKnowledgePermission: "team_knowledge_permission",
@@ -95,6 +97,7 @@ SENSITIVE_FIELDS = {
     Team: set(),
     TeamMembership: set(),
     TeamWorkflowPermission: set(),
+    UserKnowledgePermission: set(),
     UserLLMPermission: set(),
     UserWorkflowPermission: set(),
     TeamKnowledgePermission: set(),
