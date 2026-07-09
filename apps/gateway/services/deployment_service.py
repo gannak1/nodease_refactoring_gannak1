@@ -511,6 +511,8 @@ class DeploymentService:
 
         if app.active_deployment_id != deployment.id or not deployment.is_active:
             raise HTTPException(status_code=404, detail="Deployment is inactive")
+        if deployment.type == DeploymentType.WORKFLOW_NODE:
+            raise HTTPException(status_code=404, detail="Deployment not found")
         return deployment, app
 
     @staticmethod

@@ -251,6 +251,23 @@ def test_authenticated_run_rejects_stale_non_active_deployment(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
+def test_authenticated_run_rejects_workflow_node_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found"
+
+
 def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     from apps.gateway.services import deployment_service as deployment_module
 
@@ -270,6 +287,22 @@ def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     assert result["input_schema"] == deployment_row.input_schema
     assert "auth_secret" not in result
     assert "graph_snapshot" not in result
+
+
+def test_deployment_run_info_rejects_workflow_node_deployment():
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_module.DeploymentService.get_deployment_run_info(
+            db,
+            deployment_row.id,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found"
 
 
 def test_engine_failure_detail_does_not_expose_secret_like_exception(

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from apps.workflow_engine import tasks
+from apps.shared.db.models.workflow_deployment import DeploymentType
 
 
 class FakeSession:
@@ -35,7 +36,9 @@ class FakeQuery:
             app_id=uuid.uuid4(),
             workflow_id=uuid.uuid4(),
             organization_id=uuid.uuid4(),
+            active_deployment_id=uuid.uuid4(),
             is_active=True,
+            type=DeploymentType.WEBHOOK,
             graph_data={"nodes": []},
             graph_snapshot={"nodes": []},
             version=1,
@@ -58,6 +61,34 @@ class FakeWorkflowDeployment:
     id = FakeColumn()
     workflow_id = FakeColumn()
     is_active = FakeColumn()
+
+
+def _active_deployment_pair(
+    *,
+    deployment_id=None,
+    deployment_type=DeploymentType.WEBHOOK,
+    trigger_mode="webhook",
+    graph_snapshot=None,
+):
+    deployment_id = deployment_id or uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    FakeSession.deployment = SimpleNamespace(
+        id=deployment_id,
+        app_id=app_id,
+        version=7,
+        type=deployment_type,
+        is_active=True,
+        graph_snapshot=graph_snapshot or {"nodes": []},
+    )
+    FakeSession.app = SimpleNamespace(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        active_deployment_id=deployment_id,
+    )
+    return FakeSession.deployment, FakeSession.app, trigger_mode
 
 
 class FakeWorkflowEngine:
@@ -121,7 +152,10 @@ def patch_task_dependencies(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "apps.shared.db.models.workflow_deployment",
-        SimpleNamespace(WorkflowDeployment=FakeWorkflowDeployment),
+        SimpleNamespace(
+            DeploymentType=DeploymentType,
+            WorkflowDeployment=FakeWorkflowDeployment,
+        ),
     )
 
 
@@ -246,12 +280,15 @@ def test_execute_deployed_workflow_skips_sync_without_execution_subject():
 
 
 def test_execute_by_deployment_skips_sync_without_execution_subject():
+    deployment, _app, trigger_mode = _active_deployment_pair()
+
     result = tasks.execute_by_deployment.run(
-        str(uuid.uuid4()),
+        str(deployment.id),
         {},
         {
             "user_id": str(uuid.uuid4()),
             "organization_id": str(uuid.uuid4()),
+            "trigger_mode": trigger_mode,
         },
     )
 
@@ -267,8 +304,6 @@ def test_execute_by_deployment_skips_sync_without_execution_subject():
 
 def test_execute_by_deployment_uses_snapshot_rag_selection():
     deployment_id = uuid.uuid4()
-    workflow_id = uuid.uuid4()
-    organization_id = uuid.uuid4()
     knowledge_base_id = str(uuid.uuid4())
     graph_snapshot = {
         "nodes": [
@@ -289,21 +324,15 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
         ],
         "edges": [],
     }
-    FakeSession.deployment = SimpleNamespace(
-        id=deployment_id,
-        app_id=uuid.uuid4(),
-        version=7,
+    deployment, app, trigger_mode = _active_deployment_pair(
+        deployment_id=deployment_id,
         graph_snapshot=graph_snapshot,
-    )
-    FakeSession.app = SimpleNamespace(
-        workflow_id=workflow_id,
-        organization_id=organization_id,
     )
 
     result = tasks.execute_by_deployment.run(
         str(deployment_id),
         {"message": "hello"},
-        {},
+        {"trigger_mode": trigger_mode},
     )
 
     engine_kwargs = FakeWorkflowEngine.calls[0]["kwargs"]
@@ -312,8 +341,66 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
         {"id": knowledge_base_id, "name": "제품 정책"}
     ]
     assert engine_kwargs["graph"]["nodes"][0]["data"]["topK"] == 4
-    assert engine_kwargs["execution_context"]["workflow_id"] == str(workflow_id)
+    assert engine_kwargs["execution_context"]["workflow_id"] == str(app.workflow_id)
     assert engine_kwargs["execution_context"]["organization_id"] == str(
-        organization_id
+        app.organization_id
     )
     assert engine_kwargs["execution_context"]["deployment_id"] == str(deployment_id)
+
+
+def test_execute_by_deployment_rejects_inactive_deployment():
+    deployment, _app, trigger_mode = _active_deployment_pair()
+    deployment.is_active = False
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_stale_active_pointer():
+    deployment, app, trigger_mode = _active_deployment_pair()
+    app.active_deployment_id = uuid.uuid4()
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_trigger_type_mismatch():
+    deployment, _app, _trigger_mode = _active_deployment_pair(
+        deployment_type=DeploymentType.WEBHOOK,
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": "schedule"},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_workflow_node_deployment():
+    deployment, _app, trigger_mode = _active_deployment_pair(
+        deployment_type=DeploymentType.WORKFLOW_NODE,
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
+        )
+
+    assert FakeWorkflowEngine.calls == []
