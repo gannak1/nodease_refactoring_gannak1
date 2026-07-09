@@ -173,6 +173,40 @@ class TestWebhookApi(unittest.TestCase):
         self.assertNotIn(google_api_key, str(preview))
         self.assertNotIn("BEGIN PRIVATE KEY", str(preview))
 
+    def test_capture_preview_preserves_public_key_fields_and_sanitizes_key_names(self):
+        secret_key_name = "ghp_" + "a" * 36
+        second_secret_key_name = "xoxb-" + "1" * 12
+        long_key_name = "x" * 250
+        payload = {
+            "key": "public-root-id",
+            "issue": {"key": "MBA-179"},
+            "project": {"key": "NODEASE"},
+            "api_key": "api-secret-value",
+            "secretKey": "secret-key-value",
+            "access_key": "access-key-value",
+            secret_key_name: "first-value",
+            second_secret_key_name: "second-value",
+            long_key_name: "long-key-value",
+        }
+
+        preview = webhook_endpoint._redact_capture_payload(payload)
+
+        self.assertEqual(preview["key"], "public-root-id")
+        self.assertEqual(preview["issue"]["key"], "MBA-179")
+        self.assertEqual(preview["project"]["key"], "NODEASE")
+        self.assertEqual(preview["api_key"], "[REDACTED: sensitive value]")
+        self.assertEqual(preview["secretKey"], "[REDACTED: sensitive value]")
+        self.assertEqual(preview["access_key"], "[REDACTED: sensitive value]")
+        self.assertEqual(preview["[REDACTED: sensitive key]"], "first-value")
+        self.assertEqual(preview["[REDACTED: sensitive key]#2"], "second-value")
+        capped_key = (
+            "x" * webhook_endpoint.CAPTURE_PREVIEW_MAX_KEY_CHARS + "\n[TRUNCATED]"
+        )
+        self.assertEqual(preview[capped_key], "long-key-value")
+        self.assertNotIn(secret_key_name, str(preview))
+        self.assertNotIn(second_secret_key_name, str(preview))
+        self.assertNotIn(long_key_name, str(preview))
+
     def test_capture_preview_handles_non_object_payloads(self):
         self.assertEqual(webhook_endpoint._redact_capture_payload(["ok"]), ["ok"])
         self.assertEqual(

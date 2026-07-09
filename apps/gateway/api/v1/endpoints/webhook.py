@@ -26,7 +26,9 @@ CAPTURE_SESSIONS: Dict[str, Dict[str, Any]] = {}
 CAPTURE_SESSION_TTL_SECONDS = 60
 CAPTURE_PREVIEW_MAX_DEPTH = 4
 CAPTURE_PREVIEW_MAX_ITEMS = 50
+CAPTURE_PREVIEW_MAX_KEY_CHARS = 200
 CAPTURE_PREVIEW_MAX_STRING_CHARS = 2000
+_REDACTED_KEY = "[REDACTED: sensitive key]"
 _REDACTED_VALUE = "[REDACTED: sensitive value]"
 _TRUNCATED_VALUE = "[TRUNCATED]"
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -44,20 +46,25 @@ _SECRET_VALUE_PATTERNS = [
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 ]
 _SENSITIVE_KEY_PARTS = {
+    "access_key",
     "api_key",
     "apikey",
     "authorization",
+    "client_secret",
     "cookie",
     "credential",
     "credentials",
-    "key",
     "password",
+    "private_key",
     "raw_body",
     "raw_content",
     "raw_payload",
     "refresh_token",
     "secret",
+    "secret_key",
     "set_cookie",
+    "signing_key",
+    "signing_secret",
     "token",
 }
 
@@ -116,6 +123,25 @@ def _redact_capture_string(value: str) -> str:
     return sanitized
 
 
+def _redact_capture_key_text(value: Any) -> str:
+    sanitized = _CONTROL_CHARS_RE.sub(" ", str(value))
+    if any(pattern.search(sanitized) for pattern in _SECRET_VALUE_PATTERNS):
+        return _REDACTED_KEY
+    if len(sanitized) > CAPTURE_PREVIEW_MAX_KEY_CHARS:
+        return sanitized[:CAPTURE_PREVIEW_MAX_KEY_CHARS] + f"\n{_TRUNCATED_VALUE}"
+    return sanitized
+
+
+def _unique_capture_preview_key(preview: dict[str, Any], key_text: str) -> str:
+    if key_text not in preview:
+        return key_text
+
+    suffix = 2
+    while f"{key_text}#{suffix}" in preview:
+        suffix += 1
+    return f"{key_text}#{suffix}"
+
+
 def _redact_capture_payload(
     value: Any,
     *,
@@ -139,8 +165,12 @@ def _redact_capture_payload(
                 preview["__truncated__"] = True
                 break
             key_text = str(key)
+            preview_key = _unique_capture_preview_key(
+                preview,
+                _redact_capture_key_text(key_text),
+            )
             child_path = f"{key_path}.{key_text}" if key_path else key_text
-            preview[key_text] = _redact_capture_payload(
+            preview[preview_key] = _redact_capture_payload(
                 child,
                 key_path=child_path,
                 depth=depth - 1,
