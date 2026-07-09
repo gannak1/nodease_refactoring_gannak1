@@ -8,6 +8,7 @@ import { ko } from 'date-fns/locale';
 import { toast } from 'sonner';
 import { Tag } from '@/app/features/app/components/Tag';
 import { getModuleTags } from '@/app/features/app/utils/tagUtils';
+import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 
 export function VersionHistorySidebar() {
   const {
@@ -59,7 +60,7 @@ export function VersionHistorySidebar() {
       fetchHistory();
     } catch (error: any) {
       console.error('Toggle failed:', error);
-      toast.error(error.response?.data?.detail || '토글에 실패했습니다.');
+      toast.error(deploymentApiErrorMessage(error, '토글에 실패했습니다.'));
     }
   };
 

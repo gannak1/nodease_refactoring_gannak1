@@ -384,7 +384,10 @@ Status: Draft
 - Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
-- 배포 preflight는 private RAG 후속 기능에서 LLM node RAG 옵션의 KB/collection 후보가 intended execution subject/audience에게 사용 가능한지 검증하고, unavailable/unknown 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
+- 배포 preflight는 LLM node RAG 옵션의 KB/collection 후보가 deployment type에서 파생한 runtime audience에게 사용 가능한지 검증하고, unavailable/unknown/private 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
+- Public/API/webhook/schedule/chatbot/MCP surface는 subject가 없으므로 private KB 후보가 있으면 활성 배포 create/toggle에서 `409 deployment.preflight.blocked`를 반환한다.
+- Workflow-node runtime은 parent execution context를 상속한다. Parent subject가 있으면 해당 subject 기준 KB permission/source ACL을 사용하고, subject가 없으면 anonymous public-only로 낮춘다.
+- Workflow-node preflight는 `workflowNode.data.appId`로 target app active deployment를 찾는다. `workflowId`로 target을 잘못 해석하면 테스트 실패다.
 
 ## E2E Tests
 

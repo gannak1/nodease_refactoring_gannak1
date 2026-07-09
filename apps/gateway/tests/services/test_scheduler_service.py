@@ -7,7 +7,7 @@ from apps.gateway.services.scheduler_service import SchedulerService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow_budget import WorkflowBudget
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 
 
 class FakeQuery:
@@ -84,6 +84,7 @@ def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
         created_by=created_by,
         graph_snapshot={"nodes": []},
         is_active=True,
+        type=DeploymentType.SCHEDULE,
     )
     app = SimpleNamespace(
         id=app_id,
@@ -123,5 +124,49 @@ def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
     assert schedule.last_run_at is not None
     assert schedule.next_run_at == next_run_time
     assert db.committed is True
+    assert db.rolled_back is False
+    assert db.closed is True
+
+
+def test_scheduler_does_not_dispatch_non_schedule_deployment(monkeypatch):
+    deployment_id = uuid.uuid4()
+    schedule_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    created_by = uuid.uuid4()
+
+    deployment = SimpleNamespace(
+        id=deployment_id,
+        app_id=app_id,
+        created_by=created_by,
+        graph_snapshot={"nodes": []},
+        is_active=True,
+        type=DeploymentType.WORKFLOW_NODE,
+    )
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )
+    schedule = SimpleNamespace(
+        id=schedule_id,
+        last_run_at=None,
+        next_run_at=None,
+    )
+    db = FakeSession(deployment=deployment, app=app, schedule=schedule)
+    celery = FakeCeleryApp()
+
+    celery_module = importlib.import_module("apps.shared.celery_app")
+    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
+    monkeypatch.setattr(celery_module, "celery_app", celery)
+
+    service = object.__new__(SchedulerService)
+    service.scheduler = FakeScheduler(None)
+
+    service._run_workflow(deployment_id, schedule_id)
+
+    assert celery.calls == []
+    assert db.committed is False
     assert db.rolled_back is False
     assert db.closed is True

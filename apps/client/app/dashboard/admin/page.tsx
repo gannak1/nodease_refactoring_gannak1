@@ -101,7 +101,7 @@ type LLMCredentialResponse = {
   created_at: string;
 };
 
-type ResourceType = 'workflow' | 'llm_credential';
+type ResourceType = 'workflow' | 'knowledge_base' | 'llm_credential';
 type GranteeType = 'team' | 'user';
 type ResourceAuthState = 'viewer' | 'operator' | 'builder' | 'manager';
 
@@ -206,6 +206,8 @@ export default function AdminConsolePage() {
   );
   const [workflowPermissions, setWorkflowPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
+  const [knowledgePermissions, setKnowledgePermissions] =
+    useState<ResourcePermissionListResponse | null>(null);
   const [credentialPermissions, setCredentialPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -246,6 +248,7 @@ export default function AdminConsolePage() {
   const [permissionResourceType, setPermissionResourceType] =
     useState<ResourceType>('workflow');
   const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [permissionGranteeType, setPermissionGranteeType] =
     useState<GranteeType>('team');
@@ -293,12 +296,16 @@ export default function AdminConsolePage() {
   const selectedPermissionList =
     permissionResourceType === 'workflow'
       ? workflowPermissions
-      : credentialPermissions;
+      : permissionResourceType === 'knowledge_base'
+        ? knowledgePermissions
+        : credentialPermissions;
 
   const permissionResourceId =
     permissionResourceType === 'workflow'
       ? selectedWorkflowId
-      : selectedCredentialId;
+      : permissionResourceType === 'knowledge_base'
+        ? selectedKnowledgeBaseId
+        : selectedCredentialId;
 
   const activeManagerCount = useMemo(
     () =>
@@ -422,6 +429,7 @@ export default function AdminConsolePage() {
   const loadPermissions = async (
     resourceType = permissionResourceType,
     workflowId = selectedWorkflowId,
+    knowledgeBaseId = selectedKnowledgeBaseId,
     credentialId = selectedCredentialId,
   ) => {
     try {
@@ -432,6 +440,13 @@ export default function AdminConsolePage() {
         setWorkflowPermissions(response.data);
         return;
       }
+      if (resourceType === 'knowledge_base' && knowledgeBaseId) {
+        const response = await apiClient.get<ResourcePermissionListResponse>(
+          `/permissions/knowledge-bases/${knowledgeBaseId}`,
+        );
+        setKnowledgePermissions(response.data);
+        return;
+      }
       if (resourceType === 'llm_credential' && credentialId) {
         const response = await apiClient.get<ResourcePermissionListResponse>(
           `/permissions/llm-credentials/${credentialId}`,
@@ -440,10 +455,12 @@ export default function AdminConsolePage() {
         return;
       }
       if (resourceType === 'workflow') setWorkflowPermissions(null);
+      if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
       if (resourceType === 'llm_credential') setCredentialPermissions(null);
     } catch (err) {
       toast.error(getErrorMessage(err, '권한 목록을 불러오지 못했습니다.'));
       if (resourceType === 'workflow') setWorkflowPermissions(null);
+      if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
       if (resourceType === 'llm_credential') setCredentialPermissions(null);
     }
   };
@@ -476,6 +493,7 @@ export default function AdminConsolePage() {
         setProviders([]);
         setCredentials([]);
         setWorkflowPermissions(null);
+        setKnowledgePermissions(null);
         setCredentialPermissions(null);
         setKnowledgeBases([]);
         return;
@@ -519,12 +537,31 @@ export default function AdminConsolePage() {
         selectedWorkflowId ||
         appData.find((app) => app.workflow_id)?.workflow_id ||
         '';
+      const firstKnowledgeBaseId =
+        selectedKnowledgeBaseId || knowledgeData[0]?.id || '';
       const firstCredentialId = selectedCredentialId || credentialData[0]?.id || '';
       setSelectedWorkflowId(firstWorkflowId);
+      setSelectedKnowledgeBaseId(firstKnowledgeBaseId);
       setSelectedCredentialId(firstCredentialId);
       await Promise.all([
-        loadPermissions('workflow', firstWorkflowId, firstCredentialId),
-        loadPermissions('llm_credential', firstWorkflowId, firstCredentialId),
+        loadPermissions(
+          'workflow',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+        ),
+        loadPermissions(
+          'knowledge_base',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+        ),
+        loadPermissions(
+          'llm_credential',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+        ),
       ]);
       await loadTeamMembers(teamData);
     } catch (err) {
@@ -565,6 +602,12 @@ export default function AdminConsolePage() {
   }, [selectedWorkflowId, workflowOptions]);
 
   useEffect(() => {
+    if (!selectedKnowledgeBaseId && knowledgeBases.length > 0) {
+      setSelectedKnowledgeBaseId(knowledgeBases[0].id);
+    }
+  }, [knowledgeBases, selectedKnowledgeBaseId]);
+
+  useEffect(() => {
     if (!selectedCredentialId && credentials.length > 0) {
       setSelectedCredentialId(credentials[0].id);
     }
@@ -594,7 +637,13 @@ export default function AdminConsolePage() {
     if (!organization?.is_manager) return;
     loadPermissions(permissionResourceType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization?.is_manager, permissionResourceType, selectedWorkflowId, selectedCredentialId]);
+  }, [
+    organization?.is_manager,
+    permissionResourceType,
+    selectedWorkflowId,
+    selectedKnowledgeBaseId,
+    selectedCredentialId,
+  ]);
 
   const refreshMembers = async () => {
     if (!organization) return;
@@ -750,11 +799,17 @@ export default function AdminConsolePage() {
     granteeId: string,
   ) => {
     const resourceId =
-      resourceType === 'workflow' ? selectedWorkflowId : selectedCredentialId;
+      resourceType === 'workflow'
+        ? selectedWorkflowId
+        : resourceType === 'knowledge_base'
+          ? selectedKnowledgeBaseId
+          : selectedCredentialId;
     const resourcePath =
       resourceType === 'workflow'
         ? `/permissions/workflows/${resourceId}`
-        : `/permissions/llm-credentials/${resourceId}`;
+        : resourceType === 'knowledge_base'
+          ? `/permissions/knowledge-bases/${resourceId}`
+          : `/permissions/llm-credentials/${resourceId}`;
     return `${resourcePath}/${granteeType}s/${granteeId}`;
   };
 
@@ -810,7 +865,12 @@ export default function AdminConsolePage() {
       const nextCredentials = await refreshCredentials();
       const nextCredentialId = nextCredentials[0]?.id || '';
       setSelectedCredentialId(nextCredentialId);
-      await loadPermissions('llm_credential', selectedWorkflowId, nextCredentialId);
+      await loadPermissions(
+        'llm_credential',
+        selectedWorkflowId,
+        selectedKnowledgeBaseId,
+        nextCredentialId,
+      );
     });
   };
 
@@ -823,7 +883,12 @@ export default function AdminConsolePage() {
         ? nextCredentials[0]?.id || ''
         : selectedCredentialId;
     setSelectedCredentialId(nextCredentialId);
-    await loadPermissions('llm_credential', selectedWorkflowId, nextCredentialId);
+    await loadPermissions(
+      'llm_credential',
+      selectedWorkflowId,
+      selectedKnowledgeBaseId,
+      nextCredentialId,
+    );
   };
 
   const syncCredentialModels = async (credential: LLMCredentialResponse) => {
@@ -910,7 +975,7 @@ export default function AdminConsolePage() {
               label="지식 기반"
               value={knowledgeBases.length}
               icon={Database}
-              description="권한 관리는 후속 API 확인 필요"
+              description="팀/사용자 권한 관리 가능"
             />
           </div>
 
@@ -1023,6 +1088,9 @@ export default function AdminConsolePage() {
               workflowOptions={workflowOptions}
               selectedWorkflowId={selectedWorkflowId}
               onSelectedWorkflowIdChange={setSelectedWorkflowId}
+              knowledgeBases={knowledgeBases}
+              selectedKnowledgeBaseId={selectedKnowledgeBaseId}
+              onSelectedKnowledgeBaseIdChange={setSelectedKnowledgeBaseId}
               credentials={credentials}
               selectedCredentialId={selectedCredentialId}
               onSelectedCredentialIdChange={setSelectedCredentialId}
@@ -1078,7 +1146,14 @@ export default function AdminConsolePage() {
             />
           )}
           {activeTab === 'knowledge' && (
-            <KnowledgeTab knowledgeBases={knowledgeBases} />
+            <KnowledgeTab
+              knowledgeBases={knowledgeBases}
+              onManagePermissions={(knowledgeBaseId) => {
+                setSelectedKnowledgeBaseId(knowledgeBaseId);
+                setPermissionResourceType('knowledge_base');
+                setActiveTab('permissions');
+              }}
+            />
           )}
           {activeTab === 'permission-requests' && (
             <PermissionRequestsTab members={members} />
@@ -1913,6 +1988,9 @@ function PermissionsTab({
   workflowOptions,
   selectedWorkflowId,
   onSelectedWorkflowIdChange,
+  knowledgeBases,
+  selectedKnowledgeBaseId,
+  onSelectedKnowledgeBaseIdChange,
   credentials,
   selectedCredentialId,
   onSelectedCredentialIdChange,
@@ -1934,6 +2012,9 @@ function PermissionsTab({
   workflowOptions: AppResponse[];
   selectedWorkflowId: string;
   onSelectedWorkflowIdChange: (value: string) => void;
+  knowledgeBases: KnowledgeBaseResponse[];
+  selectedKnowledgeBaseId: string;
+  onSelectedKnowledgeBaseIdChange: (value: string) => void;
   credentials: LLMCredentialResponse[];
   selectedCredentialId: string;
   onSelectedCredentialIdChange: (value: string) => void;
@@ -1956,11 +2037,19 @@ function PermissionsTab({
   ) => void;
 }) {
   const resourceMissing =
-    resourceType === 'workflow' ? !selectedWorkflowId : !selectedCredentialId;
+    resourceType === 'workflow'
+      ? !selectedWorkflowId
+      : resourceType === 'knowledge_base'
+        ? !selectedKnowledgeBaseId
+        : !selectedCredentialId;
   const granteeOptionsMissing =
     granteeType === 'team' ? activeTeams.length === 0 : activeMembers.length === 0;
   const resourceLabel =
-    resourceType === 'workflow' ? 'Workflow 권한' : 'Credential 권한';
+    resourceType === 'workflow'
+      ? 'Workflow 권한'
+      : resourceType === 'knowledge_base'
+        ? 'Knowledge Base 권한'
+        : 'Credential 권한';
 
   return (
     <DashboardPanel
@@ -1981,6 +2070,7 @@ function PermissionsTab({
           className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
         >
           <option value="workflow">Workflow</option>
+          <option value="knowledge_base">Knowledge Base</option>
           <option value="llm_credential">LLM Credential</option>
         </select>
         {resourceType === 'workflow' ? (
@@ -1995,6 +2085,24 @@ function PermissionsTab({
               workflowOptions.map((app) => (
                 <option key={app.id} value={app.workflow_id || ''}>
                   {app.name}
+                </option>
+              ))
+            )}
+          </select>
+        ) : resourceType === 'knowledge_base' ? (
+          <select
+            value={selectedKnowledgeBaseId}
+            onChange={(event) =>
+              onSelectedKnowledgeBaseIdChange(event.target.value)
+            }
+            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+          >
+            {knowledgeBases.length === 0 ? (
+              <option value="">선택 가능한 지식 기반 없음</option>
+            ) : (
+              knowledgeBases.map((knowledgeBase) => (
+                <option key={knowledgeBase.id} value={knowledgeBase.id}>
+                  {knowledgeBase.name}
                 </option>
               ))
             )}
@@ -2081,7 +2189,7 @@ function PermissionsTab({
       {resourceMissing ? (
         <Placeholder
           title="선택 가능한 resource가 없습니다"
-          description="Workflow 또는 LLM Credential이 생성되면 권한을 부여할 수 있습니다."
+          description="Workflow, Knowledge Base, LLM Credential이 생성되면 권한을 부여할 수 있습니다."
         />
       ) : (
         <div className="grid gap-4 px-5 py-5 lg:grid-cols-2">
@@ -2240,6 +2348,15 @@ function resourcePermissionLabel(
     };
     return labels[state];
   }
+  if (resourceType === 'knowledge_base') {
+    const labels: Record<ResourceAuthState, string> = {
+      viewer: 'KB 조회 가능',
+      operator: 'KB 사용 가능',
+      builder: 'KB 수정 가능',
+      manager: 'KB 관리 가능',
+    };
+    return labels[state];
+  }
   const labels: Record<ResourceAuthState, string> = {
     viewer: 'Workflow 조회 가능',
     operator: 'Workflow 실행 가능',
@@ -2318,8 +2435,10 @@ function PermissionList({
 
 function KnowledgeTab({
   knowledgeBases,
+  onManagePermissions,
 }: {
   knowledgeBases: KnowledgeBaseResponse[];
+  onManagePermissions: (knowledgeBaseId: string) => void;
 }) {
   return (
     <DashboardPanel
@@ -2335,7 +2454,7 @@ function KnowledgeTab({
         {knowledgeBases.length === 0 ? (
           <Placeholder
             title="표시할 지식 기반이 없습니다"
-            description="지식 기반 권한 관리 action은 API 범위 확인 후 연결합니다."
+            description="지식 기반이 생성되면 권한을 관리할 수 있습니다."
           />
         ) : (
           knowledgeBases.map((base) => (
@@ -2355,10 +2474,10 @@ function KnowledgeTab({
                 문서 {base.document_count}개
               </span>
               <button
-                disabled
-                className="h-9 rounded-md border border-slate-200 px-3 text-sm font-semibold text-slate-400"
+                onClick={() => onManagePermissions(base.id)}
+                className="h-9 rounded-md border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
-                권한 관리 예정
+                권한 관리
               </button>
             </div>
           ))

@@ -62,6 +62,7 @@ from apps.shared.db.models.team import (
     TeamWorkflowPermission,
     UserLLMPermission,
     UserKnowledgeCollectionPermission,
+    UserKnowledgePermission,
     UserResourcePermissionMixin,
     UserWorkflowPermission,
 )
@@ -138,6 +139,7 @@ __all__ = [
     "TeamWorkflowPermission",
     "UserWorkflowPermission",
     "UserLLMPermission",
+    "UserKnowledgePermission",
     "UserKnowledgeCollectionPermission",
     "UserAppCreationPermission",
     "PermissionRequest",

@@ -16,6 +16,7 @@ from apps.shared.db.models.team import (
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserWorkflowPermission,
 )
@@ -273,9 +274,16 @@ def _knowledge_base_scope(
         return None, None
 
     knowledge_base = (
-        db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_uuid).first()
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == knowledge_base_uuid,
+            KnowledgeBase.lifecycle_state == "active",
+        )
+        .first()
     )
     if not knowledge_base:
+        return None, None
+    if getattr(knowledge_base, "lifecycle_state", "active") != "active":
         return None, None
 
     knowledge_base_organization_uuid = coerce_uuid(knowledge_base.organization_id)
@@ -636,9 +644,18 @@ def get_effective_knowledge_base_auth_state(
         .all()
     )
 
-    # user_knowledge_permissions는 공식 목표 table이지만 현재 model/migration이 없다.
-    # 모델이 들어오기 전까지 user_id/owner fallback을 grant로 섞지 않고 fail-closed 처리한다.
-    return _strongest_auth_state(team_rows, AUTH_STATE_NONE)
+    direct_rows = (
+        db.query(UserKnowledgePermission.auth_state)
+        .filter(
+            UserKnowledgePermission.user_id == user_uuid,
+            UserKnowledgePermission.knowledge_base_id == knowledge_base.id,
+            UserKnowledgePermission.grantee_organization_id == organization_uuid,
+        )
+        .all()
+    )
+
+    effective_state = _strongest_auth_state(team_rows, AUTH_STATE_NONE)
+    return _strongest_auth_state(direct_rows, effective_state)
 
 
 def has_knowledge_base_permission(

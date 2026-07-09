@@ -26,9 +26,13 @@ import type {
   OrganizationResponse,
 } from '@/app/features/organization/types/Organization';
 import { filterActiveOrganizationMembers } from '@/app/features/organization/utils/memberFilters';
+import {
+  knowledgeApi,
+  type KnowledgeBaseResponse,
+} from '@/app/features/knowledge/api/knowledgeApi';
 
 type SettingsTab = 'access' | 'credentials' | 'activity';
-type ResourceType = 'workflow' | 'llm_credential';
+type ResourceType = 'workflow' | 'knowledge_base' | 'llm_credential';
 type GranteeType = 'team' | 'user';
 type AuthState = 'viewer' | 'operator' | 'builder' | 'manager';
 
@@ -142,13 +146,19 @@ export default function SettingsPage() {
   const [providers, setProviders] = useState<LLMProviderResponse[]>([]);
   const [credentials, setCredentials] = useState<LLMCredentialResponse[]>([]);
   const [apps, setApps] = useState<AppResponse[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
+    [],
+  );
   const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [workflowPermissions, setWorkflowPermissions] =
+    useState<ResourcePermissionListResponse | null>(null);
+  const [knowledgePermissions, setKnowledgePermissions] =
     useState<ResourcePermissionListResponse | null>(null);
   const [credentialPermissions, setCredentialPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
 
   const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [newTeam, setNewTeam] = useState({ name: '', description: '' });
   const [memberForm, setMemberForm] = useState({ teamId: '', userId: '' });
@@ -177,18 +187,35 @@ export default function SettingsPage() {
     [teams],
   );
   const visibleTabs = useMemo<[SettingsTab, string][]>(
-    () => [
-      ['credentials', 'LLM Credentials'],
-      ['activity', 'Activity'],
-    ],
-    [],
+    () =>
+      isManager
+        ? [
+            ['access', 'Access'],
+            ['credentials', 'LLM Credentials'],
+            ['activity', 'Activity'],
+          ]
+        : [
+            ['credentials', 'LLM Credentials'],
+            ['activity', 'Activity'],
+          ],
+    [isManager],
   );
-  const effectiveTab = activeTab;
+  const effectiveTab = visibleTabs.some(([key]) => key === activeTab)
+    ? activeTab
+    : visibleTabs[0]?.[0] || 'credentials';
 
   const activePermissions =
     permissionForm.resourceType === 'workflow'
       ? workflowPermissions
-      : credentialPermissions;
+      : permissionForm.resourceType === 'knowledge_base'
+        ? knowledgePermissions
+        : credentialPermissions;
+  const selectedPermissionResourceId =
+    permissionForm.resourceType === 'workflow'
+      ? selectedWorkflowId
+      : permissionForm.resourceType === 'knowledge_base'
+        ? selectedKnowledgeBaseId
+        : selectedCredentialId;
   const selectedTeamMemberUserIds = useMemo(
     () =>
       memberForm.teamId
@@ -212,6 +239,7 @@ export default function SettingsPage() {
   const loadPermissions = async (
     resourceType = permissionForm.resourceType,
     workflowId = selectedWorkflowId,
+    knowledgeBaseId = selectedKnowledgeBaseId,
     credentialId = selectedCredentialId,
   ) => {
     if (organization && !organization.is_manager) return;
@@ -221,15 +249,30 @@ export default function SettingsPage() {
           `/permissions/workflows/${workflowId}`,
         );
         setWorkflowPermissions(data);
+        return;
+      }
+      if (resourceType === 'knowledge_base' && knowledgeBaseId) {
+        const data = await apiRequest<ResourcePermissionListResponse>(
+          `/permissions/knowledge-bases/${knowledgeBaseId}`,
+        );
+        setKnowledgePermissions(data);
+        return;
       }
       if (resourceType === 'llm_credential' && credentialId) {
         const data = await apiRequest<ResourcePermissionListResponse>(
           `/permissions/llm-credentials/${credentialId}`,
         );
         setCredentialPermissions(data);
+        return;
       }
+      if (resourceType === 'workflow') setWorkflowPermissions(null);
+      if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
+      if (resourceType === 'llm_credential') setCredentialPermissions(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '권한 조회 실패');
+      if (resourceType === 'workflow') setWorkflowPermissions(null);
+      if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
+      if (resourceType === 'llm_credential') setCredentialPermissions(null);
     }
   };
 
@@ -250,33 +293,97 @@ export default function SettingsPage() {
       setActiveOrganizationId(org.id);
       setOrganization(org);
 
-      const [providerData, credentialData, appData, audit] = await Promise.all([
-        apiRequest<LLMProviderResponse[]>('/llm/providers'),
-        apiRequest<LLMCredentialResponse[]>('/llm/credentials'),
-        apiRequest<AppResponse[]>('/apps'),
-        apiRequest<{ items: AuditItem[] }>('/users/me/audit-logs?limit=30'),
-      ]);
+      const [providerData, credentialData, appData, audit, knowledgeData] =
+        await Promise.all([
+          apiRequest<LLMProviderResponse[]>('/llm/providers'),
+          apiRequest<LLMCredentialResponse[]>('/llm/credentials'),
+          apiRequest<AppResponse[]>('/apps'),
+          apiRequest<{ items: AuditItem[] }>('/users/me/audit-logs?limit=30'),
+          org.is_manager ? knowledgeApi.getKnowledgeBases().catch(() => []) : [],
+        ]);
 
       setProviders(providerData);
       setCredentials(credentialData);
       setApps(appData);
+      setKnowledgeBases(knowledgeData);
       setAuditItems(audit.items || []);
 
       const firstWorkflowId =
         selectedWorkflowId ||
         appData.find((app) => app.workflow_id)?.workflow_id ||
         '';
+      const firstKnowledgeBaseId =
+        selectedKnowledgeBaseId || knowledgeData[0]?.id || '';
       const firstCredentialId = selectedCredentialId || credentialData[0]?.id || '';
       setSelectedWorkflowId(firstWorkflowId);
+      setSelectedKnowledgeBaseId(firstKnowledgeBaseId);
       setSelectedCredentialId(firstCredentialId);
 
-      setOrganizationMembers([]);
-      setTeams([]);
-      setTeamMembers({});
-      setWorkflowPermissions(null);
-      setCredentialPermissions(null);
-      setMemberForm({ teamId: '', userId: '' });
-      setPermissionForm((prev) => ({ ...prev, granteeId: '' }));
+      if (!org.is_manager) {
+        setOrganizationMembers([]);
+        setTeams([]);
+        setTeamMembers({});
+        setWorkflowPermissions(null);
+        setKnowledgePermissions(null);
+        setCredentialPermissions(null);
+        setMemberForm({ teamId: '', userId: '' });
+        setPermissionForm((prev) => ({ ...prev, granteeId: '' }));
+        return;
+      }
+
+      const [memberData, teamData] = await Promise.all([
+        apiRequest<OrganizationMember[]>(`/organizations/${org.id}/members`),
+        apiRequest<TeamResponse[]>(`/teams?organization_id=${org.id}&limit=100`),
+      ]);
+      setOrganizationMembers(memberData);
+      setTeams(teamData);
+
+      const teamMemberEntries = await Promise.all(
+        teamData.map(async (team) => {
+          try {
+            const members = await apiRequest<TeamMemberResponse[]>(
+              `/teams/${team.id}/members`,
+            );
+            return [team.id, members] as const;
+          } catch {
+            return [team.id, []] as const;
+          }
+        }),
+      );
+      setTeamMembers(Object.fromEntries(teamMemberEntries));
+      setMemberForm((prev) => ({
+        teamId: prev.teamId || teamData.find((team) => team.is_active)?.id || '',
+        userId: prev.userId,
+      }));
+      setPermissionForm((prev) => ({
+        ...prev,
+        granteeId:
+          prev.granteeId ||
+          teamData.find((team) => team.is_active)?.id ||
+          memberData.find((member) => member.membership_state === 'active')?.user_id ||
+          '',
+      }));
+
+      await Promise.all([
+        loadPermissions(
+          'workflow',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+        ),
+        loadPermissions(
+          'knowledge_base',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+        ),
+        loadPermissions(
+          'llm_credential',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+        ),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : '설정 데이터를 불러오지 못했습니다.');
     } finally {
@@ -288,6 +395,13 @@ export default function SettingsPage() {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!isManager) return;
+    if (!selectedKnowledgeBaseId && knowledgeBases.length > 0) {
+      setSelectedKnowledgeBaseId(knowledgeBases[0].id);
+    }
+  }, [isManager, knowledgeBases, selectedKnowledgeBaseId]);
 
   useEffect(() => {
     if (!isManager) return;
@@ -398,21 +512,23 @@ export default function SettingsPage() {
     granteeId: string,
   ) => {
     const resourceId =
-      resourceType === 'workflow' ? selectedWorkflowId : selectedCredentialId;
+      resourceType === 'workflow'
+        ? selectedWorkflowId
+        : resourceType === 'knowledge_base'
+          ? selectedKnowledgeBaseId
+          : selectedCredentialId;
     const resourcePath =
       resourceType === 'workflow'
         ? `/permissions/workflows/${resourceId}`
-        : `/permissions/llm-credentials/${resourceId}`;
+        : resourceType === 'knowledge_base'
+          ? `/permissions/knowledge-bases/${resourceId}`
+          : `/permissions/llm-credentials/${resourceId}`;
     return `${resourcePath}/${granteeType}s/${granteeId}`;
   };
 
   const handleGrantPermission = async () => {
     if (!organization?.is_manager || !permissionForm.granteeId) return;
-    const resourceId =
-      permissionForm.resourceType === 'workflow'
-        ? selectedWorkflowId
-        : selectedCredentialId;
-    if (!resourceId) return;
+    if (!selectedPermissionResourceId) return;
     await apiRequest(
       permissionPath(
         permissionForm.resourceType,
@@ -681,6 +797,7 @@ export default function SettingsPage() {
                   className="h-10 rounded-md border border-gray-300 px-3 text-sm"
                 >
                   <option value="workflow">Workflow</option>
+                  <option value="knowledge_base">Knowledge Base</option>
                   <option value="llm_credential">LLM Credential</option>
                 </select>
                 {permissionForm.resourceType === 'workflow' ? (
@@ -692,11 +809,38 @@ export default function SettingsPage() {
                     }}
                     className="h-10 rounded-md border border-gray-300 px-3 text-sm"
                   >
-                    {workflowOptions.map((app) => (
-                      <option key={app.workflow_id} value={app.workflow_id}>
-                        {app.name}
-                      </option>
-                    ))}
+                    {workflowOptions.length === 0 ? (
+                      <option value="">선택 가능한 workflow 없음</option>
+                    ) : (
+                      workflowOptions.map((app) => (
+                        <option key={app.workflow_id} value={app.workflow_id}>
+                          {app.name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                ) : permissionForm.resourceType === 'knowledge_base' ? (
+                  <select
+                    value={selectedKnowledgeBaseId}
+                    onChange={(event) => {
+                      setSelectedKnowledgeBaseId(event.target.value);
+                      loadPermissions(
+                        'knowledge_base',
+                        selectedWorkflowId,
+                        event.target.value,
+                      );
+                    }}
+                    className="h-10 rounded-md border border-gray-300 px-3 text-sm"
+                  >
+                    {knowledgeBases.length === 0 ? (
+                      <option value="">선택 가능한 지식 기반 없음</option>
+                    ) : (
+                      knowledgeBases.map((knowledgeBase) => (
+                        <option key={knowledgeBase.id} value={knowledgeBase.id}>
+                          {knowledgeBase.name}
+                        </option>
+                      ))
+                    )}
                   </select>
                 ) : (
                   <select
@@ -706,16 +850,21 @@ export default function SettingsPage() {
                       loadPermissions(
                         'llm_credential',
                         selectedWorkflowId,
+                        selectedKnowledgeBaseId,
                         event.target.value,
                       );
                     }}
                     className="h-10 rounded-md border border-gray-300 px-3 text-sm"
                   >
-                    {credentials.map((credential) => (
-                      <option key={credential.id} value={credential.id}>
-                        {credential.credential_name}
-                      </option>
-                    ))}
+                    {credentials.length === 0 ? (
+                      <option value="">선택 가능한 credential 없음</option>
+                    ) : (
+                      credentials.map((credential) => (
+                        <option key={credential.id} value={credential.id}>
+                          {credential.credential_name}
+                        </option>
+                      ))
+                    )}
                   </select>
                 )}
               </div>
@@ -792,7 +941,7 @@ export default function SettingsPage() {
                 </select>
                 <button
                   onClick={handleGrantPermission}
-                  disabled={!permissionForm.granteeId}
+                  disabled={!selectedPermissionResourceId || !permissionForm.granteeId}
                   className="h-10 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   부여

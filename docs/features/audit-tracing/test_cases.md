@@ -15,6 +15,8 @@ Status: Draft
 
 - Raw/compliance access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Policy block, permission denied, requester source authorization denied, source ACL stale/unmapped/ambiguous/unverified/revoked, connector/egress failure는 raw exception 없이 sanitized reason code로 기록된다.
+- Permission grant/update/revoke endpoint는 manual audit과 ORM listener audit이 중복되어 같은 mutation을 두 번 기록하지 않는다. Core upsert 또는 bulk delete를 쓰는 endpoint 경로도 permission row별 canonical action을 정확히 한 번 남긴다.
+- KB permission grant/revoke endpoint는 `team_knowledge_permission.*`/`user_knowledge_permission.*` data-change audit row를 권한 row mutation과 같은 DB transaction에 추가하며, 비동기 audit 발행 실패가 권한 변경 성공 뒤 audit 누락으로 이어지지 않는다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.
 - RAG strategy/A-B summary API는 query rewrite 적용 여부, evidence sufficiency 결과, source tier summary를 safe field로 반환할 수 있지만 raw rewritten query와 hidden source reference를 반환하지 않는다.
 

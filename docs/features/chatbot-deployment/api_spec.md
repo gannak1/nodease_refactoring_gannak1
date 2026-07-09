@@ -21,6 +21,7 @@ Status: Draft
 `api | webapp | widget | mcp | workflow_node | schedule | webhook | chatbot`
 
 - `chatbot` 값이 추가되었다. Postgres enum에는 멤버 이름 `CHATBOT`으로 저장되고, 응답에는 `deployment.type.value`인 `"chatbot"`(소문자)로 직렬화된다.
+- Public chatbot deployment activation은 [deployment](../deployment/api_spec.md)의 preflight 계약을 따른다. `/run-public`은 사용자 subject를 주입하지 않으므로 private KB 후보가 있으면 활성 배포 create/toggle에서 `409 deployment.preflight.blocked`로 차단되어야 한다.
 
 ### POST /api/v1/run-public/{url_slug} (챗봇)
 

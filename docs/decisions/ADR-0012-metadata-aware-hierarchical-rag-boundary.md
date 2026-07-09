@@ -15,7 +15,7 @@ MBA-75는 RAG를 metadata-aware retrieval, permission-aware retrieval, hierarchi
 - `rag_retrieval_traces` 신규 table을 만들지 않는다.
 - `knowledge_bases.classification`, `documents.classification` column을 만들지 않고 `documents.meta_info` metadata convention을 사용한다.
 - document별 permission table을 만들지 않는다.
-- Knowledge base user direct permission은 MVP 2 목표 table인 `user_knowledge_permissions`로 다룬다.
+- Knowledge base user direct permission은 `user_knowledge_permissions`로 다룬다.
 
 ## Options Considered
 
@@ -41,7 +41,7 @@ MBA-75는 RAG를 metadata-aware retrieval, permission-aware retrieval, hierarchi
 7. `confidential`은 KB `use` 통과 시 허용하되 audit/trace policy result를 남긴다.
 8. Hierarchical retrieval은 parent chunk를 coarse retrieval/routing에 사용하고, final citation/evidence는 child chunk로 반환한다.
 9. RAG trace에는 raw chunk content를 기본 저장하지 않는다. Per-chunk evidence는 `trace_payloads.payload_kind='rag.retrieval'` convention으로 chunk id, document id, rank, score, token count, metadata summary를 저장한다. Run/node metadata에는 retrieved chunk count, document/citation id, score summary, fallback flag 같은 redaction-safe summary만 저장한다. 성공한 retrieval 감사는 별도 `audit_logs.action='rag.retrieve'`로 기록한다.
-10. `user_knowledge_permissions`는 MVP 2 목표 table이다. MBA-75에서 함께 구현할지 별도 이슈로 나눌지는 구현 단위 결정이며, "추가 여부"를 다시 정책적으로 선택하는 문제가 아니다.
+10. `user_knowledge_permissions`는 Knowledge Base user direct permission의 현재 table이다. "추가 여부"를 다시 정책적으로 선택하는 문제가 아니다.
 
 ## Rationale
 
@@ -59,7 +59,7 @@ Access control과 retrieval hierarchy를 분리하면 KB `use` 권한 실패, do
 
 ## Follow-up Review
 
-- MBA-75 구현 단위에서 `user_knowledge_permissions`를 함께 추가할지 별도 선행/후속 이슈로 분리할지 결정한다.
+- MBA-176에서 `user_knowledge_permissions`가 구현됐으므로, 후속 Knowledge/RAG 작업은 team/user KB permission helper 결과를 공통 경계로 사용한다.
 - Hierarchical chunk column에 대한 실제 Alembic migration은 MBA-78 1차 구현에서 추가됐으며, full parent-child ingestion/ranking 동작은 후속 PR에서 별도 검증한다.
 - `policy.warn`, `policy.block`, `rag.retrieve` AuditAction 상수와 테스트는 MBA-78 1차 구현에서 먼저 고정한다. `rag.retrieve`는 RAG retrieval 성공 감사에 사용하고, `rag.retrieval`은 trace payload kind로만 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement는 후속 구현 범위다.
 - Search preview content와 workflow trace metadata-only 응답 경계가 UI에서 섞이지 않는지 browser smoke로 확인한다.

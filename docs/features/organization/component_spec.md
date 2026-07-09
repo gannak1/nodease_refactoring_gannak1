@@ -33,21 +33,21 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 
 - 출처: `apps/client/app/dashboard/admin/page.tsx`
 - 경로: `/dashboard/admin`
-- 책임: organization manager가 organization member, team, workflow permission, LLM credential permission을 관리하는 주 UI다.
+- 책임: organization manager가 organization member, team, workflow permission, Knowledge Base permission, LLM credential permission을 관리하는 주 UI다.
 - 현재 동작:
   - `/organizations/current`와 `/auth/me`를 병렬로 조회한다.
   - manager가 아니면 `관리 권한 없음` 상태를 표시한다.
   - manager면 member/team/permission 데이터를 로드하고 tab UI로 관리한다.
-  - LLM credential, knowledge, audit 관련 tab도 포함하지만, 이 문서에서는 organization-owned member/team/permission controls만 다룬다.
+  - LLM credential, knowledge, audit 관련 tab도 포함한다. MBA-176에서는 permission controls에 Knowledge Base team/user direct grant/revoke를 포함한다.
 
 ### SettingsPage
 
 - 출처: `apps/client/app/dashboard/settings/page.tsx`
 - 경로: `/dashboard/settings`
-- 책임: 현재 organization 이름과 organization auth badge를 표시하고, visible tab에서는 organization member/team/permission 관리 경로를 제공하지 않음을 확인한다.
+- 책임: 현재 organization 이름과 organization auth badge를 표시한다. Access-management tab을 노출하는 경우 AdminConsolePage와 같은 workflow/KB/LLM permission semantics를 사용해야 한다.
 - 현재 동작:
-  - code에는 access-management branch가 남아 있지만 `visibleTabs`에는 `access` tab이 포함되지 않는다.
-  - 따라서 organization member/team/permission 관리의 현재 사용자 경로는 AdminConsolePage다.
+  - code에는 access-management branch가 남아 있지만 현재 기본 visible path는 AdminConsolePage다.
+  - Settings access-management를 활성화하면 KB direct grant/revoke와 `none` 거부, DELETE revoke, active member prerequisite를 AdminConsolePage와 동일하게 구현한다.
 
 ### CreateAppModal Permission Request State
 
@@ -195,9 +195,9 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 ### PermissionsTab
 
 - 출처: `apps/client/app/dashboard/admin/page.tsx`
-- 책임: workflow/LLM credential resource permission을 team 또는 user direct 대상으로 부여/회수한다.
+- 책임: workflow/Knowledge Base/LLM credential resource permission을 team 또는 user direct 대상으로 부여/회수한다.
 - 렌더링:
-  - resource type select(`Workflow`, `LLM Credential`)
+  - resource type select(`Workflow`, `Knowledge Base`, `LLM Credential`)
   - resource select
   - grantee type select(`Team`, `User direct`)
   - active team select 또는 `ActiveOrganizationMemberPicker`
@@ -207,7 +207,8 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
   - `User direct permissions` list
 - 제한:
   - 선택 가능한 resource, active team, active member가 없으면 grant button이 disabled다.
-  - Knowledge permission grant/revoke UI는 현재 연결되어 있지 않다.
+  - Knowledge Base user direct grant는 `viewer`, `operator`, `builder`, `manager`만 허용하고 `none`은 DELETE revoke로 표현한다.
+  - 조직 멤버십은 grant 대상 조건일 뿐 KB 사용 권한이 아니라는 상태/문구를 유지한다.
 
 ### OrganizationTab
 
@@ -384,7 +385,7 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - loading/error state를 가진다.
 - visible tab은 현재 `credentials`, `activity`이다.
 - organization name과 auth badge를 표시한다.
-- `access` branch 상태와 handler는 코드에 존재하지만 visible navigation에서 선택할 수 없다.
+- `access` branch를 visible navigation에 노출하는 경우 AdminConsolePage와 같은 workflow/KB/LLM permission list/grant/revoke contract를 사용한다.
 
 ### CreateAppModal Permission Request State
 

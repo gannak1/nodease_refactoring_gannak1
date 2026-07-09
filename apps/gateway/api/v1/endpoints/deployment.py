@@ -14,10 +14,12 @@ from apps.shared.audit.context import AuditActor, clear_current_actor, set_curre
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import (
     DeploymentCreate,
+    DeploymentPreflightRequest,
+    DeploymentPreflightResponse,
     DeploymentResponse,
     DeploymentRunInfoResponse,
 )
@@ -136,6 +138,34 @@ def create_deployment(
         raise HTTPException(status_code=404, detail="App not found")
     ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
     return DeploymentService.create_deployment(db, deployment_in, current_user.id)
+
+
+@router.post("/preflight", response_model=DeploymentPreflightResponse)
+def preview_deployment_preflight(
+    preflight_in: DeploymentPreflightRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    배포 graph snapshot과 deployment type 기준으로 runtime availability를 검사합니다.
+    """
+    app = db.query(App).filter(App.id == preflight_in.app_id).first()
+    if not app or not app.workflow_id:
+        raise HTTPException(status_code=404, detail="App not found")
+    ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
+    graph_snapshot = DeploymentService._resolve_graph_snapshot(
+        db,
+        app.workflow_id,
+        preflight_in.graph_snapshot,
+    )
+    return DeploymentService.preview_knowledge_preflight(
+        db,
+        app=app,
+        deployment_type=preflight_in.type,
+        graph_snapshot=graph_snapshot,
+        audience_hint=preflight_in.audience,
+        is_active=preflight_in.is_active,
+    )
 
 
 @router.get("", response_model=List[DeploymentResponse])
@@ -317,6 +347,8 @@ def get_deployment_info_public(
 
     if not deployment.is_active:
         raise HTTPException(status_code=404, detail="Deployment is inactive")
+    if deployment.type == DeploymentType.WORKFLOW_NODE:
+        raise HTTPException(status_code=404, detail="Active deployment not found")
 
     return DeploymentInfoResponse(
         url_slug=app.url_slug,

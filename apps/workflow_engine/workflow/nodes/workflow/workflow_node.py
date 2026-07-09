@@ -2,6 +2,7 @@
 from typing import Any, Dict, List
 
 from apps.shared.db.models.app import App
+from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.node import Node
 
 from .entities import WorkflowNodeData
@@ -11,6 +12,10 @@ from .entities import WorkflowNodeData
 # 순환 의존성이 발생할 가능성이 높습니다.
 # 따라서 _run 메서드 내부에서 임포트를 처리합니다.
 
+MAX_WORKFLOW_NODE_DEPTH = 3
+_WORKFLOW_NODE_DEPTH_CONTEXT_KEY = "workflow_node_depth"
+_WORKFLOW_NODE_VISITED_APP_IDS_CONTEXT_KEY = "workflow_node_visited_app_ids"
+
 
 def _get_nested_value(data: Any, keys: List[str]) -> Any:
     for key in keys:
@@ -19,6 +24,20 @@ def _get_nested_value(data: Any, keys: List[str]) -> Any:
         else:
             return None
     return data
+
+
+def _workflow_node_depth(execution_context: Dict[str, Any]) -> int:
+    try:
+        return int(execution_context.get(_WORKFLOW_NODE_DEPTH_CONTEXT_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _visited_app_ids(execution_context: Dict[str, Any]) -> set[str]:
+    raw_value = execution_context.get(_WORKFLOW_NODE_VISITED_APP_IDS_CONTEXT_KEY) or []
+    if isinstance(raw_value, (str, bytes)):
+        raw_value = [raw_value]
+    return {str(app_id) for app_id in raw_value if app_id is not None}
 
 
 class WorkflowNode(Node[WorkflowNodeData]):
@@ -34,7 +53,7 @@ class WorkflowNode(Node[WorkflowNodeData]):
 
         db, should_close_session = self._borrow_db_session()
         if not db:
-            raise ValueError(
+            raise WorkflowNodeConfigurationError(
                 f"[WorkflowNode] DB session required in execution_context for node {self.id}"
             )
 
@@ -44,32 +63,71 @@ class WorkflowNode(Node[WorkflowNodeData]):
             # 만약 workflow_id가 실제 Workflow 테이블의 ID라면 App을 거쳐서 찾아야 함.
             # 여기서는 프론트엔드에서 App ID를 workflowId 필드에 저장한다고 가정하겠습니다. (또는 appId 필드 사용)
             target_app_id = self.data.appId  # 엔티티 정의에 appId가 있음
+            target_app_key = str(target_app_id)
+            current_depth = _workflow_node_depth(self.execution_context)
+            if current_depth >= MAX_WORKFLOW_NODE_DEPTH:
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Workflow-node nesting limit exceeded"
+                )
+
+            visited_app_ids = _visited_app_ids(self.execution_context)
+            current_app_id = self.execution_context.get("app_id")
+            if current_app_id is not None:
+                visited_app_ids.add(str(current_app_id))
+            if target_app_key in visited_app_ids:
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Recursive workflow-node reference detected"
+                )
 
             app = db.query(App).filter(App.id == target_app_id).first()
             if not app:
-                raise ValueError(f"[WorkflowNode] Target App {target_app_id} not found")
+                raise WorkflowNodeConfigurationError(
+                    f"[WorkflowNode] Target App {target_app_id} not found"
+                )
+            execution_organization_id = self.execution_context.get("organization_id")
+            app_organization_id = getattr(app, "organization_id", None)
+            if not execution_organization_id or not app_organization_id:
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Target App is unavailable"
+                )
+            if (
+                execution_organization_id
+                and app_organization_id
+                and str(app_organization_id) != str(execution_organization_id)
+            ):
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Target App is unavailable"
+                )
 
             if not app.active_deployment_id:
-                raise ValueError(
+                raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] App {app.name} has no active deployment"
                 )
 
-            from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+            from apps.shared.db.models.workflow_deployment import (
+                DeploymentType,
+                WorkflowDeployment,
+            )
 
             deployment = (
                 db.query(WorkflowDeployment)
-                .filter(WorkflowDeployment.id == app.active_deployment_id)
+                .filter(
+                    WorkflowDeployment.id == app.active_deployment_id,
+                    WorkflowDeployment.app_id == app.id,
+                    WorkflowDeployment.is_active.is_(True),
+                    WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE,
+                )
                 .first()
             )
 
             if not deployment:
-                raise ValueError(
+                raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] Active deployment not found for app {app.name}"
                 )
 
             graph = deployment.graph_snapshot
             if not graph:
-                raise ValueError(
+                raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] Deployment {deployment.version} has no graph data"
                 )
 
@@ -98,12 +156,17 @@ class WorkflowNode(Node[WorkflowNodeData]):
             # user_id 등 context 전달
             # parent_run_id를 전달하여 서브 워크플로우의 노드 실행 기록이 부모 워크플로우와 연결되도록 함
             parent_run_id = self.execution_context.get("workflow_run_id")
+            sub_execution_context = dict(self.execution_context)
+            sub_execution_context[_WORKFLOW_NODE_DEPTH_CONTEXT_KEY] = current_depth + 1
+            sub_execution_context[_WORKFLOW_NODE_VISITED_APP_IDS_CONTEXT_KEY] = list(
+                visited_app_ids | {target_app_key}
+            )
 
             # 서브 워크플로우도 세션 객체 대신 factory를 통해 필요한 시점에 세션을 엽니다.
             engine = WorkflowEngine(
                 graph,
                 sub_workflow_inputs,
-                execution_context=self.execution_context,
+                execution_context=sub_execution_context,
                 is_deployed=True,
                 db=db,
                 parent_run_id=parent_run_id,

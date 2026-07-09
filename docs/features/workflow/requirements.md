@@ -47,7 +47,8 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-005: `execution_subject`가 없을 때 Workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 조용히 fallback하지 않는다. Subject 부재는 private retrieval 실패가 아니라 anonymous public-only gate를 통과한 public collection/KB 후보만 허용하는 실행이다. Source-managed KB는 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. 모호하거나 지원하지 않는 subject는 private retrieval fail-closed로 처리한다.
 - FR-006: Workflow owner, deployment owner, execution subject는 audit/trace에서 구분할 수 있어야 한다. Owner는 소유권과 관리 표시에는 사용할 수 있지만, 명시 정책 없이 실행 시점 data access 권한으로 사용하지 않는다.
 - FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
-- FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포에서 private KB access가 필요하면 후속 intended execution subject/audience 기준 runtime availability preflight를 수행해야 한다. MVP에서는 subject 없는 배포 실행을 public-only로 낮춘다.
+- FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포는 deployment type에서 파생한 runtime audience 기준 preflight를 수행해야 한다. 사용자 subject가 없는 public/API/webhook/schedule/chatbot/MCP surface는 private KB 후보를 활성 배포로 올릴 수 없고 anonymous public-only 후보만 허용한다.
+- FR-009: Workflow-node 실행은 parent workflow의 execution context를 상속한다. Parent execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only로 낮춘다. Deployment preflight에서 workflow-node target은 node 설정의 `workflowNode.data.appId`를 기준으로 target app active deployment를 찾는다.
 
 
 ### 1. 실행 편의성
@@ -154,8 +155,11 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 
 - 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
+- Workflow-node 순환 참조, nesting depth 초과, target app/deployment unavailable 같은 복구 불가능한 graph 설정 오류는 retry 가능한 일시 장애가 아니다. Celery task는 이러한 non-retryable runtime error를 즉시 실패로 보존해야 한다.
 - Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
+- 배포 preflight에서 client-supplied audience hint는 preview UI용이며, create/activation 경로는 deployment type과 실행 endpoint에서 audience를 서버가 다시 파생한다.
+- Private KB를 자동 실행에서 사용하려면 별도 service account 또는 assigned operator 정책이 필요하다. 이 정책이 없으면 workflow owner, deployment owner, app creator 권한으로 fallback하지 않는다.
 - Anonymous public-only gate에서 source-managed KB는 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다 ([ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)).
 - 별도 RAG node를 만들지 않는다. Knowledge retrieval은 LLM node의 RAG option/runtime path로 연결한다 ([ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)).
 - Skill이 workflow generation이나 실행 시점 RAG procedure를 안내하더라도, skill은 data access 권한을 부여하지 않는다. 실제 evidence retrieval은 Knowledge permission helper 결과로만 수행한다.

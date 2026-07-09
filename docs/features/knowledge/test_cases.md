@@ -40,6 +40,11 @@ Status: Draft
 - Organization manager는 operations policy에 따라 remediation을 수행할 수 있지만 기본적으로 source ACL retrieval filtering을 우회하지 못한다.
 - 다른 organization KB id의 response shape, audit behavior, answer-run 생성 여부는 ADR-0017 resource-hiding baseline에 따라 hidden identity를 만들지 않는다.
 - Visible resource 확인 이후 same-scope KB use denial은 승인된 resource-hiding/API matrix를 따른다. Matrix가 resource visible 상태를 유지한다고 결정한 경우에만 `403 permission.denied`를 허용한다.
+- Active organization member라는 사실만으로 KB `use`가 허용되지 않는다. Team 또는 user direct KB grant가 없고 organization manager override도 없으면 retrieval은 fail-closed다.
+- `user_knowledge_permissions` direct grant는 같은 active organization member에게만 생성된다. invited/suspended/removed/non-member 대상은 safe validation 또는 hidden/not-found response로 닫는다.
+- User direct KB grant와 team KB grant가 함께 있으면 가장 강한 additive allow가 effective permission이 된다. User direct grant가 team grant를 낮추거나 deny할 수 없다.
+- User direct KB grant request에서 `none`은 거부한다. 권한 회수는 DELETE endpoint로만 표현한다.
+- User direct KB grant가 있어도 source-managed KB retrieval은 fresh source ACL/requester authorization gate를 다시 통과해야 한다.
 
 ## Knowledge Base API Tests
 
@@ -218,9 +223,15 @@ Status: Draft
 - Link candidate API는 기본적으로 KB `manage` 가능한 후보만 반환하고, visible-only KB를 표시해야 하는 경우 disabled 상태와 safe reason만 반환한다.
 - Collection permission grant/revoke는 `read`, `route`, `manage`, `sync`만 허용하고 explicit deny나 role inheritance를 만들지 않는다.
 - Collection permission revoke는 자기 자신의 마지막 `manage` grant 제거 edge case를 safe denial 또는 organization manager 전용 동작으로 처리한다.
+- KB permission list API는 `resource_type="knowledge_base"`와 team/user permission 목록을 반환하고, hidden KB id/name/count를 노출하지 않는다.
+- KB team permission grant/revoke는 기존 team KB permission table을 사용하고, KB user direct permission grant/revoke는 `user_knowledge_permissions`를 사용한다.
+- KB team/user permission grant/revoke는 권한 row 변경과 같은 transaction에서 canonical data-change audit row를 하나만 추가하며, Core upsert 또는 bulk delete가 ORM listener를 우회해도 audit이 누락되지 않는다.
+- KB hard delete는 `team_knowledge_permissions`, `user_knowledge_permissions` direct grant row를 같은 transaction에서 먼저 정리해 orphan permission이나 FK failure를 남기지 않는다.
+- Runtime/builder bulk KB permission evaluation은 team KB permission과 `user_knowledge_permissions` direct grant를 모두 합산해야 한다. User direct grant만 있는 경우에도 해당 user의 KB `use` 권한이 허용되어야 한다.
 - Public visibility 전환은 organization manager와 explicit acknowledgement를 요구하고, 전환 audit에는 raw KB title/path/url, hidden KB id/name, exact denied count가 들어가지 않는다.
 - Public visibility가 켜져도 인증 사용자 KB `use` 권한이나 source ACL requester authorization이 생기지 않는다.
 - Source-managed KB는 collection public flag만으로 anonymous public-only 후보가 되지 않는다. Source/connector public exposure approval이 없거나 `approval_scope`와 target field가 맞지 않는 approval row만 있으면 후보에서 제외된다.
+- MBA-176 preflight/runtime availability에서 source-managed KB public exposure approval primitive가 없으면 `source_public_exposure_required` blocked로 처리하고 warning으로 낮추지 않는다.
 - Connector-wide public exposure approval은 expiry, reverification cadence, revocation behavior, explicit acknowledgement가 없으면 invalid policy로 처리된다.
 - Knowledge Collection 관리 UI는 Workflow Builder와 분리되어 있고, Builder 화면에서 Collection 생성/삭제/권한관리를 주 기능으로 제공하지 않는다.
 - Collection 관리 UI는 `can_manage_collection`, `can_manage_kb`, `can_use_kb`를 혼동하지 않고, item list에 보이는 KB가 runtime retrieval 가능성을 보장하지 않는다는 상태를 표현한다.

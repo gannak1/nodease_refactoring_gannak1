@@ -807,3 +807,54 @@ def test_bulk_kb_use_uses_prefetched_context_and_restores_it():
     assert helper._bulk_manual_auth_state_by_kb_id is None
     assert helper._bulk_source_policy_allowed_kb_ids is None
     assert helper._bulk_source_authorization_by_key is None
+
+
+def test_bulk_kb_use_honors_user_direct_permission_without_team_permission():
+    kb = _kb()
+
+    class BulkPermissionQuery:
+        def __init__(self, db):
+            self.db = db
+
+        def join(self, *args, **kwargs):
+            return self
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self.db.all_values.pop(0)
+
+    class BulkPermissionDb:
+        def __init__(self):
+            self.all_values = [
+                [],  # team_knowledge_permissions
+                [(kb.id, AUTH_STATE_OPERATOR)],  # user_knowledge_permissions
+            ]
+
+        def query(self, *args, **kwargs):
+            return BulkPermissionQuery(self)
+
+    class DirectPermissionHelper(KnowledgePermissionHelper):
+        def __init__(self):
+            super().__init__(
+                BulkPermissionDb(),
+                user_id=USER_ID,
+                organization_id=ORG_ID,
+            )
+
+        def _organization_auth_state(self):
+            return ORGANIZATION_AUTH_MEMBER
+
+        def _bulk_source_policy_kb_ids(self, kbs):
+            return set()
+
+        def _bulk_latest_source_authorization_by_key(self, kbs):
+            return {}
+
+    helper = DirectPermissionHelper()
+
+    decisions = helper.bulk_evaluate_kb_use([kb])
+
+    assert decisions[kb.id].allowed is True
+    assert decisions[kb.id].effective_auth_state == AUTH_STATE_OPERATOR

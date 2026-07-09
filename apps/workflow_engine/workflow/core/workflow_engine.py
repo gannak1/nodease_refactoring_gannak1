@@ -19,6 +19,7 @@ from apps.shared.db.session import SessionLocal
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 class WorkflowEngine:
@@ -143,6 +144,8 @@ class WorkflowEngine:
             if event["type"] == "workflow_finish":
                 final_context = event["data"]
             elif event["type"] == "error":
+                if event["data"].get("non_retryable"):
+                    raise NonRetryableWorkflowError(event["data"]["message"])
                 raise ValueError(event["data"]["message"])
 
         return final_context
@@ -371,7 +374,13 @@ class WorkflowEngine:
                     self.logger.update_run_log_error(error_msg)
                 if run_id and not self.is_subworkflow:
                     publish_workflow_event(run_id, "error", {"message": error_msg})
-                yield {"type": "error", "data": {"message": error_msg}}
+                yield {
+                    "type": "error",
+                    "data": {
+                        "message": error_msg,
+                        "non_retryable": isinstance(e, NonRetryableWorkflowError),
+                    },
+                }
 
     def _submit_node(
         self,

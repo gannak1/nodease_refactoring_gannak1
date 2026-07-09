@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,34 @@ def _sync_knowledge_bases_for_execution_subject(
     return syncer.sync_knowledge_bases(graph)
 
 
+class PermanentDeploymentExecutionError(ValueError):
+    """Non-retryable deployment runtime contract violation."""
+
+
+def _enum_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def _deployment_type_allowed_for_trigger(
+    deployment_type: Any,
+    trigger_mode: Any,
+) -> bool:
+    trigger = _enum_value(trigger_mode)
+    deployment_type_value = _enum_value(deployment_type)
+    allowed_by_trigger = {
+        "api": {"api"},
+        "api_secret": {"api"},
+        "schedule": {"schedule"},
+        "webhook": {"webhook"},
+    }
+    allowed_types = allowed_by_trigger.get(trigger)
+    return bool(allowed_types and deployment_type_value in allowed_types)
+
+
 @celery_app.task(name="workflow.execute", bind=True, max_retries=3)
 def execute_workflow(
     self,
@@ -117,6 +146,9 @@ def execute_workflow(
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
+    except NonRetryableWorkflowError as e:
+        logger.error(f"[Workflow-Engine] execute_workflow 정책 차단: {e}")
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] execute_workflow 실패: {e}")
         raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
@@ -189,6 +221,9 @@ def execute_deployed_workflow(
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
+    except NonRetryableWorkflowError as e:
+        logger.error(f"[Workflow-Engine] execute_deployed_workflow 정책 차단: {e}")
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] execute_deployed_workflow 실패: {e}")
         raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
@@ -211,7 +246,10 @@ def execute_by_deployment(
     [GEVENT] WorkflowEngine이 동기화되어 단순화됨.
     """
     from apps.shared.db.models.app import App
-    from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+    from apps.shared.db.models.workflow_deployment import (
+        DeploymentType,
+        WorkflowDeployment,
+    )
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
     session = SessionLocal()
@@ -231,6 +269,30 @@ def execute_by_deployment(
             raise ValueError(f"배포 그래프 데이터가 없습니다: {deployment_id}")
 
         app = session.query(App).filter(App.id == deployment.app_id).first()
+        if not app:
+            raise PermanentDeploymentExecutionError(
+                f"배포 앱을 찾을 수 없습니다: {deployment_id}"
+            )
+        if not getattr(deployment, "is_active", False):
+            raise PermanentDeploymentExecutionError(
+                f"비활성 배포는 실행할 수 없습니다: {deployment_id}"
+            )
+        if str(getattr(app, "active_deployment_id", "")) != str(deployment.id):
+            raise PermanentDeploymentExecutionError(
+                f"현재 활성 배포가 아닙니다: {deployment_id}"
+            )
+        if deployment.type == DeploymentType.WORKFLOW_NODE:
+            raise PermanentDeploymentExecutionError(
+                f"workflow_node 배포는 직접 실행할 수 없습니다: {deployment_id}"
+            )
+        if not _deployment_type_allowed_for_trigger(
+            deployment.type,
+            execution_context.get("trigger_mode"),
+        ):
+            raise PermanentDeploymentExecutionError(
+                f"배포 타입과 실행 트리거가 일치하지 않습니다: {deployment_id}"
+            )
+
         execution_context["app_id"] = str(deployment.app_id)
         if app and not execution_context.get("workflow_id"):
             execution_context["workflow_id"] = (
@@ -265,6 +327,9 @@ def execute_by_deployment(
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
+    except (PermanentDeploymentExecutionError, NonRetryableWorkflowError) as e:
+        logger.error(f"[Workflow-Engine] execute_by_deployment 정책 차단: {e}")
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] execute_by_deployment 실패: {e}")
         raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
@@ -325,10 +390,20 @@ def stream_workflow(
             if event.get("type") == "workflow_finish":
                 final_result = event.get("data", {})
             elif event.get("type") == "error":
-                raise ValueError(event.get("data", {}).get("message", "Unknown error"))
+                event_data = event.get("data", {})
+                error_message = event_data.get("message", "Unknown error")
+                if event_data.get("non_retryable"):
+                    raise NonRetryableWorkflowError(error_message)
+                raise ValueError(error_message)
 
         return {"status": "success", "result": final_result, "sync_status": sync_result}
 
+    except NonRetryableWorkflowError as e:
+        logger.error(f"[Workflow-Engine] stream_workflow 정책 차단: {e}")
+        from apps.shared.pubsub import publish_workflow_event
+
+        publish_workflow_event(external_run_id, "error", {"message": str(e)})
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] stream_workflow 실패: {e}")
         from apps.shared.pubsub import publish_workflow_event

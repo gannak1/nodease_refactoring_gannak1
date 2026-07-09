@@ -3,15 +3,11 @@ import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import type { DeploymentResult } from '../components/deployment/types';
 import type { AppNode } from '../types/Nodes';
-
-type DeploymentType =
-  | 'api'
-  | 'webapp'
-  | 'widget'
-  | 'workflow_node'
-  | 'schedule'
-  | 'webhook'
-  | 'chatbot';
+import type { DeploymentType } from '../types/Deployment';
+import {
+  deploymentApiErrorMessage,
+  formatDeploymentPreflightMessage,
+} from '../utils/deploymentPreflightMessage';
 
 interface UseDeploymentProps {
   nodes: AppNode[]; // 시작 노드 타입 확인 및 graph_snapshot용
@@ -115,6 +111,20 @@ export function useDeployment({
           throw new Error('App ID를 찾을 수 없습니다.');
         }
 
+        const preflight = await workflowApi.preflightDeployment({
+          app_id: activeWorkflow.appId,
+          description,
+          type: deploymentType,
+          config: {},
+          is_active: true,
+        });
+        if (preflight.status === 'blocked') {
+          return {
+            success: false,
+            message: formatDeploymentPreflightMessage(preflight),
+          };
+        }
+
         const response = await workflowApi.createDeployment({
           app_id: activeWorkflow.appId,
           description,
@@ -155,18 +165,19 @@ export function useDeployment({
           // schedule 노드에서 cron expression, timezone 추출
           const scheduleNode = nodes.find((n) => n.type === 'scheduleTrigger');
           if (scheduleNode) {
-            const data = scheduleNode.data as any;
-            result.cronExpression = data.cronExpression || data.cron_expression;
-            result.timezone = data.timezone || data.time_zone || 'Asia/Seoul';
+            const data = asRecord(scheduleNode.data);
+            result.cronExpression =
+              stringValue(data.cronExpression) || stringValue(data.cron_expression);
+            result.timezone =
+              stringValue(data.timezone) || stringValue(data.time_zone) || 'Asia/Seoul';
           }
         }
 
         return result;
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           success: false,
-          message:
-            error.response?.data?.detail || '배포 중 오류가 발생했습니다.',
+          message: deploymentApiErrorMessage(error),
         };
       }
     },
@@ -189,4 +200,14 @@ export function useDeployment({
     handlePublishAsWebhook,
     handleDeploy,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }

@@ -18,6 +18,7 @@ from apps.shared.db.models.team import (
     TeamKnowledgeCollectionPermission,
     TeamMembership,
     UserKnowledgeCollectionPermission,
+    UserKnowledgePermission,
 )
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
@@ -384,6 +385,22 @@ class KnowledgePermissionHelper:
             .all()
         )
         for kb_id, auth_state in rows:
+            states[kb_id] = stronger_resource_auth_state(states[kb_id], auth_state)
+
+        direct_rows = (
+            self.db.query(
+                UserKnowledgePermission.knowledge_base_id,
+                UserKnowledgePermission.auth_state,
+            )
+            .filter(
+                UserKnowledgePermission.user_id == self.user_id,
+                UserKnowledgePermission.knowledge_base_id.in_(kb_ids),
+                UserKnowledgePermission.grantee_organization_id
+                == self.organization_id,
+            )
+            .all()
+        )
+        for kb_id, auth_state in direct_rows:
             states[kb_id] = stronger_resource_auth_state(states[kb_id], auth_state)
         return states
 

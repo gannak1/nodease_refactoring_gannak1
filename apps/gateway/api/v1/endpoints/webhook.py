@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,12 @@ async def receive_webhook(
 
     deployment = (
         db.query(WorkflowDeployment)
-        .filter(WorkflowDeployment.id == app.active_deployment_id)
+        .filter(
+            WorkflowDeployment.id == app.active_deployment_id,
+            WorkflowDeployment.app_id == app.id,
+            WorkflowDeployment.is_active.is_(True),
+            WorkflowDeployment.type == DeploymentType.WEBHOOK,
+        )
         .first()
     )
     if not deployment:

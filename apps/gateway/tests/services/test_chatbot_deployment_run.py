@@ -44,6 +44,26 @@ def _run_public(db, url_slug, user_inputs, monkeypatch, trigger_mode="app"):
     return celery, result
 
 
+def _run_api_secret(db, url_slug, user_inputs, monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    celery = _CaptureCelery()
+    monkeypatch.setattr(deployment_module, "celery_app", celery)
+    monkeypatch.setattr("celery.result.AsyncResult", _FakeAsyncResult)
+
+    result = asyncio.run(
+        deployment_module.DeploymentService.run_deployment(
+            db=db,
+            url_slug=url_slug,
+            user_inputs=user_inputs,
+            trigger_mode="api",
+            auth_token="deploy-secret",
+            require_auth=True,
+        )
+    )
+    return celery, result
+
+
 def _run_authenticated(
     db,
     deployment_id,
@@ -159,6 +179,79 @@ def test_public_run_does_not_fallback_to_owner_execution_subject(monkeypatch):
     assert "execution_subject" not in ctx
 
 
+def test_public_run_rejects_workflow_node_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.API,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBHOOK,
+        DeploymentType.WORKFLOW_NODE,
+    ],
+)
+def test_public_slug_run_rejects_non_public_app_deployment_types(
+    monkeypatch,
+    deployment_type,
+):
+    app_row, deployment_row = _deployed_app(deployment_type)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
+def test_api_slug_run_allows_api_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.API)
+    db = _Db(rows=[app_row, deployment_row])
+
+    celery, result = _run_api_secret(
+        db,
+        app_row.url_slug,
+        {"question": "x"},
+        monkeypatch,
+    )
+
+    assert _captured_context(celery)["trigger_mode"] == "api"
+    assert result["status"] == "success"
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.CHATBOT,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBAPP,
+        DeploymentType.WEBHOOK,
+        DeploymentType.WIDGET,
+        DeploymentType.WORKFLOW_NODE,
+    ],
+)
+def test_api_slug_run_rejects_non_api_deployment_types(monkeypatch, deployment_type):
+    app_row, deployment_row = _deployed_app(deployment_type)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_api_secret(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
 def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
     from apps.gateway.services import deployment_service as deployment_module
 
@@ -240,6 +333,23 @@ def test_authenticated_run_rejects_stale_non_active_deployment(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
+def test_authenticated_run_rejects_workflow_node_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found"
+
+
 def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     from apps.gateway.services import deployment_service as deployment_module
 
@@ -259,6 +369,22 @@ def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     assert result["input_schema"] == deployment_row.input_schema
     assert "auth_secret" not in result
     assert "graph_snapshot" not in result
+
+
+def test_deployment_run_info_rejects_workflow_node_deployment():
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_module.DeploymentService.get_deployment_run_info(
+            db,
+            deployment_row.id,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found"
 
 
 def test_engine_failure_detail_does_not_expose_secret_like_exception(
