@@ -1,8 +1,11 @@
 from typing import get_args
 
+import pytest
+
 from apps.gateway.services.resource_permission_registry import (
     permission_model_and_filters,
     registered_resource_types,
+    ResourceTypeNotRegistered,
     resource_permission_spec,
 )
 from apps.shared.db.models.knowledge import KnowledgeBase
@@ -85,3 +88,16 @@ def test_knowledge_base_route_cannot_fall_back_to_llm_or_workflow_tables():
         "knowledge_base_id": "kb-1",
         "user_id": "user-1",
     }
+
+
+def test_registry_fails_closed_for_unknown_resource_type_or_grantee_type():
+    with pytest.raises(ResourceTypeNotRegistered):
+        resource_permission_spec("document")
+
+    with pytest.raises(ResourceTypeNotRegistered):
+        permission_model_and_filters(
+            resource_type="knowledge_base",
+            grantee_type="organization",
+            resource_id="kb-1",
+            grantee_id="org-1",
+        )
