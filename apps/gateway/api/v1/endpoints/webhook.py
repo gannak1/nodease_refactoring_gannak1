@@ -16,6 +16,10 @@ from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_WEBHOOK_RUN,
+    is_deployment_type_allowed_for_surface,
+)
 from apps.shared.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -348,7 +352,10 @@ async def receive_webhook(
         )
         .first()
     )
-    if not deployment:
+    if not deployment or not is_deployment_type_allowed_for_surface(
+        deployment.type,
+        SURFACE_WEBHOOK_RUN,
+    ):
         raise HTTPException(status_code=404, detail="Active deployment not found")
 
     # 5-1. 예산 초과 차단 — background 예약 전에 429로 끝낸다 (BGT-REQ-030).

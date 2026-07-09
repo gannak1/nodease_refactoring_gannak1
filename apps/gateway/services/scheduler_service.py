@@ -14,6 +14,10 @@ from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_SCHEDULE_RUN,
+    is_deployment_type_allowed_for_surface,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +174,10 @@ class SchedulerService:
             if not deployment.is_active:
                 logger.error(f"Deployment 비활성화됨: {deployment_id}")
                 return
-            if deployment.type != DeploymentType.SCHEDULE:
+            if not is_deployment_type_allowed_for_surface(
+                deployment.type,
+                SURFACE_SCHEDULE_RUN,
+            ):
                 logger.error(f"Deployment is not a schedule deployment: {deployment_id}")
                 return
 

@@ -14,7 +14,11 @@ from apps.shared.audit.context import AuditActor, clear_current_actor, set_curre
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
-from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_PUBLIC_INFO,
+    is_deployment_type_allowed_for_surface,
+)
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import (
     DeploymentCreate,
@@ -347,7 +351,10 @@ def get_deployment_info_public(
 
     if not deployment.is_active:
         raise HTTPException(status_code=404, detail="Deployment is inactive")
-    if deployment.type == DeploymentType.WORKFLOW_NODE:
+    if not is_deployment_type_allowed_for_surface(
+        deployment.type,
+        SURFACE_PUBLIC_INFO,
+    ):
         raise HTTPException(status_code=404, detail="Active deployment not found")
 
     return DeploymentInfoResponse(

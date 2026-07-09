@@ -13,6 +13,7 @@ from apps.gateway.api.v1.endpoints.webhook import CAPTURE_SESSIONS
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.session import get_db
+from apps.shared.db.models.workflow_deployment import DeploymentType
 
 
 class _FakeRequest:
@@ -55,6 +56,7 @@ class TestWebhookApi(unittest.TestCase):
 
         mock_deployment = MagicMock()
         mock_deployment.id = mock_app.active_deployment_id
+        mock_deployment.type = DeploymentType.WEBHOOK
 
         def query(model):
             result = MagicMock()

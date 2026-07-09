@@ -11,6 +11,9 @@ from typing import Any, Dict
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.deployment_runtime_policy import (
+    is_deployment_type_allowed_for_trigger,
+)
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
@@ -71,28 +74,11 @@ class PermanentDeploymentExecutionError(ValueError):
     """Non-retryable deployment runtime contract violation."""
 
 
-def _enum_value(value: Any) -> str | None:
-    if value is None:
-        return None
-    if hasattr(value, "value"):
-        return str(value.value)
-    return str(value)
-
-
 def _deployment_type_allowed_for_trigger(
     deployment_type: Any,
     trigger_mode: Any,
 ) -> bool:
-    trigger = _enum_value(trigger_mode)
-    deployment_type_value = _enum_value(deployment_type)
-    allowed_by_trigger = {
-        "api": {"api"},
-        "api_secret": {"api"},
-        "schedule": {"schedule"},
-        "webhook": {"webhook"},
-    }
-    allowed_types = allowed_by_trigger.get(trigger)
-    return bool(allowed_types and deployment_type_value in allowed_types)
+    return is_deployment_type_allowed_for_trigger(deployment_type, trigger_mode)
 
 
 @celery_app.task(name="workflow.execute", bind=True, max_retries=3)

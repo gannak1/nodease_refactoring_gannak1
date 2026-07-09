@@ -20,6 +20,12 @@ from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_AUTHENTICATED_RUN,
+    SURFACE_SCHEDULE_RUN,
+    is_deployment_type_allowed_for_surface,
+    is_deployment_type_allowed_for_trigger,
+)
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
 
@@ -30,15 +36,7 @@ def _deployment_type_allowed_for_slug_trigger(
     deployment_type: DeploymentType,
     trigger_mode: str,
 ) -> bool:
-    allowed_by_trigger = {
-        "api": {DeploymentType.API},
-        "app": {
-            DeploymentType.WEBAPP,
-            DeploymentType.WIDGET,
-            DeploymentType.CHATBOT,
-        },
-    }
-    return deployment_type in allowed_by_trigger.get(trigger_mode, set())
+    return is_deployment_type_allowed_for_trigger(deployment_type, trigger_mode)
 
 
 class DeploymentService:
@@ -529,7 +527,10 @@ class DeploymentService:
 
         if app.active_deployment_id != deployment.id or not deployment.is_active:
             raise HTTPException(status_code=404, detail="Deployment is inactive")
-        if deployment.type == DeploymentType.WORKFLOW_NODE:
+        if not is_deployment_type_allowed_for_surface(
+            deployment.type,
+            SURFACE_AUTHENTICATED_RUN,
+        ):
             raise HTTPException(status_code=404, detail="Deployment not found")
         return deployment, app
 
@@ -802,7 +803,10 @@ class DeploymentService:
         db: Session,
         deployment: WorkflowDeployment,
     ) -> Schedule | None:
-        if deployment.type != DeploymentType.SCHEDULE:
+        if not is_deployment_type_allowed_for_surface(
+            deployment.type,
+            SURFACE_SCHEDULE_RUN,
+        ):
             return None
 
         schedule_trigger_node = DeploymentService._find_schedule_trigger_node(
@@ -931,7 +935,10 @@ class DeploymentService:
             db.query(Schedule).filter(Schedule.deployment_id == deployment_id).first()
         )
 
-        if deployment.type != DeploymentType.SCHEDULE:
+        if not is_deployment_type_allowed_for_surface(
+            deployment.type,
+            SURFACE_SCHEDULE_RUN,
+        ):
             if schedule:
                 if scheduler_service:
                     scheduler_service.remove_schedule(schedule.id)
