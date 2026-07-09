@@ -25,14 +25,24 @@ api.interceptors.response.use(
 
 export interface CaptureStatusResponse {
   status: 'waiting' | 'captured';
+  capture_id?: string;
+  expires_at?: string;
   payload?: Record<string, unknown>;
+  payload_redacted?: boolean;
+}
+
+export interface CaptureStartResponse {
+  status: 'waiting';
+  capture_id: string;
+  expires_at: string;
+  message?: string;
 }
 
 export const webhookApi = {
   /**
    * 캡처 세션 시작
    */
-  startCapture: async (urlSlug: string): Promise<{ status: string }> => {
+  startCapture: async (urlSlug: string): Promise<CaptureStartResponse> => {
     const response = await api.get(`/hooks/${urlSlug}/capture/start`);
     return response.data;
   },
@@ -40,8 +50,13 @@ export const webhookApi = {
   /**
    * 캡처 상태 조회
    */
-  getCaptureStatus: async (urlSlug: string): Promise<CaptureStatusResponse> => {
-    const response = await api.get(`/hooks/${urlSlug}/capture/status`);
+  getCaptureStatus: async (
+    urlSlug: string,
+    captureId: string,
+  ): Promise<CaptureStatusResponse> => {
+    const response = await api.get(`/hooks/${urlSlug}/capture/status`, {
+      params: { capture_id: captureId },
+    });
     return response.data;
   },
 };

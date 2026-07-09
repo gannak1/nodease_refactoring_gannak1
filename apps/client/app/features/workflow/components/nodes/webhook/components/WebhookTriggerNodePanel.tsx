@@ -201,13 +201,16 @@ export function WebhookTriggerNodePanel({
     }
 
     try {
-      await webhookApi.startCapture(urlSlug);
+      const capture = await webhookApi.startCapture(urlSlug);
       setIsCaptureMode(true);
 
       // 폴링 시작: 2초마다 상태 확인
       pollIntervalRef.current = setInterval(async () => {
         try {
-          const status = await webhookApi.getCaptureStatus(urlSlug);
+          const status = await webhookApi.getCaptureStatus(
+            urlSlug,
+            capture.capture_id,
+          );
           if (status.status === 'captured' && status.payload) {
             // Payload 캡처 성공
             setCapturedPayload(status.payload);
