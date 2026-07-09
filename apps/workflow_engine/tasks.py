@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,9 @@ def execute_workflow(
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
+    except NonRetryableWorkflowError as e:
+        logger.error(f"[Workflow-Engine] execute_workflow 정책 차단: {e}")
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] execute_workflow 실패: {e}")
         raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
@@ -217,6 +221,9 @@ def execute_deployed_workflow(
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
+    except NonRetryableWorkflowError as e:
+        logger.error(f"[Workflow-Engine] execute_deployed_workflow 정책 차단: {e}")
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] execute_deployed_workflow 실패: {e}")
         raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
@@ -320,7 +327,7 @@ def execute_by_deployment(
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
-    except PermanentDeploymentExecutionError as e:
+    except (PermanentDeploymentExecutionError, NonRetryableWorkflowError) as e:
         logger.error(f"[Workflow-Engine] execute_by_deployment 정책 차단: {e}")
         raise
     except Exception as e:
@@ -383,10 +390,20 @@ def stream_workflow(
             if event.get("type") == "workflow_finish":
                 final_result = event.get("data", {})
             elif event.get("type") == "error":
-                raise ValueError(event.get("data", {}).get("message", "Unknown error"))
+                event_data = event.get("data", {})
+                error_message = event_data.get("message", "Unknown error")
+                if event_data.get("non_retryable"):
+                    raise NonRetryableWorkflowError(error_message)
+                raise ValueError(error_message)
 
         return {"status": "success", "result": final_result, "sync_status": sync_result}
 
+    except NonRetryableWorkflowError as e:
+        logger.error(f"[Workflow-Engine] stream_workflow 정책 차단: {e}")
+        from apps.shared.pubsub import publish_workflow_event
+
+        publish_workflow_event(external_run_id, "error", {"message": str(e)})
+        raise
     except Exception as e:
         logger.error(f"[Workflow-Engine] stream_workflow 실패: {e}")
         from apps.shared.pubsub import publish_workflow_event

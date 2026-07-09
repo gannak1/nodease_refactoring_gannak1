@@ -147,12 +147,15 @@ async def receive_webhook(
 
     deployment = (
         db.query(WorkflowDeployment)
-        .filter(WorkflowDeployment.id == app.active_deployment_id)
+        .filter(
+            WorkflowDeployment.id == app.active_deployment_id,
+            WorkflowDeployment.app_id == app.id,
+            WorkflowDeployment.is_active.is_(True),
+            WorkflowDeployment.type == DeploymentType.WEBHOOK,
+        )
         .first()
     )
     if not deployment:
-        raise HTTPException(status_code=404, detail="Active deployment not found")
-    if deployment.type == DeploymentType.WORKFLOW_NODE:
         raise HTTPException(status_code=404, detail="Active deployment not found")
 
     # 5-1. 예산 초과 차단 — background 예약 전에 429로 끝낸다 (BGT-REQ-030).

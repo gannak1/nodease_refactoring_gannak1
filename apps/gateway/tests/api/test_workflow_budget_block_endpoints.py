@@ -391,7 +391,10 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
 
     from apps.gateway.api.v1.endpoints import webhook as webhook_endpoint
     from apps.shared.db.models.app import App
-    from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+    from apps.shared.db.models.workflow_deployment import (
+        DeploymentType,
+        WorkflowDeployment,
+    )
 
     workflow_id = uuid4()
     organization_id = uuid4()
@@ -410,6 +413,7 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
         id=deployment_id,
         app_id=app_row.id,
         version=1,
+        type=DeploymentType.WEBHOOK,
         graph_snapshot={"nodes": [], "edges": []},
         is_active=True,
         created_by=uuid4(),
@@ -447,7 +451,7 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
     assert audits[0].actor_id is None
 
 
-def test_webhook_rejects_workflow_node_before_budget_or_dispatch():
+def test_webhook_rejects_non_webhook_deployment_before_budget_or_dispatch():
     from fastapi import BackgroundTasks
 
     from apps.gateway.api.v1.endpoints import webhook as webhook_endpoint
@@ -462,7 +466,7 @@ def test_webhook_rejects_workflow_node_before_budget_or_dispatch():
     deployment_id = uuid4()
     app_row = App(
         id=uuid4(),
-        name="서브모듈 웹훅 차단",
+        name="비웹훅 배포 차단",
         url_slug=f"hook-{uuid4().hex[:8]}",
         auth_secret="hook-secret",
         workflow_id=workflow_id,
@@ -474,7 +478,7 @@ def test_webhook_rejects_workflow_node_before_budget_or_dispatch():
         id=deployment_id,
         app_id=app_row.id,
         version=1,
-        type=DeploymentType.WORKFLOW_NODE,
+        type=DeploymentType.API,
         graph_snapshot={"nodes": [], "edges": []},
         is_active=True,
         created_by=uuid4(),

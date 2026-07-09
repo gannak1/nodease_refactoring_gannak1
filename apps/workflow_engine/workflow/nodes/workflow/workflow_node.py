@@ -2,6 +2,7 @@
 from typing import Any, Dict, List
 
 from apps.shared.db.models.app import App
+from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.node import Node
 
 from .entities import WorkflowNodeData
@@ -52,7 +53,7 @@ class WorkflowNode(Node[WorkflowNodeData]):
 
         db, should_close_session = self._borrow_db_session()
         if not db:
-            raise ValueError(
+            raise WorkflowNodeConfigurationError(
                 f"[WorkflowNode] DB session required in execution_context for node {self.id}"
             )
 
@@ -65,31 +66,41 @@ class WorkflowNode(Node[WorkflowNodeData]):
             target_app_key = str(target_app_id)
             current_depth = _workflow_node_depth(self.execution_context)
             if current_depth >= MAX_WORKFLOW_NODE_DEPTH:
-                raise ValueError("[WorkflowNode] Workflow-node nesting limit exceeded")
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Workflow-node nesting limit exceeded"
+                )
 
             visited_app_ids = _visited_app_ids(self.execution_context)
             current_app_id = self.execution_context.get("app_id")
             if current_app_id is not None:
                 visited_app_ids.add(str(current_app_id))
             if target_app_key in visited_app_ids:
-                raise ValueError("[WorkflowNode] Recursive workflow-node reference detected")
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Recursive workflow-node reference detected"
+                )
 
             app = db.query(App).filter(App.id == target_app_id).first()
             if not app:
-                raise ValueError(f"[WorkflowNode] Target App {target_app_id} not found")
+                raise WorkflowNodeConfigurationError(
+                    f"[WorkflowNode] Target App {target_app_id} not found"
+                )
             execution_organization_id = self.execution_context.get("organization_id")
             app_organization_id = getattr(app, "organization_id", None)
             if not execution_organization_id or not app_organization_id:
-                raise ValueError("[WorkflowNode] Target App is unavailable")
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Target App is unavailable"
+                )
             if (
                 execution_organization_id
                 and app_organization_id
                 and str(app_organization_id) != str(execution_organization_id)
             ):
-                raise ValueError("[WorkflowNode] Target App is unavailable")
+                raise WorkflowNodeConfigurationError(
+                    "[WorkflowNode] Target App is unavailable"
+                )
 
             if not app.active_deployment_id:
-                raise ValueError(
+                raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] App {app.name} has no active deployment"
                 )
 
@@ -110,13 +121,13 @@ class WorkflowNode(Node[WorkflowNodeData]):
             )
 
             if not deployment:
-                raise ValueError(
+                raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] Active deployment not found for app {app.name}"
                 )
 
             graph = deployment.graph_snapshot
             if not graph:
-                raise ValueError(
+                raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] Deployment {deployment.version} has no graph data"
                 )
 

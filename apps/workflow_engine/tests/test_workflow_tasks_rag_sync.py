@@ -6,6 +6,7 @@ import pytest
 
 from apps.workflow_engine import tasks
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 class FakeSession:
@@ -93,12 +94,15 @@ def _active_deployment_pair(
 
 class FakeWorkflowEngine:
     calls = []
+    execute_error = None
 
     def __init__(self, *args, **kwargs):
         self.__class__.calls.append({"args": args, "kwargs": kwargs})
         self.execution_context = kwargs.get("execution_context", {})
 
     def execute(self):
+        if self.execute_error is not None:
+            raise self.execute_error
         return {"ok": True}
 
     def execute_stream(self):
@@ -131,6 +135,7 @@ class FakeSyncService:
 def patch_task_dependencies(monkeypatch):
     FakeSyncService.calls = []
     FakeWorkflowEngine.calls = []
+    FakeWorkflowEngine.execute_error = None
     FakeSession.deployment = None
     FakeSession.app = None
     monkeypatch.setattr(tasks, "SessionLocal", lambda: FakeSession())
@@ -404,3 +409,19 @@ def test_execute_by_deployment_rejects_workflow_node_deployment():
         )
 
     assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_does_not_retry_non_retryable_runtime_error():
+    deployment, _app, trigger_mode = _active_deployment_pair()
+    FakeWorkflowEngine.execute_error = NonRetryableWorkflowError(
+        "Recursive workflow-node reference detected"
+    )
+
+    with pytest.raises(NonRetryableWorkflowError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
+        )
+
+    assert len(FakeWorkflowEngine.calls) == 1

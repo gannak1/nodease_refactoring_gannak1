@@ -155,6 +155,7 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 
 - 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
+- Workflow-node 순환 참조, nesting depth 초과, target app/deployment unavailable 같은 복구 불가능한 graph 설정 오류는 retry 가능한 일시 장애가 아니다. Celery task는 이러한 non-retryable runtime error를 즉시 실패로 보존해야 한다.
 - Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
 - 배포 preflight에서 client-supplied audience hint는 preview UI용이며, create/activation 경로는 deployment type과 실행 endpoint에서 audience를 서버가 다시 파생한다.

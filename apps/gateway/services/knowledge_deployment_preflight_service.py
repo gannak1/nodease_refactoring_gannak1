@@ -58,6 +58,11 @@ WARNING_REQUIRED_ACTIONS = {
     ),
 }
 
+NON_DOWNGRADABLE_REASON_CODES = {
+    "workflow_node_target_unavailable",
+    "workflow_node_cycle_detected",
+}
+
 
 @dataclass(frozen=True)
 class _PreflightIssue:
@@ -296,9 +301,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
@@ -309,9 +312,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
@@ -321,9 +322,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
@@ -338,9 +337,7 @@ class KnowledgeDeploymentPreflightService:
                     _PreflightIssue(
                         node_id=node_id,
                         node_type=node_type,
-                        severity="blocked"
-                        if audience == "anonymous_public"
-                        else "warning",
+                        severity="blocked",
                         reason_code="workflow_node_target_unavailable",
                     )
                 ]
@@ -349,9 +346,7 @@ class KnowledgeDeploymentPreflightService:
                     _PreflightIssue(
                         node_id=node_id,
                         node_type=node_type,
-                        severity="blocked"
-                        if audience == "anonymous_public"
-                        else "warning",
+                        severity="blocked",
                         reason_code="workflow_node_cycle_detected",
                     )
                 ]
@@ -367,9 +362,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_cycle_detected",
                 )
             ]
@@ -379,9 +372,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
@@ -392,9 +383,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
@@ -413,9 +402,7 @@ class KnowledgeDeploymentPreflightService:
                 _PreflightIssue(
                     node_id=node_id,
                     node_type=node_type,
-                    severity="blocked"
-                    if audience == "anonymous_public"
-                    else "warning",
+                    severity="blocked",
                     reason_code="workflow_node_target_unavailable",
                 )
             ]
@@ -577,6 +564,7 @@ class KnowledgeDeploymentPreflightService:
         return [
             replace(issue, severity="warning")
             if issue.severity == "blocked"
+            and issue.reason_code not in NON_DOWNGRADABLE_REASON_CODES
             else issue
             for issue in issues
         ]

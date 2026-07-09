@@ -357,8 +357,43 @@ def test_workflow_node_preflight_uses_candidate_graph_for_pending_workflow_node(
         graph_snapshot=candidate_a_graph,
     )
 
-    assert result.status == "warning"
+    assert result.status == "blocked"
     assert result.safe_summary.blocked_reason == "workflow_node_cycle_detected"
+
+
+def test_workflow_node_deployment_blocks_unavailable_target_even_with_inherited_subject():
+    organization_id = uuid.uuid4()
+    missing_app_id = uuid.uuid4()
+
+    result = KnowledgeDeploymentPreflightService(
+        _Db(),
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot=_workflow_node_graph(missing_app_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_node_target_unavailable"
+    assert result.warnings == []
+
+
+def test_inactive_preview_keeps_workflow_node_structural_blockers_blocked():
+    organization_id = uuid.uuid4()
+    missing_app_id = uuid.uuid4()
+
+    result = KnowledgeDeploymentPreflightService(
+        _Db(),
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot=_workflow_node_graph(missing_app_id),
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_node_target_unavailable"
+    assert result.warnings == []
 
 
 def test_workflow_node_deployment_warns_for_inherited_subject_instead_of_blocking():

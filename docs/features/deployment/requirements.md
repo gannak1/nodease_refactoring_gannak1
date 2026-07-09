@@ -30,6 +30,7 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 - DEP-REQ-009: Source-managed KB를 anonymous public-only 후보로 포함하려면 collection public visibility와 별도 source/connector public exposure approval이 모두 필요하다. Public exposure approval primitive가 구현되기 전에는 source-managed public 후보를 blocked로 처리한다.
 - DEP-REQ-010: Preflight response는 hidden KB id/name/path, exact denied count, raw source metadata, raw exception을 반환하지 않고 safe reason code, bucketed count, required action만 반환한다.
 - DEP-REQ-011: Schedule record와 scheduler job은 active `type=schedule` deployment에서만 생성/로드/실행한다. `scheduleTrigger` node가 `workflow_node`, `chatbot`, `api` 등 다른 deployment type graph에 포함되어도 schedule 실행 surface를 만들지 않는다.
+- DEP-REQ-012: Webhook 수신 endpoint는 active deployment가 target app 소유이고 active 상태이며 `type=webhook`일 때만 background execution을 예약한다. 같은 slug의 active deployment가 `api`, `chatbot`, `workflow_node`, `schedule` 등 다른 type이면 `accepted`를 반환하지 않고 dispatch 전에 safe 404로 거부한다.
 
 ## Runtime Audience Matrix
 
@@ -51,7 +52,8 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 - Workflow-node preflight는 node 설정의 `workflowNode.data.appId`를 target app으로 해석하고, target app의 active deployment snapshot을 검사한다. `workflowId`와 혼동하지 않는다. Target active deployment는 target app 소유이고, active 상태이며, `type=workflow_node`여야 한다. Pending active candidate graph도 pending deployment type이 `workflow_node`일 때만 workflow-node target으로 인정한다.
 - `workflow_node` 배포를 단독 reusable module로 활성화할 때는 parent subject가 아직 없으므로 private KB 참조를 warning으로 보고할 수 있다. 단, public/API/webhook/authenticated run 같은 모든 direct execution surface는 거부하며, public/non-interactive parent deployment가 해당 module을 참조하면 parent audience 기준 preflight에서 private KB를 blocked로 처리한다.
 - Workflow-node runtime은 parent `execution_context.organization_id`가 있어야 하며, target app organization이 없거나 target app organization과 다르거나 parent organization context가 없으면 실행하지 않는다. Target active deployment도 target app 소유, active 상태, `type=workflow_node`를 만족해야 한다. Runtime은 `workflow_node_depth`와 `workflow_node_visited_app_ids` context guard로 순환 참조와 depth 초과를 fail-closed로 차단한다.
-- Workflow-node nesting은 우선 한 단계 active target 검사를 baseline으로 삼는다. 순환 참조, 과도한 depth, target active deployment 부재는 safe blocked/warning reason으로 낮춘다.
+- Workflow-node nesting은 우선 한 단계 active target 검사를 baseline으로 삼는다. 순환 참조, 과도한 depth, target active deployment 부재는 subject 상속 여부와 무관한 구조적 오류이므로 active publish와 inactive preview 모두에서 safe blocked reason으로 유지한다.
+- Workflow-node runtime의 순환 참조, depth 초과, target unavailable 같은 복구 불가능한 설정 오류는 Celery retry 대상이 아니다. Runtime은 non-retryable error로 즉시 실패시켜 같은 잘못된 subworkflow 실행을 반복 예약하지 않는다.
 - `run.py`/`webhook.py`와 authenticated deployment run/run-info 같은 runtime endpoint는 실행 주체와 direct surface contract verification 대상이다. Preflight의 핵심 차단은 deployment create/toggle service boundary에서 수행하며, delete는 다른 deployment를 자동 승격하지 않아 우회 activation surface를 만들지 않는다.
 - Preflight 예외는 broad catch에서 일반 `400`으로 감싸지 않고 `409 deployment.preflight.blocked` 또는 문서화된 error envelope을 보존해야 한다.
 
