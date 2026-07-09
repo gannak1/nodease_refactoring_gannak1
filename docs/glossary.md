@@ -24,7 +24,7 @@ Status: Draft
 | RBAC | Role-Based Access Control. Nodease에서는 고정 role table 대신 organization membership, team permission, user direct permission, `auth_state`로 판정한다. |
 | auth_state | DB enum이 아닌 application-level permission state string. 운영 권한은 `none`, `viewer`, `operator`, `builder`, `manager`, 감사 권한은 `auditor`, `raw_auditor`를 사용한다. |
 | Team Permission | Team 단위 resource 권한. `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`를 사용한다. |
-| User Direct Permission | Team 권한으로 처리하기 어려운 user별 additive allow 예외 권한. 현재 코드 기준 workflow와 LLM credential에 대해 구현돼 있다. |
+| User Direct Permission | Team 권한으로 처리하기 어려운 user별 additive allow 예외 권한. Workflow, Knowledge Base, LLM Credential 같은 resource별 user direct permission table로 표현하며, team 권한을 낮추는 explicit deny로 쓰지 않는다. |
 | Resource | 권한 판정 대상이 되는 업무 객체. 대표적으로 Workflow, Knowledge Base, LLM Credential, Audit 대상 organization이 있다. |
 | Explicit Deny | 명시적 거부 권한. 현재 권한 모델에는 도입하지 않는다. 권한 판정은 허용 권한 중 가장 강한 값을 선택하는 방식이다. |
 

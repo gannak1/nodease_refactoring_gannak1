@@ -62,16 +62,16 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-034: team member 추가는 active team과 active organization membership을 가진 user만 허용해야 한다.
 - ORG-REQ-035: 기존 team membership 추가와 없는 team membership 제거는 idempotent하게 처리해야 한다.
 - ORG-REQ-036: team 비활성화는 team을 삭제하지 않고 `is_active=false`, `deactivated_at` 설정으로 처리해야 하며, 이미 inactive인 team에는 idempotent success를 반환해야 한다.
-- ORG-REQ-037: resource permission 관리 API는 workflow와 LLM credential에 대한 team permission 및 user direct permission 조회/부여/회수를 제공해야 한다.
-- ORG-REQ-038: permission 조회/변경은 organization manager 또는 대상 workflow/LLM credential의 `manage` 권한 보유자만 수행할 수 있어야 한다.
+- ORG-REQ-037: resource permission 관리 API는 workflow, Knowledge Base, LLM credential에 대한 team permission 및 user direct permission 조회/부여/회수를 제공해야 한다.
+- ORG-REQ-038: permission 조회/변경은 organization manager 또는 대상 workflow/KB/LLM credential의 `manage` 권한 보유자만 수행할 수 있어야 한다.
 - ORG-REQ-039: permission 부여는 active team 또는 active organization member user만 grantee로 허용해야 한다.
 - ORG-REQ-040: permission 부여 요청은 canonical resource `auth_state`만 허용해야 한다. legacy 값(`read/write/execute/admin`)은 기존 row 해석에만 사용하고 신규 요청에서는 거부해야 한다.
-- ORG-REQ-041: permission upsert/delete는 row 단위 data-change audit(`team_workflow_permission.created`, `team_workflow_permission.updated`, `team_workflow_permission.deleted`, `team_llm_permission.*`, `user_workflow_permission.*`, `user_llm_permission.*`)을 기록해야 한다.
+- ORG-REQ-041: permission upsert/delete는 row 단위 data-change audit(`team_workflow_permission.created`, `team_workflow_permission.updated`, `team_workflow_permission.deleted`, `team_knowledge_permission.*`, `team_llm_permission.*`, `user_workflow_permission.*`, `user_knowledge_permission.*`, `user_llm_permission.*`)을 기록해야 한다.
 - ORG-REQ-042: organization scope 밖 resource는 `404 resource.not_found`로 숨기고, scope 안 권한 부족은 `403 permission.denied`로 응답해야 한다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
 - ORG-REQ-043: 클라이언트는 active organization id를 localStorage의 `moduly_active_organization_id`에 저장하고, `apiClient` 요청에 `X-Organization-Id` header를 자동 첨부해야 한다.
 - ORG-REQ-044: dashboard layout은 active organization을 확인하고, 하나뿐이면 자동 선택하며, 여러 개면 사용자가 선택하도록 해야 한다.
 - ORG-REQ-045: dashboard sidebar는 현재 organization 이름과 manager 여부를 조회하고, manager가 아닌 사용자에게 관리 메뉴를 숨겨야 한다.
-- ORG-REQ-046: admin console은 manager에게 멤버/팀/workflow permission/LLM credential permission 관리 UI를 제공하고, manager가 아닌 사용자에게 관리 권한 없음 상태를 표시해야 한다.
+- ORG-REQ-046: admin console은 manager에게 멤버/팀/workflow permission/KB permission/LLM credential permission 관리 UI를 제공하고, manager가 아닌 사용자에게 관리 권한 없음 상태를 표시해야 한다.
 - ORG-REQ-047: App 생성(`POST /apps`, "새 모듈")은 organization owner/manager 또는 `user_app_creation_permissions` row 보유자만 수행할 수 있어야 한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)).
 - ORG-REQ-048: App 생성 권한이 없는 사용자의 App 생성 요청은 `403 permission.denied`로 차단하고, 클라이언트는 이 응답에서 권한 신청 UI로 연결해야 한다.
 - ORG-REQ-049: App 생성 권한 신청은 `permission_requests`에 요청 권한 `app.create`와 신청 사유를 저장해야 한다.
@@ -96,12 +96,12 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - App 생성 권한 검사 도입 시 기존 member에 대한 backfill 마이그레이션은 하지 않는다 (실서비스 데이터 없음, [ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)). 데모/개발 환경은 seed가 계정별 권한을 구성한다 — 관리자는 owner/manager로 자동 허용, 기존 author 계정은 `user_app_creation_permissions` row 보유, 신입 계정은 row 없음.
 - App 생성 차단은 [ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)에 따라 `403 permission.denied` + audit으로 기록하고, 클라이언트는 이 응답에서 권한 신청 UI로 연결한다.
 - 이미 처리된(승인/거절) 권한 신청의 중복 처리 요청은 거부한다. pending 신청의 동시 승인/거절 경합이 중복 부여로 이어지지 않아야 한다.
-- 현재 user direct resource permission API와 cleanup은 workflow와 LLM credential만 구현한다. user knowledge permission과 user audit permission은 현재 구현 범위가 아니다. 조직 수준 App 생성 권한 row는 멤버 제거 cleanup 대상이다.
-- Team knowledge permission model은 존재하지만 organization permission 관리 API/UI는 현재 knowledge permission grant/revoke를 제공하지 않는다.
+- MBA-176 이후 user direct resource permission API와 cleanup은 workflow, Knowledge Base, LLM credential을 포함한다. user audit permission은 현재 구현 범위가 아니다. 조직 수준 App 생성 권한 row도 멤버 제거 cleanup 대상이다.
+- Team knowledge permission model은 KB permission 관리 API/UI의 일부다. Collection permission과 KB content permission은 서로 다른 권한 surface이며, KB permission 부여가 Collection route/manage 권한을 자동 부여하지 않는다.
 - 기본 organization foundation은 `Default` team 하나를 만든다. data model의 Admin/Builder/Operator/Viewer/Auditor team template preset 자동 생성은 현재 구현 범위가 아니다.
 - 멤버 초대 API는 email invitation이 아니라 가입된 user UUID 기반 초대다. email 검색/초대 UX는 현재 구현 범위가 아니다.
 - Sidebar 알림 overlay MVP는 이미 `/dashboard`에 진입해 Sidebar를 볼 수 있는 사용자를 대상으로 한다. active organization 없이 invited membership만 가진 신규 user flow는 현재 구현 범위가 아니다.
-- Admin console은 organization 관리의 주 UI다. Settings page에는 일부 access-management 코드가 남아 있지만 현재 보이는 탭에서는 노출되지 않는다.
+- Admin console은 organization 관리의 주 UI다. Settings page가 access-management surface를 노출하는 경우에도 workflow/KB/LLM permission semantics는 Admin console과 동일해야 하며, KB direct grant/revoke를 다른 의미로 재정의하지 않는다.
 - 클라이언트의 manager-only 메뉴 숨김은 UX 차단이다. 최종 보안 판단은 Gateway endpoint와 shared permission helper가 수행한다.
 - Audit metadata에는 actor snapshot, request metadata, permission cleanup count, resource id가 포함될 수 있다. secret value, raw credential, token 원문은 기록하지 않는다.
 

@@ -327,7 +327,7 @@ Slack/meeting source item의 effective ACL baseline:
 - Execution subject가 없으면 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 검색한다. Source-managed KB는 valid source/connector public exposure approval도 통과해야 한다.
 - Schedule, webhook, API trigger run의 private KB access는 deployment-approved service account 또는 명시적으로 지정된 operator가 필요하며 후속 기능이다. Subject가 없거나 inactive, removed, ambiguous 상태에서는 private KB retrieval을 수행하지 않는다.
 - Workflow owner/builder permission을 runtime fallback으로 조용히 사용하지 않는다.
-- Deployment preflight는 private RAG가 필요한 LLM node RAG option이 intended execution subject 또는 audience에게 사용 가능한지 탐지해야 하며 후속 기능이다. MVP에서는 subject 없는 자동 실행을 public-only로 처리한다.
+- MBA-176 Deployment preflight는 private RAG가 필요한 LLM node RAG option이 deployment type에서 파생한 runtime audience에게 사용 가능한지 탐지한다. Subject 없는 public/API/webhook/schedule/chatbot/MCP surface에서 private KB 후보가 있으면 활성 배포 create/toggle을 blocked로 닫고, source-managed public exposure approval primitive가 없으면 source-managed public 후보도 `source_public_exposure_required`로 blocked 처리한다. Service account와 assigned operator는 후속 기능이다.
 - Builder candidate API는 safe label, route availability, runtime availability warning, safe reason, required action만 반환한다.
 - Hidden KB id/name, exact denied count, raw source path/title/url, hidden source distribution은 Builder output에 포함하지 않는다.
 - Runtime failure 기본값은 user-facing flow에서는 permission-safe no-result, automation에서는 명시 fallback branch가 없는 한 fail-node/fail-workflow다.

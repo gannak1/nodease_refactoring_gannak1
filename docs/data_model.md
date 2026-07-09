@@ -760,7 +760,7 @@ LLM token/cost/latency 원천.
 
 | 테이블 | 목표 역할 |
 | --- | --- |
-| `user_knowledge_permissions` | 특정 user에게 knowledge base 직접 추가 권한 부여 |
+| `user_knowledge_permissions` | 특정 active organization member에게 knowledge base 직접 권한을 부여한다. 구조는 user direct permission 공통 구조와 같고 resource 컬럼은 `knowledge_base_id`, 복합 FK는 `(knowledge_base_id, grantee_organization_id) → knowledge_bases(id, organization_id)`, UNIQUE는 `(grantee_organization_id, user_id, knowledge_base_id)`다. API는 `none` 직접 grant를 받지 않고 DELETE로 회수한다 |
 | `user_audit_permissions` | 특정 user에게 audit visibility 직접 추가 권한 부여 |
 | `permission_requests` | 권한 신청 제출/처리 상태 저장, pending은 조직·사용자·요청 권한당 1건 ([ADR-0016](decisions/ADR-0016-permission-request-and-app-creation-permission.md)) |
 | `user_app_creation_permissions` | 조직 수준 App 생성 능력의 user 부여, row 존재 = 허용 ([ADR-0016](decisions/ADR-0016-permission-request-and-app-creation-permission.md)) |
