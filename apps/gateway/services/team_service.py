@@ -7,22 +7,21 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.auth.permissions import record_permission_denied
+from apps.gateway.services.resource_permission_registry import (
+    ResourceTargetNotFound,
+    ResourceTypeNotRegistered,
+    effective_resource_auth_state,
+    permission_model_and_filters,
+    resource_auth_state_allows,
+    resource_organization_id,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
-from apps.shared.db.models.knowledge import KnowledgeBase
-from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.team import (
     Team,
-    TeamKnowledgePermission,
-    TeamLLMPermission,
     TeamMembership,
-    TeamWorkflowPermission,
-    UserKnowledgePermission,
-    UserLLMPermission,
-    UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
-from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
     AUTH_STATE_BUILDER,
     AUTH_STATE_MANAGER,
@@ -30,10 +29,7 @@ from apps.shared.permissions import (
     AUTH_STATE_OPERATOR,
     AUTH_STATE_VIEWER,
     is_canonical_auth_state,
-    knowledge_base_auth_state_allows,
-    llm_credential_auth_state_allows,
     normalize_auth_state,
-    workflow_auth_state_allows,
 )
 from apps.shared.schemas.team import (
     ResourcePermissionGrantRequest,
@@ -43,9 +39,6 @@ from apps.shared.schemas.team import (
     TeamUpdateRequest,
 )
 from apps.shared.services.permissions import (
-    get_effective_knowledge_base_auth_state,
-    get_effective_llm_credential_auth_state,
-    get_effective_workflow_auth_state,
     has_active_organization_membership,
     has_organization_manager_permission,
     has_organization_scope_access,
@@ -188,28 +181,12 @@ def _resource_organization_id(
     resource_type: str,
     resource_id: Any,
 ) -> Any:
-    if resource_type == "workflow":
-        workflow = db.query(Workflow).filter(Workflow.id == resource_id).first()
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-        return workflow.organization_id
-    if resource_type == "knowledge_base":
-        knowledge_base = (
-            db.query(KnowledgeBase)
-            .filter(
-                KnowledgeBase.id == resource_id,
-                KnowledgeBase.lifecycle_state == "active",
-            )
-            .first()
-        )
-        if not knowledge_base:
-            raise HTTPException(status_code=404, detail="Knowledge Base not found")
-        return knowledge_base.organization_id
-
-    credential = db.query(LLMCredential).filter(LLMCredential.id == resource_id).first()
-    if not credential:
-        raise HTTPException(status_code=404, detail="Credential not found")
-    return credential.organization_id
+    try:
+        return resource_organization_id(db, resource_type, resource_id)
+    except ResourceTargetNotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    except ResourceTypeNotRegistered as exc:
+        raise HTTPException(status_code=400, detail="Invalid resource_type") from exc
 
 
 def _ensure_resource_permission_manager(
@@ -222,33 +199,18 @@ def _ensure_resource_permission_manager(
     if has_organization_manager_permission(db, current_user.id, organization_id):
         return
 
-    if resource_type == "workflow":
-        effective_auth_state = get_effective_workflow_auth_state(
+    try:
+        effective_auth_state = effective_resource_auth_state(
             db,
-            current_user.id,
-            resource_id,
+            resource_type=resource_type,
+            user_id=current_user.id,
+            resource_id=resource_id,
             organization_id=organization_id,
         )
-        if workflow_auth_state_allows(effective_auth_state, "manage"):
+        if resource_auth_state_allows(resource_type, effective_auth_state, "manage"):
             return
-    elif resource_type == "knowledge_base":
-        effective_auth_state = get_effective_knowledge_base_auth_state(
-            db,
-            current_user.id,
-            resource_id,
-            organization_id=organization_id,
-        )
-        if knowledge_base_auth_state_allows(effective_auth_state, "manage"):
-            return
-    else:
-        effective_auth_state = get_effective_llm_credential_auth_state(
-            db,
-            current_user.id,
-            resource_id,
-            organization_id=organization_id,
-        )
-        if llm_credential_auth_state_allows(effective_auth_state, "manage"):
-            return
+    except ResourceTypeNotRegistered as exc:
+        raise HTTPException(status_code=400, detail="Invalid resource_type") from exc
 
     record_permission_denied(
         current_user,
@@ -613,48 +575,19 @@ class TeamService:
                 )
             if not getattr(team, "is_active", True):
                 raise HTTPException(status_code=400, detail="Team is inactive")
-            if request.resource_type == "workflow":
-                model = TeamWorkflowPermission
-                filters = {
-                    "workflow_id": request.resource_id,
-                    "team_id": request.grantee_id,
-                }
-            elif request.resource_type == "knowledge_base":
-                model = TeamKnowledgePermission
-                filters = {
-                    "knowledge_base_id": request.resource_id,
-                    "team_id": request.grantee_id,
-                }
-            else:
-                model = TeamLLMPermission
-                filters = {
-                    "llm_credential_id": request.resource_id,
-                    "team_id": request.grantee_id,
-                }
         else:
             _ensure_grantee_user_membership(
                 db,
                 request.grantee_id,
                 request.organization_id,
             )
-            if request.resource_type == "workflow":
-                model = UserWorkflowPermission
-                filters = {
-                    "workflow_id": request.resource_id,
-                    "user_id": request.grantee_id,
-                }
-            elif request.resource_type == "knowledge_base":
-                model = UserKnowledgePermission
-                filters = {
-                    "knowledge_base_id": request.resource_id,
-                    "user_id": request.grantee_id,
-                }
-            else:
-                model = UserLLMPermission
-                filters = {
-                    "llm_credential_id": request.resource_id,
-                    "user_id": request.grantee_id,
-                }
+
+        model, filters = permission_model_and_filters(
+            resource_type=request.resource_type,
+            grantee_type=request.grantee_type,
+            resource_id=request.resource_id,
+            grantee_id=request.grantee_id,
+        )
 
         row = (
             db.query(model)
@@ -704,44 +637,12 @@ class TeamService:
             request.organization_id,
         )
 
-        if request.grantee_type == "team":
-            if request.resource_type == "workflow":
-                model = TeamWorkflowPermission
-                filters = {
-                    "workflow_id": request.resource_id,
-                    "team_id": request.grantee_id,
-                }
-            elif request.resource_type == "knowledge_base":
-                model = TeamKnowledgePermission
-                filters = {
-                    "knowledge_base_id": request.resource_id,
-                    "team_id": request.grantee_id,
-                }
-            else:
-                model = TeamLLMPermission
-                filters = {
-                    "llm_credential_id": request.resource_id,
-                    "team_id": request.grantee_id,
-                }
-        else:
-            if request.resource_type == "workflow":
-                model = UserWorkflowPermission
-                filters = {
-                    "workflow_id": request.resource_id,
-                    "user_id": request.grantee_id,
-                }
-            elif request.resource_type == "knowledge_base":
-                model = UserKnowledgePermission
-                filters = {
-                    "knowledge_base_id": request.resource_id,
-                    "user_id": request.grantee_id,
-                }
-            else:
-                model = UserLLMPermission
-                filters = {
-                    "llm_credential_id": request.resource_id,
-                    "user_id": request.grantee_id,
-                }
+        model, filters = permission_model_and_filters(
+            resource_type=request.resource_type,
+            grantee_type=request.grantee_type,
+            resource_id=request.resource_id,
+            grantee_id=request.grantee_id,
+        )
 
         row = (
             db.query(model)

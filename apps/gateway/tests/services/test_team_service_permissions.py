@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from apps.gateway.services import resource_permission_registry
 from apps.gateway.services import team_service
 from apps.gateway.services.team_service import TeamService
 from apps.shared.audit.actions import AuditAction
@@ -91,7 +92,7 @@ def test_workflow_resource_manager_can_grant_permission(monkeypatch):
         team_service, "has_organization_manager_permission", lambda *a: False
     )
     monkeypatch.setattr(
-        team_service,
+        resource_permission_registry,
         "get_effective_workflow_auth_state",
         lambda *a, **k: "manager",
     )
@@ -147,7 +148,7 @@ def test_knowledge_resource_manager_can_grant_user_permission(monkeypatch):
         team_service, "has_organization_manager_permission", lambda *a: False
     )
     monkeypatch.setattr(
-        team_service,
+        resource_permission_registry,
         "get_effective_knowledge_base_auth_state",
         lambda *a, **k: "manager",
     )
@@ -273,7 +274,7 @@ def test_llm_resource_manager_can_revoke_permission(monkeypatch):
         team_service, "has_organization_manager_permission", lambda *a: False
     )
     monkeypatch.setattr(
-        team_service,
+        resource_permission_registry,
         "get_effective_llm_credential_auth_state",
         lambda *a, **k: "manager",
     )
