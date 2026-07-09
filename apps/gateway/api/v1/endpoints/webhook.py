@@ -98,19 +98,18 @@ def _sensitive_key_path(key_path: str | None) -> bool:
     if not key_path:
         return False
     normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key_path)
-    parts = [
-        part.strip("_").lower()
-        for part in re.split(r"[^A-Za-z0-9_]+", normalized)
-        if part.strip("_")
+    tokens = [
+        token.lower()
+        for token in re.split(r"[^A-Za-z0-9]+", normalized)
+        if token
     ]
-    for part in parts:
-        if part in _SENSITIVE_KEY_PARTS:
+    for index, token in enumerate(tokens):
+        if token in _SENSITIVE_KEY_PARTS:
             return True
-        if any(
-            part.startswith(f"{sensitive}_") or part.endswith(f"_{sensitive}")
-            for sensitive in _SENSITIVE_KEY_PARTS
-        ):
-            return True
+        if index + 1 < len(tokens):
+            joined = f"{token}_{tokens[index + 1]}"
+            if joined in _SENSITIVE_KEY_PARTS:
+                return True
     return False
 
 
@@ -177,13 +176,14 @@ def _redact_capture_payload(
             )
         return preview
     if isinstance(value, (list, tuple, set)):
-        items = list(value)
-        preview = [
-            _redact_capture_payload(child, key_path=key_path, depth=depth - 1)
-            for child in items[:CAPTURE_PREVIEW_MAX_ITEMS]
-        ]
-        if len(items) > CAPTURE_PREVIEW_MAX_ITEMS:
-            preview.append(_TRUNCATED_VALUE)
+        preview = []
+        for index, child in enumerate(value):
+            if index >= CAPTURE_PREVIEW_MAX_ITEMS:
+                preview.append(_TRUNCATED_VALUE)
+                break
+            preview.append(
+                _redact_capture_payload(child, key_path=key_path, depth=depth - 1)
+            )
         return preview
     return _redact_capture_string(str(value))
 

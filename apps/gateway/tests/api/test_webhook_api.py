@@ -182,6 +182,9 @@ class TestWebhookApi(unittest.TestCase):
             "issue": {"key": "MBA-179"},
             "project": {"key": "NODEASE"},
             "api_key": "api-secret-value",
+            "api": {"key": "nested-api-key-value"},
+            "headers": {"x-api-key": "header-secret-value"},
+            "secret-key": "hyphen-secret-value",
             "secretKey": "secret-key-value",
             "access_key": "access-key-value",
             secret_key_name: "first-value",
@@ -195,6 +198,9 @@ class TestWebhookApi(unittest.TestCase):
         self.assertEqual(preview["issue"]["key"], "MBA-179")
         self.assertEqual(preview["project"]["key"], "NODEASE")
         self.assertEqual(preview["api_key"], "[REDACTED: sensitive value]")
+        self.assertEqual(preview["api"]["key"], "[REDACTED: sensitive value]")
+        self.assertEqual(preview["headers"]["x-api-key"], "[REDACTED: sensitive value]")
+        self.assertEqual(preview["secret-key"], "[REDACTED: sensitive value]")
         self.assertEqual(preview["secretKey"], "[REDACTED: sensitive value]")
         self.assertEqual(preview["access_key"], "[REDACTED: sensitive value]")
         self.assertEqual(preview["[REDACTED: sensitive key]"], "first-value")
@@ -206,6 +212,19 @@ class TestWebhookApi(unittest.TestCase):
         self.assertNotIn(secret_key_name, str(preview))
         self.assertNotIn(second_secret_key_name, str(preview))
         self.assertNotIn(long_key_name, str(preview))
+
+    def test_capture_preview_caps_large_array_without_full_copy(self):
+        class LargeList(list):
+            def __iter__(self):
+                for index in range(webhook_endpoint.CAPTURE_PREVIEW_MAX_ITEMS + 2):
+                    if index > webhook_endpoint.CAPTURE_PREVIEW_MAX_ITEMS:
+                        raise AssertionError("preview iterated past the cap")
+                    yield index
+
+        preview = webhook_endpoint._redact_capture_payload(LargeList())
+
+        self.assertEqual(len(preview), webhook_endpoint.CAPTURE_PREVIEW_MAX_ITEMS + 1)
+        self.assertEqual(preview[-1], "[TRUNCATED]")
 
     def test_capture_preview_handles_non_object_payloads(self):
         self.assertEqual(webhook_endpoint._redact_capture_payload(["ok"]), ["ok"])
