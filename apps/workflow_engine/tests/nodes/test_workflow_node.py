@@ -105,6 +105,7 @@ def test_workflow_node_execution_with_input_mapping():
             "db": mock_db,
             "user_id": "user-1",
             "organization_id": "org-current",
+            "app_id": "parent-app",
         }
 
         # Input from previous nodes
@@ -131,6 +132,13 @@ def test_workflow_node_execution_with_input_mapping():
         assert call_args[0][1] == {"input_text": "Hello World", "language": "en"}
         # Keyword arg is_deployed should be True
         assert call_args[1]["is_deployed"] is True
+        sub_context = call_args[1]["execution_context"]
+        assert sub_context["workflow_node_depth"] == 1
+        assert set(sub_context["workflow_node_visited_app_ids"]) == {
+            "parent-app",
+            "app-xyz",
+        }
+        assert node.execution_context.get("workflow_node_depth") is None
 
         # 3. 실행 결과 확인 (WorkflowNode는 {"result": ...} 형태로 반환)
         assert result["result"]["answer"] == "처리 완료"
@@ -194,6 +202,62 @@ def test_workflow_node_error_no_active_deployment():
     # When / Then
     with pytest.raises(ValueError, match="has no active deployment"):
         node.execute({})
+
+
+def test_workflow_node_rejects_recursive_target_app_before_db_lookup():
+    node_data = WorkflowNodeData(
+        title="순환 참조", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+    mock_db = MagicMock()
+    node.execution_context = {
+        "db": mock_db,
+        "organization_id": "org-current",
+        "app_id": "app-1",
+    }
+
+    with pytest.raises(ValueError, match="Recursive workflow-node reference"):
+        node.execute({})
+
+    mock_db.query.assert_not_called()
+
+
+def test_workflow_node_rejects_visited_target_app_before_db_lookup():
+    node_data = WorkflowNodeData(
+        title="순환 참조", workflowId="wf-1", appId="app-2", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+    mock_db = MagicMock()
+    node.execution_context = {
+        "db": mock_db,
+        "organization_id": "org-current",
+        "app_id": "app-1",
+        "workflow_node_visited_app_ids": ["app-2"],
+    }
+
+    with pytest.raises(ValueError, match="Recursive workflow-node reference"):
+        node.execute({})
+
+    mock_db.query.assert_not_called()
+
+
+def test_workflow_node_rejects_depth_limit_before_db_lookup():
+    node_data = WorkflowNodeData(
+        title="깊이 제한", workflowId="wf-1", appId="app-2", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+    mock_db = MagicMock()
+    node.execution_context = {
+        "db": mock_db,
+        "organization_id": "org-current",
+        "app_id": "app-1",
+        "workflow_node_depth": 3,
+    }
+
+    with pytest.raises(ValueError, match="nesting limit exceeded"):
+        node.execute({})
+
+    mock_db.query.assert_not_called()
 
 
 def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
