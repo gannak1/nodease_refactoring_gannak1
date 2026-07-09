@@ -50,6 +50,8 @@ class WorkflowNode(Node[WorkflowNodeData]):
                 raise ValueError(f"[WorkflowNode] Target App {target_app_id} not found")
             execution_organization_id = self.execution_context.get("organization_id")
             app_organization_id = getattr(app, "organization_id", None)
+            if app_organization_id and not execution_organization_id:
+                raise ValueError("[WorkflowNode] Target App is unavailable")
             if (
                 execution_organization_id
                 and app_organization_id

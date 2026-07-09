@@ -19,6 +19,7 @@ Verified Against: TBD
 - Inactive deployment activation/toggle은 private KB preflight 실패 시 `409 deployment.preflight.blocked`를 반환한다.
 - Active deployment delete는 다른 deployment를 자동 active로 승격하지 않는다.
 - Public/API run endpoint와 webhook endpoint는 `workflow_node` active deployment를 직접 실행하지 않는다.
+- Workflow-node runtime은 target app이 조직 소속인데 parent `execution_context.organization_id`가 없거나 target app organization과 다르면 fail-closed로 실행하지 않는다.
 - Blocking preflight 예외는 broad catch에서 generic `400`으로 변환되지 않는다.
 - Source-managed KB public 후보는 public exposure approval primitive가 없으면 blocked로 처리한다.
 

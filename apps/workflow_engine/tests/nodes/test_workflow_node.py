@@ -61,6 +61,7 @@ def test_workflow_node_execution_with_input_mapping():
     mock_app = Mock()
     mock_app.id = "app-xyz"
     mock_app.name = "Text Processor"
+    mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = "deploy-1"
 
     mock_deployment = Mock()
@@ -99,7 +100,11 @@ def test_workflow_node_execution_with_input_mapping():
         mock_engine_instance.cleanup = Mock()
 
         # Execution context
-        node.execution_context = {"db": mock_db, "user_id": "user-1"}
+        node.execution_context = {
+            "db": mock_db,
+            "user_id": "user-1",
+            "organization_id": "org-current",
+        }
 
         # Input from previous nodes
         inputs = {
@@ -178,6 +183,7 @@ def test_workflow_node_error_no_active_deployment():
     mock_app = Mock()
     mock_app.id = "app-1"
     mock_app.name = "Test App"
+    mock_app.organization_id = None
     mock_app.active_deployment_id = None  # 활성 배포 없음
 
     mock_db.query.return_value.filter.return_value.first.return_value = mock_app
@@ -209,6 +215,26 @@ def test_workflow_node_rejects_cross_organization_target():
         node.execute({})
 
 
+def test_workflow_node_rejects_missing_parent_organization_context():
+    node_data = WorkflowNodeData(
+        title="조직 컨텍스트 없음", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Test App"
+    mock_app.organization_id = "org-target"
+    mock_app.active_deployment_id = "deploy-1"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_app
+
+    node.execution_context = {"db": mock_db}
+
+    with pytest.raises(ValueError, match="Target App is unavailable"):
+        node.execute({})
+
+
 def test_workflow_node_nested_value_extraction():
     """중첩된 값 선택자가 올바르게 동작하는지 테스트합니다."""
     # Given
@@ -230,6 +256,7 @@ def test_workflow_node_nested_value_extraction():
     # Mock DB
     mock_db = MagicMock()
     mock_app = Mock()
+    mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = "deploy-1"
     mock_deployment = Mock()
     mock_deployment.graph_snapshot = {
@@ -256,7 +283,7 @@ def test_workflow_node_nested_value_extraction():
         mock_engine_instance.execute = Mock(return_value={"result": "OK"})
         mock_engine_instance.cleanup = Mock()
 
-        node.execution_context = {"db": mock_db}
+        node.execution_context = {"db": mock_db, "organization_id": "org-current"}
         inputs = {
             "user-node": {"profile": {"name": "Alice", "age": 30, "city": "Seoul"}}
         }
