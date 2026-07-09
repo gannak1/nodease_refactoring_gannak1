@@ -33,6 +33,13 @@ Verified Against: TBD
 - Active `type=workflow_node` deployment graph에 `scheduleTrigger`가 있어도 schedule record나 scheduler job을 생성하지 않는다.
 - Blocking preflight 예외는 broad catch에서 generic `400`으로 변환되지 않는다.
 - Source-managed KB public 후보는 public exposure approval primitive가 없으면 blocked로 처리한다.
+- Webhook capture start/status rejects unauthenticated requests.
+- Webhook capture start/status rejects authenticated users without target workflow `deploy` permission.
+- Webhook capture status rejects missing, wrong, expired, or different-requester `capture_id`.
+- Webhook capture cancel deletes a waiting session, rejects wrong/different-requester `capture_id`, and requires target workflow `deploy` permission.
+- Webhook received after capture cancel follows the normal execution path instead of the capture path.
+- Webhook capture stores and returns only a redacted/capped payload preview; token, secret, authorization, cookie, password, raw payload/content fields and known token patterns such as JWT, GitHub, Slack, AWS, Google API keys, and PEM private keys are not returned as raw values. Public identifier fields such as `issue.key` and `project.key` are preserved, while secret-bearing names such as `api_key`, `secret_key`, `access_key`, `x-api-key`, `secret-key`, and `api.key` are redacted. Secret-like or oversized JSON field names are sanitized before returning or storing the preview. Large arrays are capped while iterating the preview and are not copied in full before applying the item limit.
+- Webhook capture deletes the session after the captured status is read once.
 
 ## E2E Tests
 

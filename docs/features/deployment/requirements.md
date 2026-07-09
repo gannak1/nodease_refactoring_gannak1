@@ -11,6 +11,8 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 
 배포 타입 `chatbot`(공개 채팅 웹페이지, 기억모드 항상 ON, 방문자별 대화 격리)의 상세는 [chatbot-deployment](../chatbot-deployment/requirements.md)를 참조한다.
 
+Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한 배포 권한자의 디버그 도구다. Capture start/status/cancel은 user session과 대상 workflow `deploy` 권한을 요구하며, app secret 인증만으로는 사용할 수 없다. Capture session은 short TTL과 server-issued `capture_id` nonce를 사용하고, status 응답은 raw webhook payload 원문이 아니라 known secret patterns와 sensitive keys가 redacted/capped 처리된 preview만 반환한다. 사용자가 capture를 취소하면 서버 session도 삭제되어 이후 webhook은 normal execution path를 따른다.
+
 ## User Stories
 
 - 빌더로서, 배포를 활성화하기 전에 현재 workflow snapshot이 실제 실행 표면에서 사용할 수 없는 private KB를 참조하는지 알고 싶다.

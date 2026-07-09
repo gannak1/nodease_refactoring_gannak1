@@ -76,6 +76,7 @@ graph LR
 - 사용자 세션은 `auth_token` HttpOnly cookie 기준이다. user session용 Bearer token dependency는 없다.
 - Google OAuth 로그인을 지원한다 (`/api/v1/auth/google/login` → callback).
 - Bearer secret은 public run/webhook endpoint의 app secret 인증에만 사용한다.
+- Webhook capture start/status/cancel helper는 public trigger 실행 표면이 아니므로 app secret 인증만으로 열지 않는다. 로그인 사용자 세션과 대상 workflow `deploy` 권한을 요구하며, captured payload는 redacted/capped preview만 반환한다.
 
 ### Organization Context
 

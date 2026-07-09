@@ -13,6 +13,10 @@ Verified Against: TBD
 | DELETE | `/api/v1/deployments/{deployment_id}` | 배포 삭제. active 삭제 시 자동 승격하지 않는다 | 로그인 + workflow deploy/manage 권한 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 로그인 사용자를 execution subject로 활성 deployment snapshot 실행 | 로그인 + workflow execute 권한 |
+| POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | App secret via query token, Bearer header, or `X-Webhook-Secret` |
+| GET | `/api/v1/hooks/{url_slug}/capture/start` | Start a short-lived webhook payload capture session | User session + target workflow `deploy` permission |
+| GET | `/api/v1/hooks/{url_slug}/capture/status?capture_id=...` | Poll one capture session and return a redacted preview once captured | User session + same requester + target workflow `deploy` permission + capture nonce |
+| POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
 
 ## Request And Response Models
 
@@ -93,6 +97,57 @@ Response는 hidden KB id/name/path, exact denied count, raw source metadata, raw
 
 Schedule records and scheduler jobs are created only for active `type="schedule"` deployments. A `scheduleTrigger` node inside any other deployment type, including `workflow_node`, does not create a schedule surface.
 
+### Webhook Capture Start Response
+
+```json
+{
+  "status": "waiting",
+  "capture_id": "server-issued nonce",
+  "expires_at": "2026-07-09T07:00:00+00:00",
+  "message": "Capture session started"
+}
+```
+
+`capture_id` is a short-lived nonce. Clients must pass it to capture status polling. It is not a replacement for user authentication or workflow permission checks.
+
+### Webhook Capture Status Response
+
+Waiting:
+
+```json
+{
+  "status": "waiting",
+  "capture_id": "server-issued nonce",
+  "expires_at": "2026-07-09T07:00:00+00:00",
+  "payload": null
+}
+```
+
+Captured:
+
+```json
+{
+  "status": "captured",
+  "payload": {
+    "event": "ticket.created",
+    "token": "[REDACTED: sensitive value]"
+  },
+  "payload_redacted": true
+}
+```
+
+`payload` is a redacted/capped preview for workflow test input convenience. It is not raw webhook payload storage. Sensitive keys and known secret-like value patterns are redacted, nested structures are depth/item capped, and the session is deleted after a captured status read.
+
+### Webhook Capture Cancel Response
+
+```json
+{
+  "status": "cancelled"
+}
+```
+
+Cancel deletes the matching capture session immediately. A webhook received after cancellation follows the normal execution path instead of the capture path.
+
 ## Errors
 
 Blocking preflight failure:
@@ -124,6 +179,11 @@ Blocking preflight failure:
 - HTTP status: `409 Conflict`.
 - Broad exception handling must preserve this envelope and must not wrap it as generic `400`.
 - Validation failures unrelated to preflight keep existing validation error semantics.
+- Missing or invalid user session on capture start/status/cancel returns `401`.
+- Missing capture nonce on status returns request validation error.
+- Missing capture nonce on cancel returns request validation error.
+- Missing, expired, wrong, or different-requester capture session returns `404`.
+- Same-scope workflow permission denial returns `403`.
 
 ## Permissions
 
@@ -131,3 +191,5 @@ Blocking preflight failure:
 - Public/API/webhook/schedule/chatbot/mcp surfaces do not receive user KB permission unless a future service account/assigned operator policy explicitly provides an execution subject.
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces or authenticated deployment `run`/`run-info` endpoints. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
 - Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.
+- Public webhook trigger execution uses app secret authentication.
+- Webhook capture management uses user session authentication and target workflow `deploy` permission. App secret alone cannot start, read, or cancel capture sessions.
