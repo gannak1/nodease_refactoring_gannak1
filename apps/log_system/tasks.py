@@ -51,12 +51,11 @@ from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
-
 def _schedule_model_routing_run_record(workflow_run: WorkflowRun) -> None:
     """workflow terminal 상태 뒤에만 정책 run 집계를 별도 task로 넘긴다.
 
     LLM node가 먼저 끝나는 시점에는 downstream 성공/실패가 아직 확정되지 않는다.
-    따라서 정책 표본은 workflow 전체가 성공 또는 실패로 닫힌 뒤에만 기록한다.
+    node finish가 뒤늦게 기록되는 경우에는 node log task도 이 helper를 다시 호출한다.
     """
     status = getattr(workflow_run.status, "value", workflow_run.status)
     if status not in {RunStatus.SUCCESS.value, RunStatus.FAILED.value}:
@@ -65,6 +64,18 @@ def _schedule_model_routing_run_record(workflow_run: WorkflowRun) -> None:
         "workflow.model_routing.record_run",
         args=[str(workflow_run.id)],
     )
+
+
+def _schedule_model_routing_run_record_after_llm_node_log(
+    session,
+    workflow_run_id,
+) -> None:
+    """늦게 확정된 LLM node log가 terminal workflow run에 집계될 기회를 다시 만든다."""
+    workflow_run = (
+        session.query(WorkflowRun).filter(WorkflowRun.id == workflow_run_id).first()
+    )
+    if workflow_run is not None:
+        _schedule_model_routing_run_record(workflow_run)
 
 
 def _serialize_uuid(obj):
@@ -466,6 +477,11 @@ def create_node_log(self, data: Dict[str, Any]):
         session.flush()
         _insert_trace_payloads(session, workflow_run_id, data.get("trace_payloads") or [])
         session.commit()
+        if node_run.node_type == "llmNode":
+            _schedule_model_routing_run_record_after_llm_node_log(
+                session,
+                workflow_run_id,
+            )
 
         return {"status": "success", "node_id": data["node_id"]}
 
@@ -696,6 +712,11 @@ def update_node_log_error(self, data: Dict[str, Any]):
             node_run.retry_count = data.get("retry_count") or node_run.retry_count
 
         session.commit()
+        if node_run.node_type == "llmNode":
+            _schedule_model_routing_run_record_after_llm_node_log(
+                session,
+                workflow_run_id,
+            )
 
         return {"status": "success", "node_id": data["node_id"]}
 

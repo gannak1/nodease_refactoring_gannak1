@@ -35,16 +35,6 @@ class ModelRoutingPolicyStore:
         except (TypeError, ValueError):
             return 20
 
-    @staticmethod
-    def _legacy_active_policy(node_data: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-        policy = node_data.get("model_routing_policy")
-        if not isinstance(policy, dict):
-            return {}, None
-        active_policy = policy.get("active_policy")
-        if not isinstance(active_policy, dict):
-            return {}, None
-        return active_policy, str(policy.get("policy_version") or "") or None
-
     @classmethod
     def get_runtime_policy(
         cls,
@@ -94,40 +84,36 @@ class ModelRoutingPolicyStore:
 
         policy_id = uuid.uuid4()
         organization_id = cls._organization_id_for_run(db, workflow_run)
-        active_policy, policy_version = cls._legacy_active_policy(node_data)
         refresh_every_runs = cls._refresh_every_runs(node_data)
-        if not active_policy:
-            configured_model_id = str(node_data.get("model_id") or "").strip()
-            if not configured_model_id:
-                # 실행 모델이 없는 잘못된 deployment snapshot은 policy를 만들지 않는다.
-                # 이후 runtime도 저장 모델을 임의로 추정하지 않고 기존 validation 경로에서 막는다.
-                return None
-            execution_user_id = getattr(workflow_run, "user_id", None)
-            if organization_id is None or execution_user_id is None:
-                return None
-            available_model_ids = set(
-                LLMService.get_runtime_available_model_ids_for_user(
-                    db,
-                    user_id=execution_user_id,
-                    organization_id=organization_id,
-                )
+        configured_model_id = str(node_data.get("model_id") or "").strip()
+        if not configured_model_id:
+            # 실행 모델이 없는 잘못된 deployment snapshot은 policy를 만들지 않는다.
+            # 이후 runtime도 저장 모델을 임의로 추정하지 않고 기존 validation 경로에서 막는다.
+            return None
+        execution_user_id = getattr(workflow_run, "user_id", None)
+        if organization_id is None or execution_user_id is None:
+            return None
+        available_model_ids = set(
+            LLMService.get_runtime_available_model_ids_for_user(
+                db,
+                user_id=execution_user_id,
+                organization_id=organization_id,
             )
-            if configured_model_id not in available_model_ids:
-                # bootstrap policy가 실행 주체에게 사용할 수 없는 모델을 active로 만들면
-                # policy runtime의 credential guard보다 먼저 잘못된 상태를 저장하게 된다.
-                return None
-            fallback_model_id = node_data.get("fallback_model_id")
-            if fallback_model_id not in available_model_ids:
-                fallback_model_id = None
-            bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
-                policy_id=str(policy_id),
-                policy_version="bootstrap-preserve-config-v1",
-                default_model_id=configured_model_id,
-                fallback_model_id=fallback_model_id,
-                refresh_every_runs=refresh_every_runs,
-            )
-            active_policy = bootstrap["active_policy"]
-            policy_version = bootstrap["policy_version"]
+        )
+        if configured_model_id not in available_model_ids:
+            # bootstrap policy가 실행 주체에게 사용할 수 없는 모델을 active로 만들면
+            # policy runtime의 credential guard보다 먼저 잘못된 상태를 저장하게 된다.
+            return None
+        fallback_model_id = node_data.get("fallback_model_id")
+        if fallback_model_id not in available_model_ids:
+            fallback_model_id = None
+        bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
+            policy_id=str(policy_id),
+            policy_version="bootstrap-preserve-config-v1",
+            default_model_id=configured_model_id,
+            fallback_model_id=fallback_model_id,
+            refresh_every_runs=refresh_every_runs,
+        )
 
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,
@@ -137,8 +123,8 @@ class ModelRoutingPolicyStore:
             node_id=node_id,
             enabled=True,
             status="collecting",
-            policy_version=policy_version,
-            active_policy=active_policy,
+            policy_version=bootstrap["policy_version"],
+            active_policy=bootstrap["active_policy"],
             refresh_every_runs=refresh_every_runs,
             judge_user_id=workflow_run.user_id,
         )

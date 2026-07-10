@@ -350,13 +350,107 @@ class TestModelRoutingPolicyApi:
             )
 
         assert response.status_code == 200
+        assert response.json() == {
+            "policy_id": str(policy.id),
+            "status": "refreshing",
+            "trigger": "manual_refresh",
+            "scheduled": True,
+        }
         assert policy.status == "refreshing"
+        assert policy.refresh_requested_at is not None
         assert policy.judge_user_id == user_id
         db.commit.assert_called_once()
         send_task.assert_called_once_with(
             "workflow.model_routing.refresh_policy",
             args=[str(policy.id), "manual_refresh"],
         )
+
+    def test_fr11_manual_refresh_restores_policy_when_broker_publish_fails(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [{"id": "llm-triage", "type": "llmNode", "data": {}}],
+        )
+        policy = SimpleNamespace(
+            id=uuid4(), enabled=True, refresh_requested_at=None, status="active", judge_user_id=None
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
+            side_effect=[RuntimeError("broker unavailable"), None],
+        ) as send_task:
+            failed_response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy/refresh"
+            )
+
+            assert failed_response.status_code == 503
+            assert failed_response.json()["detail"] == "model_routing.refresh_schedule_failed"
+            assert policy.status == "active"
+            assert policy.refresh_requested_at is None
+            assert policy.judge_user_id is None
+            assert db.commit.call_count == 2
+            db.rollback.assert_not_called()
+
+            retry_response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy/refresh"
+            )
+
+        assert retry_response.status_code == 200
+        assert retry_response.json()["scheduled"] is True
+        assert policy.status == "refreshing"
+        assert policy.refresh_requested_at is not None
+        assert send_task.call_count == 2
+        assert db.commit.call_count == 3
+
+    def test_fr11_manual_refresh_republishes_pending_request(self):
+        workflow_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [{"id": "llm-triage", "type": "llmNode", "data": {}}],
+        )
+        policy = SimpleNamespace(
+            id=uuid4(),
+            enabled=True,
+            refresh_requested_at=datetime.now(timezone.utc),
+            status="refreshing",
+            judge_user_id=uuid4(),
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid4())
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task"
+        ) as send_task:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy/refresh"
+            )
+
+        assert response.status_code == 200
+        assert response.json()["scheduled"] is True
+        send_task.assert_called_once_with(
+            "workflow.model_routing.refresh_policy",
+            args=[str(policy.id), "manual_refresh"],
+        )
+        db.commit.assert_not_called()
 
     def test_fr10_cost_optimizer_endpoints_require_builder_permission(self):
         workflow_id = uuid4()

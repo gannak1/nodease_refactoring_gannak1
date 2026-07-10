@@ -292,6 +292,73 @@ def test_bootstrap_policy_skips_model_without_run_users_credential_use_permissio
     db.add.assert_not_called()
 
 
+def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models():
+    """첫 persisted policy는 legacy snapshot이 아니라 배포 node의 현재 모델을 보존한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    db = MagicMock()
+    node_data = {
+        "auto_model_routing": True,
+        "model_id": "gpt-4.1",
+        "fallback_model_id": "gpt-4.1-mini",
+        "model_routing_policy": {
+            "policy_version": "legacy-stale-v9",
+            "active_policy": {
+                "default_model_id": "gpt-4o-mini",
+                "fallback_model_id": "gpt-4o",
+                "rules": [
+                    {
+                        "id": "legacy-cheap-route",
+                        "selected_model_id": "gpt-4o-mini",
+                    }
+                ],
+            },
+            "refresh": {"refresh_every_runs": 35},
+        },
+    }
+
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_organization_id_for_run",
+            return_value=organization_id,
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ) as available_models,
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-1",
+            node_data=node_data,
+        )
+
+    assert policy.active_policy == {
+        "default_model_id": "gpt-4.1",
+        "fallback_model_id": "gpt-4.1-mini",
+        "rules": [],
+    }
+    assert policy.policy_version == "bootstrap-preserve-config-v1"
+    assert policy.refresh_every_runs == 35
+    available_models.assert_called_once_with(
+        db,
+        user_id=workflow_run.user_id,
+        organization_id=organization_id,
+    )
+
+
 def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
     """동시 운영 run은 동일 policy 카운터를 결정적 순서로 잠근 뒤 반영한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (

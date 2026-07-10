@@ -3172,21 +3172,49 @@ def refresh_model_routing_policy_endpoint(
     if policy is None or not policy.enabled:
         raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
     if policy.refresh_requested_at is not None:
+        try:
+            # DB에 남은 pending 요청은 이전 publish 실패 또는 broker 재시도의
+            # 복구 경로일 수 있으므로 manual 요청으로 다시 발행한다.
+            celery_app.send_task(
+                "workflow.model_routing.refresh_policy",
+                args=[str(policy.id), "manual_refresh"],
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="model_routing.refresh_schedule_failed",
+            ) from exc
         return {
             "policy_id": str(policy.id),
             "status": "refreshing",
             "trigger": "manual_refresh",
-            "scheduled": False,
+            "scheduled": True,
         }
 
+    previous_status = policy.status
+    previous_refresh_requested_at = policy.refresh_requested_at
+    previous_judge_user_id = policy.judge_user_id
     policy.status = "refreshing"
     policy.refresh_requested_at = datetime.now(timezone.utc)
     policy.judge_user_id = current_user.id
     db.commit()
-    celery_app.send_task(
-        "workflow.model_routing.refresh_policy",
-        args=[str(policy.id), "manual_refresh"],
-    )
+    try:
+        celery_app.send_task(
+            "workflow.model_routing.refresh_policy",
+            args=[str(policy.id), "manual_refresh"],
+        )
+    except Exception as exc:
+        policy.status = previous_status
+        policy.refresh_requested_at = previous_refresh_requested_at
+        policy.judge_user_id = previous_judge_user_id
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="model_routing.refresh_schedule_failed",
+        ) from exc
     return {
         "policy_id": str(policy.id),
         "status": "refreshing",
