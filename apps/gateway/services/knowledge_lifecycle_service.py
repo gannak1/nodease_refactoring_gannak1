@@ -57,7 +57,14 @@ class KnowledgeLifecycleService:
         self.db.commit()
 
     def _delete_document_files_best_effort(self, kb: KnowledgeBase) -> None:
-        storage = self._storage_service_factory()
+        try:
+            storage = self._storage_service_factory()
+        except Exception as exc:
+            logger.warning(
+                "Failed to initialize document storage cleanup: %s",
+                type(exc).__name__,
+            )
+            return
 
         for doc in kb.documents:
             if not doc.file_path:
@@ -74,9 +81,7 @@ class KnowledgeLifecycleService:
     def _delete_direct_permission_rows(self, kb: KnowledgeBase) -> None:
         self.db.query(UserKnowledgePermission).filter(
             UserKnowledgePermission.knowledge_base_id == kb.id,
-            UserKnowledgePermission.grantee_organization_id == kb.organization_id,
         ).delete(synchronize_session=False)
         self.db.query(TeamKnowledgePermission).filter(
             TeamKnowledgePermission.knowledge_base_id == kb.id,
-            TeamKnowledgePermission.grantee_organization_id == kb.organization_id,
         ).delete(synchronize_session=False)

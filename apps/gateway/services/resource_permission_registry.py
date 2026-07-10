@@ -71,6 +71,8 @@ class ResourcePermissionSpec:
     not_found_detail: str
     team_route: PermissionRoute
     user_route: PermissionRoute
+    auth_state_resolver: Callable[..., str]
+    auth_state_allows: Callable[[Any, str], bool]
     active_filter: Callable[[Any], Any] | None = None
 
     def permission_route(self, grantee_type: str) -> PermissionRoute:
@@ -96,6 +98,18 @@ RESOURCE_PERMISSION_REGISTRY: dict[str, ResourcePermissionSpec] = {
             resource_column="workflow_id",
             grantee_column="user_id",
         ),
+        auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+            get_effective_workflow_auth_state(
+                db,
+                user_id,
+                resource_id,
+                organization_id=organization_id,
+            )
+        ),
+        auth_state_allows=lambda auth_state, action: workflow_auth_state_allows(
+            auth_state,
+            action,
+        ),
     ),
     "knowledge_base": ResourcePermissionSpec(
         resource_type="knowledge_base",
@@ -110,6 +124,18 @@ RESOURCE_PERMISSION_REGISTRY: dict[str, ResourcePermissionSpec] = {
             model=UserKnowledgePermission,
             resource_column="knowledge_base_id",
             grantee_column="user_id",
+        ),
+        auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+            get_effective_knowledge_base_auth_state(
+                db,
+                user_id,
+                resource_id,
+                organization_id=organization_id,
+            )
+        ),
+        auth_state_allows=lambda auth_state, action: knowledge_base_auth_state_allows(
+            auth_state,
+            action,
         ),
         active_filter=lambda model: model.lifecycle_state == "active",
     ),
@@ -126,6 +152,18 @@ RESOURCE_PERMISSION_REGISTRY: dict[str, ResourcePermissionSpec] = {
             model=UserLLMPermission,
             resource_column="llm_credential_id",
             grantee_column="user_id",
+        ),
+        auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+            get_effective_llm_credential_auth_state(
+                db,
+                user_id,
+                resource_id,
+                organization_id=organization_id,
+            )
+        ),
+        auth_state_allows=lambda auth_state, action: llm_credential_auth_state_allows(
+            auth_state,
+            action,
         ),
     ),
 }
@@ -165,29 +203,13 @@ def effective_resource_auth_state(
     resource_id: Any,
     organization_id: Any,
 ) -> str:
-    resource_permission_spec(resource_type)
-    if resource_type == "workflow":
-        return get_effective_workflow_auth_state(
-            db,
-            user_id,
-            resource_id,
-            organization_id=organization_id,
-        )
-    if resource_type == "knowledge_base":
-        return get_effective_knowledge_base_auth_state(
-            db,
-            user_id,
-            resource_id,
-            organization_id=organization_id,
-        )
-    if resource_type == "llm_credential":
-        return get_effective_llm_credential_auth_state(
-            db,
-            user_id,
-            resource_id,
-            organization_id=organization_id,
-        )
-    raise ResourceTypeNotRegistered(resource_type)
+    spec = resource_permission_spec(resource_type)
+    return spec.auth_state_resolver(
+        db,
+        user_id,
+        resource_id,
+        organization_id=organization_id,
+    )
 
 
 def resource_auth_state_allows(
@@ -195,14 +217,8 @@ def resource_auth_state_allows(
     auth_state: str,
     action: str,
 ) -> bool:
-    resource_permission_spec(resource_type)
-    if resource_type == "workflow":
-        return workflow_auth_state_allows(auth_state, action)
-    if resource_type == "knowledge_base":
-        return knowledge_base_auth_state_allows(auth_state, action)
-    if resource_type == "llm_credential":
-        return llm_credential_auth_state_allows(auth_state, action)
-    raise ResourceTypeNotRegistered(resource_type)
+    spec = resource_permission_spec(resource_type)
+    return spec.auth_state_allows(auth_state, action)
 
 
 def permission_model_and_filters(

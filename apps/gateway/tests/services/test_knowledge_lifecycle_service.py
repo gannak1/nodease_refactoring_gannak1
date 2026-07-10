@@ -18,6 +18,7 @@ class _LifecycleQuery:
         self.model = model
 
     def filter(self, *_args, **_kwargs):
+        self.db.filters.append((self.model, _args))
         return self
 
     def first(self):
@@ -34,6 +35,7 @@ class _LifecycleDb:
     def __init__(self, kb):
         self.kb = kb
         self.operations = []
+        self.filters = []
         self.committed = False
 
     def query(self, model):
@@ -84,6 +86,13 @@ def test_delete_owned_knowledge_base_deletes_files_permissions_and_kb():
         ("permission_delete", TeamKnowledgePermission),
         ("kb_delete", kb),
     ]
+    permission_filters = {
+        model: filters
+        for model, filters in db.filters
+        if model in {UserKnowledgePermission, TeamKnowledgePermission}
+    }
+    assert len(permission_filters[UserKnowledgePermission]) == 1
+    assert len(permission_filters[TeamKnowledgePermission]) == 1
     assert db.committed is True
 
 
@@ -108,6 +117,29 @@ def test_delete_owned_knowledge_base_storage_failure_is_best_effort(caplog):
     assert str(doc.id) in caplog.text
     assert "OSError" in caplog.text
     assert sensitive_path not in caplog.text
+
+
+def test_delete_owned_knowledge_base_storage_factory_failure_is_best_effort(caplog):
+    kb = _kb(documents=[SimpleNamespace(id=uuid.uuid4(), file_path="hidden/path")])
+    db = _LifecycleDb(kb)
+
+    def raise_storage_error():
+        raise RuntimeError("sensitive storage configuration")
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="apps.gateway.services.knowledge_lifecycle_service",
+    ):
+        KnowledgeLifecycleService(
+            db,
+            storage_service_factory=raise_storage_error,
+        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+
+    assert db.operations[-1] == ("kb_delete", kb)
+    assert db.committed is True
+    assert "RuntimeError" in caplog.text
+    assert "sensitive storage configuration" not in caplog.text
+    assert "hidden/path" not in caplog.text
 
 
 def test_delete_owned_knowledge_base_missing_owned_kb_does_not_mutate():

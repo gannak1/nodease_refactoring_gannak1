@@ -2,10 +2,13 @@ from typing import get_args
 
 import pytest
 
+from apps.gateway.services import resource_permission_registry as registry_module
 from apps.gateway.services.resource_permission_registry import (
+    effective_resource_auth_state,
     permission_model_and_filters,
     registered_resource_types,
     ResourceTypeNotRegistered,
+    resource_auth_state_allows,
     resource_permission_spec,
 )
 from apps.shared.db.models.knowledge import KnowledgeBase
@@ -101,3 +104,29 @@ def test_registry_fails_closed_for_unknown_resource_type_or_grantee_type():
             resource_id="kb-1",
             grantee_id="org-1",
         )
+
+
+def test_registry_spec_owns_auth_resolver_and_action_policy(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        registry_module,
+        "get_effective_knowledge_base_auth_state",
+        lambda db, user_id, resource_id, *, organization_id: calls.append(
+            (db, user_id, resource_id, organization_id)
+        )
+        or "manager",
+    )
+
+    assert (
+        effective_resource_auth_state(
+            "db",
+            resource_type="knowledge_base",
+            user_id="user-1",
+            resource_id="kb-1",
+            organization_id="org-1",
+        )
+        == "manager"
+    )
+    assert calls == [("db", "user-1", "kb-1", "org-1")]
+    assert resource_auth_state_allows("knowledge_base", "manager", "manage")
