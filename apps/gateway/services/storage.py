@@ -8,12 +8,14 @@ import boto3
 from fastapi import UploadFile
 
 from apps.gateway.core.config import settings
+from apps.gateway.services.storage_reference import (
+    StorageDeleteError,
+    StorageReferenceError,
+    resolve_local_delete_path,
+    resolve_s3_delete_key,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class StorageDeleteError(RuntimeError):
-    """Raised when a storage object cannot be deleted."""
 
 
 class StorageService(ABC):
@@ -51,8 +53,11 @@ class LocalStorageService(StorageService):
         return file_path
 
     def delete(self, file_path: str):
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        target = resolve_local_delete_path(file_path, upload_root=self.upload_dir)
+        if target.exists() or target.is_symlink():
+            if target.is_dir():
+                raise StorageReferenceError("storage_reference_invalid")
+            target.unlink()
 
     def generate_presigned_upload_url(
         self,
@@ -165,27 +170,11 @@ class S3StorageService(StorageService):
             raise e
 
     def delete(self, file_path: str):
-        key = file_path
-
-        if file_path.startswith("s3://"):
-            parts = file_path.replace("s3://", "").split("/", 1)
-            if len(parts) > 1:
-                key = parts[1]
-        elif file_path.startswith("http"):
-            # https://bucket.s3.region.amazonaws.com/folder/file.ext -> folder/file.ext
-            # URL 파싱 대신 단순히 버킷명 뒷부분을 추출하거나, 표준 S3 URL 패턴 매칭
-            # 간단하게 마지막 path 부분만 가져오는건 위험하므로(폴더 구조), 도메인 이후 path 추출
-            from urllib.parse import urlparse
-
-            parsed = urlparse(file_path)
-            # path: /key or /bucket/key (virtual hosted)
-            # 여기서는 virtual hosted style을 가정하고 key 추출
-            key = parsed.path.lstrip("/")
-
-            # 혹시 path에 bucket 이름이 중복되어 들어가 있다면 제거 (Legacy 호환)
-            # 예: /my-bucket/uploads/file.pdf -> uploads/file.pdf
-            if key.startswith(f"{self.bucket_name}/"):
-                key = key.replace(f"{self.bucket_name}/", "", 1)
+        key = resolve_s3_delete_key(
+            file_path,
+            bucket_name=self.bucket_name,
+            region=self.region,
+        )
 
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
