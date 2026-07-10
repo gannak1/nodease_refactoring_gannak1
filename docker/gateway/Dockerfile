@@ -21,7 +21,8 @@ COPY apps/workflow_engine /build/apps/workflow_engine
 # pyproject.toml 기반으로 설치
 RUN pip install --no-cache-dir --prefix=/install \
     /build/apps/shared \
-    /build/apps/gateway
+    /build/apps/gateway \
+    /build/apps/workflow_engine
 
 
 # --- 2단계: 실행(Final) 스테이지 ---
