@@ -12,6 +12,23 @@ from sqlalchemy.engine import URL
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _PREFIX_RE = re.compile(r"^[a-z0-9_]+$")
+_RESERVED_SUBPROCESS_ENV_KEYS = frozenset(
+    {
+        "DATABASE_URL",
+        "SQLALCHEMY_DATABASE_URI",
+        "DB_HOST",
+        "DB_PORT",
+        "DB_USER",
+        "DB_PASSWORD",
+        "DB_NAME",
+        "PGHOST",
+        "PGPORT",
+        "PGUSER",
+        "PGPASSWORD",
+        "PGDATABASE",
+        "PYTHONPATH",
+    }
+)
 
 
 class DisposablePostgresConfigurationError(ValueError):
@@ -93,7 +110,20 @@ class DisposablePostgresConfig:
         root_dir: Path,
         extra: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
+        if extra:
+            conflicting_keys = {
+                str(key)
+                for key in extra
+                if str(key).upper() in _RESERVED_SUBPROCESS_ENV_KEYS
+            }
+            if conflicting_keys:
+                raise DisposablePostgresConfigurationError(
+                    "extra environment cannot override disposable PostgreSQL settings"
+                )
+
         env = os.environ.copy()
+        if extra:
+            env.update(extra)
         env.pop("DATABASE_URL", None)
         env.pop("SQLALCHEMY_DATABASE_URI", None)
         env.update(
@@ -107,8 +137,6 @@ class DisposablePostgresConfig:
                 "PYTHONPATH": str(root_dir),
             }
         )
-        if extra:
-            env.update(extra)
         return env
 
 

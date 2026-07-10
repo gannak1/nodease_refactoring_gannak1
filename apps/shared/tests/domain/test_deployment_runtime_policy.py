@@ -14,6 +14,8 @@ from apps.shared.domain.deployment_runtime_policy import (
     DEPLOYMENT_WIDGET,
     DEPLOYMENT_WORKFLOW_NODE,
     KNOWN_DEPLOYMENT_TYPES,
+    KNOWN_RUNTIME_SURFACES,
+    KNOWN_TRIGGER_MODES,
     PUBLIC_APP_DEPLOYMENT_TYPES,
     SURFACE_API_SECRET_RUN,
     SURFACE_APP_PUBLIC_RUN,
@@ -104,7 +106,67 @@ def test_runtime_policy_fails_closed_for_unknown_surface_or_type():
 
     unknown_type = evaluate_deployment_runtime_surface("future", SURFACE_PUBLIC_INFO)
     assert unknown_type.allowed is False
-    assert unknown_type.reason == "deployment_type_not_allowed_for_surface"
+    assert unknown_type.reason == "unknown_deployment_type"
+
+
+@pytest.mark.parametrize(
+    ("allowed_types_by_surface", "surface_by_trigger_mode", "message"),
+    [
+        ({"future": {DEPLOYMENT_API}}, {}, "surface is unknown"),
+        ({SURFACE_PUBLIC_INFO: {"future"}}, {}, "type is unknown"),
+        (
+            {SURFACE_PUBLIC_INFO: {DEPLOYMENT_API}},
+            {"future": SURFACE_PUBLIC_INFO},
+            "trigger mode is unknown",
+        ),
+        (
+            {SURFACE_PUBLIC_INFO: {DEPLOYMENT_API}},
+            {"api": "future"},
+            "trigger surface is unknown",
+        ),
+        (
+            {SURFACE_PUBLIC_INFO: {DEPLOYMENT_API}},
+            {"api": SURFACE_API_SECRET_RUN},
+            "trigger surface is not configured",
+        ),
+    ],
+)
+def test_runtime_policy_injection_rejects_unknown_contract_values(
+    allowed_types_by_surface,
+    surface_by_trigger_mode,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        type(DEFAULT_DEPLOYMENT_RUNTIME_POLICY).create(
+            allowed_types_by_surface=allowed_types_by_surface,
+            surface_by_trigger_mode=surface_by_trigger_mode,
+        )
+
+
+def test_runtime_policy_evaluator_rejects_unknown_values_even_for_direct_policy():
+    policy_type = type(DEFAULT_DEPLOYMENT_RUNTIME_POLICY)
+    direct_policy = policy_type(
+        allowed_types_by_surface={
+            **DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface,
+            "future": frozenset({"future"}),
+        },
+        surface_by_trigger_mode={
+            **DEFAULT_DEPLOYMENT_RUNTIME_POLICY.surface_by_trigger_mode,
+            "future": "future",
+        },
+    )
+
+    assert not is_deployment_type_allowed_for_surface(
+        "future",
+        SURFACE_PUBLIC_INFO,
+        policy=direct_policy,
+    )
+    assert not is_deployment_type_allowed_for_surface(
+        DEPLOYMENT_API,
+        "future",
+        policy=direct_policy,
+    )
+    assert trigger_mode_to_surface("future", policy=direct_policy) is None
 
 
 def test_runtime_policy_can_be_replaced_by_explicit_immutable_injection():
@@ -165,3 +227,12 @@ def test_unknown_trigger_mode_fails_closed():
 
 def test_known_deployment_types_match_canonical_database_enum():
     assert KNOWN_DEPLOYMENT_TYPES == {member.value for member in DeploymentType}
+
+
+def test_known_policy_contract_sets_match_default_policy():
+    assert KNOWN_RUNTIME_SURFACES == set(
+        DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface
+    )
+    assert KNOWN_TRIGGER_MODES == set(
+        DEFAULT_DEPLOYMENT_RUNTIME_POLICY.surface_by_trigger_mode
+    )

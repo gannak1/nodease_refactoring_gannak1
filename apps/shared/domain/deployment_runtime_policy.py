@@ -18,6 +18,21 @@ SURFACE_APP_PUBLIC_RUN = "app_public_run"
 SURFACE_WEBHOOK_RUN = "webhook_run"
 SURFACE_SCHEDULE_RUN = "schedule_run"
 SURFACE_WORKFLOW_NODE_CHILD_RUN = "workflow_node_child_run"
+KNOWN_RUNTIME_SURFACES = frozenset(
+    {
+        SURFACE_PUBLIC_INFO,
+        SURFACE_AUTHENTICATED_RUN_INFO,
+        SURFACE_AUTHENTICATED_RUN,
+        SURFACE_API_SECRET_RUN,
+        SURFACE_APP_PUBLIC_RUN,
+        SURFACE_WEBHOOK_RUN,
+        SURFACE_SCHEDULE_RUN,
+        SURFACE_WORKFLOW_NODE_CHILD_RUN,
+    }
+)
+KNOWN_TRIGGER_MODES = frozenset(
+    {"api", "api_secret", "app", "webhook", "schedule", "scheduler", "workflow_node"}
+)
 
 DEPLOYMENT_API = "api"
 DEPLOYMENT_WEBAPP = "webapp"
@@ -73,21 +88,28 @@ class DeploymentRuntimePolicy:
         normalized_allowed: dict[str, FrozenSet[str]] = {}
         for surface, deployment_types in allowed_types_by_surface.items():
             normalized_surface = _normalized_value(surface)
-            if normalized_surface is None:
-                raise ValueError("deployment runtime policy surface cannot be empty")
-            normalized_types = frozenset(
-                normalized
-                for value in deployment_types
-                if (normalized := _normalized_value(value)) is not None
-            )
+            if normalized_surface not in KNOWN_RUNTIME_SURFACES:
+                raise ValueError("deployment runtime policy surface is unknown")
+
+            normalized_type_values: set[str] = set()
+            for value in deployment_types:
+                normalized_type = _normalized_value(value)
+                if normalized_type not in KNOWN_DEPLOYMENT_TYPES:
+                    raise ValueError("deployment runtime policy type is unknown")
+                normalized_type_values.add(normalized_type)
+            normalized_types = frozenset(normalized_type_values)
             normalized_allowed[normalized_surface] = normalized_types
 
         normalized_triggers: dict[str, str] = {}
         for trigger_mode, surface in surface_by_trigger_mode.items():
             normalized_trigger = _normalized_value(trigger_mode)
             normalized_surface = _normalized_value(surface)
-            if normalized_trigger is None or normalized_surface is None:
-                raise ValueError("deployment runtime trigger mapping cannot be empty")
+            if normalized_trigger not in KNOWN_TRIGGER_MODES:
+                raise ValueError("deployment runtime trigger mode is unknown")
+            if normalized_surface not in KNOWN_RUNTIME_SURFACES:
+                raise ValueError("deployment runtime trigger surface is unknown")
+            if normalized_surface not in normalized_allowed:
+                raise ValueError("deployment runtime trigger surface is not configured")
             normalized_triggers[normalized_trigger] = normalized_surface
 
         return cls(
@@ -152,7 +174,7 @@ def trigger_mode_to_surface(
     policy: DeploymentRuntimePolicy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 ) -> str | None:
     normalized = deployment_type_value(trigger_mode)
-    if normalized is None:
+    if normalized not in KNOWN_TRIGGER_MODES:
         return None
     return policy.surface_by_trigger_mode.get(normalized)
 
@@ -176,12 +198,20 @@ def evaluate_deployment_runtime_surface(
 ) -> DeploymentRuntimePolicyResult:
     normalized_surface = deployment_type_value(surface)
     normalized_deployment_type = deployment_type_value(deployment_type)
-    if normalized_surface is None:
+    if normalized_surface not in KNOWN_RUNTIME_SURFACES:
         return DeploymentRuntimePolicyResult(
             allowed=False,
             surface=None,
             deployment_type=normalized_deployment_type,
             reason="unknown_surface",
+        )
+
+    if normalized_deployment_type not in KNOWN_DEPLOYMENT_TYPES:
+        return DeploymentRuntimePolicyResult(
+            allowed=False,
+            surface=normalized_surface,
+            deployment_type=normalized_deployment_type,
+            reason="unknown_deployment_type",
         )
 
     allowed_types = policy.allowed_types_by_surface.get(normalized_surface)

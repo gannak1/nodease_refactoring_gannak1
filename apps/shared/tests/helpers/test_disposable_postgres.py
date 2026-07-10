@@ -66,6 +66,48 @@ def test_disposable_postgres_subprocess_environment_overrides_ambient_urls(tmp_p
 
 
 @pytest.mark.parametrize(
+    "reserved_key",
+    [
+        "DATABASE_URL",
+        "sqlalchemy_database_uri",
+        "DB_HOST",
+        "db_password",
+        "DB_NAME",
+        "PGHOST",
+        "PYTHONPATH",
+    ],
+)
+def test_disposable_postgres_extra_rejects_reserved_connection_keys(
+    tmp_path,
+    reserved_key,
+):
+    config = DisposablePostgresConfig.from_environment(_environment())
+
+    with pytest.raises(
+        DisposablePostgresConfigurationError,
+        match="cannot override disposable PostgreSQL settings",
+    ):
+        config.subprocess_environment(
+            database="mbased_lifecycle_0123456789ab",
+            root_dir=tmp_path,
+            extra={reserved_key: "untrusted-value"},
+        )
+
+
+def test_disposable_postgres_extra_preserves_non_connection_settings(tmp_path):
+    config = DisposablePostgresConfig.from_environment(_environment())
+
+    result = config.subprocess_environment(
+        database="mbased_lifecycle_0123456789ab",
+        root_dir=tmp_path,
+        extra={"NODEASE_DEMO_REGENERATE_KNOWLEDGE_FIXTURE": "0"},
+    )
+
+    assert result["NODEASE_DEMO_REGENERATE_KNOWLEDGE_FIXTURE"] == "0"
+    assert result["DB_HOST"] == config.host
+
+
+@pytest.mark.parametrize(
     ("database", "prefix"),
     [
         ("production", "mbased_lifecycle"),
