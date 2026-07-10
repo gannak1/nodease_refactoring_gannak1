@@ -205,6 +205,10 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
     assert set(demo_seed.CREDENTIAL_MODEL_REL_IDS) == {
         demo_seed.DEMO_CHAT_MODEL,
         demo_seed.DEMO_CHAT_MINI_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_BASE_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_FALLBACK_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_CHEAP_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
     }
 
