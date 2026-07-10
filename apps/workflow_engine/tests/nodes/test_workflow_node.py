@@ -68,6 +68,7 @@ def test_workflow_node_execution_with_input_mapping():
     mock_deployment = Mock()
     mock_deployment.id = "deploy-1"
     mock_deployment.version = "v1.0"
+    mock_deployment.type = DeploymentType.WORKFLOW_NODE
     mock_deployment.graph_snapshot = {
         "nodes": [
             {
@@ -273,9 +274,12 @@ def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
     mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = "deploy-1"
 
+    mock_deployment = Mock()
+    mock_deployment.type = DeploymentType.API
+
     mock_db.query.return_value.filter.return_value.first.side_effect = [
         mock_app,
-        None,
+        mock_deployment,
     ]
     node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
@@ -283,10 +287,10 @@ def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
         node.execute({})
 
     deployment_filter_args = mock_db.query.return_value.filter.call_args_list[1].args
-    assert any(
-        getattr(arg, "right", None).value == DeploymentType.WORKFLOW_NODE
+    assert all(
+        getattr(getattr(arg, "right", None), "value", None)
+        != DeploymentType.WORKFLOW_NODE
         for arg in deployment_filter_args
-        if hasattr(getattr(arg, "right", None), "value")
     )
 
 
@@ -374,6 +378,7 @@ def test_workflow_node_nested_value_extraction():
     mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = "deploy-1"
     mock_deployment = Mock()
+    mock_deployment.type = DeploymentType.WORKFLOW_NODE
     mock_deployment.graph_snapshot = {
         "nodes": [
             {

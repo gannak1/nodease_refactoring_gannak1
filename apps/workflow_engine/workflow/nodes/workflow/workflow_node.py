@@ -2,6 +2,10 @@
 from typing import Any, Dict, List
 
 from apps.shared.db.models.app import App
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_WORKFLOW_NODE_CHILD_RUN,
+    is_deployment_type_allowed_for_surface,
+)
 from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.node import Node
 
@@ -104,10 +108,7 @@ class WorkflowNode(Node[WorkflowNodeData]):
                     f"[WorkflowNode] App {app.name} has no active deployment"
                 )
 
-            from apps.shared.db.models.workflow_deployment import (
-                DeploymentType,
-                WorkflowDeployment,
-            )
+            from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 
             deployment = (
                 db.query(WorkflowDeployment)
@@ -115,12 +116,14 @@ class WorkflowNode(Node[WorkflowNodeData]):
                     WorkflowDeployment.id == app.active_deployment_id,
                     WorkflowDeployment.app_id == app.id,
                     WorkflowDeployment.is_active.is_(True),
-                    WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE,
                 )
                 .first()
             )
 
-            if not deployment:
+            if not deployment or not is_deployment_type_allowed_for_surface(
+                deployment.type,
+                SURFACE_WORKFLOW_NODE_CHILD_RUN,
+            ):
                 raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] Active deployment not found for app {app.name}"
                 )

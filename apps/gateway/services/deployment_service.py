@@ -22,6 +22,7 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_AUTHENTICATED_RUN,
+    SURFACE_AUTHENTICATED_RUN_INFO,
     SURFACE_SCHEDULE_RUN,
     is_deployment_type_allowed_for_surface,
     is_deployment_type_allowed_for_trigger,
@@ -473,6 +474,7 @@ class DeploymentService:
         deployment, app = DeploymentService._get_active_deployment_and_app(
             db,
             deployment_id,
+            surface=SURFACE_AUTHENTICATED_RUN,
         )
 
         return await DeploymentService._execute_deployment_snapshot(
@@ -495,6 +497,7 @@ class DeploymentService:
         deployment, app = DeploymentService._get_active_deployment_and_app(
             db,
             deployment_id,
+            surface=SURFACE_AUTHENTICATED_RUN_INFO,
         )
         return {
             "deployment_id": deployment.id,
@@ -512,6 +515,8 @@ class DeploymentService:
     def _get_active_deployment_and_app(
         db: Session,
         deployment_id: uuid.UUID | str,
+        *,
+        surface: str,
     ) -> tuple[WorkflowDeployment, App]:
         deployment = (
             db.query(WorkflowDeployment)
@@ -529,7 +534,7 @@ class DeploymentService:
             raise HTTPException(status_code=404, detail="Deployment is inactive")
         if not is_deployment_type_allowed_for_surface(
             deployment.type,
-            SURFACE_AUTHENTICATED_RUN,
+            surface,
         ):
             raise HTTPException(status_code=404, detail="Deployment not found")
         return deployment, app

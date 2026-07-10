@@ -259,6 +259,8 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
     current_user_id = uuid4()
     db = _Db(rows=[app_row, deployment_row])
     budget_calls = []
+    evaluated_surfaces = []
+    evaluate_surface = deployment_module.is_deployment_type_allowed_for_surface
 
     def capture_budget_call(db, **kwargs):
         budget_calls.append(kwargs)
@@ -267,6 +269,14 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
         deployment_module.WorkflowBudgetService,
         "ensure_workflow_budget_allows_execution",
         capture_budget_call,
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "is_deployment_type_allowed_for_surface",
+        lambda deployment_type, surface: evaluated_surfaces.append(
+            (deployment_type, surface)
+        )
+        or evaluate_surface(deployment_type, surface),
     )
 
     celery, result = _run_authenticated(
@@ -295,6 +305,9 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
             "trigger_mode": "app",
             "actor_id": current_user_id,
         }
+    ]
+    assert evaluated_surfaces == [
+        (deployment_row.type, deployment_module.SURFACE_AUTHENTICATED_RUN)
     ]
     assert result["status"] == "success"
 
@@ -369,6 +382,33 @@ def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     assert result["input_schema"] == deployment_row.input_schema
     assert "auth_secret" not in result
     assert "graph_snapshot" not in result
+
+
+def test_deployment_run_info_uses_dedicated_runtime_surface(monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+    evaluated = []
+
+    def capture_surface(deployment_type, surface):
+        evaluated.append((deployment_type, surface))
+        return True
+
+    monkeypatch.setattr(
+        deployment_module,
+        "is_deployment_type_allowed_for_surface",
+        capture_surface,
+    )
+
+    deployment_module.DeploymentService.get_deployment_run_info(
+        db,
+        deployment_row.id,
+    )
+
+    assert evaluated == [
+        (deployment_row.type, deployment_module.SURFACE_AUTHENTICATED_RUN_INFO)
+    ]
 
 
 def test_deployment_run_info_rejects_workflow_node_deployment():

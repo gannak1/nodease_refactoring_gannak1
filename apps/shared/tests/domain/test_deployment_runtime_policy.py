@@ -1,6 +1,8 @@
 from enum import Enum
 
 import pytest
+from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.db.models.workflow_run import RunTriggerMode
 from apps.shared.domain.deployment_runtime_policy import (
     DEPLOYMENT_API,
     DEPLOYMENT_CHATBOT,
@@ -10,6 +12,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     DEPLOYMENT_WEBHOOK,
     DEPLOYMENT_WIDGET,
     DEPLOYMENT_WORKFLOW_NODE,
+    KNOWN_DEPLOYMENT_TYPES,
     SURFACE_API_SECRET_RUN,
     SURFACE_APP_PUBLIC_RUN,
     SURFACE_AUTHENTICATED_RUN,
@@ -131,6 +134,7 @@ def test_runtime_policy_normalizes_enum_like_values():
         ("app", SURFACE_APP_PUBLIC_RUN, DEPLOYMENT_CHATBOT),
         ("webhook", SURFACE_WEBHOOK_RUN, DEPLOYMENT_WEBHOOK),
         ("schedule", SURFACE_SCHEDULE_RUN, DEPLOYMENT_SCHEDULE),
+        (RunTriggerMode.SCHEDULER, SURFACE_SCHEDULE_RUN, DEPLOYMENT_SCHEDULE),
         ("workflow_node", SURFACE_WORKFLOW_NODE_CHILD_RUN, DEPLOYMENT_WORKFLOW_NODE),
     ],
 )
@@ -142,3 +146,7 @@ def test_trigger_mode_maps_to_surface(trigger_mode, surface, deployment_type):
 def test_unknown_trigger_mode_fails_closed():
     assert trigger_mode_to_surface("future") is None
     assert not is_deployment_type_allowed_for_trigger(DEPLOYMENT_API, "future")
+
+
+def test_known_deployment_types_match_canonical_database_enum():
+    assert KNOWN_DEPLOYMENT_TYPES == {member.value for member in DeploymentType}
