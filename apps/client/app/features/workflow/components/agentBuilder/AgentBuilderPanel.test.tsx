@@ -38,6 +38,7 @@ vi.mock('sonner', () => ({
 
 vi.mock('../../api/agentBuilderApi', () => ({
   agentBuilderApi: {
+    getModelOptions: vi.fn(),
     createSession: vi.fn(),
     getSession: vi.fn(),
     sendMessage: vi.fn(),
@@ -89,6 +90,48 @@ describe('AgentBuilderPanel', () => {
     window.localStorage.clear();
     useWorkflowStore.setState(initialState, true);
     vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({});
+    vi.mocked(agentBuilderApi.getModelOptions).mockResolvedValue([
+      {
+        provider_name: 'openai',
+        unavailable_reason: null,
+        options: [
+          {
+            model: {
+              id: 'model-openai',
+              model_id_for_api_call: 'gpt-5.5-pro',
+              name: 'GPT-5.5 Pro',
+              provider_name: 'openai',
+            },
+            credential: {
+              id: 'credential-openai',
+              credential_name: 'OpenAI Main',
+            },
+            relation_priority: 0,
+          },
+        ],
+      },
+      {
+        provider_name: 'anthropic',
+        unavailable_reason: null,
+        options: [
+          {
+            model: {
+              id: 'model-anthropic',
+              model_id_for_api_call: 'claude-sonnet-5',
+              name: 'Claude Sonnet 5',
+              provider_name: 'anthropic',
+            },
+            credential: {
+              id: 'credential-anthropic',
+              credential_name: 'Anthropic Main',
+            },
+            relation_priority: 0,
+          },
+        ],
+      },
+      { provider_name: 'google', unavailable_reason: 'no_authorized_model', options: [] },
+      { provider_name: 'llamaparse', unavailable_reason: 'chat_model_not_supported', options: [] },
+    ]);
     vi.mocked(agentBuilderApi.cancelDraft).mockResolvedValue({
       apply_id: 'apply-cancel',
       outcome: 'canceled',
@@ -104,7 +147,7 @@ describe('AgentBuilderPanel', () => {
     });
   });
 
-  it('Agent Builder 패널을 최소화했다가 다시 펼친다', () => {
+  it('Agent Builder 패널을 최소화했다가 다시 펼친다', async () => {
     render(
       <AgentBuilderPanel
         workflowId="workflow-1"
@@ -116,6 +159,9 @@ describe('AgentBuilderPanel', () => {
     );
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByRole('button', {
+      name: /Agent Builder 모델: GPT-5.5 Pro/,
+    });
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Agent Builder 최소화'));
@@ -123,6 +169,97 @@ describe('AgentBuilderPanel', () => {
 
     fireEvent.click(screen.getByLabelText('Agent Builder 펼치기'));
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
+  });
+
+  it('credential 허용 모델을 provider 순서로 표시하고 선택 모델을 요청에 포함한다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-model',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-model',
+      status: 'unsupported',
+      clarification_questions: [],
+      clarification_options: [],
+      warnings: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByRole('button', { name: /Agent Builder 모델: GPT-5.5 Pro/ });
+    fireEvent.click(
+      screen.getByRole('button', { name: /Agent Builder 모델: GPT-5.5 Pro/ }),
+    );
+
+    expect(
+      screen.getAllByTestId('agent-builder-model-provider').map((item) => item.textContent),
+    ).toEqual(['openai', 'anthropic', 'google', 'llamaparse']);
+    fireEvent.click(screen.getByRole('button', { name: /Claude Sonnet 5/ }));
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '입력과 응답 노드를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledWith(
+        'session-model',
+        expect.objectContaining({
+          intentModelSelection: {
+            credentialId: 'credential-anthropic',
+            modelId: 'model-anthropic',
+          },
+        }),
+      );
+    });
+  });
+
+  it('사용 가능한 intent model이 없으면 hidden fallback 없이 요청을 차단한다', async () => {
+    vi.mocked(agentBuilderApi.getModelOptions).mockResolvedValue([
+      { provider_name: 'openai', unavailable_reason: 'no_authorized_model', options: [] },
+      { provider_name: 'anthropic', unavailable_reason: 'no_authorized_model', options: [] },
+      { provider_name: 'google', unavailable_reason: 'no_authorized_model', options: [] },
+      {
+        provider_name: 'llamaparse',
+        unavailable_reason: 'chat_model_not_supported',
+        options: [],
+      },
+    ]);
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByRole('button', {
+      name: /Agent Builder 모델: 선택 필요/,
+    });
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '입력과 응답 노드를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.getModelOptions).toHaveBeenCalled();
+    });
+    expect(agentBuilderApi.createSession).not.toHaveBeenCalled();
+    expect(agentBuilderApi.sendMessage).not.toHaveBeenCalled();
   });
 
   it('loads the saved graph when Agent Builder creates a new workflow', async () => {
@@ -344,6 +481,12 @@ describe('AgentBuilderPanel', () => {
         appId: 'app-1',
         selectedNodeId: undefined,
         selectedEdgeId: undefined,
+        selectedKnowledgeCandidate: undefined,
+        selectedKnowledgeCandidates: undefined,
+        intentModelSelection: {
+          credentialId: 'credential-openai',
+          modelId: 'model-openai',
+        },
       });
     });
   });
@@ -1301,7 +1444,7 @@ describe('AgentBuilderPanel', () => {
     expect(useWorkflowStore.getState().agentBuilderPreview).toBeNull();
   });
 
-  it('저장되지 않은 변경이 있으면 적용 및 저장을 호출하지 않는다', () => {
+  it('저장되지 않은 변경이 있으면 적용 및 저장을 호출하지 않는다', async () => {
     setPreviewState([node('preview-node')]);
 
     render(
@@ -1315,6 +1458,9 @@ describe('AgentBuilderPanel', () => {
     );
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByRole('button', {
+      name: /Agent Builder 모델: GPT-5.5 Pro/,
+    });
 
     expect(
       screen.getByText(

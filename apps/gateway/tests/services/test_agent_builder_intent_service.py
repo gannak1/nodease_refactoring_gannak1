@@ -79,11 +79,17 @@ def test_llm_intent_extractor_requests_json_and_preserves_step_order():
             "unsupported_requests": [],
         }
     )
+    credential_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    runtime_calls = []
     extractor = LLMAgentBuilderIntentExtractor(
         db=FakeDb(),
         user_id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
-        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+        credential_id=credential_id,
+        model_id=model_id,
+        runtime_loader=lambda **kwargs: runtime_calls.append(kwargs)
+        or SimpleNamespace(client=client),
     )
 
     result = extractor.extract(
@@ -105,6 +111,8 @@ def test_llm_intent_extractor_requests_json_and_preserves_step_order():
     assert "json" in str(messages).lower()
     assert kwargs["response_format"]["type"] == "json_object"
     assert kwargs["temperature"] == 0
+    assert runtime_calls[0]["credential_id"] == credential_id
+    assert runtime_calls[0]["model_id"] == model_id
 
 
 def test_llm_intent_extractor_does_not_echo_invalid_provider_payload():

@@ -154,14 +154,19 @@ class LLMAgentBuilderIntentExtractor:
         db: Session,
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
+        credential_id: uuid.UUID | None = None,
+        model_id: uuid.UUID | None = None,
         runtime_loader: Callable[..., Any] | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
+        self.credential_id = credential_id
+        self.model_id = model_id
         self.runtime_loader = (
-            runtime_loader or LLMService.get_wizard_client_for_user
+            runtime_loader or LLMService.get_wizard_client_for_selection
         )
+        self.requires_explicit_selection = runtime_loader is None
 
     def extract(
         self,
@@ -169,11 +174,18 @@ class LLMAgentBuilderIntentExtractor:
         safe_message: str,
         workflow_context: dict[str, Any],
     ) -> AgentBuilderIntentExtraction:
+        if self.requires_explicit_selection and (
+            self.credential_id is None or self.model_id is None
+        ):
+            raise AgentBuilderIntentRuntimeUnavailableError(
+                "Agent Builder intent model selection is required"
+            )
         try:
             runtime = self.runtime_loader(
                 db=self.db,
                 user_id=self.user_id,
-                provider_model_map=LLMService.EFFICIENT_MODELS,
+                credential_id=self.credential_id,
+                model_id=self.model_id,
                 organization_id=self.organization_id,
                 runtime_surface="agent_builder_intent",
             )

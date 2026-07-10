@@ -68,6 +68,8 @@ class FakeWizardRuntimeQuery:
         return []
 
     def first(self):
+        if self.model is llm_service.LLMCredential:
+            return self.db.first_credential(self.filters)
         if self.model is llm_service.LLMModel:
             return self.db.first_model(self.filters)
         if self.model is llm_service.LLMRelCredentialModel:
@@ -84,14 +86,36 @@ class FakeWizardRuntimeDb:
     def query(self, *args, **kwargs):
         return FakeWizardRuntimeQuery(self, args[0])
 
+    def first_credential(self, filters):
+        credential_id = _filter_value(filters, "id")
+        organization_id = _filter_value(filters, "organization_id")
+        is_valid = _filter_value(filters, "is_valid")
+        return next(
+            (
+                credential
+                for credential in self.credentials
+                if credential.id == credential_id
+                and credential.organization_id == organization_id
+                and is_valid is True
+            ),
+            None,
+        )
+
     def first_model(self, filters):
+        model_db_id = _filter_value(filters, "id")
         provider_id = _filter_value(filters, "provider_id")
         model_id_for_api_call = _filter_value(filters, "model_id_for_api_call")
         for model in self.models:
             if (
                 model
                 and model.provider_id == provider_id
-                and model.model_id_for_api_call == model_id_for_api_call
+                and (
+                    (model_db_id is not None and model.id == model_db_id)
+                    or (
+                        model_db_id is None
+                        and model.model_id_for_api_call == model_id_for_api_call
+                    )
+                )
             ):
                 return model
         return None
@@ -565,6 +589,96 @@ def test_get_agent_answer_options_returns_safe_credential_option_schema(monkeypa
     assert "updated_at" not in option["credential"]
 
 
+def test_agent_builder_model_options_use_provider_and_performance_order(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+
+    def option(provider_name, model_id, name, credential_name, priority=0):
+        provider_id = uuid.uuid4()
+        return (
+            SimpleNamespace(
+                id=uuid.uuid4(),
+                provider_id=provider_id,
+                model_id_for_api_call=model_id,
+                name=name,
+                type="chat",
+                provider_name=provider_name,
+                context_window=8192,
+                input_price_1k=None,
+                output_price_1k=None,
+                is_active=True,
+                model_metadata=None,
+            ),
+            SimpleNamespace(
+                id=uuid.uuid4(),
+                provider_id=provider_id,
+                organization_id=organization_id,
+                credential_name=credential_name,
+                config_preview=None,
+                is_valid=True,
+            ),
+            priority,
+        )
+
+    rows = [
+        option("google", "gemini-3.1-pro-preview", "Gemini 3.1 Pro", "google"),
+        option("openai", "gpt-5.4-mini", "GPT-5.4 Mini", "openai"),
+        option("anthropic", "claude-opus-4-8", "Claude Opus 4.8", "anthropic"),
+        option("openai", "gpt-5.5", "GPT-5.5", "openai"),
+        option("google", "gemini-3.5-flash", "Gemini 3.5 Flash", "google"),
+        option("anthropic", "claude-sonnet-5", "Claude Sonnet 5", "anthropic"),
+        option("openai", "gpt-5.5-pro", "GPT-5.5 Pro", "openai"),
+    ]
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        llm_service.LLMModelResponse,
+        "model_validate",
+        staticmethod(lambda value: value),
+    )
+    monkeypatch.setattr(
+        llm_service.LLMCredentialOptionResponse,
+        "model_validate",
+        staticmethod(lambda value: value),
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "LLMCredentialModelOptionResponse",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "LLMIntentModelProviderResponse",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
+    )
+
+    groups = LLMService.get_agent_builder_model_option_groups(
+        FakeDb(rows), user_id, organization_id
+    )
+
+    assert [group.provider_name for group in groups] == [
+        "openai",
+        "anthropic",
+        "google",
+        "llamaparse",
+    ]
+    assert [
+        item.model.model_id_for_api_call for item in groups[0].options
+    ] == ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4-mini"]
+    assert [
+        item.model.model_id_for_api_call for item in groups[1].options
+    ] == ["claude-sonnet-5", "claude-opus-4-8"]
+    assert [
+        item.model.model_id_for_api_call for item in groups[2].options
+    ] == ["gemini-3.5-flash", "gemini-3.1-pro-preview"]
+    assert groups[3].options == []
+    assert groups[3].unavailable_reason == "chat_model_not_supported"
+
+
 def test_agent_answer_options_endpoint_resolves_active_organization(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -817,6 +931,137 @@ def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
     assert client_configs == [
         {"apiKey": "openai-key", "baseUrl": "https://openai.example"}
     ]
+
+
+def test_agent_builder_runtime_revalidates_explicit_credential_model_selection(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        encrypted_config='{"apiKey": "selected-key", "baseUrl": "https://example.com"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-5.5-pro",
+        is_active=True,
+        type="chat",
+    )
+    relation = SimpleNamespace(
+        credential_id=credential.id,
+        model_id=model.id,
+        is_verified=True,
+        priority=0,
+    )
+    db = FakeWizardRuntimeDb(
+        credentials=[credential],
+        model=model,
+        relations=[relation],
+    )
+    permission_calls = []
+    client_calls = []
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: permission_calls.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **kwargs: client_calls.append(kwargs) or SimpleNamespace(),
+    )
+
+    runtime = LLMService.get_wizard_client_for_selection(
+        db,
+        user_id=user_id,
+        credential_id=credential.id,
+        model_id=model.id,
+        organization_id=organization_id,
+        runtime_surface="agent_builder_intent",
+        audit_on_failure=False,
+    )
+
+    assert runtime.credential_id == credential.id
+    assert runtime.model_id == "gpt-5.5-pro"
+    assert permission_calls[0][0][:4] == (
+        db,
+        user_id,
+        credential.id,
+        "use",
+    )
+    assert permission_calls[0][1]["organization_id"] == organization_id
+    assert client_calls == [
+        {
+            "provider": "openai",
+            "model_id": "gpt-5.5-pro",
+            "credentials": {
+                "apiKey": "selected-key",
+                "baseUrl": "https://example.com",
+            },
+        }
+    ]
+
+
+def test_agent_builder_runtime_blocks_explicit_selection_without_use_permission(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    credential = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider=provider,
+        provider_id=provider.id,
+        organization_id=organization_id,
+        encrypted_config='{"apiKey": "never-used"}',
+    )
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-5.5",
+        is_active=True,
+        type="chat",
+    )
+    relation = SimpleNamespace(
+        credential_id=credential.id,
+        model_id=model.id,
+        is_verified=True,
+        priority=0,
+    )
+    db = FakeWizardRuntimeDb(
+        credentials=[credential],
+        model=model,
+        relations=[relation],
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "has_llm_credential_permission",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **kwargs: pytest.fail("denied selection created an LLM client"),
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc:
+        LLMService.get_wizard_client_for_selection(
+            db,
+            user_id=user_id,
+            credential_id=credential.id,
+            model_id=model.id,
+            organization_id=organization_id,
+            runtime_surface="agent_builder_intent",
+            audit_on_failure=False,
+        )
+
+    assert exc.value.reason == "credential_use_denied"
 
 
 def test_wizard_runtime_block_uses_unknown_target_without_credential(monkeypatch):

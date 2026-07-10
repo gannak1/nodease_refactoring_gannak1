@@ -21,6 +21,7 @@ Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 P
 | --- | --- |
 | `AgentBuilderLauncher` | 우측 하단 고정 entry point |
 | `AgentBuilderChatPanel` | 대화 목록, 입력창, pending 상태, cancel control |
+| `AgentBuilderIntentModelSelector` | Header에서 active organization의 권한 확인 model/credential 조합을 provider별로 표시하고 내부 intent planner 선택을 관리. 첫 사용 가능 option을 표시 기본값으로 사용하며 선택 ID는 message request에만 포함 |
 | `AgentBuilderMessageList` | 사용자 메시지, agent response, clarification, warning 표시 |
 | `DraftPreviewSummary` | chatbot panel 안에서 생성/변경될 workflow 요약과 `도안 생성 미리보기` action 표시 |
 | `PreviewModeController` | actual editor graph와 preview graph를 분리하고 Preview Mode 진입/종료 제어 |
@@ -45,7 +46,8 @@ Answer/Output 계열 node의 output variable 목록, value selector, input/outpu
 | --- | --- |
 | `RequestContextResolver` | 인증 사용자, active organization, workflow/app scope, 권한 context 확정 |
 | `ConversationSessionService` | server-issued chat session, redaction된 사용자 message summary와 assistant response로 구성된 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
-| `LLMIntentExtractor` | redaction된 사용자 요청과 safe workflow node type/title/role 요약을 permission-aware LLM runtime에 전달하고 schema-validated 의미 후보를 반환. Raw graph, node/edge id, credential, raw provider response를 구조화 결과에 포함하지 않음 |
+| `LLMIntentExtractor` | redaction된 사용자 요청과 safe workflow node type/title/role 요약을 명시적으로 선택되고 요청마다 재검증된 permission-aware LLM runtime에 전달하고 schema-validated 의미 후보를 반환. Raw graph, node/edge id, credential, raw provider response를 구조화 결과에 포함하지 않음 |
+| `AgentBuilderIntentModelOptionService` | Active organization의 valid credential, active chat model, verified relation, `use` permission을 결합해 ADR-0025 provider group과 결정적 model 순서 반환 |
 | `StructuredRequestBuilder` | 자연어 의미 후보를 안전한 `StructuredRequest`로 정규화 |
 | `WorkflowContextSnapshotBuilder` | graph, selected node, selected edge, existing node/edge summary 생성 |
 | `TargetResolver` | 기존 workflow 수정 target 해석 |

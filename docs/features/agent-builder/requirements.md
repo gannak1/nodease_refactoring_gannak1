@@ -12,6 +12,7 @@ Agent Builder는 Workflow Editor 안에서 사용자가 자연어로 workflow dr
 MVP는 다음을 포함한다.
 
 - Workflow Editor 우측 하단 고정 launcher와 chatbot panel
+- Chatbot header의 permission-aware intent planner model selector
 - 자연어 요청을 `StructuredRequest`로 변환
 - 새 workflow draft 생성과 기존 workflow 수정 제안 구분
 - 공통 Workflow Node Capability Catalog에서 `implemented=true`, `agent_builder_supported=true`로 승인된 node capability 조합 제안
@@ -45,6 +46,8 @@ MVP는 다음을 포함하지 않는다.
 
 Workflow Editor에는 평소 우측 하단에 작은 Agent Builder launcher가 표시되어야 한다. 사용자가 launcher를 클릭하면 workflow canvas 위 또는 옆에 chatbot panel이 열린다. Panel은 workflow canvas를 대체하지 않고, draft 생성과 검토를 돕는 보조 UI다.
 
+Panel header는 [ADR-0025](../../decisions/ADR-0025-agent-builder-intent-model-selection.md)에 따라 Agent Builder 내부 intent planner가 사용할 model을 표시하고 변경할 수 있어야 한다. Provider group은 `openai`, `anthropic`, `google`, `llamaparse` 순서로 표시하며, 사용 가능한 model/credential 조합만 선택할 수 있다. LlamaParse는 chat model을 지원하지 않는 disabled group으로 표시한다.
+
 ### AB-FR-002: Request Context
 
 모든 Agent Builder 요청은 인증 사용자와 `X-Organization-Id` 기반 active organization membership 검증으로 확정된 server context를 사용한다. Request body의 `organization_id`는 권한 판단, scope 판단, organization override에 사용하지 않는다.
@@ -77,7 +80,9 @@ node를 지칭한 단어는 새로 만들 capability로 다시 추가하지 않�
 
 LLM 의미 후보는 서버에서 다시 검증한다. 최종 schema 정규화, capability catalog allowlist, unsupported 판정, pending/missing 분리, blocking 여부, external-action risk, target node/edge 확정과 graph 생성은 deterministic normalization, `TargetResolver`, product policy를 따라야 한다. LLM 응답이 실패하거나 schema를 통과하지 못하면 정규식 기반 graph 생성으로 조용히 fallback하지 않고 safe failure로 닫는다.
 
-구조화 LLM runtime은 인증 사용자와 active organization 범위에서 `use` 권한과 verified model relation을 통과한 credential만 사용할 수 있다. Credential 원문과 raw provider response는 prompt, API response, draft metadata, trace, audit에 저장하지 않는다. 사용할 runtime이 없으면 `configuration_required`, LLM 호출 또는 schema validation이 실패하면 `failed`를 반환하며 부분 draft를 확정하지 않는다.
+구조화 LLM runtime은 인증 사용자와 active organization 범위에서 `use` 권한과 verified model relation을 통과한 credential/model 조합만 사용할 수 있다. Client는 화면에 표시된 조합 중 하나의 `credential_id`, `model_id`를 message request에 포함하고, server는 모든 요청에서 organization, credential validity, `use` 권한, active chat model, provider 일치, verified relation을 다시 검증한다. 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason을 기록할 수 있다. Credential 원문과 raw provider response는 prompt, API response, draft metadata, trace, audit에 저장하지 않는다. 사용할 runtime이 없으면 `configuration_required`, LLM 호출 또는 schema validation이 실패하면 `failed`를 반환하며 부분 draft를 확정하지 않는다.
+
+Model option은 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 이후 relation priority와 safe display name으로 결정적 순서를 보장한다. Agent Builder는 provider별 고정 저비용 model map으로 선택값을 숨겨 대체하지 않는다.
 
 `StructuredRequestBuilder`는 KB 후보 목록이나 KB safe metadata 목록을 입력으로 받지 않고, KB 후보를 선택하지도 않는다. 이 단계는 사용자 요청에서 어떤 지식이 필요한지(`knowledge_requirements`)와 어떤 값이 resolver로 해결되어야 하는지(`pending_resolution`)만 구조화한다.
 

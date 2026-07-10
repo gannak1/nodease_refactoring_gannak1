@@ -4,7 +4,7 @@ Status: Draft
 
 ## API Boundary
 
-Agent Builder API는 workflow draft 생성, clarification, validation, draft preview, Preview Mode, 그리고 사용자가 `적용 및 저장`을 선택한 draft의 workflow graph 저장을 지원한다. Preview apply/save 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따르고 node/capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)을 따른다. 이 API는 workflow 실행, Knowledge Base retrieval, Slack/GitHub/HTTP/Mail 전송 또는 조회, workflow node credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. AB-FR-003의 자연어 구조화를 위한 permission-aware 내부 planner 호출은 workflow node credential 실행과 구분한다.
+Agent Builder API는 workflow draft 생성, clarification, validation, draft preview, Preview Mode, 그리고 사용자가 `적용 및 저장`을 선택한 draft의 workflow graph 저장을 지원한다. Preview apply/save 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따르고 node/capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)을 따른다. 내부 intent model 선택은 [ADR-0025](../../decisions/ADR-0025-agent-builder-intent-model-selection.md)를 따른다. 이 API는 workflow 실행, Knowledge Base retrieval, Slack/GitHub/HTTP/Mail 전송 또는 조회, workflow node credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. AB-FR-003의 자연어 구조화를 위한 permission-aware 내부 planner 호출은 workflow node credential 실행과 구분한다.
 
 모든 endpoint는 인증 사용자와 `X-Organization-Id` 기반 active organization membership을 먼저 검증한다. Request body의 `organization_id`는 권한 또는 scope 판단에 사용하지 않는다.
 
@@ -12,6 +12,7 @@ Agent Builder API는 workflow draft 생성, clarification, validation, draft pre
 
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/api/v1/agent-builder/model-options` | Active organization과 credential `use` 권한 기준 내부 intent planner model option group 조회 |
 | `POST` | `/api/v1/agent-builder/sessions` | Workflow Editor 안 Agent Builder chat session 생성 또는 복구 |
 | `GET` | `/api/v1/agent-builder/sessions/{session_id}` | 최근 메시지, pending request, draft preview 상태 조회 |
 | `POST` | `/api/v1/agent-builder/sessions/{session_id}/messages` | 사용자 자연어 요청 제출 |
@@ -37,6 +38,11 @@ Client request body는 organization override를 포함하지 않는다.
 | `conversation_context_id` | 이어지는 clarification context |
 | `selected_knowledge_candidate` | KB 후보 clarification에 대한 단일 사용자 선택. 호환용 필드이며 `candidate_id`, 선택적 `resolution_id`, 선택적 `requirement_id`만 포함하고 raw KB id, raw source id/path/url/title은 포함하지 않음 |
 | `selected_knowledge_candidates` | KB 후보 clarification에 대한 사용자 선택 목록. 0개, 1개, 여러 개 선택을 표현하며 빈 배열은 표시된 후보를 선택하지 않고 Knowledge Base binding 없이 draft 생성을 계속한다는 뜻이다 |
+| `intent_model_selection` | 내부 intent planner가 사용할 명시적 `credential_id`, `model_id` 쌍. Raw credential 또는 provider config를 포함하지 않음 |
+
+`GET /model-options`는 provider group을 `openai`, `anthropic`, `google`, `llamaparse` 순서로 반환한다. 각 `options` item은 safe model schema, safe credential option, relation priority만 포함한다. Model은 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 후보가 없는 chat provider는 `no_authorized_model`, LlamaParse는 `chat_model_not_supported`를 반환한다.
+
+Message submit은 `intent_model_selection`을 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Server는 요청마다 credential organization/validity/`use` permission과 model active chat type/provider/verified relation을 다시 검사한다. 선택이 없거나 유효하지 않으면 hidden fallback model을 자동 선택하지 않는다. Permission/runtime 차단 audit에는 safe credential/model ID, reason, runtime surface를 기록할 수 있지만 credential 원문과 raw provider response는 포함하지 않는다.
 
 MVP message request는 raw editor graph snapshot을 받지 않는다. Client는 선택된 node/edge hint만 보낼 수 있으며, unsaved editor graph를 draft base로 신뢰하지 않는다. Apply/save stale guard에 필요한 graph 비교는 apply request의 semantic graph hash로만 수행한다. Request body에 `client_graph_snapshot` 또는 동등한 raw graph payload가 포함되면 서버는 이를 권한/scope 판단이나 draft base로 사용하지 않고 거부해야 한다.
 

@@ -23,6 +23,7 @@ from apps.shared.schemas.llm import (
     LLMCredentialModelOptionResponse,
     LLMCredentialOptionResponse,
     LLMCredentialResponse,
+    LLMIntentModelProviderResponse,
     LLMModelResponse,
     LLMProviderResponse,
 )
@@ -115,6 +116,13 @@ class LLMService:
         "google": "gemini-3.1-flash-lite",
         "anthropic": "claude-haiku-4-5-20251001",
     }
+
+    AGENT_BUILDER_PROVIDER_ORDER = (
+        "openai",
+        "anthropic",
+        "google",
+        "llamaparse",
+    )
 
     # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
     # 가격 출처: https://openai.com/api/pricing/, https://docs.anthropic.com/en/docs/about-claude/pricing
@@ -1109,6 +1117,153 @@ class LLMService:
             raise
 
     @staticmethod
+    def _load_wizard_runtime_for_selection(
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        model_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> WizardLLMRuntime:
+        organization_uuid = LLMService._resolve_runtime_organization_id(
+            db, user_id, organization_id
+        )
+        credential = (
+            db.query(LLMCredential)
+            .options(joinedload(LLMCredential.provider))
+            .filter(
+                LLMCredential.id == credential_id,
+                LLMCredential.organization_id == organization_uuid,
+                LLMCredential.is_valid == True,
+            )
+            .first()
+        )
+        if not credential:
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "The selected LLM credential is not available.",
+                credential_id=credential_id,
+                model_id=str(model_id),
+                organization_id=organization_uuid,
+            )
+        if not has_llm_credential_permission(
+            db,
+            user_id,
+            credential.id,
+            "use",
+            organization_id=organization_uuid,
+        ):
+            raise LLMCredentialNotAvailableError(
+                "credential_use_denied",
+                "LLM credential use permission is required.",
+                credential_id=credential.id,
+                model_id=str(model_id),
+                organization_id=organization_uuid,
+            )
+
+        model = (
+            db.query(LLMModel)
+            .filter(
+                LLMModel.id == model_id,
+                LLMModel.provider_id == credential.provider_id,
+                LLMModel.is_active == True,
+                LLMModel.type == "chat",
+            )
+            .first()
+        )
+        if not model:
+            raise LLMCredentialNotAvailableError(
+                "model_relation_not_verified",
+                "The selected LLM model is not available for this credential.",
+                credential_id=credential.id,
+                model_id=str(model_id),
+                organization_id=organization_uuid,
+            )
+
+        relation = (
+            db.query(LLMRelCredentialModel)
+            .filter(
+                LLMRelCredentialModel.credential_id == credential.id,
+                LLMRelCredentialModel.model_id == model.id,
+                LLMRelCredentialModel.is_verified == True,
+            )
+            .first()
+        )
+        if not relation:
+            raise LLMCredentialNotAvailableError(
+                "model_relation_not_verified",
+                "The selected LLM model relation is not verified.",
+                credential_id=credential.id,
+                model_id=model.model_id_for_api_call,
+                organization_id=organization_uuid,
+            )
+
+        try:
+            config = json.loads(credential.encrypted_config)
+            api_key = config.get("apiKey")
+            base_url = config.get("baseUrl")
+        except Exception as exc:
+            logger.warning("[LLMService] Invalid selected credential config: %s", exc)
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "The selected LLM credential configuration is invalid.",
+                credential_id=credential.id,
+                model_id=model.model_id_for_api_call,
+                organization_id=organization_uuid,
+            ) from exc
+
+        try:
+            client = get_llm_client(
+                provider=credential.provider.name,
+                model_id=model.model_id_for_api_call,
+                credentials={"apiKey": api_key, "baseUrl": base_url},
+            )
+        except Exception as exc:
+            logger.warning("[LLMService] Selected LLM client creation failed: %s", exc)
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "The selected LLM client could not be created.",
+                credential_id=credential.id,
+                model_id=model.model_id_for_api_call,
+                organization_id=organization_uuid,
+            ) from exc
+
+        return WizardLLMRuntime(
+            client=client,
+            credential_id=credential.id,
+            model_id=model.model_id_for_api_call,
+            organization_id=organization_uuid,
+        )
+
+    @staticmethod
+    def get_wizard_client_for_selection(
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        model_id: uuid.UUID,
+        organization_id: Optional[uuid.UUID] = None,
+        runtime_surface: str = "wizard",
+        audit_on_failure: bool = True,
+    ) -> WizardLLMRuntime:
+        try:
+            return LLMService._load_wizard_runtime_for_selection(
+                db,
+                user_id=user_id,
+                credential_id=credential_id,
+                model_id=model_id,
+                organization_id=organization_id,
+            )
+        except LLMCredentialNotAvailableError as exc:
+            if audit_on_failure:
+                LLMService._record_wizard_runtime_block(
+                    user_id=user_id,
+                    error=exc,
+                    runtime_surface=runtime_surface,
+                )
+            raise
+
+    @staticmethod
     def has_wizard_runtime_credential(
         db: Session,
         user_id: uuid.UUID,
@@ -1261,6 +1416,130 @@ class LLMService:
                 )
             )
         return options
+
+    @staticmethod
+    def _agent_builder_model_rank(
+        provider_name: str,
+        model_id: str,
+    ) -> tuple[int, int, int]:
+        import re
+
+        normalized = model_id.lower().replace("models/", "")
+        if provider_name == "openai":
+            generation_match = re.search(r"gpt-(\d+)(?:\.(\d+))?", normalized)
+            if generation_match is None:
+                generation_match = re.search(r"^o(\d+)", normalized)
+            if "-pro" in normalized:
+                tier = 4
+            elif "-mini" in normalized:
+                tier = 2
+            elif "-nano" in normalized:
+                tier = 1
+            else:
+                tier = 3
+        elif provider_name == "anthropic":
+            generation_match = re.search(
+                r"claude-(?:fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?",
+                normalized,
+            )
+            tier = next(
+                (
+                    rank
+                    for label, rank in (
+                        ("fable", 5),
+                        ("opus", 4),
+                        ("sonnet", 3),
+                        ("haiku", 2),
+                    )
+                    if label in normalized
+                ),
+                1,
+            )
+        elif provider_name == "google":
+            generation_match = re.search(
+                r"gemini-(\d+)(?:\.(\d+))?",
+                normalized,
+            )
+            if "flash-lite" in normalized:
+                tier = 1
+            elif "flash" in normalized:
+                tier = 2
+            elif "pro" in normalized:
+                tier = 3
+            else:
+                tier = 0
+        else:
+            generation_match = None
+            tier = 0
+        if generation_match is None:
+            tier = 0
+        generation_major = (
+            int(generation_match.group(1)) if generation_match else 0
+        )
+        generation_minor = (
+            int(generation_match.group(2))
+            if generation_match and generation_match.group(2)
+            else 0
+        )
+        return generation_major, generation_minor, tier
+
+    @staticmethod
+    def _agent_builder_model_sort_key(option: LLMCredentialModelOptionResponse):
+        provider_name = option.provider_name.lower()
+        generation_major, generation_minor, tier = LLMService._agent_builder_model_rank(
+            provider_name,
+            option.model.model_id_for_api_call,
+        )
+        return (
+            -generation_major,
+            -generation_minor,
+            -tier,
+            option.relation_priority,
+            option.model.name.lower(),
+            option.credential.credential_name.lower(),
+        )
+
+    @staticmethod
+    def get_agent_builder_model_option_groups(
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+    ) -> List[LLMIntentModelProviderResponse]:
+        options = LLMService.get_agent_answer_options(
+            db,
+            user_id,
+            organization_id,
+        )
+        by_provider: dict[str, list[LLMCredentialModelOptionResponse]] = {
+            provider_name: []
+            for provider_name in LLMService.AGENT_BUILDER_PROVIDER_ORDER
+        }
+        for option in options:
+            provider_name = option.provider_name.lower()
+            if provider_name in by_provider:
+                by_provider[provider_name].append(option)
+
+        groups: list[LLMIntentModelProviderResponse] = []
+        for provider_name in LLMService.AGENT_BUILDER_PROVIDER_ORDER:
+            provider_options = sorted(
+                by_provider[provider_name],
+                key=LLMService._agent_builder_model_sort_key,
+            )
+            unavailable_reason = None
+            if not provider_options:
+                unavailable_reason = (
+                    "chat_model_not_supported"
+                    if provider_name == "llamaparse"
+                    else "no_authorized_model"
+                )
+            groups.append(
+                LLMIntentModelProviderResponse(
+                    provider_name=provider_name,
+                    options=provider_options,
+                    unavailable_reason=unavailable_reason,
+                )
+            )
+        return groups
 
     @staticmethod
     def _normalize_model_id(model_id: str) -> str:

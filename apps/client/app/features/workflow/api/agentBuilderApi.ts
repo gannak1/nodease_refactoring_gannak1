@@ -122,6 +122,32 @@ export type AgentBuilderKnowledgeCandidateSelection = {
   requirement_id?: string | null;
 };
 
+export type AgentBuilderIntentModelOption = {
+  model: {
+    id: string;
+    model_id_for_api_call: string;
+    name: string;
+    provider_name: string;
+  };
+  credential: {
+    id: string;
+    credential_name: string;
+  };
+  provider_name?: string;
+  relation_priority: number;
+};
+
+export type AgentBuilderIntentModelProvider = {
+  provider_name: string;
+  options: AgentBuilderIntentModelOption[];
+  unavailable_reason?: string | null;
+};
+
+export type AgentBuilderIntentModelSelection = {
+  credentialId: string;
+  modelId: string;
+};
+
 export type AgentBuilderApplyResponse = {
   apply_id: string;
   outcome: 'saved' | 'blocked' | 'canceled' | 'failed';
@@ -139,6 +165,11 @@ export type AgentBuilderApplyResponse = {
 };
 
 export const agentBuilderApi = {
+  async getModelOptions(): Promise<AgentBuilderIntentModelProvider[]> {
+    const response = await apiClient.get('/agent-builder/model-options');
+    return response.data;
+  },
+
   async createSession(input: {
     workflowId?: string | null;
     appId?: string | null;
@@ -165,6 +196,7 @@ export const agentBuilderApi = {
       selectedEdgeId?: string | null;
       selectedKnowledgeCandidate?: AgentBuilderKnowledgeCandidateSelection | null;
       selectedKnowledgeCandidates?: AgentBuilderKnowledgeCandidateSelection[] | null;
+      intentModelSelection?: AgentBuilderIntentModelSelection | null;
     },
   ): Promise<AgentBuilderMessageResponse> {
     const response = await apiClient.post(
@@ -177,6 +209,12 @@ export const agentBuilderApi = {
         selected_edge_id: input.selectedEdgeId ?? undefined,
         selected_knowledge_candidate: input.selectedKnowledgeCandidate ?? undefined,
         selected_knowledge_candidates: input.selectedKnowledgeCandidates ?? undefined,
+        intent_model_selection: input.intentModelSelection
+          ? {
+              credential_id: input.intentModelSelection.credentialId,
+              model_id: input.intentModelSelection.modelId,
+            }
+          : undefined,
       },
     );
     return response.data;

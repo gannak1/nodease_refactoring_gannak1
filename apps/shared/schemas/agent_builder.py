@@ -48,6 +48,13 @@ class AgentBuilderKnowledgeCandidateSelection(BaseModel):
     requirement_id: str | None = Field(default=None, max_length=255)
 
 
+class AgentBuilderIntentModelSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    credential_id: UUID
+    model_id: UUID
+
+
 class AgentBuilderMessageRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -61,6 +68,7 @@ class AgentBuilderMessageRequest(BaseModel):
     selected_knowledge_candidates: (
         list[AgentBuilderKnowledgeCandidateSelection] | None
     ) = None
+    intent_model_selection: AgentBuilderIntentModelSelection | None = None
 
     @model_validator(mode="before")
     @classmethod

@@ -4,6 +4,13 @@ Status: Draft
 
 ## Unit Tests
 
+- Agent Builder intent model option은 `openai`, `anthropic`, `google`, `llamaparse` provider 순서로 반환되고, provider 안에서는 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬된다.
+- Model option은 active organization의 valid credential, active chat model, verified credential-model relation, 사용자 `use` 권한을 모두 통과한 조합만 포함한다.
+- LlamaParse group은 option 없이 `chat_model_not_supported`를 반환한다.
+- Agent Builder header는 첫 사용 가능 model을 기본 표시하고 사용자가 선택한 credential/model ID 쌍을 message request에 포함한다.
+- Message submit 직전 선택이 아직 확정되지 않았으면 화면에 표시할 같은 option 목록을 조회해 첫 option을 확정하며, option이 없으면 message를 전송하지 않는다.
+- Server는 선택된 credential/model 쌍을 매 요청 재검증하고 `use` 권한 또는 verified relation이 사라졌으면 LLM client를 생성하지 않는다.
+- Intent model 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장되지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason만 기록하며 credential 원문과 raw provider response는 API response, audit, trace에 포함되지 않는다.
 - `StructuredRequestBuilder`는 자연어 요청을 `request_type`, `intent_summary`, `planned_steps`, `knowledge_requirements`, `pending_resolution`, `missing_information`으로 분리한다.
 - `LLMIntentExtractor`는 redaction된 요청과 safe workflow context만 입력받고 JSON object를 반환하며, 절에 나타난 capability 순서와 기존 target/new step 역할을 보존한다.
 - LLM 출력에 catalog 밖 capability, node/edge id, 잘못된 request type/draft mode 조합이 있으면 `StructuredRequestBuilder`는 이를 graph로 materialize하지 않는다.
