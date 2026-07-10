@@ -12,6 +12,10 @@ from apps.gateway.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+class StorageDeleteError(RuntimeError):
+    """Raised when a storage object cannot be deleted."""
+
+
 class StorageService(ABC):
     @abstractmethod
     def upload(self, file: UploadFile) -> str:
@@ -185,8 +189,10 @@ class S3StorageService(StorageService):
 
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
-        except Exception as e:
-            logger.error(f"S3 Delete failed: {e}")
+        except Exception:
+            # Callers own the cleanup policy and safe logging boundary. Do not
+            # expose provider exception text, bucket names, or object keys here.
+            raise StorageDeleteError("storage_delete_failed") from None
 
 
 def get_storage_service() -> StorageService:
