@@ -5,6 +5,8 @@ Verified Against: TBD
 
 ## Unit Tests
 
+- Deployment application package는 FastAPI, SQLAlchemy, DB model, concrete adapter/service/composition module을 import하지 않는다.
+- Pure preflight use case는 repository port snapshot만으로 결과를 만들고 active blocker는 HTTPException이 아닌 typed `DeploymentPreflightBlocked`를 반환한다. Compatibility facade만 이를 기존 409 envelope으로 mapping한다.
 - Preflight graph scanner는 LLM node RAG 옵션의 explicit/materialized KB 후보를 찾고 unsupported shape는 safe warning 또는 blocked reason으로 낮춘다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
 - `workflow_node` direct public/API/webhook/authenticated run execution is rejected. Subworkflow audience resolver는 parent execution subject를 상속하고, subject가 없으면 anonymous public-only로 판정한다.

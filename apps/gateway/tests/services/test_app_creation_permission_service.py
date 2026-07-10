@@ -152,11 +152,14 @@ class _Db:
         self.deleted = []
         self.commits = 0
         self.rollbacks = 0
+        self.audit_add_error = None
 
     def query(self, model, *rest):
         return _Query([row for row in self.rows if isinstance(row, model)])
 
     def add(self, obj):
+        if isinstance(obj, AuditLog) and self.audit_add_error is not None:
+            raise self.audit_add_error
         self.added.append(obj)
         self.rows.append(obj)
 
@@ -265,8 +268,31 @@ def test_revoke_permission_deletes_row_and_records_audit():
     ]
     assert audits[0].target_type == "user_app_creation_permission"
     assert audits[0].target_id == str(row.id)
+    assert audits[0].before == {
+        "grantee_organization_id": str(organization_id),
+        "user_id": str(row.user_id),
+    }
+    assert audits[0].after is None
     assert audits[0].audit_metadata == {"organization_id": str(organization_id)}
     assert db.commits >= 1
+
+
+def test_revoke_permission_rolls_back_when_audit_add_fails():
+    organization_id = uuid4()
+    row = _permission_row(organization_id)
+    db = _Db(rows=[row])
+    db.audit_add_error = RuntimeError("audit unavailable")
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        _service().revoke_permission(
+            db,
+            permission_id=row.id,
+            organization_id=organization_id,
+            revoked_by=uuid4(),
+        )
+
+    assert db.commits == 0
+    assert db.rollbacks == 1
 
 
 def test_revoke_permission_keeps_past_request_status():

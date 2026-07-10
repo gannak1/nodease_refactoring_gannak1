@@ -97,6 +97,8 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 5. 관리자는 예산을 초과했거나 예산 위험 구간에 들어간 workflow 비율을 확인한다.
 6. 관리자는 필요하면 특정 audit log를 열어본다. 
 7. 구체적으로 구현되었다면: 열어서 actor, action, target, status, timestamp를 확인한다.
+8. 관리자는 user actor를 선택해 current organization의 membership, role, team/direct permission source를 확인한다.
+9. 관리자는 필요한 경우 항목별 확인과 선택 사유를 거쳐 member를 정지·재활성화하거나 role/resource access를 회수·재부여하고, 결과 audit의 안전한 변경 전후 상태를 확인한다.
 
 후순위: 조직 운영 상태를 요약하는 상단 긴급 알림 패널과 부적절한 접근/행동 탐지 건수 확인은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
 
@@ -214,6 +216,9 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-013 (후순위): 권한 차단(`permission.denied`) 등 비정상 접근 시도 표시. 현재 시나리오에서 사용하지 않으며, 구현이 완료되면 시나리오와 함께 복원한다.
 - FR-014: workflow 생성/배포 권한 신청 목록 조회와 승인/거절, 부여된 App 생성 권한의 목록 조회와 회수
 - FR-015: 조직 월간 비용, 예산 위험 workflow 비율 요약 (부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이며, 구현 완료 시 시나리오 2에 단계로 복원한다)
+- FR-016: Audit log의 user actor를 current organization member access profile과 연결하고 membership, role, team/App-creation/direct/team-inherited permission source를 조회
+- FR-017: Organization manager가 actor access 항목을 하나씩 정지·재활성화, role 변경, team/direct/App-creation 권한 회수·재부여하고 optional reason을 기록. Audit `auditor`/`raw_auditor`는 조회 전용
+- FR-018: Access-management audit detail에 target별 allowlist로 만든 안전한 변경 전후 상태를 표시하고 raw before/after, secret, hidden resource는 제외
 
 ### 비용 최적화 — [features/cost-optimizer/](features/cost-optimizer/requirements.md)
 
@@ -258,7 +263,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 - [ ] 시나리오 1 (권한 신청): 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
 - [ ] 시나리오 1 (Agent Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 초안을 만들고, Preview Mode에서 내부 설정을 확인한 뒤 `적용 및 저장`으로 저장하고, 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
-- [ ] 시나리오 2: 관리자가 관리자 화면에서 권한 신청/승인, workflow 생성/배포/실행 audit 기록과 조직 비용/예산 위험 요약을 확인
+- [ ] 시나리오 2: 관리자가 관리자 화면에서 권한 신청/승인, workflow 생성/배포/실행 audit 기록과 조직 비용/예산 위험 요약을 확인하고, user actor의 current organization access를 항목별로 제어한 뒤 결과 audit을 확인
 - [ ] 시나리오 3: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
 
 ## 8. Open Questions

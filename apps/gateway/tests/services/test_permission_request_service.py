@@ -140,11 +140,14 @@ class _Db:
         self.added = []
         self.commits = 0
         self.rollbacks = 0
+        self.audit_add_error = None
 
     def query(self, model, *rest):
         return _Query([row for row in self.rows if isinstance(row, model)])
 
     def add(self, obj):
+        if isinstance(obj, AuditLog) and self.audit_add_error is not None:
+            raise self.audit_add_error
         self.added.append(obj)
         self.rows.append(obj)
 
@@ -309,7 +312,37 @@ def test_approve_request_marks_request_and_grants_permission():
         {"organization_id": str(organization_id)},
         {"organization_id": str(organization_id)},
     ]
+    assert audits[1].before is None
+    assert audits[1].after == {
+        "grantee_organization_id": str(organization_id),
+        "user_id": str(requester.id),
+    }
     assert db.commits >= 1
+
+
+def test_approve_request_rolls_back_permission_when_audit_add_fails():
+    organization_id = uuid4()
+    requester = _user()
+    pending = _pending_request(organization_id, requester.id)
+    db = _Db(
+        rows=[
+            pending,
+            requester,
+            _membership(requester.id, organization_id),
+        ]
+    )
+    db.audit_add_error = RuntimeError("audit unavailable")
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        _service().approve_request(
+            db,
+            request_id=pending.id,
+            organization_id=organization_id,
+            decided_by=uuid4(),
+        )
+
+    assert db.commits == 0
+    assert db.rollbacks == 1
 
 
 def test_approve_request_conflicts_when_permission_row_already_exists():

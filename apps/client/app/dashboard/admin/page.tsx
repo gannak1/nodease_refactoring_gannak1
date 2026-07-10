@@ -1159,7 +1159,40 @@ export default function AdminConsolePage() {
             <PermissionRequestsTab members={members} />
           )}
           {activeTab === 'usage' && <UsageTab />}
-          {activeTab === 'audit' && <AuditSearchTab members={members} />}
+          {activeTab === 'audit' && (
+            <AuditSearchTab
+              members={members}
+              organizationId={organization?.id}
+              canManageActors={organization?.is_manager === true}
+              teams={teams.map((team) => ({
+                id: team.id,
+                name: team.name,
+                is_active: team.is_active,
+              }))}
+              resources={[
+                ...apps
+                  .filter((item) => item.workflow_id)
+                  .map((item) => ({
+                    id: item.workflow_id!,
+                    name: item.name,
+                    resourceType: 'workflow' as const,
+                  })),
+                ...knowledgeBases.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  resourceType: 'knowledge_base' as const,
+                })),
+                ...credentials
+                  .filter((item) => item.is_valid)
+                  .map((item) => ({
+                    id: item.id,
+                    name: item.credential_name,
+                    resourceType: 'llm_credential' as const,
+                  })),
+              ]}
+              onActorAccessChanged={loadData}
+            />
+          )}
           {activeTab === 'organization' && (
             <OrganizationTab organization={organization} />
           )}

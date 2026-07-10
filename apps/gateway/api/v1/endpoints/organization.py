@@ -1,12 +1,28 @@
+from typing import Annotated, Literal, NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.api.deps import get_access_management_application
+from apps.gateway.application.access_management.errors import (
+    AccessManagementError,
+    AuditPersistenceFailed,
+    InputValidationError,
+    LastActiveManager,
+    PermissionDenied,
+    PolicyBlocked,
+    ResourceHidden,
+    SelfControlForbidden,
+    StaleState,
+)
+from apps.gateway.application.access_management.models import AccessActionCommand
+from apps.gateway.composition.access_management import AccessManagementApplication
 from apps.gateway.services.organization_member_service import OrganizationMemberService
 from apps.gateway.utils.api_errors import (
+    error_detail,
     error_response,
     parse_organization_id,
     raise_api_error,
@@ -26,6 +42,15 @@ from apps.shared.schemas.organization_membership import (
     OrganizationMemberResponse,
     OrganizationMemberUpdateRequest,
     OrganizationSummaryResponse,
+)
+from apps.shared.schemas.member_access import (
+    MemberAccessActionRequest,
+    MemberAccessActionResponse,
+    MemberAccessProfileResponse,
+    MemberResourceAccessItem,
+    MemberResourceAccessListResponse,
+    MemberTeamMembershipItem,
+    MemberTeamMembershipListResponse,
 )
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
@@ -49,6 +74,34 @@ def _service_error_response(request: Request, exc: HTTPException) -> JSONRespons
     if exc.status_code == 400:
         return error_response(request, 400, "validation.failed", message)
     return error_response(request, exc.status_code, "operation.failed", message)
+
+
+def _raise_access_management_error(
+    request: Request,
+    exc: AccessManagementError,
+) -> NoReturn:
+    if isinstance(exc, ResourceHidden):
+        status_code = 404
+    elif isinstance(exc, PermissionDenied):
+        status_code = 403
+    elif isinstance(exc, SelfControlForbidden):
+        status_code = 400
+    elif isinstance(exc, (PolicyBlocked, StaleState, LastActiveManager)):
+        status_code = 409
+    elif isinstance(exc, InputValidationError):
+        status_code = 422
+    elif isinstance(exc, AuditPersistenceFailed):
+        status_code = 500
+    else:
+        status_code = 500
+
+    http_error = HTTPException(
+        status_code=status_code,
+        detail=error_detail(request, exc.code, str(exc)),
+    )
+    if isinstance(exc, PermissionDenied):
+        setattr(http_error, "audit_recorded", True)
+    raise http_error
 
 
 def _get_organization_in_active_membership_scope(
@@ -309,6 +362,160 @@ def remove_member(
         )
     except HTTPException as exc:
         return _service_error_response(request, exc)
+
+
+@router.get(
+    "/{organization_id}/members/{user_id}/access-profile",
+    response_model=MemberAccessProfileResponse,
+)
+def get_member_access_profile(
+    request: Request,
+    organization_id: UUID,
+    user_id: UUID,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    current_user: User = Depends(get_current_user),
+    application: AccessManagementApplication = Depends(
+        get_access_management_application
+    ),
+):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
+    try:
+        result = application.get_access_profile.execute(
+            actor_id=current_user.id,
+            organization_id=organization_id,
+            target_user_id=user_id,
+        )
+    except AccessManagementError as exc:
+        _raise_access_management_error(request, exc)
+    return MemberAccessProfileResponse.model_validate(result, from_attributes=True)
+
+
+@router.get(
+    "/{organization_id}/members/{user_id}/team-memberships",
+    response_model=MemberTeamMembershipListResponse,
+)
+def get_member_team_memberships(
+    request: Request,
+    organization_id: UUID,
+    user_id: UUID,
+    team_id: Annotated[UUID | None, Query(alias="teamId")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    current_user: User = Depends(get_current_user),
+    application: AccessManagementApplication = Depends(
+        get_access_management_application
+    ),
+):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
+    try:
+        result = application.list_team_memberships.execute(
+            actor_id=current_user.id,
+            organization_id=organization_id,
+            target_user_id=user_id,
+            team_id=team_id,
+            page=page,
+            limit=limit,
+        )
+    except AccessManagementError as exc:
+        _raise_access_management_error(request, exc)
+    return MemberTeamMembershipListResponse(
+        total=result.total,
+        items=[
+            MemberTeamMembershipItem.model_validate(item, from_attributes=True)
+            for item in result.items
+        ],
+    )
+
+
+@router.get(
+    "/{organization_id}/members/{user_id}/resource-access",
+    response_model=MemberResourceAccessListResponse,
+)
+def get_member_resource_access(
+    request: Request,
+    organization_id: UUID,
+    user_id: UUID,
+    resource_type: Annotated[
+        Literal["workflow", "knowledge_base", "llm_credential"],
+        Query(alias="resourceType"),
+    ],
+    resource_id: Annotated[UUID | None, Query(alias="resourceId")] = None,
+    source: Annotated[Literal["all", "direct", "team"], Query()] = "all",
+    page: Annotated[int, Query(ge=1)] = 1,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    current_user: User = Depends(get_current_user),
+    application: AccessManagementApplication = Depends(
+        get_access_management_application
+    ),
+):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
+    try:
+        result = application.list_resource_access.execute(
+            actor_id=current_user.id,
+            organization_id=organization_id,
+            target_user_id=user_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            source=source,
+            page=page,
+            limit=limit,
+        )
+    except AccessManagementError as exc:
+        _raise_access_management_error(request, exc)
+    return MemberResourceAccessListResponse(
+        total=result.total,
+        items=[
+            MemberResourceAccessItem.model_validate(item, from_attributes=True)
+            for item in result.items
+        ],
+    )
+
+
+@router.post(
+    "/{organization_id}/members/{user_id}/access-actions",
+    response_model=MemberAccessActionResponse,
+)
+def execute_member_access_action(
+    request: Request,
+    organization_id: UUID,
+    user_id: UUID,
+    payload: MemberAccessActionRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    current_user: User = Depends(get_current_user),
+    application: AccessManagementApplication = Depends(
+        get_access_management_application
+    ),
+):
+    _ensure_matching_active_organization_header(
+        request,
+        organization_id,
+        x_organization_id,
+    )
+    command = AccessActionCommand(
+        actor_id=current_user.id,
+        organization_id=organization_id,
+        target_user_id=user_id,
+        **payload.model_dump(),
+    )
+    try:
+        result = application.execute_access_action.execute(command)
+    except AccessManagementError as exc:
+        _raise_access_management_error(request, exc)
+    return MemberAccessActionResponse.model_validate(result, from_attributes=True)
 
 
 # 인증된 사용자가 접근 가능한 특정 active organization 상세를 조회하는 API.

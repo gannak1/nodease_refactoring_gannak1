@@ -12,6 +12,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - 감사자로서, 사용자의 RAG answer가 어떤 redaction-safe retrieval/citation summary를 사용했는지 확인하고 싶다.
 - 플랫폼 관리자로서, permission denied, policy block, source ACL stale, connector sync failure를 raw content 없이 추적하고 싶다.
 - 운영자로서, retention/purge, retry/dead-letter, partial result 같은 운영 이벤트를 안전한 reason code로 보고 싶다.
+- Organization manager로서, member access 관리 조치의 수행자, 대상, optional reason과 안전한 변경 전후 상태를 audit detail에서 확인하고 싶다.
 
 ## Functional Requirements
 
@@ -24,6 +25,12 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Raw Knowledge artifact access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Skill usage summary는 redaction-safe allowlist만 사용한다. 허용값은 workflow draft/LLM node의 RAG 옵션/test run에서 사용한 skill id, skill version, freshness state, eval status, safe source-of-truth tier, safe provenance ref, request/correlation id다.
 - Workflow LLM node prompt trace가 RAG context를 포함한 provider 호출을 기록하더라도, durable trace payload에는 Knowledge context 원문이나 chunk body를 중복 저장하지 않는다. 저장 payload는 redacted marker, safe summary, count/strategy metadata 같은 allowlist만 사용할 수 있다.
+- Access-management mutation은 canonical action, actor, current organization, target member/resource, optional reason, safe before/after를 기록해야 한다. MBA-188에서는 mutation과 AuditLog row를 같은 DB transaction에 기록하며 audit 실패 후 mutation만 성공해서는 안 된다. Durable outbox 일반화는 MBA-189 범위다 ([ADR-0023](../../decisions/ADR-0023-audit-actor-access-management-boundary.md)).
+- Audit actor visibility는 organization mutation capability를 부여하지 않는다. Audit `auditor`/`raw_auditor`는 audit list/detail만 조회할 수 있고 actor access profile/mutation은 ADR-0009의 organization manager 판정을 별도로 통과해야 한다.
+- Audit detail의 change summary는 target/action별 allowlist로 생성한다. Manual recorder는 update에도 organization provenance를 포함한 complete safe snapshot을 저장한다. Create/delete/update에 필요한 snapshot provenance가 request organization과 일치할 때만 summary를 반환한다. Generic `before`/`after` JSON을 그대로 반환하지 않으며 unknown target/action은 summary를 제공하지 않는다.
+- Access-management 진입점을 이유로 row-level canonical audit과 별도 aggregate action을 중복 기록하지 않는다. No-op mutation도 audit을 만들지 않는다.
+- Listener-tracked access mutation을 manual transaction audit이 소유할 때는 repository adapter가 object를 dirty/add/delete 상태로 만들기 전에 model/object/operation 단위 ownership을 등록하고 해당 listener candidate만 제외해야 한다. Ownership 등록부터 mutation/UoW flush 사이에는 query/autoflush를 허용하지 않으며 commit/rollback 뒤 suppression state를 다음 transaction으로 누출하지 않는다.
+- Scope 안 actor access policy block은 scoped organization membership을 target으로 `policy.block` + `action` category의 failure event를 기록하고 `target_user_id`, `requested_action`, machine `policy_reason`, sanitized optional `reason`과 scope가 확인된 opaque resource/team id만 저장한다. Permission 부족은 `permission.denied`를 사용하되 target scope 확인 전에는 target-aware metadata를 남기지 않는다. Validation, hidden resource, no-op은 actor access audit 대상이 아니다.
 
 ## Policies And Edge Cases
 
@@ -36,6 +43,9 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Raw/compliance access permission 이름은 RBAC ADR에서 최종 확정한다. 테스트나 구현에서 임시 이름을 영구 enum처럼 사용하지 않는다.
 - Raw/compliance access event는 actor, organization, KB/document version safe reference, reason code, decision, retention/legal-hold state summary, request id 정도의 allowlist만 저장한다.
 - Skill audit/trace metadata에는 raw skill body, hidden source refs, raw source title/path/url, restricted document list, raw eval fixture, raw prompt/completion/provider response를 저장하지 않는다.
+- User-entered management reason은 JSON body로 받는다. CRLF/CR을 LF로 정규화하고 trim한 blank는 null로 바꾸며, 정규화 후 500 Unicode code point를 초과하거나 tab/LF 외 C0/C1 및 bidi override/isolate control을 포함하면 거부한다. Durable audit 전 organization 설정으로 약화할 수 없는 shared fail-closed redaction baseline으로 secret/PII pattern을 치환하고 sanitization 실패 시 raw reason이나 mutation을 저장하지 않는다. Query string이나 URL에 reason을 전달하지 않는다.
+- Actor snapshot은 historical attribution을 위해 보존할 수 있지만 target user email/name을 mutation metadata에 불필요하게 중복 저장하지 않는다.
+- 전체 sync/async/outbox audit producer 이관, retry/dead-letter 일반화, read repository 분리는 MBA-188 범위가 아니며 Linear MBA-189에서 다룬다.
 
 ## Open Questions
 

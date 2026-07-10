@@ -41,6 +41,8 @@ def add_action_audit(
     organization_id: Any | None = None,
     metadata: dict[str, Any] | None = None,
     status: str = "success",
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
 ) -> None:
     audit_metadata = _json_safe(dict(metadata or {}))
     if organization_id is not None:
@@ -54,6 +56,8 @@ def add_action_audit(
             actor_type="user",
             target_type=target_type,
             target_id=str(target_id),
+            before=_json_safe(before),
+            after=_json_safe(after),
             status=status,
             audit_metadata=audit_metadata,
         )

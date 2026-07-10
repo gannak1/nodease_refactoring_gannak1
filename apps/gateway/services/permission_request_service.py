@@ -5,6 +5,9 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.db.access_management_locking import (
+    lock_access_subject_rows,
+)
 from apps.gateway.services.audit_records import add_action_audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.organization_membership import (
@@ -43,6 +46,7 @@ class PermissionRequestService:
         return (
             db.query(PermissionRequest)
             .filter(PermissionRequest.id == request_id)
+            .with_for_update()
             .first()
         )
 
@@ -107,6 +111,22 @@ class PermissionRequestService:
             raise HTTPException(
                 status_code=400, detail="Unsupported requested permission"
             )
+        locked_subject = lock_access_subject_rows(
+            db,
+            request.organization_id,
+            request.user_id,
+            manager_reduction=False,
+        )
+        if (
+            locked_subject is None
+            or locked_subject.membership.membership_state
+            != ORGANIZATION_MEMBERSHIP_ACTIVE
+            or locked_subject.user.deactivated_at is not None
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Requester is not an active member",
+            )
         existing = (
             db.query(UserAppCreationPermission)
             .filter(
@@ -114,6 +134,7 @@ class PermissionRequestService:
                 == request.organization_id,
                 UserAppCreationPermission.user_id == request.user_id,
             )
+            .with_for_update()
             .first()
         )
         if existing is not None:
@@ -145,23 +166,31 @@ class PermissionRequestService:
             db, request, decided_by=decided_by
         )
         _mark_decided(request, PERMISSION_REQUEST_APPROVED, decided_by)
-        add_action_audit(
-            db,
-            AuditAction.PERMISSION_REQUEST_APPROVED,
-            decided_by,
-            "permission_request",
-            request.id,
-            organization_id=request.organization_id,
-        )
-        add_action_audit(
-            db,
-            AuditAction.USER_APP_CREATION_PERMISSION_CREATED,
-            decided_by,
-            "user_app_creation_permission",
-            permission.id,
-            organization_id=request.organization_id,
-        )
-        db.commit()
+        try:
+            add_action_audit(
+                db,
+                AuditAction.PERMISSION_REQUEST_APPROVED,
+                decided_by,
+                "permission_request",
+                request.id,
+                organization_id=request.organization_id,
+            )
+            add_action_audit(
+                db,
+                AuditAction.USER_APP_CREATION_PERMISSION_CREATED,
+                decided_by,
+                "user_app_creation_permission",
+                permission.id,
+                organization_id=request.organization_id,
+                after={
+                    "grantee_organization_id": permission.grantee_organization_id,
+                    "user_id": permission.user_id,
+                },
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         return request
 
     @staticmethod
