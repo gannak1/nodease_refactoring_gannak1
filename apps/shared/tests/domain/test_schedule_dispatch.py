@@ -26,6 +26,7 @@ from apps.shared.domain.schedule_dispatch import (
     ScheduleDispatchSettings,
     ensure_transition_allowed,
     retry_delay_seconds,
+    schedule_dispatch_settings_from_environment,
     schedule_idempotency_key,
 )
 
@@ -144,6 +145,29 @@ def test_settings_are_immutable():
     settings = ScheduleDispatchSettings()
     with pytest.raises(FrozenInstanceError):
         settings.mode = MODE_CLAIM
+
+
+def test_settings_factory_defaults_to_disabled_and_reads_explicit_values():
+    assert schedule_dispatch_settings_from_environment({}).mode == MODE_DISABLED
+
+    settings = schedule_dispatch_settings_from_environment(
+        {
+            "SCHEDULE_DISPATCH_MODE": "claim",
+            "SCHEDULE_DISPATCH_POLL_SECONDS": "7",
+            "SCHEDULE_DISPATCH_MAX_ATTEMPTS": "8",
+        }
+    )
+
+    assert settings.mode == MODE_CLAIM
+    assert settings.poll_seconds == 7
+    assert settings.max_attempts == 8
+
+
+def test_settings_factory_rejects_invalid_integer_without_fallback():
+    with pytest.raises(ScheduleDispatchDomainError):
+        schedule_dispatch_settings_from_environment(
+            {"SCHEDULE_DISPATCH_POLL_SECONDS": "not-an-integer"}
+        )
 
 
 @pytest.mark.parametrize(

@@ -170,7 +170,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "celery", specifier = ">=5.3.0" },
+    { name = "celery", specifier = ">=5.3.0,<6.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },

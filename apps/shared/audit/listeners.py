@@ -114,6 +114,12 @@ SENSITIVE_FIELDS = {
     WorkflowDeployment: {"config", "graph_snapshot"},
 }
 
+# Operational cursors are not user configuration changes and have dedicated
+# schedule-dispatch observability. Cron/timezone/lifecycle fields remain audited.
+IGNORED_UPDATE_FIELDS = {
+    Schedule: {"last_run_at", "next_run_at"},
+}
+
 
 def _mask(model_cls, key, value):
     if key in SENSITIVE_FIELDS.get(model_cls, set()):
@@ -136,6 +142,8 @@ def _changed_columns(obj, model_cls):
     state = inspect(obj)
     for attr in state.mapper.column_attrs:
         key = attr.key
+        if key in IGNORED_UPDATE_FIELDS.get(model_cls, set()):
+            continue
         hist = state.attrs[key].history
         if not hist.has_changes():
             continue

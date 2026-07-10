@@ -1,116 +1,91 @@
-"""
-Gateway 서비스 Lifespan 관리
-- DB 초기화
-- LLM 프로바이더 시드
-- SchedulerService 초기화
-"""
+"""Gateway process lifespan and migration-first startup boundary."""
+
+from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from apps.shared.db.base import Base
-from apps.shared.db.models.schedule import Schedule  # noqa: F401
+from apps.gateway.services.migration_readiness import (
+    require_schedule_dispatch_migration_ready,
+)
 from apps.shared.db.seed import (
     seed_default_llm_models,
     seed_default_llm_providers,
     seed_placeholder_user,
 )
 from apps.shared.db.session import engine
+from apps.shared.domain.schedule_dispatch import (
+    schedule_dispatch_settings_from_environment,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _sql_string_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _ensure_deployment_type_enum_values() -> None:
-    """create_all() 기반 로컬 DB의 PostgreSQL enum 값을 모델과 맞춘다."""
-
-    if engine.dialect.name != "postgresql":
-        return
-
-    from apps.shared.db.models.workflow_deployment import DeploymentType
-
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-        if conn.execute(text("SELECT to_regtype('deploymenttype')")).scalar() is None:
-            return
-
-        for deployment_type in DeploymentType:
-            conn.execute(
-                text(
-                    "ALTER TYPE deploymenttype ADD VALUE IF NOT EXISTS "
-                    f"{_sql_string_literal(deployment_type.name)}"
-                )
-            )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 0. 감사(Audit) 데이터 변경 이력 리스너 등록 (계층 B)
+    del app
     from apps.shared.audit.listeners import register_audit_listeners
 
     register_audit_listeners()
 
-    # 1. 시작 로직: pgvector 확장 활성화
+    dispatch_settings = schedule_dispatch_settings_from_environment(os.environ)
+    require_schedule_dispatch_migration_ready(
+        engine,
+        settings=dispatch_settings,
+    )
+
+    # Extension provisioning remains explicit until infra owns it. ORM metadata
+    # and migration-managed enum/table DDL are never applied at app startup.
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
-    Base.metadata.create_all(bind=engine)
-    _ensure_deployment_type_enum_values()
-
-    # 2. 기본 LLM 프로바이더 시드 (멱등성 보장)
     from apps.shared.db.session import SessionLocal
 
     db = SessionLocal()
     try:
-        # 2.1 플레이스홀더 사용자 시드 (개발 환경 필수)
         seed_placeholder_user(db)
-
-        # 2.2 프로바이더 시드
         seed_default_llm_providers(db)
-
-        # 2.3 기본 모델 시드
         seed_default_llm_models(db)
 
-        # 2.4 기존 모델 가격 동기화 (KNOWN_MODEL_PRICES 기반)
         from apps.gateway.services.llm_service import LLMService
 
         result = LLMService.sync_system_prices(db)
         if result["updated_models"] > 0:
             logger.info(
-                f"기존 모델 {result['updated_models']}개의 가격 정보 업데이트 완료"
+                "Default LLM prices synchronized: updated_count=%s",
+                result["updated_models"],
             )
-
-        # 2.5 SchedulerService 초기화 (스케줄러 시작)
-        from apps.gateway.api.deps import get_deployment_runtime_policy
-        from apps.gateway.services.scheduler_service import init_scheduler_service
-
-        logger.info("SchedulerService 초기화 중...")
-        init_scheduler_service(
-            db,
-            runtime_policy=get_deployment_runtime_policy(),
-        )
-        logger.info("SchedulerService 초기화 완료")
-
-    except Exception as e:
-        logger.error(f"시드 데이터 생성 실패: {e}")
-        logger.exception("시드 데이터 생성 실패")
+    except Exception as exc:
+        logger.error("Seed initialization failed: error_type=%s", type(exc).__name__)
     finally:
         db.close()
 
+    from apps.gateway.api.deps import get_deployment_runtime_policy
+    from apps.gateway.services.scheduler_service import init_scheduler_service
+
+    scheduler_db = SessionLocal()
+    try:
+        init_scheduler_service(
+            scheduler_db,
+            runtime_policy=get_deployment_runtime_policy(),
+            settings=dispatch_settings,
+            session_factory=SessionLocal,
+        )
+    finally:
+        scheduler_db.close()
+
     yield
 
-    # 종료 로직
-
-    # SchedulerService 종료
     from apps.gateway.services.scheduler_service import get_scheduler_service
 
     try:
-        scheduler = get_scheduler_service()
-        scheduler.shutdown()
-    except Exception as e:
-        logger.error(f"SchedulerService 종료 실패: {e}")
+        get_scheduler_service().shutdown()
+    except Exception as exc:
+        logger.error(
+            "SchedulerService shutdown failed: error_type=%s",
+            type(exc).__name__,
+        )

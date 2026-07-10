@@ -1,0 +1,2 @@
+"""Queue publisher adapters."""
+

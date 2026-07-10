@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -204,6 +205,44 @@ class ScheduleDispatchSettings:
     @property
     def processes_existing_claims(self) -> bool:
         return self.mode in {MODE_DRAIN, MODE_CLAIM}
+
+
+_SETTING_ENV_FIELDS = {
+    "SCHEDULE_DISPATCH_POLL_SECONDS": "poll_seconds",
+    "SCHEDULE_OCCURRENCE_BATCH_SIZE": "occurrence_batch_size",
+    "SCHEDULE_DISPATCH_BATCH_SIZE": "dispatch_batch_size",
+    "SCHEDULE_RECOVERY_BATCH_SIZE": "recovery_batch_size",
+    "SCHEDULE_CLEANUP_BATCH_SIZE": "cleanup_batch_size",
+    "SCHEDULE_DISPATCH_LEASE_SECONDS": "lease_seconds",
+    "SCHEDULE_ENQUEUED_DELIVERY_TIMEOUT_SECONDS": "delivery_timeout_seconds",
+    "SCHEDULE_EXECUTION_DEADLINE_SECONDS": "execution_deadline_seconds",
+    "SCHEDULE_WORKFLOW_RUN_VISIBILITY_TIMEOUT_SECONDS": (
+        "workflow_run_visibility_timeout_seconds"
+    ),
+    "SCHEDULE_DISPATCH_MAX_ATTEMPTS": "max_attempts",
+    "SCHEDULE_DISPATCH_RETRY_BASE_SECONDS": "retry_base_seconds",
+    "SCHEDULE_DISPATCH_RETENTION_DAYS": "retention_days",
+    "SCHEDULE_DISPATCH_DEAD_LETTER_RETENTION_DAYS": "dead_letter_retention_days",
+}
+
+
+def schedule_dispatch_settings_from_environment(
+    environ: Mapping[str, str],
+) -> ScheduleDispatchSettings:
+    values: dict[str, object] = {
+        "mode": str(environ.get("SCHEDULE_DISPATCH_MODE", MODE_DISABLED)).strip(),
+    }
+    for env_name, field_name in _SETTING_ENV_FIELDS.items():
+        raw = environ.get(env_name)
+        if raw is None or not str(raw).strip():
+            continue
+        try:
+            values[field_name] = int(str(raw).strip())
+        except ValueError as exc:
+            raise ScheduleDispatchDomainError(
+                f"{env_name} must be an integer"
+            ) from exc
+    return ScheduleDispatchSettings(**values)
 
 
 @dataclass(frozen=True, slots=True)

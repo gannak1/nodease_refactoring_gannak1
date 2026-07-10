@@ -712,6 +712,71 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
     assert not db.rows_for(Schedule)
 
 
+def test_active_schedule_create_rolls_back_on_invalid_schedule_configuration(
+    monkeypatch,
+):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=None,
+        url_slug="schedule-slug",
+        auth_secret="existing-secret",
+        created_by=uuid.uuid4(),
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=app.organization_id,
+        app_id=app.id,
+        created_by=app.created_by,
+    )
+    db = _Db({App: [app], Workflow: [workflow], Schedule: []})
+
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.scheduler_service.get_scheduler_service",
+        lambda: _RejectingScheduler(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.create_deployment(
+            db,
+            DeploymentCreate(
+                app_id=app_id,
+                type=DeploymentType.SCHEDULE,
+                graph_snapshot={
+                    "nodes": [
+                        {
+                            "id": "schedule-1",
+                            "type": "scheduleTrigger",
+                            "data": {"cron_expression": "invalid"},
+                        }
+                    ],
+                    "edges": [],
+                },
+                is_active=True,
+            ),
+            user_id=app.created_by,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert (
+        exc_info.value.detail["code"]
+        == "deployment.schedule_configuration_invalid"
+    )
+    assert db.rolled_back is True
+
+
 def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -951,6 +1016,15 @@ class _Scheduler:
 
     def remove_schedule(self, schedule_id):
         self.removed.append(schedule_id)
+
+
+class _RejectingScheduler(_Scheduler):
+    def add_schedule(self, schedule, db):
+        from apps.gateway.application.deployment.schedule_errors import (
+            ScheduleConfigurationError,
+        )
+
+        raise ScheduleConfigurationError("safe configuration failure")
 
 
 class _Query:

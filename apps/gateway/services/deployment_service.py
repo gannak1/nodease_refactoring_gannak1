@@ -15,6 +15,9 @@ from apps.gateway.services.knowledge_deployment_preflight_service import (
 )
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
+from apps.gateway.application.deployment.schedule_errors import (
+    ScheduleConfigurationError,
+)
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
@@ -173,14 +176,8 @@ class DeploymentService:
                     runtime_policy=runtime_policy,
                 )
                 if schedule:
-                    # APScheduler에 등록
-                    try:
-                        scheduler_service = get_scheduler_service()
-                        scheduler_service.add_schedule(schedule, db)
-                    except Exception as e:
-                        logger.warning(f"[Deployment] ✗ 스케줄 등록 실패: {e}")
-                        # 스케줄 등록 실패해도 배포는 성공으로 처리
-                        # (나중에 수동으로 재등록 가능)
+                    scheduler_service = get_scheduler_service()
+                    scheduler_service.add_schedule(schedule, db)
 
             db.commit()
             db.refresh(db_obj)
@@ -192,6 +189,15 @@ class DeploymentService:
 
             return db_obj
 
+        except ScheduleConfigurationError:
+            db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "deployment.schedule_configuration_invalid",
+                    "message": "Schedule configuration is invalid.",
+                },
+            ) from None
         except HTTPException:
             db.rollback()
             raise
@@ -996,10 +1002,18 @@ class DeploymentService:
 
         if schedule and scheduler_service:
             if deployment.is_active:
-                # 활성화: Schedule Job 재등록
-                scheduler_service.add_schedule(schedule, db)
+                try:
+                    scheduler_service.add_schedule(schedule, db)
+                except ScheduleConfigurationError:
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "deployment.schedule_configuration_invalid",
+                            "message": "Schedule configuration is invalid.",
+                        },
+                    ) from None
             else:
-                # 비활성화: Schedule Job 제거
                 scheduler_service.remove_schedule(schedule.id)
 
         db.commit()

@@ -801,7 +801,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "celery", specifier = ">=5.3.0" },
+    { name = "celery", specifier = ">=5.3.0,<6.0" },
     { name = "gevent", specifier = ">=24.2.0" },
     { name = "gidgethub", specifier = ">=5.0.0" },
     { name = "google-genai", specifier = ">=1.0.0" },
