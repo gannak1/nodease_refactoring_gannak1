@@ -29,9 +29,16 @@ Status: Draft
 - `create_run_log`가 `data.conversation_id`를 `WorkflowRun.conversation_id`로 저장한다.
 - `conversation_id`가 없으면 None으로 저장한다.
 
+### Client — deployment success links
+
+- `useDeployment`의 챗봇 배포 결과는 `${origin}/embed/chat/{url_slug}` 공개 링크와 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 내부 실행 링크를 분리해서 만든다.
+- `SuccessStep`은 챗봇 배포 성공 시 공개 챗봇 공유 링크가 anonymous public-only RAG임을 표시하고, 사내 인증 실행 링크가 로그인 사용자 권한 실행임을 별도 표시한다.
+- 공개 챗봇 공유 링크 설명은 private Knowledge 접근을 암시하지 않는다.
+
 ## API Tests
 
 - `POST /deployments`에 `type: "chatbot"`으로 배포 생성 → 활성 배포 및 `url_slug` 반환.
+- `POST /deployments`에 `type: "chatbot"`, `is_active=true`, private KB RAG 후보가 있으면 `409 deployment.preflight.blocked`를 반환한다.
 - `GET /deployments/{deployment_id}/run-info`는 workflow `execute` 권한을 요구하고, active organization scope가 app organization과 다르면 404를 반환한다.
 - `POST /deployments/{deployment_id}/run`은 workflow `execute` 권한을 요구하고, `inputs`가 object가 아니면 400을 반환한다.
 - `GET /deployments/public/{slug}/info` → `type: "chatbot"` 직렬화 확인.
@@ -48,6 +55,7 @@ Status: Draft
 - 배포 생성은 `deploy` 권한 없는 사용자에게 거부(기존 deployment 권한 테스트 범위).
 - 인증 내부 실행은 `execute` 권한 없는 사용자에게 거부한다.
 - 공개 실행은 무인증 표면이므로 private Knowledge/RAG 후보를 anonymous public-only 경계 밖으로 확장하지 않는다.
+- 공개 챗봇 활성화 preflight는 client-supplied audience hint로 우회할 수 없다.
 
 ## Edge Cases
 

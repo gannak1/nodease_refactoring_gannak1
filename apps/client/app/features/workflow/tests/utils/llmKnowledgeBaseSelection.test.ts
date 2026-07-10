@@ -9,9 +9,30 @@ import {
 vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
   knowledgeApi: {
     getKnowledgeBases: vi.fn(),
+    getLLMSelectableKnowledgeBases: vi.fn(),
     getKnowledgeBase: vi.fn(),
   },
 }));
+
+const readyDetail = (id: string, name: string) => ({
+  id,
+  name,
+  description: `${name} 설명`,
+  document_count: 1,
+  created_at: '2026-07-01T00:00:00Z',
+  embedding_model: 'text-embedding-3-small',
+  documents: [
+    {
+      id: `${id}-doc`,
+      filename: `${id}.md`,
+      status: 'completed',
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+      chunk_count: 2,
+      token_count: 40,
+    },
+  ],
+});
 
 describe('llmKnowledgeBaseSelection', () => {
   afterEach(() => {
@@ -19,119 +40,97 @@ describe('llmKnowledgeBaseSelection', () => {
     vi.restoreAllMocks();
   });
 
-  it('preserves selected knowledge bases when detail lookup transiently fails without logging raw payloads', async () => {
-    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const rawError = {
-      response: {
-        status: 500,
-        data: { raw_payload: 'do-not-log-this' },
-      },
-    };
-
-    vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
-      {
-        id: 'kb-ok',
-        name: '완료 문서 KB',
-        description: 'ok',
-        document_count: 1,
-        created_at: '2026-07-01T00:00:00Z',
-        embedding_model: 'text-embedding-3-small',
-      },
-      {
-        id: 'kb-detail-fails',
-        name: '상세 실패 KB',
-        description: 'fails',
-        document_count: 1,
-        created_at: '2026-07-01T00:00:00Z',
-        embedding_model: 'text-embedding-3-small',
-      },
-      {
-        id: 'kb-no-docs',
-        name: '문서 없는 KB',
-        description: 'empty',
-        document_count: 0,
-        created_at: '2026-07-01T00:00:00Z',
-        embedding_model: 'text-embedding-3-small',
-      },
+  it('uses the permission-scoped LLM selectable API instead of owner-filtered legacy list/detail calls', async () => {
+    vi.mocked(knowledgeApi.getLLMSelectableKnowledgeBases).mockResolvedValueOnce([
+      readyDetail('kb-a', '사내 정책'),
+      readyDetail('kb-b', '개발 규칙'),
     ]);
-    vi.mocked(knowledgeApi.getKnowledgeBase)
-      .mockResolvedValueOnce({
-        id: 'kb-ok',
-        name: '완료 문서 KB',
-        description: 'ok',
-        document_count: 1,
-        created_at: '2026-07-01T00:00:00Z',
-        embedding_model: 'text-embedding-3-small',
-        documents: [
-          {
-            id: 'doc-1',
-            filename: 'policy.md',
-            status: 'completed',
-            created_at: '2026-07-01T00:00:00Z',
-            updated_at: '2026-07-01T00:00:00Z',
-            chunk_count: 1,
-            token_count: 20,
-          },
-        ],
-      })
-      .mockRejectedValueOnce(rawError);
 
     const result = await fetchEligibleKnowledgeBases();
 
-    expect(result.bases.map((base) => base.id)).toEqual(['kb-ok']);
-    expect(Object.keys(result.detailsById)).toEqual(['kb-ok']);
-    expect(result.preserveSelectionIds).toEqual(['kb-detail-fails']);
-    expect(knowledgeApi.getKnowledgeBase).toHaveBeenCalledTimes(2);
-    expect(consoleWarn).toHaveBeenCalledWith(
-      '[LLMReference] Failed to load knowledge base detail',
-      { knowledgeBaseId: 'kb-detail-fails', status: 500 },
-    );
-    expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain(
-      'do-not-log-this',
-    );
+    expect(knowledgeApi.getLLMSelectableKnowledgeBases).toHaveBeenCalledTimes(1);
+    expect(knowledgeApi.getKnowledgeBases).not.toHaveBeenCalled();
+    expect(knowledgeApi.getKnowledgeBase).not.toHaveBeenCalled();
+    expect(result.bases.map((base) => base.id)).toEqual(['kb-a', 'kb-b']);
+    expect(Object.keys(result.detailsById)).toEqual(['kb-a', 'kb-b']);
+  });
+
+  it('keeps multiple ready knowledge bases selectable and sanitizes selected names without collapsing to one item', async () => {
+    const result = {
+      bases: [
+        readyDetail('kb-a', '사내 정책'),
+        readyDetail('kb-b', '개발 규칙'),
+      ],
+      detailsById: {},
+    };
 
     expect(
       sanitizeSelectedKnowledgeBases(
         [
-          { id: 'kb-detail-fails', name: '상세 실패 KB' },
-          { id: 'kb-removed', name: '삭제된 KB' },
-          { id: 'kb-ok', name: '이전 이름' },
+          { id: 'kb-a', name: '이전 이름 A' },
+          { id: 'kb-b', name: '이전 이름 B' },
         ],
         result.bases,
-        { preserveMissingIds: result.preserveSelectionIds },
       ),
     ).toEqual([
-      { id: 'kb-detail-fails', name: '상세 실패 KB' },
-      { id: 'kb-ok', name: '완료 문서 KB' },
+      { id: 'kb-a', name: '사내 정책' },
+      { id: 'kb-b', name: '개발 규칙' },
     ]);
   });
 
-  it('removes selected knowledge bases when detail lookup confirms missing resource', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(knowledgeApi.getKnowledgeBases).mockResolvedValueOnce([
+  it('defensively excludes malformed or not-ready selectable API rows', async () => {
+    vi.mocked(knowledgeApi.getLLMSelectableKnowledgeBases).mockResolvedValueOnce([
+      readyDetail('kb-ready', '완료 KB'),
       {
-        id: 'kb-hidden',
-        name: '숨겨진 KB',
-        description: 'hidden',
-        document_count: 1,
-        created_at: '2026-07-01T00:00:00Z',
-        embedding_model: 'text-embedding-3-small',
+        ...readyDetail('kb-pending', '처리 전 KB'),
+        documents: [
+          {
+            id: 'pending-doc',
+            filename: 'pending.md',
+            status: 'pending',
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: '2026-07-01T00:00:00Z',
+            chunk_count: 0,
+            token_count: 0,
+          },
+        ],
       },
+      {
+        ...readyDetail('kb-malformed', '잘못된 KB'),
+        documents: 'not-an-array',
+      } as never,
     ]);
-    vi.mocked(knowledgeApi.getKnowledgeBase).mockRejectedValueOnce({
-      response: { status: 404 },
-    });
 
     const result = await fetchEligibleKnowledgeBases();
 
-    expect(result.bases).toEqual([]);
-    expect(result.preserveSelectionIds).toEqual([]);
+    expect(result.bases.map((base) => base.id)).toEqual(['kb-ready']);
+    expect(Object.keys(result.detailsById)).toEqual(['kb-ready']);
+  });
+
+  it('deduplicates selected knowledge bases, removes missing rows, and preserves transient ids when requested', () => {
     expect(
       sanitizeSelectedKnowledgeBases(
-        [{ id: 'kb-hidden', name: '숨겨진 KB' }],
-        result.bases,
-        { preserveMissingIds: result.preserveSelectionIds },
+        [
+          { id: 'kb-ready', name: '오래된 이름' },
+          { id: 'kb-ready', name: '중복 이름' },
+          { id: 'kb-transient', name: '일시 장애 KB' },
+          { id: 'kb-missing', name: '삭제된 KB' },
+        ],
+        [
+          {
+            id: 'kb-ready',
+            name: '최신 이름',
+            description: 'ready',
+            document_count: 1,
+            created_at: '2026-07-01T00:00:00Z',
+            embedding_model: 'text-embedding-3-small',
+          },
+        ],
+        { preserveMissingIds: ['kb-transient'] },
       ),
-    ).toEqual([]);
+    ).toEqual([
+      { id: 'kb-ready', name: '최신 이름' },
+      { id: 'kb-transient', name: '일시 장애 KB' },
+    ]);
   });
 });

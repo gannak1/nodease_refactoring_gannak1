@@ -11,8 +11,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 
-logger = logging.getLogger(__name__)
-
 from apps.shared.db.base import Base
 from apps.shared.db.models.schedule import Schedule  # noqa: F401
 from apps.shared.db.seed import (
@@ -21,6 +19,8 @@ from apps.shared.db.seed import (
     seed_placeholder_user,
 )
 from apps.shared.db.session import engine
+
+logger = logging.getLogger(__name__)
 
 
 def _sql_string_literal(value: str) -> str:
@@ -86,10 +86,14 @@ async def lifespan(app: FastAPI):
             )
 
         # 2.5 SchedulerService 초기화 (스케줄러 시작)
+        from apps.gateway.api.deps import get_deployment_runtime_policy
         from apps.gateway.services.scheduler_service import init_scheduler_service
 
         logger.info("SchedulerService 초기화 중...")
-        init_scheduler_service(db)
+        init_scheduler_service(
+            db,
+            runtime_policy=get_deployment_runtime_policy(),
+        )
         logger.info("SchedulerService 초기화 완료")
 
     except Exception as e:

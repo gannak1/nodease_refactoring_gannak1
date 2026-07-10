@@ -7,6 +7,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.auth_service import AuthService
+from apps.gateway.services.audit_records import add_data_change_audit
+from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.gateway.utils.api_errors import (
     auth_error_code,
     auth_error_message,
@@ -16,16 +18,8 @@ from apps.gateway.utils.api_errors import (
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.team import (
-    Team,
-    TeamLLMPermission,
-    TeamWorkflowPermission,
-    UserLLMPermission,
-    UserWorkflowPermission,
-)
+from apps.shared.db.models.team import Team
 from apps.shared.db.models.user import User
-from apps.shared.db.models.llm import LLMCredential
-from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
 from apps.shared.services.permissions import (
     has_active_organization_membership,
@@ -34,16 +28,36 @@ from apps.shared.services.permissions import (
 )
 from apps.shared.services.permission_enforcement import PermissionEnforcementService
 from apps.shared.schemas.permission import (
+    KnowledgeDirectPermissionGrantRequest,
     LLMPermissionGrantRequest,
     PermissionGrantRequest,
+    TeamKnowledgePermissionResponse,
     TeamLLMPermissionResponse,
     TeamWorkflowPermissionResponse,
+    UserKnowledgePermissionResponse,
     UserLLMPermissionResponse,
     UserWorkflowPermissionResponse,
 )
 from apps.shared.schemas.team import ResourcePermissionListResponse
 
 router = APIRouter()
+
+_WORKFLOW_PERMISSION_SPEC = resource_permission_spec("workflow")
+_KNOWLEDGE_PERMISSION_SPEC = resource_permission_spec("knowledge_base")
+_LLM_PERMISSION_SPEC = resource_permission_spec("llm_credential")
+
+# Production permission endpoints resolve every target/team/user table through
+# the same fail-closed registry used by generic service paths. Resource-specific
+# HTTP/audit contracts remain in this adapter during the incremental migration.
+Workflow = _WORKFLOW_PERMISSION_SPEC.target_model
+TeamWorkflowPermission = _WORKFLOW_PERMISSION_SPEC.team_route.model
+UserWorkflowPermission = _WORKFLOW_PERMISSION_SPEC.user_route.model
+KnowledgeBase = _KNOWLEDGE_PERMISSION_SPEC.target_model
+TeamKnowledgePermission = _KNOWLEDGE_PERMISSION_SPEC.team_route.model
+UserKnowledgePermission = _KNOWLEDGE_PERMISSION_SPEC.user_route.model
+LLMCredential = _LLM_PERMISSION_SPEC.target_model
+TeamLLMPermission = _LLM_PERMISSION_SPEC.team_route.model
+UserLLMPermission = _LLM_PERMISSION_SPEC.user_route.model
 
 
 def _authenticate(
@@ -233,6 +247,69 @@ def _record_team_llm_permission_delete_audit(
     )
 
 
+def _record_team_knowledge_permission_audit(
+    db: Session,
+    current_user: User,
+    permission: TeamKnowledgePermission,
+    before: dict | None,
+    after: dict,
+) -> None:
+    """Core upsert가 우회한 KB team 권한 변경 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    if before is None:
+        action = "team_knowledge_permission.created"
+        audit_before = None
+        audit_after = after
+    else:
+        audit_before, audit_after = _changed_permission_columns(before, after)
+        if not audit_before and not audit_after:
+            return
+        action = "team_knowledge_permission.updated"
+
+    add_data_change_audit(
+        db,
+        action=action,
+        actor_id=current_user.id,
+        target_type="team_knowledge_permission",
+        target_id=permission.id,
+        before=audit_before,
+        after=audit_after,
+        metadata=metadata,
+    )
+
+
+def _record_team_knowledge_permission_delete_audit(
+    db: Session,
+    current_user: User,
+    permission_id: UUID,
+    before: dict,
+) -> None:
+    """team-KB 권한 회수 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    add_data_change_audit(
+        db,
+        action="team_knowledge_permission.deleted",
+        actor_id=current_user.id,
+        target_type="team_knowledge_permission",
+        target_id=permission_id,
+        before=before,
+        after=None,
+        metadata=metadata,
+    )
+
+
 def _record_user_workflow_permission_audit(
     current_user: User,
     permission: UserWorkflowPermission,
@@ -355,6 +432,69 @@ def _record_user_llm_permission_delete_audit(
         actor_type="user",
         target_type="user_llm_permission",
         target_id=permission.id,
+        before=before,
+        after=None,
+        metadata=metadata,
+    )
+
+
+def _record_user_knowledge_permission_audit(
+    db: Session,
+    current_user: User,
+    permission: UserKnowledgePermission,
+    before: dict | None,
+    after: dict,
+) -> None:
+    """Core upsert가 우회한 user-KB 권한 변경 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    if before is None:
+        action = "user_knowledge_permission.created"
+        audit_before = None
+        audit_after = after
+    else:
+        audit_before, audit_after = _changed_permission_columns(before, after)
+        if not audit_before and not audit_after:
+            return
+        action = "user_knowledge_permission.updated"
+
+    add_data_change_audit(
+        db,
+        action=action,
+        actor_id=current_user.id,
+        target_type="user_knowledge_permission",
+        target_id=permission.id,
+        before=audit_before,
+        after=audit_after,
+        metadata=metadata,
+    )
+
+
+def _record_user_knowledge_permission_delete_audit(
+    db: Session,
+    current_user: User,
+    permission_id: UUID,
+    before: dict,
+) -> None:
+    """user-KB 직접 권한 회수 감사를 직접 남긴다."""
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+
+    add_data_change_audit(
+        db,
+        action="user_knowledge_permission.deleted",
+        actor_id=current_user.id,
+        target_type="user_knowledge_permission",
+        target_id=permission_id,
         before=before,
         after=None,
         metadata=metadata,
@@ -544,6 +684,100 @@ def _authorize_team_llm_permission_change(
         )
 
     return organization, credential, team
+
+
+def _authorize_team_knowledge_permission_change(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    team_id: UUID,
+) -> tuple[Organization, KnowledgeBase, Team]:
+    """team KB permission 변경 공통 scope와 manage 권한을 검증한다."""
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = has_organization_manager_permission(
+        db,
+        current_user.id,
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    knowledge_base = (
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == knowledge_base_id,
+            KnowledgeBase.organization_id == organization_id,
+            KnowledgeBase.lifecycle_state == "active",
+        )
+        .first()
+    )
+    if (
+        knowledge_base is None
+        or getattr(knowledge_base, "lifecycle_state", "active") != "active"
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Knowledge Base not found.",
+        )
+
+    team = (
+        db.query(Team)
+        .filter(
+            Team.id == team_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .first()
+    )
+    if team is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Team not found.",
+        )
+
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_knowledge_base_manage_permission(
+            db,
+            organization_id,
+            knowledge_base_id,
+            current_user.id,
+        )
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Knowledge Base manage or organization manager permission is required.",
+        )
+
+    return organization, knowledge_base, team
 
 
 def _authorize_user_workflow_permission_change(
@@ -762,6 +996,115 @@ def _authorize_user_llm_permission_change(
     return organization, credential, target_user
 
 
+def _authorize_user_knowledge_permission_change(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    user_id: UUID,
+    *,
+    require_active_target: bool = True,
+) -> tuple[Organization, KnowledgeBase, User | None]:
+    """user KB permission 변경 공통 scope와 manage 권한을 검증한다."""
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = has_organization_manager_permission(
+        db,
+        current_user.id,
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    knowledge_base = (
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == knowledge_base_id,
+            KnowledgeBase.organization_id == organization_id,
+            KnowledgeBase.lifecycle_state == "active",
+        )
+        .first()
+    )
+    if (
+        knowledge_base is None
+        or getattr(knowledge_base, "lifecycle_state", "active") != "active"
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Knowledge Base not found.",
+        )
+
+    target_user = None
+    if require_active_target:
+        target_user = (
+            db.query(User)
+            .filter(
+                User.id == user_id,
+                User.deactivated_at.is_(None),
+            )
+            .first()
+        )
+        if target_user is None:
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "User not found.",
+            )
+
+        if not _has_active_membership(
+            db,
+            organization_id,
+            user_id,
+        ):
+            raise_api_error(
+                request,
+                404,
+                "resource.not_found",
+                "User not found.",
+            )
+
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_knowledge_base_manage_permission(
+            db,
+            organization_id,
+            knowledge_base_id,
+            current_user.id,
+        )
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Knowledge Base manage or organization manager permission is required.",
+        )
+
+    return organization, knowledge_base, target_user
+
+
 def _authorize_workflow_permission_read(
     request: Request,
     db: Session,
@@ -905,6 +1248,82 @@ def _authorize_llm_permission_read(
         )
 
     return organization, credential
+
+
+def _authorize_knowledge_permission_read(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+) -> tuple[Organization, KnowledgeBase]:
+    """KB permission 목록 조회 scope와 manage 권한을 검증한다."""
+    organization = (
+        db.query(Organization)
+        .filter(
+            Organization.id == organization_id,
+            Organization.is_active.is_(True),
+        )
+        .first()
+    )
+    if organization is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    is_organization_manager = has_organization_manager_permission(
+        db,
+        current_user.id,
+        organization_id,
+    )
+    if not has_organization_scope_access(db, current_user.id, organization_id):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
+    knowledge_base = (
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == knowledge_base_id,
+            KnowledgeBase.organization_id == organization_id,
+            KnowledgeBase.lifecycle_state == "active",
+        )
+        .first()
+    )
+    if (
+        knowledge_base is None
+        or getattr(knowledge_base, "lifecycle_state", "active") != "active"
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Knowledge Base not found.",
+        )
+
+    if (
+        not is_organization_manager
+        and not PermissionEnforcementService.has_knowledge_base_manage_permission(
+            db,
+            organization_id,
+            knowledge_base_id,
+            current_user.id,
+        )
+    ):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Knowledge Base manage or organization manager permission is required.",
+        )
+
+    return organization, knowledge_base
 
 
 def _upsert_team_workflow_permission(
@@ -1053,6 +1472,78 @@ def _upsert_user_workflow_permission(
     return permission
 
 
+def _upsert_team_knowledge_permission(
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    team_id: UUID,
+    auth_state: str,
+    assigned_by: UUID,
+    assigned_at: datetime,
+) -> TeamKnowledgePermission:
+    """team-KB 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_permission_key(
+        db, "team_knowledge_permission", organization_id, knowledge_base_id, team_id
+    )
+    existing_permission = (
+        db.query(TeamKnowledgePermission)
+        .filter(
+            TeamKnowledgePermission.grantee_organization_id == organization_id,
+            TeamKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            TeamKnowledgePermission.team_id == team_id,
+        )
+        .first()
+    )
+    before = (
+        _permission_audit_columns(existing_permission)
+        if existing_permission is not None
+        else None
+    )
+
+    insert_stmt = pg_insert(TeamKnowledgePermission).values(
+        grantee_organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        team_id=team_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=assigned_at,
+        options={},
+        flags=0,
+    )
+    upsert_stmt = (
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                TeamKnowledgePermission.grantee_organization_id,
+                TeamKnowledgePermission.knowledge_base_id,
+                TeamKnowledgePermission.team_id,
+            ],
+            set_={
+                "auth_state": insert_stmt.excluded.auth_state,
+                "assigned_by": insert_stmt.excluded.assigned_by,
+                "assigned_at": insert_stmt.excluded.assigned_at,
+            },
+            where=TeamKnowledgePermission.auth_state != insert_stmt.excluded.auth_state,
+        )
+        .returning(TeamKnowledgePermission)
+        .execution_options(populate_existing=True)
+    )
+
+    permission = db.scalars(upsert_stmt).one_or_none()
+    if permission is None:
+        permission = existing_permission
+    after = _permission_audit_columns(permission)
+    _record_team_knowledge_permission_audit(
+        db,
+        current_user,
+        permission,
+        before,
+        after,
+    )
+    db.commit()
+    return permission
+
+
 def _upsert_team_llm_permission(
     db: Session,
     current_user: User,
@@ -1195,6 +1686,78 @@ def _upsert_user_llm_permission(
     return permission
 
 
+def _upsert_user_knowledge_permission(
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    user_id: UUID,
+    auth_state: str,
+    assigned_by: UUID,
+    assigned_at: datetime,
+) -> UserKnowledgePermission:
+    """user-KB 직접 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_permission_key(
+        db, "user_knowledge_permission", organization_id, knowledge_base_id, user_id
+    )
+    existing_permission = (
+        db.query(UserKnowledgePermission)
+        .filter(
+            UserKnowledgePermission.grantee_organization_id == organization_id,
+            UserKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            UserKnowledgePermission.user_id == user_id,
+        )
+        .first()
+    )
+    before = (
+        _permission_audit_columns(existing_permission)
+        if existing_permission is not None
+        else None
+    )
+
+    insert_stmt = pg_insert(UserKnowledgePermission).values(
+        grantee_organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        user_id=user_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=assigned_at,
+        options={},
+        flags=0,
+    )
+    upsert_stmt = (
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                UserKnowledgePermission.grantee_organization_id,
+                UserKnowledgePermission.user_id,
+                UserKnowledgePermission.knowledge_base_id,
+            ],
+            set_={
+                "auth_state": insert_stmt.excluded.auth_state,
+                "assigned_by": insert_stmt.excluded.assigned_by,
+                "assigned_at": insert_stmt.excluded.assigned_at,
+            },
+            where=UserKnowledgePermission.auth_state != insert_stmt.excluded.auth_state,
+        )
+        .returning(UserKnowledgePermission)
+        .execution_options(populate_existing=True)
+    )
+
+    permission = db.scalars(upsert_stmt).one_or_none()
+    if permission is None:
+        permission = existing_permission
+    after = _permission_audit_columns(permission)
+    _record_user_knowledge_permission_audit(
+        db,
+        current_user,
+        permission,
+        before,
+        after,
+    )
+    db.commit()
+    return permission
+
+
 @router.get(
     "/workflows/{workflow_id}",
     response_model=ResourcePermissionListResponse,
@@ -1264,6 +1827,83 @@ def list_workflow_permissions(
                 "grantee_type": "user",
                 "grantee_id": permission.user_id,
                 "grantee_name": permission.user.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission in user_permissions
+        ],
+    }
+
+
+@router.get(
+    "/knowledge-bases/{knowledge_base_id}",
+    response_model=ResourcePermissionListResponse,
+)
+def list_knowledge_base_permissions(
+    knowledge_base_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """KB에 부여된 team/user 권한 목록을 조회한다."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_knowledge_permission_read(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+    )
+
+    team_permissions = (
+        db.query(TeamKnowledgePermission)
+        .options(joinedload(TeamKnowledgePermission.team))
+        .join(Team, Team.id == TeamKnowledgePermission.team_id)
+        .filter(
+            TeamKnowledgePermission.grantee_organization_id == organization_id,
+            TeamKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .order_by(Team.name.asc(), TeamKnowledgePermission.id.asc())
+        .all()
+    )
+    user_permissions = (
+        db.query(UserKnowledgePermission)
+        .options(joinedload(UserKnowledgePermission.user))
+        .join(User, User.id == UserKnowledgePermission.user_id)
+        .filter(
+            UserKnowledgePermission.grantee_organization_id == organization_id,
+            UserKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            User.deactivated_at.is_(None),
+        )
+        .order_by(User.name.asc(), User.email.asc(), UserKnowledgePermission.id.asc())
+        .all()
+    )
+
+    return {
+        "resource_type": "knowledge_base",
+        "resource_id": knowledge_base_id,
+        "organization_id": organization_id,
+        "team_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "team",
+                "grantee_id": permission.team_id,
+                "grantee_name": permission.team.name,
+                "auth_state": permission.auth_state,
+                "assigned_at": permission.assigned_at,
+            }
+            for permission in team_permissions
+        ],
+        "user_permissions": [
+            {
+                "id": permission.id,
+                "grantee_type": "user",
+                "grantee_id": permission.user_id,
+                "grantee_name": permission.user.name or permission.user.email,
                 "auth_state": permission.auth_state,
                 "assigned_at": permission.assigned_at,
             }
@@ -1388,6 +2028,44 @@ def put_team_workflow_permission(
 
 
 @router.put(
+    "/knowledge-bases/{knowledge_base_id}/teams/{team_id}",
+    response_model=TeamKnowledgePermissionResponse,
+)
+def put_team_knowledge_permission(
+    knowledge_base_id: UUID,
+    team_id: UUID,
+    payload: KnowledgeDirectPermissionGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """team에 KB 권한을 부여하거나 갱신하는 PUT endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_team_knowledge_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        team_id,
+    )
+
+    now = datetime.now(timezone.utc)
+    return _upsert_team_knowledge_permission(
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        team_id,
+        payload.auth_state,
+        current_user.id,
+        now,
+    )
+
+
+@router.put(
     "/llm-credentials/{credential_id}/teams/{team_id}",
     response_model=TeamLLMPermissionResponse,
 )
@@ -1457,6 +2135,44 @@ def put_user_workflow_permission(
         current_user,
         organization_id,
         workflow_id,
+        user_id,
+        payload.auth_state,
+        current_user.id,
+        now,
+    )
+
+
+@router.put(
+    "/knowledge-bases/{knowledge_base_id}/users/{user_id}",
+    response_model=UserKnowledgePermissionResponse,
+)
+def put_user_knowledge_permission(
+    knowledge_base_id: UUID,
+    user_id: UUID,
+    payload: KnowledgeDirectPermissionGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """user에 KB 직접 권한을 부여하거나 갱신하는 PUT endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_user_knowledge_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        user_id,
+    )
+
+    now = datetime.now(timezone.utc)
+    return _upsert_user_knowledge_permission(
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
         user_id,
         payload.auth_state,
         current_user.id,
@@ -1549,6 +2265,68 @@ def delete_team_workflow_permission(
         before,
     )
     return {"message": "Team workflow permission deleted", "id": str(permission.id)}
+
+
+@router.delete("/knowledge-bases/{knowledge_base_id}/teams/{team_id}")
+def delete_team_knowledge_permission(
+    knowledge_base_id: UUID,
+    team_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """team의 KB 권한을 회수하는 DELETE endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_team_knowledge_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        team_id,
+    )
+
+    _lock_permission_key(
+        db, "team_knowledge_permission", organization_id, knowledge_base_id, team_id
+    )
+    permission = (
+        db.query(TeamKnowledgePermission)
+        .filter(
+            TeamKnowledgePermission.grantee_organization_id == organization_id,
+            TeamKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            TeamKnowledgePermission.team_id == team_id,
+        )
+        .first()
+    )
+    if permission is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Team knowledge permission not found.",
+        )
+
+    permission_id = permission.id
+    before = _permission_audit_columns(permission)
+    (
+        db.query(TeamKnowledgePermission)
+        .filter(
+            TeamKnowledgePermission.grantee_organization_id == organization_id,
+            TeamKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            TeamKnowledgePermission.team_id == team_id,
+        )
+        .delete(synchronize_session=False)
+    )
+    _record_team_knowledge_permission_delete_audit(
+        db,
+        current_user,
+        permission_id,
+        before,
+    )
+    db.commit()
+    return {"message": "Team knowledge permission deleted", "id": str(permission_id)}
 
 
 @router.delete("/llm-credentials/{credential_id}/teams/{team_id}")
@@ -1657,6 +2435,69 @@ def delete_user_workflow_permission(
         before,
     )
     return {"message": "User workflow permission deleted", "id": str(permission.id)}
+
+
+@router.delete("/knowledge-bases/{knowledge_base_id}/users/{user_id}")
+def delete_user_knowledge_permission(
+    knowledge_base_id: UUID,
+    user_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    """user의 KB 직접 권한을 회수하는 DELETE endpoint."""
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_user_knowledge_permission_change(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        user_id,
+        require_active_target=False,
+    )
+
+    _lock_permission_key(
+        db, "user_knowledge_permission", organization_id, knowledge_base_id, user_id
+    )
+    permission = (
+        db.query(UserKnowledgePermission)
+        .filter(
+            UserKnowledgePermission.grantee_organization_id == organization_id,
+            UserKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            UserKnowledgePermission.user_id == user_id,
+        )
+        .first()
+    )
+    if permission is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "User knowledge permission not found.",
+        )
+
+    permission_id = permission.id
+    before = _permission_audit_columns(permission)
+    (
+        db.query(UserKnowledgePermission)
+        .filter(
+            UserKnowledgePermission.grantee_organization_id == organization_id,
+            UserKnowledgePermission.knowledge_base_id == knowledge_base_id,
+            UserKnowledgePermission.user_id == user_id,
+        )
+        .delete(synchronize_session=False)
+    )
+    _record_user_knowledge_permission_delete_audit(
+        db,
+        current_user,
+        permission_id,
+        before,
+    )
+    db.commit()
+    return {"message": "User knowledge permission deleted", "id": str(permission_id)}
 
 
 @router.delete("/llm-credentials/{credential_id}/users/{user_id}")

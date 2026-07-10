@@ -813,6 +813,7 @@ export default function CostOptimizerPlaygroundPage() {
           workflowId,
           nodeId,
           {
+            baseline_id: baseline.baseline_id,
             date_from: historyDateFrom
               ? `${historyDateFrom}T00:00:00`
               : undefined,
@@ -982,7 +983,14 @@ export default function CostOptimizerPlaygroundPage() {
     !isRunningCandidate;
 
   const handleRunCandidate = async () => {
-    if (!canRunCandidate) return;
+    const selectedBaseline = baseline;
+    if (
+      !selectedBaseline ||
+      !(candidate.auto_model_routing || Boolean(candidate.model_id)) ||
+      isRunningCandidate
+    ) {
+      return;
+    }
 
     setIsRunningCandidate(true);
     setCandidateError('');
@@ -993,7 +1001,7 @@ export default function CostOptimizerPlaygroundPage() {
         workflowId,
         nodeId,
         {
-          baseline_id: baseline.baseline_id,
+          baseline_id: selectedBaseline.baseline_id,
           candidate: compareRequestCandidateFromDraft(
             candidate,
             testName.trim() || 'B',
@@ -2406,6 +2414,8 @@ export default function CostOptimizerPlaygroundPage() {
                         selectedHistoryRow || baseline
                           ? {
                               cost: baselineCost,
+                              prompt_tokens: activeBaselinePromptTokens,
+                              completion_tokens: activeBaselineCompletionTokens,
                               total_tokens: baselineTotalTokens,
                               latency_ms: activeBaselineLatency,
                             }

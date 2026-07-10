@@ -44,12 +44,31 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | --- | --- |
 | Knowledge Collections | Collection 목록, 상세, 생성/수정/archive, item 관리, permission grant/revoke, visibility 상태를 표시한다 |
 | KB Detail | Document-level KB lifecycle, active version, sync state, permission state를 표시한다 |
+| KB Permission Management | Admin/settings의 권한 UI에서 KB별 team grant와 user direct grant를 표시, 생성, 갱신, 회수한다 |
 | Source Connector Setup | Connector config, egress-safe test/preview, ACL mapping status를 관리한다 |
 | Sync Remediation Queue | Stale/unmapped/ambiguous ACL, failed sync, tombstone, retry/dead-letter status를 표시한다 |
 | Agent Knowledge Settings | Collection routing scope 또는 explicit KB를 선택한다. 허용된 safe candidate만 표시한다 |
 | Skill Management / Playground Candidate | 향후 Skill version, freshness, eval status, publication/review 상태를 표시할 수 있는 후보 surface | 실제 작성/테스트/승인 요청 UX와 Workflow Playground 통합 여부는 아직 확정하지 않는다. 표시한다면 safe metadata만 사용한다 |
 | Audit/Citation Detail | Redaction-safe citation과 retrieval summary를 표시한다. Raw content는 별도 raw/compliance surface에서만 사용한다 |
 | RAG A/B Compare | LLM node 단위 RAG strategy, token, cost, citation summary를 비교한다 |
+
+### KB Detail Source Processing UI
+
+`POST /api/v1/rag/upload`로 등록된 source document는 초기 상태가 `pending`일 수 있으며, chunk/embedding 생성이 끝나기 전까지 RAG 검색 대상이 아니다.
+
+- KB 상세의 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 safe 안내를 표시한다.
+- `failed` document는 같은 document settings 화면으로 들어가는 `재처리` action을 제공한다.
+- Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
+- 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
+
+### KB Permission Management UI
+
+- MBA-176에서는 기존 admin/settings permission surface를 확장해 KB team permission과 user direct permission을 함께 관리한다. 새 독립 화면을 만들지 않는다.
+- UI는 organization member 목록을 grant 대상 후보로 사용하되, 조직에 속해 있다는 사실만으로 KB `use/read/manage` 권한이 생긴다고 표시하지 않는다.
+- User direct grant 생성/수정에서는 `viewer`, `operator`, `builder`, `manager`만 선택할 수 있다. `none`은 선택지로 제공하지 않고, 권한 회수는 삭제 action으로 표현한다.
+- Effective permission 표시는 organization manager override와 team/user direct grant 중 가장 강한 additive allow로 계산된 값을 사용한다. User direct grant가 team grant를 낮추거나 deny할 수 있는 것처럼 표시하지 않는다.
+- `can_manage_kb`가 없는 사용자에게는 grant action을 숨기거나 disabled 처리하되, 최종 차단은 Gateway API가 수행한다.
+- `completed` document만 workflow builder/RAG 선택과 runtime retrieval에서 ready evidence 후보가 될 수 있다.
 
 ### Knowledge Collection Management UI
 
@@ -125,7 +144,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 1. Workflow runtime이 run context에서 execution subject를 resolve한다. Interactive run은 request user를 subject로 전달할 수 있다.
 2. Execution subject가 있으면 Knowledge Permission Helper가 해당 subject 기준으로 KB permission과 source ACL/requester authorization을 평가한다.
 3. Execution subject가 없으면 Workflow owner, deployment owner, builder, `user_id`를 silent fallback으로 쓰지 않는다. Runtime은 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 candidate로 남긴다.
-4. Public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. Source-managed KB는 Public Exposure Policy Store의 valid source/connector public exposure approval도 통과해야 candidate로 남는다.
+4. Public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. Source-managed KB는 Public Exposure Policy Store의 valid source/connector public exposure approval도 통과해야 candidate로 남는다. MBA-176에서 approval primitive가 없으면 source-managed public 후보는 warning이 아니라 `source_public_exposure_required` blocked state로 표시한다.
 5. Workflow가 Knowledge Skill을 사용할 경우 skill visibility, freshness/eval, safe metadata gate도 execution subject가 있을 때 같은 subject 기준으로 평가한다. Anonymous public-only runtime은 skill 선택만으로 private KB 후보를 넓힐 수 없다.
 6. `general`, `permission_scoped`, `task_aware` 등 모든 운영 RAG mode는 subject 기반 gate 또는 anonymous public-only gate와 final evidence gate를 통과한다.
 7. Retrieval strategy, query rewrite, source tier, skill 차이는 gate 이후 authorized/public evidence를 얼마나 넓게 또는 정밀하게 선택하는지에만 영향을 준다.

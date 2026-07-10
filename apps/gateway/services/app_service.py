@@ -145,7 +145,10 @@ class AppService:
         if app.active_deployment_id:
             deployment = (
                 db.query(WorkflowDeployment)
-                .filter(WorkflowDeployment.id == app.active_deployment_id)
+                .filter(
+                    WorkflowDeployment.id == app.active_deployment_id,
+                    WorkflowDeployment.app_id == app.id,
+                )
                 .first()
             )
             if deployment:
@@ -175,7 +178,7 @@ class AppService:
 
     @staticmethod
     def can_read_app_operations(db: Session, app: App, user_id) -> bool:
-        """운영 현황 row는 marketplace public read보다 좁은 권한으로 제한한다."""
+        """운영 현황 row는 최종 사용자 실행 권한보다 좁은 권한으로 제한한다."""
         if app.organization_id and has_organization_manager_permission(
             db, user_id, app.organization_id
         ):
@@ -184,7 +187,7 @@ class AppService:
             db,
             user_id,
             app.workflow_id,
-            "read",
+            "write",
             organization_id=app.organization_id,
         ):
             return True
@@ -895,7 +898,7 @@ class AppService:
         apps = (
             db.query(App)
             .options(joinedload(App.active_deployment))
-            .filter(App.is_market == True)
+            .filter(App.is_market.is_(True))
             .all()
         )
 
@@ -984,7 +987,10 @@ class AppService:
         # 3. 배포 데이터 조회
         deployment = (
             db.query(WorkflowDeployment)
-            .filter(WorkflowDeployment.id == source_app.active_deployment_id)
+            .filter(
+                WorkflowDeployment.id == source_app.active_deployment_id,
+                WorkflowDeployment.app_id == source_app.id,
+            )
             .first()
         )
 

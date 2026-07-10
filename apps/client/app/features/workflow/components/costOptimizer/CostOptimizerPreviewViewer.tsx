@@ -22,19 +22,14 @@ interface CostOptimizerOutputPreviewPanelProps {
 }
 
 const keyLabelMap: Record<string, string> = {
-  answer: '답변',
-  completion_tokens: 'Completion tokens',
-  cost: 'Cost',
-  input_tokens: 'Input tokens',
+  completion_tokens: '응답 토큰',
+  cost: '비용',
+  input_tokens: '입력 토큰',
   latency_ms: 'Latency',
-  mailDraft: '답변 초안',
-  output_tokens: 'Output tokens',
-  prompt_tokens: 'Prompt tokens',
-  severity: '긴급도',
-  text: 'Text',
-  total_cost: 'Total cost',
-  total_tokens: 'Total tokens',
-  usage: 'Usage',
+  output_tokens: '응답 토큰',
+  prompt_tokens: '프롬프트 토큰',
+  total_cost: '총 비용',
+  total_tokens: '전체 토큰',
 };
 
 const formatPreviewKey = (key: string) => keyLabelMap[key] || key;
@@ -148,10 +143,12 @@ const MetricGrid = ({
   title,
   values,
   tone = 'slate',
+  labelPrefix = '',
 }: {
   title: string;
   values: Record<string, PreviewValue>;
   tone?: 'blue' | 'slate';
+  labelPrefix?: string;
 }) => {
   const entries = Object.entries(values);
   if (entries.length === 0) return null;
@@ -177,7 +174,11 @@ const MetricGrid = ({
       <div className="grid gap-2 sm:grid-cols-2">
         {entries.map(([key, metricValue]) => (
           <div key={key} className={itemClassName}>
-            <div className={labelClassName}>{formatPreviewKey(key)}</div>
+            <div className={labelClassName}>
+              {labelPrefix
+                ? `${labelPrefix} ${formatPreviewKey(key)}`
+                : formatPreviewKey(key)}
+            </div>
             <div className={valueClassName}>
               {formatMetricValue(key, metricValue)}
             </div>
@@ -353,6 +354,11 @@ export function CostOptimizerOutputPreviewPanel({
   const content = outputContentOf(normalized);
   const rootMetrics = rootMetricsOf(normalized);
   const usageMetrics = mergeUsageValues(normalized, usage);
+  const usageLabelPrefix = title.startsWith('A ')
+    ? 'A'
+    : title.startsWith('B ')
+      ? 'B'
+      : '';
 
   return (
     <div className="min-h-0 rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -379,7 +385,11 @@ export function CostOptimizerOutputPreviewPanel({
           )}
         </section>
 
-        <MetricGrid title="Usage" values={usageMetrics} />
+        <MetricGrid
+          title="Usage"
+          values={usageMetrics}
+          labelPrefix={usageLabelPrefix}
+        />
       </div>
     </div>
   );

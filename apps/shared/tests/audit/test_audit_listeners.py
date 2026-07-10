@@ -14,6 +14,7 @@ from apps.shared.db.models.team import (
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserWorkflowPermission,
 )
@@ -63,6 +64,7 @@ def test_layer_b_tracks_security_and_deployment_models():
         TeamLLMPermission: "team_llm_permission",
         TeamAuditPermission: "team_audit_permission",
         UserWorkflowPermission: "user_workflow_permission",
+        UserKnowledgePermission: "user_knowledge_permission",
         UserLLMPermission: "user_llm_permission",
         TraceRedactionPolicy: "trace_redaction_policy",
         TraceRetentionPolicy: "trace_retention_policy",

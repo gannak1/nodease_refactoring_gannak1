@@ -81,6 +81,7 @@ Status: Draft
 | 메서드 | 경로 | 설명 | 인증 |
 | --- | --- | --- | --- |
 | GET | `/permissions/workflows/{workflow_id}` | workflow에 부여된 team/user direct permission 목록을 반환한다. | `auth_token` cookie, manager 또는 workflow manage, `X-Organization-Id` |
+| GET | `/permissions/knowledge-bases/{knowledge_base_id}` | Knowledge Base에 부여된 team/user direct permission 목록을 반환한다. | `auth_token` cookie, manager 또는 KB manage, `X-Organization-Id` |
 | GET | `/permissions/llm-credentials/{credential_id}` | LLM credential에 부여된 team/user direct permission 목록을 반환한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 
 ### Resource Permission Grant
@@ -89,6 +90,8 @@ Status: Draft
 | --- | --- | --- | --- |
 | PUT | `/permissions/workflows/{workflow_id}/teams/{team_id}` | team workflow permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 workflow manage, `X-Organization-Id` |
 | PUT | `/permissions/workflows/{workflow_id}/users/{user_id}` | user direct workflow permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 workflow manage, `X-Organization-Id` |
+| PUT | `/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 KB manage, `X-Organization-Id` |
+| PUT | `/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 KB manage, `X-Organization-Id` |
 | PUT | `/permissions/llm-credentials/{credential_id}/teams/{team_id}` | team LLM credential permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 | PUT | `/permissions/llm-credentials/{credential_id}/users/{user_id}` | user direct LLM credential permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 
@@ -98,6 +101,8 @@ Status: Draft
 | --- | --- | --- | --- |
 | DELETE | `/permissions/workflows/{workflow_id}/teams/{team_id}` | team workflow permission을 삭제한다. | `auth_token` cookie, manager 또는 workflow manage, `X-Organization-Id` |
 | DELETE | `/permissions/workflows/{workflow_id}/users/{user_id}` | user direct workflow permission을 삭제한다. | `auth_token` cookie, manager 또는 workflow manage, `X-Organization-Id` |
+| DELETE | `/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission을 삭제한다. | `auth_token` cookie, manager 또는 KB manage, `X-Organization-Id` |
+| DELETE | `/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission을 삭제한다. | `auth_token` cookie, manager 또는 KB manage, `X-Organization-Id` |
 | DELETE | `/permissions/llm-credentials/{credential_id}/teams/{team_id}` | team LLM credential permission을 삭제한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 | DELETE | `/permissions/llm-credentials/{credential_id}/users/{user_id}` | user direct LLM credential permission을 삭제한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 
@@ -389,9 +394,11 @@ Query parameter:
 
 ### Permission List Endpoints
 
-`GET /permissions/workflows/{workflow_id}`와 `GET /permissions/llm-credentials/{credential_id}`는 같은 응답 구조를 사용한다.
+`GET /permissions/workflows/{workflow_id}`, `GET /permissions/knowledge-bases/{knowledge_base_id}`, `GET /permissions/llm-credentials/{credential_id}`는 같은 응답 구조를 사용한다.
 
 성공 응답: `200 OK`, `ResourcePermissionListResponse`.
+
+`resource_type` 허용 값은 `workflow`, `knowledge_base`, `llm_credential`이다.
 
 ```json
 {
@@ -422,12 +429,16 @@ PUT permission endpoints는 같은 request body를 사용한다.
 
 | 필드 | 타입 | 필수 | 비고 |
 | --- | --- | --- | --- |
-| `auth_state` | `none \| viewer \| operator \| builder \| manager` | 예 | workflow/LLM credential operational matrix 값. |
+| `auth_state` | `none \| viewer \| operator \| builder \| manager` | 예 | workflow/LLM credential operational matrix 값. Knowledge direct user grant는 `none` 대신 DELETE revoke를 사용한다. |
+
+Knowledge user direct grant request는 `KnowledgeDirectPermissionGrantRequest`로 다루며 `auth_state`에서 `none`을 제외한다. Team KB grant도 신규 grant request에서는 `viewer`, `operator`, `builder`, `manager`만 사용하고, 회수는 DELETE endpoint를 사용한다.
 
 성공 응답:
 
 - team workflow: `200 OK`, `TeamWorkflowPermissionResponse`
 - user workflow: `200 OK`, `UserWorkflowPermissionResponse`
+- team KB: `200 OK`, `TeamKnowledgePermissionResponse`
+- user KB: `200 OK`, `UserKnowledgePermissionResponse`
 - team LLM credential: `200 OK`, `TeamLLMPermissionResponse`
 - user LLM credential: `200 OK`, `UserLLMPermissionResponse`
 
@@ -444,7 +455,7 @@ DELETE permission endpoints는 request body를 사용하지 않는다.
 }
 ```
 
-삭제 대상 종류에 따라 `message`는 `Team LLM credential permission deleted`, `User workflow permission deleted`, `User LLM credential permission deleted`가 될 수 있다.
+삭제 대상 종류에 따라 `message`는 `Team knowledge permission deleted`, `User knowledge permission deleted`, `Team LLM credential permission deleted`, `User workflow permission deleted`, `User LLM credential permission deleted`가 될 수 있다.
 
 ### 공통 응답 모델
 

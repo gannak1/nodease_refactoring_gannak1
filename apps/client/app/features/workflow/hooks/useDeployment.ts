@@ -3,15 +3,11 @@ import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import type { DeploymentResult } from '../components/deployment/types';
 import type { AppNode } from '../types/Nodes';
-
-type DeploymentType =
-  | 'api'
-  | 'webapp'
-  | 'widget'
-  | 'workflow_node'
-  | 'schedule'
-  | 'webhook'
-  | 'chatbot';
+import type { DeploymentType } from '../types/Deployment';
+import {
+  deploymentApiErrorMessage,
+  formatDeploymentPreflightMessage,
+} from '../utils/deploymentPreflightMessage';
 
 interface UseDeploymentProps {
   nodes: AppNode[]; // 시작 노드 타입 확인 및 graph_snapshot용
@@ -115,6 +111,20 @@ export function useDeployment({
           throw new Error('App ID를 찾을 수 없습니다.');
         }
 
+        const preflight = await workflowApi.preflightDeployment({
+          app_id: activeWorkflow.appId,
+          description,
+          type: deploymentType,
+          config: {},
+          is_active: true,
+        });
+        if (preflight.status === 'blocked') {
+          return {
+            success: false,
+            message: formatDeploymentPreflightMessage(preflight),
+          };
+        }
+
         const response = await workflowApi.createDeployment({
           app_id: activeWorkflow.appId,
           description,
@@ -126,6 +136,8 @@ export function useDeployment({
 
         const result: DeploymentResult = {
           success: true,
+          deploymentId: response.id,
+          appId: response.app_id,
           url_slug: response.url_slug ?? null,
           auth_secret: response.auth_secret ?? null,
           version: response.version,
@@ -137,9 +149,13 @@ export function useDeployment({
         if (deploymentType === 'webapp') {
           result.webAppUrl = `${window.location.origin}/shared/${response.url_slug}`;
         } else if (deploymentType === 'chatbot') {
-          // 챗봇 배포: 공개 채팅 웹페이지 공유 링크 (임베드 챗 페이지 재사용).
-          // webAppUrl로 넘겨 SuccessStep이 복사 가능한 공유 링크로 렌더하도록 한다.
-          result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+          if (response.url_slug) {
+            // 공개 챗봇 링크는 무인증 public-only RAG 경계를 사용한다.
+            result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+          }
+          if (activeWorkflow.id) {
+            result.internalRunUrl = `${window.location.origin}/modules/${activeWorkflow.id}/run?deploymentId=${response.id}`;
+          }
         } else if (deploymentType === 'widget') {
           result.embedUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
         } else if (deploymentType === 'workflow_node') {
@@ -149,22 +165,23 @@ export function useDeployment({
           // schedule 노드에서 cron expression, timezone 추출
           const scheduleNode = nodes.find((n) => n.type === 'scheduleTrigger');
           if (scheduleNode) {
-            const data = scheduleNode.data as any;
-            result.cronExpression = data.cronExpression || data.cron_expression;
-            result.timezone = data.timezone || data.time_zone || 'Asia/Seoul';
+            const data = asRecord(scheduleNode.data);
+            result.cronExpression =
+              stringValue(data.cronExpression) || stringValue(data.cron_expression);
+            result.timezone =
+              stringValue(data.timezone) || stringValue(data.time_zone) || 'Asia/Seoul';
           }
         }
 
         return result;
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           success: false,
-          message:
-            error.response?.data?.detail || '배포 중 오류가 발생했습니다.',
+          message: deploymentApiErrorMessage(error),
         };
       }
     },
-    [deploymentType, activeWorkflow?.appId, nodes],
+    [deploymentType, activeWorkflow?.appId, activeWorkflow?.id, nodes],
   );
 
   return {
@@ -183,4 +200,14 @@ export function useDeployment({
     handlePublishAsWebhook,
     handleDeploy,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }

@@ -41,6 +41,7 @@ const navigationItems = [
     name: '내 모듈',
     href: '/dashboard/mymodule',
     icon: Puzzle,
+    operationsOnly: true,
   },
   {
     name: '마켓플레이스',
@@ -88,6 +89,7 @@ export default function Sidebar() {
   >(null);
   const [organizationName, setOrganizationName] = useState('');
   const [isOrganizationManager, setIsOrganizationManager] = useState(false);
+  const [canSeeOperationsNav, setCanSeeOperationsNav] = useState(false);
   const [organizations, setOrganizations] = useState<SidebarOrganization[]>([]);
   const [isOrganizationDropdownOpen, setIsOrganizationDropdownOpen] =
     useState(false);
@@ -157,6 +159,7 @@ export default function Sidebar() {
           setActiveOrganizationIdState(null);
           setOrganizationName('');
           setIsOrganizationManager(false);
+          setCanSeeOperationsNav(false);
           setOrganizations([]);
           return;
         }
@@ -168,8 +171,24 @@ export default function Sidebar() {
         if (currentResponse.data?.name) {
           setOrganizationName(currentResponse.data.name);
         }
+        const isManager = currentResponse.data?.is_manager === true;
         setActiveOrganizationIdState(currentResponse.data?.id || organizationId);
-        setIsOrganizationManager(currentResponse.data?.is_manager === true);
+        setIsOrganizationManager(isManager);
+        if (isManager) {
+          setCanSeeOperationsNav(true);
+        } else {
+          try {
+            const operationsResponse = await apiClient.get('/apps/operations', {
+              params: { limit: 1 },
+            });
+            setCanSeeOperationsNav(
+              Array.isArray(operationsResponse.data) &&
+                operationsResponse.data.length > 0,
+            );
+          } catch {
+            setCanSeeOperationsNav(false);
+          }
+        }
         setOrganizations(
           Array.isArray(organizationsResponse.data)
             ? organizationsResponse.data
@@ -179,6 +198,7 @@ export default function Sidebar() {
         setActiveOrganizationIdState(null);
         setOrganizationName('');
         setIsOrganizationManager(false);
+        setCanSeeOperationsNav(false);
         setOrganizations([]);
       }
     };
@@ -231,6 +251,7 @@ export default function Sidebar() {
     setActiveOrganizationIdState(organization.id);
     setOrganizationName(organization.name);
     setIsOrganizationManager(organization.is_manager === true);
+    setCanSeeOperationsNav(organization.is_manager === true);
     setIsOrganizationDropdownOpen(false);
     router.push('/dashboard');
   };
@@ -298,30 +319,35 @@ export default function Sidebar() {
       {/* Main Navigation */}
       <nav className="flex-1 space-y-1">
         {navigationItems
-          .filter((item) => !item.managerOnly || isOrganizationManager)
+          .filter(
+            (item) =>
+              (!item.managerOnly || isOrganizationManager) &&
+              (!item.operationsOnly || canSeeOperationsNav),
+          )
           .map((item) => {
-          const isActive =
-            pathname === item.href ||
-            (item.href !== '/dashboard' && pathname.startsWith(`${item.href}/`));
-          const Icon = item.icon;
+            const isActive =
+              pathname === item.href ||
+              (item.href !== '/dashboard' &&
+                pathname.startsWith(`${item.href}/`));
+            const Icon = item.icon;
 
-          return (
-            <Link
-              key={item.name}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-3 rounded-lg py-2.5 text-sm font-semibold transition-colors',
-                isCollapsed ? 'justify-center px-2' : 'px-3',
-                isActive
-                  ? 'bg-slate-950 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
-              )}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {!isCollapsed && <span>{item.name}</span>}
-            </Link>
-          );
-        })}
+            return (
+              <Link
+                key={item.name}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-3 rounded-lg py-2.5 text-sm font-semibold transition-colors',
+                  isCollapsed ? 'justify-center px-2' : 'px-3',
+                  isActive
+                    ? 'bg-slate-950 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {!isCollapsed && <span>{item.name}</span>}
+              </Link>
+            );
+          })}
       </nav>
 
       {!isCollapsed && organizationName && (

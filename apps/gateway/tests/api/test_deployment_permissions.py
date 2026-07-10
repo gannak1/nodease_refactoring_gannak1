@@ -3,11 +3,22 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from sqlalchemy.sql.operators import eq
 
+from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.gateway.api.v1.endpoints import deployment as deployment_endpoint
 from apps.shared.db.models.app import App
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    SURFACE_PUBLIC_INFO,
+)
+from apps.shared.schemas.deployment import (
+    DeploymentPreflightRequest,
+    DeploymentPreflightResponse,
+)
 
 
 class FakeQuery:
@@ -35,6 +46,48 @@ class FakeModelDb:
 
     def query(self, model, *args, **kwargs):
         return FakeQuery(self.rows_by_model.get(model))
+
+
+class FilteringQuery:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.expressions = []
+
+    def filter(self, *expressions):
+        self.expressions.extend(expressions)
+        return self
+
+    def first(self):
+        return next(
+            (
+                row
+                for row in self.rows
+                if all(
+                    self._matches(row, expression) for expression in self.expressions
+                )
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _matches(row, expression):
+        left = getattr(expression, "left", None)
+        if left is None or expression.operator is not eq:
+            return True
+        column = getattr(left, "key", None)
+        if not column or not hasattr(row, column):
+            return False
+        right = expression.right
+        expected = right.value if hasattr(right, "value") else right
+        return getattr(row, column) == expected
+
+
+class FilteringModelDb:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    def query(self, model, *args, **kwargs):
+        return FilteringQuery(row for row in self.rows if isinstance(row, model))
 
 
 def test_get_deployments_authorizes_app_workflow_when_app_and_workflow_supplied(
@@ -130,11 +183,244 @@ def test_get_deployments_accepts_equivalent_workflow_uuid_text(monkeypatch):
     assert result == ["deployment"]
 
 
+def test_preview_deployment_preflight_authorizes_deploy_and_returns_result(monkeypatch):
+    workflow_id = uuid.uuid4()
+    app = SimpleNamespace(id=uuid.uuid4(), workflow_id=workflow_id)
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    graph = {"nodes": [], "edges": []}
+    checked = []
+    captured = {}
+
+    def allow(db, user, checked_workflow_id, action):
+        checked.append((user.id, checked_workflow_id, action))
+
+    def resolve_graph(db, checked_workflow_id, graph_snapshot):
+        captured["resolve"] = (checked_workflow_id, graph_snapshot)
+        return graph
+
+    def preview(db, **kwargs):
+        captured["preview"] = kwargs
+        return DeploymentPreflightResponse(
+            status="passed",
+            audience="anonymous_public",
+        )
+
+    monkeypatch.setattr(deployment_endpoint, "ensure_workflow_permission", allow)
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "_resolve_graph_snapshot",
+        resolve_graph,
+    )
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "preview_knowledge_preflight",
+        preview,
+    )
+
+    result = deployment_endpoint.preview_deployment_preflight(
+        DeploymentPreflightRequest(
+            app_id=app.id,
+            type="chatbot",
+            config={},
+            is_active=True,
+            graph_snapshot=graph,
+            audience="anonymous_public",
+        ),
+        db=FakeModelDb({App: app}),
+        current_user=current_user,
+    )
+
+    assert result.status == "passed"
+    assert checked == [(current_user.id, workflow_id, "deploy")]
+    assert captured["resolve"] == (workflow_id, graph)
+    assert captured["preview"]["app"] == app
+    assert captured["preview"]["deployment_type"].value == "chatbot"
+    assert captured["preview"]["graph_snapshot"] == graph
+    assert captured["preview"]["audience_hint"] == "anonymous_public"
+    assert captured["preview"]["is_active"] is True
+
+
 def test_authenticated_run_routes_are_registered_before_deployment_detail():
     paths = [getattr(route, "path", "") for route in deployment_endpoint.router.routes]
 
     assert paths.index("/{deployment_id}/run-info") < paths.index("/{deployment_id}")
     assert paths.index("/{deployment_id}/run") < paths.index("/{deployment_id}")
+
+
+def test_public_deployment_info_rejects_workflow_node_deployment():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        url_slug="module-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint.get_deployment_info_public(
+            app.url_slug,
+            SimpleNamespace(headers={}),
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            db=FakeModelDb({App: app, WorkflowDeployment: deployment}),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
+
+
+def test_public_deployment_info_rejects_cross_app_active_deployment_pointer():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        url_slug="cross-app-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=uuid.uuid4(),
+        version=1,
+        type=DeploymentType.CHATBOT,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint.get_deployment_info_public(
+            app.url_slug,
+            SimpleNamespace(headers={}),
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            db=FilteringModelDb([app, deployment]),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.API,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBHOOK,
+    ],
+)
+def test_public_deployment_info_rejects_non_public_metadata_types(deployment_type):
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        url_slug=f"private-info-{deployment_type.value}",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=deployment_type,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint.get_deployment_info_public(
+            app.url_slug,
+            SimpleNamespace(headers={}),
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            db=FilteringModelDb([app, deployment]),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
+
+
+def test_public_deployment_info_uses_injected_runtime_policy():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        name="Injected policy app",
+        url_slug="injected-policy-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=DeploymentType.API,
+        graph_snapshot={"nodes": [], "edges": []},
+        input_schema={},
+        output_schema={},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_PUBLIC_INFO,
+        {DeploymentType.API},
+    )
+
+    result = deployment_endpoint.get_deployment_info_public(
+        app.url_slug,
+        SimpleNamespace(headers={}),
+        injected_policy,
+        db=FilteringModelDb([app, deployment]),
+    )
+
+    assert result.type == DeploymentType.API.value
+
+
+def test_public_deployment_info_policy_is_replaceable_at_fastapi_composition_boundary():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        name="Injected HTTP policy app",
+        url_slug="injected-http-policy-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=DeploymentType.API,
+        graph_snapshot={"nodes": [], "edges": []},
+        input_schema={},
+        output_schema={},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_PUBLIC_INFO,
+        {DeploymentType.API},
+    )
+    test_app = FastAPI()
+    test_app.include_router(deployment_endpoint.router, prefix="/deployments")
+    test_app.dependency_overrides[deployment_endpoint.get_db] = lambda: FilteringModelDb(
+        [app, deployment]
+    )
+    test_app.dependency_overrides[get_deployment_runtime_policy] = lambda: injected_policy
+
+    response = TestClient(test_app).get(
+        f"/deployments/public/{app.url_slug}/info"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == DeploymentType.API.value
+    assert DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface[
+        SURFACE_PUBLIC_INFO
+    ] == {"webapp", "widget", "chatbot"}
 
 
 def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
@@ -177,6 +463,7 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
         deployment_endpoint.run_authenticated_deployment(
             deployment_id=str(deployment.id),
             request=SimpleNamespace(headers={"x-request-id": "req-1"}),
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
             db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
             current_user=current_user,
@@ -235,6 +522,7 @@ def test_run_authenticated_deployment_forwards_middleware_request_id(
                 headers={},
                 state=SimpleNamespace(request_id="middleware-req-1"),
             ),
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
             db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
             current_user=current_user,
@@ -271,7 +559,7 @@ def test_get_authenticated_deployment_run_info_authorizes_execute(monkeypatch):
     monkeypatch.setattr(
         deployment_endpoint.DeploymentService,
         "get_deployment_run_info",
-        lambda db, deployment_id: {
+        lambda db, deployment_id, **_kwargs: {
             "deployment_id": deployment_id,
             "name": "safe run info",
             "input_schema": {"variables": []},
@@ -281,6 +569,7 @@ def test_get_authenticated_deployment_run_info_authorizes_execute(monkeypatch):
     result = deployment_endpoint.get_authenticated_deployment_run_info(
         deployment_id=str(deployment.id),
         request=SimpleNamespace(headers={}),
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
         current_user=current_user,
     )
@@ -317,6 +606,7 @@ def test_run_authenticated_deployment_rejects_non_object_inputs(monkeypatch):
             deployment_endpoint.run_authenticated_deployment(
                 deployment_id=str(deployment.id),
                 request=SimpleNamespace(headers={}),
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 request_body={"inputs": "not-an-object"},
                 db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
                 current_user=SimpleNamespace(id=uuid.uuid4()),
@@ -366,6 +656,7 @@ def test_run_authenticated_deployment_masks_active_organization_mismatch(
             deployment_endpoint.run_authenticated_deployment(
                 deployment_id=str(deployment.id),
                 request=SimpleNamespace(headers={}),
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 request_body={"inputs": {}},
                 x_organization_id=str(active_organization_id),
                 db=FakeModelDb({WorkflowDeployment: deployment, App: app}),

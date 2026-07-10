@@ -15,6 +15,7 @@ const workflowApiMock = vi.hoisted(() => ({
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'workflow-1', nodeId: 'llm-1' }),
   useRouter: () => routerMock,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('../../api/workflowApi', () => ({
@@ -196,12 +197,12 @@ describe('FR-009 Cost Optimizer usage display', () => {
     expect(screen.getByText('A 응답 토큰')).toBeInTheDocument();
     expect(screen.getByText('B 프롬프트 토큰')).toBeInTheDocument();
     expect(screen.getByText('B 응답 토큰')).toBeInTheDocument();
-    expect(screen.getByText('90')).toBeInTheDocument();
-    expect(screen.getByText('30')).toBeInTheDocument();
-    expect(screen.getByText('50')).toBeInTheDocument();
-    expect(screen.getByText('20')).toBeInTheDocument();
-    expect(screen.getByText('$0.00042')).toBeInTheDocument();
-    expect(screen.getByText('940ms')).toBeInTheDocument();
+    expect(screen.getAllByText('90').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('30').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('50').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('20').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('$0.00042').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('940ms').length).toBeGreaterThan(0);
     expect(
       screen.getByText(/비교 실행에서 발생한 LLM 비용도 usage 기록에 포함됩니다/),
     ).toBeInTheDocument();
@@ -286,6 +287,8 @@ describe('FR-009 Cost Optimizer usage display', () => {
       );
     });
 
+    fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
+
     expect(screen.getByText('이전 실험 이력')).toBeInTheDocument();
     expect(screen.getByLabelText('후보 상태')).toBeInTheDocument();
     expect(screen.getByLabelText('모델 필터')).toBeInTheDocument();
@@ -315,6 +318,8 @@ describe('FR-009 Cost Optimizer usage display', () => {
     await waitFor(() => {
       expect(workflowApiMock.listCostOptimizerExperiments).toHaveBeenCalled();
     });
+
+    fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
 
     fireEvent.change(screen.getByLabelText('시작일'), {
       target: { value: '2026-07-01' },

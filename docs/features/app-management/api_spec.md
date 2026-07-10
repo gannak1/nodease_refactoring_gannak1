@@ -8,7 +8,7 @@ Verified Against: TBD
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
 | GET | `/api/v1/apps` | 현재 사용자가 접근할 수 있는 App 목록 | authenticated organization member |
-| GET | `/api/v1/apps/operations` | 내 모듈 운영 현황 목록 | authenticated organization member |
+| GET | `/api/v1/apps/operations` | 내 모듈 운영 현황 목록 | organization manager or workflow builder/manager |
 
 ## Request And Response Models
 
@@ -30,7 +30,7 @@ Budget Management 확장 계약은 [budget-management api_spec](../budget-manage
 }
 ```
 
-- `budget_status`는 member 표면용 요약이다. 예산 금액과 당월 비용 원문은 포함하지 않는다.
+- `budget_status`는 안전 목록 요약이다. 예산 금액과 당월 비용 원문은 포함하지 않는다.
 - 활성 예산이 없거나 `workflow_id`가 null이면 `budget_status`는 null이다.
 - 같은 `app_id`에 과거/보조 Workflow row가 남아 있어도 App의 primary workflow(`apps.workflow_id`)가 아니면 `budget_status` 후보로 사용하지 않는다.
 - `budget_status` 계산 규칙과 N+1 금지는 [budget-management api_spec](../budget-management/api_spec.md)의 `GET /apps, GET /apps/operations (확장)`을 따른다.
@@ -38,7 +38,7 @@ Budget Management 확장 계약은 [budget-management api_spec](../budget-manage
 
 ### GET /apps/operations
 
-`/dashboard/mymodule`의 원천이다. 응답 항목의 `app` summary는 App 기본 정보와 운영 상태를 함께 표시하기 위한 안전 요약이다.
+`/dashboard/mymodule`의 원천이다. 이 화면은 최종 사용자의 workflow 실행 표면이 아니라 작성자/운영자가 배포, 권한, 비용, 최근 실행 상태를 확인하는 운영 표면이다. 응답 항목의 `app` summary는 App 기본 정보와 운영 상태를 함께 표시하기 위한 안전 요약이다.
 
 Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_status`와 동일한 shape를 사용한다.
 
@@ -79,5 +79,6 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 
 ## Permissions
 
-- App 목록과 운영 현황은 active organization context를 기준으로 사용자가 접근 가능한 App/Workflow만 반환한다.
-- `budget_status`는 사용률과 상태만 노출한다. `/apps/operations`의 `operation_metrics`는 사용자가 접근 가능한 workflow row의 운영 비용 요약으로만 사용한다.
+- App 목록은 active organization context를 기준으로 사용자가 읽을 수 있는 App/Workflow만 반환한다.
+- 운영 현황은 active organization context를 기준으로 organization manager이거나 workflow `write` 이상 권한을 가진 App/Workflow만 반환한다. Workflow `execute` 전용 사용자는 `/apps/operations` 대상이 아니며, 배포된 챗봇 링크 또는 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다.
+- `budget_status`는 사용률과 상태만 노출한다. `/apps/operations`의 `operation_metrics`는 운영 표면에 반환된 workflow row의 비용 요약으로만 사용한다.

@@ -13,7 +13,7 @@ Related ADRs: [ADR-0002-auth-state-standard](ADR-0002-auth-state-standard.md), [
 - [ADR-0002-auth-state-standard](ADR-0002-auth-state-standard.md)
 - [ADR-0003-user-direct-permission](ADR-0003-user-direct-permission.md)
 
-이후 active 요구사항, 데이터 모델, RBAC 정책, API 문서, 구현 계획은 MVP 목표 상태를 이미 `viewer/operator/builder/manager` 기반 `auth_state`와 resource별 additive user direct permission 기준으로 정렬했다. 코드도 `user_workflow_permissions`, `user_llm_permissions`, effective permission helper, legacy auth_state compatibility mapping을 포함한다.
+이후 active 요구사항, 데이터 모델, RBAC 정책, API 문서, 구현 계획은 MVP 목표 상태를 이미 `viewer/operator/builder/manager` 기반 `auth_state`와 resource별 additive user direct permission 기준으로 정렬했다. 코드도 `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, effective permission helper, legacy auth_state compatibility mapping을 포함한다.
 
 기존 Proposed ADR 본문을 덮어쓰면 당시 미확정 상태가 사라지므로, 이 ADR을 후속 승인 기록으로 추가한다.
 
@@ -61,5 +61,5 @@ Active 문서에서 `auth_state` 표준값과 user direct permission을 확정 �
 ## 후속 검토
 
 - active 문서의 `Related ADRs`가 필요하면 이 ADR을 함께 참조하도록 정리한다.
-- `user_knowledge_permissions`, `user_audit_permissions` 구현 시 MVP별 범위가 이 ADR의 승인 범위와 맞는지 다시 확인한다.
+- `user_audit_permissions` 구현 시 MVP별 범위가 이 ADR의 승인 범위와 맞는지 다시 확인한다.
 - audit action naming은 별도 결정 또는 API 문서에서 표준화한다.

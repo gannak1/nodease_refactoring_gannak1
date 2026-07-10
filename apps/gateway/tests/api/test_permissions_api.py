@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from operator import eq
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,14 +11,18 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import is_
 
 from apps.gateway.main import app
+from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.team import (
     Team,
+    TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserWorkflowPermission,
 )
@@ -199,6 +203,612 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertIn(TeamWorkflowPermission, session.query_calls)
         self.assertIn(UserWorkflowPermission, session.query_calls)
 
+    def test_list_knowledge_permissions_returns_team_and_user_entries_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        target_user_id = uuid4()
+        assigned_at = datetime(2026, 7, 9, 5, 17, 29, tzinfo=timezone.utc)
+        team = _team(id=team_id, organization_id=organization_id)
+        target_user = _user(
+            id=target_user_id,
+            email="target@example.com",
+            name="Target User",
+        )
+        team_permission = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="operator",
+            assigned_by=user_id,
+        )
+        team_permission.assigned_at = assigned_at
+        team_permission.team = team
+        team_permission.team_organization_id = organization_id
+        team_permission.team_is_active = True
+        user_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="manager",
+            assigned_by=user_id,
+        )
+        user_permission.assigned_at = assigned_at
+        user_permission.user = target_user
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            knowledge_team_permissions=[team_permission],
+            knowledge_user_permissions=[user_permission],
+        )
+
+        response = self._get_knowledge_permissions(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "resource_type": "knowledge_base",
+                "resource_id": str(knowledge_base_id),
+                "organization_id": str(organization_id),
+                "team_permissions": [
+                    {
+                        "id": str(team_permission.id),
+                        "grantee_type": "team",
+                        "grantee_id": str(team_id),
+                        "grantee_name": "Builders",
+                        "auth_state": "operator",
+                        "assigned_at": "2026-07-09T05:17:29Z",
+                    }
+                ],
+                "user_permissions": [
+                    {
+                        "id": str(user_permission.id),
+                        "grantee_type": "user",
+                        "grantee_id": str(target_user_id),
+                        "grantee_name": "Target User",
+                        "auth_state": "manager",
+                        "assigned_at": "2026-07-09T05:17:29Z",
+                    }
+                ],
+            },
+        )
+        self.assertIn(TeamKnowledgePermission, session.query_calls)
+        self.assertIn(UserKnowledgePermission, session.query_calls)
+
+    def test_list_knowledge_permissions_hides_archived_knowledge_base(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                lifecycle_state="archived",
+            ),
+        )
+
+        response = self._get_knowledge_permissions(
+            session=session,
+            user_id=user_id,
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Knowledge Base not found."),
+        )
+        self.assertNotIn(TeamKnowledgePermission, session.query_calls)
+        self.assertNotIn(UserKnowledgePermission, session.query_calls)
+
+    def test_put_team_knowledge_permission_hides_archived_knowledge_base(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                lifecycle_state="archived",
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+        )
+
+        response = self._put_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            payload={"auth_state": "viewer"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Knowledge Base not found."),
+        )
+        self.assertNotIn(Team, session.query_calls)
+        self.assertFalse(session.scalars_called)
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_not_called()
+
+    def test_put_team_knowledge_permission_creates_audit_row_for_organization_manager(
+        self,
+    ):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        upsert_result = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="operator",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+            knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            payload={"auth_state": "operator"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["knowledge_base_id"], str(knowledge_base_id))
+        self.assertEqual(response.json()["team_id"], str(team_id))
+        self.assertEqual(response.json()["auth_state"], "operator")
+        self.assertTrue(session.committed)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "team_knowledge_permission.created")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.target_type, "team_knowledge_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertIsNone(audit.before)
+        self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
+        self.assertEqual(audit.after["team_id"], str(team_id))
+        self.assertIsInstance(audit.after["assigned_at"], str)
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_team_knowledge_permission_updates_audit_row_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        previous_assigned_by = uuid4()
+        existing_permission = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="viewer",
+            assigned_by=previous_assigned_by,
+        )
+        upsert_result = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="manager",
+            assigned_by=user_id,
+        )
+        upsert_result.id = existing_permission.id
+        upsert_result.assigned_at = existing_permission.assigned_at + timedelta(
+            seconds=1
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+            existing_knowledge_permission=existing_permission,
+            knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            payload={"auth_state": "manager"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["auth_state"], "manager")
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "team_knowledge_permission.updated")
+        self.assertEqual(audit.target_type, "team_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertEqual(audit.after["auth_state"], "manager")
+        self.assertEqual(audit.before["assigned_by"], str(previous_assigned_by))
+        self.assertEqual(audit.after["assigned_by"], str(user_id))
+        self.assertNotIn("knowledge_base_id", audit.before)
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_user_knowledge_permission_creates_row_for_organization_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        upsert_result = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            target_user=_user(
+                id=target_user_id,
+                email="target@example.com",
+                name="Target User",
+            ),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            user_knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "builder"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["knowledge_base_id"], str(knowledge_base_id))
+        self.assertEqual(response.json()["user_id"], str(target_user_id))
+        self.assertEqual(response.json()["auth_state"], "builder")
+        self.assertTrue(session.committed)
+        self.assertTrue(session.scalars_called)
+        compiled = str(session.upsert_statement.compile(dialect=postgresql.dialect()))
+        self.assertIn(
+            "ON CONFLICT (grantee_organization_id, user_id, knowledge_base_id)",
+            compiled,
+        )
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_knowledge_permission.created")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.actor_type, "user")
+        self.assertEqual(audit.target_type, "user_knowledge_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertIsNone(audit.before)
+        self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
+        self.assertIsInstance(audit.after["assigned_at"], str)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_user_knowledge_permission_updates_audit_row_for_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        previous_assigned_by = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=previous_assigned_by,
+        )
+        upsert_result = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=user_id,
+        )
+        upsert_result.id = existing_permission.id
+        upsert_result.assigned_at = existing_permission.assigned_at + timedelta(
+            seconds=1
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            target_user=_user(
+                id=target_user_id,
+                email="target@example.com",
+                name="Target User",
+            ),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_knowledge_permission=existing_permission,
+            user_knowledge_upsert_result=upsert_result,
+        )
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "builder"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["auth_state"], "builder")
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_knowledge_permission.updated")
+        self.assertEqual(audit.target_type, "user_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertEqual(audit.after["auth_state"], "builder")
+        self.assertEqual(audit.before["assigned_by"], str(previous_assigned_by))
+        self.assertEqual(audit.after["assigned_by"], str(user_id))
+        self.assertNotIn("knowledge_base_id", audit.before)
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_user_knowledge_permission_noops_same_auth_state_without_audit(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            target_user=_user(
+                id=target_user_id,
+                email="target@example.com",
+                name="Target User",
+            ),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_knowledge_permission=existing_permission,
+            user_knowledge_upsert_result=None,
+        )
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["auth_state"], "viewer")
+        self.assertTrue(session.committed)
+        self.assertTrue(session.scalars_called)
+        self.permission_audit.assert_not_called()
+        self.assertEqual(
+            [value for value in session.added if isinstance(value, AuditLog)],
+            [],
+        )
+
+    def test_put_team_knowledge_permission_rejects_none_auth_state(self):
+        response = self._put_knowledge_permission(
+            session=_Session(),
+            user_id=uuid4(),
+            knowledge_base_id=uuid4(),
+            team_id=uuid4(),
+            payload={"auth_state": "none"},
+            organization_id=uuid4(),
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_delete_user_knowledge_permission_deletes_row_for_organization_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            existing_user_knowledge_permission=existing_permission,
+        )
+
+        response = self._delete_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "User knowledge permission deleted",
+                "id": str(existing_permission.id),
+            },
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertEqual(session.bulk_deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_knowledge_permission.deleted")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.target_type, "user_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["id"], str(existing_permission.id))
+        self.assertEqual(audit.before["user_id"], str(target_user_id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertIsInstance(audit.before["assigned_at"], str)
+        self.assertIsNone(audit.after)
+        _assert_audit_added_before_commit(self, session)
+
+    def test_delete_user_knowledge_permission_hides_deleted_knowledge_base(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        target_user_id = uuid4()
+        existing_permission = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                lifecycle_state="deleted",
+            ),
+            existing_user_knowledge_permission=existing_permission,
+        )
+
+        response = self._delete_user_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            _error("resource.not_found", "Knowledge Base not found."),
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertFalse(session.committed)
+        self.assertIsNone(session.lock_statement)
+        self.permission_audit.assert_not_called()
+
+    def test_delete_team_knowledge_permission_deletes_row_for_organization_manager(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        existing_permission = _team_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            auth_state="operator",
+            assigned_by=user_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+            existing_knowledge_permission=existing_permission,
+        )
+
+        response = self._delete_knowledge_permission(
+            session=session,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            team_id=team_id,
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "message": "Team knowledge permission deleted",
+                "id": str(existing_permission.id),
+            },
+        )
+        self.assertEqual(session.deleted, [])
+        self.assertEqual(session.bulk_deleted, [existing_permission])
+        self.assertTrue(session.committed)
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "team_knowledge_permission.deleted")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.target_type, "team_knowledge_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["id"], str(existing_permission.id))
+        self.assertEqual(audit.before["team_id"], str(team_id))
+        self.assertEqual(audit.before["auth_state"], "operator")
+        self.assertIsInstance(audit.before["assigned_at"], str)
+        self.assertIsNone(audit.after)
+        _assert_audit_added_before_commit(self, session)
+
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
         # organization manager가 아니어도 대상 workflow의 manager 권한이 있으면 기존 row를 수정할 수 있다.
         user_id = uuid4()
@@ -221,6 +831,9 @@ class TestPermissionsApi(unittest.TestCase):
             assigned_by=user_id,
         )
         upsert_result.id = existing_permission.id
+        upsert_result.assigned_at = existing_permission.assigned_at + timedelta(
+            seconds=1
+        )
         session = _Session(
             organization=_organization(id=organization_id, created_by=uuid4()),
             membership=_membership(user_id=user_id, organization_id=organization_id),
@@ -2605,6 +3218,42 @@ class TestPermissionsApi(unittest.TestCase):
                 headers=headers,
             )
 
+    def _get_knowledge_permissions(
+        self,
+        session,
+        user_id,
+        knowledge_base_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 KB permission 목록 endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).get(
+                f"/api/v1/permissions/knowledge-bases/{knowledge_base_id}",
+                headers=headers,
+            )
+
     def _put_user_permission(
         self,
         session,
@@ -2640,6 +3289,85 @@ class TestPermissionsApi(unittest.TestCase):
         ):
             return TestClient(app).put(
                 f"/api/v1/permissions/workflows/{workflow_id}/users/{target_user_id}",
+                headers=headers,
+                json=payload,
+            )
+
+    def _put_knowledge_permission(
+        self,
+        session,
+        user_id,
+        knowledge_base_id,
+        team_id,
+        payload,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 KB team 권한 PUT endpoint를 호출한다."""
+        _ensure_active_user_row(session, user_id)
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).put(
+                f"/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}",
+                headers=headers,
+                json=payload,
+            )
+
+    def _put_user_knowledge_permission(
+        self,
+        session,
+        user_id,
+        knowledge_base_id,
+        target_user_id,
+        payload,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 KB user 직접 권한 PUT endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).put(
+                f"/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{target_user_id}",
                 headers=headers,
                 json=payload,
             )
@@ -2834,6 +3562,80 @@ class TestPermissionsApi(unittest.TestCase):
                 headers=headers,
             )
 
+    def _delete_knowledge_permission(
+        self,
+        session,
+        user_id,
+        knowledge_base_id,
+        team_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 KB team 권한 DELETE endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).delete(
+                f"/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}",
+                headers=headers,
+            )
+
+    def _delete_user_knowledge_permission(
+        self,
+        session,
+        user_id,
+        knowledge_base_id,
+        target_user_id,
+        organization_id=None,
+        raw_organization_id=None,
+        include_auth_cookie=True,
+        auth_side_effect=None,
+    ):
+        """fake DB session과 fake 인증 결과로 KB user 직접 권한 DELETE endpoint를 호출한다."""
+        app.dependency_overrides[get_db] = lambda: session
+        headers = {
+            "X-Request-ID": "req-test",
+        }
+        if include_auth_cookie:
+            headers["Cookie"] = "auth_token=token"
+        if raw_organization_id is not None:
+            headers["X-Organization-Id"] = raw_organization_id
+        elif organization_id is not None:
+            headers["X-Organization-Id"] = str(organization_id)
+
+        patch_kwargs = (
+            {"side_effect": auth_side_effect}
+            if auth_side_effect is not None
+            else {"return_value": SimpleNamespace(id=user_id)}
+        )
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.AuthService.get_user_from_token",
+            **patch_kwargs,
+        ):
+            return TestClient(app).delete(
+                f"/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{target_user_id}",
+                headers=headers,
+            )
+
     def _delete_user_llm_permission(
         self,
         session,
@@ -2880,12 +3682,14 @@ class _Query:
         items=None,
         apply_filters=False,
         project_auth_state=False,
+        delete_sink=None,
     ):
         """first/all 결과와 필터 적용 여부를 받아 fake query를 구성한다."""
         self.first_result = first_result
         self.items = items or []
         self.apply_filters = apply_filters
         self.project_auth_state = project_auth_state
+        self.delete_sink = delete_sink
         self.join_values = []
         self.filter_expressions = []
         self.options_values = []
@@ -2938,6 +3742,16 @@ class _Query:
             return [item.auth_state for item in rows]
         return rows
 
+    def delete(self, synchronize_session=False):
+        """SQLAlchemy bulk delete 경로를 기록한다."""
+        if self.first_result is not None:
+            rows = [self.first_result] if self.first() is not None else []
+        else:
+            rows = self.all()
+        if self.delete_sink is not None:
+            self.delete_sink.extend(rows)
+        return len(rows)
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -2960,25 +3774,34 @@ class _Session:
         organization=None,
         membership=None,
         workflow=None,
+        knowledge_base=None,
         credential=None,
         team=None,
         target_user=None,
         target_membership=None,
         manager_permissions=None,
+        knowledge_manager_permissions=None,
         llm_manager_permissions=None,
         user_direct_permissions=None,
+        user_knowledge_direct_permissions=None,
         user_llm_direct_permissions=None,
         existing_permission=None,
+        existing_knowledge_permission=None,
         existing_llm_permission=None,
         existing_user_permission=None,
+        existing_user_knowledge_permission=None,
         existing_user_llm_permission=None,
         workflow_team_permissions=None,
         workflow_user_permissions=None,
+        knowledge_team_permissions=None,
+        knowledge_user_permissions=None,
         llm_team_permissions=None,
         llm_user_permissions=None,
         upsert_result=None,
+        knowledge_upsert_result=None,
         llm_upsert_result=None,
         user_upsert_result=None,
+        user_knowledge_upsert_result=None,
         user_llm_upsert_result=None,
     ):
         """권한 endpoint가 사용하는 Session API의 최소 동작을 구성한다."""
@@ -2995,6 +3818,10 @@ class _Session:
             apply_filters=True,
         )
         self.workflow_query = _Query(first_result=workflow, apply_filters=True)
+        self.knowledge_base_query = _Query(
+            first_result=knowledge_base,
+            apply_filters=True,
+        )
         self.credential_query = _Query(first_result=credential, apply_filters=True)
         self.team_query = _Query(first_result=team, apply_filters=True)
         self.user_rows = _active_user_rows(organization, membership, target_user)
@@ -3004,36 +3831,50 @@ class _Session:
             apply_filters=True,
         )
         self.manager_permissions = manager_permissions
+        self.knowledge_manager_permissions = knowledge_manager_permissions
         self.llm_manager_permissions = llm_manager_permissions
         self.user_direct_permissions = user_direct_permissions or []
+        self.user_knowledge_direct_permissions = user_knowledge_direct_permissions or []
         self.user_llm_direct_permissions = user_llm_direct_permissions or []
         self.existing_permission = existing_permission
+        self.existing_knowledge_permission = existing_knowledge_permission
         self.existing_llm_permission = existing_llm_permission
         self.existing_user_permission = existing_user_permission
+        self.existing_user_knowledge_permission = existing_user_knowledge_permission
         self.existing_user_llm_permission = existing_user_llm_permission
         self.workflow_team_permissions = workflow_team_permissions
         self.workflow_user_permissions = workflow_user_permissions
+        self.knowledge_team_permissions = knowledge_team_permissions
+        self.knowledge_user_permissions = knowledge_user_permissions
         self.llm_team_permissions = llm_team_permissions
         self.llm_user_permissions = llm_user_permissions
         self.workflow_manager_query = None
+        self.knowledge_manager_query = None
         self.llm_manager_query = None
         self.user_workflow_query = None
+        self.user_knowledge_query = None
         self.user_llm_query = None
         self.workflow_permission_query_count = 0
+        self.knowledge_permission_query_count = 0
         self.llm_permission_query_count = 0
         self.membership_query_count = 0
         self.user_query_count = 0
         self.user_workflow_permission_query_count = 0
+        self.user_knowledge_permission_query_count = 0
         self.user_llm_permission_query_count = 0
         self.upsert_result = upsert_result
+        self.knowledge_upsert_result = knowledge_upsert_result
         self.llm_upsert_result = llm_upsert_result
         self.user_upsert_result = user_upsert_result
+        self.user_knowledge_upsert_result = user_knowledge_upsert_result
         self.user_llm_upsert_result = user_llm_upsert_result
         self.upsert_statement = None
         self.lock_statement = None
         self.query_calls = []
         self.added = []
         self.deleted = []
+        self.bulk_deleted = []
+        self.operations = []
         self.scalars_called = False
         self.committed = False
         self.refreshed = False
@@ -3058,6 +3899,8 @@ class _Session:
             return self.membership_query
         if model is Workflow:
             return self.workflow_query
+        if model is KnowledgeBase:
+            return self.knowledge_base_query
         if model is LLMCredential:
             return self.credential_query
         if model is Team:
@@ -3102,6 +3945,46 @@ class _Session:
                     project_auth_state=True,
                 )
                 return self.workflow_manager_query
+            return _Query(items=[], apply_filters=True, project_auth_state=True)
+        if model is TeamKnowledgePermission:
+            self.knowledge_permission_query_count += 1
+            if self.knowledge_team_permissions is not None:
+                return _Query(
+                    items=self.knowledge_team_permissions,
+                    apply_filters=True,
+                )
+            if (
+                self.knowledge_manager_permissions is not None
+                and self.knowledge_permission_query_count == 1
+            ):
+                self.knowledge_manager_query = _Query(
+                    items=self.knowledge_manager_permissions,
+                    apply_filters=True,
+                )
+                return self.knowledge_manager_query
+            return _Query(
+                first_result=self.existing_knowledge_permission,
+                apply_filters=True,
+                delete_sink=self.bulk_deleted,
+            )
+        if model is TeamKnowledgePermission.auth_state:
+            self.knowledge_permission_query_count += 1
+            if self.knowledge_team_permissions is not None:
+                return _Query(
+                    items=self.knowledge_team_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+            if (
+                self.knowledge_manager_permissions is not None
+                and self.knowledge_permission_query_count == 1
+            ):
+                self.knowledge_manager_query = _Query(
+                    items=self.knowledge_manager_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+                return self.knowledge_manager_query
             return _Query(items=[], apply_filters=True, project_auth_state=True)
         if model is TeamLLMPermission:
             self.llm_permission_query_count += 1
@@ -3180,6 +4063,46 @@ class _Session:
                 )
                 return self.user_workflow_query
             return _Query(items=[], apply_filters=True, project_auth_state=True)
+        if model is UserKnowledgePermission:
+            self.user_knowledge_permission_query_count += 1
+            if self.knowledge_user_permissions is not None:
+                return _Query(
+                    items=self.knowledge_user_permissions,
+                    apply_filters=True,
+                )
+            if (
+                self.user_knowledge_direct_permissions
+                and self.user_knowledge_permission_query_count == 1
+            ):
+                self.user_knowledge_query = _Query(
+                    items=self.user_knowledge_direct_permissions,
+                    apply_filters=True,
+                )
+                return self.user_knowledge_query
+            return _Query(
+                first_result=self.existing_user_knowledge_permission,
+                apply_filters=True,
+                delete_sink=self.bulk_deleted,
+            )
+        if model is UserKnowledgePermission.auth_state:
+            self.user_knowledge_permission_query_count += 1
+            if self.knowledge_user_permissions is not None:
+                return _Query(
+                    items=self.knowledge_user_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+            if (
+                self.user_knowledge_direct_permissions
+                and self.user_knowledge_permission_query_count == 1
+            ):
+                self.user_knowledge_query = _Query(
+                    items=self.user_knowledge_direct_permissions,
+                    apply_filters=True,
+                    project_auth_state=True,
+                )
+                return self.user_knowledge_query
+            return _Query(items=[], apply_filters=True, project_auth_state=True)
         if model is UserLLMPermission:
             self.user_llm_permission_query_count += 1
             if self.llm_user_permissions is not None:
@@ -3224,6 +4147,7 @@ class _Session:
     def add(self, value):
         """ORM insert 경로 사용 여부를 감지하도록 add 호출 값을 기록한다."""
         self.added.append(value)
+        self.operations.append(("add", type(value)))
 
     def delete(self, value):
         """ORM delete 경로 사용 여부를 감지하도록 delete 호출 값을 기록한다."""
@@ -3234,10 +4158,14 @@ class _Session:
         self.scalars_called = True
         self.upsert_statement = statement
         table_name = getattr(getattr(statement, "table", None), "name", None)
+        if table_name == TeamKnowledgePermission.__tablename__:
+            return _ScalarResult(self.knowledge_upsert_result)
         if table_name == TeamLLMPermission.__tablename__:
             return _ScalarResult(self.llm_upsert_result)
         if table_name == UserWorkflowPermission.__tablename__:
             return _ScalarResult(self.user_upsert_result)
+        if table_name == UserKnowledgePermission.__tablename__:
+            return _ScalarResult(self.user_knowledge_upsert_result)
         if table_name == UserLLMPermission.__tablename__:
             return _ScalarResult(self.user_llm_upsert_result)
         return _ScalarResult(self.upsert_result)
@@ -3250,6 +4178,7 @@ class _Session:
     def commit(self):
         """endpoint가 transaction commit까지 도달했는지 표시한다."""
         self.committed = True
+        self.operations.append(("commit", None))
 
     def refresh(self, value):
         """id가 비어 있으면 fake id를 넣고 refresh 호출을 기록한다."""
@@ -3286,6 +4215,24 @@ def _workflow(id, organization_id):
         env_variables={},
         runtime_variables={},
         created_by=uuid4(),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _knowledge_base(id, organization_id, user_id, lifecycle_state="active"):
+    """KB scope 검증에 필요한 필드만 채운 KnowledgeBase fixture를 만든다."""
+    now = datetime.now(timezone.utc)
+    return KnowledgeBase(
+        id=id,
+        organization_id=organization_id,
+        name="Knowledge Base",
+        description=None,
+        embedding_model="text-embedding-3-small",
+        top_k=5,
+        similarity_threshold=0.7,
+        user_id=user_id,
+        lifecycle_state=lifecycle_state,
         created_at=now,
         updated_at=now,
     )
@@ -3452,6 +4399,60 @@ def _user_workflow_permission(
     )
 
 
+def _team_knowledge_permission(
+    organization_id,
+    knowledge_base_id,
+    team_id,
+    auth_state,
+    assigned_by,
+    member_user_id=None,
+    membership_organization_id=None,
+    team_organization_id=None,
+    team_is_active=True,
+):
+    """KB 권한 판정과 upsert returning용 team permission fixture를 만든다."""
+    permission = TeamKnowledgePermission(
+        id=uuid4(),
+        grantee_organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        team_id=team_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=datetime.now(timezone.utc),
+        options={},
+        flags=0,
+    )
+    if member_user_id is not None:
+        permission.member_user_id = member_user_id
+        permission.membership_grantee_organization_id = (
+            membership_organization_id or organization_id
+        )
+        permission.team_organization_id = team_organization_id or organization_id
+        permission.team_is_active = team_is_active
+    return permission
+
+
+def _user_knowledge_permission(
+    organization_id,
+    knowledge_base_id,
+    user_id,
+    auth_state,
+    assigned_by,
+):
+    """user direct KB permission fixture를 만든다."""
+    return UserKnowledgePermission(
+        id=uuid4(),
+        grantee_organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        user_id=user_id,
+        auth_state=auth_state,
+        assigned_by=assigned_by,
+        assigned_at=datetime.now(timezone.utc),
+        options={},
+        flags=0,
+    )
+
+
 def _user_llm_permission(
     organization_id,
     credential_id,
@@ -3506,6 +4507,22 @@ def _team_llm_permission(
     return permission
 
 
+def _single_added_audit(session):
+    audits = [value for value in session.added if isinstance(value, AuditLog)]
+    if len(audits) != 1:
+        raise AssertionError(f"Expected exactly one AuditLog, got {len(audits)}")
+    return audits[0]
+
+
+def _assert_audit_added_before_commit(testcase, session):
+    testcase.assertIn(("add", AuditLog), session.operations)
+    testcase.assertIn(("commit", None), session.operations)
+    testcase.assertLess(
+        session.operations.index(("add", AuditLog)),
+        session.operations.index(("commit", None)),
+    )
+
+
 def _matches_expression(obj, expression):
     """fake query가 주요 SQLAlchemy filter 표현식을 적용하게 평가한다."""
     left_value = _column_value(obj, str(expression.left))
@@ -3542,6 +4559,13 @@ def _column_value(obj, column):
         "users.deactivated_at": getattr(obj, "deactivated_at", None),
         "workflows.id": getattr(obj, "id", missing),
         "workflows.organization_id": getattr(obj, "organization_id", missing),
+        "knowledge_bases.id": getattr(obj, "id", missing),
+        "knowledge_bases.organization_id": getattr(
+            obj,
+            "organization_id",
+            missing,
+        ),
+        "knowledge_bases.lifecycle_state": getattr(obj, "lifecycle_state", missing),
         "llm_credentials.id": getattr(obj, "id", missing),
         "llm_credentials.organization_id": getattr(
             obj,
@@ -3581,6 +4605,17 @@ def _column_value(obj, column):
             missing,
         ),
         "team_workflow_permissions.team_id": getattr(obj, "team_id", missing),
+        "team_knowledge_permissions.knowledge_base_id": getattr(
+            obj,
+            "knowledge_base_id",
+            missing,
+        ),
+        "team_knowledge_permissions.grantee_organization_id": getattr(
+            obj,
+            "grantee_organization_id",
+            missing,
+        ),
+        "team_knowledge_permissions.team_id": getattr(obj, "team_id", missing),
         "team_llm_permissions.llm_credential_id": getattr(
             obj,
             "llm_credential_id",
@@ -3599,6 +4634,17 @@ def _column_value(obj, column):
             missing,
         ),
         "user_workflow_permissions.grantee_organization_id": getattr(
+            obj,
+            "grantee_organization_id",
+            missing,
+        ),
+        "user_knowledge_permissions.user_id": getattr(obj, "user_id", missing),
+        "user_knowledge_permissions.knowledge_base_id": getattr(
+            obj,
+            "knowledge_base_id",
+            missing,
+        ),
+        "user_knowledge_permissions.grantee_organization_id": getattr(
             obj,
             "grantee_organization_id",
             missing,

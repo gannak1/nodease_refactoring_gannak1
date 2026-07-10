@@ -19,11 +19,6 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import or_, text
-from sqlalchemy.orm import Session
-
-from apps.gateway.services.auth_service import AuthService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import (
@@ -48,14 +43,6 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.permission_request import (
-    PERMISSION_REQUEST_APPROVED,
-    REQUESTED_PERMISSION_APP_CREATE,
-    PermissionRequest,
-)
-from apps.shared.db.models.user_app_creation_permission import (
-    UserAppCreationPermission,
-)
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_AUTH_MEMBER,
@@ -64,6 +51,11 @@ from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_REMOVED,
     ORGANIZATION_MEMBERSHIP_SUSPENDED,
     OrganizationMembership,
+)
+from apps.shared.db.models.permission_request import (
+    PERMISSION_REQUEST_APPROVED,
+    REQUESTED_PERMISSION_APP_CREATE,
+    PermissionRequest,
 )
 from apps.shared.db.models.team import (
     Team,
@@ -77,6 +69,9 @@ from apps.shared.db.models.team import (
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.db.models.user_app_creation_permission import (
+    UserAppCreationPermission,
+)
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
@@ -88,6 +83,10 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.services.password_hashing import hash_password
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import or_, text
+from sqlalchemy.orm import Session
 
 DEMO_SEED_VERSION = "final-demo-2026-07"
 DEMO_PASSWORD = "123123"
@@ -1912,7 +1911,7 @@ def _output_schema() -> dict[str, Any]:
 
 def _seed_users_and_org(db: Session) -> None:
     _adopt_existing_demo_user_ids(db)
-    hashed_password = AuthService.hash_password(DEMO_PASSWORD)
+    hashed_password = hash_password(DEMO_PASSWORD)
     for spec in USER_SPECS:
         user = _upsert_by_id(
             db,
@@ -2056,7 +2055,6 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
         [
             ("internal_privacy_hr_records", "platform_admin", "manager"),
             ("internal_privacy_hr_records", "hr_knowledge_users", "operator"),
-            ("internal_privacy_hr_records", "ai_builder_onboarding", "operator"),
             ("internal_compensation_access_policy", "platform_admin", "manager"),
             ("internal_compensation_access_policy", "hr_knowledge_users", "operator"),
             ("internal_compensation_access_policy", "ai_builder_onboarding", "operator"),
@@ -3139,7 +3137,7 @@ def _test_feature_graph() -> dict[str, Any]:
 def seed_test_data(db: Session) -> None:
     """Upsert mutable local QA seed data without touching final demo rows."""
     _adopt_existing_test_user_ids(db)
-    hashed_password = AuthService.hash_password(DEMO_PASSWORD)
+    hashed_password = hash_password(DEMO_PASSWORD)
 
     for spec in TEST_USER_SPECS:
         _upsert_by_id(

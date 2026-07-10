@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
+from apps.shared.db.base import Base
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -16,8 +17,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
-
-from apps.shared.db.base import Base
 
 if TYPE_CHECKING:
     from apps.shared.db.models.knowledge import KnowledgeBase, KnowledgeCollection
@@ -383,6 +382,48 @@ class UserLLMPermission(UserResourcePermissionMixin, Base):
     )
     llm_credential: Mapped["LLMCredential"] = relationship(
         "LLMCredential",
+        overlaps="grantee_organization",
+    )
+
+
+class UserKnowledgePermission(UserResourcePermissionMixin, Base):
+    """Direct additive user permission for a knowledge base resource."""
+
+    __tablename__ = "user_knowledge_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "user_id",
+            "knowledge_base_id",
+            name="uq_user_knowledge_permissions_org_user_knowledge",
+        ),
+        ForeignKeyConstraint(
+            ["knowledge_base_id", "grantee_organization_id"],
+            ["knowledge_bases.id", "knowledge_bases.organization_id"],
+            name="fk_user_knowledge_permissions_knowledge_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_user_knowledge_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_user_knowledge_permissions_flags_nonnegative"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    knowledge_base: Mapped["KnowledgeBase"] = relationship(
+        "KnowledgeBase",
         overlaps="grantee_organization",
     )
 

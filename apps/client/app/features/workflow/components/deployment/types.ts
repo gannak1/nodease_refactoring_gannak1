@@ -4,10 +4,13 @@ export type DeploymentStep = 'input' | 'success' | 'error';
 
 export interface DeploymentResult {
   success: boolean;
+  deploymentId?: string;
+  appId?: string;
   url_slug?: string | null;
   auth_secret?: string | null;
   version?: number;
   webAppUrl?: string;
+  internalRunUrl?: string;
   embedUrl?: string;
   isWorkflowNode?: boolean;
   input_schema?: InputSchema | null;

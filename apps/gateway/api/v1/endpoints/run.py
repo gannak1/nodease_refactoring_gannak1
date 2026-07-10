@@ -1,10 +1,12 @@
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, Response
 from sqlalchemy.orm import Session
 
+from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.shared.db.session import get_db
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.shared.domain.deployment_runtime_policy import DeploymentRuntimePolicy
 
 router = APIRouter()
 
@@ -12,6 +14,10 @@ router = APIRouter()
 @router.post("/run/{url_slug}")
 async def run_workflow(
     url_slug: str,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     request_body: dict = Body(...),
     authorization: Optional[str] = Header(None),
     x_auth_secret: Optional[str] = Header(None),
@@ -37,12 +43,17 @@ async def run_workflow(
         auth_token=auth_token,
         require_auth=True,  # 인증 필수
         trigger_mode="api",  # REST API 호출
+        runtime_policy=runtime_policy,
     )
 
 
 @router.post("/run-public/{url_slug}")
 async def run_workflow_public(
     url_slug: str,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     request_body: dict = Body(...),
     response: Response = None,
     db: Session = Depends(get_db),
@@ -66,4 +77,5 @@ async def run_workflow_public(
         auth_token=None,
         require_auth=False,  # 인증 불필요
         trigger_mode="app",  # 웹 앱/임베딩 호출
+        runtime_policy=runtime_policy,
     )

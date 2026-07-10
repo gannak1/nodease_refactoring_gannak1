@@ -10,7 +10,7 @@ import {
  * 그 로직을 재사용하거나 수정하지 않기 위해 별도 파일로 유지합니다.
  *
  * 이 유틸은 LLM 노드에서 아래 역할만 담당합니다.
- * - 완료된 문서가 있는 지식 베이스만 보여주기
+ * - 완료된 retrieval-visible 문서가 있는 지식 베이스만 보여주기
  * - 외부에서 삭제된 베이스가 기존 선택에 남는 문제 정리
  * - 선택 목록의 이름/중복을 최신 상태로 정리
  */
@@ -26,63 +26,41 @@ type SanitizeSelectedKnowledgeBasesOptions = {
   preserveMissingIds?: Iterable<string>;
 };
 
-// LLM 노드에서 실제로 사용할 수 있는지 판단하기 위해 완료된 문서 수만 계산합니다.
+// LLM 노드에서 실제로 사용할 수 있는지 판단하기 위해 검색 가능한 완료 문서 수를 계산합니다.
 const getCompletedCount = (detail: KnowledgeBaseDetailResponse) => {
-  return (detail.documents || []).filter((doc) => doc.status === 'completed')
-    .length;
-};
-
-const shouldPreserveSelectionOnDetailFailure = (status?: number) => {
-  return status === undefined || status === 408 || status === 429 || status >= 500;
+  const documents = Array.isArray(detail.documents) ? detail.documents : [];
+  return documents.filter(
+    (doc) => doc.status === 'completed' && (doc.chunk_count || 0) > 0,
+  ).length;
 };
 
 /**
  * LLM 노드에서 표시 가능한 지식 베이스만 가져옵니다.
- * - 목록 응답에서 후보를 고른 뒤 상세를 조회해 완료 문서가 있는지 확인합니다.
- * - 404/403 상세 실패는 삭제 또는 권한 상실로 보고 후보/선택 정리 대상에서 제외합니다.
- * - 일시적 상세 실패는 후보 표시에서는 제외하되 기존 선택값은 보존할 수 있게 id를 반환합니다.
- * - 로그에는 원본 오류 객체 대신 status와 KB id만 남겨 민감한 응답 payload 노출을 피합니다.
+ * - Gateway의 LLM 전용 후보 API가 active organization, KB use 권한,
+ *   retrieval-visible completed chunk 기준을 적용합니다.
+ * - client는 malformed payload 방어와 최신 이름/중복 정리만 수행합니다.
  */
 export const fetchEligibleKnowledgeBases =
   async (): Promise<EligibleKnowledgeBasesResult> => {
-    const bases = await knowledgeApi.getKnowledgeBases();
-    const candidates = bases.filter((kb) => (kb.document_count || 0) > 0);
-    const detailResults = await Promise.allSettled(
-      candidates.map((kb) => knowledgeApi.getKnowledgeBase(kb.id)),
-    );
-
+    const details = await knowledgeApi.getLLMSelectableKnowledgeBases();
     const detailsById: Record<string, KnowledgeBaseDetailResponse> = {};
     const eligibleBases: KnowledgeBaseResponse[] = [];
-    const preserveSelectionIds: string[] = [];
 
-    detailResults.forEach((result, index) => {
-      const base = candidates[index];
-      if (result.status !== 'fulfilled') {
-        const status = result.reason?.response?.status;
-        console.warn(
-          '[LLMReference] Failed to load knowledge base detail',
-          { knowledgeBaseId: base.id, status },
-        );
-        if (shouldPreserveSelectionOnDetailFailure(status)) {
-          preserveSelectionIds.push(base.id);
-        }
-        return;
-      }
-      const detail = result.value;
+    details.forEach((detail) => {
       const completedCount = getCompletedCount(detail);
       if (completedCount > 0) {
-        eligibleBases.push(base);
-        detailsById[base.id] = detail;
+        eligibleBases.push(detail);
+        detailsById[detail.id] = detail;
       }
     });
 
-    return { bases: eligibleBases, detailsById, preserveSelectionIds };
+    return { bases: eligibleBases, detailsById };
   };
 
 /**
  * 기존 선택된 지식 베이스를 최신 상태로 정리합니다.
  * - 현재 목록에 없는 항목은 제거
- * - 상세 조회가 일시 실패한 기존 선택 항목은 이름을 유지한 채 보존
+ * - 일시 장애 등으로 보존 요청된 기존 선택 항목은 이름을 유지한 채 보존
  * - 중복 제거
  * - 이름은 최신 목록 기준으로 갱신
  */

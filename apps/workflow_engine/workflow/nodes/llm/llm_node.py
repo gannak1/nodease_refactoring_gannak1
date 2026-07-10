@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -743,7 +744,9 @@ class LLMNode(Node[LLMNodeData]):
                 )
             except Exception:
                 text = ""
-            usage = response.get("usage", {}) if isinstance(response, dict) else {}
+            usage = self._safe_usage_metadata(
+                response.get("usage", {}) if isinstance(response, dict) else {}
+            )
             answer_grounding = self._build_answer_grounding_metadata(
                 text, knowledge_context
             )
@@ -885,6 +888,28 @@ class LLMNode(Node[LLMNodeData]):
             "[REDACTED: knowledge context omitted from prompt trace]\n"
             "[END KNOWLEDGE]"
         )
+
+    @staticmethod
+    def _safe_usage_metadata(usage: Any) -> Dict[str, int | float]:
+        if not isinstance(usage, dict):
+            return {}
+
+        allowed_keys = {
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "total_cost",
+            "latency_ms",
+        }
+        safe_usage: Dict[str, int | float] = {}
+        for key in allowed_keys:
+            value = usage.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if not math.isfinite(value) or value < 0:
+                continue
+            safe_usage[key] = value
+        return safe_usage
 
     def _render_prompt(self, template: Optional[str], inputs: Dict[str, Any]) -> str:
         """
@@ -1816,17 +1841,21 @@ class LLMNode(Node[LLMNodeData]):
         for kb_id in parsed_ids:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
-                raise PermissionError("Knowledge Base is unavailable.")
-            decision = decisions[kb.id]
-            if not decision.allowed:
-                if decision.external_reason_code == "permission.denied":
-                    self._record_knowledge_permission_denied(
-                        user_id,
-                        str(kb_id),
-                        decision.effective_auth_state,
-                        organization_id,
-                    )
-                raise PermissionError("Knowledge Base is unavailable.")
+                # Stale deployment snapshots can contain KBs that were later deleted
+                # or made inactive. Hide them from retrieval instead of failing the
+                # whole LLM node and leaking resource state to the user.
+                continue
+            decision = decisions.get(kb.id)
+            if decision is None or not decision.allowed:
+                self._record_knowledge_permission_denied(
+                    user_id,
+                    str(kb_id),
+                    getattr(decision, "effective_auth_state", "unknown")
+                    if decision
+                    else "unknown",
+                    organization_id,
+                )
+                continue
             authorized_ids.append(str(kb_id))
         return authorized_ids
 

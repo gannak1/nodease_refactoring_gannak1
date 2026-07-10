@@ -92,6 +92,7 @@ const fakeEventSource = () => ({
 const mockSidebarDefaults = ({
   currentOrganization = managerOrganization,
   organizations = [managerOrganization, memberOrganization],
+  operationRows = [],
 } = {}) => {
   activeOrganizationMock.getStoredActiveOrganizationId.mockReturnValue(
     currentOrganization.id,
@@ -109,6 +110,9 @@ const mockSidebarDefaults = ({
     }
     if (path === '/organizations') {
       return Promise.resolve({ data: organizations });
+    }
+    if (path === '/apps/operations') {
+      return Promise.resolve({ data: operationRows });
     }
     return Promise.reject(new Error(`Unexpected path: ${path}`));
   });
@@ -163,6 +167,42 @@ describe('Sidebar notifications', () => {
 });
 
 describe('Sidebar organization switcher', () => {
+  it('organization manager는 내 모듈 운영 메뉴를 볼 수 있다', async () => {
+    render(<Sidebar />);
+
+    expect(await screen.findByRole('link', { name: '내 모듈' })).toHaveAttribute(
+      'href',
+      '/dashboard/mymodule',
+    );
+  });
+
+  it('운영 가능한 row가 없는 일반 멤버에게 내 모듈 운영 메뉴를 숨긴다', async () => {
+    mockSidebarDefaults({ currentOrganization: memberOrganization });
+
+    render(<Sidebar />);
+
+    await screen.findByText('Beta');
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('link', { name: '내 모듈' }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('운영 가능한 row가 있는 일반 멤버에게 내 모듈 운영 메뉴를 표시한다', async () => {
+    mockSidebarDefaults({
+      currentOrganization: memberOrganization,
+      operationRows: [{ app: { id: 'app-1', name: '작성자 모듈' } }],
+    });
+
+    render(<Sidebar />);
+
+    expect(await screen.findByRole('link', { name: '내 모듈' })).toHaveAttribute(
+      'href',
+      '/dashboard/mymodule',
+    );
+  });
+
   it('현재 organization 이름과 구분 badge를 표시한다', async () => {
     render(<Sidebar />);
 

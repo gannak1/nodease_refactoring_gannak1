@@ -8,12 +8,29 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.workflow import WorkflowNode
 from apps.workflow_engine.workflow.nodes.workflow.entities import (
     WorkflowNodeData,
     WorkflowNodeInput,
 )
+
+
+def _filter_values(expressions):
+    values = {}
+    for expression in expressions:
+        key = getattr(getattr(expression, "left", None), "key", None)
+        right = getattr(expression, "right", None)
+        if hasattr(right, "value"):
+            value = right.value
+        elif str(right).lower() == "true":
+            value = True
+        else:
+            value = right
+        values[key] = value
+    return values
 
 
 def test_workflow_node_initialization():
@@ -61,11 +78,13 @@ def test_workflow_node_execution_with_input_mapping():
     mock_app = Mock()
     mock_app.id = "app-xyz"
     mock_app.name = "Text Processor"
+    mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = "deploy-1"
 
     mock_deployment = Mock()
     mock_deployment.id = "deploy-1"
     mock_deployment.version = "v1.0"
+    mock_deployment.type = DeploymentType.WORKFLOW_NODE
     mock_deployment.graph_snapshot = {
         "nodes": [
             {
@@ -99,7 +118,12 @@ def test_workflow_node_execution_with_input_mapping():
         mock_engine_instance.cleanup = Mock()
 
         # Execution context
-        node.execution_context = {"db": mock_db, "user_id": "user-1"}
+        node.execution_context = {
+            "db": mock_db,
+            "user_id": "user-1",
+            "organization_id": "org-current",
+            "app_id": "parent-app",
+        }
 
         # Input from previous nodes
         inputs = {
@@ -113,6 +137,12 @@ def test_workflow_node_execution_with_input_mapping():
         # Then
         # 1. App과 Deployment 조회 확인
         assert mock_db.query.call_count == 2
+        deployment_filters = mock_db.query.return_value.filter.call_args_list[1].args
+        assert _filter_values(deployment_filters) == {
+            "id": "deploy-1",
+            "app_id": "app-xyz",
+            "is_active": True,
+        }
 
         # 2. WorkflowEngine이 올바른 인자로 초기화되었는지 확인
         # WorkflowEngine is called with positional args: (graph, sub_workflow_inputs, ...)
@@ -125,6 +155,13 @@ def test_workflow_node_execution_with_input_mapping():
         assert call_args[0][1] == {"input_text": "Hello World", "language": "en"}
         # Keyword arg is_deployed should be True
         assert call_args[1]["is_deployed"] is True
+        sub_context = call_args[1]["execution_context"]
+        assert sub_context["workflow_node_depth"] == 1
+        assert set(sub_context["workflow_node_visited_app_ids"]) == {
+            "parent-app",
+            "app-xyz",
+        }
+        assert node.execution_context.get("workflow_node_depth") is None
 
         # 3. 실행 결과 확인 (WorkflowNode는 {"result": ...} 형태로 반환)
         assert result["result"]["answer"] == "처리 완료"
@@ -144,7 +181,7 @@ def test_workflow_node_error_no_db_session():
     node.execution_context = {}  # DB 세션 없음
 
     # When / Then
-    with pytest.raises(ValueError, match="DB session required"):
+    with pytest.raises(WorkflowNodeConfigurationError, match="DB session required"):
         node.execute({})
 
 
@@ -162,7 +199,10 @@ def test_workflow_node_error_app_not_found():
     node.execution_context = {"db": mock_db}
 
     # When / Then
-    with pytest.raises(ValueError, match="Target App .* not found"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App .* not found",
+    ):
         node.execute({})
 
 
@@ -178,14 +218,188 @@ def test_workflow_node_error_no_active_deployment():
     mock_app = Mock()
     mock_app.id = "app-1"
     mock_app.name = "Test App"
+    mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = None  # 활성 배포 없음
 
     mock_db.query.return_value.filter.return_value.first.return_value = mock_app
 
-    node.execution_context = {"db": mock_db}
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
     # When / Then
-    with pytest.raises(ValueError, match="has no active deployment"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="has no active deployment",
+    ):
+        node.execute({})
+
+
+def test_workflow_node_rejects_recursive_target_app_before_db_lookup():
+    node_data = WorkflowNodeData(
+        title="순환 참조", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+    mock_db = MagicMock()
+    node.execution_context = {
+        "db": mock_db,
+        "organization_id": "org-current",
+        "app_id": "app-1",
+    }
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Recursive workflow-node reference",
+    ):
+        node.execute({})
+
+    mock_db.query.assert_not_called()
+
+
+def test_workflow_node_rejects_visited_target_app_before_db_lookup():
+    node_data = WorkflowNodeData(
+        title="순환 참조", workflowId="wf-1", appId="app-2", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+    mock_db = MagicMock()
+    node.execution_context = {
+        "db": mock_db,
+        "organization_id": "org-current",
+        "app_id": "app-1",
+        "workflow_node_visited_app_ids": ["app-2"],
+    }
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Recursive workflow-node reference",
+    ):
+        node.execute({})
+
+    mock_db.query.assert_not_called()
+
+
+def test_workflow_node_rejects_depth_limit_before_db_lookup():
+    node_data = WorkflowNodeData(
+        title="깊이 제한", workflowId="wf-1", appId="app-2", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+    mock_db = MagicMock()
+    node.execution_context = {
+        "db": mock_db,
+        "organization_id": "org-current",
+        "app_id": "app-1",
+        "workflow_node_depth": 3,
+    }
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="nesting limit exceeded",
+    ):
+        node.execute({})
+
+    mock_db.query.assert_not_called()
+
+
+def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
+    node_data = WorkflowNodeData(
+        title="일반 배포 거부", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Test App"
+    mock_app.organization_id = "org-current"
+    mock_app.active_deployment_id = "deploy-1"
+
+    mock_deployment = Mock()
+    mock_deployment.type = DeploymentType.API
+
+    mock_db.query.return_value.filter.return_value.first.side_effect = [
+        mock_app,
+        mock_deployment,
+    ]
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Active deployment not found",
+    ):
+        node.execute({})
+
+    deployment_filter_args = mock_db.query.return_value.filter.call_args_list[1].args
+    assert _filter_values(deployment_filter_args) == {
+        "id": "deploy-1",
+        "app_id": "app-1",
+        "is_active": True,
+    }
+
+
+def test_workflow_node_rejects_cross_organization_target():
+    node_data = WorkflowNodeData(
+        title="조직 불일치", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Test App"
+    mock_app.organization_id = "org-other"
+    mock_app.active_deployment_id = "deploy-1"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_app
+
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App is unavailable",
+    ):
+        node.execute({})
+
+
+def test_workflow_node_rejects_missing_parent_organization_context():
+    node_data = WorkflowNodeData(
+        title="조직 컨텍스트 없음", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Test App"
+    mock_app.organization_id = "org-target"
+    mock_app.active_deployment_id = "deploy-1"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_app
+
+    node.execution_context = {"db": mock_db}
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App is unavailable",
+    ):
+        node.execute({})
+
+
+def test_workflow_node_rejects_target_without_organization_scope():
+    node_data = WorkflowNodeData(
+        title="조직 없는 대상", workflowId="wf-1", appId="app-1", inputs=[]
+    )
+    node = WorkflowNode(id="node-1", data=node_data)
+
+    mock_db = MagicMock()
+    mock_app = Mock()
+    mock_app.id = "app-1"
+    mock_app.name = "Legacy App"
+    mock_app.organization_id = None
+    mock_app.active_deployment_id = "deploy-1"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_app
+
+    node.execution_context = {"db": mock_db, "organization_id": "org-current"}
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App is unavailable",
+    ):
         node.execute({})
 
 
@@ -210,8 +424,10 @@ def test_workflow_node_nested_value_extraction():
     # Mock DB
     mock_db = MagicMock()
     mock_app = Mock()
+    mock_app.organization_id = "org-current"
     mock_app.active_deployment_id = "deploy-1"
     mock_deployment = Mock()
+    mock_deployment.type = DeploymentType.WORKFLOW_NODE
     mock_deployment.graph_snapshot = {
         "nodes": [
             {
@@ -236,7 +452,7 @@ def test_workflow_node_nested_value_extraction():
         mock_engine_instance.execute = Mock(return_value={"result": "OK"})
         mock_engine_instance.cleanup = Mock()
 
-        node.execution_context = {"db": mock_db}
+        node.execution_context = {"db": mock_db, "organization_id": "org-current"}
         inputs = {
             "user-node": {"profile": {"name": "Alice", "age": 30, "city": "Seoul"}}
         }

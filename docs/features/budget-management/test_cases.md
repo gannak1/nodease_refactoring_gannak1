@@ -43,7 +43,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 활성 예산 workflow 5개 중 at_risk 1개, exceeded 1개, When `GET /admin/summary`를 호출하면, Then `budget`은 `{budgeted_workflow_count: 5, at_risk_count: 1, exceeded_count: 1, ratio: 0.4}`다.
 - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 null이다.
 - Given 활성 예산이 있는 App, When member가 `GET /apps`를 호출하면, Then 항목의 `budget_status`에 `usage_ratio`, `status`만 포함되고 예산 금액/비용 원문은 포함되지 않는다.
-- Given 활성 예산이 있는 App, When member가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
+- Given 활성 예산이 있는 App, When organization manager 또는 workflow `write` 이상 사용자가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
 - Given 예산 미설정 App 또는 `workflow_id`가 null인 App, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status`는 null이고 기존 응답 필드는 변하지 않는다.
 - Given App의 primary workflow에는 활성 예산이 없고 같은 `app_id`의 과거/보조 workflow에는 활성 예산과 초과 비용이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이고 보조 workflow의 `exceeded` 상태를 대신 표시하지 않는다.
 - Given `workflow_id=null`인 App과 같은 `app_id`를 가진 과거/보조 workflow에 활성 예산이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이다.
@@ -70,6 +70,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 기존 예산 row, When 두 요청이 동시에 서로 다른 값으로 PUT하면, Then 최종 상태는 어느 한쪽 값과 정확히 일치하고 (두 값이 섞이지 않음) 각 갱신마다 `workflow_budget.updated`가 기록된다.
 - Given 예산 수정/비활성화와 `GET /apps` 또는 `GET /apps/operations` 조회가 동시에 발생하면, Then 조회 응답은 5xx 없이 완료되고 `budget_status`는 수정 전 값, 수정 후 값, 또는 비활성화 후 null 중 하나로 일관되게 반환된다.
 - Given workflow 삭제로 예산 row가 cascade 삭제되는 중 `GET /apps/operations`가 실행되면, Then 권한/목록 조회에서 이미 제외된 row는 반환하지 않고, 응답 대상 App에서 예산을 찾을 수 없으면 `budget_status=null`로 처리한다.
+- Given workflow `execute` 전용 사용자가 `GET /apps/operations`를 호출하면, Then 해당 workflow row와 예산 상태는 응답에 포함되지 않는다.
 - Given 초과가 `llm_usage_logs`에 이미 반영된 workflow, When 여러 실행 요청이 동시에 도착하면, Then 전부 `429 budget.exceeded`로 차단된다 (보장 하한선, BGT-REQ-034).
 - Given 사용률 99%인 workflow, When 실행 요청 N개가 동시에 판정을 통과해 dispatch되면, Then 이는 수용된 한시적 초과(BGT-REQ-035)이며, 이 실행들의 비용이 기록된 이후의 신규 요청은 모두 차단된다. (테스트는 "통과 자체"가 아니라 "기록 반영 후 차단 전환"을 검증한다.)
 - Given 실행 판정과 동시에 예산이 비활성화되는 경합, When 두 동작이 겹치면, Then 실행은 수정 전/후 어느 한쪽 기준으로 일관되게 판정되고 5xx가 발생하지 않는다.

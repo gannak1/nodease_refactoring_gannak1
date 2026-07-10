@@ -22,7 +22,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 | 감사 로그 탭 | 조직 audit log 검색/필터 + 상세 드로어 | audit `auditor` 이상 |
 | 권한 신청 탭 | 신청 목록 + 승인/거절 | organization owner/manager |
 | 비용 탭 | workflow별 사용량/비용 집계 | organization owner/manager |
-| 기존 탭들 (구성원/팀/권한/credential/knowledge/조직) | 기존 구현 유지 — 이 feature 범위 아님 | 기존 기준 유지 |
+| 기존 탭들 (구성원/팀/권한/credential/knowledge/조직) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
 
 - (후순위) `auditor`/`raw_auditor` 전용 사용자에게는 감사 로그 탭만 노출하고 기본 탭을 감사 로그로 한다. 요약 카드와 나머지 탭은 렌더링하지 않는다. 현재 데모 시나리오에서 auditor 전용 계정을 사용하지 않으므로 이 노출 제어는 후순위로 미룬다. 구현 전까지 admin 페이지 접근은 기존 organization manager 게이트를 유지한다.
 - 프론트 노출 제어는 UX 보조이며 최종 차단은 Gateway가 수행한다 (NFR-001). 권한 없는 API 응답(403)은 안내 문구로 처리한다. auditor 전용 노출 제어가 후순위인 동안에도 이 서버 경계는 그대로 적용된다.
@@ -70,6 +70,15 @@ Verified Against: feature/mba-147 @ e1a04e9
 - 확정 시 `DELETE /admin/app-creation-permissions/{permission_id}` 호출. 성공하면 toast로 알리고 보유 목록을 갱신한다. 회수된 사용자는 재신청할 수 있으므로 신청 목록도 함께 갱신한다.
 - `404` 응답(이미 회수됐거나 없는 row)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
 - 데이터 원천: `GET /admin/app-creation-permissions`.
+
+### KnowledgePermissionManagement (MBA-176)
+
+- 기존 admin/settings permission UI를 재사용해 Knowledge Base별 team permission과 user direct permission을 관리한다.
+- 목록 데이터 원천: `GET /permissions/knowledge-bases/{knowledge_base_id}`.
+- Grant action: `PUT /permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}`, `PUT /permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}`.
+- Revoke action: `DELETE /permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}`, `DELETE /permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}`.
+- User direct grant selector는 `viewer`, `operator`, `builder`, `manager`만 제공한다. `none`은 회수 action으로 표현한다.
+- UI는 active organization member라는 사실과 KB 사용 가능 여부를 구분해 표시한다. 조직 멤버십은 grant 대상 조건이지만 KB `use/read/manage` 권한 자체가 아니다.
 
 ### UsageTab (FR-012)
 

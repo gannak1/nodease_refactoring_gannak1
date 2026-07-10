@@ -18,6 +18,9 @@ from sqlalchemy.sql.operators import eq
 
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+)
 
 
 # --- 실행 헬퍼 ---------------------------------------------------------------
@@ -37,8 +40,30 @@ def _run_public(db, url_slug, user_inputs, monkeypatch, trigger_mode="app"):
             url_slug=url_slug,
             user_inputs=user_inputs,
             trigger_mode=trigger_mode,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             auth_token=None,
             require_auth=False,
+        )
+    )
+    return celery, result
+
+
+def _run_api_secret(db, url_slug, user_inputs, monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    celery = _CaptureCelery()
+    monkeypatch.setattr(deployment_module, "celery_app", celery)
+    monkeypatch.setattr("celery.result.AsyncResult", _FakeAsyncResult)
+
+    result = asyncio.run(
+        deployment_module.DeploymentService.run_deployment(
+            db=db,
+            url_slug=url_slug,
+            user_inputs=user_inputs,
+            trigger_mode="api",
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            auth_token="deploy-secret",
+            require_auth=True,
         )
     )
     return celery, result
@@ -67,6 +92,7 @@ def _run_authenticated(
             deployment_id=deployment_id,
             user_inputs=user_inputs,
             current_user_id=user_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
     )
     return celery, result
@@ -159,6 +185,121 @@ def test_public_run_does_not_fallback_to_owner_execution_subject(monkeypatch):
     assert "execution_subject" not in ctx
 
 
+def test_public_run_rejects_workflow_node_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
+def test_public_slug_run_rejects_cross_app_active_deployment_pointer(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    deployment_row.app_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment data not found."
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.API,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBHOOK,
+        DeploymentType.WORKFLOW_NODE,
+    ],
+)
+def test_public_slug_run_rejects_non_public_app_deployment_types(
+    monkeypatch,
+    deployment_type,
+):
+    app_row, deployment_row = _deployed_app(deployment_type)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
+def test_api_slug_run_allows_api_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.API)
+    db = _Db(rows=[app_row, deployment_row])
+
+    celery, result = _run_api_secret(
+        db,
+        app_row.url_slug,
+        {"question": "x"},
+        monkeypatch,
+    )
+
+    assert _captured_context(celery)["trigger_mode"] == "api"
+    assert result["status"] == "success"
+
+
+def test_api_slug_run_rejects_cross_app_active_deployment_pointer(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.API)
+    deployment_row.app_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_api_secret(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment data not found."
+
+
+def test_workflow_node_listing_join_requires_active_deployment_owner():
+    from apps.gateway.services.deployment_service import DeploymentService
+
+    query = _JoinCaptureQuery()
+    db = _JoinCaptureDb(query)
+
+    assert DeploymentService.list_workflow_node_deployments(db, uuid4()) == []
+
+    clauses = list(query.join_clause.clauses)
+    column_pairs = {
+        (expression.left.key, expression.right.key) for expression in clauses
+    }
+    assert column_pairs == {
+        ("active_deployment_id", "id"),
+        ("id", "app_id"),
+    }
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.CHATBOT,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBAPP,
+        DeploymentType.WEBHOOK,
+        DeploymentType.WIDGET,
+        DeploymentType.WORKFLOW_NODE,
+    ],
+)
+def test_api_slug_run_rejects_non_api_deployment_types(monkeypatch, deployment_type):
+    app_row, deployment_row = _deployed_app(deployment_type)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_api_secret(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found."
+
+
 def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
     from apps.gateway.services import deployment_service as deployment_module
 
@@ -166,6 +307,8 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
     current_user_id = uuid4()
     db = _Db(rows=[app_row, deployment_row])
     budget_calls = []
+    evaluated_surfaces = []
+    evaluate_surface = deployment_module.is_deployment_type_allowed_for_surface
 
     def capture_budget_call(db, **kwargs):
         budget_calls.append(kwargs)
@@ -174,6 +317,14 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
         deployment_module.WorkflowBudgetService,
         "ensure_workflow_budget_allows_execution",
         capture_budget_call,
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "is_deployment_type_allowed_for_surface",
+        lambda deployment_type, surface, *, policy: evaluated_surfaces.append(
+            (deployment_type, surface)
+        )
+        or evaluate_surface(deployment_type, surface, policy=policy),
     )
 
     celery, result = _run_authenticated(
@@ -202,6 +353,9 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
             "trigger_mode": "app",
             "actor_id": current_user_id,
         }
+    ]
+    assert evaluated_surfaces == [
+        (deployment_row.type, deployment_module.SURFACE_AUTHENTICATED_RUN)
     ]
     assert result["status"] == "success"
 
@@ -240,6 +394,23 @@ def test_authenticated_run_rejects_stale_non_active_deployment(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
+def test_authenticated_run_rejects_workflow_node_deployment(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found"
+
+
 def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     from apps.gateway.services import deployment_service as deployment_module
 
@@ -251,6 +422,7 @@ def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     result = deployment_module.DeploymentService.get_deployment_run_info(
         db,
         deployment_row.id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
     assert result["deployment_id"] == deployment_row.id
@@ -259,6 +431,55 @@ def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     assert result["input_schema"] == deployment_row.input_schema
     assert "auth_secret" not in result
     assert "graph_snapshot" not in result
+
+
+def test_deployment_run_info_uses_dedicated_runtime_surface(monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+    evaluated = []
+
+    def capture_surface(deployment_type, surface, *, policy):
+        evaluated.append((deployment_type, surface, policy))
+        return True
+
+    monkeypatch.setattr(
+        deployment_module,
+        "is_deployment_type_allowed_for_surface",
+        capture_surface,
+    )
+
+    deployment_module.DeploymentService.get_deployment_run_info(
+        db,
+        deployment_row.id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    )
+
+    assert evaluated == [
+        (
+            deployment_row.type,
+            deployment_module.SURFACE_AUTHENTICATED_RUN_INFO,
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+    ]
+
+
+def test_deployment_run_info_rejects_workflow_node_deployment():
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.WORKFLOW_NODE)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_module.DeploymentService.get_deployment_run_info(
+            db,
+            deployment_row.id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment not found"
 
 
 def test_engine_failure_detail_does_not_expose_secret_like_exception(
@@ -412,3 +633,26 @@ class _Db:
 
     def close(self):
         pass
+
+
+class _JoinCaptureQuery:
+    def __init__(self):
+        self.join_clause = None
+
+    def join(self, _model, on_clause):
+        self.join_clause = on_clause
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return []
+
+
+class _JoinCaptureDb:
+    def __init__(self, query):
+        self.query_result = query
+
+    def query(self, *args, **kwargs):
+        return self.query_result

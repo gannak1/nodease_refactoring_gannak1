@@ -22,9 +22,11 @@ Verified Against: TBD
 - Given `row.app.budget_status`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 예산 관련 텍스트 없이 기존 row 레이아웃을 유지한다.
 - Given `row.app.operation_metrics`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 월 예상 비용/증가 추세/최적화 권장 UI는 "운영 비용 없음" 또는 "비교 데이터 없음"을 표시하고 deterministic dummy 값을 생성하지 않는다.
 
-### AC-3. Member 표면 노출 제한
+### AC-3. 안전 요약 노출 제한
 
 - Given `GET /apps` 또는 `GET /apps/operations` 응답을 확인한다, Then `budget_status`에는 `usage_ratio`와 `status`만 포함되고 `monthly_budget_usd`, `current_month_cost`, credential, raw payload, secret 값은 포함되지 않는다.
+- Given workflow `execute` 전용 일반 사용자가 있다, When `GET /apps/operations`를 호출한다, Then 해당 workflow row와 운영 비용/최근 실행/최적화 지표는 응답에 포함되지 않는다.
+- Given 같은 사용자가 배포 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다, When workflow 실행을 요청한다, Then workflow `execute` 권한과 RAG 실행 주체 권한으로 실행 가능 여부를 판단한다.
 
 ### AC-4. 조회 성능과 동시성
 
@@ -55,7 +57,9 @@ Verified Against: TBD
 - `AppService.list_app_operations`
   - Given 활성 예산이 있는 App의 primary workflow, When operations row를 생성하면, Then `row.app.budget_status`는 `GET /apps`와 같은 shape다.
   - Given App의 `workflow_id`가 null이고 같은 `app_id`의 보조 workflow에 예산이 있다, When operations row를 생성하면, Then `row.app.budget_status`는 null이다.
-  - Given member 표면 응답, Then 예산 금액과 당월 비용 원문은 포함하지 않는다.
+  - Given 안전 요약 응답, Then 예산 금액과 당월 비용 원문은 포함하지 않는다.
+  - Given workflow `execute` 전용 사용자가 App을 읽거나 실행할 수 있다, When operations row를 조회하면, Then 해당 App은 운영 현황 목록에서 제외된다.
+  - Given workflow `write` 이상 사용자가 App을 조회한다, When operations row를 조회하면, Then 해당 App은 운영 현황 목록에 포함될 수 있다.
   - Given operations page/batch에 여러 App의 primary workflow가 포함된다, When rows를 생성하면, Then primary workflow id 기준 batch 단위 grouped query로 예산 상태를 계산한다.
   - Given primary workflow의 당월 usage 중 `organization_id`가 NULL인 기존 로그가 있다, When rows를 생성하면, Then 해당 비용도 포함해 `row.app.budget_status`를 계산한다.
   - Given KST 월초 직후(예: 2026-07-31 16:00 UTC = 2026-08-01 01:00 KST), When rows를 생성하면, Then 8월 KST 비용 기준으로 `budget_status`를 계산한다.
@@ -72,17 +76,19 @@ Verified Against: TBD
   - `/dashboard/mymodule` row의 `app.budget_status`가 활성 예산 상태를 반환한다.
   - 예산 미설정 row는 기존 운영 현황 필드를 유지하고 `app.budget_status=null`을 반환한다.
   - `row.app.workflow_id`가 null이면 같은 `app_id`의 보조 workflow 예산 상태를 노출하지 않고 `app.budget_status=null`을 반환한다.
-  - 권한이 없는 App/Workflow는 기존 접근 정책대로 목록에서 제외되며, 예산 상태만으로 노출되지 않는다.
+  - workflow `execute` 전용 사용자와 권한이 없는 App/Workflow는 목록에서 제외되며, 예산 상태만으로 노출되지 않는다.
+  - organization manager 또는 workflow `write` 이상 사용자는 운영 현황 row를 조회할 수 있다.
   - KST 월 경계 row 포함/제외 기준이 `GET /apps`와 동일하다.
 
 ## E2E Tests
 
 - 빌더가 `/dashboard/mymodule`에 진입하면 예산 위험/초과 workflow row에 `BudgetStatusBadge`가 표시된다.
 - 초과 상태 row는 실행 상태 영역에 "실행 차단"을 표시하지만, row 열기/조회 진입은 기존 권한 조건을 따른다.
+- 실행 전용 사용자는 사이드바에서 `/dashboard/mymodule` 운영 메뉴를 보지 않고, 내부 실행 화면의 뒤로가기는 기본 대시보드로 이동한다.
 
 ## Permission Tests
 
-- `budget_status`는 App/Workflow 읽기 권한을 통과한 row에만 붙는다. 권한 없는 workflow의 예산 상태는 응답에 포함하지 않는다.
+- `budget_status`는 App/Workflow 목록 또는 운영 현황 권한을 통과한 row에만 붙는다. 권한 없는 workflow와 operations 권한이 없는 execute-only workflow의 예산 상태는 응답에 포함하지 않는다.
 
 ## Concurrency Tests
 
@@ -97,5 +103,5 @@ Verified Against: TBD
 - 비활성 예산은 `budget_status=null`로 취급한다.
 - 예산 row는 활성화되어 있으나 관련 workflow가 응답 대상 App의 `workflow_id`와 연결되지 않으면 `budget_status=null`이다.
 - 같은 `app_id`의 과거/보조 Workflow row에 활성 예산이 있어도 App의 primary `workflow_id`와 다르면 `budget_status`에는 반영하지 않는다.
-- `monthly_budget_usd`가 0 이하인 비정상 row가 기존 데이터에 남아 있어도 member 표면에서는 `budget_status=null`로 취급한다.
+- `monthly_budget_usd`가 0 이하인 비정상 row가 기존 데이터에 남아 있어도 안전 요약에서는 `budget_status=null`로 취급한다.
 - KST 월초 직후에도 `budget_status`는 현재 KST 달력 월 기준으로 계산한다.

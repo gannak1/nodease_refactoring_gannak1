@@ -8,6 +8,7 @@ Status: Draft
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 `knowledge_bases.organization_id`로 범위를 좁힌다. Header가 없으면 기존 owner-only 동작을 유지한다 |
+| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. 일반 관리 목록의 owner filtering을 사용하지 않고 active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | `X-Organization-Id`가 있으면 active organization validation 후 해당 organization에 귀속한다. Header가 없으면 기존 primary organization fallback을 유지한다. 최신 Knowledge schema 필수 컬럼이 없거나 schema introspection이 실패하면 500 대신 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 같은 organization KB만 반환한다. Detail 응답은 최신 `KnowledgeBase` ORM 전체 로드에 의존하지 않아 stale local DB에서 신규 lifecycle/sync 컬럼 누락으로 500이 나지 않아야 한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
@@ -17,6 +18,13 @@ Status: Draft
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
+| GET | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}` | KB에 부여된 team/user direct permission 목록 | manager 또는 KB `manage`, active organization |
+| PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
+| PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
+| DELETE | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 회수 | manager 또는 KB `manage`, active organization |
+| DELETE | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 회수 | manager 또는 KB `manage`, active organization |
+
+현재 `POST /api/v1/knowledge`는 공백뿐인 `name`, 255자를 초과하는 `name`, 비어 있거나 secret-like/token-like 또는 allowlist 밖 문자를 포함한 `embedding_model`을 DB insert 전에 safe validation error로 거부한다. Validation error response는 raw request value를 echo하지 않고 reason code만 반환한다. KB `name`은 사용자 표시용 label이며 resource identity가 아니므로 같은 organization 안의 동일 `name` 생성을 이름만으로 거부하지 않는다. 같은 제목의 서로 다른 문서, 수동 KB, source-managed KB는 `knowledge_base_id`, protected source identity, sync/lifecycle state, safe metadata로 구분한다. 단, 같은 문서의 version은 여러 개가 동시에 retrieval-visible한 resource로 취급하지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization이 완료되면 최신 active ready version으로 교체한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 retrieval evidence 후보가 아니다. Source-managed KB의 동일 source item 중복 방지는 `source_identity_id`와 source sync lineage invariant로 다루며, KB `name` conflict로 대체하지 않는다.
 
 그 외 `/api/v1/knowledge/*` KB/list/detail/document/process/sync surface, `/api/v1/rag/upload/presigned-url`, `/api/v1/rag/document/*`, `/api/v1/rag/proxy/preview` 계열은 현재 동작 경로로 읽는다. 특정 endpoint가 helper 기반 KB permission enforcement를 명시하지 않는 한, 현재 `/api/v1/knowledge/*` endpoint는 owner/current-behavior filtered surface다. Document content/download/preview surface는 현재 raw 또는 source-derived content를 노출할 수 있으므로, KB 통합 cutover 전 target raw/compliance access 또는 redacted-preview policy로 재분류해야 한다. URL/proxy preview surface는 목표 `OutboundEgressGuard` 정렬 대상이며, 구현이 갱신되기 전에는 target egress 계약을 만족한다고 보지 않는다.
 
@@ -36,6 +44,48 @@ Status: Draft
 | 실행 시점 RAG retrieval | 내부 service call | Workflow LLM node의 RAG 옵션 실행 시 collection-routed 또는 KB-candidate-routed retrieval. Builder/preflight 후보 조회는 `/api/v1/knowledge/candidates/resolve`를 사용할 수 있지만, runtime retrieval은 내부 service boundary로 다시 권한을 평가한다 |
 
 공개 HTTP path가 필요한 경우에는 별도 API gate review에서 path 이름과 JSON/SSE shape를 확정한다. MBA-105의 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
+
+### KB Permission Endpoints
+
+MBA-176의 Knowledge 직접 권한 API는 Organization resource permission surface와 같은 응답 envelope를 사용한다. KB 권한은 organization membership의 대체물이 아니며, active organization member에게만 effective permission으로 적용된다.
+
+List response는 `ResourcePermissionListResponse`를 사용하고 `resource_type`은 `"knowledge_base"`다.
+
+```json
+{
+  "resource_type": "knowledge_base",
+  "resource_id": "00000000-0000-0000-0000-000000000000",
+  "organization_id": "00000000-0000-0000-0000-000000000000",
+  "team_permissions": [],
+  "user_permissions": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "grantee_type": "user",
+      "grantee_id": "00000000-0000-0000-0000-000000000000",
+      "grantee_name": "User",
+      "auth_state": "operator",
+      "assigned_at": "2026-07-04T00:00:00Z"
+    }
+  ]
+}
+```
+
+Grant request:
+
+```json
+{
+  "auth_state": "operator"
+}
+```
+
+- 허용 값은 `viewer`, `operator`, `builder`, `manager`다. `none`은 직접 grant request에서 거부하고, 권한 회수는 DELETE endpoint를 사용한다.
+- Team grant는 기존 `team_knowledge_permissions`를 생성/갱신한다. User grant는 `user_knowledge_permissions`를 생성/갱신한다.
+- 요청자는 organization manager 또는 해당 KB `manage` 권한을 가져야 한다.
+- `X-Organization-Id`는 KB의 organization과 일치해야 한다. 다른 organization KB, hidden/deleted/archived KB, 존재를 드러내면 안 되는 대상은 safe 404/resource-hidden 계약을 따른다.
+- User grant 대상은 같은 active organization member여야 한다. invited/suspended/removed/non-member 사용자에게는 grant를 생성하지 않는다.
+- Grant/revoke 성공은 permission row 변경과 같은 DB transaction 안에 `team_knowledge_permission.*` 또는 `user_knowledge_permission.*` data-change audit row를 정확히 한 번 기록해야 한다. Core upsert와 bulk delete 경로는 ORM listener에만 의존하지 않는다.
+- Effective KB permission은 organization manager override와 team/user direct grant 중 가장 강한 additive allow다. 직접 grant는 team grant를 낮추거나 deny할 수 없다.
+- Source-managed KB retrieval에서는 KB `use` grant가 있어도 source ACL/requester authorization gate와 final evidence policy를 다시 통과해야 한다.
 
 Builder와 deployment preflight가 사용할 MBA-105 candidate resolver contract는 다음 shape를 지켜야 한다.
 
@@ -240,6 +290,8 @@ MVP에서 public/private visibility 전환은 organization manager만 허용한�
 
 Source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
 
+MBA-176에서 source/connector public exposure approval primitive가 아직 구현되지 않은 경우, source-managed KB는 public collection에 연결되어 있어도 anonymous public-only 후보로 승격하지 않는다. Deployment preflight와 runtime availability preview는 이를 warning이 아니라 `source_public_exposure_required` blocked reason으로 반환한다.
+
 ### Workflow Runtime RAG Execution Subject
 
 Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 가능한 경우 `execution_subject`를 명시한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다. MVP에서 `execution_subject`가 없으면 retrieval은 실패가 아니라 anonymous public-only로 낮아진다.
@@ -274,6 +326,12 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 `llm_assisted` query rewrite는 LLM 호출이므로 별도 승인 전까지 구현하지 않는다. 승인 시 execution subject, generation model/credential, credential `use` 권한, usage/cost 기록, timeout, token/cost budget, 실패 시 fallback을 확정해야 한다. Workflow runtime에서 실행되면 rewrite LLM call도 workflow 실행 주체 기준의 권한과 비용 기록을 따라야 한다.
 
 ## Response Model
+
+### Knowledge Base Detail
+
+`GET /api/v1/knowledge/{kb_id}`의 `documents[].chunk_count`는 물리적으로 저장된 모든 chunk row 수가 아니라, LLM RAG 후보 판단에 사용할 수 있는 retrieval-visible chunk 수다. Document-level KB에서 active ready document version이 있으면 해당 version에 연결된 chunk만 센다. Active version pointer가 아직 없는 전환기 legacy KB는 `document_chunks.document_version_id IS NULL`인 legacy unversioned chunk만 fallback으로 셀 수 있다. `documents.status`가 `completed`가 아니거나 active version이 `ready`가 아닌 pre-finalized/indexing/failed/superseded artifact는 `chunk_count`와 selectable-ready 판단의 근거가 아니다.
+
+이 값은 KB 상세 화면과 LLM node Knowledge Base picker가 같은 ready/not-ready 경계를 쓰도록 제공하는 safe availability signal이다. Raw source title/path/url, hidden document count, 권한 없는 document 존재 여부, non-allowlisted metadata는 포함하지 않는다.
 
 ### Citation Identity
 
@@ -359,7 +417,7 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Explicit KB mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, KB visibility/resource hiding, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | 빌더 단계 Knowledge Skill mode | active organization, skill visibility, skill safe metadata display, skill freshness/eval gate. Skill visibility는 collection route, KB permission, source ACL gate를 대체하지 않는다 |
 | 실행 시점 LLM node의 RAG 옵션 | execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate와 final evidence policy. execution subject가 없으면 anonymous public-only gate와 final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate 또는 anonymous public-only gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
-| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, source-managed KB의 valid public exposure approval, final evidence policy. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
+| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, source-managed KB의 valid public exposure approval, final evidence policy. Public exposure approval primitive가 없으면 source-managed 후보는 `source_public_exposure_required`로 blocked. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
 | Collection management | `collection.manage`; 기존 KB linking에는 `kb.manage`도 필요 |
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |

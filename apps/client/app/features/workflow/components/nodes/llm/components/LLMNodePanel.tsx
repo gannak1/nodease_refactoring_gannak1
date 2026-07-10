@@ -889,7 +889,7 @@ export function LLMNodePanel({
               nodeId={nodeId}
               workflowAccess={workflowAccess}
               hasUnsavedChanges={hasUnsavedChanges}
-              label="최적화"
+              label="모델 라우팅 최적화"
               destination="model-routing"
               title="운영 로그 기반 LLM 노드 설정 추천을 검토합니다."
               onOpen={() => setIsOptimizationModalOpen(true)}

@@ -2,20 +2,36 @@ import gzip
 import json
 
 import pytest
-
 from apps.shared.db import demo_seed
 from scripts import seed_demo as seed_demo_script
 
 
 class FakeSchemaInspector:
-    def __init__(self, columns_by_table):
+    def __init__(self, columns_by_table, *, alembic_revisions=None):
         self.columns_by_table = columns_by_table
+        self.bind = FakeAlembicBind(alembic_revisions or [])
 
     def has_table(self, table_name):
         return table_name in self.columns_by_table
 
     def get_columns(self, table_name):
         return [{"name": name} for name in self.columns_by_table[table_name]]
+
+
+class FakeAlembicBind:
+    def __init__(self, revisions):
+        self.revisions = revisions
+
+    def execute(self, _stmt):
+        return self
+
+    def fetchall(self):
+        return [(revision,) for revision in self.revisions]
+
+
+class FailingSchemaInspector:
+    def has_table(self, table_name):
+        raise RuntimeError("secret raw database failure")
 
 
 def write_minimal_demo_fixture(
@@ -225,6 +241,7 @@ def test_schema_readiness_reports_stale_demo_db_columns():
                 "sync_state",
             ],
         },
+        "reason": None,
     }
 
     message = seed_demo_script.format_schema_readiness_error(gaps)
@@ -232,6 +249,94 @@ def test_schema_readiness_reports_stale_demo_db_columns():
     assert "knowledge_bases: embedding_model, organization_id, sync_state" in message
     assert "alembic -c apps/shared/alembic.ini upgrade heads" in message
     assert "--profile demo --reset --drop-existing-data --yes" in message
+
+
+def test_schema_readiness_reports_safe_reason_on_introspection_failure():
+    gaps = seed_demo_script.schema_readiness_gaps(
+        FailingSchemaInspector(),
+        required_columns={"knowledge_bases": {"id", "sync_state"}},
+    )
+
+    assert gaps == {
+        "missing_tables": [],
+        "missing_columns": {},
+        "reason": "schema_introspection_failed",
+    }
+
+    message = seed_demo_script.format_schema_readiness_error(gaps)
+    assert "Readiness check failed: schema_introspection_failed" in message
+    assert "secret raw database failure" not in message
+
+
+def test_alembic_readiness_reports_missing_version_table():
+    gaps = seed_demo_script.alembic_readiness_gaps(
+        FakeSchemaInspector({"knowledge_bases": {"id"}}),
+        code_heads=["head-1"],
+        known_revisions=["head-1"],
+    )
+
+    assert gaps["ready"] is False
+    assert gaps["missing_version_table"] is True
+
+    message = seed_demo_script.format_schema_readiness_error(
+        {
+            "missing_tables": [],
+            "missing_columns": {},
+            "reason": None,
+            "migration": gaps,
+        }
+    )
+    assert "alembic_version table is missing" in message
+
+
+def test_alembic_readiness_reports_database_behind_code_head():
+    gaps = seed_demo_script.alembic_readiness_gaps(
+        FakeSchemaInspector(
+            {"alembic_version": {"version_num"}},
+            alembic_revisions=["head-1"],
+        ),
+        code_heads=["head-2"],
+        known_revisions=["head-1", "head-2"],
+    )
+
+    assert gaps["ready"] is False
+    assert gaps["database_behind"] is True
+
+    message = seed_demo_script.format_schema_readiness_error(
+        {
+            "missing_tables": [],
+            "missing_columns": {},
+            "reason": None,
+            "migration": gaps,
+        }
+    )
+    assert "DB revision does not match code head" in message
+    assert "db=head-1" in message
+    assert "code=head-2" in message
+
+
+def test_alembic_readiness_reports_split_code_heads():
+    gaps = seed_demo_script.alembic_readiness_gaps(
+        FakeSchemaInspector(
+            {"alembic_version": {"version_num"}},
+            alembic_revisions=["head-1"],
+        ),
+        code_heads=["head-1", "head-2"],
+        known_revisions=["head-1", "head-2"],
+    )
+
+    assert gaps["ready"] is False
+    assert gaps["split_heads"] is True
+
+    message = seed_demo_script.format_schema_readiness_error(
+        {
+            "missing_tables": [],
+            "missing_columns": {},
+            "reason": None,
+            "migration": gaps,
+        }
+    )
+    assert "multiple code heads" in message
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
@@ -271,6 +376,21 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
     assert (
         "internal_compensation_access_policy",
         "ai_builder_onboarding",
+        "operator",
+    ) in permission_specs
+    assert (
+        "internal_privacy_hr_records",
+        "ai_builder_onboarding",
+        "operator",
+    ) not in permission_specs
+    assert (
+        "internal_privacy_hr_records",
+        "platform_admin",
+        "manager",
+    ) in permission_specs
+    assert (
+        "internal_privacy_hr_records",
+        "hr_knowledge_users",
         "operator",
     ) in permission_specs
 

@@ -1,11 +1,12 @@
 import uuid
-from typing import Any, List
+from typing import Annotated, Any, List
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
@@ -15,9 +16,16 @@ from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_PUBLIC_INFO,
+    DeploymentRuntimePolicy,
+    is_deployment_type_allowed_for_surface,
+)
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import (
     DeploymentCreate,
+    DeploymentPreflightRequest,
+    DeploymentPreflightResponse,
     DeploymentResponse,
     DeploymentRunInfoResponse,
 )
@@ -73,9 +81,7 @@ def _ensure_app_matches_active_organization(
         raise HTTPException(status_code=404, detail="Deployment not found")
 
 
-def _deployment_toggle_audit_action(
-    deployment: WorkflowDeployment, app: App
-) -> str:
+def _deployment_toggle_audit_action(deployment: WorkflowDeployment, app: App) -> str:
     if (
         not deployment.is_active
         and app.active_deployment_id is not None
@@ -124,6 +130,10 @@ def _record_deployment_toggle_audit(
 @audit(AuditAction.WORKFLOW_DEPLOY)
 def create_deployment(
     deployment_in: DeploymentCreate,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -135,7 +145,40 @@ def create_deployment(
     if not app or not app.workflow_id:
         raise HTTPException(status_code=404, detail="App not found")
     ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
-    return DeploymentService.create_deployment(db, deployment_in, current_user.id)
+    return DeploymentService.create_deployment(
+        db,
+        deployment_in,
+        current_user.id,
+        runtime_policy=runtime_policy,
+    )
+
+
+@router.post("/preflight", response_model=DeploymentPreflightResponse)
+def preview_deployment_preflight(
+    preflight_in: DeploymentPreflightRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    배포 graph snapshot과 deployment type 기준으로 runtime availability를 검사합니다.
+    """
+    app = db.query(App).filter(App.id == preflight_in.app_id).first()
+    if not app or not app.workflow_id:
+        raise HTTPException(status_code=404, detail="App not found")
+    ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
+    graph_snapshot = DeploymentService._resolve_graph_snapshot(
+        db,
+        app.workflow_id,
+        preflight_in.graph_snapshot,
+    )
+    return DeploymentService.preview_knowledge_preflight(
+        db,
+        app=app,
+        deployment_type=preflight_in.type,
+        graph_snapshot=graph_snapshot,
+        audience_hint=preflight_in.audience,
+        is_active=preflight_in.is_active,
+    )
 
 
 @router.get("", response_model=List[DeploymentResponse])
@@ -202,6 +245,10 @@ def list_workflow_nodes(
 def get_authenticated_deployment_run_info(
     deployment_id: str,
     request: Request,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -218,13 +265,21 @@ def get_authenticated_deployment_run_info(
         x_organization_id,
     )
     ensure_workflow_permission(db, current_user, workflow_id, "execute")
-    return DeploymentService.get_deployment_run_info(db, deployment_id)
+    return DeploymentService.get_deployment_run_info(
+        db,
+        deployment_id,
+        runtime_policy=runtime_policy,
+    )
 
 
 @router.post("/{deployment_id}/run")
 async def run_authenticated_deployment(
     deployment_id: str,
     request: Request,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     request_body: dict[str, Any] | None = Body(default=None),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
@@ -253,6 +308,7 @@ async def run_authenticated_deployment(
         deployment_id=deployment_id,
         user_inputs=inputs,
         current_user_id=current_user.id,
+        runtime_policy=runtime_policy,
         request_id=_request_id_from_request(request),
         correlation_id=request.headers.get("x-correlation-id"),
     )
@@ -274,7 +330,13 @@ def get_deployment(
 
 @router.get("/public/{url_slug}/info")
 def get_deployment_info_public(
-    url_slug: str, response: Response, db: Session = Depends(get_db)
+    url_slug: str,
+    response: Response,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
+    db: Session = Depends(get_db),
 ):
     """
     배포 정보 공개 조회 (웹 앱/임베딩용, 인증 불필요)
@@ -308,7 +370,10 @@ def get_deployment_info_public(
 
     deployment = (
         db.query(WorkflowDeployment)
-        .filter(WorkflowDeployment.id == app.active_deployment_id)
+        .filter(
+            WorkflowDeployment.id == app.active_deployment_id,
+            WorkflowDeployment.app_id == app.id,
+        )
         .first()
     )
 
@@ -317,6 +382,12 @@ def get_deployment_info_public(
 
     if not deployment.is_active:
         raise HTTPException(status_code=404, detail="Deployment is inactive")
+    if not is_deployment_type_allowed_for_surface(
+        deployment.type,
+        SURFACE_PUBLIC_INFO,
+        policy=runtime_policy,
+    ):
+        raise HTTPException(status_code=404, detail="Active deployment not found")
 
     return DeploymentInfoResponse(
         url_slug=app.url_slug,
@@ -332,6 +403,10 @@ def get_deployment_info_public(
 @router.patch("/{deployment_id}/toggle", response_model=DeploymentResponse)
 def toggle_deployment(
     deployment_id: str,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -347,7 +422,12 @@ def toggle_deployment(
     token = set_current_actor(actor)
     try:
         scheduler = get_scheduler_service()
-        result = DeploymentService.toggle_deployment(db, deployment_id, scheduler)
+        result = DeploymentService.toggle_deployment(
+            db,
+            deployment_id,
+            scheduler,
+            runtime_policy=runtime_policy,
+        )
     except Exception as e:
         _record_deployment_toggle_audit(
             audit_action,

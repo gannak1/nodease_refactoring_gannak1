@@ -376,6 +376,7 @@ Status: Draft
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.
+- LLM node RAG 선택 UI는 legacy owner-filtered `/knowledge` 목록이 아니라 active organization, KB `use` 권한, completed retrieval-visible document chunk 기준을 통과한 LLM-selectable 후보만 표시한다. 빈 KB 또는 `pending`/`failed` 문서만 있는 KB는 경고 없이 선택 가능한 후보로 노출하지 않는다. 후보가 없으면 "완료된 문서가 있는 지식 베이스가 없습니다." 같은 safe 안내를 표시한다.
 - 인증 배포 실행 화면은 `GET /deployments/{deployment_id}/run-info` safe metadata만 사용하고, `auth_secret` 또는 `graph_snapshot`을 받지 않는다.
 - 로그인 사용자의 배포 실행 요청(`/deployments/{deployment_id}/run`)은 workflow `execute` 권한을 재검증하고, active deployment snapshot을 `execution_subject=current_user`로 실행한다.
 - 인증 배포 실행의 `conversation_id`는 서버에서 deployment와 execution subject 기준으로 namespace 처리되어 다른 사용자 memory context와 섞이지 않는다.
@@ -383,7 +384,10 @@ Status: Draft
 - Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
-- 배포 preflight는 private RAG 후속 기능에서 LLM node RAG 옵션의 KB/collection 후보가 intended execution subject/audience에게 사용 가능한지 검증하고, unavailable/unknown 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
+- 배포 preflight는 LLM node RAG 옵션의 KB/collection 후보가 deployment type에서 파생한 runtime audience에게 사용 가능한지 검증하고, unavailable/unknown/private 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
+- Public/API/webhook/schedule/chatbot/MCP surface는 subject가 없으므로 private KB 후보가 있으면 활성 배포 create/toggle에서 `409 deployment.preflight.blocked`를 반환한다.
+- Workflow-node runtime은 parent execution context를 상속한다. Parent subject가 있으면 해당 subject 기준 KB permission/source ACL을 사용하고, subject가 없으면 anonymous public-only로 낮춘다.
+- Workflow-node preflight는 `workflowNode.data.appId`로 target app active deployment를 찾는다. `workflowId`로 target을 잘못 해석하면 테스트 실패다.
 
 ## E2E Tests
 

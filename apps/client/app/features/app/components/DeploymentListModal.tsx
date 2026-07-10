@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { X, Power, PowerOff } from 'lucide-react';
 import { appApi, type Deployment } from '../api/appApi';
+import { deploymentApiErrorMessage } from '@/app/features/workflow/utils/deploymentPreflightMessage';
 
 interface DeploymentListModalProps {
   appId: string;
@@ -16,6 +17,7 @@ const DEPLOYMENT_TYPE_LABELS: Record<string, string> = {
   webapp: '웹 앱',
   widget: '위젯',
   chatbot: '챗봇',
+  mcp: 'MCP',
   workflow_node: '서브 모듈',
   webhook: '웹훅',
   schedule: '알람',
@@ -60,7 +62,7 @@ export default function DeploymentListModal({
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('배포 토글 실패:', err);
-      alert('배포 상태 변경에 실패했습니다.');
+      alert(deploymentApiErrorMessage(err, '배포 상태 변경에 실패했습니다.'));
     } finally {
       setTogglingId(null);
     }

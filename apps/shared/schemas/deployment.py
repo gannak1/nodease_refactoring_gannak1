@@ -1,9 +1,17 @@
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from pydantic import BaseModel, Field
+
+
+DeploymentPreflightStatus = Literal["passed", "warning", "blocked"]
+DeploymentPreflightAudience = Literal[
+    "anonymous_public",
+    "authenticated_user",
+    "workflow_node_inherited",
+]
 
 
 class DeploymentBase(BaseModel):
@@ -22,6 +30,44 @@ class DeploymentCreate(DeploymentBase):
     # 현재는 백엔드에서 DB의 draft를 읽어서 저장함
     graph_snapshot: Optional[Dict[str, Any]] = None
     auth_secret: Optional[str] = None  # 생성 시에만 입력 가능
+
+
+class DeploymentPreflightRequest(DeploymentBase):
+    app_id: UUID
+    graph_snapshot: Optional[Dict[str, Any]] = None
+    audience: Optional[DeploymentPreflightAudience] = None
+
+
+class DeploymentPreflightSummary(BaseModel):
+    blocked_reason: Optional[str] = None
+    affected_node_count: int = 0
+    affected_kb_count_bucket: str = "0"
+
+
+class DeploymentPreflightRequiredAction(BaseModel):
+    action: str
+    label: str
+
+
+class DeploymentPreflightNodeResult(BaseModel):
+    node_id: Optional[str] = None
+    node_type: str
+    status: DeploymentPreflightStatus
+    reason_codes: list[str] = Field(default_factory=list)
+    knowledge_base_count_bucket: str = "0"
+
+
+class DeploymentPreflightResponse(BaseModel):
+    status: DeploymentPreflightStatus
+    audience: DeploymentPreflightAudience
+    safe_summary: DeploymentPreflightSummary = Field(
+        default_factory=DeploymentPreflightSummary
+    )
+    required_actions: list[DeploymentPreflightRequiredAction] = Field(
+        default_factory=list
+    )
+    warnings: list[str] = Field(default_factory=list)
+    nodes: list[DeploymentPreflightNodeResult] = Field(default_factory=list)
 
 
 class DeploymentResponse(DeploymentBase):

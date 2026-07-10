@@ -6,6 +6,8 @@ import {
 import { WorkflowDraftRequest } from '../types/Workflow';
 import {
   DeploymentCreate,
+  DeploymentPreflightRequest,
+  DeploymentPreflightResponse,
   DeploymentResponse,
   DeploymentRunInfoResponse,
 } from '../types/Deployment';
@@ -381,6 +383,11 @@ export const workflowApi = {
   createDeployment: async (data: DeploymentCreate) => {
     const response = await api.post('/deployments', data);
     return response.data as DeploymentResponse;
+  },
+
+  preflightDeployment: async (data: DeploymentPreflightRequest) => {
+    const response = await api.post('/deployments/preflight', data);
+    return response.data as DeploymentPreflightResponse;
   },
 
   getDeployments: async (workflowId: string) => {
