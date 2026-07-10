@@ -165,6 +165,7 @@ class SqlAlchemyScheduleAdmissionRepository:
         exhausted: bool,
     ) -> None:
         claim = self._require_claim()
+        claim.attempt_count += 1
         claim.status = STATUS_DEAD_LETTERED if exhausted else STATUS_PENDING
         claim.safe_reason_code = REASON_BUDGET_EVALUATION_FAILED
         claim.lease_owner = None

@@ -1,7 +1,14 @@
 import inspect
+import uuid
+from datetime import datetime, timedelta, timezone
 
 from apps.workflow_engine.adapters.schedule_dispatch_repository import (
     SqlAlchemyScheduleAdmissionRepository,
+)
+from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
+from apps.shared.domain.schedule_dispatch import (
+    REASON_BUDGET_EVALUATION_FAILED,
+    STATUS_PENDING,
 )
 
 
@@ -16,3 +23,30 @@ def test_admission_repository_declares_canonical_lock_order():
     claim_lock = source.index("select(ScheduleDispatchClaim)", schedule_lock)
 
     assert app_lock < deployment_lock < schedule_lock < claim_lock
+
+
+def test_budget_deferred_increments_attempt_count_for_bounded_retry():
+    now = datetime.now(timezone.utc)
+    claim = ScheduleDispatchClaim(
+        id=uuid.uuid4(),
+        schedule_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        scheduled_for=now,
+        idempotency_key=f"schedule:{uuid.uuid4()}",
+        status=STATUS_PENDING,
+        attempt_count=2,
+        claimed_at=now,
+    )
+    repository = object.__new__(SqlAlchemyScheduleAdmissionRepository)
+    repository._claim = claim
+
+    repository.mark_budget_deferred(
+        now=now,
+        next_attempt_at=now + timedelta(seconds=5),
+        exhausted=False,
+    )
+
+    assert claim.attempt_count == 3
+    assert claim.status == STATUS_PENDING
+    assert claim.safe_reason_code == REASON_BUDGET_EVALUATION_FAILED
