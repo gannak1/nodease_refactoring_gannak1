@@ -2,9 +2,8 @@ from datetime import datetime
 from typing import Any, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from apps.shared.db.models.audit_log import ActorType, AuditCategory, AuditStatus
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AuditLogSchema(BaseModel):
@@ -27,5 +26,11 @@ class AuditLogListResponse(BaseModel):
     items: List[AuditLogSchema]
 
 
+class AuditChangeSummary(BaseModel):
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+
+
 class AuditLogDetailResponse(AuditLogSchema):
     audit_metadata: dict[str, Any] = Field(default_factory=dict)
+    change_summary: AuditChangeSummary | None = None

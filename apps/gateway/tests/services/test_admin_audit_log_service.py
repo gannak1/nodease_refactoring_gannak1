@@ -15,7 +15,7 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
-from apps.shared.db.models.team import Team, TeamAuditPermission, TeamMembership
+from apps.shared.db.models.team import TeamAuditPermission
 
 
 ADMIN_AUDIT_SERVICE = "apps.gateway.services.admin_audit_log_service"
@@ -235,6 +235,288 @@ def test_sanitize_audit_metadata_removes_secret_keys_recursively():
         "request_id": "req-1",
         "reason": "permission.denied",
         "nested": {"summary": "kept", "child": {}},
+    }
+
+
+def test_detail_metadata_rejects_nested_or_malformed_typed_values(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action="policy.block",
+        target_type="organization_membership",
+        target_id=str(uuid4()),
+        status=AuditStatus.FAILURE,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        audit_metadata={
+            "organization_id": str(organization_id),
+            "request_id": {"value": "must-not-leak"},
+            "reason": ["must-not-leak"],
+            "target_user_id": {"raw": str(uuid4())},
+            "resource_type": "unknown",
+            "resource_id": "not-a-uuid",
+            "policy_reason": "raw_exception",
+            "affected_resource_source_count": True,
+            "summary": [{"token": "secret", "safe": "kept"}],
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert detail.request_id is None
+    assert detail.audit_metadata == {
+        "organization_id": str(organization_id),
+        "summary": [{"safe": "kept"}],
+    }
+
+
+def test_change_summary_requires_exact_action_target_and_complete_update_provenance(
+    monkeypatch,
+):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    user_id = uuid4()
+    before = {
+        "organization_id": str(organization_id),
+        "user_id": str(user_id),
+        "membership_state": "active",
+        "organization_auth_state": "member",
+        "raw_payload": {"secret": "must not leak"},
+    }
+    after = {
+        "organization_id": str(organization_id),
+        "user_id": str(user_id),
+        "membership_state": "suspended",
+        "organization_auth_state": "member",
+        "password": "must not leak",
+    }
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action="organization.member.update",
+        target_type="organization_membership",
+        target_id="membership-1",
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        before=before,
+        after=after,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert detail.change_summary.model_dump() == {
+        "before": {
+            "organization_id": str(organization_id),
+            "user_id": str(user_id),
+            "membership_state": "active",
+            "organization_auth_state": "member",
+        },
+        "after": {
+            "organization_id": str(organization_id),
+            "user_id": str(user_id),
+            "membership_state": "suspended",
+            "organization_auth_state": "member",
+        },
+    }
+
+    log.action = "organization.member.remove"
+    assert (
+        AdminAuditLogService.get_audit_log_detail(
+            _AuditLogSession([log]),
+            current_user=SimpleNamespace(id=uuid4()),
+            organization_id=organization_id,
+            audit_log_id=log.id,
+        ).change_summary
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "target_type", "before_present", "after_present"),
+    [
+        ("team_membership.created", "team_membership", False, True),
+        ("team_membership.deleted", "team_membership", True, False),
+        (
+            "user_app_creation_permission.created",
+            "user_app_creation_permission",
+            False,
+            True,
+        ),
+        (
+            "user_app_creation_permission.deleted",
+            "user_app_creation_permission",
+            True,
+            False,
+        ),
+    ],
+)
+def test_create_and_delete_summary_use_only_required_complete_snapshot(
+    monkeypatch,
+    action,
+    target_type,
+    before_present,
+    after_present,
+):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    user_id = uuid4()
+    if target_type == "team_membership":
+        snapshot = {
+            "grantee_organization_id": str(organization_id),
+            "team_id": str(uuid4()),
+            "user_id": str(user_id),
+        }
+    else:
+        snapshot = {
+            "grantee_organization_id": str(organization_id),
+            "user_id": str(user_id),
+        }
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action=action,
+        target_type=target_type,
+        target_id=str(uuid4()),
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        before=snapshot if before_present else None,
+        after=snapshot if after_present else None,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    summary = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    ).change_summary
+
+    assert summary is not None
+    assert (summary.before is not None) is before_present
+    assert (summary.after is not None) is after_present
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda before, after, other: before.pop("grantee_organization_id"),
+        lambda before, after, other: after.pop("auth_state"),
+        lambda before, after, other: before.update(
+            grantee_organization_id=str(other)
+        ),
+        lambda before, after, other: after.update(user_id={"secret": "nested"}),
+        lambda before, after, other: after.update(auth_state="raw_auditor"),
+    ],
+)
+def test_resource_update_summary_fails_closed_on_partial_or_invalid_snapshot(
+    monkeypatch,
+    mutation,
+):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    snapshot = {
+        "grantee_organization_id": str(organization_id),
+        "user_id": str(uuid4()),
+        "knowledge_base_id": str(uuid4()),
+        "auth_state": "viewer",
+    }
+    before = dict(snapshot)
+    after = dict(snapshot, auth_state="operator")
+    mutation(before, after, other_organization_id)
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action="user_knowledge_permission.updated",
+        target_type="user_knowledge_permission",
+        target_id=str(uuid4()),
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        before=before,
+        after=after,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert detail.change_summary is None
+
+
+def test_policy_block_has_safe_metadata_but_never_change_summary(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    metadata = {
+        "organization_id": str(organization_id),
+        "request_id": "request-1",
+        "target_user_id": str(uuid4()),
+        "requested_action": "membership.suspend",
+        "policy_reason": "access_management.self_control_forbidden",
+        "resource_type": "workflow",
+        "resource_id": str(uuid4()),
+        "team_id": str(uuid4()),
+        "affected_resource_source_count": 3,
+        "actor": {"email": "hidden@example.invalid"},
+        "raw_payload": {"secret": "hidden"},
+    }
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action="policy.block",
+        target_type="organization_membership",
+        target_id=str(uuid4()),
+        status=AuditStatus.FAILURE,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        audit_metadata=metadata,
+        before={"organization_id": str(organization_id)},
+        after={"organization_id": str(organization_id)},
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert detail.change_summary is None
+    assert detail.audit_metadata == {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"actor", "raw_payload"}
     }
 
 
@@ -542,6 +824,8 @@ def _audit_log(
     status,
     occurred_at,
     audit_metadata=None,
+    before=None,
+    after=None,
 ):
     # audit_logs에는 organization_id 컬럼이 없으므로 조직 scope는 metadata 기준으로 검증한다.
     metadata = audit_metadata or {
@@ -557,6 +841,8 @@ def _audit_log(
         action=action,
         target_type=target_type,
         target_id=target_id,
+        before=before,
+        after=after,
         status=status,
         audit_metadata=metadata,
     )
