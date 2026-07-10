@@ -30,6 +30,7 @@ Verified Against: TBD
 - App status, clone, workflow-node deployment listing은 active deployment id뿐 아니라 deployment `app_id` ownership도 확인한다. Cross-app pointer로 다른 app의 graph/schema/status를 복제하거나 노출하지 않는다.
 - Webhook endpoint는 active deployment가 `type=webhook`이 아닌 경우 API/chatbot/schedule/workflow-node 등 모든 non-webhook deployment와 unknown/empty type을 safe 404로 거부하며, budget check와 background task 등록 전에 종료한다.
 - Gateway runtime endpoints, webhook endpoint, scheduler, Workflow Engine task는 같은 central runtime policy 결과를 사용하며 서로 다른 allowlist를 갖지 않는다.
+- 직접 생성한 runtime policy에 mutable dict/set을 전달한 뒤 원본을 변경해도 policy 결과가 바뀌지 않아야 하며, direct constructor도 unknown type/surface/trigger를 fail-fast로 거부한다. Gateway webhook/scheduler/DeploymentService와 Workflow Engine provider에 custom immutable policy를 주입했을 때 해당 surface 판정에 실제 적용되어야 한다.
 - Workflow-node runtime은 target app이 조직 소속인데 parent `execution_context.organization_id`가 없거나 target app organization과 다르면 fail-closed로 실행하지 않는다.
 - Workflow-node runtime은 target app organization이 없으면 legacy/ambiguous target으로 보고 fail-closed로 실행하지 않는다.
 - Workflow-node runtime은 target app의 active deployment가 `type=workflow_node`가 아니면 fail-closed로 실행하지 않는다.
@@ -38,6 +39,7 @@ Verified Against: TBD
 - Workflow-node runtime의 순환/depth/target 설정 오류는 Celery retry로 재시도하지 않고 non-retryable runtime error로 즉시 실패한다.
 - Active `type=workflow_node` deployment graph에 `scheduleTrigger`가 있어도 schedule record나 scheduler job을 생성하지 않는다.
 - Scheduler startup query와 dispatch 시점은 모두 schedule deployment가 해당 app의 현재 `active_deployment_id`인지 재확인한다. Queue에는 graph가 아니라 deployment id를 넣고, worker가 실행 직전 active/type/app/current pointer를 다시 확인해 enqueue 후 삭제/비활성/stale/non-current가 된 deployment를 retry 없이 종료한다.
+- APScheduler에 job이 남아 있어도 `Schedule.id + deployment_id` row가 없으면 queue와 budget service를 호출하지 않고 local job을 제거한다. Worker queue context에 다른 organization/workflow/app/deployment/version 또는 execution subject를 넣어도 DB의 canonical App/Deployment context로 덮어쓰거나 제거하고 correlation allowlist만 보존한다.
 - Blocking preflight 예외는 broad catch에서 generic `400`으로 변환되지 않는다.
 - Source-managed KB public 후보는 public exposure approval primitive가 없으면 blocked로 처리한다.
 - Webhook capture start/status rejects unauthenticated requests.

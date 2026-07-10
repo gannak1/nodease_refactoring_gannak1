@@ -38,7 +38,7 @@ Status: Draft
 | ORG-TC-U009 | invited/removed member는 PATCH로 active/suspended 전환할 수 없어야 한다. | invited 또는 removed member update가 성공한다. | `409`. |
 | ORG-TC-U010 | member update는 빈 update와 no-op audit을 구분해야 한다. | 빈 body가 성공하거나 no-op PATCH가 audit row를 만든다. | 빈 body는 `400`, no-op은 audit 없음. |
 | ORG-TC-U011 | 자기 자신 또는 마지막 active manager의 상태/권한 변경은 거부해야 한다. | self update 또는 마지막 manager 강등/제거가 성공한다. | `400` 또는 `409`. |
-| ORG-TC-U012 | member removal은 team membership, user direct permission, App 생성 권한 row를 정리해야 한다. | removed 처리 후 team membership, user workflow/LLM direct permission, `user_app_creation_permissions` row 중 하나가 남는다. | cleanup count와 삭제가 일치한다. |
+| ORG-TC-U012 | member removal은 team membership, user direct permission, App 생성 권한 row를 정리해야 한다. | removed 처리 후 team membership, user workflow/Knowledge Base/LLM direct permission, `user_app_creation_permissions` row 중 하나가 남는다. | cleanup count와 삭제가 일치한다. |
 | ORG-TC-U013 | 이미 removed인 member removal은 idempotent해야 한다. | removed member DELETE가 404 또는 409를 반환한다. | `status=removed`, cleanup count 0. |
 | ORG-TC-U014 | team mutation은 organization manager scope 안에서만 수행되어야 한다. | scope 밖 user나 non-manager가 team create/update/member mutation에 성공한다. | `404` 또는 `403`. |
 | ORG-TC-U015 | team `managed_by`와 team member add는 active organization user만 허용해야 한다. | scope 밖, inactive, membership 없는 user가 저장된다. | `400` 또는 `404`. |
@@ -107,3 +107,4 @@ Status: Draft
 | ORG-TC-P006 | workflow permission source 목록은 team과 user direct source를 구분해야 한다. | source type 또는 grantee id/name이 누락된다. | source list schema validation 통과. |
 | ORG-TC-P007 | permission denied는 scope 안 denial에만 기록되고 scope 밖 resource는 숨겨야 한다. | scope 안 denial audit이 없거나 scope 밖 접근에 403/permission.denied audit이 발생한다. | audit recorded 또는 `404 resource.not_found`. |
 | ORG-TC-P008 | auth failure는 organization permission check보다 먼저 닫혀야 한다. | token 없음인데 organization query나 body validation이 먼저 실행된다. | `auth.required`. |
+| ORG-TC-P009 | Production workflow/Knowledge Base/LLM credential permission API는 target/team/user ORM model을 중앙 registry에서 해석해야 한다. | Endpoint가 registry와 별도 model import/switch를 사용하거나 unknown resource/grantee가 다른 permission table로 fallback한다. | Registry route와 API model identity 일치, unknown 값 fail-closed. |
