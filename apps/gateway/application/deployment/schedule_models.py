@@ -3,18 +3,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
-
-BudgetDecisionStatus = Literal["allowed", "blocked", "unavailable"]
-
-
-@dataclass(frozen=True, slots=True)
-class BudgetExecutionDecision:
-    status: BudgetDecisionStatus
-
-    @property
-    def is_allowed(self) -> bool:
-        return self.status == "allowed"
 
 
 @dataclass(frozen=True, slots=True)

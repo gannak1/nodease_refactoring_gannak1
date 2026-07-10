@@ -473,6 +473,27 @@ def test_execute_by_deployment_rejects_trigger_type_mismatch():
     assert FakeWorkflowEngine.calls == []
 
 
+def test_claim_mode_rejects_legacy_generic_schedule_task(monkeypatch):
+    deployment, _app, _trigger_mode = _active_deployment_pair(
+        deployment_type=DeploymentType.SCHEDULE,
+        trigger_mode="schedule",
+    )
+    monkeypatch.setattr(
+        tasks,
+        "get_schedule_dispatch_settings",
+        lambda: SimpleNamespace(mode="claim"),
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": "schedule"},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
 def test_execute_by_deployment_uses_worker_runtime_policy_provider(monkeypatch):
     deployment, _app, trigger_mode = _active_deployment_pair()
     injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(

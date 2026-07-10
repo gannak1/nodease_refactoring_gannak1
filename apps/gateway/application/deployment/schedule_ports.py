@@ -6,13 +6,13 @@ from datetime import datetime
 from typing import Protocol
 
 from apps.gateway.application.deployment.schedule_models import (
-    BudgetExecutionDecision,
     DispatchCanonicalContext,
     DispatchClaimSnapshot,
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
     SchedulePublishRequest,
 )
+from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 
 
 class ScheduleDispatchUnitOfWork(Protocol):

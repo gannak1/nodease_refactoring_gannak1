@@ -8,10 +8,10 @@ from apps.gateway.application.deployment.schedule_dispatch import (
     ScheduleDispatchUseCase,
 )
 from apps.gateway.application.deployment.schedule_models import (
-    BudgetExecutionDecision,
     DispatchCanonicalContext,
     DispatchClaimSnapshot,
 )
+from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,

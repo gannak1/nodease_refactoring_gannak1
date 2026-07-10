@@ -17,8 +17,9 @@ from apps.gateway.services.admin_usage_service import (
     _total_cost_sum,
 )
 from apps.gateway.services.audit_records import add_action_audit
-from apps.gateway.application.deployment.schedule_models import (
-    BudgetExecutionDecision,
+from apps.shared.domain.workflow_budget import BudgetExecutionDecision
+from apps.shared.services.workflow_budget_execution import (
+    evaluate_workflow_budget_execution,
 )
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMUsageLog
@@ -129,38 +130,10 @@ class WorkflowBudgetService:
         now: datetime | None = None,
     ) -> BudgetExecutionDecision:
         """Return a side-effect-free budget decision for caller-owned transactions."""
-        if workflow_id is None:
-            return BudgetExecutionDecision(status="allowed")
-
-        normalized_id = _normalize_workflow_id(workflow_id)
-        try:
-            budget = _find_budget(db, normalized_id)
-            if budget is None:
-                return BudgetExecutionDecision(status="allowed")
-            if (
-                _active_budget_amount(
-                    budget.monthly_budget_usd,
-                    budget.is_enabled,
-                )
-                is None
-            ):
-                return BudgetExecutionDecision(status="allowed")
-
-            current_cost = WorkflowBudgetService.get_current_month_cost(
-                db,
-                workflow_id=normalized_id,
-                now=now or datetime.now(KST),
-            )
-            status = WorkflowBudgetService.classify_budget_usage(
-                current_cost,
-                budget.monthly_budget_usd,
-                budget.is_enabled,
-            )
-        except Exception:
-            return BudgetExecutionDecision(status="unavailable")
-
-        return BudgetExecutionDecision(
-            status="blocked" if status == "exceeded" else "allowed"
+        return evaluate_workflow_budget_execution(
+            db,
+            workflow_id=workflow_id,
+            now=now or datetime.now(KST),
         )
 
     @staticmethod

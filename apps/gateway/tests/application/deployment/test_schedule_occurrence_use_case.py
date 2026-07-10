@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 import pytest
 
 from apps.gateway.application.deployment.schedule_models import (
-    BudgetExecutionDecision,
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
 )
+from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.gateway.application.deployment.schedule_occurrence import (
     ScheduleOccurrenceUseCase,
 )

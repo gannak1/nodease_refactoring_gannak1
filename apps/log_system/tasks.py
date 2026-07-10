@@ -78,6 +78,10 @@ def _schedule_model_routing_run_record_after_llm_node_log(
         _schedule_model_routing_run_record(workflow_run)
 
 
+class PermanentLogContractError(ValueError):
+    pass
+
+
 def _serialize_uuid(obj):
     """UUID를 문자열로 변환 (JSON 직렬화용)"""
     if isinstance(obj, uuid.UUID):
@@ -142,7 +146,7 @@ def _record_workflow_execute_audit(run_log, status, reason_code=None):
         action=AuditAction.WORKFLOW_EXECUTE,
         category="action",
         actor_id=run_log.user_id,
-        actor_type="user",
+        actor_type="system" if run_log.user_id is None else "user",
         target_type="workflow",
         target_id=run_log.workflow_id,
         status=status,
@@ -242,6 +246,8 @@ def create_run_log(self, data: Dict[str, Any]):
             "api": RunTriggerMode.API,
             "app": RunTriggerMode.API,
             "deployed": RunTriggerMode.API,
+            "schedule": RunTriggerMode.SCHEDULER,
+            "scheduler": RunTriggerMode.SCHEDULER,
         }
 
         normalized_trigger = None
@@ -258,7 +264,18 @@ def create_run_log(self, data: Dict[str, Any]):
         # UUID 변환
         run_id = _deserialize_uuid(data["run_id"])
         workflow_id = _deserialize_uuid(data["workflow_id"])
-        user_id = _deserialize_uuid(data["user_id"])
+        user_id = (
+            _deserialize_uuid(data.get("user_id"))
+            if data.get("user_id") is not None
+            else None
+        )
+        if user_id is None and not (
+            normalized_trigger == RunTriggerMode.SCHEDULER
+            and str(data.get("workflow_task_id") or "").startswith("schedule:")
+        ):
+            raise PermanentLogContractError(
+                "null executor is only valid for a correlated schedule run"
+            )
         deployment_id = (
             _deserialize_uuid(data.get("deployment_id"))
             if data.get("deployment_id")
@@ -308,6 +325,9 @@ def create_run_log(self, data: Dict[str, Any]):
 
         return {"status": "success", "run_id": str(run_id)}
 
+    except PermanentLogContractError:
+        session.rollback()
+        raise
     except IntegrityError as e:
         session.rollback()
         if run_id is not None:

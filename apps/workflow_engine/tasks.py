@@ -16,6 +16,9 @@ from apps.shared.domain.deployment_runtime_policy import (
     is_deployment_type_allowed_for_trigger,
 )
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
+from apps.workflow_engine.schedule_dispatch_settings import (
+    get_schedule_dispatch_settings,
+)
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
@@ -364,6 +367,14 @@ def execute_by_deployment(
         if not isinstance(execution_context, dict):
             raise PermanentDeploymentExecutionError("실행 컨텍스트 형식이 올바르지 않습니다")
         queued_context = dict(execution_context)
+        if (
+            str(queued_context.get("trigger_mode", "")).strip().lower()
+            == "schedule"
+            and get_schedule_dispatch_settings().mode != "disabled"
+        ):
+            raise PermanentDeploymentExecutionError(
+                "claim mode requires the dedicated schedule task"
+            )
 
         deployment = (
             session.query(WorkflowDeployment)
@@ -445,6 +456,141 @@ def execute_by_deployment(
         if engine is not None:
             engine.cleanup()
         session.close()
+
+
+@celery_app.task(
+    name="workflow.execute_scheduled_deployment",
+    bind=True,
+    max_retries=0,
+)
+def execute_scheduled_deployment(self, schedule_dispatch_claim_id: str):
+    """Execute one canonical schedule claim without Celery-level replay."""
+    task_id = str(getattr(self.request, "id", "") or "")
+    return _execute_scheduled_deployment_claim(
+        schedule_dispatch_claim_id,
+        task_id=task_id,
+    )
+
+
+def _execute_scheduled_deployment_claim(
+    schedule_dispatch_claim_id: str,
+    *,
+    task_id: str,
+):
+    from apps.workflow_engine.adapters.schedule_dispatch_repository import (
+        SharedWorkflowBudgetDecisionAdapter,
+        SqlAlchemyScheduleAdmissionRepository,
+        SqlAlchemyScheduleAdmissionUnitOfWork,
+    )
+    from apps.workflow_engine.application.schedule_dispatch import (
+        ScheduledDeploymentExecutionUseCase,
+    )
+    from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+
+    try:
+        claim_id = uuid.UUID(str(schedule_dispatch_claim_id))
+    except (TypeError, ValueError):
+        raise PermanentDeploymentExecutionError("invalid schedule claim locator") from None
+    if not task_id.startswith("schedule:"):
+        raise PermanentDeploymentExecutionError("invalid schedule task identity")
+
+    use_case = ScheduledDeploymentExecutionUseCase(
+        settings=get_schedule_dispatch_settings(),
+        runtime_policy=get_deployment_runtime_policy(),
+    )
+    admission_owner = str(uuid.uuid4())
+    admission_session = SessionLocal()
+    try:
+        try:
+            admission = use_case.admit(
+                repository=SqlAlchemyScheduleAdmissionRepository(admission_session),
+                budget=SharedWorkflowBudgetDecisionAdapter(admission_session),
+                uow=SqlAlchemyScheduleAdmissionUnitOfWork(admission_session),
+                claim_id=claim_id,
+                task_id=task_id,
+                admission_owner=admission_owner,
+            )
+        except Exception as exc:
+            logger.error(
+                "Schedule admission unavailable: claim_id=%s error_type=%s",
+                claim_id,
+                type(exc).__name__,
+            )
+            raise PermanentDeploymentExecutionError(
+                "schedule admission is unavailable"
+            ) from None
+    finally:
+        admission_session.close()
+
+    if admission.status != "admitted" or admission.plan is None:
+        return {
+            "status": admission.status,
+            "reason": admission.reason,
+            "claim_id": str(claim_id),
+        }
+
+    plan = admission.plan
+    engine_session = SessionLocal()
+    engine = None
+    execution_succeeded = False
+    try:
+        sync_result = _sync_knowledge_bases_for_execution_subject(
+            engine_session,
+            plan.graph_snapshot,
+            plan.execution_context,
+        )
+        engine = WorkflowEngine(
+            graph=plan.graph_snapshot,
+            user_input=plan.user_input,
+            execution_context=plan.execution_context,
+            is_deployed=True,
+            db=engine_session,
+        )
+        result = engine.execute()
+        execution_succeeded = True
+    except Exception as exc:
+        logger.error(
+            "Scheduled workflow execution failed: claim_id=%s error_type=%s",
+            claim_id,
+            type(exc).__name__,
+        )
+        result = None
+        sync_result = _sync_skipped_result("execution_failed")
+    finally:
+        if engine is not None:
+            engine.cleanup()
+        engine_session.close()
+
+    finalization_session = SessionLocal()
+    try:
+        try:
+            finalized = use_case.finalize(
+                repository=SqlAlchemyScheduleAdmissionRepository(finalization_session),
+                uow=SqlAlchemyScheduleAdmissionUnitOfWork(finalization_session),
+                plan=plan,
+                succeeded=execution_succeeded,
+            )
+        except Exception as exc:
+            logger.error(
+                "Schedule finalization unavailable: claim_id=%s error_type=%s",
+                claim_id,
+                type(exc).__name__,
+            )
+            raise NonRetryableWorkflowError(
+                "scheduled workflow finalization is unavailable"
+            ) from None
+    finally:
+        finalization_session.close()
+
+    if not execution_succeeded:
+        raise NonRetryableWorkflowError("scheduled workflow execution failed")
+    return {
+        "status": "success",
+        "result": result,
+        "sync_status": sync_result,
+        "claim_id": str(claim_id),
+        "finalized": finalized,
+    }
 
 
 @celery_app.task(name="workflow.stream", bind=True, max_retries=3)

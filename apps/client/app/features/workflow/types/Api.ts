@@ -400,7 +400,7 @@ export interface WorkflowNodeRun {
 export interface WorkflowRun {
   id: string;
   workflow_id: string;
-  user_id: string;
+  user_id: string | null;
   status: string;
   trigger_mode: 'manual' | 'scheduler' | 'api' | 'app' | 'webhook';
   inputs?: Record<string, any>;

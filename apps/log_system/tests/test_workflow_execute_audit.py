@@ -63,3 +63,25 @@ def test_record_workflow_execute_failure_audit_omits_raw_error(monkeypatch):
     assert metadata["reason_code"] == "workflow.execute_failed"
     assert metadata["error_present"] is True
     assert "sensitive provider response" not in str(metadata)
+
+
+def test_system_schedule_execute_audit_has_no_user_actor(monkeypatch):
+    calls = []
+    run = SimpleNamespace(
+        id=uuid4(),
+        user_id=None,
+        workflow_id=uuid4(),
+        trigger_mode=RunTriggerMode.SCHEDULER,
+        request_id=None,
+        correlation_id=None,
+        error_message=None,
+    )
+    monkeypatch.setattr(
+        "apps.log_system.tasks.record_audit",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    _record_workflow_execute_audit(run, "success")
+
+    assert calls[0]["actor_id"] is None
+    assert calls[0]["actor_type"] == "system"

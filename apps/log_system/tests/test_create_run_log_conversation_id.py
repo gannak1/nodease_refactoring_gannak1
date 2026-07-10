@@ -84,6 +84,30 @@ def test_missing_conversation_id_is_none(monkeypatch):
     assert run.conversation_id is None
 
 
+def test_system_schedule_run_allows_null_executor_with_correlation(monkeypatch):
+    run = _run_create_run_log(
+        _base_data(
+            user_id=None,
+            trigger_mode="schedule",
+            workflow_task_id=f"schedule:{uuid4()}",
+        ),
+        monkeypatch,
+    )
+
+    assert run.user_id is None
+    assert run.trigger_mode == RunTriggerMode.SCHEDULER
+
+
+def test_null_executor_without_schedule_correlation_is_rejected(monkeypatch):
+    import pytest
+
+    with pytest.raises(ValueError):
+        _run_create_run_log(
+            _base_data(user_id=None, trigger_mode="manual"),
+            monkeypatch,
+        )
+
+
 class _QuerySession:
     def __init__(self, run):
         self.run = run
