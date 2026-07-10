@@ -169,6 +169,75 @@ export interface CostOptimizerRecommendationApplyRequest {
   recommendation_ids: string[];
 }
 
+export interface CostOptimizerRecommendationVerifyRequest {
+  recommendation_ids: string[];
+  baseline_mode: 'latest_success';
+  recommendation_policy_version?: string;
+  node_config_fingerprint?: string;
+}
+
+export interface CostOptimizerMetricComparison {
+  baseline: number | null;
+  candidate: number | null;
+  delta?: number | null;
+  change_rate?: number | null;
+}
+
+export interface CostOptimizerRecommendationVerificationResponse {
+  verification_status: 'completed' | 'partial' | 'failed' | 'stale';
+  comparison_id: string | null;
+  candidate_id: string | null;
+  applied_recommendation_ids?: string[];
+  baseline: {
+    label: string;
+    workflow_node_run_id?: string | null;
+    executed_at?: string | null;
+    model?: string | null;
+    deployment_id?: string | null;
+    metrics: Record<string, number | null | undefined>;
+  };
+  candidate: {
+    status: string;
+    model?: string | null;
+    metrics: Record<string, number | null | undefined>;
+  };
+  metrics: Record<string, CostOptimizerMetricComparison>;
+  quality_evaluation: {
+    status: string;
+    baseline?: { score?: number | null };
+    candidate?: { score?: number | null };
+    delta?: number | null;
+    dimensions?: Record<
+      string,
+      { baseline?: number | null; candidate?: number | null }
+    >;
+    confidence?: string | null;
+    safe_summary?: string | null;
+    judge_cost?: number | null;
+    judge_usage_log_id?: string | null;
+  };
+  schema_validation: {
+    status: string;
+    issues?: Array<{ code?: string; message?: string } | string>;
+  };
+  downstream_compatibility: CostOptimizerDownstreamCompatibility;
+  incurred_cost: {
+    candidate_execution_cost?: number | null;
+    quality_judge_cost?: number | null;
+    total_new_cost?: number | null;
+    currency?: string | null;
+  };
+  apply: {
+    allowed: boolean;
+    requires_confirmation: boolean;
+    reasons: string[];
+  };
+  verification_context?: {
+    node_config_fingerprint?: string | null;
+    recommendation_policy_version?: string | null;
+  };
+}
+
 export interface ModelRoutingPolicyResponse {
   enabled: boolean;
   status: 'off' | 'collecting' | 'active' | 'refreshing' | 'pending_review' | 'failed';

@@ -34,6 +34,7 @@ import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
 import { OptimizationRecommendationModal } from '../../../costOptimizer/OptimizationRecommendationModal';
+import { candidateFromOptions } from '../../../costOptimizer/costOptimizerPlaygroundModel';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import type { ModelRoutingPolicyResponse } from '@/app/features/workflow/types/Api';
 
@@ -1661,6 +1662,7 @@ export function LLMNodePanel({
             {
               id: nodeId,
               title: String(data.title || 'LLM 노드'),
+              candidateDraft: candidateFromOptions(data),
             },
           ]}
           initialNodeId={nodeId}

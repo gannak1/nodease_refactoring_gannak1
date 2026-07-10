@@ -1,0 +1,217 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { OptimizationRecommendationModal } from '../../components/costOptimizer/OptimizationRecommendationModal';
+
+const workflowApiMock = vi.hoisted(() => ({
+  getCostOptimizerParameterRecommendations: vi.fn(),
+  verifyCostOptimizerRecommendations: vi.fn(),
+  applyCostOptimizerCandidate: vi.fn(),
+  applyCostOptimizerRecommendations: vi.fn(),
+}));
+
+const routerMock = vi.hoisted(() => ({ push: vi.fn() }));
+
+vi.mock('../../api/workflowApi', () => ({ workflowApi: workflowApiMock }));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => routerMock,
+}));
+
+const recommendationResponse = {
+  analysis_stage: 'recommendations_available',
+  policy_version: 'recommendation-v2',
+  recommendations: [
+    {
+      recommendation_type: 'llm_parameter',
+      parameter_key: 'max_tokens',
+      current_value: 2000,
+      suggested_value: 600,
+      apply_mode: 'experiment_required',
+      candidate_patch: { parameters: { max_tokens: 600 } },
+      reason: '최근 완료 토큰 사용량이 낮습니다.',
+    },
+  ],
+  warnings: [],
+  profile: { node_config_fingerprint: 'node-fingerprint' },
+};
+
+const verificationResponse = {
+  verification_status: 'completed',
+  comparison_id: 'comparison-1',
+  candidate_id: 'candidate-1',
+  baseline: {
+    label: '최신 비교 가능한 성공 기록',
+    executed_at: '2026-07-11T10:00:00.000Z',
+    model: 'gpt-4.1',
+    metrics: { cost: 0.02, latency_ms: 4200, total_tokens: 1800 },
+  },
+  candidate: {
+    status: 'success',
+    model: 'gpt-4.1-mini',
+    metrics: { cost: 0.004, latency_ms: 1700, total_tokens: 700 },
+  },
+  metrics: {
+    cost: { baseline: 0.02, candidate: 0.004, delta: -0.016 },
+    latency_ms: { baseline: 4200, candidate: 1700, delta: -2500 },
+    total_tokens: { baseline: 1800, candidate: 700, delta: -1100 },
+  },
+  quality_evaluation: {
+    status: 'completed',
+    baseline: { score: 78 },
+    candidate: { score: 80 },
+    delta: 2,
+    dimensions: { clarity_consistency: { baseline: 77, candidate: 81 } },
+    confidence: 'high',
+    safe_summary: '후보 출력의 품질이 기준 실행과 비슷하거나 더 좋습니다.',
+    judge_cost: 0.001,
+  },
+  schema_validation: { status: 'passed', issues: [] },
+  downstream_compatibility: {
+    state: 'compatible',
+    label: '호환',
+    contract_check: { checked_node_ids: ['answer-1'], warnings: [] },
+  },
+  incurred_cost: {
+    candidate_execution_cost: 0.004,
+    quality_judge_cost: 0.001,
+    total_new_cost: 0.005,
+    currency: 'USD',
+  },
+  apply: { allowed: true, requires_confirmation: false, reasons: [] },
+  verification_context: {
+    node_config_fingerprint: 'node-fingerprint',
+    recommendation_policy_version: 'recommendation-v2',
+  },
+};
+
+const renderModal = () =>
+  render(
+    <OptimizationRecommendationModal
+      workflowId="workflow-1"
+      workflowName="고객 지원 자동화"
+      llmNodes={[
+        {
+          id: 'llm-triage',
+          title: '티켓 처리 판단',
+          candidateDraft: {
+            model_id: 'gpt-4.1',
+            fallback_model_id: '',
+            auto_model_routing: false,
+            task_type: 'generate',
+            system_prompt: '고객 지원을 처리합니다.',
+            user_prompt: '{{message}}',
+            assistant_prompt: '',
+            referenced_variables: [],
+            max_tokens: 2000,
+            temperature: 0.2,
+            top_p: 1,
+            presence_penalty: 0,
+            frequency_penalty: 0,
+            stop: [],
+            output_format: 'text',
+            json_schema_fields: [],
+            knowledgeBases: [],
+            topK: 3,
+            scoreThreshold: 0.5,
+            dedupeRetrievedContext: false,
+            retrievedContextMaxChars: null,
+            retrievedContextCompression: 'off',
+            answerGroundingCheck: 'off',
+          },
+        },
+      ]}
+      onClose={vi.fn()}
+      onApplyPatches={vi.fn()}
+    />,
+  );
+
+describe('FR-013 추천 설정 인라인 검증 모달', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    workflowApiMock.getCostOptimizerParameterRecommendations.mockResolvedValue(
+      recommendationResponse,
+    );
+    workflowApiMock.verifyCostOptimizerRecommendations.mockResolvedValue(
+      verificationResponse,
+    );
+    workflowApiMock.applyCostOptimizerCandidate.mockResolvedValue({ applied: true });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('테스트하기는 페이지 이동 없이 최신 성공 기록 기준 검증 결과와 독립 metric bar를 표시한다', async () => {
+    renderModal();
+
+    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.verifyCostOptimizerRecommendations).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-triage',
+        expect.objectContaining({
+          recommendation_ids: ['max_tokens'],
+          baseline_mode: 'latest_success',
+          recommendation_policy_version: 'recommendation-v2',
+        }),
+        expect.any(String),
+      );
+    });
+
+    expect(routerMock.push).not.toHaveBeenCalled();
+    expect(await screen.findByText('최신 비교 가능한 성공 기록')).toBeInTheDocument();
+    expect(screen.getByText('비용')).toBeInTheDocument();
+    expect(screen.getByText('실행 시간')).toBeInTheDocument();
+    expect(screen.getByText('전체 토큰')).toBeInTheDocument();
+    expect(screen.getByText('출력 품질 점수')).toBeInTheDocument();
+    expect(screen.getByText('스키마 검증')).toBeInTheDocument();
+    expect(screen.getByText('후속 노드 호환성')).toBeInTheDocument();
+    expect(screen.getByText('이번 검증에 새로 든 비용')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '적용하기' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '상세 비교 분석하기' })).toBeEnabled();
+    expect(screen.getByTestId('recommendation-verification-scroll-body')).toHaveClass(
+      'overflow-y-auto',
+    );
+    expect(screen.getByTestId('recommendation-verification-footer')).toHaveClass(
+      'sticky',
+    );
+  });
+
+  it('검증한 동일 candidate 설정을 기존 apply API로 적용한다', async () => {
+    renderModal();
+    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await screen.findByRole('button', { name: '적용하기' });
+
+    fireEvent.click(screen.getByRole('button', { name: '적용하기' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.applyCostOptimizerCandidate).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-triage',
+        expect.objectContaining({
+          comparison_id: 'comparison-1',
+          candidate_settings: expect.objectContaining({
+            model_id: 'gpt-4.1',
+            parameters: expect.objectContaining({ max_tokens: 600 }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('상세 비교 분석하기는 같은 comparison/candidate 이력을 열고 다시 실행하지 않는다', async () => {
+    renderModal();
+    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await screen.findByRole('button', { name: '상세 비교 분석하기' });
+
+    fireEvent.click(screen.getByRole('button', { name: '상세 비교 분석하기' }));
+
+    expect(routerMock.push).toHaveBeenCalledWith(
+      '/modules/workflow-1/cost-optimizer/llm-triage?comparisonId=comparison-1&candidateId=candidate-1',
+    );
+    expect(workflowApiMock.verifyCostOptimizerRecommendations).toHaveBeenCalledTimes(1);
+  });
+});
