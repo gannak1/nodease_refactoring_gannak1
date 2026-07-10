@@ -9,12 +9,28 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.workflow import WorkflowNode
 from apps.workflow_engine.workflow.nodes.workflow.entities import (
     WorkflowNodeData,
     WorkflowNodeInput,
 )
+
+
+def _filter_values(expressions):
+    values = {}
+    for expression in expressions:
+        key = getattr(getattr(expression, "left", None), "key", None)
+        right = getattr(expression, "right", None)
+        if hasattr(right, "value"):
+            value = right.value
+        elif str(right).lower() == "true":
+            value = True
+        else:
+            value = right
+        values[key] = value
+    return values
 
 
 def test_workflow_node_initialization():
@@ -121,6 +137,12 @@ def test_workflow_node_execution_with_input_mapping():
         # Then
         # 1. App과 Deployment 조회 확인
         assert mock_db.query.call_count == 2
+        deployment_filters = mock_db.query.return_value.filter.call_args_list[1].args
+        assert _filter_values(deployment_filters) == {
+            "id": "deploy-1",
+            "app_id": "app-xyz",
+            "is_active": True,
+        }
 
         # 2. WorkflowEngine이 올바른 인자로 초기화되었는지 확인
         # WorkflowEngine is called with positional args: (graph, sub_workflow_inputs, ...)
@@ -159,7 +181,7 @@ def test_workflow_node_error_no_db_session():
     node.execution_context = {}  # DB 세션 없음
 
     # When / Then
-    with pytest.raises(ValueError, match="DB session required"):
+    with pytest.raises(WorkflowNodeConfigurationError, match="DB session required"):
         node.execute({})
 
 
@@ -177,7 +199,10 @@ def test_workflow_node_error_app_not_found():
     node.execution_context = {"db": mock_db}
 
     # When / Then
-    with pytest.raises(ValueError, match="Target App .* not found"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App .* not found",
+    ):
         node.execute({})
 
 
@@ -201,7 +226,10 @@ def test_workflow_node_error_no_active_deployment():
     node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
     # When / Then
-    with pytest.raises(ValueError, match="has no active deployment"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="has no active deployment",
+    ):
         node.execute({})
 
 
@@ -217,7 +245,10 @@ def test_workflow_node_rejects_recursive_target_app_before_db_lookup():
         "app_id": "app-1",
     }
 
-    with pytest.raises(ValueError, match="Recursive workflow-node reference"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Recursive workflow-node reference",
+    ):
         node.execute({})
 
     mock_db.query.assert_not_called()
@@ -236,7 +267,10 @@ def test_workflow_node_rejects_visited_target_app_before_db_lookup():
         "workflow_node_visited_app_ids": ["app-2"],
     }
 
-    with pytest.raises(ValueError, match="Recursive workflow-node reference"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Recursive workflow-node reference",
+    ):
         node.execute({})
 
     mock_db.query.assert_not_called()
@@ -255,7 +289,10 @@ def test_workflow_node_rejects_depth_limit_before_db_lookup():
         "workflow_node_depth": 3,
     }
 
-    with pytest.raises(ValueError, match="nesting limit exceeded"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="nesting limit exceeded",
+    ):
         node.execute({})
 
     mock_db.query.assert_not_called()
@@ -283,15 +320,18 @@ def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
     ]
     node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
-    with pytest.raises(ValueError, match="Active deployment not found"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Active deployment not found",
+    ):
         node.execute({})
 
     deployment_filter_args = mock_db.query.return_value.filter.call_args_list[1].args
-    assert all(
-        getattr(getattr(arg, "right", None), "value", None)
-        != DeploymentType.WORKFLOW_NODE
-        for arg in deployment_filter_args
-    )
+    assert _filter_values(deployment_filter_args) == {
+        "id": "deploy-1",
+        "app_id": "app-1",
+        "is_active": True,
+    }
 
 
 def test_workflow_node_rejects_cross_organization_target():
@@ -310,7 +350,10 @@ def test_workflow_node_rejects_cross_organization_target():
 
     node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
-    with pytest.raises(ValueError, match="Target App is unavailable"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App is unavailable",
+    ):
         node.execute({})
 
 
@@ -330,7 +373,10 @@ def test_workflow_node_rejects_missing_parent_organization_context():
 
     node.execution_context = {"db": mock_db}
 
-    with pytest.raises(ValueError, match="Target App is unavailable"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App is unavailable",
+    ):
         node.execute({})
 
 
@@ -350,7 +396,10 @@ def test_workflow_node_rejects_target_without_organization_scope():
 
     node.execution_context = {"db": mock_db, "organization_id": "org-current"}
 
-    with pytest.raises(ValueError, match="Target App is unavailable"):
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="Target App is unavailable",
+    ):
         node.execute({})
 
 
