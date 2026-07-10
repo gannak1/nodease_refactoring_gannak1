@@ -351,6 +351,44 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
     assert engine_kwargs["execution_context"]["deployment_id"] == str(deployment_id)
 
 
+def test_execute_by_deployment_rebuilds_tenant_context_from_database():
+    deployment, app, trigger_mode = _active_deployment_pair()
+    attacker_workflow_id = str(uuid.uuid4())
+    attacker_organization_id = str(uuid.uuid4())
+    attacker_app_id = str(uuid.uuid4())
+
+    result = tasks.execute_by_deployment.run(
+        str(deployment.id),
+        {},
+        {
+            "trigger_mode": trigger_mode,
+            "workflow_id": attacker_workflow_id,
+            "organization_id": attacker_organization_id,
+            "app_id": attacker_app_id,
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 999,
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(uuid.uuid4()),
+            },
+            "request_id": "request-1",
+        },
+    )
+
+    context = FakeWorkflowEngine.calls[0]["kwargs"]["execution_context"]
+    assert result["status"] == "success"
+    assert context["workflow_id"] == str(app.workflow_id)
+    assert context["organization_id"] == str(app.organization_id)
+    assert context["app_id"] == str(deployment.app_id)
+    assert context["deployment_id"] == str(deployment.id)
+    assert context["workflow_version"] == deployment.version
+    assert context["request_id"] == "request-1"
+    assert "execution_subject" not in context
+    assert attacker_workflow_id not in context.values()
+    assert attacker_organization_id not in context.values()
+    assert attacker_app_id not in context.values()
+
+
 def test_execute_by_deployment_rejects_inactive_deployment():
     deployment, _app, trigger_mode = _active_deployment_pair()
     deployment.is_active = False

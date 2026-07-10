@@ -63,9 +63,13 @@ class FakeCeleryApp:
 class FakeScheduler:
     def __init__(self, next_run_time):
         self.next_run_time = next_run_time
+        self.removed = []
 
     def get_job(self, job_id):
         return SimpleNamespace(next_run_time=self.next_run_time)
+
+    def remove_job(self, job_id):
+        self.removed.append(job_id)
 
 
 class CaptureLoadQuery:
@@ -239,6 +243,39 @@ def test_scheduler_does_not_dispatch_stale_non_current_deployment(monkeypatch):
 
     assert celery.calls == []
     assert schedule.last_run_at is None
+    assert db.committed is False
+    assert db.rolled_back is False
+    assert db.closed is True
+
+
+def test_scheduler_removes_stale_job_before_dispatch(monkeypatch):
+    deployment_id = uuid.uuid4()
+    schedule_id = uuid.uuid4()
+    db = FakeSession(
+        deployment=SimpleNamespace(
+            id=deployment_id,
+            app_id=uuid.uuid4(),
+            created_by=uuid.uuid4(),
+            is_active=True,
+            type=DeploymentType.SCHEDULE,
+        ),
+        app=None,
+        schedule=None,
+    )
+    celery = FakeCeleryApp()
+    scheduler = FakeScheduler(None)
+
+    celery_module = importlib.import_module("apps.shared.celery_app")
+    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
+    monkeypatch.setattr(celery_module, "celery_app", celery)
+
+    service = object.__new__(SchedulerService)
+    service.scheduler = scheduler
+
+    service._run_workflow(deployment_id, schedule_id)
+
+    assert celery.calls == []
+    assert scheduler.removed == [str(schedule_id)]
     assert db.committed is False
     assert db.rolled_back is False
     assert db.closed is True

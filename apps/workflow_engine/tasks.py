@@ -18,6 +18,17 @@ from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
 
+_DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS = frozenset(
+    {
+        "conversation_id",
+        "correlation_id",
+        "request_id",
+        "trace_metadata",
+        "trigger_mode",
+        "workflow_task_id",
+    }
+)
+
 
 def _sync_skipped_result(reason: str) -> Dict[str, Any]:
     """Knowledge sync를 실행하지 않았음을 task 응답에 안전하게 표시한다."""
@@ -79,6 +90,36 @@ def _deployment_type_allowed_for_trigger(
     trigger_mode: Any,
 ) -> bool:
     return is_deployment_type_allowed_for_trigger(deployment_type, trigger_mode)
+
+
+def _canonical_deployment_execution_context(
+    queued_context: Dict[str, Any],
+    *,
+    deployment: Any,
+    app: Any,
+) -> Dict[str, Any]:
+    """Rebuild tenant/resource identity from canonical deployment rows."""
+    context = {
+        key: queued_context[key]
+        for key in _DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS
+        if key in queued_context
+    }
+    canonical_user_id = getattr(app, "created_by", None) or getattr(
+        deployment, "created_by", None
+    )
+    context.update(
+        {
+            "user_id": str(canonical_user_id) if canonical_user_id else None,
+            "workflow_id": str(app.workflow_id) if app.workflow_id else None,
+            "organization_id": (
+                str(app.organization_id) if app.organization_id else None
+            ),
+            "app_id": str(deployment.app_id),
+            "deployment_id": str(deployment.id),
+            "workflow_version": deployment.version,
+        }
+    )
+    return context
 
 
 @celery_app.task(name="workflow.execute", bind=True, max_retries=3)
@@ -242,6 +283,10 @@ def execute_by_deployment(
     engine = None
 
     try:
+        if not isinstance(execution_context, dict):
+            raise PermanentDeploymentExecutionError("실행 컨텍스트 형식이 올바르지 않습니다")
+        queued_context = dict(execution_context)
+
         deployment = (
             session.query(WorkflowDeployment)
             .filter(WorkflowDeployment.id == deployment_id)
@@ -277,23 +322,17 @@ def execute_by_deployment(
             )
         if not _deployment_type_allowed_for_trigger(
             deployment.type,
-            execution_context.get("trigger_mode"),
+            queued_context.get("trigger_mode"),
         ):
             raise PermanentDeploymentExecutionError(
                 f"배포 타입과 실행 트리거가 일치하지 않습니다: {deployment_id}"
             )
 
-        execution_context["app_id"] = str(deployment.app_id)
-        if app and not execution_context.get("workflow_id"):
-            execution_context["workflow_id"] = (
-                str(app.workflow_id) if app.workflow_id else None
-            )
-        if app and not execution_context.get("organization_id"):
-            execution_context["organization_id"] = (
-                str(app.organization_id) if app.organization_id else None
-            )
-        execution_context["deployment_id"] = str(deployment.id)
-        execution_context["workflow_version"] = deployment.version
+        execution_context = _canonical_deployment_execution_context(
+            queued_context,
+            deployment=deployment,
+            app=app,
+        )
 
         sync_result = {}
         try:

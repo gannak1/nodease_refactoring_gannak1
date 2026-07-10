@@ -117,8 +117,10 @@ class SchedulerService:
         try:
             self.scheduler.remove_job(job_id)
             logger.info(f"Job 제거: {job_id}")
-        except Exception as e:
-            logger.error(f"Job 제거 실패 ({job_id}): {e}")
+        except Exception:
+            # APScheduler adapter 오류 원문은 job store/provider 내부 정보를
+            # 포함할 수 있으므로 식별자와 결과만 남긴다.
+            logger.warning("Job 제거 실패: %s", job_id)
 
     def update_schedule(
         self,
@@ -162,6 +164,21 @@ class SchedulerService:
         logger.info(f"워크플로우 실행 시작: {deployment_id} (스케줄: {schedule_id})")
 
         try:
+            # APScheduler에는 남아 있지만 DB row가 이미 삭제되었거나 다른
+            # deployment를 가리키는 stale job이면 어떤 부수효과도 만들지 않는다.
+            schedule = (
+                db.query(Schedule)
+                .filter(
+                    Schedule.id == schedule_id,
+                    Schedule.deployment_id == deployment_id,
+                )
+                .first()
+            )
+            if schedule is None:
+                logger.warning("Stale schedule job ignored: %s", schedule_id)
+                self.remove_schedule(schedule_id)
+                return
+
             # Deployment 조회
             deployment = (
                 db.query(WorkflowDeployment)
@@ -240,16 +257,14 @@ class SchedulerService:
             logger.info(f"Celery 태스크 전송 완료: {deployment_id}")
 
             # Schedule 업데이트: last_run_at, next_run_at
-            schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-            if schedule:
-                schedule.last_run_at = datetime.now(timezone.utc)
+            schedule.last_run_at = datetime.now(timezone.utc)
 
-                # 다음 실행 시간 계산
-                job = self.scheduler.get_job(str(schedule_id))
-                if job and job.next_run_time:
-                    schedule.next_run_at = job.next_run_time
+            # 다음 실행 시간 계산
+            job = self.scheduler.get_job(str(schedule_id))
+            if job and job.next_run_time:
+                schedule.next_run_at = job.next_run_time
 
-                db.commit()
+            db.commit()
 
         except Exception as e:
             logger.error(f"워크플로우 실행 실패: {e}")
