@@ -1,9 +1,11 @@
 # Admin Dashboard Test Cases
 
 Status: Draft
-Verified Against: feature/mba-147 @ e1a04e9
+Verified Against: feature/mba-188 @ 59d1cc51
 
-[requirements.md](requirements.md)의 FR-011~FR-015와 [api_spec.md](api_spec.md), [component_spec.md](component_spec.md)를 검증한다. 신청 제출 측(FR-041)의 인수 조건은 [organization](../organization/requirements.md) 범위이며, 여기서는 관리자 측 흐름과 E2E 연결만 다룬다.
+검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.
+
+[requirements.md](requirements.md)의 FR-011~FR-018과 [api_spec.md](api_spec.md), [component_spec.md](component_spec.md)를 검증한다. 신청 제출 측(FR-041)의 인수 조건은 [organization](../organization/requirements.md) 범위이며, 여기서는 관리자 측 흐름과 E2E 연결만 다룬다.
 
 ## Acceptance Criteria
 
@@ -54,6 +56,33 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 회수된 사용자, When 권한을 재신청(`POST /permission-requests`)하면, Then 보유/pending 없음 조건이 재충족되어 pending 신청이 생성된다.
 - Given 이미 회수됐거나 다른 조직의 `permission_id`, When 회수를 요청하면, Then `404`로 숨겨지고 `user_app_creation_permission.deleted` audit은 기록되지 않는다.
 
+### AC-7. Audit actor access management (FR-016~FR-018)
+
+- Given organization manager와 current organization user actor, When actor button을 클릭하면, Then actor access drawer가 열리고 membership/role/team/App-creation/direct/team source가 organization scope 안에서만 표시된다.
+- Given target이 여러 team membership을 가짐, When team source 영역을 탐색하면, Then profile은 count만 반환하고 active/inactive row는 stable paginated endpoint로 조회된다.
+- Given audit `auditor`/`raw_auditor`만 가진 사용자, When audit API와 access profile/action API를 호출하면, Then audit detail은 조회할 수 있지만 actor API는 `403`이다. Auditor-only admin page 노출은 후순위이며, isolated AuditSearchTab test에서도 management control을 렌더링하지 않는다.
+- Given system/null/historical actor, When audit row를 조회하면, Then audit detail은 유지되지만 access management control은 제공되지 않는다.
+- Given active member, When suspend action을 confirm하면, Then membership만 suspended가 되고 stored permission row는 유지되며 effective organization access는 fail-closed다.
+- Given suspended member, When reactivate action을 confirm하면, Then stored source를 다시 평가하고 canonical audit에 before/after/reason을 기록한다.
+- Given suspended member, When role control을 확인하면, Then manager-to-member cleanup은 가능하지만 member-to-manager promotion은 재활성화 전 disabled이고 direct API도 409다.
+- Given globally deactivated target, When actor drawer를 열면, Then stored source와 effective disabled를 표시하고 cleanup revoke/remove만 허용한다.
+- Given organization manager target, When state-changing resource/team/App-creation action을 시도하면, Then UI는 disabled이고 direct API는 `409 manager_override_active`다. 이미 desired state인 retry는 unchanged일 수 있다.
+- Given direct permission과 team source가 함께 있는 member, When direct permission을 revoke하면, Then remaining team source와 effective auth_state가 표시된다.
+- Given team membership을 remove하면, Then 해당 team에서 파생된 resource source만 사라지고 unrelated direct/team source는 유지된다.
+- Given direct permission restore, When manager가 resource와 canonical auth_state를 선택하면, Then deleted row/AuditLog 자동 복원이 아니라 새 grant/upsert가 발생한다.
+- Given access action, When audit recorder add/flush가 실패하면, Then mutation은 rollback되고 UI는 성공 상태로 반영하지 않는다.
+- Given supported access-management audit event, When detail을 조회하면, Then target allowlist 기반 `change_summary`만 반환되고 raw before/after/secret/hidden resource는 포함되지 않는다.
+- Given historical permission audit, When stored grantee organization이 request organization과 일치하면, Then opaque resource id만 표시하고 current name/path는 resolve하지 않는다. Provenance가 없거나 다르면 summary는 null이다.
+- Given concurrent last-two-manager mutation 또는 permission revoke, When 요청이 경합하면, Then 불변식을 지키며 canonical audit은 applied mutation당 정확히 한 건이다.
+- Given actor drawer snapshot 이후 global user state, membership identity/role 또는 source row가 바뀜, When 이전 action을 제출하면, Then identity/global-state/ABA mismatch는 no-op보다 먼저 409가 되고 profile을 갱신하며 자동 재시도하지 않는다. Same-row desired-state retry만 unchanged다.
+- Given team/resource source가 여러 page에 걸쳐 있음, When catalog item을 선택하면, Then `teamId`/`resourceId` exact 조회로 다른 page의 existing row를 확인하고 row id/auth-state 또는 absence precondition을 구성한다.
+- Given team/resource exact 조회가 실패함, When catalog item이 선택되어 있어도, Then 실패를 absence로 해석하지 않고 추가/부여 action을 disabled 처리하며 재조회 control을 제공한다.
+- Given access action이 404/409를 반환함, When 최신 profile/source를 재조회하면, Then 기존 confirm dialog와 payload는 폐기되고 사용자가 새 snapshot에서 action을 다시 선택해야 한다.
+- Given reason에 common secret/PII pattern 또는 forbidden control/bidi가 포함됨, When action을 제출하면, Then raw reason은 audit/detail에 남지 않고 validation/redaction failure 시 mutation도 성공하지 않는다.
+- Given sanitized reason에 HTML/script-like text가 포함됨, When audit detail을 렌더링하면, Then text node로 표시되고 HTML 실행이나 `dangerouslySetInnerHTML` 경로를 사용하지 않는다.
+- Given scope 안 actor policy block, When audit detail을 열면, Then `policy.block`, failure status, scoped target user, requested action, machine policy reason와 sanitized optional reason만 safe metadata로 표시된다. Scope가 확인된 opaque resource/team id 외 `change_summary`/name/email/raw request/expected snapshot은 없다.
+- Given `summary` 외 allowlist metadata key에 nested object, malformed UUID, unknown resource/policy reason 또는 boolean count가 저장됨, When audit detail을 열면, Then 해당 malformed field는 생략되고 detail 전체가 500으로 실패하지 않는다. 기존 `summary`는 secret-like nested key를 제거하는 sanitized JSON 계약을 유지한다.
+
 ## Unit Tests
 
 단위 테스트는 endpoint/TestClient보다 service/helper method 계약을 우선 검증한다. 아래 class명은 구현 경계의 권장 이름이다. 구현 과정에서 이름이 달라지더라도 동일한 책임 단위가 보존되어야 한다.
@@ -100,6 +129,8 @@ Verified Against: feature/mba-147 @ e1a04e9
   - Given 같은 조직의 log id, When 상세를 조회하면, Then actor/action/target/status/timestamp와 sanitized metadata를 반환한다.
   - Given 다른 조직의 log id, When 상세를 조회하면, Then `404`를 반환한다.
   - Given 존재하지 않는 log id, When 상세를 조회하면, Then 다른 조직 id와 구분되지 않는 `404`를 반환한다.
+  - Given supported actor access target/action, Then target별 allowlist로 만든 safe `change_summary`를 반환한다.
+  - Given unknown target/action 또는 allowlist 밖 before/after field, Then `change_summary`에서 제외한다.
 - `sanitize_audit_metadata(metadata)`
   - Given allowlist key(`request_id`, `reason`, `summary`, `organization_id` 등), When sanitize하면, Then 값이 유지된다.
   - Given `raw_payload`, `payload`, `encrypted_config`, `api_key`, `token`, `secret`, `password`, `authorization` 계열 key, When sanitize하면, Then key 또는 value가 응답에서 제거된다.
@@ -191,6 +222,8 @@ Verified Against: feature/mba-147 @ e1a04e9
 
 - (FR-011) 검색 필터가 각각, 그리고 조합(AND)으로 동작한다. 정렬은 `occurred_at` 내림차순, pagination은 `page`/`limit`(최대 100)과 `{total, items}` 형식을 따른다.
 - (FR-011) 상세 응답에 allowlist metadata만 포함되고 raw payload/secret 값이 없다.
+- (FR-018) 상세 응답의 `change_summary`는 정확한 supported target/action 조합과 create/delete/update별 organization provenance를 통과한 safe field만 포함한다. Target만 맞고 action이 다르거나 필요한 provenance가 없으면 null이다.
+- (FR-016/FR-017) actor access profile/team-membership/resource list/action은 organization manager 전용이고, paginated team/direct source와 single-action schema를 따른다.
 - (FR-012) 기간 미지정 시 이번 달(KST) 기본, 응답의 `period`가 적용 기간을 반환한다. 목록은 App primary workflow 전체를 반환하고, usage가 없는 workflow는 0 row로 포함하며, 정렬은 비용 내림차순과 동률 안정 정렬을 따른다.
 - (FR-014) 목록 기본 status 필터가 `pending`이고, `approved`/`rejected` 필터가 동작한다.
 - (FR-014) 승인 성공 응답에 `status`, `decided_by`, `decided_at`이 포함된다. 승인/거절의 side effect(AC-3)가 DB와 audit에 반영된다.
@@ -206,6 +239,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 
 - **PRD 시나리오 1→2 연결 완주**: 권한 없는 신입 계정의 App 생성 차단(403) → 권한 신청 제출 → 관리자가 권한 신청 탭에서 승인 → 신입 계정 App 생성 성공 → 관리자 audit 탭에서 `permission_request.created/approved`, `user_app_creation_permission.created`, App/workflow 생성 기록 확인.
 - **PRD 시나리오 2 완주**: 관리자가 audit 검색으로 권한 신청/승인, workflow 생성/배포/실행 기록을 확인하고, 상단 요약 카드에서 이번 달 조직 비용과 예산 위험/초과 workflow 비율을 확인한다.
+- **Audit actor 제어 연결**: 관리자가 audit actor를 열어 member를 정지하고 재활성화한 뒤, 같은 audit tab에서 `organization.member.update`의 optional reason과 safe change summary를 확인한다.
 - 비용 탭에서 비용 상위 workflow를 확인하고 해당 workflow 화면으로 이동한다 (진입만 — 비교/최적화는 cost-optimizer 범위).
 - 승인 흐름 UI: 승인 버튼 → 확인 다이얼로그(요청자/권한/사유 표시) → 확정 → 성공 toast → 목록에서 pending 제거.
 - 이미 처리된 신청을 다른 세션에서 재처리 → "이미 처리된 신청" 안내 후 목록 갱신.
@@ -216,6 +250,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 ## Permission Tests
 
 - `auditor` 사용자: audit 검색/상세 200, usage/summary/permission-requests/app-creation-permissions 전부 403 (`permission.denied` audit 기록).
+- `auditor`/`raw_auditor` 사용자: actor access profile/team-membership/resource list/action도 403이며 audit visibility를 mutation capability로 사용하지 않는다.
 - audit 권한 없는 일반 member: 모든 admin API 403.
 - organization owner/manager: 모든 admin API 200.
 - 다른 organization의 audit/usage/신청 데이터가 응답에 포함되지 않고, 타 조직 id 직접 조회는 404다.
@@ -227,6 +262,10 @@ Verified Against: feature/mba-147 @ e1a04e9
 - audit/permission 검색 결과가 없는 기간/필터 조합 → 빈 목록 정상 응답, UI는 empty state 표시.
 - usage 조회에서 기간 안에 사용량이 없는 workflow → 빈 목록이 아니라 사용량 0 row로 표시. App primary workflow 자체가 없을 때만 empty state 표시.
 - `audit_metadata`에 저장된 secret 계열 값이 목록/상세 어디에도 노출되지 않는다 (NFR-004).
+- Generic AuditLog before/after에 allowlist 밖 field나 nested secret이 있어도 `change_summary`에 포함되지 않는다. Update의 before/after 한쪽 organization provenance가 누락되거나 불일치해도 partial summary를 만들지 않는다.
+- Actor id가 user UUID여도 current organization membership이 없으면 access control을 제공하지 않고 cross-org 정보는 404로 숨긴다.
+- Access action no-op은 audit을 만들지 않고, audit add/flush 실패는 mutation을 rollback한다.
+- Access action common membership/source precondition 누락·혼합은 422이고 row ABA는 409다.
 - 가격 미등록 모델의 usage(`total_cost=0.0`)는 집계에 0으로 반영된다 — "미산정 구분 불가"는 수용된 한계이며 테스트는 0 합산 동작만 검증한다.
 - 예산 `budget` null 상태에서 UI 요약 카드가 "예산 미설정"을 표시한다 (오류 아님).
 - 승인 시점에 신청자가 조직의 active member가 아니면(제거/정지) 승인이 `409`로 거부되고, 권한 row와 audit(`user_app_creation_permission.created`)이 생성되지 않는다.

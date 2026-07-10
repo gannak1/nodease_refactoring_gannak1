@@ -10,6 +10,7 @@ type AuditDetailDrawerProps = {
   auditLogId: string;
   actorName?: string | null;
   onClose: () => void;
+  onAfterClose?: () => void;
 };
 
 const FOCUSABLE_SELECTOR =
@@ -22,6 +23,7 @@ export function AuditDetailDrawer({
   auditLogId,
   actorName,
   onClose,
+  onAfterClose,
 }: AuditDetailDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<AuditLogDetailResponse | null>(null);
@@ -48,10 +50,15 @@ export function AuditDetailDrawer({
     panelRef.current?.focus();
   }, []);
 
+  const close = () => {
+    onClose();
+    requestAnimationFrame(() => onAfterClose?.());
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {
       event.stopPropagation();
-      onClose();
+      close();
       return;
     }
     if (event.key !== 'Tab' || !panelRef.current) return;
@@ -61,7 +68,10 @@ export function AuditDetailDrawer({
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
+    if (
+      event.shiftKey &&
+      (document.activeElement === first || document.activeElement === panelRef.current)
+    ) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -77,7 +87,7 @@ export function AuditDetailDrawer({
     <div className="fixed inset-0 z-50 flex justify-end">
       <div
         className="absolute inset-0 bg-slate-950/30"
-        onClick={onClose}
+        onClick={close}
         aria-hidden="true"
       />
       <div
@@ -94,7 +104,7 @@ export function AuditDetailDrawer({
             감사 로그 상세
           </h2>
           <button
-            onClick={onClose}
+            onClick={close}
             className="rounded p-1 text-slate-500 hover:bg-slate-100"
             aria-label="닫기"
           >
@@ -159,6 +169,23 @@ export function AuditDetailDrawer({
                 </span>
               }
             />
+            {detail.change_summary && (
+              <div>
+                <dt className="text-xs font-semibold uppercase text-slate-500">
+                  변경 요약
+                </dt>
+                <dd className="mt-2 divide-y divide-slate-100 border-y border-slate-200">
+                  <Snapshot
+                    label="변경 전"
+                    value={detail.change_summary.before}
+                  />
+                  <Snapshot
+                    label="변경 후"
+                    value={detail.change_summary.after}
+                  />
+                </dd>
+              </div>
+            )}
             {metadataEntries.length > 0 && (
               <div>
                 <dt className="text-xs font-semibold uppercase text-slate-500">
@@ -180,6 +207,34 @@ export function AuditDetailDrawer({
             )}
           </dl>
         )}
+      </div>
+    </div>
+  );
+}
+
+function Snapshot({
+  label,
+  value,
+}: {
+  label: string;
+  value: Record<string, unknown> | null;
+}) {
+  if (!value) return null;
+  return (
+    <div className="py-3">
+      <p className="text-xs font-semibold text-slate-500">{label}</p>
+      <div className="mt-2 space-y-1">
+        {Object.entries(value).map(([key, fieldValue]) => (
+          <div
+            key={key}
+            className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] gap-2 text-xs"
+          >
+            <span className="truncate font-medium text-slate-500">{key}</span>
+            <span className="break-all text-slate-800">
+              {formatMetadataValue(fieldValue)}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

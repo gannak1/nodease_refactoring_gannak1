@@ -5,6 +5,9 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from apps.gateway.adapters.db.access_management_locking import (
+    lock_access_subject_rows,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
@@ -233,6 +236,9 @@ def _add_audit_log(
     current_user: User,
     membership: OrganizationMembership,
     metadata: dict[str, Any],
+    *,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
 ) -> None:
     db.add(
         AuditLog(
@@ -242,37 +248,36 @@ def _add_audit_log(
             actor_type="user",
             target_type="organization_membership",
             target_id=str(membership.id),
+            before=before,
+            after=after,
             status="success",
             audit_metadata=_merge_audit_context(current_user, metadata),
         )
     )
 
 
-def _locked_manager_count(db: Session, organization_id: Any) -> int:
-    # count()는 row lock을 잡지 못하므로 실제 active manager row를 조회해 잠근다.
-    # 이렇게 해야 동시 강등/삭제 요청이 같은 manager 수를 보고 함께 통과하지 않는다.
-    active_managers = (
-        db.query(OrganizationMembership)
-        .filter(
-            OrganizationMembership.organization_id == organization_id,
-            OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
-            OrganizationMembership.organization_auth_state == ORGANIZATION_AUTH_MANAGER,
-        )
-        # ponytail: id 정렬로 동시 강등/제거 시 락 획득 순서를 고정해 데드락 회피
-        .order_by(OrganizationMembership.id)
-        .with_for_update()
-        .all()
-    )
-    return len(active_managers)
+def _membership_audit_snapshot(
+    membership: OrganizationMembership,
+) -> dict[str, Any]:
+    return {
+        "organization_id": str(membership.organization_id),
+        "user_id": str(membership.user_id),
+        "membership_state": membership.membership_state,
+        "organization_auth_state": membership.organization_auth_state,
+    }
 
 
 def _guard_last_manager(
-    db: Session,
     membership: OrganizationMembership,
     next_membership_state: str,
     next_auth_state: str,
+    *,
+    active_manager_count: int | None,
+    target_user_active: bool,
 ) -> None:
     if (
+        not target_user_active
+        or
         membership.membership_state != ORGANIZATION_MEMBERSHIP_ACTIVE
         or membership.organization_auth_state != ORGANIZATION_AUTH_MANAGER
     ):
@@ -282,7 +287,9 @@ def _guard_last_manager(
         and next_auth_state == ORGANIZATION_AUTH_MANAGER
     ):
         return
-    if _locked_manager_count(db, membership.organization_id) <= 1:
+    if active_manager_count is None:
+        raise RuntimeError("Active manager rows must be locked before reduction")
+    if active_manager_count <= 1:
         raise HTTPException(
             status_code=409,
             detail="Cannot remove the last organization manager.",
@@ -537,14 +544,6 @@ class OrganizationMemberService:
     ) -> OrganizationMemberResponse:
         _get_active_organization(db, organization_id)
         _ensure_manager(db, current_user, organization_id)
-        membership = _get_membership(db, organization_id, user_id)
-        if membership is None:
-            raise HTTPException(status_code=404, detail="Member not found.")
-        if membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED:
-            raise HTTPException(
-                status_code=409,
-                detail="Removed member must be re-invited.",
-            )
         provided_fields = request.model_fields_set & {
             "membership_state",
             "organization_auth_state",
@@ -553,6 +552,27 @@ class OrganizationMemberService:
             getattr(request, field_name) is None for field_name in provided_fields
         ):
             raise HTTPException(status_code=400, detail="No update fields provided.")
+
+        manager_reduction = (
+            request.membership_state is not None
+            and request.membership_state != ORGANIZATION_MEMBERSHIP_ACTIVE
+        ) or request.organization_auth_state == ORGANIZATION_AUTH_MEMBER
+        locked = lock_access_subject_rows(
+            db,
+            organization_id,
+            user_id,
+            manager_reduction=manager_reduction,
+            allowed_membership_states=None,
+        )
+        if locked is None:
+            raise HTTPException(status_code=404, detail="Member not found.")
+        membership = locked.membership
+        membership.user = locked.user
+        if membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED:
+            raise HTTPException(
+                status_code=409,
+                detail="Removed member must be re-invited.",
+            )
 
         next_state = request.membership_state or membership.membership_state
         next_auth_state = (
@@ -578,9 +598,16 @@ class OrganizationMemberService:
         ):
             return _member_response(membership)
 
-        _guard_last_manager(db, membership, next_state, next_auth_state)
+        _guard_last_manager(
+            membership,
+            next_state,
+            next_auth_state,
+            active_manager_count=locked.active_manager_count,
+            target_user_active=locked.user.deactivated_at is None,
+        )
         previous_state = membership.membership_state
         previous_auth_state = membership.organization_auth_state
+        before = _membership_audit_snapshot(membership)
         membership.membership_state = next_state
         membership.organization_auth_state = next_auth_state
         if next_state == ORGANIZATION_MEMBERSHIP_ACTIVE:
@@ -588,20 +615,26 @@ class OrganizationMemberService:
         if next_state == ORGANIZATION_MEMBERSHIP_SUSPENDED:
             membership.removed_at = None
 
-        _add_audit_log(
-            db,
-            AuditAction.ORGANIZATION_MEMBER_UPDATE,
-            current_user,
-            membership,
-            _audit_metadata(
+        try:
+            _add_audit_log(
+                db,
+                AuditAction.ORGANIZATION_MEMBER_UPDATE,
+                current_user,
                 membership,
-                previous_membership_state=previous_state,
-                next_membership_state=membership.membership_state,
-                previous_organization_auth_state=previous_auth_state,
-                next_organization_auth_state=membership.organization_auth_state,
-            ),
-        )
-        db.commit()
+                _audit_metadata(
+                    membership,
+                    previous_membership_state=previous_state,
+                    next_membership_state=membership.membership_state,
+                    previous_organization_auth_state=previous_auth_state,
+                    next_organization_auth_state=membership.organization_auth_state,
+                ),
+                before=before,
+                after=_membership_audit_snapshot(membership),
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         db.refresh(membership)
         return _member_response(membership)
 
@@ -616,9 +649,17 @@ class OrganizationMemberService:
         _ensure_manager(db, current_user, organization_id)
         if current_user.id == user_id:
             raise HTTPException(status_code=400, detail="Cannot remove yourself.")
-        membership = _get_membership(db, organization_id, user_id)
-        if membership is None:
+        locked = lock_access_subject_rows(
+            db,
+            organization_id,
+            user_id,
+            manager_reduction=True,
+            allowed_membership_states=None,
+        )
+        if locked is None:
             raise HTTPException(status_code=404, detail="Member not found.")
+        membership = locked.membership
+        membership.user = locked.user
         if membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED:
             return OrganizationMemberRemoveResponse(
                 status="removed",
@@ -627,10 +668,11 @@ class OrganizationMemberService:
             )
 
         _guard_last_manager(
-            db,
             membership,
             ORGANIZATION_MEMBERSHIP_REMOVED,
             membership.organization_auth_state,
+            active_manager_count=locked.active_manager_count,
+            target_user_active=locked.user.deactivated_at is None,
         )
         previous_state = membership.membership_state
         previous_auth_state = membership.organization_auth_state
@@ -686,31 +728,35 @@ class OrganizationMemberService:
             audit=0,
         )
         cleanup = _cleanup_counts(removed_team_memberships, revoked_user_permissions)
-        _add_audit_log(
-            db,
-            AuditAction.ORGANIZATION_MEMBER_REMOVE,
-            current_user,
-            membership,
-            _audit_metadata(
+        try:
+            _add_audit_log(
+                db,
+                AuditAction.ORGANIZATION_MEMBER_REMOVE,
+                current_user,
                 membership,
-                previous_membership_state=previous_state,
-                next_membership_state=membership.membership_state,
-                previous_organization_auth_state=previous_auth_state,
-                next_organization_auth_state=membership.organization_auth_state,
-                cleanup=cleanup,
-            ),
-        )
-        _add_audit_log(
-            db,
-            AuditAction.PERMISSION_REVOKE,
-            current_user,
-            membership,
-            {
-                **_audit_metadata(membership, cleanup=cleanup),
-                "reason": AuditAction.ORGANIZATION_MEMBER_REMOVE,
-            },
-        )
-        db.commit()
+                _audit_metadata(
+                    membership,
+                    previous_membership_state=previous_state,
+                    next_membership_state=membership.membership_state,
+                    previous_organization_auth_state=previous_auth_state,
+                    next_organization_auth_state=membership.organization_auth_state,
+                    cleanup=cleanup,
+                ),
+            )
+            _add_audit_log(
+                db,
+                AuditAction.PERMISSION_REVOKE,
+                current_user,
+                membership,
+                {
+                    **_audit_metadata(membership, cleanup=cleanup),
+                    "reason": AuditAction.ORGANIZATION_MEMBER_REMOVE,
+                },
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         return OrganizationMemberRemoveResponse(
             status="removed",
             removed_team_memberships=removed_team_memberships,

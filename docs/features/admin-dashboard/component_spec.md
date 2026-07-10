@@ -1,7 +1,9 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: feature/mba-147 @ e1a04e9
+Verified Against: feature/mba-188 @ 59d1cc51
+
+검증 값은 MBA-188 actor access, audit detail 연동 섹션에 적용한다. 기존 비용/권한 신청 섹션의 기준은 해당 feature 문서와 git history를 따른다.
 
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
@@ -20,6 +22,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 | --- | --- | --- |
 | 상단 요약 카드 | 이번 달 조직 LLM 비용(USD), 예산 위험/초과 workflow 비율 | organization owner/manager |
 | 감사 로그 탭 | 조직 audit log 검색/필터 + 상세 드로어 | audit `auditor` 이상 |
+| Actor access drawer | Audit actor의 current organization access 조회/관리 | ADR-0009 organization manager |
 | 권한 신청 탭 | 신청 목록 + 승인/거절 | organization owner/manager |
 | 비용 탭 | workflow별 사용량/비용 집계 | organization owner/manager |
 | 기존 탭들 (구성원/팀/권한/credential/knowledge/조직) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
@@ -44,14 +47,39 @@ Verified Against: feature/mba-147 @ e1a04e9
 - 결과 테이블 컬럼: 발생 시각(사용자 로컬 시간대 렌더링), 행위자, action(사용자 친화 라벨 병기 — canonical action에서 파생), 대상, status 배지.
 - Pagination: `page`/`limit` 기반, 기존 목록 패턴을 따른다.
 - 행 클릭 → `AuditDetailDrawer` 열림.
+- User actor cell은 별도 button으로 렌더링한다. Organization manager가 active/suspended current organization member actor를 선택하면 row click propagation을 중단하고 `ActorAccessDrawer`를 연다.
+- Auditor-only admin page 노출은 기존 후순위 범위를 유지한다. 이후 해당 page가 열리더라도 auditor-only, system/null actor, invited/removed/missing historical actor에는 actor management control을 제공하지 않고 audit row/detail 동작만 유지한다.
 - 데이터 원천: `GET /admin/audit-logs`.
 
 ### AuditDetailDrawer (FR-011)
 
 - 화면 오른쪽 사이드 드로어. 목록 맥락을 유지한 채 상세를 보여준다.
-- 표시 필드: actor, action(canonical 문자열과 파생 라벨), target, status, timestamp, allowlist metadata(`request_id`, `reason` 등).
+- 표시 필드: actor, action(canonical 문자열과 파생 라벨), target, status, timestamp, allowlist metadata(`request_id`, sanitized `reason`, `requested_action`, `policy_reason` 등).
+- Supported access-management event는 target/action allowlist 기반 `change_summary.before/after`를 표시한다. Unknown target/action은 변경 요약 영역을 표시하지 않는다.
 - raw payload, secret 계열 값은 표시하지 않는다 (NFR-004). raw payload 접근 UI는 이 feature 범위가 아니다 (trace visibility policy).
 - 데이터 원천: `GET /admin/audit-logs/{id}`.
+
+### ActorAccessDrawer (FR-016, FR-017)
+
+- 오른쪽 side drawer로 audit list 맥락을 유지한다.
+- Organization member access semantics와 API contract는 [organization component spec](../organization/component_spec.md)의 `ActorAccessDrawer`와 [organization API spec](../organization/api_spec.md)을 따른다.
+- Summary 영역: actor name/email, global user active state, membership state, organization role, effective access, control block reason. Role set은 `member`/`manager` desired value별 control을 구분한다.
+- Source 영역: team membership count와 paginated active/inactive membership, App creation source, direct/team resource source counts.
+- Resource 영역: workflow/Knowledge Base/LLM credential filter, direct/team source filter, pagination. Team membership 목록도 별도 pagination을 사용한다.
+- Catalog team/resource 선택은 exact `teamId`/`resourceId` 조회로 current page 밖 existing row를 확인한 뒤 confirm precondition을 구성한다. Exact 조회가 실패하면 absence로 간주하지 않고 추가/부여 action을 disabled 처리한다.
+- Action 영역: suspend/reactivate, role set, team membership add/remove, direct permission grant/revoke, App creation grant/revoke.
+- Active manager override target은 role 강등 전 resource/team/App action을 disabled 처리한다. Suspended target의 stored manager role은 override로 표시하지 않는다. Server 409가 최종 방어다.
+- Suspended target은 stored source를 표시하되 role promotion과 신규 grant/restore control은 reactivation 전 disabled 처리한다. Manager-to-member 강등과 remove/revoke cleanup은 허용한다.
+- Globally deactivated target은 cleanup-only로 표시하고 reactivate/promotion/add/grant control을 disabled 처리한다.
+
+### ActorAccessConfirmDialog (FR-017)
+
+- Target user, action 종류, resource/team, current/next state, effective impact를 표시한다.
+- Optional reason textarea는 최대 500자이고 JSON body의 `reason`으로 전송한다.
+- Client는 server와 같은 newline/code-point/control/bidi validation을 적용하되, durable redaction과 authorization source로 사용하지 않는다.
+- Confirm 한 번에 access action 하나만 제출한다.
+- Payload에는 profile user-active/membership id/state/role과 action별 source row precondition을 포함한다.
+- 처리 중 confirm button을 disabled 처리한다. 성공 후 profile/source를 재조회하고, stale/conflict/not-found 응답은 기존 confirm을 닫아 stale payload 재제출을 막은 뒤 최신 상태를 재조회한다.
 
 ### PermissionRequestsTab (FR-014)
 
@@ -96,6 +124,9 @@ Verified Against: feature/mba-147 @ e1a04e9
 - 비용 탭의 빈 목록은 organization scope 안에 표시할 App primary workflow가 없을 때만 사용한다. 기간 안에 usage가 없는 workflow는 빈 목록이 아니라 사용량 0 row로 표시한다.
 - 권한 신청 처리 중: 해당 행 버튼 비활성화(중복 클릭 방지). 409 응답(이미 처리된 신청)은 "이미 처리된 신청입니다" toast 후 목록 갱신.
 - 권한 회수 처리 중: 확인 다이얼로그의 버튼을 비활성화한다(중복 클릭 방지, modal이 행 버튼 접근을 막는다). 404 응답(이미 회수된 권한)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
+- Actor access profile 404: current organization에서 관리할 수 없는 historical actor 안내 후 audit detail은 유지한다.
+- Actor access action 409: last manager, manager override, target user inactive, stale member state에 맞는 안전한 안내를 표시하고 profile을 재조회한다.
+- Actor access action audit/transaction failure: 성공 상태로 낙관 반영하지 않고 오류와 retry를 제공한다.
 - 요약 카드의 `budget` null 상태: "예산 미설정" 표시 (오류 아님).
 - (후순위) auditor 전용 사용자: 감사 로그 탭 단독 노출 상태. auditor 전용 노출 제어와 함께 복원한다.
 - 403 응답: 접근 권한 안내 문구 (프론트 노출 제어를 우회한 접근 대비).
@@ -105,13 +136,15 @@ Verified Against: feature/mba-147 @ e1a04e9
 1. 탭 전환: 기존 admin 페이지 탭 패턴을 따른다. 탭 상태는 페이지 내 state로 유지한다.
 2. audit 검색: 필터 변경 → 조회 버튼 또는 디바운스 적용 → 1페이지부터 재조회.
 3. audit 행 클릭 → 드로어 열림. ESC/바깥 클릭/닫기 버튼으로 닫힘.
-4. 권한 신청 승인: `승인` 클릭 → ConfirmDialog → 확정 → API 호출 → 성공 toast → 목록 갱신. 거절도 동일 흐름.
-5. 비용 행의 workflow 링크 클릭 → 해당 workflow 화면으로 이동.
-6. 요약 카드는 페이지 진입 시 로드하고 탭 전환과 무관하게 유지한다.
+4. audit user actor 클릭 → ActorAccessDrawer → 항목 선택 → ActorAccessConfirmDialog → single access action → profile/resource/audit 재조회.
+5. 권한 신청 승인: `승인` 클릭 → ConfirmDialog → 확정 → API 호출 → 성공 toast → 목록 갱신. 거절도 동일 흐름.
+6. 비용 행의 workflow 링크 클릭 → 해당 workflow 화면으로 이동.
+7. 요약 카드는 페이지 진입 시 로드하고 탭 전환과 무관하게 유지한다.
 
 ## Accessibility
 
 - 드로어와 ConfirmDialog는 포커스 트랩, ESC 닫기, 적절한 `role`(`dialog`)과 `aria-label`을 갖는다.
+- Actor button은 keyboard-focusable element를 사용하고 actor drawer를 닫으면 해당 button으로 focus를 복원한다.
 - 테이블은 `<th>` 헤더와 캡션을 갖고, 정렬 기준(비용 내림차순)을 시각적으로 표시한다.
 - status/상태 배지는 색상 외에 텍스트를 병기한다 (색맹 대응).
 - 승인/거절 버튼은 처리 중 `disabled`와 로딩 표시를 제공한다.

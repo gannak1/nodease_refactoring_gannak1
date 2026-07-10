@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
-import { Activity, RotateCcw, Search } from 'lucide-react';
+import { Activity, RotateCcw, Search, UserRoundCog } from 'lucide-react';
 import { ActiveOrganizationMemberPicker } from '../../organization/components/ActiveOrganizationMemberPicker';
 import type { OrganizationMember } from '../../organization/types/Organization';
 import { DashboardPanel } from '../../dashboard/components/DashboardSurface';
@@ -15,6 +15,11 @@ import type {
 import { auditActionLabel } from '../utils/auditActionLabel';
 import { AdminPagination } from './AdminPagination';
 import { AuditDetailDrawer } from './AuditDetailDrawer';
+import { ActorAccessDrawer } from './ActorAccessDrawer';
+import type {
+  ActorAccessResourceCatalogItem,
+  ActorAccessTeamCatalogItem,
+} from '../types/ActorAccess';
 
 const PAGE_SIZE = 20;
 
@@ -50,9 +55,21 @@ const toFilters = (form: FilterForm): AuditLogSearchFilters => ({
 
 type AuditSearchTabProps = {
   members: OrganizationMember[];
+  organizationId?: string;
+  canManageActors?: boolean;
+  teams?: ActorAccessTeamCatalogItem[];
+  resources?: ActorAccessResourceCatalogItem[];
+  onActorAccessChanged?: () => void;
 };
 
-export function AuditSearchTab({ members }: AuditSearchTabProps) {
+export function AuditSearchTab({
+  members,
+  organizationId,
+  canManageActors = false,
+  teams = [],
+  resources = [],
+  onActorAccessChanged,
+}: AuditSearchTabProps) {
   const [form, setForm] = useState<FilterForm>(EMPTY_FORM);
   const [applied, setApplied] = useState<{
     filters: AuditLogSearchFilters;
@@ -65,6 +82,9 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
     { kind: 'forbidden' | 'unknown'; message: string } | null
   >(null);
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
+  const [selectedActorId, setSelectedActorId] = useState<string | null>(null);
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const actorTriggerRef = useRef<HTMLElement | null>(null);
 
   const memberNamesByUserId = useMemo(
     () =>
@@ -235,7 +255,8 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
         </p>
       ) : (
         <>
-          <table className="w-full text-left text-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-sm">
             <caption className="sr-only">
               조직 감사 로그 목록 (발생 시각 내림차순)
             </caption>
@@ -261,10 +282,30 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
             <tbody>
               {items.map((item) => {
                 const label = auditActionLabel(item.action);
+                const actorMember =
+                  item.actor_type === 'user' && item.actor_id
+                  ? members.find(
+                      (member) =>
+                        member.user_id === item.actor_id &&
+                        (member.membership_state === 'active' ||
+                          member.membership_state === 'suspended'),
+                    )
+                  : null;
                 return (
                   <tr
                     key={item.id}
-                    onClick={() => setSelectedLogId(item.id)}
+                    tabIndex={0}
+                    onClick={(event) => {
+                      detailTriggerRef.current = event.currentTarget;
+                      setSelectedLogId(item.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        detailTriggerRef.current = event.currentTarget;
+                        setSelectedLogId(item.id);
+                      }
+                    }}
                     className="cursor-pointer border-b border-slate-50 hover:bg-slate-50"
                   >
                     <td className="px-5 py-3 text-xs text-slate-500">
@@ -273,10 +314,30 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
                       </time>
                     </td>
                     <td className="px-3 py-3 text-slate-700">
-                      {(item.actor_id &&
-                        memberNamesByUserId.get(item.actor_id)) ||
-                        item.actor_id ||
-                        item.actor_type}
+                      <span className="flex items-center gap-1.5">
+                        <span className="min-w-0 truncate">
+                          {(item.actor_id &&
+                            memberNamesByUserId.get(item.actor_id)) ||
+                            item.actor_id ||
+                            item.actor_type}
+                        </span>
+                        {canManageActors && organizationId && actorMember && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              actorTriggerRef.current = event.currentTarget;
+                              setSelectedActorId(actorMember.user_id);
+                            }}
+                            onKeyDown={(event) => event.stopPropagation()}
+                            className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
+                            aria-label={`${actorMember.user_name} 접근 관리`}
+                            title="행위자 접근 관리"
+                          >
+                            <UserRoundCog className="h-4 w-4" />
+                          </button>
+                        )}
+                      </span>
                     </td>
                     <td className="px-3 py-3">
                       <span className="flex flex-wrap items-center gap-1.5">
@@ -310,7 +371,8 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
                 );
               })}
             </tbody>
-          </table>
+            </table>
+          </div>
           <AdminPagination
             page={applied.page}
             totalPages={totalPages}
@@ -331,6 +393,20 @@ export function AuditSearchTab({ members }: AuditSearchTabProps) {
               : null
           }
           onClose={() => setSelectedLogId(null)}
+          onAfterClose={() => detailTriggerRef.current?.focus()}
+        />
+      )}
+      {selectedActorId && organizationId && (
+        <ActorAccessDrawer
+          organizationId={organizationId}
+          userId={selectedActorId}
+          teams={teams}
+          resources={resources}
+          onChanged={onActorAccessChanged}
+          onClose={() => {
+            setSelectedActorId(null);
+            requestAnimationFrame(() => actorTriggerRef.current?.focus());
+          }}
         />
       )}
     </DashboardPanel>

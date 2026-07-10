@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.operators import eq, is_
 
 from apps.gateway.main import app
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MEMBER,
@@ -932,7 +933,50 @@ class TestTeamsApi(unittest.TestCase):
         self.assertEqual(session.added[0].team_id, team_id)
         self.assertEqual(session.added[0].user_id, member_user_id)
         self.assertEqual(session.added[0].assigned_by, user_id)
+        audit = next(row for row in session.added if isinstance(row, AuditLog))
+        self.assertEqual(audit.action, "team_membership.created")
+        self.assertEqual(audit.target_id, str(session.added[0].id))
+        self.assertEqual(audit.after["team_id"], str(team_id))
+        self.assertEqual(audit.after["user_id"], str(member_user_id))
         self.assertTrue(session.committed)
+
+    def test_add_team_member_rolls_back_when_audit_add_fails(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        team_id = uuid4()
+        member_user_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                name="Acme",
+                created_by=user_id,
+            ),
+            teams=[
+                _team(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="Builders",
+                    created_by=user_id,
+                )
+            ],
+            user=_user(id=member_user_id),
+            organization_memberships=[
+                _organization_membership(member_user_id, organization_id)
+            ],
+        )
+        session.audit_add_error = RuntimeError("audit unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "audit unavailable"):
+            self._post_team_member(
+                session=session,
+                user_id=user_id,
+                organization_id=organization_id,
+                team_id=team_id,
+                payload={"user_id": str(member_user_id)},
+            )
+
+        self.assertFalse(session.committed)
+        self.assertTrue(session.rolled_back)
 
     def test_add_team_member_rejects_missing_user(self):
         user_id = uuid4()
@@ -1256,6 +1300,11 @@ class TestTeamsApi(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "removed"})
         self.assertEqual(session.deleted, [membership])
+        audit = next(row for row in session.added if isinstance(row, AuditLog))
+        self.assertEqual(audit.action, "team_membership.deleted")
+        self.assertEqual(audit.target_id, str(membership.id))
+        self.assertEqual(audit.before["team_id"], str(team_id))
+        self.assertEqual(audit.before["user_id"], str(member_user_id))
         self.assertTrue(session.committed)
 
     def test_remove_team_member_allows_managed_by(self):
@@ -1802,6 +1851,9 @@ class _Query:
         self.order_by_values.extend(args)
         return self
 
+    def with_for_update(self):
+        return self
+
     def options(self, *args):
         self.options_values.extend(args)
         return self
@@ -1867,6 +1919,8 @@ class _Session:
         self.query_calls = []
         self.added = []
         self.deleted = []
+        self.info = {}
+        self.audit_add_error = None
         self.committed = False
         self.commit_calls = 0
         self.rolled_back = False
@@ -1922,6 +1976,8 @@ class _Session:
         return rows
 
     def add(self, row):
+        if isinstance(row, AuditLog) and self.audit_add_error is not None:
+            raise self.audit_add_error
         _hydrate_defaults(row)
         self.added.append(row)
         if isinstance(row, Team):

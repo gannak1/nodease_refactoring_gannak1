@@ -20,6 +20,7 @@ export function AdminPagination({
       </span>
       <div className="flex gap-2">
         <button
+          type="button"
           onClick={() => onPageChange(Math.max(1, page - 1))}
           disabled={page <= 1}
           className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
@@ -27,6 +28,7 @@ export function AdminPagination({
           이전
         </button>
         <button
+          type="button"
           onClick={() => onPageChange(Math.min(totalPages, page + 1))}
           disabled={page >= totalPages}
           className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"

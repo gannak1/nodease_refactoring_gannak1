@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Callable
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
@@ -6,6 +7,9 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
+from apps.gateway.adapters.db.access_management_locking import (
+    lock_access_subject_rows,
+)
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.services.audit_records import add_data_change_audit
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
@@ -17,6 +21,7 @@ from apps.gateway.utils.api_errors import (
 )
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
+from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import Team
 from apps.shared.db.models.user import User
@@ -119,6 +124,65 @@ def _changed_permission_columns(before: dict, after: dict) -> tuple[dict, dict]:
         before_changes[key] = before_value
         after_changes[key] = after_value
     return before_changes, after_changes
+
+
+def _user_permission_audit_snapshot(
+    permission,
+    resource_field: str,
+) -> dict:
+    return {
+        "grantee_organization_id": permission.grantee_organization_id,
+        "user_id": permission.user_id,
+        resource_field: getattr(permission, resource_field),
+        "auth_state": permission.auth_state,
+    }
+
+
+def _lock_active_direct_permission_subject(
+    db: Session,
+    organization_id: UUID,
+    user_id: UUID,
+) -> None:
+    locked = lock_access_subject_rows(
+        db,
+        organization_id,
+        user_id,
+        manager_reduction=False,
+    )
+    if (
+        locked is None
+        or locked.membership.membership_state != "active"
+        or locked.user.deactivated_at is not None
+    ):
+        raise HTTPException(status_code=404, detail="User not found.")
+
+
+def _lock_direct_permission_cleanup_subject(
+    db: Session,
+    organization_id: UUID,
+    user_id: UUID,
+) -> None:
+    # Active/suspended actor targets share the exact membership/User lock order.
+    # Removed legacy subjects have no actor-management surface; their child row
+    # advisory lock remains the cleanup serialization boundary.
+    lock_access_subject_rows(
+        db,
+        organization_id,
+        user_id,
+        manager_reduction=False,
+    )
+
+
+def _commit_audited_permission_mutation(
+    db: Session,
+    record: Callable[[], None],
+) -> None:
+    try:
+        record()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _record_team_workflow_permission_audit(
@@ -280,6 +344,7 @@ def _record_team_knowledge_permission_audit(
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -287,7 +352,7 @@ def _record_team_knowledge_permission_audit(
 def _record_team_knowledge_permission_delete_audit(
     db: Session,
     current_user: User,
-    permission_id: UUID,
+    permission: TeamKnowledgePermission,
     before: dict,
 ) -> None:
     """team-KB 권한 회수 감사를 직접 남긴다."""
@@ -303,14 +368,16 @@ def _record_team_knowledge_permission_delete_audit(
         action="team_knowledge_permission.deleted",
         actor_id=current_user.id,
         target_type="team_knowledge_permission",
-        target_id=permission_id,
+        target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
 
 def _record_user_workflow_permission_audit(
+    db: Session,
     current_user: User,
     permission: UserWorkflowPermission,
     before: dict | None,
@@ -331,25 +398,26 @@ def _record_user_workflow_permission_audit(
         audit_after = after
     else:
         # 변경이 없는 upsert는 감사 로그를 남기지 않는다.
-        audit_before, audit_after = _changed_permission_columns(before, after)
-        if not audit_before and not audit_after:
+        if before == after:
             return
+        audit_before, audit_after = before, after
         action = "user_workflow_permission.updated"
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action=action,
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="user_workflow_permission",
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
 
 def _record_user_workflow_permission_delete_audit(
+    db: Session,
     current_user: User,
     permission: UserWorkflowPermission,
     before: dict,
@@ -362,20 +430,21 @@ def _record_user_workflow_permission_delete_audit(
         "name": getattr(current_user, "name", None),
     }
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action="user_workflow_permission.deleted",
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="user_workflow_permission",
         target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
 
 def _record_user_llm_permission_audit(
+    db: Session,
     current_user: User,
     permission: UserLLMPermission,
     before: dict | None,
@@ -394,25 +463,26 @@ def _record_user_llm_permission_audit(
         audit_before = None
         audit_after = after
     else:
-        audit_before, audit_after = _changed_permission_columns(before, after)
-        if not audit_before and not audit_after:
+        if before == after:
             return
+        audit_before, audit_after = before, after
         action = "user_llm_permission.updated"
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action=action,
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="user_llm_permission",
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
 
 def _record_user_llm_permission_delete_audit(
+    db: Session,
     current_user: User,
     permission: UserLLMPermission,
     before: dict,
@@ -425,15 +495,15 @@ def _record_user_llm_permission_delete_audit(
         "name": getattr(current_user, "name", None),
     }
 
-    record_audit(
+    add_data_change_audit(
+        db,
         action="user_llm_permission.deleted",
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
+        actor_id=current_user.id,
         target_type="user_llm_permission",
         target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -458,9 +528,9 @@ def _record_user_knowledge_permission_audit(
         audit_before = None
         audit_after = after
     else:
-        audit_before, audit_after = _changed_permission_columns(before, after)
-        if not audit_before and not audit_after:
+        if before == after:
             return
+        audit_before, audit_after = before, after
         action = "user_knowledge_permission.updated"
 
     add_data_change_audit(
@@ -471,6 +541,7 @@ def _record_user_knowledge_permission_audit(
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -478,7 +549,7 @@ def _record_user_knowledge_permission_audit(
 def _record_user_knowledge_permission_delete_audit(
     db: Session,
     current_user: User,
-    permission_id: UUID,
+    permission: UserKnowledgePermission,
     before: dict,
 ) -> None:
     """user-KB 직접 권한 회수 감사를 직접 남긴다."""
@@ -494,9 +565,10 @@ def _record_user_knowledge_permission_delete_audit(
         action="user_knowledge_permission.deleted",
         actor_id=current_user.id,
         target_type="user_knowledge_permission",
-        target_id=permission_id,
+        target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -1409,6 +1481,7 @@ def _upsert_user_workflow_permission(
     assigned_at: datetime,
 ) -> UserWorkflowPermission:
     """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_active_direct_permission_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_workflow_permission", organization_id, workflow_id, user_id
     )
@@ -1423,7 +1496,7 @@ def _upsert_user_workflow_permission(
         .first()
     )
     before = (
-        _permission_audit_columns(existing_permission)
+        _user_permission_audit_snapshot(existing_permission, "workflow_id")
         if existing_permission is not None
         else None
     )
@@ -1461,13 +1534,16 @@ def _upsert_user_workflow_permission(
     if permission is None:
         # 같은 auth_state PUT은 no-op이므로 returning row가 없고 기존 row를 응답에 재사용한다.
         permission = existing_permission
-    after = _permission_audit_columns(permission)
-    db.commit()
-    _record_user_workflow_permission_audit(
-        current_user,
-        permission,
-        before,
-        after,
+    after = _user_permission_audit_snapshot(permission, "workflow_id")
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_user_workflow_permission_audit(
+            db,
+            current_user,
+            permission,
+            before,
+            after,
+        ),
     )
     return permission
 
@@ -1626,6 +1702,7 @@ def _upsert_user_llm_permission(
     assigned_at: datetime,
 ) -> UserLLMPermission:
     """user-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_active_direct_permission_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_llm_permission", organization_id, credential_id, user_id
     )
@@ -1639,7 +1716,7 @@ def _upsert_user_llm_permission(
         .first()
     )
     before = (
-        _permission_audit_columns(existing_permission)
+        _user_permission_audit_snapshot(existing_permission, "llm_credential_id")
         if existing_permission is not None
         else None
     )
@@ -1675,13 +1752,16 @@ def _upsert_user_llm_permission(
     permission = db.scalars(upsert_stmt).one_or_none()
     if permission is None:
         permission = existing_permission
-    after = _permission_audit_columns(permission)
-    db.commit()
-    _record_user_llm_permission_audit(
-        current_user,
-        permission,
-        before,
-        after,
+    after = _user_permission_audit_snapshot(permission, "llm_credential_id")
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_user_llm_permission_audit(
+            db,
+            current_user,
+            permission,
+            before,
+            after,
+        ),
     )
     return permission
 
@@ -1697,6 +1777,7 @@ def _upsert_user_knowledge_permission(
     assigned_at: datetime,
 ) -> UserKnowledgePermission:
     """user-KB 직접 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    _lock_active_direct_permission_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_knowledge_permission", organization_id, knowledge_base_id, user_id
     )
@@ -1710,7 +1791,7 @@ def _upsert_user_knowledge_permission(
         .first()
     )
     before = (
-        _permission_audit_columns(existing_permission)
+        _user_permission_audit_snapshot(existing_permission, "knowledge_base_id")
         if existing_permission is not None
         else None
     )
@@ -1746,15 +1827,17 @@ def _upsert_user_knowledge_permission(
     permission = db.scalars(upsert_stmt).one_or_none()
     if permission is None:
         permission = existing_permission
-    after = _permission_audit_columns(permission)
-    _record_user_knowledge_permission_audit(
+    after = _user_permission_audit_snapshot(permission, "knowledge_base_id")
+    _commit_audited_permission_mutation(
         db,
-        current_user,
-        permission,
-        before,
-        after,
+        lambda: _record_user_knowledge_permission_audit(
+            db,
+            current_user,
+            permission,
+            before,
+            after,
+        ),
     )
-    db.commit()
     return permission
 
 
@@ -2322,7 +2405,7 @@ def delete_team_knowledge_permission(
     _record_team_knowledge_permission_delete_audit(
         db,
         current_user,
-        permission_id,
+        permission,
         before,
     )
     db.commit()
@@ -2406,6 +2489,7 @@ def delete_user_workflow_permission(
         require_active_target=False,
     )
 
+    _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_workflow_permission", organization_id, workflow_id, user_id
     )
@@ -2426,13 +2510,17 @@ def delete_user_workflow_permission(
             "User workflow permission not found.",
         )
 
-    before = _permission_audit_columns(permission)
+    before = _user_permission_audit_snapshot(permission, "workflow_id")
+    register_manual_audit_ownership(db, permission, "deleted")
     db.delete(permission)
-    db.commit()
-    _record_user_workflow_permission_delete_audit(
-        current_user,
-        permission,
-        before,
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_user_workflow_permission_delete_audit(
+            db,
+            current_user,
+            permission,
+            before,
+        ),
     )
     return {"message": "User workflow permission deleted", "id": str(permission.id)}
 
@@ -2459,6 +2547,7 @@ def delete_user_knowledge_permission(
         require_active_target=False,
     )
 
+    _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_knowledge_permission", organization_id, knowledge_base_id, user_id
     )
@@ -2480,23 +2569,18 @@ def delete_user_knowledge_permission(
         )
 
     permission_id = permission.id
-    before = _permission_audit_columns(permission)
-    (
-        db.query(UserKnowledgePermission)
-        .filter(
-            UserKnowledgePermission.grantee_organization_id == organization_id,
-            UserKnowledgePermission.knowledge_base_id == knowledge_base_id,
-            UserKnowledgePermission.user_id == user_id,
-        )
-        .delete(synchronize_session=False)
-    )
-    _record_user_knowledge_permission_delete_audit(
+    before = _user_permission_audit_snapshot(permission, "knowledge_base_id")
+    register_manual_audit_ownership(db, permission, "deleted")
+    db.delete(permission)
+    _commit_audited_permission_mutation(
         db,
-        current_user,
-        permission_id,
-        before,
+        lambda: _record_user_knowledge_permission_delete_audit(
+            db,
+            current_user,
+            permission,
+            before,
+        ),
     )
-    db.commit()
     return {"message": "User knowledge permission deleted", "id": str(permission_id)}
 
 
@@ -2522,6 +2606,7 @@ def delete_user_llm_permission(
         require_active_target=False,
     )
 
+    _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_llm_permission", organization_id, credential_id, user_id
     )
@@ -2542,13 +2627,17 @@ def delete_user_llm_permission(
             "User LLM credential permission not found.",
         )
 
-    before = _permission_audit_columns(permission)
+    before = _user_permission_audit_snapshot(permission, "llm_credential_id")
+    register_manual_audit_ownership(db, permission, "deleted")
     db.delete(permission)
-    db.commit()
-    _record_user_llm_permission_delete_audit(
-        current_user,
-        permission,
-        before,
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_user_llm_permission_delete_audit(
+            db,
+            current_user,
+            permission,
+            before,
+        ),
     )
     return {
         "message": "User LLM credential permission deleted",

@@ -27,7 +27,40 @@ KST = ZoneInfo("Asia/Seoul")
 AUDIT_READER_RANK = AUDIT_AUTH_STATE_RANK["auditor"]
 AUDIT_RESOURCE_TYPE = "audit"
 AUDIT_READ_ACTION = "read"
-DETAIL_METADATA_KEYS = {"organization_id", "request_id", "reason", "summary"}
+DETAIL_METADATA_KEYS = {
+    "affected_resource_source_count",
+    "organization_id",
+    "policy_reason",
+    "reason",
+    "request_id",
+    "requested_action",
+    "resource_id",
+    "resource_type",
+    "summary",
+    "target_user_id",
+    "team_id",
+}
+_DETAIL_UUID_KEYS = {
+    "organization_id",
+    "resource_id",
+    "target_user_id",
+    "team_id",
+}
+_DETAIL_STRING_KEYS = {
+    "reason",
+    "request_id",
+    "requested_action",
+    "resource_type",
+}
+_DETAIL_RESOURCE_TYPES = {"workflow", "knowledge_base", "llm_credential"}
+_DETAIL_POLICY_REASONS = {
+    "access_management.self_control_forbidden",
+    "access_management.last_active_manager",
+    "access_management.manager_override_active",
+    "access_management.member_state_not_manageable",
+    "access_management.target_user_inactive",
+    "access_management.stale_state",
+}
 SECRET_METADATA_KEYS = {
     "authorization",
     "encrypted_config",
@@ -38,6 +71,85 @@ SECRET_METADATA_KEYS = {
     "secret",
     "password",
 }
+_UUID_FIELDS = {
+    "grantee_organization_id",
+    "knowledge_base_id",
+    "llm_credential_id",
+    "organization_id",
+    "team_id",
+    "user_id",
+    "workflow_id",
+}
+_MEMBERSHIP_STATES = {"invited", "active", "suspended", "removed"}
+_ORGANIZATION_AUTH_STATES = {"member", "manager"}
+_RESOURCE_AUTH_STATES = {"none", "viewer", "operator", "builder", "manager"}
+_CHANGE_SUMMARY_SPECS: dict[tuple[str, str], tuple[str, str, frozenset[str]]] = {
+    (
+        "organization.member.update",
+        "organization_membership",
+    ): (
+        "update",
+        "organization_id",
+        frozenset(
+            {
+                "organization_id",
+                "user_id",
+                "membership_state",
+                "organization_auth_state",
+            }
+        ),
+    ),
+    (
+        "team_membership.created",
+        "team_membership",
+    ): (
+        "create",
+        "grantee_organization_id",
+        frozenset({"grantee_organization_id", "team_id", "user_id"}),
+    ),
+    (
+        "team_membership.deleted",
+        "team_membership",
+    ): (
+        "delete",
+        "grantee_organization_id",
+        frozenset({"grantee_organization_id", "team_id", "user_id"}),
+    ),
+    (
+        "user_app_creation_permission.created",
+        "user_app_creation_permission",
+    ): (
+        "create",
+        "grantee_organization_id",
+        frozenset({"grantee_organization_id", "user_id"}),
+    ),
+    (
+        "user_app_creation_permission.deleted",
+        "user_app_creation_permission",
+    ): (
+        "delete",
+        "grantee_organization_id",
+        frozenset({"grantee_organization_id", "user_id"}),
+    ),
+}
+
+for _resource_name, _resource_field in (
+    ("workflow", "workflow_id"),
+    ("knowledge", "knowledge_base_id"),
+    ("llm", "llm_credential_id"),
+):
+    _target_type = f"user_{_resource_name}_permission"
+    _fields = frozenset(
+        {"grantee_organization_id", "user_id", _resource_field, "auth_state"}
+    )
+    for _operation in ("created", "updated", "deleted"):
+        _CHANGE_SUMMARY_SPECS[(f"{_target_type}.{_operation}", _target_type)] = (
+            {"created": "create", "updated": "update", "deleted": "delete"}[
+                _operation
+            ],
+            "grantee_organization_id",
+            _fields,
+        )
 
 
 @dataclass(frozen=True)
@@ -136,6 +248,7 @@ class AdminAuditLogService:
         return AuditLogDetailResponse(
             **_list_item(item).model_dump(),
             audit_metadata=_detail_metadata(item.audit_metadata),
+            change_summary=_change_summary(item, organization_id),
         )
 
     @staticmethod
@@ -146,10 +259,7 @@ class AdminAuditLogService:
         for key, value in metadata.items():
             if _is_secret_key(key):
                 continue
-            if isinstance(value, dict):
-                sanitized[key] = AdminAuditLogService.sanitize_audit_metadata(value)
-            else:
-                sanitized[key] = value
+            sanitized[key] = _sanitize_metadata_value(value)
         return sanitized
 
 
@@ -224,6 +334,7 @@ def _filtered_query(
 
 
 def _list_item(item: AuditLog) -> AuditLogSchema:
+    request_id = (item.audit_metadata or {}).get("request_id")
     return AuditLogSchema(
         id=item.id,
         occurred_at=item.occurred_at,
@@ -234,13 +345,104 @@ def _list_item(item: AuditLog) -> AuditLogSchema:
         target_type=item.target_type,
         target_id=item.target_id,
         status=item.status,
-        request_id=(item.audit_metadata or {}).get("request_id"),
+        request_id=request_id if isinstance(request_id, str) else None,
     )
 
 
 def _detail_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     sanitized = AdminAuditLogService.sanitize_audit_metadata(metadata)
-    return {key: sanitized[key] for key in DETAIL_METADATA_KEYS if key in sanitized}
+    detail: dict[str, Any] = {}
+    for key in DETAIL_METADATA_KEYS:
+        if key not in sanitized:
+            continue
+        value = _safe_detail_metadata_value(key, sanitized[key])
+        if value is not None:
+            detail[key] = value
+    return detail
+
+
+def _sanitize_metadata_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return AdminAuditLogService.sanitize_audit_metadata(value)
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_metadata_value(item) for item in value]
+    return value
+
+
+def _safe_detail_metadata_value(key: str, value: Any) -> Any | None:
+    if key in _DETAIL_UUID_KEYS:
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError, AttributeError):
+            return None
+    if key == "affected_resource_source_count":
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    if key == "policy_reason":
+        return value if value in _DETAIL_POLICY_REASONS else None
+    if key == "resource_type":
+        return value if value in _DETAIL_RESOURCE_TYPES else None
+    if key in _DETAIL_STRING_KEYS:
+        return value if isinstance(value, str) else None
+    if key == "summary":
+        return value if isinstance(value, (dict, list, str, int, float, bool)) else None
+    return None
+
+
+def _change_summary(item: AuditLog, organization_id: Any) -> dict[str, Any] | None:
+    if item.target_type is None:
+        return None
+    spec = _CHANGE_SUMMARY_SPECS.get((item.action, item.target_type))
+    if spec is None:
+        return None
+    operation, provenance_field, allowed_fields = spec
+    required_sides = {
+        "create": ("after",),
+        "delete": ("before",),
+        "update": ("before", "after"),
+    }[operation]
+    snapshots = {"before": item.before, "after": item.after}
+    safe_sides: dict[str, dict[str, Any] | None] = {
+        "before": None,
+        "after": None,
+    }
+    for side in required_sides:
+        snapshot = snapshots[side]
+        safe_snapshot = _safe_complete_snapshot(snapshot, allowed_fields)
+        if safe_snapshot is None:
+            return None
+        if safe_snapshot[provenance_field] != str(organization_id):
+            return None
+        safe_sides[side] = safe_snapshot
+    return safe_sides
+
+
+def _safe_complete_snapshot(
+    snapshot: Any,
+    allowed_fields: frozenset[str],
+) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict) or not allowed_fields.issubset(snapshot):
+        return None
+    safe: dict[str, Any] = {}
+    for field in allowed_fields:
+        value = snapshot[field]
+        if field in _UUID_FIELDS:
+            try:
+                value = str(UUID(str(value)))
+            except (TypeError, ValueError, AttributeError):
+                return None
+        elif field == "membership_state":
+            if value not in _MEMBERSHIP_STATES:
+                return None
+        elif field == "organization_auth_state":
+            if value not in _ORGANIZATION_AUTH_STATES:
+                return None
+        elif field == "auth_state":
+            if value not in _RESOURCE_AUTH_STATES:
+                return None
+        elif not isinstance(value, (str, int, float, bool)) and value is not None:
+            return None
+        safe[field] = value
+    return safe
 
 
 def _is_secret_key(key: str) -> bool:

@@ -13,11 +13,12 @@ Nested transaction(savepoint)은 계층 B 감사 대상에서 보수적으로 �
 
 import logging
 
-from sqlalchemy import inspect
-from sqlalchemy.orm import Session
-
 from apps.shared.audit.context import get_current_actor, get_current_metadata
 from apps.shared.audit.logger import record_audit
+from apps.shared.audit.manual_ownership import (
+    clear_manual_audit_ownership,
+    is_manually_audited,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import KnowledgeBase
@@ -43,6 +44,8 @@ from apps.shared.db.models.workflow_run import (
     TraceRetentionPolicy,
     TraceVisibilityPolicy,
 )
+from sqlalchemy import inspect
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +106,6 @@ SENSITIVE_FIELDS = {
     TeamKnowledgePermission: set(),
     TeamLLMPermission: set(),
     TeamAuditPermission: set(),
-    UserWorkflowPermission: set(),
-    UserLLMPermission: set(),
     TraceRedactionPolicy: {"regex_rules"},
     TraceRetentionPolicy: set(),
     TraceVisibilityPolicy: set(),
@@ -165,6 +166,7 @@ def _disable_for_nested_transaction(session):
     # ponytail: savepoint별 버퍼는 실제 사용처가 생기면 추가한다.
     session.info["_audit_disabled_nested"] = True
     _discard_buffers(session)
+    clear_manual_audit_ownership(session)
     logger.warning("[Audit] nested transaction 감지는 계층 B 감사를 건너뜁니다")
 
 
@@ -202,6 +204,8 @@ def _before_flush(session, flush_context, instances):
             model_cls = _model_of(obj)
             if model_cls is None or not _should_track(model_cls, "created"):
                 continue
+            if is_manually_audited(session, obj, "created"):
+                continue
             pending.append(
                 (obj, model_cls, "created", None, _all_columns(obj, model_cls))
             )
@@ -209,6 +213,8 @@ def _before_flush(session, flush_context, instances):
         for obj in session.dirty:
             model_cls = _model_of(obj)
             if model_cls is None or not _should_track(model_cls, "updated"):
+                continue
+            if is_manually_audited(session, obj, "updated"):
                 continue
             before, after = _changed_columns(obj, model_cls)
             if not before and not after:
@@ -218,6 +224,8 @@ def _before_flush(session, flush_context, instances):
         for obj in session.deleted:
             model_cls = _model_of(obj)
             if model_cls is None or not _should_track(model_cls, "deleted"):
+                continue
+            if is_manually_audited(session, obj, "deleted"):
                 continue
             pending.append(
                 (obj, model_cls, "deleted", _all_columns(obj, model_cls), None)
@@ -279,10 +287,12 @@ def _after_commit(session):
     """트랜잭션이 확정된 뒤 감사 이벤트를 발행한다."""
     if session.info.pop("_audit_disabled_nested", None):
         _discard_buffers(session)
+        clear_manual_audit_ownership(session)
         return
 
     ready = session.info.pop("_audit_ready", None)
     if not ready:
+        clear_manual_audit_ownership(session)
         return
 
     for event in ready.values():
@@ -291,12 +301,14 @@ def _after_commit(session):
             record_audit(**event)
         except Exception as e:  # noqa: BLE001
             logger.error(f"[Audit] after_commit 발행 실패: {e}")
+    clear_manual_audit_ownership(session)
 
 
 def _after_rollback(session):
     """롤백된 변경의 감사 후보를 폐기한다."""
     _discard_buffers(session)
     session.info.pop("_audit_disabled_nested", None)
+    clear_manual_audit_ownership(session)
 
 
 def _after_soft_rollback(session, previous_transaction):
@@ -306,6 +318,7 @@ def _after_soft_rollback(session, previous_transaction):
     else:
         session.info.pop("_audit_disabled_nested", None)
     _discard_buffers(session)
+    clear_manual_audit_ownership(session)
 
 
 _registered = False
