@@ -137,10 +137,11 @@ def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
 
     assert len(celery.calls) == 1
     task = celery.calls[0]
-    assert task["name"] == "workflow.execute"
-    assert task["kwargs"] == {"is_deployed": True}
+    assert task["name"] == "workflow.execute_by_deployment"
+    assert task["kwargs"] == {}
 
-    _, user_input, execution_context = task["args"]
+    queued_deployment_id, user_input, execution_context = task["args"]
+    assert queued_deployment_id == str(deployment_id)
     assert user_input["schedule_id"] == str(schedule_id)
     assert execution_context["trigger_mode"] == "schedule"
     assert execution_context["workflow_id"] == str(workflow_id)
@@ -148,6 +149,7 @@ def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
     assert execution_context["app_id"] == str(app_id)
     assert execution_context["deployment_id"] == str(deployment_id)
     assert execution_context["user_id"] == str(created_by)
+    assert deployment.graph_snapshot not in task["args"]
     assert schedule.last_run_at is not None
     assert schedule.next_run_at == next_run_time
     assert db.committed is True

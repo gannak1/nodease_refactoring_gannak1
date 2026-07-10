@@ -180,7 +180,9 @@ class SchedulerService:
                 deployment.type,
                 SURFACE_SCHEDULE_RUN,
             ):
-                logger.error(f"Deployment is not a schedule deployment: {deployment_id}")
+                logger.error(
+                    f"Deployment is not a schedule deployment: {deployment_id}"
+                )
                 return
 
             # App 조회하여 workflow_id 가져오기
@@ -231,9 +233,8 @@ class SchedulerService:
 
             # Celery 태스크로 워크플로우 실행 위임 (비동기, 결과 대기 안 함)
             celery_app.send_task(
-                "workflow.execute",
-                args=[deployment.graph_snapshot, user_input, execution_context],
-                kwargs={"is_deployed": True},
+                "workflow.execute_by_deployment",
+                args=[str(deployment.id), user_input, execution_context],
             )
 
             logger.info(f"Celery 태스크 전송 완료: {deployment_id}")

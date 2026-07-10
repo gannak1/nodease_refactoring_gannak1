@@ -249,10 +249,14 @@ def execute_by_deployment(
         )
 
         if not deployment:
-            raise ValueError(f"배포를 찾을 수 없습니다: {deployment_id}")
+            raise PermanentDeploymentExecutionError(
+                f"배포를 찾을 수 없습니다: {deployment_id}"
+            )
 
         if not deployment.graph_snapshot:
-            raise ValueError(f"배포 그래프 데이터가 없습니다: {deployment_id}")
+            raise PermanentDeploymentExecutionError(
+                f"배포 그래프 데이터가 없습니다: {deployment_id}"
+            )
 
         app = session.query(App).filter(App.id == deployment.app_id).first()
         if not app:

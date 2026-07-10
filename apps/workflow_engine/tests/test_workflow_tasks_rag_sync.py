@@ -320,9 +320,7 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
                     "provider": "openai",
                     "model_id": "gpt-4o",
                     "user_prompt": "query",
-                    "knowledgeBases": [
-                        {"id": knowledge_base_id, "name": "제품 정책"}
-                    ],
+                    "knowledgeBases": [{"id": knowledge_base_id, "name": "제품 정책"}],
                     "topK": 4,
                 },
             }
@@ -356,6 +354,36 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
 def test_execute_by_deployment_rejects_inactive_deployment():
     deployment, _app, trigger_mode = _active_deployment_pair()
     deployment.is_active = False
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_deleted_deployment_without_retry():
+    FakeSession.deployment = False
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(uuid.uuid4()),
+            {},
+            {"trigger_mode": "schedule"},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_missing_graph_without_retry():
+    deployment, _app, trigger_mode = _active_deployment_pair(
+        deployment_type=DeploymentType.SCHEDULE,
+        trigger_mode="schedule",
+    )
+    deployment.graph_snapshot = None
 
     with pytest.raises(tasks.PermanentDeploymentExecutionError):
         tasks.execute_by_deployment.run(
