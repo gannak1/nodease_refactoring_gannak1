@@ -16,6 +16,11 @@ global:
 # Application Services
 # =============================================================================
 
+# Start production in disabled mode. Activate claim mode only after the
+# migration-first rollout and legacy task drain gate have passed.
+scheduleDispatch:
+  mode: "disabled"
+
 # Gateway (API Server)
 gateway:
   enabled: true

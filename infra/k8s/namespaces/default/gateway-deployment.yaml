@@ -50,6 +50,35 @@ spec:
                 secretKeyRef:
                   name: app-secrets
                   key: REDIS_PASSWORD
+            # Durable schedule dispatch (activate only after migration-first rollout)
+            - name: SCHEDULE_DISPATCH_MODE
+              value: "disabled"
+            - name: SCHEDULE_DISPATCH_POLL_SECONDS
+              value: "5"
+            - name: SCHEDULE_OCCURRENCE_BATCH_SIZE
+              value: "50"
+            - name: SCHEDULE_DISPATCH_BATCH_SIZE
+              value: "10"
+            - name: SCHEDULE_RECOVERY_BATCH_SIZE
+              value: "50"
+            - name: SCHEDULE_CLEANUP_BATCH_SIZE
+              value: "100"
+            - name: SCHEDULE_DISPATCH_LEASE_SECONDS
+              value: "60"
+            - name: SCHEDULE_ENQUEUED_DELIVERY_TIMEOUT_SECONDS
+              value: "120"
+            - name: SCHEDULE_EXECUTION_DEADLINE_SECONDS
+              value: "900"
+            - name: SCHEDULE_WORKFLOW_RUN_VISIBILITY_TIMEOUT_SECONDS
+              value: "120"
+            - name: SCHEDULE_DISPATCH_MAX_ATTEMPTS
+              value: "5"
+            - name: SCHEDULE_DISPATCH_RETRY_BASE_SECONDS
+              value: "5"
+            - name: SCHEDULE_DISPATCH_RETENTION_DAYS
+              value: "30"
+            - name: SCHEDULE_DISPATCH_DEAD_LETTER_RETENTION_DAYS
+              value: "180"
             - name: CORS_ORIGINS
               value: "https://moduly-ai.cloud,https://www.moduly-ai.cloud,http://localhost:3000,http://127.0.0.1:3000"
             - name: SECRET_KEY

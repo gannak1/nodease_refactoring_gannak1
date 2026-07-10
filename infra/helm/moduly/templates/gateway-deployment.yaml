@@ -75,6 +75,8 @@ spec:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: REDIS_PASSWORD
+
+        {{- include "moduly.scheduleDispatchEnv" . | nindent 8 }}
         
         # CORS and Security
         - name: CORS_ORIGINS

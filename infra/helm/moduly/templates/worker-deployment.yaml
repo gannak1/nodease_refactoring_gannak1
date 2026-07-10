@@ -71,6 +71,8 @@ spec:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: REDIS_PASSWORD
+
+        {{- include "moduly.scheduleDispatchEnv" . | nindent 8 }}
         
         # Sandbox configuration (for Code node execution)
         - name: SANDBOX_URL

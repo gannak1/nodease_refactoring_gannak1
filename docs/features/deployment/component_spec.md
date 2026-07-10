@@ -24,6 +24,13 @@ Verified Against: TBD
 - Public claim 조회/redrive UI는 제공하지 않는다. Outcome unknown acknowledgment는 protected operational job/CLI에서만 수행한다.
 - 기존 deployment list/modal은 claim status나 idempotency key를 사용자에게 표시하지 않는다.
 
+### Schedule Dispatch Configuration Contract
+
+- Gateway와 Workflow Engine은 동일한 `SCHEDULE_DISPATCH_*` 환경변수 집합을 각 composition에서 검증해 주입받는다. 설정 파싱은 `apps/shared/domain/schedule_dispatch.py`가 소유하며, 두 프로세스가 서로 다른 mode/deadline을 사용하지 않도록 Helm helper, raw Kubernetes manifest, Docker Compose가 같은 기본값을 전달한다.
+- `SCHEDULE_DISPATCH_MODE`의 기본값은 `disabled`다. `claim` 활성화는 Alembic migration 적용, disabled rollout, 기존 direct task drain과 pod 설정 일치 확인 이후에만 수행한다. `drain`은 신규 occurrence를 만들지 않고 이미 생성된 claim만 처리한다.
+- Polling, batch size, lease/delivery/execution deadline, retry cap, retention 값은 환경변수로 조정할 수 있지만 domain range validation을 통과해야 한다. 잘못된 mode 또는 범위를 가진 값은 process startup에서 fail-fast한다.
+- 이 설정은 secret이 아니지만 pod 환경과 운영 배포 이력에 남을 수 있으므로 raw workflow payload, credential, audit metadata와 섞어 기록하지 않는다.
+
 ## States
 
 - `checking`: Preflight/create request in progress.

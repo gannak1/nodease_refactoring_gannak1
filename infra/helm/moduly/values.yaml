@@ -12,6 +12,24 @@ global:
   # Storage class (use default for most environments)
   storageClass: ""
 
+# Durable distributed schedule dispatch. Keep disabled until the migration-first
+# rollout has completed and the legacy dispatcher has been drained.
+scheduleDispatch:
+  mode: "disabled"
+  pollSeconds: 5
+  occurrenceBatchSize: 50
+  dispatchBatchSize: 10
+  recoveryBatchSize: 50
+  cleanupBatchSize: 100
+  leaseSeconds: 60
+  deliveryTimeoutSeconds: 120
+  executionDeadlineSeconds: 900
+  workflowRunVisibilityTimeoutSeconds: 120
+  maxAttempts: 5
+  retryBaseSeconds: 5
+  retentionDays: 30
+  deadLetterRetentionDays: 180
+
 # =============================================================================
 # Application Services
 # =============================================================================

@@ -5,6 +5,9 @@
 # =============================================================================
 # Secrets (Local Development Values)
 # =============================================================================
+scheduleDispatch:
+  mode: "disabled"
+
 secrets:
   # Database password
   dbPassword: "moduly123"
