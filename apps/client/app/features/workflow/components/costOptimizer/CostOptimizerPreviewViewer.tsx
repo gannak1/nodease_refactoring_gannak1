@@ -1,5 +1,7 @@
 'use client';
 
+import type { CostOptimizerPreviewFieldLabels } from './costOptimizerPreviewLabels';
+
 type PreviewValue =
   | string
   | number
@@ -12,6 +14,7 @@ interface CostOptimizerPreviewViewerProps {
   value: unknown;
   emptyText?: string;
   className?: string;
+  fieldLabels?: CostOptimizerPreviewFieldLabels;
 }
 
 interface CostOptimizerOutputPreviewPanelProps {
@@ -19,25 +22,24 @@ interface CostOptimizerOutputPreviewPanelProps {
   value: unknown;
   usage?: unknown;
   emptyText?: string;
+  fieldLabels?: CostOptimizerPreviewFieldLabels;
 }
 
 const keyLabelMap: Record<string, string> = {
-  answer: '답변',
   completion_tokens: '응답 토큰',
   cost: '비용',
   input_tokens: '입력 토큰',
-  latency_ms: 'Latency',
-  mailDraft: '답변 초안',
+  latency_ms: '실행 시간',
   output_tokens: '응답 토큰',
   prompt_tokens: '프롬프트 토큰',
-  severity: '긴급도',
-  text: '텍스트',
   total_cost: '총 비용',
   total_tokens: '전체 토큰',
-  usage: '사용량',
 };
 
-const formatPreviewKey = (key: string) => keyLabelMap[key] || key;
+const formatPreviewKey = (
+  key: string,
+  fieldLabels?: CostOptimizerPreviewFieldLabels,
+) => fieldLabels?.[key] || keyLabelMap[key] || key;
 const metricKeys = new Set([
   'cost',
   'total_cost',
@@ -266,9 +268,11 @@ const PreviewLeaf = ({ value }: { value: string | number | boolean | null }) => 
 const PreviewNode = ({
   value,
   level = 0,
+  fieldLabels,
 }: {
   value: PreviewValue;
   level?: number;
+  fieldLabels?: CostOptimizerPreviewFieldLabels;
 }) => {
   if (
     value === null ||
@@ -293,7 +297,11 @@ const PreviewNode = ({
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
               {index}
             </span>
-            <PreviewNode value={item} level={level + 1} />
+            <PreviewNode
+              value={item}
+              level={level + 1}
+              fieldLabels={fieldLabels}
+            />
           </span>
         ))}
       </span>
@@ -313,9 +321,13 @@ const PreviewNode = ({
           className="grid gap-1 rounded-md border border-slate-100 bg-white/70 px-2 py-1.5"
         >
           <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-            {formatPreviewKey(key)}
+            {formatPreviewKey(key, fieldLabels)}
           </span>
-          <PreviewNode value={item} level={level + 1} />
+          <PreviewNode
+            value={item}
+            level={level + 1}
+            fieldLabels={fieldLabels}
+          />
         </span>
       ))}
     </span>
@@ -326,6 +338,7 @@ export function CostOptimizerPreviewViewer({
   value,
   emptyText = '-',
   className = '',
+  fieldLabels,
 }: CostOptimizerPreviewViewerProps) {
   const normalized = normalizeCostOptimizerPreview(value);
   const isEmpty =
@@ -341,7 +354,7 @@ export function CostOptimizerPreviewViewer({
       className={`block whitespace-normal break-words rounded-md bg-slate-50 p-3 text-xs leading-relaxed text-slate-800 ${className}`}
       title={valueToCopyText(normalized)}
     >
-      <PreviewNode value={normalized} />
+      <PreviewNode value={normalized} fieldLabels={fieldLabels} />
     </span>
   );
 }
@@ -351,6 +364,7 @@ export function CostOptimizerOutputPreviewPanel({
   value,
   usage,
   emptyText = '출력 없음',
+  fieldLabels,
 }: CostOptimizerOutputPreviewPanelProps) {
   const normalized = normalizeCostOptimizerPreview(value);
   const isEmpty =
@@ -386,6 +400,7 @@ export function CostOptimizerOutputPreviewPanel({
               value={content}
               emptyText={emptyText}
               className="border border-slate-100 bg-slate-50"
+              fieldLabels={fieldLabels}
             />
           )}
         </section>

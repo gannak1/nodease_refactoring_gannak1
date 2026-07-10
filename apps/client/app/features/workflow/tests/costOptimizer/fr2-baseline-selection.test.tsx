@@ -100,7 +100,9 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     expect(
       screen.getByRole('searchbox', { name: /baseline 검색/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'gpt-4.1-mini' }),
+    ).toBeInTheDocument();
   });
 
   it('baseline preview는 긴 값과 여러 JSON field를 임의로 줄이지 않고 표시한다', async () => {
@@ -142,7 +144,7 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     );
 
     expect(await screen.findByText(new RegExp(longMessage))).toBeInTheDocument();
-    expect(screen.getByText('긴급도')).toBeInTheDocument();
+    expect(screen.getByText('severity')).toBeInTheDocument();
     expect(screen.getByText('high')).toBeInTheDocument();
     expect(screen.getByText('confidence')).toBeInTheDocument();
     expect(screen.getByText('0.91')).toBeInTheDocument();
@@ -181,7 +183,7 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
 
     expect(await screen.findByText('approvalRequired')).toBeInTheDocument();
     expect(screen.getByText('false')).toBeInTheDocument();
-    expect(screen.getByText('답변 초안')).toBeInTheDocument();
+    expect(screen.getByText('mailDraft')).toBeInTheDocument();
     expect(
       screen.getByText('고객에게 정산 파일 재생성 방법을 안내합니다.'),
     ).toBeInTheDocument();
@@ -217,7 +219,7 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
-    expect(await screen.findByText('답변 초안')).toBeInTheDocument();
+    expect(await screen.findByText('mailDraft')).toBeInTheDocument();
     expect(
       screen.getByText('preview가 잘려도 이 전체 답변 초안을 보여줘야 합니다.'),
     ).toBeInTheDocument();
@@ -250,7 +252,9 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
         expect.objectContaining({ limit: 20, offset: 0 }),
       );
     });
-    expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'gpt-4.1-mini' }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/420/)).toBeInTheDocument();
     expect(screen.getByText(/1.8s/)).toBeInTheDocument();
     expect(screen.getByText(/0.0012/)).toBeInTheDocument();
@@ -296,9 +300,27 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     fireEvent.change(await screen.findByRole('searchbox'), {
       target: { value: 'billing' },
     });
-    fireEvent.change(screen.getByLabelText(/모델/i), {
+
+    await waitFor(() => {
+      expect(workflowApiMock.listCostOptimizerBaselines).toHaveBeenLastCalledWith(
+        'workflow-1',
+        'llm-triage',
+        expect.objectContaining({ q: 'billing', model: undefined }),
+      );
+    });
+
+    fireEvent.change(screen.getByRole('combobox', { name: '모델' }), {
       target: { value: 'gpt-4.1-mini' },
     });
+
+    await waitFor(() => {
+      expect(workflowApiMock.listCostOptimizerBaselines).toHaveBeenLastCalledWith(
+        'workflow-1',
+        'llm-triage',
+        expect.objectContaining({ q: 'billing', model: 'gpt-4.1-mini' }),
+      );
+    });
+
     fireEvent.change(screen.getByLabelText(/비교 가능 여부/i), {
       target: { value: 'true' },
     });
@@ -326,6 +348,92 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
         }),
       );
     });
+  });
+
+  it('picker 모델 필터는 API가 반환한 baseline 모델만 옵션으로 제공한다', async () => {
+    workflowApiMock.listCostOptimizerBaselines.mockResolvedValue({
+      total: 2,
+      limit: 20,
+      offset: 0,
+      items: [
+        comparableBaseline,
+        {
+          ...comparableBaseline,
+          baseline_id: 'baseline-claude',
+          model: 'claude-sonnet-4-5',
+        },
+      ],
+    });
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const modelFilter = await screen.findByLabelText(/모델/i);
+    expect(
+      screen.getByRole('option', { name: 'gpt-4.1-mini' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'claude-sonnet-4-5' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('option', { name: 'GPT mini' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(modelFilter, {
+      target: { value: 'claude-sonnet-4-5' },
+    });
+
+    await waitFor(() => {
+      expect(workflowApiMock.listCostOptimizerBaselines).toHaveBeenLastCalledWith(
+        'workflow-1',
+        'llm-triage',
+        expect.objectContaining({ model: 'claude-sonnet-4-5' }),
+      );
+    });
+  });
+
+  it('output schema title이 있으면 preview field label로 사용한다', async () => {
+    const CostOptimizerBaselineSelection = await loadBaselineSelection();
+    workflowApiMock.listCostOptimizerBaselines.mockResolvedValue({
+      total: 1,
+      limit: 20,
+      offset: 0,
+      items: [
+        {
+          ...comparableBaseline,
+          output_preview: JSON.stringify({ reply_draft: '고객에게 안내합니다.' }),
+          node_options: {
+            output_format: {
+              type: 'json',
+              schema: {
+                properties: {
+                  reply_draft: { title: '고객 답변 초안', type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    render(
+      <CostOptimizerBaselineSelection
+        workflowId="workflow-1"
+        nodeId="llm-triage"
+        onBaselineSelected={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('고객 답변 초안')).toBeInTheDocument();
+    expect(screen.queryByText('reply_draft')).not.toBeInTheDocument();
   });
 
   it('picker는 더 보기로 다음 offset을 요청하고 기존 row 뒤에 append한다', async () => {

@@ -21,6 +21,7 @@ import {
 
 import { CostOptimizerBaselineSelection } from '@/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection';
 import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
+import { fieldLabelsFromOutputFormat } from '@/app/features/workflow/components/costOptimizer/costOptimizerPreviewLabels';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
 import {
   applyCandidatePatchesToDraft,
@@ -1228,6 +1229,9 @@ export default function CostOptimizerPlaygroundPage() {
       selectedHistoryRow.candidate.output_preview ??
       '선택한 이전 실험의 B candidate 출력이 저장되어 있지 않습니다.'
     : candidateResult?.output;
+  const baselineOutputFieldLabels = fieldLabelsFromOutputFormat(
+    baselineNodeOptions?.output_format,
+  );
   const activeCandidateActualModel =
     candidateModelRoutingSummary?.selectedModel ||
     (isUnknownRecord(activeCandidateOutput)
@@ -2373,6 +2377,7 @@ export default function CostOptimizerPlaygroundPage() {
                     <CostOptimizerOutputPreviewPanel
                       title="A baseline 출력"
                       value={activeBaselineOutput}
+                      fieldLabels={baselineOutputFieldLabels}
                       usage={
                         selectedHistoryRow || baseline
                           ? {

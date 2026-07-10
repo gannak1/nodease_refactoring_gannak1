@@ -13,6 +13,7 @@ import type {
   CostOptimizerBaselineRow,
 } from '../../types/Api';
 import { CostOptimizerPreviewViewer } from './CostOptimizerPreviewViewer';
+import { fieldLabelsFromOutputFormat } from './costOptimizerPreviewLabels';
 
 interface CostOptimizerBaselineSelectionProps {
   workflowId: string;
@@ -153,6 +154,18 @@ export function CostOptimizerBaselineSelection({
   };
 
   const hasMore = rows.length < total;
+  const modelOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [...rows.map((row) => row.model), model].filter(
+            (modelId): modelId is string =>
+              typeof modelId === 'string' && modelId.trim().length > 0,
+          ),
+        ),
+      ).sort((left, right) => left.localeCompare(right)),
+    [model, rows],
+  );
 
   return (
     <section aria-label="비용 최적화 baseline 선택" className="space-y-4">
@@ -204,7 +217,11 @@ export function CostOptimizerBaselineSelection({
                 onChange={(event) => updateModel(event.target.value)}
               >
                 <option value="">전체 모델</option>
-                <option value="gpt-4.1-mini">GPT mini</option>
+                {modelOptions.map((modelId) => (
+                  <option key={modelId} value={modelId}>
+                    {modelId}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
@@ -348,6 +365,9 @@ export function CostOptimizerBaselineSelection({
                       value={previewValueOf(row.output, row.output_preview)}
                       emptyText="출력 미보관"
                       className="border border-slate-100 bg-white"
+                      fieldLabels={fieldLabelsFromOutputFormat(
+                        row.node_options?.output_format,
+                      )}
                     />
                   </div>
                 </div>
