@@ -522,7 +522,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.target_id, str(upsert_result.id))
         self.assertIsNone(audit.before)
         self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
-        self.assertIsInstance(audit.after["assigned_at"], str)
+        self.assertEqual(audit.after["user_id"], str(target_user_id))
+        self.assertEqual(audit.after["auth_state"], "builder")
+        self.assertNotIn("assigned_at", audit.after)
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
         _assert_audit_added_before_commit(self, session)
@@ -589,9 +591,12 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.target_id, str(existing_permission.id))
         self.assertEqual(audit.before["auth_state"], "viewer")
         self.assertEqual(audit.after["auth_state"], "builder")
-        self.assertEqual(audit.before["assigned_by"], str(previous_assigned_by))
-        self.assertEqual(audit.after["assigned_by"], str(user_id))
-        self.assertNotIn("knowledge_base_id", audit.before)
+        self.assertEqual(
+            audit.before["knowledge_base_id"],
+            str(knowledge_base_id),
+        )
+        self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
+        self.assertNotIn("assigned_by", audit.before)
         _assert_audit_added_before_commit(self, session)
 
     def test_put_user_knowledge_permission_noops_same_auth_state_without_audit(self):
@@ -695,8 +700,8 @@ class TestPermissionsApi(unittest.TestCase):
                 "id": str(existing_permission.id),
             },
         )
-        self.assertEqual(session.deleted, [])
-        self.assertEqual(session.bulk_deleted, [existing_permission])
+        self.assertEqual(session.deleted, [existing_permission])
+        self.assertEqual(session.bulk_deleted, [])
         self.assertTrue(session.committed)
         self.permission_audit.assert_not_called()
         audit = _single_added_audit(session)
@@ -705,10 +710,13 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.actor_id, user_id)
         self.assertEqual(audit.target_type, "user_knowledge_permission")
         self.assertEqual(audit.target_id, str(existing_permission.id))
-        self.assertEqual(audit.before["id"], str(existing_permission.id))
         self.assertEqual(audit.before["user_id"], str(target_user_id))
+        self.assertEqual(
+            audit.before["knowledge_base_id"],
+            str(knowledge_base_id),
+        )
         self.assertEqual(audit.before["auth_state"], "viewer")
-        self.assertIsInstance(audit.before["assigned_at"], str)
+        self.assertNotIn("assigned_at", audit.before)
         self.assertIsNone(audit.after)
         _assert_audit_added_before_commit(self, session)
 
@@ -1985,13 +1993,54 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.assertTrue(session.committed)
         self.assertIsNotNone(session.lock_statement)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "user_workflow_permission.created")
-        self.assertEqual(audit["target_type"], "user_workflow_permission")
-        self.assertEqual(audit["target_id"], upsert_result.id)
-        self.assertEqual(audit["after"]["user_id"], target_user_id)
-        self.assertEqual(audit["after"]["auth_state"], "builder")
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_workflow_permission.created")
+        self.assertEqual(audit.target_type, "user_workflow_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertEqual(audit.after["user_id"], str(target_user_id))
+        self.assertEqual(audit.after["auth_state"], "builder")
+        _assert_audit_added_before_commit(self, session)
+
+    def test_put_user_workflow_permission_rolls_back_when_audit_add_fails(self):
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                created_by=target_user_id,
+                managed_by=actor_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            user_upsert_result=_user_workflow_permission(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                user_id=target_user_id,
+                auth_state="builder",
+                assigned_by=actor_id,
+            ),
+        )
+        session.audit_add_error = RuntimeError("audit unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "audit unavailable"):
+            self._put_user_permission(
+                session=session,
+                user_id=actor_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                target_user_id=target_user_id,
+                payload={"auth_state": "builder"},
+            )
+
+        self.assertFalse(session.committed)
+        self.assertIn(("rollback", None), session.operations)
 
     def test_put_user_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 user direct 권한을 부여할 수 있다.
@@ -2163,13 +2212,14 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.assertTrue(session.committed)
         self.assertIsNotNone(session.lock_statement)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "user_llm_permission.created")
-        self.assertEqual(audit["target_type"], "user_llm_permission")
-        self.assertEqual(audit["target_id"], upsert_result.id)
-        self.assertEqual(audit["after"]["user_id"], target_user_id)
-        self.assertEqual(audit["after"]["auth_state"], "operator")
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_llm_permission.created")
+        self.assertEqual(audit.target_type, "user_llm_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertEqual(audit.after["user_id"], str(target_user_id))
+        self.assertEqual(audit.after["auth_state"], "operator")
+        _assert_audit_added_before_commit(self, session)
 
     def test_put_user_llm_permission_allows_credential_manager(self):
         # organization manager가 아니어도 credential manager면 user direct 권한을 부여할 수 있다.
@@ -2752,20 +2802,19 @@ class TestPermissionsApi(unittest.TestCase):
             "pg_advisory_xact_lock",
             str(session.lock_statement.compile(dialect=postgresql.dialect())),
         )
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "user_workflow_permission.deleted")
-        self.assertEqual(audit["category"], "data_change")
-        self.assertEqual(audit["actor_id"], str(actor_id))
-        self.assertEqual(audit["actor_type"], "user")
-        self.assertEqual(audit["target_type"], "user_workflow_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
-        self.assertEqual(audit["before"]["id"], existing_permission.id)
-        self.assertEqual(audit["before"]["user_id"], target_user_id)
-        self.assertEqual(audit["before"]["auth_state"], "builder")
-        self.assertIsNone(audit["after"])
-        self.assertEqual(audit["metadata"]["request_id"], "req-test")
-        self.assertEqual(audit["metadata"]["actor"]["id"], str(actor_id))
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_workflow_permission.deleted")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, actor_id)
+        self.assertEqual(audit.target_type, "user_workflow_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["workflow_id"], str(workflow_id))
+        self.assertEqual(audit.before["user_id"], str(target_user_id))
+        self.assertEqual(audit.before["auth_state"], "builder")
+        self.assertIsNone(audit.after)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        _assert_audit_added_before_commit(self, session)
 
     def test_delete_user_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 user direct permission 회수가 가능하다.
@@ -2966,21 +3015,22 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
         self.assertIsNotNone(session.lock_statement)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "user_llm_permission.deleted")
-        self.assertEqual(audit["category"], "data_change")
-        self.assertEqual(audit["actor_id"], str(actor_id))
-        self.assertEqual(audit["actor_type"], "user")
-        self.assertEqual(audit["target_type"], "user_llm_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
-        self.assertEqual(audit["before"]["id"], existing_permission.id)
-        self.assertEqual(audit["before"]["user_id"], target_user_id)
-        self.assertEqual(audit["before"]["llm_credential_id"], credential_id)
-        self.assertEqual(audit["before"]["auth_state"], "operator")
-        self.assertIsNone(audit["after"])
-        self.assertEqual(audit["metadata"]["request_id"], "req-test")
-        self.assertEqual(audit["metadata"]["actor"]["id"], str(actor_id))
+        self.permission_audit.assert_not_called()
+        audit = _single_added_audit(session)
+        self.assertEqual(audit.action, "user_llm_permission.deleted")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, actor_id)
+        self.assertEqual(audit.target_type, "user_llm_permission")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["user_id"], str(target_user_id))
+        self.assertEqual(
+            audit.before["llm_credential_id"],
+            str(credential_id),
+        )
+        self.assertEqual(audit.before["auth_state"], "operator")
+        self.assertIsNone(audit.after)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        _assert_audit_added_before_commit(self, session)
 
     def test_delete_user_llm_permission_allows_credential_manager(self):
         # organization manager가 아니어도 credential manager면 user direct permission 회수가 가능하다.
@@ -3715,6 +3765,10 @@ class _Query:
         self.order_by_values.extend(args)
         return self
 
+    def with_for_update(self):
+        """Production row-lock query chain을 보존하는 테스트 더블이다."""
+        return self
+
     def first(self):
         """첫 fake row를 반환하고 필요하면 SQLAlchemy 조건을 흉내 낸다."""
         if self.first_result is None:
@@ -3875,6 +3929,8 @@ class _Session:
         self.deleted = []
         self.bulk_deleted = []
         self.operations = []
+        self.info = {}
+        self.audit_add_error = None
         self.scalars_called = False
         self.committed = False
         self.refreshed = False
@@ -4146,6 +4202,8 @@ class _Session:
 
     def add(self, value):
         """ORM insert 경로 사용 여부를 감지하도록 add 호출 값을 기록한다."""
+        if isinstance(value, AuditLog) and self.audit_add_error is not None:
+            raise self.audit_add_error
         self.added.append(value)
         self.operations.append(("add", type(value)))
 
@@ -4179,6 +4237,12 @@ class _Session:
         """endpoint가 transaction commit까지 도달했는지 표시한다."""
         self.committed = True
         self.operations.append(("commit", None))
+
+    def rollback(self):
+        self.operations.append(("rollback", None))
+
+    def flush(self):
+        self.operations.append(("flush", None))
 
     def refresh(self, value):
         """id가 비어 있으면 fake id를 넣고 refresh 호출을 기록한다."""

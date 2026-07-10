@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -6,7 +7,11 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from apps.gateway.adapters.db.access_management_locking import (
+    lock_access_subject_rows,
+)
 from apps.gateway.auth.permissions import record_permission_denied
+from apps.gateway.services.audit_records import add_data_change_audit
 from apps.gateway.services.resource_permission_registry import (
     ResourceTargetNotFound,
     ResourceTypeNotRegistered,
@@ -16,7 +21,9 @@ from apps.gateway.services.resource_permission_registry import (
     resource_organization_id,
 )
 from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
+from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.team import (
     Team,
     TeamMembership,
@@ -296,6 +303,24 @@ def _record_permission_mutation(
     )
 
 
+def _access_mutation_audit_metadata(current_user: User) -> dict[str, Any]:
+    metadata = get_current_metadata()
+    metadata["actor"] = {
+        "id": str(current_user.id),
+        "email": getattr(current_user, "email", None),
+        "name": getattr(current_user, "name", None),
+    }
+    return metadata
+
+
+def _team_membership_audit_snapshot(row: TeamMembership) -> dict[str, Any]:
+    return {
+        "grantee_organization_id": row.grantee_organization_id,
+        "team_id": row.team_id,
+        "user_id": row.user_id,
+    }
+
+
 class TeamService:
     @staticmethod
     def ensure_organization_manager_scope(
@@ -480,6 +505,33 @@ class TeamService:
             manager_scope,
         )
         _ensure_grantee_user_membership(db, request.user_id, team.organization_id)
+        locked_subject = lock_access_subject_rows(
+            db,
+            team.organization_id,
+            request.user_id,
+            manager_reduction=False,
+        )
+        if (
+            locked_subject is None
+            or locked_subject.membership.membership_state != "active"
+            or locked_subject.user.deactivated_at is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Grantee user is not a member of the organization",
+            )
+        team = (
+            db.query(Team)
+            .filter(
+                Team.id == team.id,
+                Team.organization_id == team.organization_id,
+                Team.is_active.is_(True),
+            )
+            .with_for_update()
+            .first()
+        )
+        if team is None:
+            raise HTTPException(status_code=404, detail="Team not found")
         membership = (
             db.query(TeamMembership)
             .filter(
@@ -487,19 +539,33 @@ class TeamService:
                 TeamMembership.team_id == team.id,
                 TeamMembership.user_id == request.user_id,
             )
+            .with_for_update()
             .first()
         )
         if membership:
             return membership
 
         membership = TeamMembership(
+            id=uuid.uuid4(),
             grantee_organization_id=team.organization_id,
             team_id=team.id,
             user_id=request.user_id,
             assigned_by=current_user.id,
         )
+        register_manual_audit_ownership(db, membership, "created")
         db.add(membership)
         try:
+            add_data_change_audit(
+                db,
+                action="team_membership.created",
+                actor_id=current_user.id,
+                target_type="team_membership",
+                target_id=membership.id,
+                before=None,
+                after=_team_membership_audit_snapshot(membership),
+                organization_id=team.organization_id,
+                metadata=_access_mutation_audit_metadata(current_user),
+            )
             db.commit()
         except IntegrityError as exc:
             db.rollback()
@@ -518,6 +584,9 @@ class TeamService:
                 status_code=409,
                 detail="Team membership already exists",
             ) from exc
+        except Exception:
+            db.rollback()
+            raise
         db.refresh(membership)
         return membership
 
@@ -537,6 +606,24 @@ class TeamService:
             team.organization_id,
             manager_scope,
         )
+        lock_access_subject_rows(
+            db,
+            team.organization_id,
+            user_id,
+            manager_reduction=False,
+        )
+        team = (
+            db.query(Team)
+            .filter(
+                Team.id == team.id,
+                Team.organization_id == team.organization_id,
+                Team.is_active.is_(True),
+            )
+            .with_for_update()
+            .first()
+        )
+        if team is None:
+            raise HTTPException(status_code=404, detail="Team not found")
         # 없는 member 제거는 admin UI 재시도 안정성을 위해 idempotent하게 처리한다.
         membership = (
             db.query(TeamMembership)
@@ -545,11 +632,29 @@ class TeamService:
                 TeamMembership.team_id == team.id,
                 TeamMembership.user_id == user_id,
             )
+            .with_for_update()
             .first()
         )
         if membership:
+            before = _team_membership_audit_snapshot(membership)
+            register_manual_audit_ownership(db, membership, "deleted")
             db.delete(membership)
-            db.commit()
+            try:
+                add_data_change_audit(
+                    db,
+                    action="team_membership.deleted",
+                    actor_id=current_user.id,
+                    target_type="team_membership",
+                    target_id=membership.id,
+                    before=before,
+                    after=None,
+                    organization_id=team.organization_id,
+                    metadata=_access_mutation_audit_metadata(current_user),
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
         return {"status": "removed"}
 
     @staticmethod

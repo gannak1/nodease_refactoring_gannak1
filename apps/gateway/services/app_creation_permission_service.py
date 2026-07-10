@@ -3,6 +3,9 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.db.access_management_locking import (
+    lock_access_subject_rows,
+)
 from apps.gateway.services.audit_records import add_action_audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.user_app_creation_permission import (
@@ -51,14 +54,42 @@ class AppCreationPermissionService:
             raise HTTPException(
                 status_code=404, detail="App creation permission not found"
             )
-        db.delete(permission)
-        add_action_audit(
+        lock_access_subject_rows(
             db,
-            AuditAction.USER_APP_CREATION_PERMISSION_DELETED,
-            actor_id=revoked_by,
-            target_type="user_app_creation_permission",
-            target_id=permission.id,
-            organization_id=permission.grantee_organization_id,
+            permission.grantee_organization_id,
+            permission.user_id,
+            manager_reduction=False,
         )
-        db.commit()
+        permission = (
+            db.query(UserAppCreationPermission)
+            .filter(
+                UserAppCreationPermission.id == permission_id,
+                UserAppCreationPermission.grantee_organization_id == organization_id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if permission is None:
+            raise HTTPException(
+                status_code=404, detail="App creation permission not found"
+            )
+        before = {
+            "grantee_organization_id": permission.grantee_organization_id,
+            "user_id": permission.user_id,
+        }
+        db.delete(permission)
+        try:
+            add_action_audit(
+                db,
+                AuditAction.USER_APP_CREATION_PERMISSION_DELETED,
+                actor_id=revoked_by,
+                target_type="user_app_creation_permission",
+                target_id=permission.id,
+                organization_id=permission.grantee_organization_id,
+                before=before,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         return permission

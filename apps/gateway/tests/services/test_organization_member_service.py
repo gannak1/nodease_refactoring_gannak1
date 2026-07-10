@@ -289,6 +289,17 @@ def test_accept_update_guards_and_state_transitions(monkeypatch):
         AuditAction.ORGANIZATION_MEMBER_ACCEPT,
         AuditAction.ORGANIZATION_MEMBER_UPDATE,
     ]
+    update_audit = db.audit_logs[-1]
+    assert update_audit.before == {
+        "organization_id": str(org.id),
+        "user_id": str(target.id),
+        "membership_state": ORGANIZATION_MEMBERSHIP_ACTIVE,
+        "organization_auth_state": ORGANIZATION_AUTH_MEMBER,
+    }
+    assert update_audit.after == {
+        **update_audit.before,
+        "membership_state": ORGANIZATION_MEMBERSHIP_SUSPENDED,
+    }
 
 
 def test_decline_invitation_marks_removed_and_records_audit():
@@ -464,8 +475,82 @@ def test_last_manager_guard_blocks_demote_by_another_manager(monkeypatch):
         )
 
     assert last_manager.value.status_code == 409
-    assert db.for_update_calls == 1
-    assert db.for_update_order_by_args == [(OrganizationMembership.id,)]
+    # manager membership 후보와 대응 User row를 같은 순서로 각각 잠근다.
+    assert db.for_update_calls == 2
+    assert str(db.for_update_order_by_args[0][0]).endswith(
+        "organization_memberships.id ASC"
+    )
+
+
+def test_deactivated_manager_role_does_not_block_cleanup_demotion(monkeypatch):
+    actor = _user()
+    target = _user()
+    target.deactivated_at = datetime.now(timezone.utc)
+    org = _organization("Acme", created_by=actor.id)
+    target_membership = _membership(
+        target,
+        org,
+        auth_state=ORGANIZATION_AUTH_MANAGER,
+    )
+    db = _Db(
+        users=[actor, target],
+        organizations=[org],
+        memberships=[
+            _membership(actor, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            target_membership,
+        ],
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    result = OrganizationMemberService.update_member(
+        db,
+        actor,
+        org.id,
+        target.id,
+        OrganizationMemberUpdateRequest(
+            organization_auth_state=ORGANIZATION_AUTH_MEMBER
+        ),
+    )
+
+    assert result.organization_auth_state == ORGANIZATION_AUTH_MEMBER
+    assert db.commits == 1
+
+
+def test_update_member_rolls_back_when_audit_add_fails(monkeypatch):
+    actor = _user()
+    target = _user()
+    org = _organization("Acme", created_by=actor.id)
+    target_membership = _membership(target, org)
+    db = _Db(
+        users=[actor, target],
+        organizations=[org],
+        memberships=[
+            _membership(actor, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            target_membership,
+        ],
+    )
+    db.audit_add_error = RuntimeError("audit unavailable")
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        OrganizationMemberService.update_member(
+            db,
+            actor,
+            org.id,
+            target.id,
+            OrganizationMemberUpdateRequest(
+                membership_state=ORGANIZATION_MEMBERSHIP_SUSPENDED
+            ),
+        )
+
+    assert db.commits == 0
+    assert db.rollbacks == 1
 
 
 @pytest.mark.parametrize(
@@ -871,6 +956,8 @@ class _Db:
         self.app_creation_permissions = app_creation_permissions or []
         self.audit_logs = []
         self.commits = 0
+        self.rollbacks = 0
+        self.audit_add_error = None
         self.for_update_calls = 0
         self.for_update_order_by_args = []
 
@@ -923,6 +1010,8 @@ class _Db:
 
     def add(self, row):
         if isinstance(row, AuditLog):
+            if self.audit_add_error is not None:
+                raise self.audit_add_error
             self.audit_logs.append(row)
         elif isinstance(row, OrganizationMembership):
             self.memberships.append(row)
@@ -936,7 +1025,7 @@ class _Db:
         self.commits += 1
 
     def rollback(self):
-        pass
+        self.rollbacks += 1
 
     def refresh(self, row):
         return row
