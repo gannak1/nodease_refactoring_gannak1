@@ -105,6 +105,41 @@ const formatContextDateTime = (value: string | null | undefined) => {
   }).format(date);
 };
 
+const baselineFromExperimentSummary = (
+  workflowId: string,
+  nodeId: string,
+  experiment: CostOptimizerExperimentSummary,
+): CostOptimizerBaselineRow | null => {
+  const summary = experiment.baseline_summary;
+  const baselineId = summary?.baseline_id || experiment.baseline_node_run_id;
+  if (!summary || !baselineId) return null;
+
+  return {
+    baseline_id: baselineId,
+    baseline_source: 'cost_optimizer_experiment_history',
+    source_workflow_node_run_id: baselineId,
+    workflow_run_id: summary.workflow_run_id || experiment.baseline_workflow_run_id || '',
+    workflow_id: workflowId,
+    node_id: nodeId,
+    run_started_at: experiment.created_at || '',
+    workflow_run_status: 'success',
+    node_status: 'success',
+    model: summary.model || '-',
+    cost: summary.cost || 0,
+    total_tokens: summary.total_tokens || 0,
+    latency_ms: summary.latency_ms || 0,
+    input_available: false,
+    output_available: Boolean(summary.output_available),
+    usage_available: true,
+    trace_available: false,
+    compare_available: false,
+    input_preview: '',
+    output_preview: summary.output_preview || '',
+    output: summary.output,
+    has_trace: false,
+  };
+};
+
 const downstreamLabelOf = (
   compatibility: CostOptimizerDownstreamCompatibility | null | undefined,
 ) => {
@@ -649,6 +684,8 @@ export default function CostOptimizerPlaygroundPage() {
   const workflowId = params.id;
   const nodeId = params.nodeId;
   const recommendationPresetKey = searchParams.get('recommendationPresetKey');
+  const comparisonId = searchParams.get('comparisonId');
+  const candidateId = searchParams.get('candidateId');
 
   const [targetNode, setTargetNode] = useState<AppNode | null>(null);
   const [workflowNodes, setWorkflowNodes] = useState<AppNode[]>([]);
@@ -766,6 +803,56 @@ export default function CostOptimizerPlaygroundPage() {
       active = false;
     };
   }, [nodeId, recommendationPresetKey, workflowId]);
+
+  useEffect(() => {
+    if (!comparisonId || !candidateId || isLoadingNode) return;
+
+    let active = true;
+    const loadDetailAnalysis = async () => {
+      try {
+        const response = await workflowApi.listCostOptimizerExperiments(
+          workflowId,
+          nodeId,
+          { limit: 100, offset: 0 },
+        );
+        if (!active) return;
+        const experiment = (response.items || []).find(
+          (item) => item.experiment_id === comparisonId,
+        );
+        const selectedCandidate = experiment?.candidates.find(
+          (item) => item.candidate_id === candidateId,
+        );
+        const historyBaseline = experiment
+          ? baselineFromExperimentSummary(workflowId, nodeId, experiment)
+          : null;
+
+        if (!experiment || !selectedCandidate || !historyBaseline) {
+          setHistoryError('선택한 비교 실험 이력을 찾을 수 없습니다.');
+          return;
+        }
+
+        setHistoryItems(response.items || []);
+        setBaseline(historyBaseline);
+        setActiveMode('report');
+        setSelectedHistoryTarget({
+          type: 'history',
+          experimentId: comparisonId,
+          candidateId,
+        });
+        setIsHistoryCollapsed(true);
+      } catch {
+        if (active) {
+          setHistoryError('선택한 비교 실험 이력을 불러오지 못했습니다.');
+        }
+      }
+    };
+
+    void loadDetailAnalysis();
+
+    return () => {
+      active = false;
+    };
+  }, [candidateId, comparisonId, isLoadingNode, nodeId, workflowId]);
 
   useEffect(() => {
     if (!baseline || activeMode !== 'report') return;

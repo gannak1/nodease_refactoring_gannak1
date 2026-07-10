@@ -363,6 +363,60 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.queryByText('B candidate')).not.toBeInTheDocument();
   });
 
+  it('상세 분석 deep link는 저장된 experiment 후보를 선택한 결과 분석 화면을 연다', async () => {
+    searchParamsMock.get.mockImplementation((key: string) => {
+      if (key === 'comparisonId') return 'comparison-inline-1';
+      if (key === 'candidateId') return 'candidate-inline-1';
+      return null;
+    });
+    workflowApiMock.listCostOptimizerExperiments.mockResolvedValue({
+      items: [
+        {
+          experiment_id: 'comparison-inline-1',
+          workflow_id: 'workflow-1',
+          node_id: 'llm-1',
+          created_at: '2026-07-11T10:10:00Z',
+          baseline_summary: {
+            baseline_id: 'baseline-inline-1',
+            workflow_run_id: 'run-inline-1',
+            model: 'gpt-4.1',
+            cost: 0.02,
+            total_tokens: 1800,
+            latency_ms: 4200,
+          },
+          candidates: [
+            {
+              candidate_id: 'candidate-inline-1',
+              name: '추천 설정 검증',
+              status: 'success',
+              model_id: 'gpt-4.1-mini',
+              total_cost: 0.004,
+              total_tokens: 700,
+              latency_ms: 1700,
+              schema_status: 'pass',
+              downstream_state: 'compatible',
+              created_at: '2026-07-11T10:11:00Z',
+            },
+          ],
+        },
+      ],
+    });
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    expect(
+      await screen.findByText('선택한 이전 실험'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '결과 분석' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      screen.queryByRole('button', { name: '테스트 baseline 선택' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('추천 테스트 진입은 baseline 선택 후에만 추천 설정을 B 후보에 반영한다', async () => {
     const presetKey = 'cost-optimizer-recommendations:workflow-1:llm-1:1';
     window.sessionStorage.setItem(
