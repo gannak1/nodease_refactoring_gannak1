@@ -58,9 +58,9 @@ Inbound adapter -> Application use case -> Port -> Outbound adapter
 
 ## Package Direction
 
-이번 bootstrap에서 물리적으로 생성하는 첫 package scaffold는 Gateway deployment domain package와 필요한 parent package로 제한한다. 이 scaffold는 package boundary만 만들며, 실제 deployment preflight use case/port 이관은 후속 pilot PR에서 진행한다.
+초기 bootstrap에서 물리적으로 생성한 첫 package scaffold는 Gateway deployment domain package와 필요한 parent package로 제한했다. 당시 scaffold는 package boundary만 만들었고, 실제 deployment preflight use case/port 이관은 후속 pilot에서 진행하도록 결정했다.
 
-다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다. 다만 `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다. Deployment preflight pilot은 후속 pilot PR에서 use case/port/adapter 이관이 완료된 뒤 이후 도메인 리팩터링의 reference implementation으로 사용한다.
+다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다. 다만 `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다. Deployment preflight pilot은 use case/port/adapter 이관이 완료된 뒤 이후 도메인 리팩터링의 reference implementation으로 사용한다.
 
 Allowed first scaffold:
 
@@ -92,6 +92,15 @@ Longer-term target package names should make ownership explicit. Gateway workflo
 - public/API/webhook/schedule/workflow_node active surface 정책을 작은 범위에서 검증할 수 있다.
 - private KB 차단, workflow_node target 검증, 409 보존 같은 운영/보안 가치가 큰 규칙을 포함한다.
 - Permission mutation보다 resource type matrix가 좁고, Knowledge ingestion/retrieval보다 외부 adapter 수가 적다.
+
+구현 상태:
+
+- `apps/gateway/application/deployment/`에 framework-independent result/error, repository port와 preflight use case를 둔다.
+- SQLAlchemy query는 `apps/gateway/adapters/db/deployment_preflight_repository.py`가 pure snapshot으로 변환한다.
+- `apps/gateway/composition/deployment.py`가 concrete dependency를 조립한다.
+- 기존 service facade는 application blocked error를 기존 `409 deployment.preflight.blocked` envelope으로 변환해 public API contract를 보존한다.
+- Application import boundary와 기존 preflight behavior 회귀 테스트를 함께 유지한다.
+- 이 read-only policy pilot에는 UnitOfWork가 필요하지 않다. 이후 permission mutation pilot은 이 구조에 transaction owner, UnitOfWork, transaction-bound audit port를 추가해야 한다.
 
 후속 pilot 순서는 다음을 기본값으로 둔다.
 
@@ -198,7 +207,7 @@ rg -n "from apps\\.gateway|import apps\\.gateway|from apps\\.workflow_engine|imp
 
 ## Follow-up
 
-- Deployment preflight pilot에서 use case/port/adapter 구조를 검증한다.
+- Deployment preflight pilot에서 use case/port/adapter 구조를 검증했고, 이후 변경에서 import boundary와 behavior 회귀 테스트를 유지한다.
 - Permission mutation을 두 번째 pilot으로 분리한다.
 - Knowledge ingestion/retrieval을 세 번째 pilot으로 분리한다.
 - Import boundary 검증을 자동화할지 결정한다.

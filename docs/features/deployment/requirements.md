@@ -37,6 +37,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-014: 인증 없는 public deployment info는 기본 runtime policy에서 `webapp`, `widget`, `chatbot` metadata만 노출한다. API, MCP, schedule, webhook, workflow-node와 unknown type은 safe 404로 닫는다. Allowlist는 endpoint 문자열 분기나 환경변수가 아니라 불변 `DeploymentRuntimePolicy` dependency로 주입하며, 확장은 명시적 composition 변경과 계약 테스트를 요구한다.
 - DEP-REQ-015: Scheduler는 Celery dispatch 전에 `Schedule.id`와 `deployment_id`가 일치하는 canonical DB row를 확인해야 한다. Row가 삭제되었거나 불일치하면 stale local job을 제거하고 budget check, queue dispatch, `last_run_at`/`next_run_at` update를 수행하지 않아야 한다.
 - DEP-REQ-016: Deployment ID 기반 Worker는 queue 입력의 tenant/resource 식별자를 권한 source of truth로 사용하지 않아야 한다. `workflow_id`, `organization_id`, `app_id`, deployment id/version, runtime credential owner는 DB의 current active Deployment/App에서 재구성하고, queue에서는 검증된 trigger와 제한된 correlation metadata만 전달받아야 한다. Subject 없는 webhook/schedule 실행에 queue 입력으로 `execution_subject`를 주입할 수 없다.
+- DEP-REQ-017: Deployment preflight policy/use case는 FastAPI, SQLAlchemy, concrete adapter를 import하지 않아야 한다. SQLAlchemy adapter는 organization/lifecycle/workflow-node owner/type/active 조건을 pure snapshot으로 변환하고, outer composition root가 port implementation을 주입해야 한다. Existing service facade는 typed application block을 기존 `409 deployment.preflight.blocked` HTTP contract로만 mapping해야 한다.
 
 ## Runtime Audience Matrix
 

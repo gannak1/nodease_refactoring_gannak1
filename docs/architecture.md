@@ -95,13 +95,15 @@ Package 기준:
 | `apps/workflow_engine/adapters/` | DB run repository, execution queue, node runtime/provider adapter 등 workflow runtime outbound adapter를 둔다 |
 | `apps/shared/domain/` | Gateway와 Workflow Engine이 함께 쓰는 순수 policy 또는 contract만 둔다 |
 
-초기 scaffold 규칙:
+초기 pilot과 이후 package 규칙:
 
-- 이번 bootstrap에서 물리적으로 생성하는 package는 Gateway deployment domain package와 필요한 parent package로 제한한다.
-- 이 scaffold는 package boundary만 만들며, 실제 deployment preflight use case/port 이관은 후속 pilot PR에서 진행한다.
-- 다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다.
-- `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다.
-- Deployment preflight pilot은 후속 pilot PR에서 use case/port/adapter 이관이 완료된 뒤 이후 도메인 리팩터링의 reference implementation으로 사용한다.
+- Gateway deployment scaffold 다음 단계로 deployment preflight pilot을 실제 이관했다.
+- `apps/gateway/application/deployment/`는 framework-independent result/error, repository port, graph/audience policy와 use case를 소유한다.
+- `apps/gateway/adapters/db/deployment_preflight_repository.py`는 SQLAlchemy model/query를 pure snapshot으로 변환한다.
+- `apps/gateway/composition/deployment.py`는 concrete repository와 use case만 조립하고 정책을 판단하지 않는다.
+- `apps/gateway/services/knowledge_deployment_preflight_service.py`는 기존 caller 호환 facade로서 application result를 shared response schema로, typed blocked error를 기존 HTTP 409 envelope으로 변환한다.
+- 다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다. `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다.
+- Deployment preflight pilot을 이후 도메인 리팩터링의 reference implementation으로 사용하되, mutation 도메인은 별도 UnitOfWork와 transaction-bound audit 요구를 추가해야 한다.
 - `apps/shared/domain/*` 하위 도메인 package는 실제 cross-runtime pure policy가 생길 때만 만든다.
 - Gateway workflow 관리 책임은 `workflow_management`처럼 API 관리 책임을 드러내고, Workflow Engine 실행 책임과 혼동하지 않는다.
 
