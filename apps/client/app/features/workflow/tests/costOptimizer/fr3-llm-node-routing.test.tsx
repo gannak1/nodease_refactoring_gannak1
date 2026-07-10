@@ -5,6 +5,13 @@ import { NodeInlinePanel } from '../../components/nodes/NodeInlinePanel';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { AppNode, LLMNodeData } from '../../types/Nodes';
 
+const workflowApiMock = vi.hoisted(() => ({
+  getCostOptimizerAvailability: vi.fn(),
+  getModelRoutingPolicy: vi.fn(),
+  patchModelRoutingPolicy: vi.fn(),
+  refreshModelRoutingPolicy: vi.fn(),
+}));
+
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
   ModelSelectDropdown: ({
     value,
@@ -56,20 +63,7 @@ vi.mock('../../components/nodes/ui/PropertyVisibilityToggle', () => ({
 }));
 
 vi.mock('../../api/workflowApi', () => ({
-  workflowApi: {
-    getCostOptimizerAvailability: vi.fn().mockResolvedValue({
-      available: true,
-      reason: null,
-      workflow_id: 'workflow-1',
-      node_id: 'llm-1',
-      node_type: 'llmNode',
-      permission: {
-        can_compare: true,
-        can_apply: true,
-        required_auth_state: 'builder',
-      },
-    }),
-  },
+  workflowApi: workflowApiMock,
 }));
 
 vi.mock('next/navigation', () => ({
@@ -103,6 +97,72 @@ const createLlmNode = (data: Partial<LLMNodeData> = {}): AppNode =>
 describe('FR-003 LLM node model routing optimization entry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    workflowApiMock.getCostOptimizerAvailability.mockResolvedValue({
+      available: true,
+      reason: null,
+      workflow_id: 'workflow-1',
+      node_id: 'llm-1',
+      node_type: 'llmNode',
+      permission: {
+        can_compare: true,
+        can_apply: true,
+        required_auth_state: 'builder',
+      },
+    });
+    workflowApiMock.getModelRoutingPolicy.mockResolvedValue({
+      enabled: true,
+      status: 'active',
+      policy_id: 'policy-persisted',
+      policy_version: 'router-policy-v5',
+      active_policy: {
+        default_model_id: 'gpt-4.1-mini',
+        fallback_model_id: 'gpt-4.1',
+        rules: [],
+      },
+      pending_policy: null,
+      refresh: {
+        refresh_every_runs: 20,
+        eligible_runs_since_last_refresh: 2,
+        next_refresh_after_runs: 18,
+        last_refresh_result: 'applied',
+        last_refresh_at: null,
+      },
+      last_update: {
+        id: 'update-1',
+        trigger: 'auto_n_runs',
+        status: 'applied',
+        eligible_run_count: 20,
+        excluded_run_count: 2,
+        judge_provider: 'openai',
+        judge_model: 'gpt-4.1-mini',
+        judge_usage_log_id: 'usage-1',
+        prompt_version: 'model-routing-policy-judge-v1',
+        new_policy_version: 'router-policy-v5',
+        judge_cost: 0.0012,
+        created_at: '2026-07-10T00:00:00+00:00',
+      },
+    });
+    workflowApiMock.patchModelRoutingPolicy.mockResolvedValue({
+      enabled: true,
+      status: 'collecting',
+      policy_id: null,
+      policy_version: null,
+      active_policy: null,
+      pending_policy: null,
+      refresh: {
+        refresh_every_runs: 20,
+        eligible_runs_since_last_refresh: 0,
+        next_refresh_after_runs: 20,
+        last_refresh_result: null,
+        last_refresh_at: null,
+      },
+    });
+    workflowApiMock.refreshModelRoutingPolicy.mockResolvedValue({
+      policy_id: 'policy-persisted',
+      status: 'refreshing',
+      trigger: 'manual_refresh',
+      scheduled: true,
+    });
     global.fetch = vi.fn(async () => ({
       ok: true,
       json: async () => [
@@ -196,7 +256,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeChecked();
     expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
-    expect(screen.getByText('router-policy-v4')).toBeInTheDocument();
+    expect(await screen.findByText('router-policy-v5')).toBeInTheDocument();
     expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
     expect(screen.queryByText('기본 모델')).not.toBeInTheDocument();
     expect(screen.queryByText('대체 모델')).not.toBeInTheDocument();
@@ -265,15 +325,86 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
         .auto_model_routing,
     ).toBe(true);
+    expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+      'workflow-1',
+      'llm-1',
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
-  it('운영 로그 기반 모델 라우팅 최적화 진입 버튼을 보여준다', async () => {
+  it('자동 정책 갱신하기는 refresh API를 요청한다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+    render(<NodeInlinePanel node={node} />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /자동 정책 갱신하기/ }),
+    );
+
+    expect(workflowApiMock.refreshModelRoutingPolicy).toHaveBeenCalledWith(
+      'workflow-1',
+      'llm-1',
+    );
+  });
+
+  it('첫 배포 운영 실행 전에는 정책 row가 없어 수동 갱신을 막고 이유를 안내한다', async () => {
+    workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
+      enabled: true,
+      status: 'collecting',
+      policy_id: null,
+      policy_version: null,
+      active_policy: null,
+      pending_policy: null,
+      refresh: {
+        refresh_every_runs: 20,
+        eligible_runs_since_last_refresh: 0,
+        next_refresh_after_runs: 20,
+        last_refresh_result: null,
+        last_refresh_at: null,
+      },
+      last_update: null,
+    });
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    render(<NodeInlinePanel node={node} />);
+
+    expect(
+      await screen.findByText(/첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /자동 정책 갱신하기/ }),
+    ).toBeDisabled();
+  });
+
+  it('최근 정책 갱신의 judge 비용과 결과를 보여준다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    render(<NodeInlinePanel node={node} />);
+
+    expect(await screen.findByText(/최근 정책 점검/)).toBeInTheDocument();
+    expect(screen.getByText(/자동 갱신 · 반영됨/)).toBeInTheDocument();
+    expect(screen.getByText(/Judge: gpt-4.1-mini/)).toBeInTheDocument();
+    expect(screen.getByText(/비용 \$0\.0012/)).toBeInTheDocument();
+  });
+
+  it('운영 로그 기반 최적화 진입 버튼을 보여준다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
 
     expect(
-      await screen.findByRole('button', { name: /모델 라우팅 최적화/ }),
+      await screen.findByRole('button', { name: /^최적화$/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/배포 후 운영 로그를 기준으로 추천 모델/),

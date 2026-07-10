@@ -173,7 +173,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     renderPanel(createLlmNode());
 
     expect(
-      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.getByRole('button', { name: /^최적화$/i }),
     ).toBeInTheDocument();
   });
 
@@ -181,7 +181,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     renderPanel(createNonLlmNode());
 
     expect(
-      screen.queryByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.queryByRole('button', { name: /^최적화$/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -191,14 +191,14 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     renderPanel(createLlmNode());
 
     expect(
-      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.getByRole('button', { name: /^최적화$/i }),
     ).toBeDisabled();
   });
 
   it('모델 라우팅 최적화 클릭 시 모델 추천 모달을 연다', async () => {
     renderPanel(createLlmNode());
     fireEvent.click(
-      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.getByRole('button', { name: /^최적화$/i }),
     );
 
     expect(
@@ -214,7 +214,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
 
     renderPanel(createLlmNode());
     fireEvent.click(
-      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.getByRole('button', { name: /^최적화$/i }),
     );
 
     expect(routerMock.push).not.toHaveBeenCalled();
@@ -248,7 +248,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
       );
     });
     expect(
-      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.getByRole('button', { name: /^최적화$/i }),
     ).toBeDisabled();
   });
 });
