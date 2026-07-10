@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-166 @ 15f74f516d0a0c8e8bf5dce9b8e86892a069d2d3
+Verified Against: feature/mba-166 @ d9eeed80c47dcd9988c5453c2332b0e8c17cf921
 
 ## Purpose
 
@@ -461,6 +461,7 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 
 - text 출력이면 전체 텍스트를 줄바꿈과 내부 스크롤로 표시한다.
 - JSON 출력이면 field 단위로 펼쳐서 볼 수 있어야 한다.
+- JSON field 표시명은 해당 node 실행 시점 JSON Schema의 `properties.{key}.title`이 있을 때만 사용한다. title이 없으면 원본 key를 그대로 표시하며, 공통 preview 컴포넌트에 workflow 도메인별 key-label mapping을 두지 않는다.
 - JSON schema가 있으면 필수 field 충족 여부, 누락 field, type mismatch를 표시한다.
 - 긴 값은 화면에서 임의로 `...` 처리하지 않는다. 패널 내부 스크롤을 사용한다.
 
