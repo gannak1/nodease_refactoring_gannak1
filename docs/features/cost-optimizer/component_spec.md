@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-166 @ 3644be49eb8182b6e76e9f3f25769b66a9da00ad
+Verified Against: feature/mba-166 @ 15f74f516d0a0c8e8bf5dce9b8e86892a069d2d3
 
 ## Purpose
 
@@ -45,7 +45,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
 | FR-009 | Cost/usage metric display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-011 | Model routing policy controls, model-routing recommendation route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 부분 구현 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
+| FR-011 | Model routing policy controls, model-routing recommendation route, refresh result summary | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | policy toggle/주기 저장, manual refresh 요청, 마지막 judge 결과·비용 표시 검증 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 
 ## Screens
@@ -227,7 +227,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 - 기본 모델 선택 UI를 숨긴다.
 - fallback 모델 선택 UI를 숨긴다.
-- active policy 상태 panel을 표시한다.
+- active policy 상태 panel을 표시한다. panel은 `GET /model-routing/policy` 응답을 우선 사용하고, 배포 policy가 아직 없을 때만 draft의 legacy JSON summary를 보조 표시한다.
 - runtime은 active policy를 사용해 모델을 선택한다.
 - active policy가 없으면 `collecting` 상태로 표시하고, runtime은 보수적으로 저장된 안정 모델을 사용한다.
 - judge LLM은 일반 실행 중 호출하지 않는다.
@@ -248,21 +248,26 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 | 상태 | 표시 | 사용자 액션 |
 | --- | --- | --- |
 | `off` | 자동 라우팅 꺼짐 | 토글 ON |
-| `collecting` | 운영 로그 수집 중, `n/20회` | 수동 갱신 가능, 로그 부족이면 실패 안내 |
+| `collecting` + policy id 없음 | 첫 배포 운영 실행 대기 | `자동 정책 갱신하기` disabled, `첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다.` 안내 |
+| `collecting` + policy id 있음 | 운영 로그 수집 중, `n/20회` | 수동 갱신 가능. 로그/후보 근거가 부족하면 최종 결과에서 실패 또는 기존 policy 유지 안내 |
 | `active` | active policy로 실행 중 | 수동 갱신 가능 |
 | `refreshing` | 정책 갱신 중 | 중복 갱신 버튼 disabled |
 | `pending_review` | 새 정책 보류, 기존 정책 유지 | 보류 사유 확인 |
 | `failed` | 마지막 갱신 실패 | 실패 사유 확인 후 재시도 |
 
-`자동 정책 갱신하기` 버튼을 누르면 즉시 정책 갱신 요청을 보낸다.
+`자동 정책 갱신하기` 버튼을 누르면 `POST /model-routing/policy/refresh`로 즉시 정책 갱신 작업을 예약한다.
 
-- 요청 중에는 버튼을 disabled 처리한다.
-- 성공하면 새 policy version과 적용 결과를 표시한다.
+- 요청 중에는 버튼을 disabled 처리한다. policy id가 없는 초기 `collecting` 상태에서도 disabled 처리한다.
+- 요청 성공은 judge 완료가 아니라 `refreshing` 상태 전환을 뜻한다. UI는 policy 조회를 다시 수행해 새 policy version과 최종 적용 결과를 표시한다.
 - `kept_current`이면 정책 재평가는 끝났지만 검증된 변경 후보가 없어 기존 active policy를 유지했다는 문구를 표시한다.
 - `pending_review`이면 새 정책이 운영에 반영되지 않았고 기존 active policy가 유지된다는 문구를 표시한다.
 - 실패하면 로그 부족, credential/model 사용 불가, judge 호출 실패 같은 safe reason을 표시한다.
 
 정책 갱신 결과의 judge 호출 비용은 숨기지 않는다. UI는 policy update summary에서 judge 모델, token/cost, 갱신 trigger를 확인할 수 있어야 한다. 단 raw prompt, raw output, credential 원문, API key, raw trace payload는 표시하지 않는다.
+
+현재 구현은 policy 조회 응답의 `last_update` safe summary를 사용해 `최근 정책 점검`, 자동/수동 갱신 여부, `반영됨`/보류/실패 상태, judge 모델과 judge 비용을 표시한다. 사용자는 judge usage log id를 원문 로그로 열람하지 않고 추적 식별자로만 확인한다.
+
+자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 첫 LLM node 성공 실행이 policy row를 생성한다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.

@@ -1,7 +1,7 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: feature/mba-166 @ 3644be49eb8182b6e76e9f3f25769b66a9da00ad
+Verified Against: feature/mba-166 @ 15f74f516d0a0c8e8bf5dce9b8e86892a069d2d3
 
 ## Purpose
 
@@ -26,7 +26,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Model routing policy controls / model-routing route | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 검증된 후보 이력 기반 model-routing 추천 | 작성 완료 | 부분 통과 |
+| FR-011 | Model routing policy controls / model-routing route | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 운영 표본 누적·품질 gate·judge usage 추적 기반 정책 갱신 | 작성 완료 | 통과 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 
 ## Test Implementation Tracking
@@ -66,9 +66,13 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-011 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | `모델 라우팅 최적화` 진입 버튼, 자동 라우팅 토글, ON/OFF에 따른 모델 선택 UI 전환, task type 선택 미노출 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 통과 |
 | FR-011 | Frontend route | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | `모델 라우팅 최적화` 버튼이 기존 A/B workspace가 아니라 전용 model-routing route로 이동 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
 | FR-011 | Workflow engine service | `apps/workflow_engine/tests/services/test_model_router.py` | `ModelRouter.resolve_policy()`가 런타임 하드코딩 키워드 없이 active policy rule의 일반 조건과 `keyword_any`만 평가하고, `ModelRouter.resolve()`는 기존 추천 분석 호환 경로를 유지 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_router.py` | 통과 |
-| FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 자동 라우팅 ON 실행이 judge를 호출하지 않고 active policy rule로 모델을 선택하며 safe routing metadata를 남김 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py -k auto_model_routing` | 통과 |
+| FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 자동 라우팅 ON 실행이 judge를 호출하지 않고 active policy rule로 모델을 선택하며 safe routing metadata를 남긴다. 배포 policy row가 없을 때는 legacy snapshot을 무시하고 저장 모델로 시작한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py -k auto_model_routing` | 통과 |
 | FR-011 | Trace metadata | `apps/shared/tests/services/test_tracing_metadata.py` | model routing decision summary가 safe metadata allowlist로 보존되고 raw prompt/secret은 제거됨 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_tracing_metadata.py` | 통과 |
-| FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 완료 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 부분 통과: 로컬 OpenAI dry-run 통과, Anthropic/Google은 API key 부재로 dry-run 실패 기대 |
+| FR-011 | Policy lifecycle | `apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py`, `apps/log_system/tests/test_model_routing_policy_hook.py` | 성공한 LLM node 완료 hook만 운영 표본 집계, 중복 방지, 설정 횟수 도달 시 refresh task 1회 예약, manual refresh와 `kept_current`/`pending_review` active policy 보존을 검증 | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py apps/log_system/tests/test_model_routing_policy_hook.py` | 통과 |
+| FR-011 | Persisted refresh | `apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py` | judge confidence/운영 품질 gate, 실행 가능한 rule 정규화, 기존 policy 보존, judge usage log 연결을 검증 | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py` | 통과 |
+| FR-011 | Policy routing E2E | `apps/workflow_engine/tests/e2e/test_model_routing_policy_e2e.py` | 61회 실행 동안 20/40/60회에만 judge refresh가 발생하고, 각 실행은 저장된 rule set으로 모델을 선택하는 흐름 | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/e2e/test_model_routing_policy_e2e.py` | 통과 |
+| FR-011 | Gateway policy API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | GET/PATCH/POST policy의 builder 권한, 상태 조회, 주기 변경, refresh 예약과 마지막 갱신 safe summary를 검증 | 작성 완료 | `apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
+| FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 대기 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 로컬 계정에서 OpenAI/Anthropic/Google credential 사용 권한이 없어 dry-run이 `credential_use_denied`/`credential_not_available`로 중단됨. 실제 provider 호출은 실행하지 않음 |
 | FR-012 | Gateway/service | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 운영 로그/trace 기반 LLM 파라미터 추천 룰셋, safe evidence, `direct_policy_update` 적용 경계 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 통과 기록 있음 |
 | FR-012 | Frontend component/API client | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 최적화 추천 모달, 추천 row 선택, 테스트하기 CTA, `direct_policy_update`만 직접 적용 | 작성 완료 | 관련 targeted test | 통과 기록 있음 |
 
@@ -93,6 +97,17 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-011-R13 | high-risk retention | 고객-facing/schema 계약이 있고 보상/SLA/법무 리스크가 큰 입력이 들어온다 | `keyword_any` rule이 포함된 active policy를 평가한다 | 도메인 위험도 판단은 저장된 policy rule로만 수행되고 런타임 상수에는 의존하지 않는다. |
 | FR-011-R14 | multi-provider judge | organization이 Anthropic 또는 Google credential만 가지고 있고 해당 provider의 cheap/mid/high/judge model relation과 `use` 권한이 verified 상태다 | `scripts/verify_model_router_actual.py --provider anthropic` 또는 `--provider google`을 실행한다 | OpenAI 모델 hardcode 없이 해당 provider preset으로 실제 후보 실행과 LLM judge 평가를 수행한다. credential이 없으면 provider 호출 전에 명확한 실패 사유를 출력한다. |
 | FR-011-R15 | provider dry run | 실제 API key가 없거나 비용 발생 없이 설정만 확인하고 싶다 | `scripts/verify_model_router_actual.py --dry-run`을 실행한다 | provider 호출 없이 현재 organization/user가 실행 가능한 preset, cheap/mid/high model, judge model을 출력한다. |
+| FR-011-R16 | 운영 run 누적 | 자동 라우팅 ON인 배포 workflow가 완료되고 target LLM node가 실행됐다 | 완료 hook을 두 번 호출한다 | `workflow_run_id`당 event는 한 건만 저장되고 eligible count는 한 번만 증가한다. |
+| FR-011-R17 | 자동 갱신 예약 | 마지막 갱신 후 eligible 운영 run이 `refresh_every_runs - 1`개 누적됐다 | 다음 배포 후 운영 run이 완료된다 | policy status를 `refreshing`으로 전환하고 `auto_n_runs` refresh task를 한 번만 예약한다. 테스트/compare/배포 없는 run은 카운트하지 않는다. |
+| FR-011-R18 | 자동 갱신 결과 | judge가 policy를 반환했지만 품질 gate를 통과한 변경 rule이 없다 | refresh task를 실행한다 | update는 `kept_current` 또는 `pending_review`로 저장되고 기존 active policy/version은 유지된다. |
+| FR-011-R19 | runtime DB policy | active policy row가 있고 LLM node data에는 legacy policy JSON이 다르다 | 배포 runtime을 실행한다 | DB active policy를 우선 평가하고 trace에 DB policy id/version과 `judge_called=false`를 남긴다. |
+| FR-011-R20 | completed-node hook | LLM node log가 `running` 상태로 생성된다 | log task가 policy run record hook을 호출한다 | 운영 표본 집계 task를 예약하지 않는다. `success` 완료 시에만 한 번 예약한다. |
+| FR-011-R21 | judge usage tracking | policy refresh가 실제 judge를 호출한다 | refresh 결과를 저장한다 | `judge_provider`, `judge_model`, `judge_usage_log_id`, judge 비용 safe summary를 update row와 policy 조회 응답에서 확인할 수 있다. |
+| FR-011-R22 | deployed bootstrap | 자동 라우팅 ON인 배포 LLM node에 아직 policy row가 없다 | runtime이 첫 실행 모델을 해석한다 | graph의 legacy policy snapshot을 평가하지 않고 node의 저장 `model_id`/`fallback_model_id`를 사용한다. 첫 성공 완료 후 생성된 policy row만 다음 배포 실행부터 평가한다. |
+| FR-011-R23 | bootstrap candidate promotion | bootstrap rule 또는 fallback에 있던 모델을 새 default/rule primary model로 승격한다 | refresh policy를 정규화한다 | 해당 모델의 독립 운영 품질 표본이 없으면 `pending_review`로 보류하고 기존 active policy를 유지한다. |
+| FR-011-R24 | efficiency evidence | 변경 모델과 현재 primary model의 평균 비용/latency가 모두 있다 | refresh policy를 정규화한다 | 변경 모델이 비용과 latency 모두 더 나쁘면 `kept_current`로 기록하고 기존 active policy를 유지한다. |
+| FR-011-R25 | deployment bootstrap boundary | draft에서만 자동 라우팅을 ON으로 저장했고 deployment snapshot에는 해당 설정이 없다 | 운영 실행을 완료한다 | policy row/event를 만들거나 refresh를 예약하지 않는다. 자동 라우팅 설정을 포함해 배포한 뒤 첫 성공 LLM node run부터 policy row와 표본 집계를 시작한다. |
+| FR-011-R26 | initial manual refresh guard | policy id가 없는 `collecting` 상태다 | LLM node panel을 렌더링한다 | `자동 정책 갱신하기`를 disabled 처리하고 첫 배포 운영 실행 완료 후 가능하다는 안내를 표시한다. |
 
 ## LLM Parameter Recommendation Tests
 
