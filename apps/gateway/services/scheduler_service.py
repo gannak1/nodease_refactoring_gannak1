@@ -16,6 +16,7 @@ from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_SCHEDULE_RUN,
+    DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
 )
 
@@ -33,8 +34,13 @@ class SchedulerService:
     4. 서버 재시작해도 DB에서 스케줄 복구
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        runtime_policy: DeploymentRuntimePolicy,
+    ):
         """BackgroundScheduler 초기화"""
+        self.runtime_policy = runtime_policy
         self.scheduler = BackgroundScheduler(timezone="UTC")
         self.scheduler.start()
         logger.info("APScheduler 시작됨")
@@ -196,6 +202,7 @@ class SchedulerService:
             if not is_deployment_type_allowed_for_surface(
                 deployment.type,
                 SURFACE_SCHEDULE_RUN,
+                policy=self.runtime_policy,
             ):
                 logger.error(
                     f"Deployment is not a schedule deployment: {deployment_id}"
@@ -305,7 +312,11 @@ def get_scheduler_service() -> SchedulerService:
     return scheduler_service
 
 
-def init_scheduler_service(db: Session) -> SchedulerService:
+def init_scheduler_service(
+    db: Session,
+    *,
+    runtime_policy: DeploymentRuntimePolicy,
+) -> SchedulerService:
     """
     서버 시작 시 SchedulerService 초기화 (main.py에서 호출)
 
@@ -316,6 +327,6 @@ def init_scheduler_service(db: Session) -> SchedulerService:
         초기화된 SchedulerService 인스턴스
     """
     global scheduler_service
-    scheduler_service = SchedulerService()
+    scheduler_service = SchedulerService(runtime_policy=runtime_policy)
     scheduler_service.load_schedules_from_db(db)
     return scheduler_service

@@ -78,15 +78,9 @@ class DeploymentRuntimePolicy:
     allowed_types_by_surface: Mapping[str, FrozenSet[str]]
     surface_by_trigger_mode: Mapping[str, str]
 
-    @classmethod
-    def create(
-        cls,
-        *,
-        allowed_types_by_surface: Mapping[str, Iterable[str]],
-        surface_by_trigger_mode: Mapping[str, str],
-    ) -> "DeploymentRuntimePolicy":
+    def __post_init__(self) -> None:
         normalized_allowed: dict[str, FrozenSet[str]] = {}
-        for surface, deployment_types in allowed_types_by_surface.items():
+        for surface, deployment_types in self.allowed_types_by_surface.items():
             normalized_surface = _normalized_value(surface)
             if normalized_surface not in KNOWN_RUNTIME_SURFACES:
                 raise ValueError("deployment runtime policy surface is unknown")
@@ -97,11 +91,10 @@ class DeploymentRuntimePolicy:
                 if normalized_type not in KNOWN_DEPLOYMENT_TYPES:
                     raise ValueError("deployment runtime policy type is unknown")
                 normalized_type_values.add(normalized_type)
-            normalized_types = frozenset(normalized_type_values)
-            normalized_allowed[normalized_surface] = normalized_types
+            normalized_allowed[normalized_surface] = frozenset(normalized_type_values)
 
         normalized_triggers: dict[str, str] = {}
-        for trigger_mode, surface in surface_by_trigger_mode.items():
+        for trigger_mode, surface in self.surface_by_trigger_mode.items():
             normalized_trigger = _normalized_value(trigger_mode)
             normalized_surface = _normalized_value(surface)
             if normalized_trigger not in KNOWN_TRIGGER_MODES:
@@ -112,9 +105,27 @@ class DeploymentRuntimePolicy:
                 raise ValueError("deployment runtime trigger surface is not configured")
             normalized_triggers[normalized_trigger] = normalized_surface
 
+        object.__setattr__(
+            self,
+            "allowed_types_by_surface",
+            MappingProxyType(normalized_allowed),
+        )
+        object.__setattr__(
+            self,
+            "surface_by_trigger_mode",
+            MappingProxyType(normalized_triggers),
+        )
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        allowed_types_by_surface: Mapping[str, Iterable[str]],
+        surface_by_trigger_mode: Mapping[str, str],
+    ) -> "DeploymentRuntimePolicy":
         return cls(
-            allowed_types_by_surface=MappingProxyType(normalized_allowed),
-            surface_by_trigger_mode=MappingProxyType(normalized_triggers),
+            allowed_types_by_surface=allowed_types_by_surface,
+            surface_by_trigger_mode=surface_by_trigger_mode,
         )
 
     def with_surface_allowed_types(

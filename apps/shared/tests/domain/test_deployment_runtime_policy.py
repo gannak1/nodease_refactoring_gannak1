@@ -143,30 +143,37 @@ def test_runtime_policy_injection_rejects_unknown_contract_values(
         )
 
 
-def test_runtime_policy_evaluator_rejects_unknown_values_even_for_direct_policy():
+def test_runtime_policy_direct_constructor_rejects_unknown_values():
     policy_type = type(DEFAULT_DEPLOYMENT_RUNTIME_POLICY)
-    direct_policy = policy_type(
-        allowed_types_by_surface={
-            **DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface,
-            "future": frozenset({"future"}),
-        },
-        surface_by_trigger_mode={
-            **DEFAULT_DEPLOYMENT_RUNTIME_POLICY.surface_by_trigger_mode,
-            "future": "future",
-        },
-    )
+    with pytest.raises(ValueError, match="surface is unknown"):
+        policy_type(
+            allowed_types_by_surface={
+                **DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface,
+                "future": frozenset({"future"}),
+            },
+            surface_by_trigger_mode={
+                **DEFAULT_DEPLOYMENT_RUNTIME_POLICY.surface_by_trigger_mode,
+                "future": "future",
+            },
+        )
 
-    assert not is_deployment_type_allowed_for_surface(
-        "future",
-        SURFACE_PUBLIC_INFO,
-        policy=direct_policy,
+
+def test_runtime_policy_direct_constructor_defensively_freezes_mutable_inputs():
+    policy_type = type(DEFAULT_DEPLOYMENT_RUNTIME_POLICY)
+    allowed_types = {SURFACE_PUBLIC_INFO: {DEPLOYMENT_WEBAPP}}
+    trigger_surfaces = {"app": SURFACE_PUBLIC_INFO}
+
+    policy = policy_type(
+        allowed_types_by_surface=allowed_types,
+        surface_by_trigger_mode=trigger_surfaces,
     )
-    assert not is_deployment_type_allowed_for_surface(
-        DEPLOYMENT_API,
-        "future",
-        policy=direct_policy,
+    allowed_types[SURFACE_PUBLIC_INFO].add(DEPLOYMENT_CHATBOT)
+    trigger_surfaces["api"] = SURFACE_PUBLIC_INFO
+
+    assert policy.allowed_types_by_surface[SURFACE_PUBLIC_INFO] == frozenset(
+        {DEPLOYMENT_WEBAPP}
     )
-    assert trigger_mode_to_surface("future", policy=direct_policy) is None
+    assert policy.surface_by_trigger_mode == {"app": SURFACE_PUBLIC_INFO}
 
 
 def test_runtime_policy_can_be_replaced_by_explicit_immutable_injection():

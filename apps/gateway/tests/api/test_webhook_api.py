@@ -14,6 +14,10 @@ from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.session import get_db
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    SURFACE_WEBHOOK_RUN,
+)
 
 
 class _FakeRequest:
@@ -480,6 +484,7 @@ class TestWebhookApi(unittest.TestCase):
                         payload={"event": "after_cancel"},
                     ),
                     BackgroundTasks(),
+                    runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                     db=mock_db_session,
                 )
             )
@@ -522,6 +527,7 @@ class TestWebhookApi(unittest.TestCase):
                                     payload={"event": "must-not-dispatch"},
                                 ),
                                 background_tasks,
+                                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                                 db=mock_db_session,
                             )
                         )
@@ -547,11 +553,39 @@ class TestWebhookApi(unittest.TestCase):
                         payload={},
                     ),
                     BackgroundTasks(),
+                    runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                     db=mock_db_session,
                 )
             )
 
         self.assertEqual(exc.exception.status_code, 403)
+
+    def test_webhook_uses_injected_runtime_policy(self):
+        mock_db_session = self._mock_db_with_app(active_deployment=True)
+        background_tasks = BackgroundTasks()
+        injected_policy = (
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+                SURFACE_WEBHOOK_RUN,
+                set(),
+            )
+        )
+
+        with self.assertRaises(HTTPException) as exc:
+            asyncio.run(
+                webhook_endpoint.receive_webhook(
+                    self.url_slug,
+                    _FakeRequest(
+                        query_params={"token": self.auth_secret},
+                        payload={},
+                    ),
+                    background_tasks,
+                    runtime_policy=injected_policy,
+                    db=mock_db_session,
+                )
+            )
+
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(background_tasks.tasks, [])
 
 
 if __name__ == "__main__":

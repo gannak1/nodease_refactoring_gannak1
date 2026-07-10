@@ -12,8 +12,10 @@ from typing import Any, Dict
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
 from apps.shared.domain.deployment_runtime_policy import (
+    DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_trigger,
 )
+from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
@@ -88,8 +90,14 @@ class PermanentDeploymentExecutionError(ValueError):
 def _deployment_type_allowed_for_trigger(
     deployment_type: Any,
     trigger_mode: Any,
+    *,
+    runtime_policy: DeploymentRuntimePolicy,
 ) -> bool:
-    return is_deployment_type_allowed_for_trigger(deployment_type, trigger_mode)
+    return is_deployment_type_allowed_for_trigger(
+        deployment_type,
+        trigger_mode,
+        policy=runtime_policy,
+    )
 
 
 def _canonical_deployment_execution_context(
@@ -323,6 +331,7 @@ def execute_by_deployment(
         if not _deployment_type_allowed_for_trigger(
             deployment.type,
             queued_context.get("trigger_mode"),
+            runtime_policy=get_deployment_runtime_policy(),
         ):
             raise PermanentDeploymentExecutionError(
                 f"배포 타입과 실행 트리거가 일치하지 않습니다: {deployment_id}"

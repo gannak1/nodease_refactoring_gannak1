@@ -6,6 +6,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_WORKFLOW_NODE_CHILD_RUN,
     is_deployment_type_allowed_for_surface,
 )
+from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.node import Node
 
@@ -123,6 +124,7 @@ class WorkflowNode(Node[WorkflowNodeData]):
             if not deployment or not is_deployment_type_allowed_for_surface(
                 deployment.type,
                 SURFACE_WORKFLOW_NODE_CHILD_RUN,
+                policy=get_deployment_runtime_policy(),
             ):
                 raise WorkflowNodeConfigurationError(
                     f"[WorkflowNode] Active deployment not found for app {app.name}"

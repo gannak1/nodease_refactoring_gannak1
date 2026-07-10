@@ -24,6 +24,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_AUTHENTICATED_RUN,
     SURFACE_AUTHENTICATED_RUN_INFO,
     SURFACE_SCHEDULE_RUN,
+    DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
     is_deployment_type_allowed_for_trigger,
 )
@@ -36,8 +37,14 @@ logger = logging.getLogger(__name__)
 def _deployment_type_allowed_for_slug_trigger(
     deployment_type: DeploymentType,
     trigger_mode: str,
+    *,
+    runtime_policy: DeploymentRuntimePolicy,
 ) -> bool:
-    return is_deployment_type_allowed_for_trigger(deployment_type, trigger_mode)
+    return is_deployment_type_allowed_for_trigger(
+        deployment_type,
+        trigger_mode,
+        policy=runtime_policy,
+    )
 
 
 class DeploymentService:
@@ -45,7 +52,11 @@ class DeploymentService:
 
     @staticmethod
     def create_deployment(
-        db: Session, deployment_in: DeploymentCreate, user_id: uuid.UUID
+        db: Session,
+        deployment_in: DeploymentCreate,
+        user_id: uuid.UUID,
+        *,
+        runtime_policy: DeploymentRuntimePolicy,
     ) -> WorkflowDeployment:
         """
         워크플로우를 배포합니다.
@@ -159,6 +170,7 @@ class DeploymentService:
                 schedule = DeploymentService._ensure_schedule_record(
                     db,
                     db_obj,
+                    runtime_policy=runtime_policy,
                 )
                 if schedule:
                     # APScheduler에 등록
@@ -390,6 +402,7 @@ class DeploymentService:
         url_slug: str,
         user_inputs: Dict[str, Any],
         trigger_mode: str,
+        runtime_policy: DeploymentRuntimePolicy,
         auth_token: Optional[str] = None,
         require_auth: bool = True,  # 인증 필요 여부 (기본값: 필요)
     ) -> Dict[str, Any]:
@@ -438,6 +451,7 @@ class DeploymentService:
         if not _deployment_type_allowed_for_slug_trigger(
             deployment.type,
             trigger_mode,
+            runtime_policy=runtime_policy,
         ):
             raise HTTPException(status_code=404, detail="Deployment not found.")
 
@@ -471,6 +485,7 @@ class DeploymentService:
         deployment_id: uuid.UUID | str,
         user_inputs: Dict[str, Any],
         current_user_id: uuid.UUID | str,
+        runtime_policy: DeploymentRuntimePolicy,
         request_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -484,6 +499,7 @@ class DeploymentService:
             db,
             deployment_id,
             surface=SURFACE_AUTHENTICATED_RUN,
+            runtime_policy=runtime_policy,
         )
 
         return await DeploymentService._execute_deployment_snapshot(
@@ -502,11 +518,14 @@ class DeploymentService:
     def get_deployment_run_info(
         db: Session,
         deployment_id: uuid.UUID | str,
+        *,
+        runtime_policy: DeploymentRuntimePolicy,
     ) -> Dict[str, Any]:
         deployment, app = DeploymentService._get_active_deployment_and_app(
             db,
             deployment_id,
             surface=SURFACE_AUTHENTICATED_RUN_INFO,
+            runtime_policy=runtime_policy,
         )
         return {
             "deployment_id": deployment.id,
@@ -526,6 +545,7 @@ class DeploymentService:
         deployment_id: uuid.UUID | str,
         *,
         surface: str,
+        runtime_policy: DeploymentRuntimePolicy,
     ) -> tuple[WorkflowDeployment, App]:
         deployment = (
             db.query(WorkflowDeployment)
@@ -544,6 +564,7 @@ class DeploymentService:
         if not is_deployment_type_allowed_for_surface(
             deployment.type,
             surface,
+            policy=runtime_policy,
         ):
             raise HTTPException(status_code=404, detail="Deployment not found")
         return deployment, app
@@ -816,10 +837,13 @@ class DeploymentService:
     def _ensure_schedule_record(
         db: Session,
         deployment: WorkflowDeployment,
+        *,
+        runtime_policy: DeploymentRuntimePolicy,
     ) -> Schedule | None:
         if not is_deployment_type_allowed_for_surface(
             deployment.type,
             SURFACE_SCHEDULE_RUN,
+            policy=runtime_policy,
         ):
             return None
 
@@ -888,7 +912,11 @@ class DeploymentService:
 
     @staticmethod
     def toggle_deployment(
-        db: Session, deployment_id: uuid.UUID, scheduler_service=None
+        db: Session,
+        deployment_id: uuid.UUID,
+        scheduler_service=None,
+        *,
+        runtime_policy: DeploymentRuntimePolicy,
     ) -> WorkflowDeployment:
         """
         배포의 is_active 상태를 토글합니다.
@@ -952,6 +980,7 @@ class DeploymentService:
         if not is_deployment_type_allowed_for_surface(
             deployment.type,
             SURFACE_SCHEDULE_RUN,
+            policy=runtime_policy,
         ):
             if schedule:
                 if scheduler_service:
@@ -959,7 +988,11 @@ class DeploymentService:
                 db.delete(schedule)
             schedule = None
         elif deployment.is_active and not schedule:
-            schedule = DeploymentService._ensure_schedule_record(db, deployment)
+            schedule = DeploymentService._ensure_schedule_record(
+                db,
+                deployment,
+                runtime_policy=runtime_policy,
+            )
 
         if schedule and scheduler_service:
             if deployment.is_active:

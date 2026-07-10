@@ -18,6 +18,9 @@ from sqlalchemy.sql.operators import eq
 
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+)
 
 
 # --- 실행 헬퍼 ---------------------------------------------------------------
@@ -37,6 +40,7 @@ def _run_public(db, url_slug, user_inputs, monkeypatch, trigger_mode="app"):
             url_slug=url_slug,
             user_inputs=user_inputs,
             trigger_mode=trigger_mode,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             auth_token=None,
             require_auth=False,
         )
@@ -57,6 +61,7 @@ def _run_api_secret(db, url_slug, user_inputs, monkeypatch):
             url_slug=url_slug,
             user_inputs=user_inputs,
             trigger_mode="api",
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             auth_token="deploy-secret",
             require_auth=True,
         )
@@ -87,6 +92,7 @@ def _run_authenticated(
             deployment_id=deployment_id,
             user_inputs=user_inputs,
             current_user_id=user_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
     )
     return celery, result
@@ -315,10 +321,10 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
     monkeypatch.setattr(
         deployment_module,
         "is_deployment_type_allowed_for_surface",
-        lambda deployment_type, surface: evaluated_surfaces.append(
+        lambda deployment_type, surface, *, policy: evaluated_surfaces.append(
             (deployment_type, surface)
         )
-        or evaluate_surface(deployment_type, surface),
+        or evaluate_surface(deployment_type, surface, policy=policy),
     )
 
     celery, result = _run_authenticated(
@@ -416,6 +422,7 @@ def test_deployment_run_info_excludes_secret_and_graph_snapshot():
     result = deployment_module.DeploymentService.get_deployment_run_info(
         db,
         deployment_row.id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
     assert result["deployment_id"] == deployment_row.id
@@ -433,8 +440,8 @@ def test_deployment_run_info_uses_dedicated_runtime_surface(monkeypatch):
     db = _Db(rows=[app_row, deployment_row])
     evaluated = []
 
-    def capture_surface(deployment_type, surface):
-        evaluated.append((deployment_type, surface))
+    def capture_surface(deployment_type, surface, *, policy):
+        evaluated.append((deployment_type, surface, policy))
         return True
 
     monkeypatch.setattr(
@@ -446,10 +453,15 @@ def test_deployment_run_info_uses_dedicated_runtime_surface(monkeypatch):
     deployment_module.DeploymentService.get_deployment_run_info(
         db,
         deployment_row.id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
     assert evaluated == [
-        (deployment_row.type, deployment_module.SURFACE_AUTHENTICATED_RUN_INFO)
+        (
+            deployment_row.type,
+            deployment_module.SURFACE_AUTHENTICATED_RUN_INFO,
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
     ]
 
 
@@ -463,6 +475,7 @@ def test_deployment_run_info_rejects_workflow_node_deployment():
         deployment_module.DeploymentService.get_deployment_run_info(
             db,
             deployment_row.id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
     assert exc_info.value.status_code == 404

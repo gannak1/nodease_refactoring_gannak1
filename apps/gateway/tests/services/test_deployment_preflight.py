@@ -19,6 +19,9 @@ from apps.shared.db.models.knowledge import (
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+)
 from apps.shared.schemas.deployment import DeploymentCreate
 
 
@@ -539,7 +542,8 @@ def test_create_preserves_preflight_http_exception(monkeypatch):
                 graph_snapshot={"nodes": [], "edges": []},
                 is_active=True,
             ),
-            user_id=app.created_by,
+                user_id=app.created_by,
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
     assert exc_info.value.status_code == 409
@@ -594,6 +598,7 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
             is_active=False,
         ),
         user_id=app.created_by,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
     assert deployment.is_active is False
@@ -654,6 +659,7 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
             is_active=True,
         ),
         user_id=app.created_by,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
     assert deployment.is_active is True
@@ -698,7 +704,12 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
         lambda *a, **k: None,
     )
 
-    DeploymentService.toggle_deployment(db, deployment_id, scheduler)
+    DeploymentService.toggle_deployment(
+        db,
+        deployment_id,
+        scheduler,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    )
 
     assert deployment.is_active is True
     assert app.active_deployment_id == deployment_id

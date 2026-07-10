@@ -6,6 +6,10 @@ import pytest
 
 from apps.workflow_engine import tasks
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    SURFACE_WEBHOOK_RUN,
+)
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
@@ -457,6 +461,28 @@ def test_execute_by_deployment_rejects_trigger_type_mismatch():
             str(deployment.id),
             {},
             {"trigger_mode": "schedule"},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_uses_worker_runtime_policy_provider(monkeypatch):
+    deployment, _app, trigger_mode = _active_deployment_pair()
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_WEBHOOK_RUN,
+        set(),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "get_deployment_runtime_policy",
+        lambda: injected_policy,
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
         )
 
     assert FakeWorkflowEngine.calls == []

@@ -130,6 +130,10 @@ def _record_deployment_toggle_audit(
 @audit(AuditAction.WORKFLOW_DEPLOY)
 def create_deployment(
     deployment_in: DeploymentCreate,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -141,7 +145,12 @@ def create_deployment(
     if not app or not app.workflow_id:
         raise HTTPException(status_code=404, detail="App not found")
     ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
-    return DeploymentService.create_deployment(db, deployment_in, current_user.id)
+    return DeploymentService.create_deployment(
+        db,
+        deployment_in,
+        current_user.id,
+        runtime_policy=runtime_policy,
+    )
 
 
 @router.post("/preflight", response_model=DeploymentPreflightResponse)
@@ -236,6 +245,10 @@ def list_workflow_nodes(
 def get_authenticated_deployment_run_info(
     deployment_id: str,
     request: Request,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -252,13 +265,21 @@ def get_authenticated_deployment_run_info(
         x_organization_id,
     )
     ensure_workflow_permission(db, current_user, workflow_id, "execute")
-    return DeploymentService.get_deployment_run_info(db, deployment_id)
+    return DeploymentService.get_deployment_run_info(
+        db,
+        deployment_id,
+        runtime_policy=runtime_policy,
+    )
 
 
 @router.post("/{deployment_id}/run")
 async def run_authenticated_deployment(
     deployment_id: str,
     request: Request,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     request_body: dict[str, Any] | None = Body(default=None),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
@@ -287,6 +308,7 @@ async def run_authenticated_deployment(
         deployment_id=deployment_id,
         user_inputs=inputs,
         current_user_id=current_user.id,
+        runtime_policy=runtime_policy,
         request_id=_request_id_from_request(request),
         correlation_id=request.headers.get("x-correlation-id"),
     )
@@ -381,6 +403,10 @@ def get_deployment_info_public(
 @router.patch("/{deployment_id}/toggle", response_model=DeploymentResponse)
 def toggle_deployment(
     deployment_id: str,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -396,7 +422,12 @@ def toggle_deployment(
     token = set_current_actor(actor)
     try:
         scheduler = get_scheduler_service()
-        result = DeploymentService.toggle_deployment(db, deployment_id, scheduler)
+        result = DeploymentService.toggle_deployment(
+            db,
+            deployment_id,
+            scheduler,
+            runtime_policy=runtime_policy,
+        )
     except Exception as e:
         _record_deployment_toggle_audit(
             audit_action,

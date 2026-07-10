@@ -463,6 +463,7 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
         deployment_endpoint.run_authenticated_deployment(
             deployment_id=str(deployment.id),
             request=SimpleNamespace(headers={"x-request-id": "req-1"}),
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
             db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
             current_user=current_user,
@@ -521,6 +522,7 @@ def test_run_authenticated_deployment_forwards_middleware_request_id(
                 headers={},
                 state=SimpleNamespace(request_id="middleware-req-1"),
             ),
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
             db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
             current_user=current_user,
@@ -557,7 +559,7 @@ def test_get_authenticated_deployment_run_info_authorizes_execute(monkeypatch):
     monkeypatch.setattr(
         deployment_endpoint.DeploymentService,
         "get_deployment_run_info",
-        lambda db, deployment_id: {
+        lambda db, deployment_id, **_kwargs: {
             "deployment_id": deployment_id,
             "name": "safe run info",
             "input_schema": {"variables": []},
@@ -567,6 +569,7 @@ def test_get_authenticated_deployment_run_info_authorizes_execute(monkeypatch):
     result = deployment_endpoint.get_authenticated_deployment_run_info(
         deployment_id=str(deployment.id),
         request=SimpleNamespace(headers={}),
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
         current_user=current_user,
     )
@@ -603,6 +606,7 @@ def test_run_authenticated_deployment_rejects_non_object_inputs(monkeypatch):
             deployment_endpoint.run_authenticated_deployment(
                 deployment_id=str(deployment.id),
                 request=SimpleNamespace(headers={}),
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 request_body={"inputs": "not-an-object"},
                 db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
                 current_user=SimpleNamespace(id=uuid.uuid4()),
@@ -652,6 +656,7 @@ def test_run_authenticated_deployment_masks_active_organization_mismatch(
             deployment_endpoint.run_authenticated_deployment(
                 deployment_id=str(deployment.id),
                 request=SimpleNamespace(headers={}),
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 request_body={"inputs": {}},
                 x_organization_id=str(active_organization_id),
                 db=FakeModelDb({WorkflowDeployment: deployment, App: app}),

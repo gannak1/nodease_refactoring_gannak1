@@ -23,6 +23,9 @@ from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+)
 
 
 def _exceeded_db(workflow_id, organization_id):
@@ -438,6 +441,7 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
                 app_row.url_slug,
                 Request(scope, receive),
                 background_tasks,
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 db=db,
             )
         )
@@ -503,6 +507,7 @@ def test_webhook_rejects_non_webhook_deployment_before_budget_or_dispatch():
                 app_row.url_slug,
                 Request(scope, receive),
                 background_tasks,
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 db=db,
             )
         )
