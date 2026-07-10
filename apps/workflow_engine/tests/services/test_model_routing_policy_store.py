@@ -31,6 +31,7 @@ def test_record_completed_run_counts_only_successful_llm_node_runs():
         workflow_id=uuid4(),
         deployment_id=uuid4(),
         trigger_mode="webhook",
+        status="success",
     )
     deployment = SimpleNamespace(
         graph_snapshot={
@@ -89,6 +90,7 @@ def test_record_completed_run_ignores_deployment_snapshot_without_auto_routing()
         workflow_id=uuid4(),
         deployment_id=uuid4(),
         trigger_mode="api",
+        status="success",
     )
     deployment = SimpleNamespace(
         graph_snapshot={

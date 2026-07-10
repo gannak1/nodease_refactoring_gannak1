@@ -44,7 +44,13 @@ def _candidate(model_id: str, price: float) -> ModelCandidate:
     )
 
 
-def _request(current_policy=None, *, include_candidate_quality=True, recent_runs=None):
+def _request(
+    current_policy=None,
+    *,
+    include_candidate_quality=True,
+    recent_runs=None,
+    segment_profiles=None,
+):
     default_recent_runs = [
         {
             "model_id": "gpt-4.1",
@@ -79,6 +85,34 @@ def _request(current_policy=None, *, include_candidate_quality=True, recent_runs
                 "avg_cost": 0.01,
             }
         )
+    default_segment_profiles = [
+        {
+            "conditions": {"output_format": "json", "input_length_bucket": "short"},
+            "model_performance": {
+                "gpt-4o-mini": {
+                    "run_count": 10,
+                    "success_rate": 1.0,
+                    "schema_pass_rate": 1.0,
+                    "downstream_success_rate": 1.0,
+                    "fallback_rate": 0.0,
+                    "avg_cost": 0.001,
+                }
+            },
+        },
+        {
+            "conditions": {"output_format": "json"},
+            "model_performance": {
+                "gpt-4o-mini": {
+                    "run_count": 10,
+                    "success_rate": 1.0,
+                    "schema_pass_rate": 1.0,
+                    "downstream_success_rate": 1.0,
+                    "fallback_rate": 0.0,
+                    "avg_cost": 0.001,
+                }
+            },
+        },
+    ]
     return ModelRoutingPolicyRefreshRequest(
         workflow_id="workflow-1",
         node_id="llm-1",
@@ -92,6 +126,19 @@ def _request(current_policy=None, *, include_candidate_quality=True, recent_runs
         ],
         judge_model_id="gpt-4.1-mini",
         recent_runs=recent_runs if recent_runs is not None else default_recent_runs,
+        segment_profiles=(
+            segment_profiles if segment_profiles is not None else default_segment_profiles
+        ),
+    )
+
+
+def _preserved_policy(*, refresh_every_runs=20):
+    return ModelRoutingPolicyRefreshService.default_rule_policy(
+        policy_id="policy-1",
+        policy_version="bootstrap-preserve-config-v1",
+        default_model_id="gpt-4.1-mini",
+        fallback_model_id="gpt-4.1",
+        refresh_every_runs=refresh_every_runs,
     )
 
 
@@ -108,31 +155,63 @@ def test_policy_refresh_request_requires_explicit_judge_model():
         )
 
 
-def test_default_rule_policy_avoids_nano_for_short_json_schema_rule():
-    """짧은 JSON 출력 rule은 최저가 nano보다 안정적인 텍스트 출력 모델을 선택한다."""
+def test_bootstrap_policy_preserves_the_configured_models_without_rules():
+    """운영 품질 근거가 없는 bootstrap은 가격으로 모델 등급을 만들지 않는다."""
     policy = ModelRoutingPolicyRefreshService.default_rule_policy(
         policy_id="policy-1",
-        policy_version="router-policy-v1",
-        candidate_models=[
-            _candidate("gpt-5-nano", 0.00045),
-            _candidate("gpt-4o-mini", 0.00075),
-            _candidate("gpt-4.1-mini", 0.002),
-            _candidate("gpt-4.1", 0.01),
-        ],
+        policy_version="bootstrap-preserve-config-v1",
+        default_model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
     )
 
-    rules_by_id = {
-        rule["id"]: rule for rule in policy["active_policy"]["rules"]
+    assert policy["active_policy"] == {
+        "default_model_id": "gpt-4.1",
+        "fallback_model_id": "gpt-4.1-mini",
+        "rules": [],
     }
 
-    assert (
-        rules_by_id["short-json-no-knowledge"]["selected_model_id"]
-        == "gpt-4o-mini"
+
+def test_policy_refresh_sends_segmented_evidence_and_rejects_keyword_rules_without_evidence():
+    request = _request()
+    request = ModelRoutingPolicyRefreshRequest(
+        **{
+            **request.__dict__,
+            "segment_profiles": [
+                {
+                    "conditions": {"output_format": "json", "input_length_bucket": "short"},
+                    "model_performance": {
+                        "gpt-4o-mini": {
+                            "run_count": 10,
+                            "success_rate": 1.0,
+                            "schema_pass_rate": 1.0,
+                            "downstream_success_rate": 1.0,
+                            "fallback_rate": 0.0,
+                            "avg_cost": 0.001,
+                        }
+                    },
+                }
+            ],
+        }
     )
-    assert (
-        rules_by_id["short-json-no-knowledge"]["fallback_model_id"]
-        == "gpt-4.1-mini"
+
+    messages = ModelRoutingPolicyRefreshService._build_messages(  # noqa: SLF001
+        request,
+        ModelRoutingPolicyRefreshService._sanitize_candidates(request.candidate_models),  # noqa: SLF001
     )
+    payload = json.loads(messages[1]["content"])
+    assert payload["segment_profiles"][0]["conditions"]["output_format"] == "json"
+
+    rules = ModelRoutingPolicyRefreshService._sanitize_rules(  # noqa: SLF001
+        [
+            {
+                "id": "unsupported-keyword-rule",
+                "when": {"keyword_any": ["SLA"]},
+                "selected_model_id": "gpt-4o-mini",
+            }
+        ],
+        {"gpt-4o-mini"},
+    )
+    assert rules == []
 
 
 def test_policy_refresh_accepts_judge_generated_rule_set():
@@ -176,8 +255,7 @@ def test_policy_refresh_accepts_judge_generated_rule_set():
     assert result.status == "applied"
     assert result.policy["active_policy"]["default_model_id"] == "gpt-4.1-mini"
     assert [rule["id"] for rule in result.policy["active_policy"]["rules"]] == [
-        "simple",
-        "high",
+        "simple"
     ]
     assert result.judge_usage["total_tokens"] == 150
     assert result.metadata["prompt_version"] == "model-routing-policy-judge-v1"
@@ -186,15 +264,7 @@ def test_policy_refresh_accepts_judge_generated_rule_set():
 
 def test_policy_refresh_keeps_existing_policy_when_judge_returns_unusable_model():
     """judge가 후보 밖 모델만 반환하면 pending_review로 남기고 기존 정책을 유지한다."""
-    current_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
-        policy_id="policy-1",
-        policy_version="router-policy-v1",
-        candidate_models=[
-            _candidate("gpt-4o-mini", 0.001),
-            _candidate("gpt-4.1-mini", 0.01),
-            _candidate("gpt-4.1", 0.1),
-        ],
-    )
+    current_policy = _preserved_policy()
     judge = _JudgeClient(
         {
             "status": "applied",
@@ -222,16 +292,7 @@ def test_policy_refresh_keeps_existing_policy_when_judge_returns_unusable_model(
 
 def test_policy_refresh_preserves_user_configured_refresh_every_runs():
     """사용자가 LLM 노드에서 정한 judge policy refresh 빈도는 갱신 후에도 유지된다."""
-    current_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
-        policy_id="policy-1",
-        policy_version="router-policy-v1",
-        candidate_models=[
-            _candidate("gpt-4o-mini", 0.001),
-            _candidate("gpt-4.1-mini", 0.01),
-            _candidate("gpt-4.1", 0.1),
-        ],
-        refresh_every_runs=45,
-    )
+    current_policy = _preserved_policy(refresh_every_runs=45)
     judge = _JudgeClient(
         {
             "status": "applied",
@@ -263,15 +324,7 @@ def test_policy_refresh_preserves_user_configured_refresh_every_runs():
 
 def test_policy_refresh_rejects_unknown_condition_keys():
     """judge가 허용되지 않은 when key를 반환하면 rule을 저장하지 않는다."""
-    current_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
-        policy_id="policy-1",
-        policy_version="router-policy-v1",
-        candidate_models=[
-            _candidate("gpt-4o-mini", 0.001),
-            _candidate("gpt-4.1-mini", 0.01),
-            _candidate("gpt-4.1", 0.1),
-        ],
-    )
+    current_policy = _preserved_policy()
     judge = _JudgeClient(
         {
             "status": "applied",
@@ -352,15 +405,7 @@ def test_policy_refresh_keeps_current_when_new_model_has_no_quality_evidence():
 
 def test_policy_refresh_rejects_unverified_model_promoted_from_bootstrap_rule():
     """bootstrap rule에 있던 모델도 새 default로 승격되면 별도 운영 품질 근거가 필요하다."""
-    current_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
-        policy_id="policy-1",
-        policy_version="router-policy-v1",
-        candidate_models=[
-            _candidate("gpt-4o-mini", 0.001),
-            _candidate("gpt-4.1-mini", 0.01),
-            _candidate("gpt-4.1", 0.1),
-        ],
-    )
+    current_policy = _preserved_policy()
     judge = _JudgeClient(
         {
             "status": "applied",

@@ -24,12 +24,14 @@ class _ProfileQuery:
     def __init__(self, rows):
         self.rows = rows
         self.filters = []
+        self.outerjoins = []
         self.limit_value = None
 
     def join(self, *args, **kwargs):
         return self
 
     def outerjoin(self, *args, **kwargs):
+        self.outerjoins.append(args)
         return self
 
     def filter(self, *criteria):
@@ -345,8 +347,8 @@ def test_optimized_promotes_when_recent_lower_cost_candidate_regresses():
     assert "품질 gate" in decision.reason
 
 
-def test_collect_profile_counts_only_deployed_operational_llm_usage_rows():
-    """라우터 프로필은 배포 후 운영 실행의 LLM usage와 node run만 usable run으로 본다."""
+def test_collect_profile_reads_canonical_llm_trace_and_keeps_failed_model_runs():
+    """라우터 profile은 canonical llm trace를 읽고 usage 없는 실패도 품질 표본에 남긴다."""
     workflow_id = uuid4()
     now = datetime.now(timezone.utc)
     successful_node_run = SimpleNamespace(
@@ -357,19 +359,31 @@ def test_collect_profile_counts_only_deployed_operational_llm_usage_rows():
         started_at=now,
         retry_count=0,
         trace_metadata={
-            "schema_status": "passed",
-            "downstream_status": "compatible",
-            "llm": {"fallback_used": False},
+            "llm": {
+                "selected_model": "gpt-4.1-mini",
+                "schema_status": "passed",
+                "downstream_status": "compatible",
+                "fallback_used": False,
+                "output_format": "json",
+            },
         },
     )
-    missing_usage_node_run = SimpleNamespace(
+    failed_node_run = SimpleNamespace(
         node_id="llm-triage",
         node_type="llmNode",
-        status="success",
-        outputs={"text": "not counted"},
+        status="failed",
+        outputs=None,
         started_at=now,
         retry_count=0,
-        trace_metadata={},
+        trace_metadata={
+            "llm": {
+                "selected_model": "gpt-4.1-mini",
+                "schema_status": "failed",
+                "downstream_status": "failed",
+                "fallback_used": False,
+                "output_format": "json",
+            },
+        },
     )
     workflow_run = SimpleNamespace(id=uuid4())
     usage = SimpleNamespace(
@@ -384,7 +398,7 @@ def test_collect_profile_counts_only_deployed_operational_llm_usage_rows():
     db = _ProfileSession(
         [
             (successful_node_run, workflow_run, usage, model),
-            (missing_usage_node_run, workflow_run, None, None),
+            (failed_node_run, workflow_run, None, None),
         ]
     )
 
@@ -401,22 +415,28 @@ def test_collect_profile_counts_only_deployed_operational_llm_usage_rows():
     assert "workflow_runs.deployment_id IS NOT NULL" in filter_sql
     assert "workflow_runs.trigger_mode IN" in filter_sql
     assert "workflow_node_runs.node_id = :node_id_1" in filter_sql
+    assert "workflow_node_runs.status IN" in filter_sql
+    usage_join_condition = db.query_obj.outerjoins[0][1]
+    assert "llm_usage_logs.cost_optimizer_candidate_id IS NULL" in str(
+        usage_join_condition
+    )
     assert db.query_obj.limit_value == 200
-    assert profile.operational_usable_runs == 1
-    assert profile.model_performance["gpt-4.1-mini"].run_count == 1
+    assert profile.operational_usable_runs == 2
+    assert profile.model_performance["gpt-4.1-mini"].run_count == 2
+    assert profile.model_performance["gpt-4.1-mini"].success_count == 1
     assert profile.model_performance["gpt-4.1-mini"].schema_pass_count == 1
     assert profile.model_performance["gpt-4.1-mini"].downstream_success_count == 1
     assert profile.model_performance["gpt-4.1-mini"].total_tokens == 150
     assert profile.model_performance["gpt-4.1-mini"].as_summary() == {
-        "run_count": 1,
-        "success_rate": 1.0,
-        "schema_pass_rate": 1.0,
-        "downstream_success_rate": 1.0,
+        "run_count": 2,
+        "success_rate": 0.5,
+        "schema_pass_rate": 0.5,
+        "downstream_success_rate": 0.5,
         "fallback_rate": 0.0,
         "retry_count": 0,
-        "avg_cost": 0.004,
-        "avg_total_tokens": 150.0,
-        "avg_latency_ms": 1300.0,
+        "avg_cost": 0.002,
+        "avg_total_tokens": 75.0,
+        "avg_latency_ms": 650.0,
     }
 
 
@@ -833,6 +853,35 @@ def test_runtime_policy_evaluator_falls_back_to_default_when_rule_model_unavaila
     assert decision.fallback_model_id == "gpt-4.1"
     assert decision.matched_rule_id is None
     assert decision.reason_code == "policy_default"
+
+
+def test_runtime_policy_never_returns_a_model_outside_currently_usable_models():
+    policy = {
+        "active_policy": {
+            "default_model_id": "gpt-4.1",
+            "fallback_model_id": "gpt-4.1-mini",
+            "rules": [],
+        }
+    }
+    node_data = SimpleNamespace(
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
+        knowledgeBases=[],
+        output_format={"type": "text"},
+        system_prompt="",
+        user_prompt="",
+        assistant_prompt="",
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "권한이 변경된 credential 테스트"},
+        node_data=node_data,
+        available_model_ids=["gpt-4.1-mini"],
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.fallback_model_id is None
 
 
 def test_runtime_context_does_not_classify_domain_keywords_by_itself():

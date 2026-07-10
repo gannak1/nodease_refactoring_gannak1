@@ -20,8 +20,14 @@ class ModelRoutingPolicyLifecycleService:
     def is_eligible_operational_run(run: Any) -> bool:
         deployment_id = getattr(run, "deployment_id", None)
         trigger_mode = getattr(run, "trigger_mode", None)
+        status = getattr(run, "status", None)
         normalized_trigger = str(getattr(trigger_mode, "value", trigger_mode) or "").lower()
-        return bool(deployment_id) and normalized_trigger in OPERATIONAL_TRIGGER_MODES
+        normalized_status = str(getattr(status, "value", status) or "").lower()
+        return (
+            bool(deployment_id)
+            and normalized_trigger in OPERATIONAL_TRIGGER_MODES
+            and normalized_status in {"success", "failed"}
+        )
 
     @staticmethod
     def apply_run_event(policy: Any, *, event_was_created: bool) -> PolicyRunEventOutcome:

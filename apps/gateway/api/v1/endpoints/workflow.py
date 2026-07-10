@@ -535,10 +535,26 @@ def _default_cost_optimizer_model_routing_policy(
     if not candidate_models:
         raise HTTPException(status_code=422, detail="cost_optimizer.model_unavailable")
 
+    available_model_ids = {model.model_id for model in candidate_models}
+    requested_model_id = str(candidate.model_id or "").strip()
+    default_model_id = (
+        requested_model_id
+        if requested_model_id in available_model_ids
+        else candidate_models[0].model_id
+    )
+    requested_fallback_id = str(candidate.fallback_model_id or "").strip()
+    fallback_model_id = (
+        requested_fallback_id
+        if requested_fallback_id in available_model_ids
+        and requested_fallback_id != default_model_id
+        else None
+    )
+
     return ModelRoutingPolicyRefreshService.default_rule_policy(
         policy_id="cost-optimizer-cold-start-default",
         policy_version="gateway-cold-start-v1",
-        candidate_models=candidate_models,
+        default_model_id=default_model_id,
+        fallback_model_id=fallback_model_id,
         refresh_every_runs=_candidate_refresh_every_runs(candidate),
     )
 
@@ -568,6 +584,11 @@ def _materialize_cost_optimizer_candidate_model_routing_policy(
         existing_policy,
         default_policy,
     )
+    active_policy = default_policy["active_policy"]
+    if not str(candidate_data.get("model_id") or "").strip():
+        candidate_data["model_id"] = active_policy["default_model_id"]
+    if not str(candidate_data.get("fallback_model_id") or "").strip():
+        candidate_data["fallback_model_id"] = active_policy.get("fallback_model_id")
     return CostOptimizerCandidateRequest(**candidate_data)
 
 

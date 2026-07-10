@@ -30,16 +30,8 @@ class _JudgeClient:
                                 "fallback_model_id": "gpt-4.1",
                                 "rules": [
                                     {
-                                        "id": "sla-risk-high",
-                                        "priority": 10,
-                                        "when": {"keyword_any": ["SLA", "보상"]},
-                                        "selected_model_id": "gpt-4.1",
-                                        "fallback_model_id": None,
-                                        "reason_code": "risk_keyword_uses_strong_model",
-                                    },
-                                    {
                                         "id": "short-json-low-cost",
-                                        "priority": 20,
+                                        "priority": 10,
                                         "when": {
                                             "output_format": "json",
                                             "input_length_bucket": "short",
@@ -47,14 +39,6 @@ class _JudgeClient:
                                         "selected_model_id": "gpt-4o-mini",
                                         "fallback_model_id": "gpt-4.1-mini",
                                         "reason_code": "short_structured_input_uses_low_cost_model",
-                                    },
-                                    {
-                                        "id": "customer-facing-balanced",
-                                        "priority": 30,
-                                        "when": {"customer_facing": True},
-                                        "selected_model_id": "gpt-4.1-mini",
-                                        "fallback_model_id": "gpt-4.1",
-                                        "reason_code": "customer_facing_uses_balanced_model",
                                     },
                                 ],
                             }
@@ -100,12 +84,13 @@ def test_policy_refresh_e2e_runs_every_20_runs_and_runtime_uses_saved_rules():
     policy = ModelRoutingPolicyRefreshService.default_rule_policy(
         policy_id=str(uuid4()),
         policy_version="bootstrap-v1",
-        candidate_models=candidates,
+        default_model_id="gpt-4.1",
+        fallback_model_id=None,
         refresh_every_runs=20,
     )
     lifecycle_state = SimpleNamespace(
         enabled=True,
-        status="active",
+        status=policy["status"],
         eligible_runs_since_last_refresh=0,
         refresh_every_runs=20,
         refresh_requested_at=None,
@@ -128,6 +113,25 @@ def test_policy_refresh_e2e_runs_every_20_runs_and_runtime_uses_saved_rules():
             "avg_cost": candidate.price_score,
         }
         for candidate in candidates
+    ]
+    segment_profiles = [
+        {
+            "conditions": {
+                "output_format": "json",
+                "input_length_bucket": "short",
+            },
+            "model_performance": {
+                "gpt-4o-mini": {
+                    "run_count": 10,
+                    "success_rate": 1.0,
+                    "schema_pass_rate": 1.0,
+                    "downstream_success_rate": 1.0,
+                    "fallback_rate": 0.0,
+                    "avg_cost": 0.001,
+                    "avg_latency_ms": 300,
+                }
+            },
+        }
     ]
 
     for index in range(1, 62):
@@ -162,6 +166,7 @@ def test_policy_refresh_e2e_runs_every_20_runs_and_runtime_uses_saved_rules():
                 current_policy=policy,
                 candidate_models=candidates,
                 recent_runs=recent_runs,
+                segment_profiles=segment_profiles,
                 node_summary={"output_format": "json", "schema_required": True},
                 trigger=f"auto_{index}_runs",
                 judge_model_id="gpt-4.1-mini",
@@ -181,15 +186,10 @@ def test_policy_refresh_e2e_runs_every_20_runs_and_runtime_uses_saved_rules():
 
     assert refresh_points == [20, 40, 60]
     assert judge.calls == 3
-    assert all(selected == "gpt-4.1-mini" for index, _, selected in decisions if index <= 20)
-    assert all(
-        selected == "gpt-4.1"
-        for index, message, selected in decisions
-        if index > 20 and "SLA" in message
-    )
+    assert all(selected == "gpt-4.1" for index, _, selected in decisions if index <= 20)
     assert all(
         selected == "gpt-4o-mini"
-        for index, message, selected in decisions
-        if index > 20 and "SLA" not in message
+        for index, _, selected in decisions
+        if index > 20
     )
     assert lifecycle_state.policy_version == "bootstrap-v4"

@@ -745,14 +745,14 @@ class TestModelRoutingPolicyApi:
         assert (
             node_data["model_routing_policy"]["refresh"]["refresh_every_runs"] == 20
         )
-        assert node_data["model_routing_policy"]["status"] == "active"
+        assert node_data["model_routing_policy"]["status"] == "collecting"
         assert (
             node_data["model_routing_policy"]["policy_version"]
             == "gateway-cold-start-v1"
         )
         assert (
             node_data["model_routing_policy"]["active_policy"]["default_model_id"]
-            == "gpt-5-mini"
+            == "gpt-4.1-mini"
         )
         assert (
             node_data["model_routing_policy"]["active_policy"]["fallback_model_id"]
@@ -1505,21 +1505,11 @@ class TestCostOptimizerCompareApi:
             node for node in sent_graph["nodes"] if node["id"] == "llm-triage"
         )
         policy = sent_llm_node["data"]["model_routing_policy"]
-        assert policy["status"] == "active"
+        assert policy["status"] == "collecting"
         assert policy["policy_version"] == "gateway-cold-start-v1"
-        assert policy["active_policy"]["default_model_id"] == "gpt-5-mini"
-        assert policy["active_policy"]["fallback_model_id"] == "gpt-4.1"
-        rules_by_id = {
-            rule["id"]: rule for rule in policy["active_policy"]["rules"]
-        }
-        assert (
-            rules_by_id["short-json-no-knowledge"]["selected_model_id"]
-            == "gpt-4.1-mini"
-        )
-        assert (
-            rules_by_id["short-json-no-knowledge"]["reason_code"]
-            == "short_structured_input_uses_low_cost_model"
-        )
+        assert policy["active_policy"]["default_model_id"] == "gpt-4.1-mini"
+        assert policy["active_policy"]["fallback_model_id"] is None
+        assert policy["active_policy"]["rules"] == []
 
     def test_fr3_compare_rejects_unusable_knowledge_base_before_running_task(self):
         workflow_id = uuid4()

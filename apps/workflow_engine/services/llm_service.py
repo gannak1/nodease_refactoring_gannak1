@@ -763,6 +763,51 @@ class LLMService:
         )
 
     @staticmethod
+    def get_runtime_available_model_ids_for_user(
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+    ) -> list[str]:
+        """현재 실행 주체가 실제 runtime에서 사용할 수 있는 chat model id를 반환한다.
+
+        정책 row에 남은 과거 모델이 credential 권한 변경 뒤에도 선택되지 않도록,
+        client 생성과 같은 credential/use permission 기준을 적용한다.
+        """
+        organization_uuid = LLMService._require_runtime_organization_id(organization_id)
+        rows = (
+            db.query(LLMModel, LLMCredential)
+            .join(
+                LLMRelCredentialModel,
+                LLMRelCredentialModel.model_id == LLMModel.id,
+            )
+            .join(
+                LLMCredential,
+                LLMCredential.id == LLMRelCredentialModel.credential_id,
+            )
+            .filter(
+                LLMModel.is_active == True,
+                LLMModel.type == "chat",
+                LLMCredential.organization_id == organization_uuid,
+                LLMCredential.is_valid == True,
+                LLMRelCredentialModel.is_verified == True,
+            )
+            .all()
+        )
+        model_ids = {
+            str(model.model_id_for_api_call)
+            for model, credential in rows
+            if has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            )
+        }
+        return sorted(model_ids)
+
+    @staticmethod
     def get_client_with_any_credential(db: Session, model_id: Optional[str] = None):
         """
         [DEPRECATED] 안전성 문제로 비활성화되었습니다.

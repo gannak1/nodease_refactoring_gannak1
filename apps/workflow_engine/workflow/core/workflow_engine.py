@@ -684,6 +684,10 @@ class WorkflowEngine:
 
         if node_type == "llmNode":
             usage = result_dict.get("usage") or {}
+            result_metadata = result_dict.get("metadata") or {}
+            result_metadata = (
+                result_metadata if isinstance(result_metadata, dict) else {}
+            )
             llm_metadata = dict(metadata.get("llm") or {})
             # LLM 메타데이터는 비용/모델 식별용 요약만 담고 프롬프트/완성 원문은 페이로드로 분리합니다.
             llm_metadata.update(
@@ -700,11 +704,58 @@ class WorkflowEngine:
                     "retry_count": 0,
                 }
             )
+            routing_metadata = result_metadata.get("model_routing")
+            routing_metadata = (
+                routing_metadata if isinstance(routing_metadata, dict) else {}
+            )
+            routing_context = routing_metadata.get("runtime_context")
+            if not isinstance(routing_context, dict):
+                routing_context = result_metadata.get("routing_context")
+            routing_context = (
+                routing_context if isinstance(routing_context, dict) else {}
+            )
+            for key in (
+                "policy_id",
+                "policy_version",
+                "selected_model",
+                "fallback_model",
+                "decision_source",
+                "matched_rule_id",
+                "reason_code",
+                "judge_called",
+            ):
+                if key in routing_metadata:
+                    llm_metadata[key] = routing_metadata[key]
+            for key in (
+                "customer_facing",
+                "knowledge_enabled",
+                "output_format",
+                "schema_required",
+                "has_file_input",
+                "input_length_bucket",
+                "prompt_length_bucket",
+                "node_task",
+            ):
+                if key in routing_context:
+                    llm_metadata[key] = routing_context[key]
+            for key in (
+                "finish_reason",
+                "schema_status",
+                "fallback_used",
+                "repetition_rate",
+            ):
+                if key in result_metadata:
+                    llm_metadata[key] = result_metadata[key]
+                elif key in routing_metadata:
+                    llm_metadata[key] = routing_metadata[key]
             metadata["llm"] = llm_metadata
-            knowledge = (result_dict.get("metadata") or {}).get("knowledge_search")
-            if knowledge:
+            rag_summary = result_metadata.get("rag")
+            rag_summary = rag_summary if isinstance(rag_summary, dict) else {}
+            knowledge = result_metadata.get("knowledge_search")
+            if knowledge or rag_summary:
                 # Per-chunk evidence는 trace_payloads에 두고 run/node metadata에는 요약만 남깁니다.
                 rag_metadata = dict(metadata.get("rag") or {})
+                rag_metadata.update(rag_summary)
                 rag_metadata.update(
                     TraceMetadataSanitizer.summarize_rag_metadata(knowledge)
                 )

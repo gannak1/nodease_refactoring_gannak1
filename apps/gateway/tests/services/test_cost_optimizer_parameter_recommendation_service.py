@@ -421,6 +421,166 @@ def test_fr12_recommends_rag_context_controls_without_trimming_author_prompt():
     assert "긴 업무 프롬프트" not in str(response)
 
 
+def test_fr12_reads_canonical_trace_sections_and_counts_terminal_failures():
+    """성공 usage만 보지 말고 canonical trace와 실패 run을 함께 품질 gate에 반영한다."""
+    workflow_id = uuid4()
+    successful_run_ids = [uuid4() for _ in range(20)]
+    failed_run_ids = [uuid4() for _ in range(3)]
+    db = _RecommendationDb(
+        workflow_runs=[
+            *[
+                _workflow_run(workflow_id, run_id, deployment_id=uuid4())
+                for run_id in successful_run_ids
+            ],
+            *[
+                _workflow_run(
+                    workflow_id,
+                    run_id,
+                    deployment_id=uuid4(),
+                    status=RunStatus.FAILED,
+                )
+                for run_id in failed_run_ids
+            ],
+        ],
+        node_runs=[
+            *[
+                _node_run(
+                    run_id,
+                    completion_tokens=420,
+                    finish_reason="stop",
+                    context_token_estimate=1800,
+                    retrieved_chunk_count=10,
+                    evidence_sufficient=True,
+                )
+                for run_id in successful_run_ids
+            ],
+            *[
+                _node_run(
+                    run_id,
+                    completion_tokens=0,
+                    node_status=NodeRunStatus.FAILED,
+                    schema_status="failed",
+                    downstream_status="failed",
+                    evidence_sufficient=False,
+                )
+                for run_id in failed_run_ids
+            ],
+        ],
+        usage_logs=[
+            _usage_log(workflow_id, run_id, completion_tokens=420, prompt_tokens=2400)
+            for run_id in successful_run_ids
+        ],
+    )
+
+    response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=_workflow(
+            workflow_id,
+            max_tokens=4096,
+            knowledge={"topK": 10, "retrievedContextMaxChars": 6000},
+        ),
+        node_id="llm-triage",
+    )
+
+    assert response["profile"]["sample_count"] == 23
+    assert response["profile"]["schema_fail_rate"] > 0.1
+    assert response["profile"]["downstream_fail_rate"] > 0.1
+    assert _recommendation(response, "max_tokens") is None
+    assert _recommendation(response, "rag.top_k") is None
+
+
+def test_fr12_blocks_parameter_recommendations_when_current_draft_differs_from_active_deployment():
+    """현재 draft와 운영 표본의 node 설정이 다르면 두 설정을 섞어 추천하지 않는다."""
+    workflow_id = uuid4()
+    app_id = uuid4()
+    deployment_id = uuid4()
+    run_ids = [uuid4() for _ in range(20)]
+    deployed_node = _workflow(workflow_id, max_tokens=512).graph["nodes"][0]
+    db = _RecommendationDb(
+        workflow_runs=[
+            _workflow_run(workflow_id, run_id, deployment_id=deployment_id)
+            for run_id in run_ids
+        ],
+        node_runs=[
+            _node_run(run_id, completion_tokens=420, finish_reason="stop")
+            for run_id in run_ids
+        ],
+        usage_logs=[
+            _usage_log(workflow_id, run_id, completion_tokens=420) for run_id in run_ids
+        ],
+        active_deployment=SimpleNamespace(
+            id=deployment_id,
+            app_id=app_id,
+            graph_snapshot={"nodes": [deployed_node]},
+        ),
+    )
+
+    response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=SimpleNamespace(
+            id=workflow_id,
+            app_id=app_id,
+            graph=_workflow(workflow_id, max_tokens=4096).graph,
+        ),
+        node_id="llm-triage",
+    )
+
+    assert response["analysis_stage"] == "draft_not_deployed"
+    assert _recommendation(response, "max_tokens") is None
+    assert any(
+        warning["code"] == "draft_config_not_deployed"
+        for warning in response["warnings"]
+    )
+
+
+def test_fr12_ignores_dynamic_model_routing_policy_state_in_deployment_fingerprint():
+    """배포 뒤 active policy만 갱신된 것은 draft 설정 drift로 보지 않는다."""
+    workflow_id = uuid4()
+    app_id = uuid4()
+    deployment_id = uuid4()
+    current_workflow = _workflow(
+        workflow_id,
+        max_tokens=512,
+        auto_model_routing=True,
+    )
+    deployed_workflow = _workflow(
+        workflow_id,
+        max_tokens=512,
+        auto_model_routing=True,
+    )
+    current_workflow.graph["nodes"][0]["data"]["model_routing_policy"] = {
+        "status": "active",
+        "active_policy": {"default_model_id": "gpt-4.1-mini", "rules": []},
+    }
+    deployed_workflow.graph["nodes"][0]["data"]["model_routing_policy"] = {
+        "status": "collecting",
+        "active_policy": {"default_model_id": "gpt-4.1", "rules": []},
+    }
+    db = _RecommendationDb(
+        workflow_runs=[],
+        node_runs=[],
+        usage_logs=[],
+        active_deployment=SimpleNamespace(
+            id=deployment_id,
+            app_id=app_id,
+            graph_snapshot=deployed_workflow.graph,
+        ),
+    )
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        graph=current_workflow.graph,
+    )
+
+    response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=workflow,
+        node_id="llm-triage",
+    )
+
+    assert response["analysis_stage"] == "insufficient_logs"
+
+
 def _recommendation(response, parameter_key):
     return next(
         (
@@ -478,13 +638,13 @@ def _workflow(
     )
 
 
-def _workflow_run(workflow_id, run_id, *, deployment_id):
+def _workflow_run(workflow_id, run_id, *, deployment_id, status=RunStatus.SUCCESS):
     return SimpleNamespace(
         id=run_id,
         workflow_id=workflow_id,
         deployment_id=deployment_id,
         trigger_mode=RunTriggerMode.API,
-        status=RunStatus.SUCCESS,
+        status=status,
     )
 
 
@@ -499,25 +659,28 @@ def _node_run(
     context_token_estimate=0,
     retrieved_chunk_count=0,
     repetition_rate=None,
+    node_status=NodeRunStatus.SUCCESS,
 ):
     return SimpleNamespace(
         id=uuid4(),
         workflow_run_id=workflow_run_id,
         node_id="llm-triage",
         node_type="llmNode",
-        status=NodeRunStatus.SUCCESS,
+        status=node_status,
         retry_count=0,
         trace_metadata={
-            "finish_reason": finish_reason,
-            "schema_status": schema_status,
-            "downstream_status": downstream_status,
-            "rag_summary": {
+            "llm": {
+                "finish_reason": finish_reason,
+                "schema_status": schema_status,
+                "downstream_status": downstream_status,
+                "fallback_used": False,
+                "repetition_rate": repetition_rate,
+            },
+            "rag": {
                 "context_token_estimate": context_token_estimate,
                 "retrieved_chunk_count": retrieved_chunk_count,
                 "evidence_sufficient": evidence_sufficient,
             },
-            "completion_tokens": completion_tokens,
-            "repetition_rate": repetition_rate,
         },
     )
 
@@ -544,7 +707,15 @@ def _usage_log(
 
 
 class _RecommendationDb:
-    def __init__(self, *, workflow_runs, node_runs, usage_logs):
+    def __init__(
+        self,
+        *,
+        workflow_runs,
+        node_runs,
+        usage_logs,
+        active_deployment=None,
+    ):
         self.workflow_runs = workflow_runs
         self.node_runs = node_runs
         self.usage_logs = usage_logs
+        self.active_deployment = active_deployment

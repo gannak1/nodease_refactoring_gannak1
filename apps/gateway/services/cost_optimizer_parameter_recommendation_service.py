@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from statistics import mean
@@ -15,6 +17,7 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 
 POLICY_VERSION = "llm-parameter-recommendation-rules-v1"
 MIN_OPERATION_SAMPLES = 20
@@ -44,6 +47,9 @@ class _NodeRunSample:
     retrieved_chunk_count: int
     evidence_sufficient: bool | None
     repetition_rate: float | None
+    has_successful_usage: bool
+    node_succeeded: bool
+    workflow_succeeded: bool
 
 
 class CostOptimizerParameterRecommendationService:
@@ -65,11 +71,56 @@ class CostOptimizerParameterRecommendationService:
         node = _find_node(workflow.graph, node_id)
         node_data = node.get("data") if isinstance(node, dict) else {}
         node_data = node_data if isinstance(node_data, dict) else {}
-        samples = cls._collect_samples(db, workflow.id, node_id)
+        cohort = _resolve_operation_cohort(
+            db,
+            workflow=workflow,
+            node_id=node_id,
+            current_node_data=node_data,
+        )
         warnings: list[dict[str, str]] = []
         routing_recommendations = cls._recommend_model_routing_controls(node_data)
 
-        if len(samples) < MIN_OPERATION_SAMPLES:
+        if cohort["status"] == "draft_not_deployed":
+            return {
+                "analysis_stage": "draft_not_deployed",
+                "policy_version": POLICY_VERSION,
+                "recommendations": routing_recommendations,
+                "warnings": [
+                    {
+                        "code": "draft_config_not_deployed",
+                        "message": (
+                            "현재 draft LLM 설정이 활성 배포 설정과 달라 운영 로그를 "
+                            "섞어 파라미터 추천을 만들지 않았습니다. 먼저 배포하거나 "
+                            "A/B 후보 실험으로 검증하세요."
+                        ),
+                    }
+                ],
+                "profile": {"sample_count": 0},
+            }
+
+        if cohort["status"] == "deployment_unavailable":
+            return {
+                "analysis_stage": "deployment_unavailable",
+                "policy_version": POLICY_VERSION,
+                "recommendations": routing_recommendations,
+                "warnings": [
+                    {
+                        "code": "active_deployment_unavailable",
+                        "message": "활성 배포 설정을 찾지 못해 파라미터 추천을 만들지 않았습니다.",
+                    }
+                ],
+                "profile": {"sample_count": 0},
+            }
+
+        samples = cls._collect_samples(
+            db,
+            workflow.id,
+            node_id,
+            deployment_id=cohort["deployment_id"],
+        )
+
+        profile = _profile(samples)
+        if profile["successful_usage_sample_count"] < MIN_OPERATION_SAMPLES:
             return {
                 "analysis_stage": "insufficient_logs",
                 "policy_version": POLICY_VERSION,
@@ -78,15 +129,19 @@ class CostOptimizerParameterRecommendationService:
                     {
                         "code": "operation_logs_insufficient",
                         "message": (
-                            "배포 후 성공 운영 로그가 충분하지 않아 "
+                            "같은 활성 배포 설정의 성공 운영 usage 로그가 충분하지 않아 "
                             "파라미터 추천을 만들지 않았습니다."
                         ),
                     }
                 ],
-                "profile": {"sample_count": len(samples)},
+                "profile": {
+                    "sample_count": profile["sample_count"],
+                    "successful_usage_sample_count": profile[
+                        "successful_usage_sample_count"
+                    ],
+                },
             }
 
-        profile = _profile(samples)
         recommendations: list[dict[str, Any]] = [*routing_recommendations]
         max_tokens = cls._recommend_max_tokens(node_data, profile, warnings)
         if max_tokens:
@@ -126,6 +181,9 @@ class CostOptimizerParameterRecommendationService:
             "warnings": warnings,
             "profile": {
                 "sample_count": profile["sample_count"],
+                "successful_usage_sample_count": profile[
+                    "successful_usage_sample_count"
+                ],
                 "schema_fail_rate": profile["schema_fail_rate"],
                 "downstream_fail_rate": profile["downstream_fail_rate"],
                 "truncation_rate": profile["truncation_rate"],
@@ -223,10 +281,26 @@ class CostOptimizerParameterRecommendationService:
         return recommendations
 
     @staticmethod
-    def _collect_samples(db: Session, workflow_id: Any, node_id: str) -> list[_NodeRunSample]:
+    def _collect_samples(
+        db: Session,
+        workflow_id: Any,
+        node_id: str,
+        *,
+        deployment_id: Any | None,
+    ) -> list[_NodeRunSample]:
         if hasattr(db, "workflow_runs"):
-            return _collect_samples_from_fake_db(db, workflow_id, node_id)
-        return _collect_samples_from_query(db, workflow_id, node_id)
+            return _collect_samples_from_fake_db(
+                db,
+                workflow_id,
+                node_id,
+                deployment_id=deployment_id,
+            )
+        return _collect_samples_from_query(
+            db,
+            workflow_id,
+            node_id,
+            deployment_id=deployment_id,
+        )
 
     @staticmethod
     def _recommend_max_tokens(
@@ -245,6 +319,16 @@ class CostOptimizerParameterRecommendationService:
             or profile["schema_fail_rate"] > 0.1
             or profile["downstream_fail_rate"] > 0.1
         )
+        if _is_schema_or_structured_node(node_data) and not profile[
+            "schema_signal_complete"
+        ]:
+            warnings.append(
+                {
+                    "code": "schema_signal_incomplete",
+                    "message": "schema 검증 결과가 누락된 운영 표본이 있어 max_tokens 하향 추천을 만들지 않았습니다.",
+                }
+            )
+            return None
         if quality_unstable:
             warnings.append(
                 {
@@ -261,10 +345,12 @@ class CostOptimizerParameterRecommendationService:
         if suggested >= current * 0.9:
             return None
 
-        finish_reasons_known = profile["finish_reason_known_count"] >= profile["sample_count"] * 0.8
+        finish_reasons_known = profile["finish_reason_known_count"] >= profile[
+            "successful_usage_sample_count"
+        ] * 0.8
         confidence = "high" if finish_reasons_known else "medium"
         reason = (
-            f"최근 배포 후 성공 실행 {profile['sample_count']}회에서 "
+            f"최근 배포 후 성공 usage {profile['successful_usage_sample_count']}회에서 "
             f"completion token p95가 {completion_p95}입니다."
         )
         if not finish_reasons_known:
@@ -278,7 +364,7 @@ class CostOptimizerParameterRecommendationService:
             risk="low" if confidence == "high" else "medium",
             reason=reason,
             evidence={
-                "sample_count": profile["sample_count"],
+                "sample_count": profile["successful_usage_sample_count"],
                 "completion_tokens_p95": completion_p95,
                 "schema_pass_rate": round(1 - profile["schema_fail_rate"], 4),
                 "downstream_success_rate": round(
@@ -388,6 +474,14 @@ class CostOptimizerParameterRecommendationService:
     ) -> list[dict[str, Any]]:
         if not _has_rag_settings(node_data):
             return []
+        if not profile["rag_signal_complete"]:
+            warnings.append(
+                {
+                    "code": "rag_signal_incomplete",
+                    "message": "RAG 검색 요약이 누락된 운영 표본이 있어 context 축소 추천을 만들지 않았습니다.",
+                }
+            )
+            return []
         if profile["rag_evidence_insufficient_rate"] > 0:
             warnings.append(
                 {
@@ -396,6 +490,14 @@ class CostOptimizerParameterRecommendationService:
                         "검색 근거가 부족한 실행이 있어 RAG context 축소 추천을 "
                         "만들지 않았습니다."
                     ),
+                }
+            )
+            return []
+        if profile["downstream_fail_rate"] > 0.1:
+            warnings.append(
+                {
+                    "code": "quality_signal_unstable",
+                    "message": "후속 노드 실패가 감지되어 RAG context 축소 추천을 만들지 않았습니다.",
                 }
             )
             return []
@@ -479,34 +581,48 @@ class CostOptimizerParameterRecommendationService:
         return recommendations
 
 
-def _collect_samples_from_fake_db(db, workflow_id: Any, node_id: str) -> list[_NodeRunSample]:
-    operation_run_ids = {
-        run.id
+def _collect_samples_from_fake_db(
+    db,
+    workflow_id: Any,
+    node_id: str,
+    *,
+    deployment_id: Any | None,
+) -> list[_NodeRunSample]:
+    operation_runs = [
+        run
         for run in getattr(db, "workflow_runs", [])
         if getattr(run, "workflow_id", None) == workflow_id
         and getattr(run, "deployment_id", None) is not None
+        and (deployment_id is None or getattr(run, "deployment_id", None) == deployment_id)
         and _enum_value(getattr(run, "trigger_mode", None)) in OPERATION_TRIGGER_MODES
-        and _enum_value(getattr(run, "status", None)) == RunStatus.SUCCESS.value
-    }
+        and _enum_value(getattr(run, "status", None))
+        in {RunStatus.SUCCESS.value, RunStatus.FAILED.value}
+    ]
+    run_by_id = {run.id: run for run in operation_runs}
     node_runs = {
         node_run.workflow_run_id: node_run
         for node_run in getattr(db, "node_runs", [])
-        if node_run.workflow_run_id in operation_run_ids
+        if node_run.workflow_run_id in run_by_id
         and getattr(node_run, "node_id", None) == node_id
-        and _enum_value(getattr(node_run, "status", None)) == NodeRunStatus.SUCCESS.value
+        and _enum_value(getattr(node_run, "status", None))
+        in {NodeRunStatus.SUCCESS.value, NodeRunStatus.FAILED.value}
     }
-    usage_logs = [
-        usage
+    usage_by_run_id = {
+        usage.workflow_run_id: usage
         for usage in getattr(db, "usage_logs", [])
         if getattr(usage, "workflow_id", None) == workflow_id
         and getattr(usage, "workflow_run_id", None) in node_runs
         and getattr(usage, "node_id", None) == node_id
         and getattr(usage, "cost_optimizer_candidate_id", None) is None
         and getattr(usage, "status", "success") == "success"
-    ]
+    }
     return [
-        _sample_from_usage_and_node_run(usage, node_runs[usage.workflow_run_id])
-        for usage in usage_logs
+        _sample_from_usage_and_node_run(
+            usage_by_run_id.get(run_id),
+            node_run,
+            workflow_status=_enum_value(getattr(run_by_id[run_id], "status", None)),
+        )
+        for run_id, node_run in node_runs.items()
     ]
 
 
@@ -514,20 +630,20 @@ def _collect_samples_from_query(
     db: Session,
     workflow_id: Any,
     node_id: str,
+    *,
+    deployment_id: Any | None,
 ) -> list[_NodeRunSample]:
-    runs = (
-        db.query(WorkflowRun.id)
-        .filter(
-            WorkflowRun.workflow_id == workflow_id,
-            WorkflowRun.deployment_id.isnot(None),
-            WorkflowRun.status == RunStatus.SUCCESS,
-            WorkflowRun.trigger_mode.in_(OPERATION_TRIGGER_MODE_ENUMS),
-        )
-        .order_by(WorkflowRun.started_at.desc())
-        .limit(200)
-        .all()
+    query = db.query(WorkflowRun).filter(
+        WorkflowRun.workflow_id == workflow_id,
+        WorkflowRun.deployment_id.isnot(None),
+        WorkflowRun.status.in_([RunStatus.SUCCESS, RunStatus.FAILED]),
+        WorkflowRun.trigger_mode.in_(OPERATION_TRIGGER_MODE_ENUMS),
     )
-    run_ids = [row[0] if isinstance(row, tuple) else row.id for row in runs]
+    if deployment_id is not None:
+        query = query.filter(WorkflowRun.deployment_id == deployment_id)
+    runs = query.order_by(WorkflowRun.started_at.desc()).limit(200).all()
+    run_by_id = {run.id: run for run in runs}
+    run_ids = list(run_by_id)
     if not run_ids:
         return []
 
@@ -536,7 +652,7 @@ def _collect_samples_from_query(
         .filter(
             WorkflowNodeRun.workflow_run_id.in_(run_ids),
             WorkflowNodeRun.node_id == node_id,
-            WorkflowNodeRun.status == NodeRunStatus.SUCCESS,
+            WorkflowNodeRun.status.in_([NodeRunStatus.SUCCESS, NodeRunStatus.FAILED]),
         )
         .all()
     )
@@ -555,40 +671,89 @@ def _collect_samples_from_query(
         )
         .all()
     )
+    usage_by_run_id = {usage.workflow_run_id: usage for usage in usage_logs}
     return [
-        _sample_from_usage_and_node_run(usage, node_run_by_run_id[usage.workflow_run_id])
-        for usage in usage_logs
-        if usage.workflow_run_id in node_run_by_run_id
+        _sample_from_usage_and_node_run(
+            usage_by_run_id.get(run_id),
+            node_run,
+            workflow_status=_enum_value(getattr(run_by_id[run_id], "status", None)),
+        )
+        for run_id, node_run in node_run_by_run_id.items()
     ]
 
 
-def _sample_from_usage_and_node_run(usage, node_run) -> _NodeRunSample:
+def _sample_from_usage_and_node_run(
+    usage,
+    node_run,
+    *,
+    workflow_status: str | None,
+) -> _NodeRunSample:
     trace_metadata = getattr(node_run, "trace_metadata", None)
     trace_metadata = trace_metadata if isinstance(trace_metadata, dict) else {}
-    rag_summary = trace_metadata.get("rag_summary")
+    llm_summary = trace_metadata.get("llm")
+    llm_summary = llm_summary if isinstance(llm_summary, dict) else trace_metadata
+    rag_summary = trace_metadata.get("rag")
+    rag_summary = (
+        rag_summary
+        if isinstance(rag_summary, dict)
+        else trace_metadata.get("rag_summary")
+    )
     rag_summary = rag_summary if isinstance(rag_summary, dict) else {}
+    node_status = _enum_value(getattr(node_run, "status", None))
+    inferred_downstream_status = _string_or_none(
+        llm_summary.get("downstream_status")
+    )
+    if inferred_downstream_status is None:
+        if node_status == NodeRunStatus.FAILED.value:
+            inferred_downstream_status = "failed"
+        elif workflow_status == RunStatus.SUCCESS.value:
+            inferred_downstream_status = "passed"
+        elif workflow_status == RunStatus.FAILED.value:
+            inferred_downstream_status = "failed"
     return _NodeRunSample(
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
         latency_ms=int(getattr(usage, "latency_ms", 0) or 0),
         cost=float(getattr(usage, "total_cost", 0) or 0),
-        finish_reason=_string_or_none(trace_metadata.get("finish_reason")),
-        schema_status=_string_or_none(trace_metadata.get("schema_status")),
-        downstream_status=_string_or_none(trace_metadata.get("downstream_status")),
+        finish_reason=_string_or_none(llm_summary.get("finish_reason")),
+        schema_status=_string_or_none(llm_summary.get("schema_status")),
+        downstream_status=inferred_downstream_status,
         retry_count=int(getattr(node_run, "retry_count", 0) or 0),
-        fallback_used=bool(trace_metadata.get("fallback_used")),
+        fallback_used=bool(llm_summary.get("fallback_used")),
         context_token_estimate=int(rag_summary.get("context_token_estimate") or 0),
         retrieved_chunk_count=int(rag_summary.get("retrieved_chunk_count") or 0),
         evidence_sufficient=rag_summary.get("evidence_sufficient"),
-        repetition_rate=_number_or_none(trace_metadata.get("repetition_rate")),
+        repetition_rate=_number_or_none(llm_summary.get("repetition_rate")),
+        has_successful_usage=bool(
+            usage is not None and getattr(usage, "status", "success") == "success"
+        ),
+        node_succeeded=node_status == NodeRunStatus.SUCCESS.value,
+        workflow_succeeded=workflow_status == RunStatus.SUCCESS.value,
     )
 
 
 def _profile(samples: list[_NodeRunSample]) -> dict[str, Any]:
     sample_count = len(samples)
-    finish_reason_known_count = sum(1 for sample in samples if sample.finish_reason)
+    successful_usage_samples = [
+        sample
+        for sample in samples
+        if sample.has_successful_usage and sample.node_succeeded
+    ]
+    successful_usage_sample_count = len(successful_usage_samples)
+    finish_reason_known_count = sum(
+        1 for sample in successful_usage_samples if sample.finish_reason
+    )
+    schema_evaluated_samples = [
+        sample
+        for sample in samples
+        if sample.schema_status
+        in {"passed", "pass", "valid", "failed", "schema_failed", "truncated"}
+    ]
+    schema_evaluated_count = len(schema_evaluated_samples)
     schema_fail_count = sum(
-        1 for sample in samples if sample.schema_status in {"failed", "schema_failed"}
+        1
+        for sample in schema_evaluated_samples
+        if sample.schema_status in {"failed", "schema_failed"}
     )
     downstream_fail_count = sum(
         1
@@ -597,47 +762,73 @@ def _profile(samples: list[_NodeRunSample]) -> dict[str, Any]:
     )
     truncation_count = sum(
         1
-        for sample in samples
+        for sample in successful_usage_samples
         if sample.finish_reason in {"length", "max_tokens"} or sample.schema_status == "truncated"
     )
+    rag_evaluated_samples = [
+        sample for sample in samples if sample.evidence_sufficient is not None
+    ]
     rag_evidence_insufficient_count = sum(
-        1 for sample in samples if sample.evidence_sufficient is False
+        1 for sample in rag_evaluated_samples if sample.evidence_sufficient is False
     )
     repetition_values = [
         sample.repetition_rate
-        for sample in samples
+        for sample in successful_usage_samples
         if sample.repetition_rate is not None
     ]
     return {
         "sample_count": sample_count,
+        "successful_usage_sample_count": successful_usage_sample_count,
         "completion_tokens_p95": _percentile(
-            [sample.completion_tokens for sample in samples], 0.95
+            [sample.completion_tokens for sample in successful_usage_samples], 0.95
         ),
         "prompt_tokens_p95": _percentile(
-            [sample.prompt_tokens for sample in samples], 0.95
+            [sample.prompt_tokens for sample in successful_usage_samples], 0.95
         ),
         "context_token_estimate_p95": _percentile(
-            [sample.context_token_estimate for sample in samples], 0.95
+            [sample.context_token_estimate for sample in successful_usage_samples], 0.95
         ),
         "retrieved_chunk_count_p95": _percentile(
-            [sample.retrieved_chunk_count for sample in samples], 0.95
+            [sample.retrieved_chunk_count for sample in successful_usage_samples], 0.95
         ),
-        "schema_fail_rate": round(schema_fail_count / sample_count, 4),
-        "downstream_fail_rate": round(downstream_fail_count / sample_count, 4),
-        "truncation_rate": round(truncation_count / sample_count, 4),
+        "schema_fail_rate": round(
+            schema_fail_count / schema_evaluated_count, 4
+        )
+        if schema_evaluated_count
+        else 0.0,
+        "downstream_fail_rate": round(downstream_fail_count / sample_count, 4)
+        if sample_count
+        else 0.0,
+        "truncation_rate": round(
+            truncation_count / successful_usage_sample_count, 4
+        )
+        if successful_usage_sample_count
+        else 0.0,
         "retry_rate": round(
             sum(1 for sample in samples if sample.retry_count > 0) / sample_count,
             4,
-        ),
+        )
+        if sample_count
+        else 0.0,
         "fallback_rate": round(
-            sum(1 for sample in samples if sample.fallback_used) / sample_count,
+            sum(1 for sample in successful_usage_samples if sample.fallback_used)
+            / successful_usage_sample_count,
             4,
-        ),
+        )
+        if successful_usage_sample_count
+        else 0.0,
         "rag_evidence_insufficient_rate": round(
-            rag_evidence_insufficient_count / sample_count,
+            rag_evidence_insufficient_count / len(rag_evaluated_samples),
             4,
-        ),
+        )
+        if rag_evaluated_samples
+        else 0.0,
         "finish_reason_known_count": finish_reason_known_count,
+        "schema_signal_complete": bool(samples)
+        and schema_evaluated_count == sample_count,
+        "rag_signal_complete": bool(samples)
+        and len(rag_evaluated_samples) == sample_count
+        and all(sample.context_token_estimate >= 0 for sample in rag_evaluated_samples),
         "repetition_rate": round(mean(repetition_values), 4)
         if repetition_values
         else None,
@@ -677,6 +868,85 @@ def _find_node(graph: dict[str, Any], node_id: str) -> dict[str, Any] | None:
         if isinstance(node, dict) and node.get("id") == node_id:
             return node
     return None
+
+
+def _resolve_operation_cohort(
+    db: Session,
+    *,
+    workflow: Any,
+    node_id: str,
+    current_node_data: dict[str, Any],
+) -> dict[str, Any]:
+    """추천 표본을 현재 활성 배포 node 설정 하나로 한정한다.
+
+    테스트용 in-memory DB는 active_deployment를 선택적으로 제공한다. 실제 DB에서는
+    workflow.app_id의 활성 deployment snapshot을 기준으로 한다.
+    """
+    if hasattr(db, "workflow_runs"):
+        deployment = getattr(db, "active_deployment", None)
+        if deployment is None:
+            return {"status": "legacy_test_cohort", "deployment_id": None}
+    else:
+        app_id = getattr(workflow, "app_id", None)
+        if app_id is None:
+            return {"status": "deployment_unavailable", "deployment_id": None}
+        deployment = (
+            db.query(WorkflowDeployment)
+            .filter(
+                WorkflowDeployment.app_id == app_id,
+                WorkflowDeployment.is_active.is_(True),
+            )
+            .order_by(WorkflowDeployment.version.desc())
+            .first()
+        )
+        if deployment is None:
+            return {"status": "deployment_unavailable", "deployment_id": None}
+
+    deployment_graph = getattr(deployment, "graph_snapshot", None)
+    deployed_node = _find_node(
+        deployment_graph if isinstance(deployment_graph, dict) else {}, node_id
+    )
+    deployed_node_data = (
+        deployed_node.get("data") if isinstance(deployed_node, dict) else None
+    )
+    if not isinstance(deployed_node_data, dict) or _node_config_fingerprint(
+        current_node_data
+    ) != _node_config_fingerprint(deployed_node_data):
+        return {"status": "draft_not_deployed", "deployment_id": None}
+
+    return {"status": "active_deployment", "deployment_id": deployment.id}
+
+
+def _node_config_fingerprint(node_data: dict[str, Any]) -> str:
+    """원문을 노출하지 않고 비용/품질에 영향을 주는 node 설정만 비교한다."""
+    relevant_keys = (
+        "model_id",
+        "fallback_model_id",
+        "parameters",
+        "output_format",
+        "system_prompt",
+        "user_prompt",
+        "assistant_prompt",
+        "knowledgeBases",
+        "topK",
+        "scoreThreshold",
+        "retrievedContextMaxChars",
+        "dedupeRetrievedContext",
+        "retrievedContextCompression",
+        "includeSourceMetadata",
+        "answerGroundingCheck",
+        "ragFailurePolicy",
+        "auto_model_routing",
+    )
+    payload = {key: node_data.get(key) for key in relevant_keys if key in node_data}
+    routing_policy = node_data.get("model_routing_policy")
+    refresh = routing_policy.get("refresh") if isinstance(routing_policy, dict) else None
+    if isinstance(refresh, dict) and "refresh_every_runs" in refresh:
+        payload["model_routing_refresh_every_runs"] = refresh.get(
+            "refresh_every_runs"
+        )
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _parameters(node_data: dict[str, Any]) -> dict[str, Any]:

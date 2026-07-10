@@ -418,6 +418,76 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
 
 
+def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subject(
+    monkeypatch,
+):
+    """정책에 남은 primary credential이 회수돼도 사용 가능한 fallback만 선택한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    persisted_policy = SimpleNamespace(
+        enabled=True,
+        status="active",
+        id=uuid.uuid4(),
+        policy_version="router-policy-v2",
+        active_policy={
+            "default_model_id": "gpt-4.1",
+            "fallback_model_id": "gpt-4.1-mini",
+            "rules": [],
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=0,
+    )
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
+        auto_model_routing=True,
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt="",
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-router",
+        data,
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+        },
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda *args, **kwargs: persisted_policy,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_available_model_ids_for_user",
+        lambda db, *, user_id, organization_id: captured.update(
+            {"user_id": user_id, "organization_id": organization_id}
+        )
+        or ["gpt-4.1-mini"],
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
+
+    assert captured == {"user_id": user_id, "organization_id": organization_id}
+    assert selected == "gpt-4.1-mini"
+    assert fallback is None
+    assert metadata["reason_code"] == "policy_default"
+
+
 def test_llm_node_data_preserves_output_format_for_cost_optimizer_apply():
     """Cost Optimizer로 적용한 출력 형식/schema가 런타임 노드 데이터에서 보존된다."""
     data = LLMNodeData(
@@ -2938,6 +3008,11 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     )
     monkeypatch.setattr(
         workflow_llm_service.LLMService,
+        "get_runtime_available_model_ids_for_user",
+        lambda *args, **kwargs: ["gpt-4.1-mini", "gpt-4.1"],
+    )
+    monkeypatch.setattr(
+        workflow_llm_service.LLMService,
         "calculate_cost",
         lambda *args, **kwargs: 0.0,
     )
@@ -3067,6 +3142,11 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
             "deployment_id": str(uuid.uuid4()),
         },
     )
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4.1-mini", "gpt-4.1"],
+    )
 
     selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
 
@@ -3075,6 +3155,41 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     assert metadata["policy_id"] == str(persisted.id)
     assert metadata["policy_version"] == "router-policy-v9"
     assert metadata["judge_called"] is False
+
+
+def test_llm_node_blocks_policy_when_no_model_is_usable_by_execution_subject(
+    monkeypatch,
+):
+    """모든 policy 모델의 credential 권한이 회수되면 provider 호출 전에 종료한다."""
+    data = LLMNodeData(
+        title="routing credential guard",
+        model_id="gpt-4.1",
+        auto_model_routing=True,
+        model_routing_policy={
+            "policy_id": "policy-1",
+            "active_policy": {
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "rules": [],
+            },
+        },
+        user_prompt="hello",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    monkeypatch.setattr(node, "_available_routing_model_ids", lambda _db: [])
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc_info:
+        node._resolve_model_routing_policy({}, object())
+
+    assert exc_info.value.reason == "model_routing_no_available_model"
+
+
+def test_llm_node_output_repetition_rate_keeps_only_a_numeric_summary():
+    """반복 억제 추천용 signal은 completion 원문 대신 비율만 남긴다."""
+    assert LLMNode._repetition_rate("같은 문장 같은 문장 같은 문장") > 0
+    assert LLMNode._repetition_rate("서로 다른 문장") == 0.0
 
 
 def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(

@@ -59,23 +59,28 @@ def test_policy_schedules_refresh_exactly_when_threshold_is_reached():
 
 
 @pytest.mark.parametrize(
-    ("deployment_id", "trigger_mode", "expected"),
+    ("deployment_id", "trigger_mode", "status", "expected"),
     [
-        ("deployment-1", "webhook", True),
-        ("deployment-1", "api", True),
-        (None, "manual", False),
-        ("deployment-1", "manual", False),
-        (None, "webhook", False),
+        ("deployment-1", "webhook", "success", True),
+        ("deployment-1", "api", "failed", True),
+        ("deployment-1", "webhook", "running", False),
+        (None, "manual", "success", False),
+        ("deployment-1", "manual", "success", False),
+        (None, "webhook", "success", False),
     ],
 )
 def test_only_deployed_operational_runs_are_eligible(
-    deployment_id, trigger_mode, expected
+    deployment_id, trigger_mode, status, expected
 ):
     from apps.workflow_engine.services.model_routing_policy_lifecycle import (
         ModelRoutingPolicyLifecycleService,
     )
 
-    run = SimpleNamespace(deployment_id=deployment_id, trigger_mode=trigger_mode)
+    run = SimpleNamespace(
+        deployment_id=deployment_id,
+        trigger_mode=trigger_mode,
+        status=status,
+    )
 
     assert ModelRoutingPolicyLifecycleService.is_eligible_operational_run(run) is expected
 

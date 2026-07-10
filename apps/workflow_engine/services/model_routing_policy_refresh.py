@@ -13,9 +13,6 @@ from apps.workflow_engine.services.model_router import ModelCandidate, ModelRout
 
 POLICY_JUDGE_PROMPT_VERSION = "model-routing-policy-judge-v1"
 ALLOWED_REFRESH_STATUSES = {"applied", "kept_current", "pending_review", "failed"}
-STRUCTURED_OUTPUT_RISKY_MODEL_KEYWORDS = (
-    "nano",
-)
 
 
 @dataclass(frozen=True)
@@ -28,6 +25,7 @@ class ModelRoutingPolicyRefreshRequest:
     candidate_models: list[ModelCandidate]
     judge_model_id: str
     recent_runs: list[dict[str, Any]] = field(default_factory=list)
+    segment_profiles: list[dict[str, Any]] = field(default_factory=list)
     node_summary: dict[str, Any] = field(default_factory=dict)
     trigger: str = "manual_refresh"
 
@@ -104,6 +102,7 @@ class ModelRoutingPolicyRefreshService:
             current_policy=request.current_policy,
             candidates=candidates,
             recent_runs=request.recent_runs,
+            segment_profiles=request.segment_profiles,
         )
         metadata = cls._metadata(
             request,
@@ -142,71 +141,29 @@ class ModelRoutingPolicyRefreshService:
         *,
         policy_id: str,
         policy_version: str,
-        candidate_models: list[ModelCandidate],
+        default_model_id: str,
+        fallback_model_id: str | None,
         refresh_every_runs: int = 20,
     ) -> dict[str, Any]:
-        cheap, mid, high = cls._tier_models(candidate_models)
-        structured_cheap = cls._structured_output_model(candidate_models, fallback=cheap)
-        structured_fallback = cls._first_distinct_model(
-            [mid, high, cheap],
-            exclude=structured_cheap.model_id,
-        )
+        default_model_id = str(default_model_id or "").strip()
+        fallback_model_id = str(fallback_model_id or "").strip() or None
+        if not default_model_id:
+            raise ValueError("default_model_id is required for bootstrap policy")
         return {
-            "status": "active",
+            "status": "collecting",
             "policy_id": policy_id,
             "policy_version": policy_version,
             "active_policy": {
-                "default_model_id": mid.model_id,
-                "fallback_model_id": high.model_id,
-                "rules": [
-                    {
-                        "id": "long-input-strong-model",
-                        "priority": 10,
-                        "when": {"input_length_bucket": "long"},
-                        "selected_model_id": high.model_id,
-                        "fallback_model_id": None,
-                        "reason_code": "long_input_uses_strong_model",
-                    },
-                    {
-                        "id": "customer-facing-balanced",
-                        "priority": 20,
-                        "when": {"customer_facing": True},
-                        "selected_model_id": mid.model_id,
-                        "fallback_model_id": high.model_id,
-                        "reason_code": "customer_facing_uses_balanced_model",
-                    },
-                    {
-                        "id": "knowledge-enabled-balanced",
-                        "priority": 30,
-                        "when": {"knowledge_enabled": True},
-                        "selected_model_id": mid.model_id,
-                        "fallback_model_id": high.model_id,
-                        "reason_code": "rag_context_uses_balanced_model",
-                    },
-                    {
-                        "id": "short-json-no-knowledge",
-                        "priority": 40,
-                        "when": {
-                            "output_format": "json",
-                            "knowledge_enabled": False,
-                            "input_length_bucket": "short",
-                        },
-                        "selected_model_id": structured_cheap.model_id,
-                        "fallback_model_id": (
-                            structured_fallback.model_id
-                            if structured_fallback is not None
-                            else None
-                        ),
-                        "reason_code": "short_structured_input_uses_low_cost_model",
-                    },
-                ],
+                "default_model_id": default_model_id,
+                "fallback_model_id": fallback_model_id,
+                "rules": [],
             },
             "refresh": {
                 "refresh_every_runs": cls._normalize_refresh_every_runs(
                     refresh_every_runs
                 ),
-                "last_refresh_result": "bootstrap",
-                "last_refresh_trigger": "bootstrap",
+                "last_refresh_result": "bootstrap_preserve_config",
+                "last_refresh_trigger": "bootstrap_preserve_config",
             },
         }
 
@@ -224,6 +181,7 @@ class ModelRoutingPolicyRefreshService:
             "candidate_models": candidates,
             "current_policy": request.current_policy,
             "recent_runs": request.recent_runs[-40:],
+            "segment_profiles": request.segment_profiles[-40:],
             "required_schema": {
                 "status": "applied | kept_current | pending_review",
                 "confidence": "number from 0 to 1",
@@ -243,7 +201,6 @@ class ModelRoutingPolicyRefreshService:
                             "input_length_bucket": "optional short/medium/long",
                             "prompt_length_bucket": "optional short/medium/long",
                             "node_task": "optional node task/category",
-                            "keyword_any": "optional domain keyword array generated from recent runs",
                         },
                         "selected_model_id": "candidate model id",
                         "fallback_model_id": "candidate model id or null",
@@ -259,13 +216,12 @@ class ModelRoutingPolicyRefreshService:
                     "You generate safe JSON model-routing policies for a workflow LLM node. "
                     "Use only candidate model ids. Return JSON only. "
                     "Do not include secrets or raw user payloads. "
-                    "Runtime code has no domain keyword classifier. If domain terms matter, "
-                    "put them explicitly in rules[].when.keyword_any. Prefer generic conditions "
+                    "Runtime code has no domain keyword classifier. Do not generate keyword_any "
+                    "rules because raw input payloads are not provided to the judge. Prefer generic conditions "
                     "such as output_format, knowledge_enabled, schema_required, customer_facing, "
                     "node_task, and input_length_bucket when they are sufficient. "
-                    "When using keyword_any, include exact source-language terms from recent run "
-                    "summaries. Korean terms must remain Korean; do not replace them with "
-                    "English-only translations."
+                    "Create a conditional rule only when segment_profiles contains quality evidence "
+                    "for that same condition."
                 ),
             },
             {
@@ -282,6 +238,7 @@ class ModelRoutingPolicyRefreshService:
         current_policy: Optional[dict[str, Any]],
         candidates: list[dict[str, Any]],
         recent_runs: list[dict[str, Any]],
+        segment_profiles: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], str, str]:
         candidate_ids = {candidate["model_id"] for candidate in candidates}
         status = str(generated.get("status") or "pending_review")
@@ -340,6 +297,13 @@ class ModelRoutingPolicyRefreshService:
             if model_id
             and not cls._passes_model_quality_gate(quality_metrics.get(model_id))
         }
+        unverified_models.update(
+            cls._unverified_rule_models(
+                sanitized_rules,
+                changed_models=changed_models,
+                segment_profiles=segment_profiles,
+            )
+        )
         if unverified_models:
             current = current_policy or {}
             return (
@@ -579,6 +543,9 @@ class ModelRoutingPolicyRefreshService:
             when = rule.get("when") if isinstance(rule.get("when"), dict) else {}
             if any(key not in ModelRouter.POLICY_CONDITION_KEYS for key in when):
                 continue
+            if "keyword_any" in when:
+                # Raw input/keyword 근거를 judge에 전달하지 않으므로 추정 rule을 막는다.
+                continue
             fallback_model = str(rule.get("fallback_model_id") or "").strip() or None
             if fallback_model not in candidate_ids:
                 fallback_model = None
@@ -593,6 +560,54 @@ class ModelRoutingPolicyRefreshService:
                 }
             )
         return sorted(sanitized, key=lambda item: item["priority"])
+
+    @classmethod
+    def _unverified_rule_models(
+        cls,
+        rules: list[dict[str, Any]],
+        *,
+        changed_models: set[str],
+        segment_profiles: list[dict[str, Any]],
+    ) -> set[str]:
+        """조건부 rule은 같은 조건의 운영 quality 표본이 있을 때만 승격한다."""
+        unverified: set[str] = set()
+        for rule in rules:
+            selected_model = str(rule.get("selected_model_id") or "")
+            when = rule.get("when") if isinstance(rule.get("when"), dict) else {}
+            if not selected_model or selected_model not in changed_models or not when:
+                continue
+            metrics = cls._segment_metrics_for_rule(
+                segment_profiles,
+                when=when,
+                model_id=selected_model,
+            )
+            if not cls._passes_model_quality_gate(metrics):
+                unverified.add(selected_model)
+        return unverified
+
+    @staticmethod
+    def _segment_metrics_for_rule(
+        segment_profiles: list[dict[str, Any]],
+        *,
+        when: dict[str, Any],
+        model_id: str,
+    ) -> dict[str, Any] | None:
+        matching: list[dict[str, Any]] = []
+        for profile in segment_profiles:
+            if not isinstance(profile, dict):
+                continue
+            conditions = profile.get("conditions")
+            performances = profile.get("model_performance")
+            if not isinstance(conditions, dict) or not isinstance(performances, dict):
+                continue
+            if any(conditions.get(key) != value for key, value in when.items()):
+                continue
+            metrics = performances.get(model_id)
+            if isinstance(metrics, dict):
+                matching.append(metrics)
+        if not matching:
+            return None
+        return max(matching, key=lambda item: int(item.get("run_count") or 0))
 
     @staticmethod
     def _parse_judge_response(content: str) -> dict[str, Any]:
@@ -644,45 +659,6 @@ class ModelRoutingPolicyRefreshService:
             }
             for candidate in candidates
         ]
-
-    @classmethod
-    def _tier_models(
-        cls, candidates: list[ModelCandidate]
-    ) -> tuple[ModelCandidate, ModelCandidate, ModelCandidate]:
-        sorted_candidates = sorted(candidates, key=lambda candidate: candidate.price_score)
-        cheap = sorted_candidates[0]
-        high = sorted_candidates[-1]
-        mid = sorted_candidates[len(sorted_candidates) // 2]
-        return cheap, mid, high
-
-    @classmethod
-    def _structured_output_model(
-        cls,
-        candidates: list[ModelCandidate],
-        *,
-        fallback: ModelCandidate,
-    ) -> ModelCandidate:
-        """JSON schema 출력은 최저가보다 안정적인 텍스트 생성 가능성을 우선한다."""
-        for candidate in sorted(candidates, key=lambda item: item.price_score):
-            normalized_id = candidate.model_id.lower()
-            if any(
-                keyword in normalized_id
-                for keyword in STRUCTURED_OUTPUT_RISKY_MODEL_KEYWORDS
-            ):
-                continue
-            return candidate
-        return fallback
-
-    @staticmethod
-    def _first_distinct_model(
-        candidates: list[ModelCandidate],
-        *,
-        exclude: str,
-    ) -> Optional[ModelCandidate]:
-        for candidate in candidates:
-            if candidate.model_id != exclude:
-                return candidate
-        return None
 
     @staticmethod
     def _next_policy_version(previous_version: str) -> str:

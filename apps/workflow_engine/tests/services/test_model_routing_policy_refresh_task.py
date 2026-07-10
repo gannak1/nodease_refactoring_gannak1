@@ -75,7 +75,14 @@ def test_persisted_refresh_records_judge_usage_log_reference():
         ),
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRouter.collect_candidates",
-            return_value=[SimpleNamespace(model_id="gpt-4.1-mini")],
+            return_value=[
+                SimpleNamespace(model_id="gpt-4.1", price_score=0.1),
+                SimpleNamespace(model_id="gpt-4.1-mini", price_score=0.01)
+            ],
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.LLMService.get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1-mini"],
         ),
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRouter.collect_profile",
@@ -95,7 +102,7 @@ def test_persisted_refresh_records_judge_usage_log_reference():
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingPolicyRefreshService.refresh_policy",
             return_value=refresh_result,
-        ),
+        ) as refresh_policy,
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.LLMService.calculate_cost",
             return_value=0.0012,
@@ -115,3 +122,27 @@ def test_persisted_refresh_records_judge_usage_log_reference():
     assert update.judge_provider == "openai"
     assert update.judge_usage_log_id == usage_log.id
     log_usage.assert_called_once()
+    refresh_request = refresh_policy.call_args.args[1]
+    assert [candidate.model_id for candidate in refresh_request.candidate_models] == [
+        "gpt-4.1-mini"
+    ]
+
+
+def test_persisted_refresh_prefers_current_model_for_judge_when_available():
+    """judge 비용·품질 기준은 현재 운영 모델을 우선해 비교 기준을 잃지 않는다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    candidates = [
+        SimpleNamespace(model_id="gpt-4.1", price_score=0.1),
+        SimpleNamespace(model_id="gpt-4.1-mini", price_score=0.01),
+    ]
+
+    assert (
+        PersistedModelRoutingPolicyRefreshService._select_judge_model(
+            candidates,
+            current_model_id="gpt-4.1",
+        )
+        == "gpt-4.1"
+    )

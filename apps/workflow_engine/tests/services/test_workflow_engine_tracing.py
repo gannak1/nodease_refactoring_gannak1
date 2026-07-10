@@ -124,6 +124,65 @@ def test_rag_metadata_keeps_source_fields_only():
     assert "raw chunk text" not in str(metadata)
 
 
+def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
+    """추천/라우팅이 읽는 안전한 summary는 실제 node trace에도 남아야 한다."""
+    engine = _engine_without_init()
+    node = SimpleNamespace(_trace_metadata={})
+
+    metadata = engine._build_node_trace_metadata(
+        "llmNode",
+        node,
+        result={
+            "model": "gpt-4.1-mini",
+            "usage": {"prompt_tokens": 21, "completion_tokens": 13},
+            "cost": 0.001,
+            "metadata": {
+                "finish_reason": "stop",
+                "schema_status": "passed",
+                "repetition_rate": 0.125,
+                "model_routing": {
+                    "policy_id": "policy-1",
+                    "policy_version": "router-policy-v2",
+                    "selected_model": "gpt-4.1",
+                    "fallback_model": "gpt-4.1-mini",
+                    "fallback_used": True,
+                    "decision_source": "active_policy",
+                    "matched_rule_id": "short-json",
+                    "reason_code": "quality_gate_passed",
+                    "judge_called": False,
+                    "runtime_context": {
+                        "output_format": "json",
+                        "schema_required": True,
+                        "knowledge_enabled": True,
+                        "input_length_bucket": "short",
+                        "prompt_length_bucket": "medium",
+                        "raw_input": "must not persist",
+                    },
+                },
+                "rag": {
+                    "context_token_estimate": 123,
+                    "retrieved_chunk_count": 2,
+                    "evidence_sufficient": True,
+                    "raw_query": "must not persist",
+                },
+            },
+        },
+        process_data={"provider": "openai", "model": "gpt-4.1"},
+        started_at=datetime.now(timezone.utc),
+        finished_at=datetime.now(timezone.utc),
+    )
+
+    assert metadata["llm"]["finish_reason"] == "stop"
+    assert metadata["llm"]["schema_status"] == "passed"
+    assert metadata["llm"]["repetition_rate"] == 0.125
+    assert metadata["llm"]["fallback_used"] is True
+    assert metadata["llm"]["input_length_bucket"] == "short"
+    assert metadata["rag"]["context_token_estimate"] == 123
+    assert metadata["rag"]["evidence_sufficient"] is True
+    assert "raw_input" not in str(metadata)
+    assert "raw_query" not in str(metadata)
+
+
 def test_tuple_graph_is_supported_explicitly():
     node = NodeSchema(
         id="start-1",

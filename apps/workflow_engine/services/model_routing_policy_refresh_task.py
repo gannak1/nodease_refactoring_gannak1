@@ -60,6 +60,19 @@ class PersistedModelRoutingPolicyRefreshService:
                 if policy.organization_id is not None
                 else []
             )
+            if policy.judge_user_id is not None and policy.organization_id is not None:
+                available_model_ids = set(
+                    LLMService.get_runtime_available_model_ids_for_user(
+                        db,
+                        user_id=policy.judge_user_id,
+                        organization_id=policy.organization_id,
+                    )
+                )
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.model_id in available_model_ids
+                ]
             profile = ModelRouter.collect_profile(
                 db,
                 ModelRouterContext(
@@ -70,6 +83,7 @@ class PersistedModelRoutingPolicyRefreshService:
                 ),
             )
             recent_runs = cls._safe_recent_runs(profile)
+            segment_profiles = cls._safe_segment_profiles(profile)
             excluded_count = cls._excluded_run_count(db, policy, requested_at)
             update.eligible_run_count = profile.operational_usable_runs
             update.excluded_run_count = excluded_count
@@ -79,6 +93,7 @@ class PersistedModelRoutingPolicyRefreshService:
             update.input_summary = {
                 "node_summary": cls._safe_node_summary(node_data or {}),
                 "model_profile": profile.as_snapshot(),
+                "segment_profile_count": len(segment_profiles),
                 "candidate_count": len(candidates),
             }
 
@@ -91,7 +106,10 @@ class PersistedModelRoutingPolicyRefreshService:
                 judge_model_id = None
                 judge_usage = {}
             else:
-                judge_model_id = candidates[len(candidates) // 2].model_id
+                judge_model_id = cls._select_judge_model(
+                    candidates,
+                    current_model_id=(node_data or {}).get("model_id"),
+                )
                 result = ModelRoutingPolicyRefreshService.refresh_policy(
                     db,
                     ModelRoutingPolicyRefreshRequest(
@@ -102,6 +120,7 @@ class PersistedModelRoutingPolicyRefreshService:
                         current_policy=current_policy,
                         candidate_models=candidates,
                         recent_runs=recent_runs,
+                        segment_profiles=segment_profiles,
                         node_summary=cls._safe_node_summary(node_data or {}),
                         trigger=trigger,
                         judge_model_id=judge_model_id,
@@ -225,6 +244,25 @@ class PersistedModelRoutingPolicyRefreshService:
             {"model_id": model_id, **summary}
             for model_id, summary in profile.as_snapshot()["model_performance"].items()
         ]
+
+    @staticmethod
+    def _safe_segment_profiles(profile) -> list[dict[str, Any]]:
+        snapshot = profile.as_snapshot()
+        segments = snapshot.get("segment_performance")
+        return segments if isinstance(segments, list) else []
+
+    @staticmethod
+    def _select_judge_model(candidates, *, current_model_id: Any) -> str:
+        """현재 운영 모델을 우선하고, 없으면 안정적인 순서로 judge 모델을 고른다."""
+        current_model_id = str(current_model_id or "").strip()
+        for candidate in candidates:
+            if candidate.model_id == current_model_id:
+                return candidate.model_id
+        ordered = sorted(
+            candidates,
+            key=lambda candidate: (candidate.price_score, candidate.model_id),
+        )
+        return ordered[len(ordered) // 2].model_id
 
     @staticmethod
     def _remaining_event_count(

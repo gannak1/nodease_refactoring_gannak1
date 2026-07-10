@@ -104,6 +104,38 @@ def test_llm_span_metadata_preserves_model_routing_summary_only():
     }
 
 
+def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "finish_reason": "stop",
+                "schema_status": "passed",
+                "repetition_rate": 0.125,
+                "downstream_status": "passed",
+                "fallback_used": True,
+                "policy_id": "policy-1",
+                "matched_rule_id": "short-json",
+                "decision_source": "active_policy",
+                "reason_code": "quality_gate_passed",
+                "judge_called": False,
+                "input_length_bucket": "short",
+                "prompt_length_bucket": "medium",
+                "output_format": "json",
+                "schema_required": True,
+                "knowledge_enabled": False,
+                "raw_input": "secret input",
+            }
+        },
+    )
+
+    assert metadata["llm"]["fallback_used"] is True
+    assert metadata["llm"]["finish_reason"] == "stop"
+    assert metadata["llm"]["repetition_rate"] == 0.125
+    assert metadata["llm"]["input_length_bucket"] == "short"
+    assert "raw_input" not in metadata["llm"]
+
+
 def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

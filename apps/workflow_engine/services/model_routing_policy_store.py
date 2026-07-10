@@ -16,7 +16,6 @@ from apps.shared.db.models.workflow_run import NodeRunStatus, WorkflowNodeRun, W
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
-from apps.workflow_engine.services.model_router import ModelRouter
 from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
@@ -92,22 +91,25 @@ class ModelRoutingPolicyStore:
         if policy is not None:
             return policy
 
-        active_policy, policy_version = cls._legacy_active_policy(node_data)
         policy_id = uuid.uuid4()
         organization_id = cls._organization_id_for_run(db, workflow_run)
         active_policy, policy_version = cls._legacy_active_policy(node_data)
         refresh_every_runs = cls._refresh_every_runs(node_data)
-        if not active_policy and organization_id is not None:
-            candidates = ModelRouter.collect_candidates(db, organization_id=organization_id)
-            if candidates:
-                bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
-                    policy_id=str(policy_id),
-                    policy_version="bootstrap-v1",
-                    candidate_models=candidates,
-                    refresh_every_runs=refresh_every_runs,
-                )
-                active_policy = bootstrap["active_policy"]
-                policy_version = bootstrap["policy_version"]
+        if not active_policy:
+            configured_model_id = str(node_data.get("model_id") or "").strip()
+            if not configured_model_id:
+                # 실행 모델이 없는 잘못된 deployment snapshot은 policy를 만들지 않는다.
+                # 이후 runtime도 저장 모델을 임의로 추정하지 않고 기존 validation 경로에서 막는다.
+                return None
+            bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
+                policy_id=str(policy_id),
+                policy_version="bootstrap-preserve-config-v1",
+                default_model_id=configured_model_id,
+                fallback_model_id=node_data.get("fallback_model_id"),
+                refresh_every_runs=refresh_every_runs,
+            )
+            active_policy = bootstrap["active_policy"]
+            policy_version = bootstrap["policy_version"]
 
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,
@@ -116,7 +118,7 @@ class ModelRoutingPolicyStore:
             deployment_id=workflow_run.deployment_id,
             node_id=node_id,
             enabled=True,
-            status="active" if active_policy else "collecting",
+            status="collecting",
             policy_version=policy_version,
             active_policy=active_policy,
             refresh_every_runs=refresh_every_runs,
