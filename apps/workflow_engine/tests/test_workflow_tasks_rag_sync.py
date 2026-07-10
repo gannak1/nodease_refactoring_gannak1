@@ -79,12 +79,14 @@ def _active_deployment_pair(
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     organization_id = uuid.uuid4()
+    created_by = uuid.uuid4()
     FakeSession.deployment = SimpleNamespace(
         id=deployment_id,
         app_id=app_id,
         version=7,
         type=deployment_type,
         is_active=True,
+        created_by=created_by,
         graph_snapshot=graph_snapshot or {"nodes": []},
     )
     FakeSession.app = SimpleNamespace(
@@ -92,6 +94,7 @@ def _active_deployment_pair(
         workflow_id=workflow_id,
         organization_id=organization_id,
         active_deployment_id=deployment_id,
+        created_by=created_by,
     )
     return FakeSession.deployment, FakeSession.app, trigger_mode
 
@@ -360,6 +363,7 @@ def test_execute_by_deployment_rebuilds_tenant_context_from_database():
     attacker_workflow_id = str(uuid.uuid4())
     attacker_organization_id = str(uuid.uuid4())
     attacker_app_id = str(uuid.uuid4())
+    attacker_user_id = str(uuid.uuid4())
 
     result = tasks.execute_by_deployment.run(
         str(deployment.id),
@@ -369,6 +373,7 @@ def test_execute_by_deployment_rebuilds_tenant_context_from_database():
             "workflow_id": attacker_workflow_id,
             "organization_id": attacker_organization_id,
             "app_id": attacker_app_id,
+            "user_id": attacker_user_id,
             "deployment_id": str(uuid.uuid4()),
             "workflow_version": 999,
             "execution_subject": {
@@ -386,11 +391,13 @@ def test_execute_by_deployment_rebuilds_tenant_context_from_database():
     assert context["app_id"] == str(deployment.app_id)
     assert context["deployment_id"] == str(deployment.id)
     assert context["workflow_version"] == deployment.version
+    assert context["user_id"] == str(deployment.created_by)
     assert context["request_id"] == "request-1"
     assert "execution_subject" not in context
     assert attacker_workflow_id not in context.values()
     assert attacker_organization_id not in context.values()
     assert attacker_app_id not in context.values()
+    assert attacker_user_id not in context.values()
 
 
 def test_execute_by_deployment_rejects_inactive_deployment():

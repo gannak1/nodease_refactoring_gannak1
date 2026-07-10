@@ -102,6 +102,35 @@ class CaptureLoadDb:
         return self.captured_query
 
 
+class CaptureStaleScheduleQuery:
+    def __init__(self):
+        self.filters = []
+
+    def filter(self, *expressions):
+        self.filters.extend(expressions)
+        return self
+
+    def first(self):
+        return None
+
+
+class CaptureStaleScheduleDb:
+    def __init__(self):
+        self.query_capture = CaptureStaleScheduleQuery()
+        self.rolled_back = False
+        self.closed = False
+
+    def query(self, model):
+        assert model is Schedule
+        return self.query_capture
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+
 def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
     """Scheduled LLM runtime keeps the app organization scope in execution context. MBA-43"""
     deployment_id = uuid.uuid4()
@@ -326,6 +355,33 @@ def test_scheduler_removes_stale_job_before_dispatch(monkeypatch):
     assert celery.calls == []
     assert scheduler.removed == [str(schedule_id)]
     assert db.committed is False
+    assert db.rolled_back is False
+    assert db.closed is True
+
+
+def test_scheduler_stale_lookup_matches_schedule_and_deployment_ids(monkeypatch):
+    deployment_id = uuid.uuid4()
+    schedule_id = uuid.uuid4()
+    db = CaptureStaleScheduleDb()
+    scheduler = FakeScheduler(None)
+
+    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
+
+    service = object.__new__(SchedulerService)
+    service.scheduler = scheduler
+    service.runtime_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY
+
+    service._run_workflow(deployment_id, schedule_id)
+
+    filter_values = {
+        expression.left.key: expression.right.value
+        for expression in db.query_capture.filters
+    }
+    assert filter_values == {
+        "id": schedule_id,
+        "deployment_id": deployment_id,
+    }
+    assert scheduler.removed == [str(schedule_id)]
     assert db.rolled_back is False
     assert db.closed is True
 
