@@ -5,6 +5,8 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from apps.shared.db.models.llm import LLMModel
+
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
 
@@ -38,9 +40,16 @@ class ModelRoutingPolicyRefreshResult:
     judge_model_id: str
     judge_usage: dict[str, Any]
     metadata: dict[str, Any]
+    judge_credential_id: Optional[uuid.UUID] = None
+    judge_provider: Optional[str] = None
 
 
 class ModelRoutingPolicyRefreshService:
+    """Judge 결과를 검증된 runtime policy로 변환하는 서비스."""
+
+    MIN_MODEL_QUALITY_SAMPLES = 5
+    MIN_JUDGE_CONFIDENCE = 0.7
+
     @classmethod
     def refresh_policy(
         cls,
@@ -63,6 +72,7 @@ class ModelRoutingPolicyRefreshService:
 
         messages = cls._build_messages(request, candidates)
         selection = None
+        judge_provider = None
         if judge_client is None:
             selection = LLMService.get_runtime_client_for_user(
                 db,
@@ -71,6 +81,7 @@ class ModelRoutingPolicyRefreshService:
                 organization_id=request.organization_id,
             )
             judge_client = selection.client
+            judge_provider = cls._provider_for_model(db, selection.model_id)
 
         response = judge_client.invoke_sync(messages, temperature=0.0, max_tokens=1200)
         usage = cls._usage_from_response(response)
@@ -85,11 +96,14 @@ class ModelRoutingPolicyRefreshService:
                 judge_model_id=selection.model_id if selection is not None else request.judge_model_id,
                 judge_usage=usage,
                 metadata=cls._metadata(request, "failed", len(candidates), usage),
+                judge_credential_id=selection.credential_id if selection else None,
+                judge_provider=judge_provider,
             )
         policy, status, reason = cls._normalize_generated_policy(
             generated,
             current_policy=request.current_policy,
             candidates=candidates,
+            recent_runs=request.recent_runs,
         )
         metadata = cls._metadata(
             request,
@@ -97,6 +111,7 @@ class ModelRoutingPolicyRefreshService:
             len(candidates),
             usage,
             generated_policy_version=policy.get("policy_version"),
+            confidence=cls._confidence(generated.get("confidence")),
         )
         return ModelRoutingPolicyRefreshResult(
             status=status,
@@ -105,7 +120,21 @@ class ModelRoutingPolicyRefreshService:
             judge_model_id=selection.model_id if selection is not None else request.judge_model_id,
             judge_usage=usage,
             metadata=metadata,
+            judge_credential_id=selection.credential_id if selection else None,
+            judge_provider=judge_provider,
         )
+
+    @staticmethod
+    def _provider_for_model(db: Session | None, model_id: str) -> Optional[str]:
+        if db is None:
+            return None
+        model = (
+            db.query(LLMModel)
+            .filter(LLMModel.model_id_for_api_call == model_id)
+            .first()
+        )
+        provider = getattr(model, "provider", None) if model is not None else None
+        return str(getattr(provider, "name", "") or "") or None
 
     @classmethod
     def default_rule_policy(
@@ -197,6 +226,7 @@ class ModelRoutingPolicyRefreshService:
             "recent_runs": request.recent_runs[-40:],
             "required_schema": {
                 "status": "applied | kept_current | pending_review",
+                "confidence": "number from 0 to 1",
                 "default_model_id": "model id",
                 "fallback_model_id": "model id or null",
                 "rules": [
@@ -251,11 +281,30 @@ class ModelRoutingPolicyRefreshService:
         *,
         current_policy: Optional[dict[str, Any]],
         candidates: list[dict[str, Any]],
+        recent_runs: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], str, str]:
         candidate_ids = {candidate["model_id"] for candidate in candidates}
         status = str(generated.get("status") or "pending_review")
         if status not in ALLOWED_REFRESH_STATUSES:
             status = "pending_review"
+
+        # Judge가 명시적으로 현재 정책을 유지하라고 판단한 경우에는
+        # 새 rule set을 만들지 않고 active snapshot/version을 그대로 보존한다.
+        if status == "kept_current" and current_policy:
+            return (
+                cls._with_refresh_status(current_policy, "kept_current"),
+                "kept_current",
+                "검증된 변경 후보가 없어 기존 정책을 유지합니다.",
+            )
+
+        confidence = cls._confidence(generated.get("confidence"))
+        if confidence < cls.MIN_JUDGE_CONFIDENCE:
+            current = current_policy or {}
+            return (
+                cls._with_refresh_status(current, "pending_review"),
+                "pending_review",
+                "judge confidence가 정책 반영 기준보다 낮아 기존 정책을 유지합니다.",
+            )
 
         raw_rules = [
             rule
@@ -279,6 +328,39 @@ class ModelRoutingPolicyRefreshService:
         if fallback_model not in candidate_ids:
             fallback_model = None
 
+        quality_metrics = cls._quality_metrics_by_model(recent_runs)
+        changed_models = cls._changed_primary_models(
+            current_policy,
+            default_model=default_model,
+            rules=sanitized_rules,
+        )
+        unverified_models = {
+            model_id
+            for model_id in changed_models
+            if model_id
+            and not cls._passes_model_quality_gate(quality_metrics.get(model_id))
+        }
+        if unverified_models:
+            current = current_policy or {}
+            return (
+                cls._with_refresh_status(current, "pending_review"),
+                "pending_review",
+                "검증된 운영 표본이 없는 모델은 자동 정책에 반영하지 않습니다.",
+            )
+
+        if changed_models and not cls._has_efficiency_evidence(
+            changed_models,
+            current_policy=current_policy,
+            candidates=candidates,
+            quality_metrics=quality_metrics,
+        ):
+            current = current_policy or {}
+            return (
+                cls._with_refresh_status(current, "kept_current"),
+                "kept_current",
+                "비용 또는 latency 개선 근거가 부족해 기존 정책을 유지합니다.",
+            )
+
         policy_id = str(
             (current_policy or {}).get("policy_id") or "model-router-policy"
         )
@@ -300,6 +382,190 @@ class ModelRoutingPolicyRefreshService:
             },
         }
         return policy, status, str(generated.get("reason") or "judge rule set applied")
+
+    @staticmethod
+    def _confidence(value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _policy_model_ids(policy: Optional[dict[str, Any]]) -> set[str]:
+        if not isinstance(policy, dict):
+            return set()
+        active = policy.get("active_policy")
+        if not isinstance(active, dict):
+            return set()
+        model_ids = {
+            str(active.get("default_model_id") or "").strip(),
+            str(active.get("fallback_model_id") or "").strip(),
+        }
+        for rule in active.get("rules") or []:
+            if not isinstance(rule, dict):
+                continue
+            model_ids.update(
+                {
+                    str(rule.get("selected_model_id") or "").strip(),
+                    str(rule.get("fallback_model_id") or "").strip(),
+                }
+            )
+        return {model_id for model_id in model_ids if model_id}
+
+    @classmethod
+    def _changed_primary_models(
+        cls,
+        current_policy: Optional[dict[str, Any]],
+        *,
+        default_model: str,
+        rules: list[dict[str, Any]],
+    ) -> set[str]:
+        """기존 policy에서 새 실행 경로로 승격되는 모델만 품질 gate 대상으로 잡는다."""
+        active = (
+            current_policy.get("active_policy")
+            if isinstance(current_policy, dict)
+            else None
+        )
+        active = active if isinstance(active, dict) else {}
+        changed: set[str] = set()
+        if default_model and default_model != str(active.get("default_model_id") or ""):
+            changed.add(default_model)
+
+        current_rules = {
+            str(rule.get("id") or ""): rule
+            for rule in active.get("rules") or []
+            if isinstance(rule, dict) and str(rule.get("id") or "")
+        }
+        for rule in rules:
+            model_id = str(rule.get("selected_model_id") or "")
+            current_rule = current_rules.get(str(rule.get("id") or ""))
+            if (
+                model_id
+                and (
+                    current_rule is None
+                    or str(current_rule.get("selected_model_id") or "") != model_id
+                )
+            ):
+                changed.add(model_id)
+        return changed
+
+    @classmethod
+    def _has_efficiency_evidence(
+        cls,
+        changed_models: set[str],
+        *,
+        current_policy: Optional[dict[str, Any]],
+        candidates: list[dict[str, Any]],
+        quality_metrics: dict[str, dict[str, Any]],
+    ) -> bool:
+        """새 primary routing 모델은 관측 비용/지연 또는 price 근거가 있어야 한다."""
+        if not changed_models or not isinstance(current_policy, dict):
+            return True
+
+        current_models = cls._primary_model_ids(current_policy)
+        if not current_models:
+            return False
+        candidates_by_id = {
+            str(candidate.get("model_id") or ""): candidate
+            for candidate in candidates
+        }
+
+        for changed_model in changed_models:
+            changed_metrics = quality_metrics.get(changed_model) or {}
+            changed_candidate = candidates_by_id.get(changed_model) or {}
+            for current_model in current_models - {changed_model}:
+                current_metrics = quality_metrics.get(current_model) or {}
+                current_candidate = candidates_by_id.get(current_model) or {}
+                observed_cost = cls._is_lower_metric(
+                    changed_metrics.get("avg_cost"),
+                    current_metrics.get("avg_cost"),
+                )
+                observed_latency = cls._is_lower_metric(
+                    changed_metrics.get("avg_latency_ms"),
+                    current_metrics.get("avg_latency_ms"),
+                )
+                if observed_cost or observed_latency:
+                    return True
+
+                has_observed_comparison = any(
+                    cls._as_float(value) is not None
+                    for value in (
+                        changed_metrics.get("avg_cost"),
+                        current_metrics.get("avg_cost"),
+                        changed_metrics.get("avg_latency_ms"),
+                        current_metrics.get("avg_latency_ms"),
+                    )
+                )
+                if has_observed_comparison:
+                    continue
+                if cls._is_lower_metric(
+                    changed_candidate.get("price_score"),
+                    current_candidate.get("price_score"),
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _primary_model_ids(policy: dict[str, Any]) -> set[str]:
+        active = policy.get("active_policy")
+        active = active if isinstance(active, dict) else {}
+        model_ids = {str(active.get("default_model_id") or "").strip()}
+        for rule in active.get("rules") or []:
+            if isinstance(rule, dict):
+                model_ids.add(str(rule.get("selected_model_id") or "").strip())
+        return {model_id for model_id in model_ids if model_id}
+
+    @staticmethod
+    def _as_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _is_lower_metric(cls, value: Any, reference: Any) -> bool:
+        parsed = cls._as_float(value)
+        baseline = cls._as_float(reference)
+        return parsed is not None and baseline is not None and parsed < baseline
+
+    @staticmethod
+    def _quality_metrics_by_model(
+        recent_runs: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        metrics: dict[str, dict[str, Any]] = {}
+        for row in recent_runs:
+            if not isinstance(row, dict):
+                continue
+            model_id = str(row.get("model_id") or row.get("model") or "").strip()
+            if model_id:
+                metrics[model_id] = row
+        return metrics
+
+    @classmethod
+    def _passes_model_quality_gate(cls, metrics: Optional[dict[str, Any]]) -> bool:
+        if not isinstance(metrics, dict):
+            return False
+        try:
+            run_count = int(metrics.get("run_count") or 0)
+        except (TypeError, ValueError):
+            return False
+        if run_count < cls.MIN_MODEL_QUALITY_SAMPLES:
+            return False
+
+        def below(key: str, minimum: float) -> bool:
+            value = metrics.get(key)
+            return value is not None and float(value) < minimum
+
+        if below("success_rate", ModelRouter.SCHEMA_PASS_RATE_MIN):
+            return False
+        if below("schema_pass_rate", ModelRouter.SCHEMA_PASS_RATE_MIN):
+            return False
+        if below("downstream_success_rate", ModelRouter.DOWNSTREAM_SUCCESS_RATE_MIN):
+            return False
+        fallback_rate = metrics.get("fallback_rate")
+        if fallback_rate is not None and float(fallback_rate) > ModelRouter.FALLBACK_RATE_MAX:
+            return False
+        return True
 
     @staticmethod
     def _sanitize_rules(
@@ -464,6 +730,7 @@ class ModelRoutingPolicyRefreshService:
         usage: Optional[dict[str, Any]],
         *,
         generated_policy_version: Optional[str] = None,
+        confidence: Optional[float] = None,
     ) -> dict[str, Any]:
         return {
             "trigger": request.trigger,
@@ -472,6 +739,7 @@ class ModelRoutingPolicyRefreshService:
             "eligible_run_count": len(request.recent_runs),
             "candidate_count": candidate_count,
             "result": status,
+            "confidence": confidence,
             "judge_usage": usage or {},
             "generated_policy_version": generated_policy_version,
         }

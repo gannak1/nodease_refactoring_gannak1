@@ -340,7 +340,7 @@ class LLMNode(Node[LLMNodeData]):
     node_type = "llmNode"
 
     def _resolve_model_routing_policy(
-        self, inputs: Dict[str, Any]
+        self, inputs: Dict[str, Any], db_session=None
     ) -> tuple[str, Optional[str], Optional[dict]]:
         """저장된 active policy snapshot으로 실행 모델을 결정한다.
 
@@ -353,6 +353,34 @@ class LLMNode(Node[LLMNodeData]):
             return selected_model_id, fallback_model_id, None
 
         policy = self.data.model_routing_policy or {}
+        is_deployed_execution = bool(self.execution_context.get("deployment_id"))
+        if db_session is not None:
+            from apps.workflow_engine.services.model_routing_policy_store import (
+                ModelRoutingPolicyStore,
+            )
+
+            persisted_policy = ModelRoutingPolicyStore.get_runtime_policy(
+                db_session,
+                workflow_id=self.execution_context.get("workflow_id"),
+                deployment_id=self.execution_context.get("deployment_id"),
+                node_id=self.id,
+            )
+            if persisted_policy is not None and persisted_policy.enabled:
+                policy = {
+                    "status": persisted_policy.status,
+                    "policy_id": str(persisted_policy.id),
+                    "policy_version": persisted_policy.policy_version,
+                    "active_policy": persisted_policy.active_policy,
+                    "refresh": {
+                        "refresh_every_runs": persisted_policy.refresh_every_runs,
+                        "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
+                    },
+                }
+            elif is_deployed_execution:
+                # 배포 runtime의 source of truth는 policy table이다. 첫 성공 실행이
+                # policy row를 만들기 전까지 graph에 남은 legacy snapshot을 평가하면
+                # 저장 모델과 다른 과거 후보로 임의 라우팅될 수 있다.
+                policy = {}
         if not isinstance(policy, dict):
             return selected_model_id, fallback_model_id, {
                 "enabled": True,
@@ -425,14 +453,14 @@ class LLMNode(Node[LLMNodeData]):
         temp_session = None
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
-        selected_model_id, fallback_model_id, model_routing_metadata = (
-            self._resolve_model_routing_policy(inputs)
-        )
-
-        if not client_override or self.data.knowledgeBases:
+        if not client_override or self.data.knowledgeBases or self.data.auto_model_routing:
             db_session, should_close_session = self._borrow_db_session()
             if should_close_session:
                 temp_session = db_session
+
+        selected_model_id, fallback_model_id, model_routing_metadata = (
+            self._resolve_model_routing_policy(inputs, db_session)
+        )
 
         try:
             if client_override:

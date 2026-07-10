@@ -128,6 +128,7 @@ class ModelPerformance:
     fallback_count: int = 0
     retry_count: int = 0
     total_cost: float = 0.0
+    total_tokens: int = 0
     total_latency_ms: int = 0
 
     @property
@@ -152,6 +153,18 @@ class ModelPerformance:
             return None
         return self.total_cost / self.run_count
 
+    @property
+    def avg_total_tokens(self) -> Optional[float]:
+        if self.run_count <= 0:
+            return None
+        return self.total_tokens / self.run_count
+
+    @property
+    def avg_latency_ms(self) -> Optional[float]:
+        if self.run_count <= 0:
+            return None
+        return self.total_latency_ms / self.run_count
+
     def as_summary(self) -> dict[str, Any]:
         return {
             "run_count": self.run_count,
@@ -161,6 +174,8 @@ class ModelPerformance:
             "fallback_rate": self.fallback_rate,
             "retry_count": self.retry_count,
             "avg_cost": self.avg_cost,
+            "avg_total_tokens": self.avg_total_tokens,
+            "avg_latency_ms": self.avg_latency_ms,
         }
 
 
@@ -184,6 +199,7 @@ class ModelRouterContext:
     workflow_id: str
     node_id: str
     current_model_id: Optional[str]
+    deployment_id: Optional[str] = None
     candidate_models: Iterable[ModelCandidate] = field(default_factory=list)
     node_profile: Optional[NodeRunProfile] = None
     fallback_model_id: Optional[str] = None
@@ -483,7 +499,7 @@ class ModelRouter:
             workflow_uuid = uuid.UUID(str(context.workflow_id))
         except (TypeError, ValueError):
             return NodeRunProfile()
-        rows = (
+        query = (
             db.query(WorkflowNodeRun, WorkflowRun, LLMUsageLog, LLMModel)
             .join(WorkflowRun, WorkflowNodeRun.workflow_run_id == WorkflowRun.id)
             .outerjoin(
@@ -502,8 +518,14 @@ class ModelRouter:
             .filter(WorkflowNodeRun.node_type == "llmNode")
             .order_by(WorkflowNodeRun.started_at.desc())
             .limit(200)
-            .all()
         )
+        if context.deployment_id:
+            try:
+                deployment_uuid = uuid.UUID(str(context.deployment_id))
+            except (TypeError, ValueError):
+                return NodeRunProfile()
+            query = query.filter(WorkflowRun.deployment_id == deployment_uuid)
+        rows = query.all()
 
         performances: dict[str, ModelPerformance] = {}
         usable_runs = 0
@@ -525,6 +547,9 @@ class ModelRouter:
             if node_run.status == NodeRunStatus.SUCCESS and usage_log.status == "success":
                 performance.success_count += 1
             performance.total_cost += float(usage_log.total_cost or 0)
+            performance.total_tokens += int(
+                getattr(usage_log, "prompt_tokens", 0) or 0
+            ) + int(getattr(usage_log, "completion_tokens", 0) or 0)
             performance.total_latency_ms += int(usage_log.latency_ms or 0)
             performance.retry_count += int(node_run.retry_count or 0)
 

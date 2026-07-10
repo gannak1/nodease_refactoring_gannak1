@@ -42,7 +42,41 @@ def _candidate(model_id: str, price: float) -> ModelCandidate:
     )
 
 
-def _request(current_policy=None):
+def _request(current_policy=None, *, include_candidate_quality=True, recent_runs=None):
+    default_recent_runs = [
+        {
+            "model_id": "gpt-4.1",
+            "run_count": 20,
+            "success_rate": 1.0,
+            "schema_pass_rate": 1.0,
+            "downstream_success_rate": 1.0,
+            "fallback_rate": 0.0,
+            "avg_cost": 0.02,
+        },
+    ]
+    if include_candidate_quality:
+        default_recent_runs.append(
+            {
+                "model_id": "gpt-4o-mini",
+                "run_count": 10,
+                "success_rate": 1.0,
+                "schema_pass_rate": 1.0,
+                "downstream_success_rate": 1.0,
+                "fallback_rate": 0.0,
+                "avg_cost": 0.001,
+            }
+        )
+        default_recent_runs.append(
+            {
+                "model_id": "gpt-4.1-mini",
+                "run_count": 10,
+                "success_rate": 1.0,
+                "schema_pass_rate": 1.0,
+                "downstream_success_rate": 1.0,
+                "fallback_rate": 0.0,
+                "avg_cost": 0.01,
+            }
+        )
     return ModelRoutingPolicyRefreshRequest(
         workflow_id="workflow-1",
         node_id="llm-1",
@@ -54,15 +88,7 @@ def _request(current_policy=None):
             _candidate("gpt-4.1-mini", 0.01),
             _candidate("gpt-4.1", 0.1),
         ],
-        recent_runs=[
-            {
-                "model": "gpt-4.1",
-                "status": "success",
-                "input_length_bucket": "short",
-                "output_format": "json",
-                "cost": 0.02,
-            }
-        ],
+        recent_runs=recent_runs if recent_runs is not None else default_recent_runs,
     )
 
 
@@ -98,6 +124,7 @@ def test_policy_refresh_accepts_judge_generated_rule_set():
     judge = _JudgeClient(
         {
             "status": "applied",
+            "confidence": 0.95,
             "default_model_id": "gpt-4.1-mini",
             "fallback_model_id": "gpt-4.1",
             "rules": [
@@ -155,6 +182,7 @@ def test_policy_refresh_keeps_existing_policy_when_judge_returns_unusable_model(
     judge = _JudgeClient(
         {
             "status": "applied",
+            "confidence": 0.95,
             "default_model_id": "unknown",
             "rules": [
                 {
@@ -191,6 +219,7 @@ def test_policy_refresh_preserves_user_configured_refresh_every_runs():
     judge = _JudgeClient(
         {
             "status": "applied",
+            "confidence": 0.95,
             "default_model_id": "gpt-4.1-mini",
             "fallback_model_id": "gpt-4.1",
             "rules": [
@@ -230,6 +259,7 @@ def test_policy_refresh_rejects_unknown_condition_keys():
     judge = _JudgeClient(
         {
             "status": "applied",
+            "confidence": 0.95,
             "default_model_id": "gpt-4.1-mini",
             "fallback_model_id": "gpt-4.1",
             "rules": [
@@ -257,3 +287,151 @@ def test_policy_refresh_rejects_unknown_condition_keys():
     assert result.status == "pending_review"
     assert result.policy["policy_id"] == "policy-1"
     assert result.policy["refresh"]["last_refresh_result"] == "pending_review"
+
+
+def test_policy_refresh_keeps_current_when_new_model_has_no_quality_evidence():
+    """운영 표본이 없는 저비용 모델은 judge가 제안해도 active policy가 되면 안 된다."""
+    current_policy = {
+        "status": "active",
+        "policy_id": "policy-1",
+        "policy_version": "router-policy-v1",
+        "active_policy": {
+            "default_model_id": "gpt-4.1",
+            "fallback_model_id": "gpt-4.1-mini",
+            "rules": [],
+        },
+    }
+    judge = _JudgeClient(
+        {
+            "status": "applied",
+            "confidence": 0.95,
+            "default_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "unverified-cheap-model",
+                    "priority": 10,
+                    "when": {"output_format": "json"},
+                    "selected_model_id": "gpt-4o-mini",
+                    "fallback_model_id": "gpt-4.1",
+                    "reason_code": "lower_cost",
+                }
+            ],
+        }
+    )
+
+    result = ModelRoutingPolicyRefreshService.refresh_policy(
+        None,
+        _request(current_policy, include_candidate_quality=False),
+        judge_client=judge,
+    )
+
+    assert result.status == "pending_review"
+    assert (
+        result.policy["active_policy"]["default_model_id"]
+        == current_policy["active_policy"]["default_model_id"]
+    )
+    assert result.policy["policy_version"] == current_policy["policy_version"]
+
+
+def test_policy_refresh_rejects_unverified_model_promoted_from_bootstrap_rule():
+    """bootstrap rule에 있던 모델도 새 default로 승격되면 별도 운영 품질 근거가 필요하다."""
+    current_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
+        policy_id="policy-1",
+        policy_version="router-policy-v1",
+        candidate_models=[
+            _candidate("gpt-4o-mini", 0.001),
+            _candidate("gpt-4.1-mini", 0.01),
+            _candidate("gpt-4.1", 0.1),
+        ],
+    )
+    judge = _JudgeClient(
+        {
+            "status": "applied",
+            "confidence": 0.95,
+            "default_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "rules": [
+                {
+                    "id": "short-json-no-knowledge",
+                    "priority": 10,
+                    "when": {"output_format": "json"},
+                    "selected_model_id": "gpt-4o-mini",
+                    "fallback_model_id": "gpt-4.1-mini",
+                    "reason_code": "promote_existing_bootstrap_candidate",
+                }
+            ],
+        }
+    )
+
+    result = ModelRoutingPolicyRefreshService.refresh_policy(
+        None,
+        _request(current_policy, include_candidate_quality=False),
+        judge_client=judge,
+    )
+
+    assert result.status == "pending_review"
+    assert result.policy["active_policy"] == current_policy["active_policy"]
+
+
+def test_policy_refresh_keeps_current_when_changed_model_has_no_efficiency_evidence():
+    """품질이 같아도 실제 평균 비용과 지연 시간이 나쁘면 정책을 바꾸지 않는다."""
+    current_policy = {
+        "status": "active",
+        "policy_id": "policy-1",
+        "policy_version": "router-policy-v1",
+        "active_policy": {
+            "default_model_id": "gpt-4.1",
+            "fallback_model_id": "gpt-4.1-mini",
+            "rules": [],
+        },
+    }
+    judge = _JudgeClient(
+        {
+            "status": "applied",
+            "confidence": 0.95,
+            "default_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "slower-and-costlier",
+                    "priority": 10,
+                    "when": {"output_format": "json"},
+                    "selected_model_id": "gpt-4o-mini",
+                    "fallback_model_id": "gpt-4.1",
+                    "reason_code": "incorrect_efficiency_claim",
+                }
+            ],
+        }
+    )
+    recent_runs = [
+        {
+            "model_id": "gpt-4.1",
+            "run_count": 10,
+            "success_rate": 1.0,
+            "schema_pass_rate": 1.0,
+            "downstream_success_rate": 1.0,
+            "fallback_rate": 0.0,
+            "avg_cost": 0.004,
+            "avg_latency_ms": 900,
+        },
+        {
+            "model_id": "gpt-4o-mini",
+            "run_count": 10,
+            "success_rate": 1.0,
+            "schema_pass_rate": 1.0,
+            "downstream_success_rate": 1.0,
+            "fallback_rate": 0.0,
+            "avg_cost": 0.006,
+            "avg_latency_ms": 1200,
+        },
+    ]
+
+    result = ModelRoutingPolicyRefreshService.refresh_policy(
+        None,
+        _request(current_policy, recent_runs=recent_runs),
+        judge_client=judge,
+    )
+
+    assert result.status == "kept_current"
+    assert result.policy["active_policy"] == current_policy["active_policy"]

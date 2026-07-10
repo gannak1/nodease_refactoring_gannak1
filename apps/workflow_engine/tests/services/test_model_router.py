@@ -377,6 +377,8 @@ def test_collect_profile_counts_only_deployed_operational_llm_usage_rows():
         status="success",
         total_cost=Decimal("0.004"),
         latency_ms=1300,
+        prompt_tokens=100,
+        completion_tokens=50,
     )
     model = SimpleNamespace(model_id_for_api_call="gpt-4.1-mini")
     db = _ProfileSession(
@@ -404,6 +406,18 @@ def test_collect_profile_counts_only_deployed_operational_llm_usage_rows():
     assert profile.model_performance["gpt-4.1-mini"].run_count == 1
     assert profile.model_performance["gpt-4.1-mini"].schema_pass_count == 1
     assert profile.model_performance["gpt-4.1-mini"].downstream_success_count == 1
+    assert profile.model_performance["gpt-4.1-mini"].total_tokens == 150
+    assert profile.model_performance["gpt-4.1-mini"].as_summary() == {
+        "run_count": 1,
+        "success_rate": 1.0,
+        "schema_pass_rate": 1.0,
+        "downstream_success_rate": 1.0,
+        "fallback_rate": 0.0,
+        "retry_count": 0,
+        "avg_cost": 0.004,
+        "avg_total_tokens": 150.0,
+        "avg_latency_ms": 1300.0,
+    }
 
 
 def test_collect_profile_uses_workflow_success_as_downstream_fallback():

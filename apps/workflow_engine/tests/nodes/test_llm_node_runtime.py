@@ -3014,6 +3014,128 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     }
 
 
+def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monkeypatch):
+    """배포 runtime은 node data의 오래된 policy보다 DB active policy를 우선한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    persisted = SimpleNamespace(
+        id=uuid.uuid4(),
+        enabled=True,
+        status="active",
+        policy_version="router-policy-v9",
+        active_policy={
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "persisted-short-text",
+                    "priority": 10,
+                    "when": {"input_length_bucket": "short"},
+                    "selected_model_id": "gpt-4.1-mini",
+                    "fallback_model_id": "gpt-4.1",
+                    "reason_code": "persisted_policy_rule",
+                }
+            ],
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=4,
+    )
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda *args, **kwargs: persisted,
+    )
+    data = LLMNodeData(
+        title="persisted routing",
+        model_id="gpt-4.1",
+        auto_model_routing=True,
+        model_routing_policy={
+            "policy_version": "legacy-v1",
+            "active_policy": {"default_model_id": "legacy-model", "rules": []},
+        },
+        user_prompt="hello",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+        },
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
+
+    assert selected == "gpt-4.1-mini"
+    assert fallback == "gpt-4.1"
+    assert metadata["policy_id"] == str(persisted.id)
+    assert metadata["policy_version"] == "router-policy-v9"
+    assert metadata["judge_called"] is False
+
+
+def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
+    monkeypatch,
+):
+    """첫 배포 실행은 legacy node JSON이 아니라 저장된 안정 모델로 시작한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda *args, **kwargs: None,
+    )
+    data = LLMNodeData(
+        title="bootstrap routing",
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
+        auto_model_routing=True,
+        model_routing_policy={
+            "policy_version": "legacy-v1",
+            "active_policy": {
+                "default_model_id": "gpt-4o-mini",
+                "fallback_model_id": "gpt-4.1-mini",
+                "rules": [
+                    {
+                        "id": "legacy-low-cost",
+                        "when": {"input_length_bucket": "short"},
+                        "selected_model_id": "gpt-4o-mini",
+                    }
+                ],
+            },
+        },
+        user_prompt="hello",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-1",
+        data,
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+        },
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
+
+    assert selected == "gpt-4.1"
+    assert fallback == "gpt-4.1-mini"
+    assert metadata == {
+        "enabled": True,
+        "policy_id": None,
+        "policy_version": None,
+        "decision_source": "stored_model",
+        "reason_code": "active_policy_unavailable",
+        "judge_called": False,
+    }
+
+
 def test_workflow_llm_service_uses_relation_priority_before_credential_created_at(
     monkeypatch,
 ):

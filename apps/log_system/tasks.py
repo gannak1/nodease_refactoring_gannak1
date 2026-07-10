@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App  # noqa: F401
 from apps.shared.db.models.connection import Connection  # noqa: F401
@@ -42,14 +44,23 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
-from apps.shared.audit.actions import AuditAction
-from apps.shared.audit.logger import record_audit
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from celery.exceptions import Retry
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
+
+
+def _schedule_model_routing_run_record(node_run: WorkflowNodeRun) -> None:
+    """LLM node 로그가 확정된 뒤에만 정책 run 집계를 별도 task로 넘긴다."""
+    status = getattr(node_run.status, "value", node_run.status)
+    if node_run.node_type != "llmNode" or status != NodeRunStatus.SUCCESS.value:
+        return
+    celery_app.send_task(
+        "workflow.model_routing.record_run",
+        args=[str(node_run.workflow_run_id)],
+    )
 
 
 def _serialize_uuid(obj):
@@ -536,6 +547,7 @@ def update_node_log_finish(self, data: Dict[str, Any]):
 
         _insert_trace_payloads(session, workflow_run_id, data.get("trace_payloads") or [])
         session.commit()
+        _schedule_model_routing_run_record(node_run)
 
         return {"status": "success", "node_id": data["node_id"]}
 

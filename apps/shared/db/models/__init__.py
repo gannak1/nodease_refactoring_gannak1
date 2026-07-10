@@ -40,6 +40,11 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.llm_node_version import LLMNodeVersion
+from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingPolicy,
+    LLMNodeModelRoutingPolicyRunEvent,
+    LLMNodeModelRoutingPolicyUpdate,
+)
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
@@ -118,6 +123,9 @@ __all__ = [
     "LLMRelCredentialModel",
     "LLMUsageLog",
     "LLMNodeVersion",
+    "LLMNodeModelRoutingPolicy",
+    "LLMNodeModelRoutingPolicyRunEvent",
+    "LLMNodeModelRoutingPolicyUpdate",
     "Schedule",
     "Organization",
     "OrganizationMembership",

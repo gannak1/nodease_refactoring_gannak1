@@ -1,0 +1,34 @@
+from unittest.mock import MagicMock, patch
+from uuid import uuid4
+
+
+def test_operational_run_task_dispatches_refresh_for_due_policy():
+    """운영 run 집계 결과가 due policy를 반환하면 refresh task를 dispatch한다."""
+    from apps.workflow_engine import tasks
+
+    policy_id = uuid4()
+    session = MagicMock()
+    sent = []
+
+    with (
+        patch.object(tasks, "SessionLocal", return_value=session),
+        patch.object(
+            tasks.celery_app,
+            "send_task",
+            side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_store.ModelRoutingPolicyStore.record_completed_deployed_run",
+            return_value=[policy_id],
+        ),
+    ):
+        result = tasks.record_model_routing_operational_run.__wrapped__(str(uuid4()))
+
+    assert result == {"status": "success", "scheduled_policy_ids": [str(policy_id)]}
+    session.commit.assert_called_once()
+    assert sent == [
+        (
+            ("workflow.model_routing.refresh_policy",),
+            {"args": [str(policy_id), "auto_n_runs"]},
+        )
+    ]
