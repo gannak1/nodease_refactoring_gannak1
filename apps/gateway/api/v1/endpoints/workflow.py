@@ -25,6 +25,14 @@ from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.cost_optimizer_parameter_recommendation_service import (
     CostOptimizerParameterRecommendationService,
+    _node_config_fingerprint,
+    _resolve_operation_cohort,
+)
+from apps.gateway.services.cost_optimizer_output_quality_service import (
+    CostOptimizerOutputQualityService,
+)
+from apps.gateway.services.cost_optimizer_recommendation_verification_service import (
+    CostOptimizerRecommendationVerificationService,
 )
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
@@ -199,6 +207,15 @@ class CostOptimizerApplyRequest(BaseModel):
 
 class CostOptimizerRecommendationApplyRequest(BaseModel):
     recommendation_ids: list[str] = Field(default_factory=list)
+
+
+class CostOptimizerRecommendationVerifyRequest(BaseModel):
+    recommendation_ids: list[str] = Field(default_factory=list)
+    baseline_mode: Literal["latest_success"]
+    # 프론트가 추천 목록을 조회한 시점의 값을 함께 보내면 이전 modal state를
+    # 재사용한 요청을 stale로 막을 수 있다. 기존 클라이언트 호환을 위해 선택값이다.
+    recommendation_policy_version: str | None = None
+    node_config_fingerprint: str | None = None
 
 
 class ModelRoutingPolicyPatchRequest(BaseModel):
@@ -1376,6 +1393,12 @@ def _baseline_row_from_records(
     trace_available = (
         bool(node_run.trace_metadata) or has_trace_input or has_trace_output
     )
+    trace_metadata = (
+        node_run.trace_metadata if isinstance(node_run.trace_metadata, dict) else {}
+    )
+    rag_summary = trace_metadata.get("rag") or trace_metadata.get("rag_summary")
+    rag_summary = _safe_cost_optimizer_rag_summary(rag_summary)
+    rag_summary = rag_summary if isinstance(rag_summary, dict) else None
     process_data = getattr(node_run, "process_data", None) or {}
     node_options = (
         process_data.get("node_options") if isinstance(process_data, dict) else {}
@@ -1397,6 +1420,11 @@ def _baseline_row_from_records(
         "baseline_source": "workflow_node_run",
         "source_workflow_node_run_id": str(node_run.id),
         "workflow_run_id": str(run.id),
+        "deployment_id": (
+            str(getattr(run, "deployment_id", None))
+            if getattr(run, "deployment_id", None)
+            else None
+        ),
         "workflow_id": str(workflow.id),
         "node_id": node_run.node_id,
         "run_started_at": run.started_at.isoformat(),
@@ -1424,6 +1452,7 @@ def _baseline_row_from_records(
         "input": _redact_baseline_value(input_payload),
         "output": _redact_baseline_value(output_payload),
         "node_options": _redact_baseline_value(node_options),
+        "node_config_fingerprint": _node_config_fingerprint(node_options),
         "downstream_snapshot": downstream_snapshot,
         "usage": {
             "model": model,
@@ -1438,7 +1467,7 @@ def _baseline_row_from_records(
             "input_preview": input_preview,
             "output_preview": output_preview,
             "messages_preview": [],
-            "rag_summary": None,
+            "rag_summary": rag_summary,
             "error_message": node_run.error_message,
         },
         "downstream_compatibility": downstream_compatibility,
@@ -1461,6 +1490,7 @@ def _cost_optimizer_baseline_rows(
         )
         .filter(
             WorkflowRun.workflow_id == workflow.id,
+            WorkflowRun.status == RunStatus.SUCCESS,
             WorkflowNodeRun.node_id == node_id,
             WorkflowNodeRun.node_type == "llmNode",
             WorkflowNodeRun.status == NodeRunStatus.SUCCESS,
@@ -1511,6 +1541,39 @@ def get_cost_optimizer_latest_baseline(
         row
         for row in _cost_optimizer_baseline_rows(db, workflow, node_id)
         if _has_cost_optimizer_baseline_result(row) and row["compare_available"]
+    ]
+    if not candidates:
+        raise HTTPException(status_code=400, detail="cost_optimizer.no_baseline")
+    return sorted(candidates, key=lambda row: row["run_started_at"], reverse=True)[0]
+
+
+def get_cost_optimizer_latest_operation_baseline(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+) -> dict[str, Any]:
+    """현재 활성 deployment/config cohort의 최신 성공 운영 baseline을 고정한다."""
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    node_data = node_data if isinstance(node_data, dict) else {}
+    cohort = _resolve_operation_cohort(
+        db,
+        workflow=workflow,
+        node_id=node_id,
+        current_node_data=node_data,
+    )
+    if cohort.get("status") != "active_deployment":
+        raise HTTPException(status_code=409, detail="cost_optimizer.recommendation_stale")
+
+    expected_deployment_id = str(cohort.get("deployment_id"))
+    expected_fingerprint = _node_config_fingerprint(node_data)
+    candidates = [
+        row
+        for row in _cost_optimizer_baseline_rows(db, workflow, node_id)
+        if _has_cost_optimizer_baseline_result(row)
+        and row.get("compare_available")
+        and row.get("deployment_id") == expected_deployment_id
+        and row.get("node_config_fingerprint") == expected_fingerprint
     ]
     if not candidates:
         raise HTTPException(status_code=400, detail="cost_optimizer.no_baseline")
@@ -2355,6 +2418,7 @@ def _persist_cost_optimizer_comparison(
     candidate_result: dict[str, Any],
     diff: dict[str, Any],
     downstream_compatibility: dict[str, Any],
+    quality_evaluation: dict[str, Any] | None = None,
 ) -> CostOptimizerExperiment:
     usage = candidate_result.get("usage")
     usage = usage if isinstance(usage, dict) else {}
@@ -2373,7 +2437,16 @@ def _persist_cost_optimizer_comparison(
         candidate_result.get("candidate_workflow_run_id")
     )
 
-    experiment.usage_summary = usage
+    quality_evaluation = (
+        quality_evaluation if isinstance(quality_evaluation, dict) else {}
+    )
+    quality_judge = quality_evaluation.get("judge")
+    quality_judge = quality_judge if isinstance(quality_judge, dict) else {}
+    experiment.usage_summary = {
+        **usage,
+        "quality_judge": quality_judge,
+        "quality_judge_cost": quality_evaluation.get("judge_cost"),
+    }
     experiment.status = "failed" if status == "failed" else "completed"
     candidate_row.name = candidate.label
     candidate_row.model_id = candidate.model_id
@@ -2391,7 +2464,11 @@ def _persist_cost_optimizer_comparison(
     )
     candidate_row.schema_status = _cost_optimizer_schema_status(schema_validation)
     candidate_row.downstream_state = str(downstream_state) if downstream_state else None
-    candidate_row.usage_summary = usage
+    candidate_row.usage_summary = {
+        **usage,
+        "quality_judge": quality_judge,
+        "quality_judge_cost": quality_evaluation.get("judge_cost"),
+    }
     candidate_row.schema_validation = schema_validation
     candidate_row.retrieval_summary = (
         retrieval_summary if isinstance(retrieval_summary, dict) else None
@@ -2403,7 +2480,10 @@ def _persist_cost_optimizer_comparison(
         workflow_run_id=candidate_workflow_run_id,
     )
     candidate_row.downstream_compatibility = downstream_compatibility
-    candidate_row.diff_summary = diff
+    candidate_row.diff_summary = {
+        **diff,
+        "quality_evaluation": quality_evaluation,
+    }
     candidate_row.status = status
     db.commit()
     return experiment
@@ -3545,6 +3625,444 @@ def apply_cost_optimizer_recommendations(
         },
         "updated_draft_revision": updated_revision,
     }
+
+
+def _cost_optimizer_inline_schema_validation(
+    candidate: CostOptimizerCandidateRequest,
+    candidate_result: dict[str, Any],
+) -> dict[str, Any]:
+    output_format = candidate.output_format if isinstance(candidate.output_format, dict) else {}
+    if output_format.get("type") != "json":
+        return {"status": "not_applicable", "issues": []}
+    schema = output_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        return {"status": "not_configured", "issues": []}
+    validation = candidate_result.get("schema_validation")
+    validation = validation if isinstance(validation, dict) else {}
+    if validation.get("status") in {"valid", "pass", "passed"}:
+        return {"status": "passed", "issues": []}
+    errors = validation.get("errors") if isinstance(validation.get("errors"), list) else []
+    return {
+        "status": "failed",
+        "issues": [str(error)[:200] for error in errors[:10]],
+    }
+
+
+def _cost_optimizer_metric_comparison(
+    baseline_value: Any,
+    candidate_value: Any,
+) -> dict[str, Any]:
+    baseline_number = (
+        float(baseline_value)
+        if isinstance(baseline_value, (int, float, Decimal))
+        else None
+    )
+    candidate_number = (
+        float(candidate_value)
+        if isinstance(candidate_value, (int, float, Decimal))
+        else None
+    )
+    delta = (
+        candidate_number - baseline_number
+        if baseline_number is not None and candidate_number is not None
+        else None
+    )
+    return {
+        "baseline": baseline_number,
+        "candidate": candidate_number,
+        "delta": delta,
+        "change_rate": (
+            delta / baseline_number
+            if delta is not None and baseline_number not in {None, 0}
+            else None
+        ),
+    }
+
+
+def _build_cost_optimizer_verification_apply_decision(
+    *,
+    candidate_result: dict[str, Any],
+    schema_validation: dict[str, Any],
+    downstream_compatibility: dict[str, Any],
+    quality_evaluation: dict[str, Any],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    candidate_status = str(candidate_result.get("status") or "failed")
+    if candidate_status == "failed":
+        reasons.append("candidate_execution_failed")
+    if schema_validation.get("status") == "failed":
+        reasons.append("schema_failed")
+    if downstream_compatibility.get("state") == "incompatible":
+        reasons.append("downstream_incompatible")
+
+    allowed = not reasons
+    confirmation_reasons: list[str] = []
+    if quality_evaluation.get("status") != "completed":
+        confirmation_reasons.append("quality_evaluation_unavailable")
+    elif quality_evaluation.get("delta") is not None and quality_evaluation["delta"] < 0:
+        confirmation_reasons.append("quality_score_decreased")
+    if quality_evaluation.get("confidence") == "low":
+        confirmation_reasons.append("quality_confidence_low")
+    if downstream_compatibility.get("state") == "warning":
+        confirmation_reasons.append("downstream_warning")
+
+    return {
+        "allowed": allowed,
+        "requires_confirmation": allowed and bool(confirmation_reasons),
+        "reasons": reasons + confirmation_reasons,
+    }
+
+
+def _cost_optimizer_stale_verification_response(reason: str) -> dict[str, Any]:
+    return {
+        "verification_status": "stale",
+        "comparison_id": None,
+        "candidate_id": None,
+        "baseline": None,
+        "candidate": None,
+        "metrics": {},
+        "quality_evaluation": {
+            "status": "unavailable",
+            "baseline": {"score": None},
+            "candidate": {"score": None},
+            "delta": None,
+            "dimensions": {},
+            "confidence": "unavailable",
+            "safe_summary": "추천 설정이 최신 node 설정과 일치하지 않습니다.",
+        },
+        "schema_validation": {"status": "not_applicable", "issues": []},
+        "downstream_compatibility": {"state": "unknown"},
+        "incurred_cost": {
+            "candidate_execution_cost": None,
+            "quality_judge_cost": None,
+            "total_new_cost": None,
+            "currency": "USD",
+        },
+        "apply": {
+            "allowed": False,
+            "requires_confirmation": False,
+            "reasons": [reason],
+        },
+    }
+
+
+def _verify_cost_optimizer_recommendations(
+    *,
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    current_user: User,
+    request: Request,
+    request_body: CostOptimizerRecommendationVerifyRequest,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """추천 candidate 실행과 quality judge를 하나의 멱등 검증으로 묶는다."""
+    idempotency_key = idempotency_key.strip()
+    if not idempotency_key:
+        raise HTTPException(status_code=422, detail="cost_optimizer.idempotency_key_required")
+    request_fingerprint = CostOptimizerRecommendationVerificationService.request_fingerprint(
+        workflow_id=workflow.id,
+        node_id=node_id,
+        recommendation_ids=request_body.recommendation_ids,
+        baseline_mode=request_body.baseline_mode,
+    )
+    claim = CostOptimizerRecommendationVerificationService.claim(
+        db,
+        workflow_id=workflow.id,
+        node_id=node_id,
+        user_id=current_user.id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+    )
+    if claim.replay_response is not None:
+        return claim.replay_response
+
+    verification = claim.record
+    try:
+        recommendations_payload = CostOptimizerParameterRecommendationService.recommend(
+            db,
+            workflow=workflow,
+            node_id=node_id,
+        )
+        node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+        node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        node_data = node_data if isinstance(node_data, dict) else {}
+        current_fingerprint = _node_config_fingerprint(node_data)
+        current_policy_version = str(
+            recommendations_payload.get("policy_version") or ""
+        )
+        if (
+            request_body.node_config_fingerprint
+            and request_body.node_config_fingerprint != current_fingerprint
+        ) or (
+            request_body.recommendation_policy_version
+            and request_body.recommendation_policy_version != current_policy_version
+        ):
+            response = _cost_optimizer_stale_verification_response(
+                "recommendation_stale"
+            )
+            CostOptimizerRecommendationVerificationService.complete(
+                db,
+                record=verification,
+                response=response,
+                experiment_id=None,
+                candidate_id=None,
+            )
+            return response
+
+        candidate, applied_recommendation_ids = (
+            _cost_optimizer_candidate_from_recommendations(
+                workflow,
+                node_id,
+                recommendations_payload,
+                request_body.recommendation_ids,
+            )
+        )
+        candidate = _materialize_cost_optimizer_candidate_model_routing_policy(
+            db,
+            current_user,
+            candidate,
+        )
+        _validate_cost_optimizer_candidate_shape(candidate)
+        _ensure_cost_optimizer_candidate_knowledge_available(
+            db,
+            current_user,
+            workflow,
+            candidate,
+        )
+        _ensure_cost_optimizer_candidate_models_available(
+            db,
+            current_user,
+            candidate,
+        )
+        baseline = get_cost_optimizer_latest_operation_baseline(db, workflow, node_id)
+    except HTTPException as exc:
+        if exc.detail == "cost_optimizer.recommendation_stale":
+            response = _cost_optimizer_stale_verification_response(
+                "recommendation_stale"
+            )
+            CostOptimizerRecommendationVerificationService.complete(
+                db,
+                record=verification,
+                response=response,
+                experiment_id=None,
+                candidate_id=None,
+            )
+            return response
+        CostOptimizerRecommendationVerificationService.fail(db, record=verification)
+        raise
+    except Exception:
+        CostOptimizerRecommendationVerificationService.fail(db, record=verification)
+        raise
+
+    try:
+        experiment, candidate_row = _create_cost_optimizer_comparison(
+            db=db,
+            workflow=workflow,
+            node_id=node_id,
+            baseline=baseline,
+            candidate=candidate,
+            current_user=current_user,
+        )
+        candidate_result = _run_cost_optimizer_candidate(
+            workflow=workflow,
+            node_id=node_id,
+            baseline=baseline,
+            candidate=candidate,
+            cost_optimizer_candidate_id=candidate_row.id,
+            current_user=current_user,
+            request=request,
+        )
+        downstream_compatibility = _resolve_cost_optimizer_downstream_compatibility(
+            baseline,
+            workflow,
+            node_id,
+            candidate_output=candidate_result.get("output")
+            if isinstance(candidate_result, dict)
+            else None,
+        )
+        schema_validation = _cost_optimizer_inline_schema_validation(
+            candidate,
+            candidate_result,
+        )
+        candidate_for_quality = {
+            **candidate_result,
+            "input": baseline.get("input"),
+        }
+        quality_evaluation = (
+            CostOptimizerOutputQualityService.evaluate(
+                db=db,
+                workflow=workflow,
+                current_user=current_user,
+                node_id=node_id,
+                candidate_row=candidate_row,
+                baseline=baseline,
+                candidate_result=candidate_for_quality,
+            )
+            if candidate_result.get("status") != "failed"
+            else {
+                "status": "unavailable",
+                "baseline": {"score": None},
+                "candidate": {"score": None},
+                "delta": None,
+                "dimensions": {},
+                "confidence": "unavailable",
+                "safe_summary": "candidate 실행 실패로 품질 평가를 수행하지 않았습니다.",
+                "judge_cost": None,
+                "judge_usage_log_id": None,
+            }
+        )
+        diff = _build_cost_optimizer_diff(baseline, candidate_result)
+        experiment = _persist_cost_optimizer_comparison(
+            db=db,
+            experiment=experiment,
+            candidate_row=candidate_row,
+            candidate=candidate,
+            candidate_result=candidate_result,
+            diff=diff,
+            downstream_compatibility=downstream_compatibility,
+            quality_evaluation=quality_evaluation,
+        )
+        baseline_usage = baseline.get("usage") if isinstance(baseline.get("usage"), dict) else {}
+        candidate_usage = (
+            candidate_result.get("usage")
+            if isinstance(candidate_result.get("usage"), dict)
+            else {}
+        )
+        candidate_cost = _cost_optimizer_usage_number(candidate_usage, "cost", "total_cost")
+        judge_cost = quality_evaluation.get("judge_cost")
+        judge_cost = float(judge_cost) if isinstance(judge_cost, (int, float)) else None
+        total_new_cost = (
+            candidate_cost + judge_cost
+            if candidate_cost is not None and judge_cost is not None
+            else candidate_cost
+            if candidate_cost is not None and quality_evaluation.get("status") == "unavailable"
+            else None
+        )
+        metrics = {
+            "cost": _cost_optimizer_metric_comparison(
+                _cost_optimizer_usage_number(baseline_usage, "cost", "total_cost"),
+                candidate_cost,
+            ),
+            "latency_ms": _cost_optimizer_metric_comparison(
+                _cost_optimizer_usage_number(baseline_usage, "latency_ms"),
+                _cost_optimizer_usage_number(candidate_usage, "latency_ms")
+                or candidate_result.get("latency_ms"),
+            ),
+            "input_tokens": _cost_optimizer_metric_comparison(
+                _cost_optimizer_usage_number(baseline_usage, "prompt_tokens"),
+                _cost_optimizer_usage_number(candidate_usage, "prompt_tokens"),
+            ),
+            "output_tokens": _cost_optimizer_metric_comparison(
+                _cost_optimizer_usage_number(baseline_usage, "completion_tokens"),
+                _cost_optimizer_usage_number(candidate_usage, "completion_tokens"),
+            ),
+            "total_tokens": _cost_optimizer_metric_comparison(
+                _cost_optimizer_total_tokens(baseline_usage),
+                _cost_optimizer_total_tokens(candidate_usage),
+            ),
+        }
+        verification_status = (
+            "failed"
+            if candidate_result.get("status") == "failed"
+            else "partial"
+            if quality_evaluation.get("status") != "completed"
+            else "completed"
+        )
+        apply = _build_cost_optimizer_verification_apply_decision(
+            candidate_result=candidate_result,
+            schema_validation=schema_validation,
+            downstream_compatibility=downstream_compatibility,
+            quality_evaluation=quality_evaluation,
+        )
+        response = {
+            "verification_status": verification_status,
+            "comparison_id": str(experiment.id),
+            "candidate_id": str(candidate_row.id),
+            "applied_recommendation_ids": applied_recommendation_ids,
+            "baseline": {
+                "label": "최신 비교 가능한 성공 기록",
+                "workflow_node_run_id": baseline.get("baseline_id"),
+                "executed_at": baseline.get("run_started_at"),
+                "model": baseline.get("model"),
+                "deployment_id": baseline.get("deployment_id"),
+                "metrics": {
+                    "cost": _cost_optimizer_usage_number(baseline_usage, "cost", "total_cost"),
+                    "latency_ms": _cost_optimizer_usage_number(baseline_usage, "latency_ms"),
+                    "input_tokens": _cost_optimizer_usage_number(baseline_usage, "prompt_tokens"),
+                    "output_tokens": _cost_optimizer_usage_number(baseline_usage, "completion_tokens"),
+                    "total_tokens": _cost_optimizer_total_tokens(baseline_usage),
+                },
+            },
+            "candidate": {
+                "status": candidate_result.get("status"),
+                "model": (
+                    candidate_result.get("output", {}).get("model")
+                    if isinstance(candidate_result.get("output"), dict)
+                    else None
+                )
+                or candidate.model_id,
+                "metrics": {
+                    "cost": candidate_cost,
+                    "latency_ms": metrics["latency_ms"]["candidate"],
+                    "input_tokens": metrics["input_tokens"]["candidate"],
+                    "output_tokens": metrics["output_tokens"]["candidate"],
+                    "total_tokens": metrics["total_tokens"]["candidate"],
+                },
+            },
+            "metrics": metrics,
+            "quality_evaluation": quality_evaluation,
+            "schema_validation": schema_validation,
+            "downstream_compatibility": downstream_compatibility,
+            "incurred_cost": {
+                "candidate_execution_cost": candidate_cost,
+                "quality_judge_cost": judge_cost,
+                "total_new_cost": total_new_cost,
+                "currency": "USD",
+            },
+            "apply": apply,
+            "verification_context": {
+                "node_config_fingerprint": current_fingerprint,
+                "recommendation_policy_version": current_policy_version,
+            },
+        }
+        CostOptimizerRecommendationVerificationService.complete(
+            db,
+            record=verification,
+            response=response,
+            experiment_id=experiment.id,
+            candidate_id=candidate_row.id,
+        )
+        return response
+    except Exception:
+        CostOptimizerRecommendationVerificationService.fail(db, record=verification)
+        raise
+
+
+@router.post(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/recommendations/verify"
+)
+def verify_cost_optimizer_recommendations(
+    workflow_id: str,
+    node_id: str,
+    request_body: CostOptimizerRecommendationVerifyRequest,
+    request: Request,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """추천 설정을 최신 성공 운영 baseline에 한 번만 실행해 빠르게 검증한다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    return _verify_cost_optimizer_recommendations(
+        db=db,
+        workflow=workflow,
+        node_id=node_id,
+        current_user=current_user,
+        request=request,
+        request_body=request_body,
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.post("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare")
