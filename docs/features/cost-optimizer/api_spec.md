@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-166 @ 15f74f516d0a0c8e8bf5dce9b8e86892a069d2d3
+Verified Against: feature/mba-166 @ 034a716
 
 ## Purpose
 
@@ -117,16 +117,6 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
         "reason_code": "short_structured_input_uses_low_cost_model",
         "selected_model_id": "gpt-4.1-mini",
         "fallback_model_id": "gpt-4.1"
-      },
-      {
-        "id": "domain-risk-terms",
-        "priority": 20,
-        "when": {
-          "keyword_any": ["SLA", "보상", "장애"]
-        },
-        "reason_code": "judge_generated_domain_keyword_rule",
-        "selected_model_id": "gpt-4.1",
-        "fallback_model_id": null
       }
     ]
   },
@@ -172,7 +162,7 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 }
 ```
 
-`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. active policy가 없으면 status는 `collecting`이고, runtime은 보수적 fallback으로 저장 모델을 사용한다. 정책 row는 `auto_model_routing=true`가 포함된 deployment snapshot의 첫 성공 LLM node run 완료 hook이 생성한다. 따라서 draft의 PATCH만으로는 `policy_id`가 생기거나 운영 run이 집계되지 않는다.
+`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. active policy가 없으면 status는 `collecting`이고, runtime은 보수적으로 저장 모델을 사용한다. 정책 row는 `auto_model_routing=true`가 포함된 deployment snapshot의 target LLM node가 성공한 terminal 운영 workflow 완료 hook에서 생성한다. 따라서 draft의 PATCH만으로는 `policy_id`가 생기거나 운영 run이 집계되지 않는다.
 
 ### POST Policy Refresh Response
 
@@ -245,41 +235,43 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 
 ### Runtime Metadata
 
-LLM node 실행 시점 metadata는 선택 결과만 safe summary로 남긴다.
+LLM node 실행 시점 metadata는 선택 결과와 추천/품질 판단에 필요한 safe summary를 canonical `workflow_node_runs.trace_metadata.llm` 및 `.rag`에 남긴다. `model_routing`을 중첩한 별도 section으로 저장하지 않는다.
 
 ```json
 {
   "llm": {
-    "model_routing": {
-      "enabled": true,
-      "policy_id": "uuid",
-      "policy_version": "router-policy-v4",
-      "selected_model": "gpt-4.1-mini",
-      "fallback_model": "gpt-4.1",
-      "decision_source": "active_policy",
-      "matched_rule_id": "short-json-no-knowledge",
-      "reason_code": "short_structured_input_uses_low_cost_model",
-      "runtime_context": {
-        "intent": "generate",
-        "risk_level": "medium",
-        "customer_facing": false,
-        "knowledge_enabled": false,
-        "output_format": "json",
-        "schema_required": true,
-        "has_file_input": false,
-        "input_length": 180,
-        "input_length_bucket": "short",
-        "prompt_length": 920,
-        "prompt_length_bucket": "medium",
-        "node_task": "generate"
-      },
-      "judge_called": false
-    }
+    "model": "gpt-4.1-mini",
+    "policy_id": "uuid",
+    "policy_version": "router-policy-v4",
+    "selected_model": "gpt-4.1-mini",
+    "fallback_model": "gpt-4.1",
+    "decision_source": "active_policy",
+    "matched_rule_id": "short-json-no-knowledge",
+    "reason_code": "short_structured_input_uses_low_cost_model",
+    "judge_called": false,
+    "finish_reason": "stop",
+    "schema_status": "passed",
+    "downstream_status": "passed",
+    "fallback_used": false,
+    "repetition_rate": 0.02,
+    "customer_facing": false,
+    "knowledge_enabled": false,
+    "output_format": "json",
+    "schema_required": true,
+    "has_file_input": false,
+    "input_length_bucket": "short",
+    "prompt_length_bucket": "medium",
+    "node_task": "generate"
+  },
+  "rag": {
+    "context_token_estimate": 420,
+    "retrieved_chunk_count": 3,
+    "evidence_sufficient": true
   }
 }
 ```
 
-런타임은 도메인 키워드 목록을 코드 상수로 갖지 않는다. `keyword_any`는 judge policy refresh가 생성해 저장한 policy rule 조건일 때만 평가된다.
+런타임은 도메인 키워드 목록을 코드 상수로 갖지 않는다. 현재 judge refresh는 raw 입력을 받지 않으므로 `keyword_any`를 추정 생성하지 않는다. 자동 반영 rule은 동일 조건의 segment 성능 근거가 있는 일반 feature 조건만 사용한다. 이미 검토된 저장 policy의 `keyword_any`는 호환 경로로 평가할 수 있지만, judge가 새로 만들지는 않는다.
 
 ### Refresh Metadata
 
@@ -298,13 +290,13 @@ LLM node 실행 시점 metadata는 선택 결과만 safe summary로 남긴다.
 }
 ```
 
-Judge 입력에는 raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content를 포함하지 않는다. 입력은 모델별 비용/token/latency 평균, schema/downstream/fallback/retry safe summary, candidate model 사용 가능성 summary로 제한한다.
+Judge 입력에는 raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content를 포함하지 않는다. 입력은 모델별 비용/token/latency 평균, schema/downstream/fallback/retry safe summary, 현재 사용자 기준 candidate model 사용 가능성, 그리고 일반 feature 조건별 segment 성능 summary로 제한한다.
 
 ## LLM Parameter Recommendation Contract
 
 관련 FR: FR-012
 
-LLM 파라미터 추천은 모델 라우팅과 별도 계약으로 다룬다. 이 API는 target LLM node의 배포 후 운영 로그와 Cost Optimizer 후보 실험 이력을 분석해 `max_tokens`, `temperature`, RAG context 같은 조정 후보를 반환한다.
+LLM 파라미터 추천은 모델 라우팅과 별도 계약으로 다룬다. 이 API는 현재 draft와 동일한 활성 deployment snapshot의 target LLM node 배포 후 운영 로그를 분석해 `max_tokens`, `temperature`, RAG context 같은 조정 후보를 반환한다. Cost Optimizer 후보 실험은 운영 통계에 섞지 않는다.
 
 예상 service/API entrypoint:
 
@@ -338,7 +330,7 @@ LLMParameterRecommendationService.recommend(
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `analysis_stage` | `insufficient_logs` \| `recommendations_available` | 추천 가능한 운영 로그가 충분한지 |
+| `analysis_stage` | `insufficient_logs` \| `recommendations_available` \| `draft_not_deployed` \| `deployment_unavailable` | 추천 가능한 운영 로그와 현재 draft/deployment cohort 상태 |
 | `recommendations` | array | 파라미터 추천 목록 |
 | `warnings` | array | 추천 불가 또는 적용 주의 사유 |
 | `policy_version` | string | 추천 룰셋 버전 |
@@ -393,12 +385,12 @@ LLMParameterRecommendationService.recommend(
 | `workflow_node_runs` | target LLM node의 status, duration, output 존재 여부, trace metadata |
 | `workflow_runs` | 배포 후 운영 실행 여부, 전체 성공/실패 상태 |
 | `llm_usage_logs` | prompt/completion token, cost, latency, model, node id |
-| Cost Optimizer candidates | 과거 후보의 schema/downstream/cost 결과 |
-| RAG trace summary | `context_token_estimate`, `retrieved_chunk_count`, `evidence_sufficient` |
+| canonical `trace_metadata.llm` | finish reason, schema/downstream status, fallback used, output repetition rate, routing safe summary |
+| canonical `trace_metadata.rag` | `context_token_estimate`, `retrieved_chunk_count`, `evidence_sufficient` |
 
-추천 profile에는 `workflow_runs.deployment_id IS NOT NULL`인 배포 후 운영 실행만 기본 포함한다. 배포 전 테스트 실행과 Cost Optimizer compare 실행은 운영 profile에 포함하지 않고 후보 검토 자료로만 사용할 수 있다.
+추천 profile에는 `workflow_runs.deployment_id IS NOT NULL`인 배포 후 terminal 운영 실행만 포함한다. 대상은 활성 deployment snapshot과 비용/품질 관련 node 설정 fingerprint가 같은 target node다. 배포 전 테스트 실행과 Cost Optimizer compare 실행은 운영 profile에 포함하지 않는다. 성공 usage는 token/cost p95에 사용하고, terminal 실패 node/workflow는 schema/downstream/RAG 품질 실패율에 포함한다.
 
-`max_tokens` 추천은 `completion_tokens` p95/p99와 현재 `parameters.max_tokens`를 비교한다. provider `finish_reason`이 저장되지 않았거나 길이 잘림 여부를 알 수 없으면 confidence를 `medium` 이하로 낮춘다.
+`max_tokens` 추천은 성공 usage의 `completion_tokens` p95/p99와 현재 `parameters.max_tokens`를 비교한다. `finish_reason` 또는 structured output의 schema signal이 누락되면 confidence를 낮추거나 추천을 만들지 않는다.
 
 `temperature` 추천은 output format, JSON schema, schema 실패율, retry/fallback 추세를 사용한다. JSON/schema/분류/추출 성격의 노드에서 `temperature`가 높고 실패율이 있으면 낮은 후보값을 제안한다.
 

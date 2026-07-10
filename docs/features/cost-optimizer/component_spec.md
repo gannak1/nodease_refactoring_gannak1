@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-166 @ d9eeed80c47dcd9988c5453c2332b0e8c17cf921
+Verified Against: feature/mba-166 @ 034a716
 
 ## Purpose
 
@@ -227,9 +227,9 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 - 기본 모델 선택 UI를 숨긴다.
 - fallback 모델 선택 UI를 숨긴다.
-- active policy 상태 panel을 표시한다. panel은 `GET /model-routing/policy` 응답을 우선 사용하고, 배포 policy가 아직 없을 때만 draft의 legacy JSON summary를 보조 표시한다.
+- active policy 상태 panel을 표시한다. panel은 `GET /model-routing/policy` 응답을 우선 사용한다.
 - runtime은 active policy를 사용해 모델을 선택한다.
-- active policy가 없으면 `collecting` 상태로 표시하고, runtime은 보수적으로 저장된 안정 모델을 사용한다.
+- active policy가 없으면 `collecting` 상태로 표시하고, runtime은 node에 저장된 `model_id`/`fallback_model_id`를 그대로 사용한다. bootstrap은 새 모델이나 rule을 만들지 않는다.
 - judge LLM은 일반 실행 중 호출하지 않는다.
 
 정책 상태 panel은 다음 정보를 보여준다.
@@ -262,12 +262,13 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 - `kept_current`이면 정책 재평가는 끝났지만 검증된 변경 후보가 없어 기존 active policy를 유지했다는 문구를 표시한다.
 - `pending_review`이면 새 정책이 운영에 반영되지 않았고 기존 active policy가 유지된다는 문구를 표시한다.
 - 실패하면 로그 부족, credential/model 사용 불가, judge 호출 실패 같은 safe reason을 표시한다.
+- active policy의 default/rule/fallback 중 현재 사용자의 credential `use` 권한으로 실행 가능한 모델이 없으면 provider 호출 전에 실행이 차단된다는 안내를 표시한다.
 
 정책 갱신 결과의 judge 호출 비용은 숨기지 않는다. UI는 policy update summary에서 judge 모델, token/cost, 갱신 trigger를 확인할 수 있어야 한다. 단 raw prompt, raw output, credential 원문, API key, raw trace payload는 표시하지 않는다.
 
 현재 구현은 policy 조회 응답의 `last_update` safe summary를 사용해 `최근 정책 점검`, 자동/수동 갱신 여부, `반영됨`/보류/실패 상태, judge 모델과 judge 비용을 표시한다. 사용자는 judge usage log id를 원문 로그로 열람하지 않고 추적 식별자로만 확인한다.
 
-자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 첫 LLM node 성공 실행이 policy row를 생성한다.
+자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 target LLM node가 성공한 terminal 운영 workflow 완료가 policy row를 생성한다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
@@ -551,8 +552,8 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | --- | --- | --- | --- | --- |
 | `model_id` | `data.model_id` | `candidate.model_id` | `candidate_settings.model_id` | 기존 모델 선택 목록을 재사용한다. |
 | `fallback_model_id` | `data.fallback_model_id` | `candidate.fallback_model_id` | `candidate_settings.fallback_model_id` | 기본 모델과 같으면 validation 대상이다. |
-| `auto_model_routing` | `data.auto_model_routing` | 사용하지 않음 | 사용하지 않음 | LLM 노드 자동 모델 라우팅 ON/OFF 저장값이다. ON이면 런타임은 active policy를 우선 평가한다. Cost Optimizer A/B 후보 설정에는 포함하지 않는다. |
-| `model_routing_context` | `data.model_routing_context` | 사용하지 않음 | 사용하지 않음 | 런타임 policy rule 평가에 쓰는 명시적 일반 힌트다. 예: `customer_facing`, `node_task`. 도메인 키워드 목록은 여기에 넣지 않고 policy rule의 `when.keyword_any`에 저장한다. |
+| `auto_model_routing` | `data.auto_model_routing` | `candidate.auto_model_routing` | `candidate_settings.auto_model_routing` | LLM 노드 자동 모델 라우팅 ON/OFF 저장값이다. ON인 후보에 active policy가 없으면 Gateway는 후보가 명시한 모델을 보존한 rule 없는 cold-start policy를 materialize한다. |
+| `model_routing_context` | `data.model_routing_context` | 사용하지 않음 | 사용하지 않음 | 런타임 policy rule 평가에 쓰는 명시적 일반 힌트다. 예: `customer_facing`, `node_task`. 현재 자동 refresh는 raw 입력을 받지 않으므로 도메인 키워드 rule을 추정 생성하지 않고 이 일반 feature의 segment 근거만 사용한다. |
 | `task_type` | 내부 기본값 | 내부 기본값 | `candidate_settings.task_type` | 사용자 입력으로 노출하지 않는다. 후속 라우터/분석 내부 판단값으로만 사용한다. |
 | `system_prompt` | `data.system_prompt` | `candidate.system_prompt` | `candidate_settings.system_prompt` | 변수 삽입 지원. |
 | `user_prompt` | `data.user_prompt` | `candidate.user_prompt` | `candidate_settings.user_prompt` | 변수 삽입 지원. |

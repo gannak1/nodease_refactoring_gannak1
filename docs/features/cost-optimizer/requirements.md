@@ -82,7 +82,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `구현 완료` | `정책 저장·운영 표본 집계·judge 갱신·품질 gate·runtime 평가·safe metadata 구현` | LLM 노드는 policy table의 active rule set으로 실행 모델을 선택한다. 성공한 배포 후 운영 LLM node run을 중복 없이 집계하고 설정 횟수만큼 누적되면 refresh task가 judge로 정책을 재평가한다. 검증 표본이 없는 모델이나 낮은 confidence 결과는 기존 active policy를 유지하며, judge 호출 비용도 usage log로 추적한다. |
+| FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `구현 완료` | `정책 저장·terminal 운영 표본 집계·judge 갱신·품질 gate·runtime credential guard·safe metadata 구현` | LLM 노드는 policy table의 active rule set으로 실행 모델을 선택한다. target LLM node가 성공한 배포 후 운영 workflow가 terminal 상태가 된 뒤에만 표본을 중복 없이 집계하고, 설정 횟수만큼 누적되면 refresh task가 judge로 정책을 재평가한다. 검증 표본이 없는 모델이나 낮은 confidence 결과는 기존 active policy를 유지하며, judge 호출 비용도 usage log로 추적한다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
@@ -413,7 +413,7 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 1. 빌더가 LLM 노드 상세 화면에서 `자동 모델 라우팅`을 켠다.
 2. ON 상태에서는 기본 모델과 fallback 모델 직접 선택 UI를 숨기고 현재 정책 상태를 보여준다.
 3. 변경한 node 설정을 포함해 workflow를 배포한다. draft에서 토글만 켠 상태는 운영 표본 집계 대상이 아니다.
-4. 배포 후 첫 성공 운영 실행은 저장 `model_id`/`fallback_model_id`로 보수적으로 실행하고 policy row 및 bootstrap rule set을 만든다.
+4. 배포 후 첫 성공 운영 실행은 저장 `model_id`/`fallback_model_id`로 보수적으로 실행하고, 같은 두 모델만 담은 policy row를 만든다. bootstrap은 모델을 하향하거나 조건 rule을 만들지 않는다.
 5. 그 다음 배포 후 실행부터 LLM 노드는 policy table의 active policy를 읽어 모델을 선택한다.
 6. 실행 시점에는 judge LLM을 호출하지 않는다.
 7. 배포 후 운영 실행이 20회 쌓이면 정책 갱신 job이 실행된다.
@@ -421,7 +421,7 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 9. judge가 새 정책을 만들면 품질 gate 통과 시 active policy로 반영한다.
 10. 품질 근거가 부족하거나 검증된 저비용 후보가 없으면 기존 active policy를 유지하고 갱신 결과를 `kept_current`로 기록한다.
 11. 새 정책안이 만들어졌지만 불확실성이 높으면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
-12. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 fallback 정책을 사용한다.
+12. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 policy fallback을 찾는다. 현재 실행 주체가 쓸 수 있는 모델이 하나도 없으면 provider 호출 전에 명시적으로 실패한다.
 
 정책 상태는 다음 값만 사용한다. `cold_start`, `warming_up`, `optimized` 같은 데이터 성숙도 단계는 사용자-facing 상태와 API 계약에서 사용하지 않는다.
 
@@ -436,7 +436,7 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 
 정책 저장 source of truth는 `llm_node_model_routing_policies`다. 이 row는 active policy, pending policy, 정책 버전, 설정된 갱신 횟수, 마지막 갱신 시각과 누적 운영 실행 수를 가진다. LLM node data의 `model_routing_policy` JSON은 이전 draft/Cost Optimizer candidate 호환용 snapshot일 뿐, 일반 배포 실행의 정책 기준이 아니다.
 
-배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node에 아직 policy row가 없다면 첫 실행은 node에 저장된 `model_id`와 `fallback_model_id`를 보수적으로 사용한다. graph snapshot 안의 legacy `model_routing_policy` JSON은 이 시점에 평가하지 않으며, 첫 성공 실행 완료 hook이 policy row와 generic bootstrap rule set을 만든 다음 실행부터 table의 active policy를 사용한다. bootstrap 생성은 judge refresh가 아니며, `auto_n_runs` 또는 `manual_refresh`가 policy update row를 남기는 실제 정책 갱신이다.
+배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node에 아직 policy row가 없다면 첫 실행은 node에 저장된 `model_id`와 `fallback_model_id`를 보수적으로 사용한다. graph snapshot 안의 legacy `model_routing_policy` JSON은 이 시점에 평가하지 않는다. 첫 terminal 운영 workflow 완료 후 생성되는 bootstrap policy도 저장 `model_id`/`fallback_model_id`만 보존하고 rule은 빈 배열로 둔다. bootstrap 생성은 judge refresh가 아니며, `auto_n_runs` 또는 `manual_refresh`가 policy update row를 남기는 실제 정책 갱신이다.
 
 각 배포 후 workflow run은 `llm_node_model_routing_policy_run_events`에 한 번만 기록한다. 이 event의 `(policy_id, workflow_run_id)` 고유 제약으로 Celery 재시도나 중복 완료 훅이 같은 run을 두 번 카운트하지 못하게 한다. 누적 수가 `refresh_every_runs`에 처음 도달한 event만 refresh task를 예약한다.
 
@@ -444,14 +444,14 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 
 1. target LLM node의 policy table에서 active policy를 조회한다.
 2. active policy가 있고 사용할 수 있는 모델이면 policy rule로 모델을 선택한다.
-3. 선택된 모델과 fallback 모델이 현재 organization credential/model relation에서 실행 가능한지 검증한다.
-4. 선택된 모델을 사용할 수 없으면 policy fallback을 사용한다.
-5. fallback도 사용할 수 없으면 저장된 안정 모델 또는 상위 안정 모델로 보수적으로 실행한다.
-6. 실행 metadata에 policy id, policy version, selected model, fallback model, reason code를 남긴다.
+3. policy의 default/rule/fallback 모델을 현재 execution subject의 credential `use` 권한과 verified credential-model relation으로 제한한다.
+4. 선택된 rule 모델을 사용할 수 없으면 policy default/fallback 중 현재 사용 가능한 모델을 선택한다.
+5. 현재 사용 가능한 policy 모델이 하나도 없으면 provider 호출 전에 `model_routing_no_available_model`로 실패한다. 저장 모델이나 임의 상위 모델을 추정해 호출하지 않는다.
+6. 실행 metadata에 policy id, policy version, selected model, fallback model, reason code, `judge_called=false`를 남긴다.
 
-런타임 rule evaluator는 도메인 키워드 목록을 코드 상수로 가지지 않는다. 실행 시점에는 입력 길이 bucket, prompt 길이 bucket, 출력 형식, schema 필요 여부, RAG 사용 여부, 파일 입력 여부, 명시적 `customer_facing`, 명시적 `node_task` 같은 일반 feature만 계산한다. SLA, 보상, 장애, 다운로드 같은 도메인 키워드가 필요하면 judge policy refresh가 active policy rule의 `when.keyword_any`에 저장해야 한다.
+런타임 rule evaluator는 도메인 키워드 목록을 코드 상수로 가지지 않는다. 실행 시점에는 입력 길이 bucket, prompt 길이 bucket, 출력 형식, schema 필요 여부, RAG 사용 여부, 파일 입력 여부, 명시적 `customer_facing`, 명시적 `node_task` 같은 일반 feature만 계산한다. 현재 judge refresh에는 raw 입력이 전달되지 않으므로 `keyword_any`를 추정 생성하지 않고, 위 일반 feature와 동일한 segment 성능 근거가 있는 rule만 자동 반영한다. 기존에 검토·저장된 `keyword_any` rule은 runtime이 저장 policy로만 평가할 수 있지만, 자동 refresh의 생성 대상은 아니다.
 
-rule 평가는 구체적인 도메인 rule이 일반 fallback rule에 가려지지 않도록 수행한다. `keyword_any` 같은 judge 생성 도메인 rule은 동일 입력에서 generic `short-json` rule과 함께 매칭될 수 있으므로 우선 평가한다. 그 외 generic rule은 policy의 `priority` 순서를 따른다. 기본 bootstrap policy는 customer-facing 입력을 short JSON 비용 절감 rule보다 보수적으로 우선한다.
+generic rule은 policy의 `priority` 순서를 따른다. 기본 bootstrap policy는 rule 없이 저장 모델을 유지한다.
 
 허용되지 않은 `when` condition key가 들어온 rule은 저장하거나 평가하지 않는다. 런타임이 모르는 key를 무시하면 judge가 잘못 만든 rule이 너무 넓게 매칭될 수 있기 때문이다. 예를 들어 `customer_support_ticket_triage: true` 같은 임의 key는 사용할 수 없고, 노드 작업 분류는 `node_task: "customer_support_ticket_triage"`로 표현해야 한다.
 
@@ -459,7 +459,7 @@ rule 평가는 구체적인 도메인 rule이 일반 fallback rule에 가려지�
 
 정책 갱신 샘플에 포함하는 데이터:
 
-- `workflow_runs.deployment_id IS NOT NULL`인 배포 후 실행
+- `workflow_runs.deployment_id IS NOT NULL`인 배포 후 terminal (`success` 또는 `failed`) 실행
 - `trigger_mode`가 API, webhook, scheduler, app 같은 운영 실행인 run
 - target LLM node의 `workflow_node_runs`
 - 모델, 비용, token, latency 원천인 `llm_usage_logs`
@@ -470,7 +470,7 @@ rule 평가는 구체적인 도메인 rule이 일반 fallback rule에 가려지�
 - 배포 전 테스트 실행
 - `deployment_id IS NULL`인 수동 테스트 실행
 - Cost Optimizer A/B 후보 실행
-- usage 또는 output을 복원할 수 없는 실행
+- 모델을 식별할 수 없거나 safe summary를 만들 수 없는 실행
 - retention/redaction 정책 때문에 safe summary를 만들 수 없는 실행
 
 Judge LLM 호출은 정책 갱신 작업에서만 발생한다. 자동 라우팅 ON 상태의 일반 workflow 실행마다 judge를 호출해서는 안 된다.
@@ -493,6 +493,7 @@ Judge 입력 safe summary는 다음 정보를 포함할 수 있다.
 - downstream success rate
 - fallback rate
 - retry count
+- 입력/프롬프트 길이 bucket, output format, schema 필요 여부, RAG 사용 여부, 파일 입력 여부, `customer_facing`, `node_task`별 segment 성능 summary
 - output format/schema summary
 - RAG 사용 여부와 retrieval safe summary
 - 현재 active policy version
@@ -505,6 +506,7 @@ Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 �
 - schema/downstream 품질 지표가 기준 이하로 떨어지지 않는다.
 - fallback/retry 증가가 허용 범위 이내다.
 - judge 결과 confidence가 정책 기준 이상이다.
+- 조건 rule은 같은 `when` 조건의 segment에서 해당 모델이 품질 gate를 통과한 근거가 있다.
 - raw payload 또는 secret을 포함하지 않는다.
 
 새 default model 또는 새/변경된 rule의 `selected_model_id`는 기존 bootstrap policy의 rule이나 fallback에 이미 등장했더라도 별도의 운영 품질 표본을 가져야 한다. 단순히 후보 목록에 있었던 사실은 검증 근거가 아니다. 변경 모델과 현재 primary model 모두 관측 평균 비용 또는 평균 latency가 있으면 변경 모델은 둘 중 하나에서 개선되어야 한다. 관측값을 비교할 수 없는 경우에만 verified candidate의 정적 price 정보를 보조 비용 근거로 사용한다.
@@ -526,22 +528,29 @@ gate를 통과하지 못하면 새 정책안은 `pending_review`로 저장하고
 }
 ```
 
-실행 시점 trace metadata는 모델 선택 결과만 safe summary로 남긴다.
+실행 시점 trace metadata는 모델 선택 결과와 파라미터 추천 품질 신호를 canonical `trace_metadata.llm`/`.rag`에 safe summary로 남긴다.
 
 ```json
 {
   "llm": {
-    "model_routing": {
-      "enabled": true,
-      "policy_id": "uuid",
-      "policy_version": "router-policy-v4",
-      "selected_model": "gpt-4.1-mini",
-      "fallback_model": "gpt-4.1",
-      "decision_source": "active_policy",
-      "matched_rule_id": "low-risk-json-triage",
-      "reason_code": "quality_gate_passed_cost_reduction",
-      "judge_called": false
-    }
+    "policy_id": "uuid",
+    "policy_version": "router-policy-v4",
+    "selected_model": "gpt-4.1-mini",
+    "fallback_model": "gpt-4.1",
+    "decision_source": "active_policy",
+    "matched_rule_id": "low-risk-json-triage",
+    "reason_code": "quality_gate_passed_cost_reduction",
+    "judge_called": false,
+    "finish_reason": "stop",
+    "schema_status": "passed",
+    "downstream_status": "passed",
+    "fallback_used": false,
+    "repetition_rate": 0.02
+  },
+  "rag": {
+    "context_token_estimate": 420,
+    "retrieved_chunk_count": 3,
+    "evidence_sufficient": true
   }
 }
 ```
@@ -585,7 +594,9 @@ Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 �
 
 추천값은 `completion_tokens` p95 또는 p99에 안전 여유를 더해 계산한다. 예를 들어 현재 `max_tokens=4096`, 최근 p95가 820이고 길이 잘림이 없다면 `1200~1500` 범위를 추천할 수 있다.
 
-현재 코드에는 provider `finish_reason` 저장이 충분하지 않다. 따라서 `max_tokens` 추천은 응답 잘림 여부를 확실히 알 수 없는 경우 confidence를 `medium` 이하로 낮추고, 후속으로 `finish_reason == length` 계열 정보를 usage summary 또는 trace metadata에 저장해야 한다.
+일반 실행은 `finish_reason`, JSON schema 결과, fallback 사용 여부, output 반복률을 `workflow_node_runs.trace_metadata.llm`의 safe summary로 남긴다. `finish_reason` 또는 schema signal이 누락된 표본은 max_tokens 하향 추천의 신뢰도를 낮추거나 추천 자체를 막는다.
+
+파라미터 추천은 현재 draft와 활성 deployment snapshot의 target node 설정 fingerprint가 같은 경우에만 운영 표본을 사용한다. 서로 다른 deployment/version 또는 현재 draft 설정을 섞지 않으며, terminal 실패 run은 schema/downstream/RAG 품질 실패율에 포함한다. 비용·token p95는 성공 usage가 있는 표본에서만 계산한다.
 
 `temperature` 추천은 다음 정책을 따른다.
 
