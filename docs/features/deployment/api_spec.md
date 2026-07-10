@@ -155,6 +155,18 @@ Captured:
 
 Cancel deletes the matching capture session immediately. A webhook received after cancellation follows the normal execution path instead of the capture path.
 
+## Distributed Schedule Dispatch Internal Contract
+
+MBA-187은 public Schedule API request/response와 public claim 조회 endpoint를 추가하지 않는다. `workflow.execute_scheduled_deployment`는 내부 Celery inbound adapter이며 client contract가 아니다.
+
+내부 task payload는 opaque claim locator와 safe request correlation만 전달한다. Organization, workflow, app, deployment/version, execution subject와 graph snapshot은 queue 값을 권한 source로 사용하지 않는다. Worker는 claim과 canonical DB resource에서 이를 재구성한다.
+
+동일 occurrence는 deterministic Celery task id를 사용하지만 broker publish 자체는 at-least-once다. Worker가 claim을 `running`으로 admission한 경우에만 engine을 시작하며 duplicate delivery는 성공 응답을 새로 만들거나 workflow를 다시 실행하지 않는다. Admission 이후 outcome unknown은 자동 replay하지 않는다.
+
+Schedule 생성/활성화에서 cron expression 또는 timezone이 유효하지 않으면 safe `422 deployment.schedule_configuration_invalid`를 반환한다. Parser exception, timezone path 또는 raw configuration detail은 응답과 audit에 포함하지 않는다. Legacy invalid schedule은 background reconciliation에서 다른 schedule을 막지 않고 해당 row만 safe하게 격리한다.
+
+Claim 조회, 상태 변경, outcome acknowledgment와 redrive는 public API로 노출하지 않는다. Outcome acknowledgment는 protected operational CLI/job이 application use case를 호출한다.
+
 ## Errors
 
 Blocking preflight failure:

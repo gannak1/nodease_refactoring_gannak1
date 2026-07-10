@@ -340,6 +340,29 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 | last_run_at / next_run_at | DATETIME | NULL (next_run_at INDEX) |
 | created_at / updated_at | DATETIME | NOT NULL |
 
+#### Target `schedule_dispatch_claims` (MBA-187)
+
+[ADR-0024](decisions/ADR-0024-distributed-schedule-dispatch-claim.md)의 분산 schedule operational ledger다. 이 subsection은 migration 적용 전 목표 schema이며 현재 구현 테이블 목록에 포함됐다는 뜻이 아니다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK |
+| schedule_id / organization_id / deployment_id | UUID | NOT NULL, lifecycle FK 없음. Organization은 canonical tenant/audit provenance |
+| scheduled_for | DATETIME(timezone) | NOT NULL, `UNIQUE(schedule_id, scheduled_for)` |
+| idempotency_key | VARCHAR(128) | NOT NULL, UNIQUE |
+| status | VARCHAR(32) | NOT NULL, allowlisted state와 상태별 field check |
+| lease_owner / lease_expires_at | VARCHAR(64) / DATETIME(timezone) | dispatch/delivery lease 상태에서만 허용 |
+| execution_deadline_at | DATETIME(timezone) | running outcome 분류 기준. 강제 종료 시각 아님 |
+| attempt_count / next_attempt_at | INTEGER / DATETIME(timezone) | bounded retry. next attempt는 pending에서만 허용 |
+| celery_task_id | VARCHAR(128) | deterministic idempotency key와 동일 |
+| workflow_run_id | UUID | NULL, UNIQUE, FK 없음. Admission 전 stable run correlation |
+| safe_reason_code | VARCHAR(64) | NULL, 상태별 allowlist |
+| outcome_reviewed_at / outcome_review_audit_id / outcome_resolution_code | DATETIME / UUID / VARCHAR(64) | outcome unknown에서 all-or-none. Audit FK 없음 |
+| claimed_at / enqueued_at / started_at / completed_at | DATETIME(timezone) | 상태별 monotonic/non-null check |
+| created_at / updated_at | DATETIME(timezone) | NOT NULL |
+
+Claim은 raw input, graph snapshot, prompt/evidence, credential, provider response, raw exception을 저장하지 않는다. Terminal row는 bounded retention 대상이고 nonterminal row는 cleanup하지 않는다.
+
 #### `workflow_runs`
 
 workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
@@ -348,7 +371,7 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | --- | --- | --- |
 | id | UUID | PK |
 | workflow_id | UUID | NOT NULL, FK→workflows.id (CASCADE) |
-| user_id | UUID | NOT NULL, FK→users.id (CASCADE) |
+| user_id | UUID | 현재 NOT NULL, FK→users.id (CASCADE). MBA-187 target은 `trigger_mode=schedule`과 canonical claim correlation이 있는 system run에만 NULL 허용 |
 | app_id | UUID | NULL, FK→apps.id (SET NULL) |
 | deployment_id | UUID | NULL, FK→workflow_deployments.id (SET NULL) |
 | workflow_version | INTEGER | NULL |

@@ -30,6 +30,10 @@ Status: Draft
 - Security Alert evidence API는 실제 연결된 audit만 `AuditLogSchema` 수준으로 반환하고 generic metadata/before/after/change summary를 inline 노출하지 않는다.
 - Audit `auditor`/`raw_auditor` only user는 기존 audit list/detail을 조회할 수 있어도 Security Alert list/detail/evidence/lifecycle API는 `403`이어야 한다.
 - Security Alert 최초 생성 또는 lifecycle audit insert가 실패하면 대응 alert transaction도 rollback하고, cooldown occurrence 갱신은 lifecycle audit을 추가하지 않아야 한다.
+- Schedule budget/outcome recorder는 access-management recorder나 legacy user helper를 재사용하지 않고 `actor_id=null`, `actor_type=system`, canonical organization과 strict metadata만 caller UoW에 추가한다.
+- `schedule_dispatch.outcome_reviewed` detail은 exact claim target과 같은 organization에서만 조회되고 allowlisted operation correlation/resolution만 반환한다. 다른 조직은 404이고 malformed correlation/resolution 또는 nested/raw metadata는 생략한다.
+- Outcome review audit insert/flush가 실패하면 claim review field도 rollback하고, recorder가 생성하지 않은 audit id를 claim에 연결할 수 없다.
+- Schedule operational timestamp만 갱신하면 generic `schedule.updated`가 생성되지 않지만 cron/timezone/lifecycle 변경과 같은 transaction의 unrelated tracked mutation audit은 유지된다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.
 - RAG strategy/A-B summary API는 query rewrite 적용 여부, evidence sufficiency 결과, source tier summary를 safe field로 반환할 수 있지만 raw rewritten query와 hidden source reference를 반환하지 않는다.
 
@@ -41,6 +45,7 @@ Status: Draft
 - Organization manager가 audit actor를 정지/재활성화하면 `organization.member.update` audit의 optional reason과 safe membership before/after를 같은 audit tab에서 확인할 수 있다.
 - Direct permission revoke 후 team source가 남는 경우 audit은 direct row deletion만 기록하고 UI effective access는 remaining team source를 반영한다.
 - Security Alert detail의 evidence에서 audit detail로 이동해도 기존 organization scope와 metadata allowlist를 우회하지 않아야 한다.
+- Protected outcome review job은 product audit에 system actor/canonical organization/operation correlation만 남기고 human operator identity는 platform IAM audit에 남긴다. Acknowledgment 뒤에도 workflow redrive가 발생하지 않는다.
 
 ## Permission Tests
 
@@ -60,3 +65,4 @@ Status: Draft
 - Management reason은 blank를 null로 정규화하고 500자 초과 또는 forbidden control character를 거부한다.
 - Management reason의 CRLF/trim/Unicode code-point 경계와 bidi control을 검증하고, common secret/PII는 durable audit 전에 redacted한다.
 - Reason redaction/sanitization 실패는 raw fallback 없이 access mutation과 audit을 모두 rollback한다.
+- Schedule/Deployment가 삭제된 뒤에도 claim의 durable organization provenance로 outcome review audit을 올바른 조직에 귀속하고 다른 조직에서 조회하지 못한다.

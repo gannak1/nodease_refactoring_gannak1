@@ -135,6 +135,8 @@ apps/gateway/.venv/bin/python scripts/seed_demo.py --profile test --reset --drop
 
 `scripts/seed_demo.py`는 빈 로컬 DB 편의를 위해 `Base.metadata.create_all()`을 호출하지만, 이 경로는 기존 테이블에 새 컬럼을 `ALTER`하지 않는다. 오래된 로컬 DB에 최신 demo seed를 그대로 실행하면 seed가 일부 성공한 것처럼 보여도 다른 Knowledge/RAG API나 runtime 경로가 뒤늦게 500으로 실패할 수 있다.
 
+`create_all()`은 explicit demo/test bootstrap 전용이다. MBA-187 적용 뒤 Gateway server startup은 migration-managed table이나 enum을 자동 생성/보정하지 않으며, 시작 전에 Alembic single head와 DB revision readiness를 통과해야 한다. 빈 로컬 DB도 아래 migration 또는 명시적 seed/reset 절차를 사용한다.
+
 그래서 demo profile seed는 데이터 쓰기 전에 Knowledge/RAG 데모 흐름이 의존하는 필수 테이블/컬럼과 Alembic migration readiness를 확인한다. `alembic_version` table이 없거나, DB revision이 코드의 단일 head와 맞지 않거나, 코드 migration graph에 head가 여러 개이면 seed를 중단하고 다음 중 하나를 선택하도록 안내한다.
 
 기존 로컬 데이터를 보존해야 하는 경우 migration을 먼저 적용한다.

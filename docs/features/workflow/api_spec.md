@@ -19,6 +19,12 @@ Client 내부 route:
 
 ## Request And Response Models
 
+### Workflow run actor compatibility
+
+Workflow run list/detail 또는 node execution log가 run actor를 포함하는 경우 `user_id`는 `UUID | null`이다. Null은 canonical schedule claim과 `trigger_mode="schedule"`인 system execution에서만 허용한다. Client는 null을 App creator로 대체하지 않고 actor를 표시하는 화면에서는 `System`으로 표현한다. Manual/API/webhook 등 기존 user-attributed run의 non-null 계약은 유지한다.
+
+Schedule claim id, idempotency key와 outcome review state는 public workflow API response에 추가하지 않는다. Internal Worker correlation은 user-visible output이나 raw durable trace에 포함하지 않는다.
+
 ### 1. 실행 편의성
 
 - 이번 UI 변경은 신규 API를 추가하지 않는다.

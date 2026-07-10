@@ -36,6 +36,10 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - 모든 `policy.block` producer는 최상위 `audit_metadata.policy_reason`에 `{domain}.{reason}` canonical 값을 기록해야 한다. Legacy reason mapping과 Security Alert allowlist는 ADR-0028을 따른다.
 - Security Alert 최초 생성은 `security_alert.detected`, 관리자 확인·재개·해결은 `security_alert.acknowledged/reopened/resolved`로 기록해야 한다. Alert 최초 row/evidence/detected audit과 lifecycle mutation/audit은 각각 같은 transaction에 기록해야 하며 cooldown occurrence 갱신은 별도 action을 만들지 않는다.
 - Security Alert evidence는 `audit_logs` row를 연결만 하고 raw metadata/before/after를 복사하지 않아야 한다. Alert evidence API는 기존 audit allowlist를 따르는 safe projection만 반환해야 한다.
+- System schedule 실행 audit은 `actor_id=NULL`, `actor_type=system`을 사용하며 App/deployment creator나 workflow owner를 actor로 합성하지 않는다. Schedule WorkflowRun executor도 null이고 private RAG 권한은 ADR-0018의 anonymous public-only 경계를 따른다.
+- Schedule outcome unknown acknowledgment는 `schedule_dispatch.outcome_reviewed` action, `schedule_dispatch_claim` target과 exact claim id를 사용한다. Metadata는 durable `organization_id`, allowlisted `operation_correlation_id`, `outcome_resolution_code`만 허용하고 두 operation field는 정확한 action/target 조합에서만 detail에 표시한다. Raw incident note, provider response, workflow input/output를 저장하지 않는다 ([ADR-0024](../../decisions/ADR-0024-distributed-schedule-dispatch-claim.md)).
+- Schedule outcome review claim update와 AuditLog는 같은 UnitOfWork에서 commit한다. Recorder가 생성한 audit id만 claim에 연결하며 CLI가 audit id/actor id를 입력하거나 adapter가 독립 commit해서는 안 된다.
+- `Schedule.next_run_at`/`last_run_at` system operational update는 generic configuration data-change audit에서 field-level 제외한다. Cron/timezone/activation/lifecycle 변경 audit과 unrelated tracked mutation은 유지하며 claim ledger를 generic listener 대상으로 추가하지 않는다.
 
 ## Policies And Edge Cases
 

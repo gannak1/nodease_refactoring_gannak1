@@ -48,6 +48,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0026](ADR-0026-agent-builder-intent-and-connection-validation.md) | Accepted | Agent Builder intent 및 graph 연결 검증 | Schema-valid LLM 의미 후보를 semantic invariant로 재검증하고 최대 1회 safe-code repair 후 fail-closed한다. Catalog v2 연결 정책을 preview/apply-save 양쪽에서 검증하며 `loopNode`는 Builder 제품 가용성에서 제외한다. |
 | [ADR-0027](ADR-0027-agent-builder-pre-intent-safe-kb-context.md) | Accepted | Agent Builder pre-intent safe KB context | Intent LLM 호출 전에 권한과 retrieval-visible gate를 통과한 KB metadata 후보를 조회하고 상위 20개의 opaque handle, safe label/topics/description, runtime availability, bounded relevance만 prompt에 제공한다. LLM handle은 hint이며 backend가 다시 ranking·권한·materialization을 검증한다. |
 | [ADR-0028](ADR-0028-security-alert-detection-and-lifecycle.md) | Accepted | Security Alert 탐지와 lifecycle 경계 | 조직·actor가 검증된 `permission.denied`와 allowlist `policy.block`을 규칙 기반 alert로 탐지하는 정책을 확정했다. Alert/evidence 모델, 실시간 detector, reconciliation, 관리자 API/UI는 MBA-211~214, audit producer 정규화는 MBA-223 구현 전이다. |
+| [ADR-0024](ADR-0024-distributed-schedule-dispatch-claim.md) | Accepted | 분산 Schedule dispatch claim과 admission 멱등성 경계 | 구현 전 accepted target이다. MBA-187은 occurrence별 durable claim, deterministic task id, duplicate-suppressed Worker admission, system actor와 outcome-unknown no-replay 정책을 구현한다. 외부 node 부수효과 exactly-once는 MBA-190 범위다 |
 
 ## 참고 보고서
 

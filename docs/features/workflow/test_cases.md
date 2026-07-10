@@ -389,6 +389,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
+- System schedule run은 `WorkflowRun.user_id=null`, execution audit system actor이며 App/deployment creator나 workflow owner가 executor/RAG subject로 전파되지 않는다. 기존 manual/API/webhook user-attributed run은 non-null actor 계약을 유지한다.
+- Duplicate schedule task delivery는 stable workflow run id 하나를 재사용하고 engine admission을 한 번만 허용한다. Admission 이후 outcome unknown은 자동 replay하지 않는다.
+- Schedule idempotency correlation은 node execution context에서 opaque하게 전달되지만 prompt/output/raw trace에 포함되지 않으며 provider side-effect exactly-once로 주장하지 않는다.
 - 배포 preflight는 LLM node RAG 옵션의 KB/collection 후보가 deployment type에서 파생한 runtime audience에게 사용 가능한지 검증하고, unavailable/unknown/private 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.
 - Public/API/webhook/schedule/chatbot/MCP surface는 subject가 없으므로 private KB 후보가 있으면 활성 배포 create/toggle에서 `409 deployment.preflight.blocked`를 반환한다.
 - Workflow-node runtime은 parent execution context를 상속한다. Parent subject가 있으면 해당 subject 기준 KB permission/source ACL을 사용하고, subject가 없으면 anonymous public-only로 낮춘다.

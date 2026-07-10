@@ -15,6 +15,15 @@ Verified Against: TBD
 - Existing activation toggle controls surface `deployment.preflight.blocked` responses without showing hidden KB identity.
 - Active delete controls do not need preflight display in MBA-176 because delete no longer auto-promotes another deployment.
 
+### Internal Schedule Dispatch Components
+
+- `SchedulerService`는 periodic tick lifecycle만 담당하는 inbound adapter다.
+- Deployment application의 occurrence/dispatch use case가 claim, budget decision, next-run advancement, audit와 publish state transition을 조율한다.
+- Existing `apps/gateway/composition/deployment.py`가 preflight와 분리된 schedule dispatch builder로 SQLAlchemy repository/UnitOfWork, schedule audit recorder, next-fire calculator와 Celery publisher를 주입한다.
+- Workflow Engine Celery task는 claim locator를 application use case로 전달하고 result를 task outcome으로 mapping한다. DB query, runtime policy 조합과 engine 생성은 task 본문이 직접 소유하지 않는다.
+- Public claim 조회/redrive UI는 제공하지 않는다. Outcome unknown acknowledgment는 protected operational job/CLI에서만 수행한다.
+- 기존 deployment list/modal은 claim status나 idempotency key를 사용자에게 표시하지 않는다.
+
 ## States
 
 - `checking`: Preflight/create request in progress.

@@ -49,6 +49,9 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
 - FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포는 deployment type에서 파생한 runtime audience 기준 preflight를 수행해야 한다. 사용자 subject가 없는 public/API/webhook/schedule/chatbot/MCP surface는 private KB 후보를 활성 배포로 올릴 수 없고 anonymous public-only 후보만 허용한다.
 - FR-009: Workflow-node 실행은 parent workflow의 execution context를 상속한다. Parent execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only로 낮춘다. Deployment preflight에서 workflow-node target은 node 설정의 `workflowNode.data.appId`를 기준으로 target app active deployment를 찾는다.
+- FR-010: System schedule execution은 App/deployment creator나 workflow owner를 executor로 기록하지 않아야 한다. Canonical schedule claim과 연결된 `WorkflowRun.user_id`는 null이고 audit actor는 system이어야 하며, 기존 manual/API/webhook interactive run의 사용자 attribution은 유지해야 한다.
+- FR-011: Schedule Worker는 claim admission 전에 stable workflow run id를 정하고 duplicate delivery에서 같은 id를 재사용해야 한다. Admission 이후 실패나 timeout으로 outcome이 불명확하면 engine을 자동 재실행하지 않아야 한다.
+- FR-012: Schedule execution context의 idempotency key는 node adapter까지 opaque correlation으로 전달할 수 있지만 prompt, user-visible output, durable raw trace에 복제하지 않아야 한다. 이 전달은 외부 provider의 exactly-once를 보장하지 않는다.
 
 
 ### 1. 실행 편의성
