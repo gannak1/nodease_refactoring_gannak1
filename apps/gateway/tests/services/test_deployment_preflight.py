@@ -176,6 +176,40 @@ def test_preflight_blocks_source_managed_kb_even_if_collection_is_public():
     assert result.safe_summary.blocked_reason == "source_public_exposure_required"
 
 
+@pytest.mark.parametrize("kb_scope", ["cross_org", "archived"])
+def test_preflight_hides_kb_outside_active_organization_scope(kb_scope):
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    kb_organization_id = (
+        uuid.uuid4() if kb_scope == "cross_org" else organization_id
+    )
+    lifecycle_state = "archived" if kb_scope == "archived" else "active"
+    db = _Db(
+        {
+            KnowledgeBase: [
+                _row(
+                    id=kb_id,
+                    organization_id=kb_organization_id,
+                    lifecycle_state=lifecycle_state,
+                    source_identity_id=None,
+                )
+            ]
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.API,
+        graph_snapshot=_llm_graph(kb_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "knowledge_base_unavailable"
+    assert str(kb_id) not in result.model_dump_json()
+
+
 def test_workflow_node_preflight_uses_data_app_id_for_target_lookup():
     organization_id = uuid.uuid4()
     target_app_id = uuid.uuid4()
@@ -257,6 +291,77 @@ def test_workflow_node_preflight_rejects_non_workflow_node_active_deployment():
                     graph_snapshot={"nodes": [], "edges": []},
                 )
             ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.CHATBOT,
+        graph_snapshot=_workflow_node_graph(target_app_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_node_target_unavailable"
+
+
+@pytest.mark.parametrize("target_violation", ["wrong_owner", "inactive"])
+def test_workflow_node_preflight_rejects_unowned_or_inactive_target_deployment(
+    target_violation,
+):
+    organization_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    target_deployment_id = uuid.uuid4()
+    db = _Db(
+        {
+            App: [
+                _row(
+                    id=target_app_id,
+                    organization_id=organization_id,
+                    active_deployment_id=target_deployment_id,
+                )
+            ],
+            WorkflowDeployment: [
+                _row(
+                    id=target_deployment_id,
+                    app_id=(
+                        uuid.uuid4()
+                        if target_violation == "wrong_owner"
+                        else target_app_id
+                    ),
+                    is_active=target_violation != "inactive",
+                    type=DeploymentType.WORKFLOW_NODE,
+                    graph_snapshot={"nodes": [], "edges": []},
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.CHATBOT,
+        graph_snapshot=_workflow_node_graph(target_app_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_node_target_unavailable"
+
+
+def test_workflow_node_preflight_hides_cross_organization_target_app():
+    organization_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    db = _Db(
+        {
+            App: [
+                _row(
+                    id=target_app_id,
+                    organization_id=uuid.uuid4(),
+                    active_deployment_id=uuid.uuid4(),
+                )
+            ]
         }
     )
 

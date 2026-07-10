@@ -9,6 +9,7 @@ FORBIDDEN_PREFIXES = (
     "apps.gateway.composition",
     "apps.gateway.services",
     "apps.shared.db",
+    "apps.shared.schemas",
 )
 
 
