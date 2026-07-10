@@ -1,6 +1,6 @@
 import pathlib
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
@@ -35,10 +35,21 @@ class _ProfileQuery:
         return self
 
     def filter(self, *criteria):
+        if self.limit_value is not None:
+            raise RuntimeError("legacy Query does not allow filter() after limit()")
         self.filters.extend(criteria)
+        for criterion in criteria:
+            if str(criterion).startswith("workflow_runs.deployment_id ="):
+                deployment_id = criterion.right.value
+                self.rows = [
+                    row
+                    for row in self.rows
+                    if getattr(row[1], "deployment_id", None) == deployment_id
+                ]
         return self
 
     def order_by(self, *args, **kwargs):
+        self.rows.sort(key=lambda row: row[0].started_at, reverse=True)
         return self
 
     def limit(self, value):
@@ -46,7 +57,9 @@ class _ProfileQuery:
         return self
 
     def all(self):
-        return self.rows
+        if self.limit_value is None:
+            return self.rows
+        return self.rows[: self.limit_value]
 
 
 class _ProfileSession:
@@ -474,6 +487,86 @@ def test_collect_profile_uses_workflow_success_as_downstream_fallback():
     assert performance.downstream_eval_count == 1
     assert performance.downstream_success_count == 1
     assert performance.downstream_success_rate == 1.0
+
+
+def test_collect_profile_scopes_to_deployment_before_limiting_recent_runs():
+    """배포 정책 갱신은 대상 deployment의 최신 운영 표본 최대 200개를 수집한다."""
+    workflow_id = uuid4()
+    deployment_id = uuid4()
+    now = datetime.now(timezone.utc)
+    rows = []
+    for offset in range(201):
+        model_id = f"model-{offset}"
+        rows.append(
+            (
+                SimpleNamespace(
+                    node_id="llm-triage",
+                    node_type="llmNode",
+                    status="success",
+                    started_at=now - timedelta(seconds=offset),
+                    retry_count=0,
+                    trace_metadata={"llm": {"selected_model": model_id}},
+                ),
+                SimpleNamespace(
+                    id=uuid4(), status="success", deployment_id=deployment_id
+                ),
+                SimpleNamespace(
+                    model_id=uuid4(),
+                    status="success",
+                    total_cost=Decimal("0.001"),
+                    latency_ms=10,
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                ),
+                SimpleNamespace(model_id_for_api_call=model_id),
+            )
+        )
+    for offset in range(5):
+        rows.append(
+            (
+                SimpleNamespace(
+                    node_id="llm-triage",
+                    node_type="llmNode",
+                    status="success",
+                    started_at=now + timedelta(seconds=offset + 1),
+                    retry_count=0,
+                    trace_metadata={"llm": {"selected_model": f"other-{offset}"}},
+                ),
+                SimpleNamespace(id=uuid4(), status="success", deployment_id=uuid4()),
+                SimpleNamespace(
+                    model_id=uuid4(),
+                    status="success",
+                    total_cost=Decimal("0.001"),
+                    latency_ms=10,
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                ),
+                SimpleNamespace(model_id_for_api_call=f"other-{offset}"),
+            )
+        )
+    rows.reverse()
+    db = _ProfileSession(rows)
+
+    profile = ModelRouter.collect_profile(
+        db,
+        ModelRouterContext(
+            workflow_id=str(workflow_id),
+            node_id="llm-triage",
+            current_model_id="gpt-4.1",
+            deployment_id=str(deployment_id),
+        ),
+    )
+
+    filter_sql = "\n".join(str(criteria) for criteria in db.query_obj.filters)
+    assert "workflow_runs.deployment_id = :deployment_id_1" in filter_sql
+    assert db.query_obj.limit_value == 200
+    assert profile.operational_usable_runs == 200
+    assert "model-0" in profile.model_performance
+    assert "model-199" in profile.model_performance
+    assert "model-200" not in profile.model_performance
+    assert not set(profile.model_performance).intersection(
+        {f"other-{offset}" for offset in range(5)}
+    )
 
 
 def test_collect_profile_without_workflow_id_falls_back_to_empty_profile():

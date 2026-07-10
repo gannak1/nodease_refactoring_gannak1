@@ -441,8 +441,8 @@ export function LLMNodePanel({
       legacyPolicy?.refresh?.runs_since_last_refresh ??
       0;
     const refreshEveryRuns =
-      policy?.refresh?.refresh_every_runs ??
       legacyPolicy?.refresh?.refresh_every_runs ??
+      policy?.refresh?.refresh_every_runs ??
       20;
     const status =
       policy?.status ||

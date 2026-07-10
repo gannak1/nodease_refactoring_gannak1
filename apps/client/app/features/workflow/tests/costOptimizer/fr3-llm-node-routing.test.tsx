@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NodeInlinePanel } from '../../components/nodes/NodeInlinePanel';
@@ -262,7 +268,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByText('대체 모델')).not.toBeInTheDocument();
   });
 
-  it('자동 모델 라우팅의 자동 정책 점검 주기를 슬라이더로 조정한다', async () => {
+  it('persisted policy가 있어도 자동 정책 점검 주기 draft와 PATCH에 슬라이더 값을 사용한다', async () => {
     const node = createLlmNode({
       auto_model_routing: true,
       model_routing_policy: {
@@ -295,7 +301,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       true,
     );
 
-    render(<NodeInlinePanel node={node} />);
+    const { rerender } = render(<NodeInlinePanel node={node} />);
 
     const slider = await screen.findByRole('slider', {
       name: /자동 정책 점검 주기/,
@@ -304,9 +310,29 @@ describe('FR-003 LLM node model routing optimization entry', () => {
 
     fireEvent.change(slider, { target: { value: '45' } });
 
+    rerender(
+      <NodeInlinePanel node={useWorkflowStore.getState().nodes[0] as AppNode} />,
+    );
+    const updatedSlider = screen.getByRole('slider', {
+      name: /자동 정책 점검 주기/,
+    });
+    fireEvent.mouseUp(updatedSlider);
+
     const nextData = useWorkflowStore.getState().nodes[0]
       .data as LLMNodeData;
     expect(nextData.model_routing_policy?.refresh?.refresh_every_runs).toBe(45);
+    expect(updatedSlider).toHaveValue('45');
+    expect(screen.getByText('2/45회')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        {
+          enabled: true,
+          refresh_every_runs: 45,
+        },
+      );
+    });
     expect(
       screen.getByText(/권장: 20~50회/),
     ).toBeInTheDocument();

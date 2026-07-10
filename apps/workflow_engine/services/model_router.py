@@ -527,6 +527,12 @@ class ModelRouter:
             workflow_uuid = uuid.UUID(str(context.workflow_id))
         except (TypeError, ValueError):
             return NodeRunProfile()
+        deployment_uuid = None
+        if context.deployment_id:
+            try:
+                deployment_uuid = uuid.UUID(str(context.deployment_id))
+            except (TypeError, ValueError):
+                return NodeRunProfile()
         query = (
             db.query(WorkflowNodeRun, WorkflowRun, LLMUsageLog, LLMModel)
             .join(WorkflowRun, WorkflowNodeRun.workflow_run_id == WorkflowRun.id)
@@ -546,16 +552,10 @@ class ModelRouter:
             .filter(WorkflowNodeRun.node_id == context.node_id)
             .filter(WorkflowNodeRun.node_type == "llmNode")
             .filter(WorkflowNodeRun.status.in_([NodeRunStatus.SUCCESS, NodeRunStatus.FAILED]))
-            .order_by(WorkflowNodeRun.started_at.desc())
-            .limit(200)
         )
-        if context.deployment_id:
-            try:
-                deployment_uuid = uuid.UUID(str(context.deployment_id))
-            except (TypeError, ValueError):
-                return NodeRunProfile()
+        if deployment_uuid is not None:
             query = query.filter(WorkflowRun.deployment_id == deployment_uuid)
-        rows = query.all()
+        rows = query.order_by(WorkflowNodeRun.started_at.desc()).limit(200).all()
 
         performances: dict[str, ModelPerformance] = {}
         segment_performance: dict[str, dict[str, Any]] = {}

@@ -69,6 +69,20 @@ def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_re
 
     session = SessionLocal()
     try:
+        if trigger == "auto_n_runs":
+            from apps.workflow_engine.services.model_routing_policy_store import (
+                ModelRoutingPolicyStore,
+            )
+
+            if (
+                ModelRoutingPolicyStore.claim_pending_auto_refresh(
+                    session,
+                    policy_id=policy_id,
+                )
+                is None
+            ):
+                session.rollback()
+                return {"status": "skipped", "update_id": None, "result": None}
         update = PersistedModelRoutingPolicyRefreshService.refresh(
             session,
             policy_id=policy_id,

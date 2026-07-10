@@ -19,6 +19,7 @@ from apps.workflow_engine.services.model_routing_policy_lifecycle import (
 from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
+from apps.workflow_engine.services.llm_service import LLMService
 
 
 class ModelRoutingPolicyStore:
@@ -101,11 +102,28 @@ class ModelRoutingPolicyStore:
                 # 실행 모델이 없는 잘못된 deployment snapshot은 policy를 만들지 않는다.
                 # 이후 runtime도 저장 모델을 임의로 추정하지 않고 기존 validation 경로에서 막는다.
                 return None
+            execution_user_id = getattr(workflow_run, "user_id", None)
+            if organization_id is None or execution_user_id is None:
+                return None
+            available_model_ids = set(
+                LLMService.get_runtime_available_model_ids_for_user(
+                    db,
+                    user_id=execution_user_id,
+                    organization_id=organization_id,
+                )
+            )
+            if configured_model_id not in available_model_ids:
+                # bootstrap policy가 실행 주체에게 사용할 수 없는 모델을 active로 만들면
+                # policy runtime의 credential guard보다 먼저 잘못된 상태를 저장하게 된다.
+                return None
+            fallback_model_id = node_data.get("fallback_model_id")
+            if fallback_model_id not in available_model_ids:
+                fallback_model_id = None
             bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
                 policy_id=str(policy_id),
                 policy_version="bootstrap-preserve-config-v1",
                 default_model_id=configured_model_id,
-                fallback_model_id=node_data.get("fallback_model_id"),
+                fallback_model_id=fallback_model_id,
                 refresh_every_runs=refresh_every_runs,
             )
             active_policy = bootstrap["active_policy"]
@@ -135,6 +153,38 @@ class ModelRoutingPolicyStore:
                 deployment_id=workflow_run.deployment_id,
                 node_id=node_id,
             )
+        return policy
+
+    @classmethod
+    def _lock_policy_for_update(
+        cls,
+        db: Session,
+        *,
+        policy_id: uuid.UUID,
+    ) -> LLMNodeModelRoutingPolicy | None:
+        return (
+            db.query(LLMNodeModelRoutingPolicy)
+            .populate_existing()
+            .filter(LLMNodeModelRoutingPolicy.id == policy_id)
+            .with_for_update()
+            .first()
+        )
+
+    @classmethod
+    def claim_pending_auto_refresh(
+        cls,
+        db: Session,
+        *,
+        policy_id: str | uuid.UUID,
+    ) -> LLMNodeModelRoutingPolicy | None:
+        """동일 auto refresh 메시지 중 아직 처리할 요청 하나만 transaction 안에서 통과시킨다."""
+        try:
+            policy_uuid = uuid.UUID(str(policy_id))
+        except (TypeError, ValueError):
+            return None
+        policy = cls._lock_policy_for_update(db, policy_id=policy_uuid)
+        if not ModelRoutingPolicyLifecycleService.has_pending_refresh_request(policy):
+            return None
         return policy
 
     @staticmethod
@@ -186,7 +236,7 @@ class ModelRoutingPolicyStore:
             .all()
         )
         scheduled: list[uuid.UUID] = []
-        for node_run in node_runs:
+        for node_run in sorted(node_runs, key=lambda item: str(item.node_id)):
             node_data = node_data_by_id.get(node_run.node_id)
             if not isinstance(node_data, dict):
                 continue
@@ -207,11 +257,19 @@ class ModelRoutingPolicyStore:
                 policy_id=policy.id,
                 workflow_run_id=workflow_run.id,
             )
+            # 동시 run은 event insert 뒤 같은 순서로 policy row를 잠근다. lock을
+            # 얻은 시점의 최신 counter에만 event를 반영해 누락 갱신을 막는다.
+            policy = cls._lock_policy_for_update(db, policy_id=policy.id)
+            if policy is None:
+                continue
             outcome = ModelRoutingPolicyLifecycleService.apply_run_event(
                 policy,
                 event_was_created=event_was_created,
             )
-            if outcome.should_enqueue_refresh:
+            if outcome.should_enqueue_refresh or (
+                not event_was_created
+                and ModelRoutingPolicyLifecycleService.has_pending_refresh_request(policy)
+            ):
                 scheduled.append(policy.id)
         db.flush()
         return scheduled

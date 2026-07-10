@@ -17,6 +17,15 @@ class ModelRoutingPolicyLifecycleService:
     """DB 저장소가 event를 만들었는지에 따라 policy state만 전이한다."""
 
     @staticmethod
+    def has_pending_refresh_request(policy: Any) -> bool:
+        """broker 재시도 시 다시 발행해도 되는 auto refresh 요청인지 확인한다."""
+        return bool(
+            getattr(policy, "enabled", False)
+            and getattr(policy, "refresh_requested_at", None) is not None
+            and str(getattr(policy, "status", "") or "").lower() == "refreshing"
+        )
+
+    @staticmethod
     def is_eligible_operational_run(run: Any) -> bool:
         deployment_id = getattr(run, "deployment_id", None)
         trigger_mode = getattr(run, "trigger_mode", None)
