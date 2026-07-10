@@ -4,18 +4,24 @@ import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Annotated, Any, Dict
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    SURFACE_WEBHOOK_RUN,
+    DeploymentRuntimePolicy,
+    is_deployment_type_allowed_for_surface,
+)
 from apps.shared.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -294,6 +300,10 @@ async def receive_webhook(
     url_slug: str,
     request: Request,
     background_tasks: BackgroundTasks,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
     db: Session = Depends(get_db),
 ):
     """
@@ -348,7 +358,11 @@ async def receive_webhook(
         )
         .first()
     )
-    if not deployment:
+    if not deployment or not is_deployment_type_allowed_for_surface(
+        deployment.type,
+        SURFACE_WEBHOOK_RUN,
+        policy=runtime_policy,
+    ):
         raise HTTPException(status_code=404, detail="Active deployment not found")
 
     # 5-1. 예산 초과 차단 — background 예약 전에 429로 끝낸다 (BGT-REQ-030).

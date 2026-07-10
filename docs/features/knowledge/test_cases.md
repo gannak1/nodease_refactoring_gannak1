@@ -119,7 +119,11 @@ Status: Draft
 - External index success 이후 DB finalize failure가 발생하면 이전 active version을 유지하고 orphan cleanup을 queue에 넣는다.
 - DB finalize success 이후 object storage/vector index cleanup failure가 발생하면 새 active version은 유지하고 cleanup을 retry한다.
 - DB source sync 또는 shared vector save path가 같은 KB/document chunks를 동시에 교체하려 할 때 advisory lock 또는 versioned chunk set이 lost update를 막는다.
-- Document/KB delete는 DB commit 전에 object storage 또는 raw artifact를 먼저 삭제하지 않는다. Physical cleanup은 outbox/reconciler가 idempotent하게 수행한다.
+- Target cleanup outbox/reconciler cutover는 Document/KB delete가 DB commit 전에 object storage 또는 raw artifact를 먼저 삭제하지 않고, physical cleanup을 outbox/reconciler가 idempotent하게 수행함을 검증한다.
+- Current hard-delete baseline은 KB delete가 Knowledge lifecycle service boundary를 통과하고, organization field가 잘못된 legacy row를 포함해 해당 KB를 참조하는 direct KB permission row cleanup이 hard delete와 같은 transaction에서 먼저 일어나며, storage adapter 생성 또는 object delete 실패가 API 실패나 raw path/raw exception log 노출로 이어지지 않음을 검증한다. Storage adapter는 provider 세부정보가 없는 typed delete error를 호출자에게 전달하고, lifecycle service는 한 object cleanup 실패 뒤에도 나머지 object cleanup을 계속한다. Permission cleanup, ORM delete 또는 DB commit이 실패하면 session rollback 후 예외를 전파한다. 이 baseline은 MBA-184의 durable audit/outbox와 target cleanup outbox/reconciler cutover를 대체하지 않는다.
+- S3 delete reference는 configured bucket의 `s3://`, virtual-host, 승인된 path-style URL과 canonical `uploads/` key만 허용한다. URL-encoded 공백/한글 key는 한 번 decode하고, bucket/host mismatch, HTTP, query/fragment, 빈 key, control/dot/backslash segment, `uploads/` 밖 key는 provider 호출 전에 safe typed error로 거부한다.
+- Local delete reference는 configured upload root 내부 resolved path만 허용한다. Root 밖 절대/상대 경로와 symlink escape는 파일을 삭제하지 않고 safe typed error로 닫는다.
+- Backend upload와 presigned upload가 생성한 S3 key 및 Local path는 같은 canonical builder/delete validator round-trip을 통과해야 한다. Filename 또는 user segment에 slash/backslash, `.`/`..`, control character, 과도한 길이가 있으면 object 생성/presign 전에 safe typed error로 거부하며, delete validator를 완화해 legacy unsafe key를 허용하지 않는다.
 
 ## Client/UI Tests
 
@@ -226,7 +230,10 @@ Status: Draft
 - KB permission list API는 `resource_type="knowledge_base"`와 team/user permission 목록을 반환하고, hidden KB id/name/count를 노출하지 않는다.
 - KB team permission grant/revoke는 기존 team KB permission table을 사용하고, KB user direct permission grant/revoke는 `user_knowledge_permissions`를 사용한다.
 - KB team/user permission grant/revoke는 권한 row 변경과 같은 transaction에서 canonical data-change audit row를 하나만 추가하며, Core upsert 또는 bulk delete가 ORM listener를 우회해도 audit이 누락되지 않는다.
-- KB hard delete는 `team_knowledge_permissions`, `user_knowledge_permissions` direct grant row를 같은 transaction에서 먼저 정리해 orphan permission이나 FK failure를 남기지 않는다.
+- Resource permission registry contract는 schema가 허용하는 `workflow`, `llm_credential`, `knowledge_base` resource type과 Gateway routing key가 일치하는지 검증한다.
+- `resource_type="knowledge_base"` grant/revoke/list는 `TeamKnowledgePermission`과 `UserKnowledgePermission`만 사용하고 LLM credential 또는 workflow permission fallback으로 흐르지 않는다.
+- KB hard delete는 Knowledge lifecycle service boundary를 통과하고, `team_knowledge_permissions`, `user_knowledge_permissions` direct grant row를 같은 transaction에서 먼저 정리해 orphan permission이나 FK failure를 남기지 않는다. Disposable PostgreSQL integration은 owner predicate, wrong-owner no-mutation, legacy cross-organization permission cleanup, document/chunk cascade와 실제 FK delete 성공을 검증한다.
+- Disposable PostgreSQL integration은 명시적 host/port/user/password를 요구하고 기본 credential을 사용하지 않는다. Loopback 밖 host는 exact host confirmation 없이는 연결하지 않으며, allowlist random DB name만 생성/삭제하고 subprocess에는 검증된 개별 DB 설정만 전달한다. 실패 출력과 config representation은 credential/connection detail을 노출하지 않는다.
 - Runtime/builder bulk KB permission evaluation은 team KB permission과 `user_knowledge_permissions` direct grant를 모두 합산해야 한다. User direct grant만 있는 경우에도 해당 user의 KB `use` 권한이 허용되어야 한다.
 - Public visibility 전환은 organization manager와 explicit acknowledgement를 요구하고, 전환 audit에는 raw KB title/path/url, hidden KB id/name, exact denied count가 들어가지 않는다.
 - Public visibility가 켜져도 인증 사용자 KB `use` 권한이나 source ACL requester authorization이 생기지 않는다.

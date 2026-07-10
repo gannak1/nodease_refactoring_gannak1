@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from apps.gateway.services import resource_permission_registry
 from apps.gateway.services import team_service
 from apps.gateway.services.team_service import TeamService
 from apps.shared.audit.actions import AuditAction
@@ -91,7 +92,7 @@ def test_workflow_resource_manager_can_grant_permission(monkeypatch):
         team_service, "has_organization_manager_permission", lambda *a: False
     )
     monkeypatch.setattr(
-        team_service,
+        resource_permission_registry,
         "get_effective_workflow_auth_state",
         lambda *a, **k: "manager",
     )
@@ -147,7 +148,7 @@ def test_knowledge_resource_manager_can_grant_user_permission(monkeypatch):
         team_service, "has_organization_manager_permission", lambda *a: False
     )
     monkeypatch.setattr(
-        team_service,
+        resource_permission_registry,
         "get_effective_knowledge_base_auth_state",
         lambda *a, **k: "manager",
     )
@@ -217,6 +218,94 @@ def test_user_grant_requires_grantee_organization_membership(monkeypatch):
     assert exc_info.value.status_code == 400
 
 
+def test_grant_rejects_cross_organization_resource_before_authorization(monkeypatch):
+    requested_organization_id = uuid.uuid4()
+    resource_organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=workflow_id,
+                organization_id=resource_organization_id,
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        team_service,
+        "has_organization_manager_permission",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("authorization must not run across organizations")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        TeamService.grant_resource_permission(
+            db,
+            user,
+            ResourcePermissionGrantRequest(
+                organization_id=requested_organization_id,
+                resource_type="workflow",
+                resource_id=workflow_id,
+                grantee_type="user",
+                grantee_id=uuid.uuid4(),
+                auth_state="viewer",
+            ),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Resource organization mismatch"
+    assert db.committed is False
+
+
+def test_resource_permission_manager_denial_is_fail_closed_and_audited(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(id=workflow_id, organization_id=organization_id),
+        ]
+    )
+    denied = []
+
+    monkeypatch.setattr(
+        team_service,
+        "has_organization_manager_permission",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        resource_permission_registry,
+        "get_effective_workflow_auth_state",
+        lambda *args, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(
+        team_service,
+        "record_permission_denied",
+        lambda *args, **kwargs: denied.append(args),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        TeamService.grant_resource_permission(
+            db,
+            user,
+            ResourcePermissionGrantRequest(
+                organization_id=organization_id,
+                resource_type="workflow",
+                resource_id=workflow_id,
+                grantee_type="user",
+                grantee_id=uuid.uuid4(),
+                auth_state="viewer",
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"
+    assert denied == [(user, "workflow", workflow_id, "manage", "viewer")]
+    assert db.committed is False
+
+
 def test_team_grant_rejects_inactive_team(monkeypatch):
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -273,7 +362,7 @@ def test_llm_resource_manager_can_revoke_permission(monkeypatch):
         team_service, "has_organization_manager_permission", lambda *a: False
     )
     monkeypatch.setattr(
-        team_service,
+        resource_permission_registry,
         "get_effective_llm_credential_auth_state",
         lambda *a, **k: "manager",
     )

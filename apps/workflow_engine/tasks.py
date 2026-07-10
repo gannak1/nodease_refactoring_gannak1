@@ -11,9 +11,25 @@ from typing import Any, Dict
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.deployment_runtime_policy import (
+    DeploymentRuntimePolicy,
+    is_deployment_type_allowed_for_trigger,
+)
+from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
+
+_DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS = frozenset(
+    {
+        "conversation_id",
+        "correlation_id",
+        "request_id",
+        "trace_metadata",
+        "trigger_mode",
+        "workflow_task_id",
+    }
+)
 
 
 def _sync_skipped_result(reason: str) -> Dict[str, Any]:
@@ -71,28 +87,47 @@ class PermanentDeploymentExecutionError(ValueError):
     """Non-retryable deployment runtime contract violation."""
 
 
-def _enum_value(value: Any) -> str | None:
-    if value is None:
-        return None
-    if hasattr(value, "value"):
-        return str(value.value)
-    return str(value)
-
-
 def _deployment_type_allowed_for_trigger(
     deployment_type: Any,
     trigger_mode: Any,
+    *,
+    runtime_policy: DeploymentRuntimePolicy,
 ) -> bool:
-    trigger = _enum_value(trigger_mode)
-    deployment_type_value = _enum_value(deployment_type)
-    allowed_by_trigger = {
-        "api": {"api"},
-        "api_secret": {"api"},
-        "schedule": {"schedule"},
-        "webhook": {"webhook"},
+    return is_deployment_type_allowed_for_trigger(
+        deployment_type,
+        trigger_mode,
+        policy=runtime_policy,
+    )
+
+
+def _canonical_deployment_execution_context(
+    queued_context: Dict[str, Any],
+    *,
+    deployment: Any,
+    app: Any,
+) -> Dict[str, Any]:
+    """Rebuild tenant/resource identity from canonical deployment rows."""
+    context = {
+        key: queued_context[key]
+        for key in _DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS
+        if key in queued_context
     }
-    allowed_types = allowed_by_trigger.get(trigger)
-    return bool(allowed_types and deployment_type_value in allowed_types)
+    canonical_user_id = getattr(app, "created_by", None) or getattr(
+        deployment, "created_by", None
+    )
+    context.update(
+        {
+            "user_id": str(canonical_user_id) if canonical_user_id else None,
+            "workflow_id": str(app.workflow_id) if app.workflow_id else None,
+            "organization_id": (
+                str(app.organization_id) if app.organization_id else None
+            ),
+            "app_id": str(deployment.app_id),
+            "deployment_id": str(deployment.id),
+            "workflow_version": deployment.version,
+        }
+    )
+    return context
 
 
 @celery_app.task(name="workflow.execute", bind=True, max_retries=3)
@@ -256,6 +291,10 @@ def execute_by_deployment(
     engine = None
 
     try:
+        if not isinstance(execution_context, dict):
+            raise PermanentDeploymentExecutionError("실행 컨텍스트 형식이 올바르지 않습니다")
+        queued_context = dict(execution_context)
+
         deployment = (
             session.query(WorkflowDeployment)
             .filter(WorkflowDeployment.id == deployment_id)
@@ -263,10 +302,14 @@ def execute_by_deployment(
         )
 
         if not deployment:
-            raise ValueError(f"배포를 찾을 수 없습니다: {deployment_id}")
+            raise PermanentDeploymentExecutionError(
+                f"배포를 찾을 수 없습니다: {deployment_id}"
+            )
 
         if not deployment.graph_snapshot:
-            raise ValueError(f"배포 그래프 데이터가 없습니다: {deployment_id}")
+            raise PermanentDeploymentExecutionError(
+                f"배포 그래프 데이터가 없습니다: {deployment_id}"
+            )
 
         app = session.query(App).filter(App.id == deployment.app_id).first()
         if not app:
@@ -287,23 +330,18 @@ def execute_by_deployment(
             )
         if not _deployment_type_allowed_for_trigger(
             deployment.type,
-            execution_context.get("trigger_mode"),
+            queued_context.get("trigger_mode"),
+            runtime_policy=get_deployment_runtime_policy(),
         ):
             raise PermanentDeploymentExecutionError(
                 f"배포 타입과 실행 트리거가 일치하지 않습니다: {deployment_id}"
             )
 
-        execution_context["app_id"] = str(deployment.app_id)
-        if app and not execution_context.get("workflow_id"):
-            execution_context["workflow_id"] = (
-                str(app.workflow_id) if app.workflow_id else None
-            )
-        if app and not execution_context.get("organization_id"):
-            execution_context["organization_id"] = (
-                str(app.organization_id) if app.organization_id else None
-            )
-        execution_context["deployment_id"] = str(deployment.id)
-        execution_context["workflow_version"] = deployment.version
+        execution_context = _canonical_deployment_execution_context(
+            queued_context,
+            deployment=deployment,
+            app=app,
+        )
 
         sync_result = {}
         try:

@@ -1,13 +1,21 @@
 import logging
 import os
 import shutil
-import uuid
 from abc import ABC, abstractmethod
+from urllib.parse import quote
 
 import boto3
 from fastapi import UploadFile
 
 from apps.gateway.core.config import settings
+from apps.gateway.services.storage_reference import (
+    StorageDeleteError,
+    StorageReferenceError,
+    build_upload_object_key,
+    build_upload_object_name,
+    resolve_local_delete_path,
+    resolve_s3_delete_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +42,7 @@ class LocalStorageService(StorageService):
         os.makedirs(self.upload_dir, exist_ok=True)
 
     def upload(self, file: UploadFile) -> str:
-        # 안전한 파일명 생성
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
+        unique_filename = build_upload_object_name(file.filename)
         file_path = os.path.join(self.upload_dir, unique_filename)
 
         with open(file_path, "wb") as buffer:
@@ -47,8 +54,11 @@ class LocalStorageService(StorageService):
         return file_path
 
     def delete(self, file_path: str):
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        target = resolve_local_delete_path(file_path, upload_root=self.upload_dir)
+        if target.exists() or target.is_symlink():
+            if target.is_dir():
+                raise StorageReferenceError("storage_reference_invalid")
+            target.unlink()
 
     def generate_presigned_upload_url(
         self,
@@ -85,8 +95,7 @@ class S3StorageService(StorageService):
             raise ValueError("S3_BUCKET_NAME is not set. ")
 
     def upload(self, file: UploadFile) -> str:
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
-        s3_key = f"uploads/{unique_filename}"
+        s3_key = build_upload_object_key(file.filename)
 
         try:
             self.s3_client.upload_fileobj(
@@ -110,7 +119,8 @@ class S3StorageService(StorageService):
                 pass
 
         # S3 URL
-        return f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{s3_key}"
+        encoded_key = quote(s3_key, safe="/")
+        return f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{encoded_key}"
 
     def generate_presigned_upload_url(
         self,
@@ -135,9 +145,7 @@ class S3StorageService(StorageService):
                 "method": "PUT"
             }
         """
-        # 고유한 파일명 생성 (충돌 방지)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        s3_key = f"uploads/{user_id}/{unique_filename}"
+        s3_key = build_upload_object_key(filename, user_id=user_id)
 
         try:
             # Presigned URL 생성 (PUT 방식)
@@ -161,32 +169,18 @@ class S3StorageService(StorageService):
             raise e
 
     def delete(self, file_path: str):
-        key = file_path
-
-        if file_path.startswith("s3://"):
-            parts = file_path.replace("s3://", "").split("/", 1)
-            if len(parts) > 1:
-                key = parts[1]
-        elif file_path.startswith("http"):
-            # https://bucket.s3.region.amazonaws.com/folder/file.ext -> folder/file.ext
-            # URL 파싱 대신 단순히 버킷명 뒷부분을 추출하거나, 표준 S3 URL 패턴 매칭
-            # 간단하게 마지막 path 부분만 가져오는건 위험하므로(폴더 구조), 도메인 이후 path 추출
-            from urllib.parse import urlparse
-
-            parsed = urlparse(file_path)
-            # path: /key or /bucket/key (virtual hosted)
-            # 여기서는 virtual hosted style을 가정하고 key 추출
-            key = parsed.path.lstrip("/")
-
-            # 혹시 path에 bucket 이름이 중복되어 들어가 있다면 제거 (Legacy 호환)
-            # 예: /my-bucket/uploads/file.pdf -> uploads/file.pdf
-            if key.startswith(f"{self.bucket_name}/"):
-                key = key.replace(f"{self.bucket_name}/", "", 1)
+        key = resolve_s3_delete_key(
+            file_path,
+            bucket_name=self.bucket_name,
+            region=self.region,
+        )
 
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
-        except Exception as e:
-            logger.error(f"S3 Delete failed: {e}")
+        except Exception:
+            # Callers own the cleanup policy and safe logging boundary. Do not
+            # expose provider exception text, bucket names, or object keys here.
+            raise StorageDeleteError("storage_delete_failed") from None
 
 
 def get_storage_service() -> StorageService:

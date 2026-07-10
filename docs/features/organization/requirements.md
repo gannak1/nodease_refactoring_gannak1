@@ -5,7 +5,7 @@ Related Features: auth, workflow, knowledge, llm-credentials, audit-tracing, adm
 
 ## Purpose
 
-Organization 기능은 Nodease의 tenant-like 작업 경계와 RBAC 운영 기반을 담당한다. 현재 구현 범위는 기본 organization foundation 생성, active organization context 조회/선택, organization 이름/options 수정, organization membership 초대/수락/거절/상태 변경/제거, team 생성/수정/멤버 배정/비활성화, workflow 및 LLM credential에 대한 team/user direct permission 조회/부여/회수, App 생성 권한 검사와 권한 신청 제출이다.
+Organization 기능은 Nodease의 tenant-like 작업 경계와 RBAC 운영 기반을 담당한다. 현재 구현 범위는 기본 organization foundation 생성, active organization context 조회/선택, organization 이름/options 수정, organization membership 초대/수락/거절/상태 변경/제거, team 생성/수정/멤버 배정/비활성화, workflow, Knowledge Base, LLM credential에 대한 team/user direct permission 조회/부여/회수, App 생성 권한 검사와 권한 신청 제출이다.
 
 Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organization foundation 생성을 호출한다. Organization은 생성된 organization, membership, team, resource permission의 scope와 운영 변경을 소유한다. Workflow, Knowledge, LLM credential, Audit feature의 리소스별 동작 의미는 각 feature 문서가 소유하며, Organization 문서는 공통 scope/RBAC 경계와 현재 구현된 권한 관리 API만 정의한다.
 
@@ -20,7 +20,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - 초대받은 사용자는 Sidebar 사용자 메뉴의 알림 overlay에서 본인의 organization 초대를 수락하거나 거절할 수 있다.
 - organization manager는 team을 만들고 수정하며, active organization member를 team에 배정하거나 team에서 제거할 수 있다.
 - organization manager는 더 이상 운영에 쓰지 않는 team을 비활성화할 수 있다.
-- organization manager 또는 대상 resource manager는 workflow/LLM credential 권한을 team 또는 user direct permission으로 부여하거나 회수할 수 있다.
+- organization manager 또는 대상 resource manager는 workflow/Knowledge Base/LLM credential 권한을 team 또는 user direct permission으로 부여하거나 회수할 수 있다.
 - 멤버는 organization scope 안에서 부여된 resource 권한만 사용할 수 있고, scope 밖 resource는 존재 여부를 알 수 없어야 한다.
 
 ## Functional Requirements
@@ -51,7 +51,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-023: member update는 invited member의 강제 active/suspended 전환, removed member update, 자기 자신의 상태/권한 변경, 마지막 active manager 제거/강등을 거부해야 한다.
 - ORG-REQ-024: member update 성공은 `organization.member.update` audit을 기록해야 하며, no-op update는 audit을 기록하지 않아야 한다.
 - ORG-REQ-025: organization manager는 자기 자신과 마지막 active manager를 제외한 멤버를 removed 상태로 변경할 수 있어야 한다.
-- ORG-REQ-026: 멤버 제거는 해당 user의 team membership, user workflow direct permission, user LLM credential direct permission, user App 생성 권한 row를 함께 정리해야 한다.
+- ORG-REQ-026: 멤버 제거는 해당 user의 team membership, user workflow/Knowledge Base/LLM credential direct permission, user App 생성 권한 row를 함께 정리해야 한다.
 - ORG-REQ-027: 멤버 제거 성공은 `organization.member.remove` audit과 cleanup aggregate `permission.revoke` audit을 기록해야 한다.
 - ORG-REQ-028: 이미 removed인 멤버 제거 요청은 idempotent success로 처리해야 한다.
 - ORG-REQ-029: team 목록/생성/수정/멤버 조회/멤버 추가/멤버 제거/비활성화는 organization manager만 수행할 수 있어야 한다 ([ADR-0011](../../decisions/ADR-0011-team-router-rbac-service-boundary.md)).
@@ -81,6 +81,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-053: App 생성 후 배포 권한은 생성자에게 자동 부여되는 workflow manager permission으로 따라오므로, 별도 배포 권한 신청 항목을 두지 않아야 한다.
 - ORG-REQ-054: `GET /notifications`는 현재 로그인한 사용자의 invited organization membership을 `organization.invitation` 알림으로 파생해 반환해야 한다. 별도 notification table, 읽음 상태, 히스토리는 현재 구현 범위가 아니다.
 - ORG-REQ-055: `GET /notifications/stream`은 현재 로그인한 사용자 기준 SSE stream을 제공하고, organization 초대 생성/수락/거절 후 `notifications.changed` 이벤트를 발행해야 한다. 클라이언트는 이벤트 수신 시 `GET /notifications`를 재조회한다.
+- ORG-REQ-057: Production resource permission API의 target model과 team/user permission model 선택은 중앙 resource permission registry를 사용해야 한다. Endpoint adapter가 resource별 response/audit mapping을 유지하더라도 registry에 없는 resource/grantee type이 다른 permission table로 fallback해서는 안 된다.
 
 ## Policies And Edge Cases
 

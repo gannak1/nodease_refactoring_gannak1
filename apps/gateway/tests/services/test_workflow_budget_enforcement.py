@@ -23,11 +23,15 @@ from fastapi import HTTPException
 from sqlalchemy.sql.operators import eq
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 7, 15, 9, 0, tzinfo=KST)
@@ -203,7 +207,14 @@ def test_run_deployment_blocks_exceeded_budget_before_dispatch(
 
     organization_id = uuid4()
     workflow_id = uuid4()
-    app_row, deployment_row = _deployed_app(workflow_id, organization_id)
+    deployment_type = (
+        DeploymentType.API if trigger_mode == "api" else DeploymentType.CHATBOT
+    )
+    app_row, deployment_row = _deployed_app(
+        workflow_id,
+        organization_id,
+        deployment_type=deployment_type,
+    )
     db = _enforcement_db(
         budget=_budget_row(organization_id, workflow_id, Decimal("100.00")),
         usage_logs=[_usage_log(workflow_id, Decimal("150.000000"), now_utc=True)],
@@ -218,6 +229,7 @@ def test_run_deployment_blocks_exceeded_budget_before_dispatch(
                 url_slug=app_row.url_slug,
                 user_inputs={},
                 trigger_mode=trigger_mode,
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 auth_token=auth_token,
                 require_auth=require_auth,
             )
@@ -244,11 +256,23 @@ def test_scheduler_run_skips_dispatch_and_records_audit_without_raising(
 
     organization_id = uuid4()
     workflow_id = uuid4()
-    app_row, deployment_row = _deployed_app(workflow_id, organization_id)
+    app_row, deployment_row = _deployed_app(
+        workflow_id,
+        organization_id,
+        deployment_type=DeploymentType.SCHEDULE,
+    )
+    schedule_id = uuid4()
+    schedule_row = Schedule(
+        id=schedule_id,
+        deployment_id=deployment_row.id,
+        node_id="schedule-trigger",
+        cron_expression="* * * * *",
+        timezone="UTC",
+    )
     db = _enforcement_db(
         budget=_budget_row(organization_id, workflow_id, Decimal("100.00")),
         usage_logs=[_usage_log(workflow_id, Decimal("150.000000"), now_utc=True)],
-        extra_rows=[app_row, deployment_row],
+        extra_rows=[app_row, deployment_row, schedule_row],
     )
     # 문자열/import-as 대신 sys.modules의 진짜 모듈을 patch한다 —
     # apps.shared 패키지가 celery_app 모듈을 동명 Celery 인스턴스 attr로
@@ -262,9 +286,12 @@ def test_scheduler_run_skips_dispatch_and_records_audit_without_raising(
     monkeypatch.setattr(celery_module, "celery_app", _DispatchGuard())
 
     SchedulerService._run_workflow(
-        SimpleNamespace(scheduler=None),
+        SimpleNamespace(
+            scheduler=None,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        ),
         deployment_id=deployment_row.id,
-        schedule_id=uuid4(),
+        schedule_id=schedule_id,
     )  # 예외가 밖으로 나오면 안 된다
 
     audits = db.added_of(AuditLog)
@@ -303,7 +330,12 @@ def _usage_log(workflow_id, total_cost, *, now_utc=False):
     )
 
 
-def _deployed_app(workflow_id, organization_id):
+def _deployed_app(
+    workflow_id,
+    organization_id,
+    *,
+    deployment_type=DeploymentType.CHATBOT,
+):
     deployment_id = uuid4()
     app_row = App(
         id=uuid4(),
@@ -319,6 +351,7 @@ def _deployed_app(workflow_id, organization_id):
         id=deployment_id,
         app_id=app_row.id,
         version=1,
+        type=deployment_type,
         graph_snapshot={"nodes": [], "edges": []},
         is_active=True,
         created_by=uuid4(),

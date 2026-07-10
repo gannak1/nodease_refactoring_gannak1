@@ -44,6 +44,10 @@ from apps.gateway.services.knowledge_base_query_service import (
     KnowledgeSchemaNotReady,
     KnowledgeValidationError,
 )
+from apps.gateway.services.knowledge_lifecycle_service import (
+    KnowledgeLifecycleNotFound,
+    KnowledgeLifecycleService,
+)
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
@@ -53,7 +57,6 @@ from apps.gateway.services.organization_context import (
 )
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
-from apps.shared.db.models.team import TeamKnowledgePermission, UserKnowledgePermission
 from apps.shared.db.models.user import User
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
@@ -901,47 +904,13 @@ def delete_knowledge_base(
     연결된 문서 및 임베딩 데이터는 DB Cascade 설정에 따라 함께 삭제됩니다.
     물리적 파일(S3/Local)도 함께 삭제합니다.
     """
-    kb = (
-        db.query(KnowledgeBase)
-        .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == current_user.id)
-        .first()
-    )
-
-    if not kb:
+    try:
+        KnowledgeLifecycleService(db).delete_owned_knowledge_base(
+            kb_id=kb_id,
+            user_id=current_user.id,
+        )
+    except KnowledgeLifecycleNotFound:
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
-
-    # 물리적 파일 삭제 (Storage)
-    from services.storage import get_storage_service
-
-    storage = get_storage_service()
-
-    for doc in kb.documents:
-        if doc.file_path:
-            try:
-                # S3/Local 파일 삭제
-                storage.delete(doc.file_path)
-            except Exception as e:
-                # 파일 삭제 실패하더라도 DB 삭제는 계속 진행 (로그만 남김)
-                logger.warning(
-                    "Failed to delete document file for doc %s: %s",
-                    doc.id,
-                    type(e).__name__,
-                )
-
-    # KB permission rows do not cascade from knowledge_bases, so remove them
-    # in the same transaction before the hard delete.
-    db.query(UserKnowledgePermission).filter(
-        UserKnowledgePermission.knowledge_base_id == kb.id,
-        UserKnowledgePermission.grantee_organization_id == kb.organization_id,
-    ).delete(synchronize_session=False)
-    db.query(TeamKnowledgePermission).filter(
-        TeamKnowledgePermission.knowledge_base_id == kb.id,
-        TeamKnowledgePermission.grantee_organization_id == kb.organization_id,
-    ).delete(synchronize_session=False)
-
-    # DB 삭제 (Cascade로 청크도 같이 삭제됨)
-    db.delete(kb)
-    db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

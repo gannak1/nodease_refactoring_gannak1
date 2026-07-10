@@ -6,6 +6,10 @@ import pytest
 
 from apps.workflow_engine import tasks
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    SURFACE_WEBHOOK_RUN,
+)
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
@@ -75,12 +79,14 @@ def _active_deployment_pair(
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     organization_id = uuid.uuid4()
+    created_by = uuid.uuid4()
     FakeSession.deployment = SimpleNamespace(
         id=deployment_id,
         app_id=app_id,
         version=7,
         type=deployment_type,
         is_active=True,
+        created_by=created_by,
         graph_snapshot=graph_snapshot or {"nodes": []},
     )
     FakeSession.app = SimpleNamespace(
@@ -88,6 +94,7 @@ def _active_deployment_pair(
         workflow_id=workflow_id,
         organization_id=organization_id,
         active_deployment_id=deployment_id,
+        created_by=created_by,
     )
     return FakeSession.deployment, FakeSession.app, trigger_mode
 
@@ -320,9 +327,7 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
                     "provider": "openai",
                     "model_id": "gpt-4o",
                     "user_prompt": "query",
-                    "knowledgeBases": [
-                        {"id": knowledge_base_id, "name": "제품 정책"}
-                    ],
+                    "knowledgeBases": [{"id": knowledge_base_id, "name": "제품 정책"}],
                     "topK": 4,
                 },
             }
@@ -353,9 +358,81 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
     assert engine_kwargs["execution_context"]["deployment_id"] == str(deployment_id)
 
 
+def test_execute_by_deployment_rebuilds_tenant_context_from_database():
+    deployment, app, trigger_mode = _active_deployment_pair()
+    attacker_workflow_id = str(uuid.uuid4())
+    attacker_organization_id = str(uuid.uuid4())
+    attacker_app_id = str(uuid.uuid4())
+    attacker_user_id = str(uuid.uuid4())
+
+    result = tasks.execute_by_deployment.run(
+        str(deployment.id),
+        {},
+        {
+            "trigger_mode": trigger_mode,
+            "workflow_id": attacker_workflow_id,
+            "organization_id": attacker_organization_id,
+            "app_id": attacker_app_id,
+            "user_id": attacker_user_id,
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 999,
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(uuid.uuid4()),
+            },
+            "request_id": "request-1",
+        },
+    )
+
+    context = FakeWorkflowEngine.calls[0]["kwargs"]["execution_context"]
+    assert result["status"] == "success"
+    assert context["workflow_id"] == str(app.workflow_id)
+    assert context["organization_id"] == str(app.organization_id)
+    assert context["app_id"] == str(deployment.app_id)
+    assert context["deployment_id"] == str(deployment.id)
+    assert context["workflow_version"] == deployment.version
+    assert context["user_id"] == str(deployment.created_by)
+    assert context["request_id"] == "request-1"
+    assert "execution_subject" not in context
+    assert attacker_workflow_id not in context.values()
+    assert attacker_organization_id not in context.values()
+    assert attacker_app_id not in context.values()
+    assert attacker_user_id not in context.values()
+
+
 def test_execute_by_deployment_rejects_inactive_deployment():
     deployment, _app, trigger_mode = _active_deployment_pair()
     deployment.is_active = False
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_deleted_deployment_without_retry():
+    FakeSession.deployment = False
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(uuid.uuid4()),
+            {},
+            {"trigger_mode": "schedule"},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_rejects_missing_graph_without_retry():
+    deployment, _app, trigger_mode = _active_deployment_pair(
+        deployment_type=DeploymentType.SCHEDULE,
+        trigger_mode="schedule",
+    )
+    deployment.graph_snapshot = None
 
     with pytest.raises(tasks.PermanentDeploymentExecutionError):
         tasks.execute_by_deployment.run(
@@ -391,6 +468,28 @@ def test_execute_by_deployment_rejects_trigger_type_mismatch():
             str(deployment.id),
             {},
             {"trigger_mode": "schedule"},
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_by_deployment_uses_worker_runtime_policy_provider(monkeypatch):
+    deployment, _app, trigger_mode = _active_deployment_pair()
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_WEBHOOK_RUN,
+        set(),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "get_deployment_runtime_policy",
+        lambda: injected_policy,
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {"trigger_mode": trigger_mode},
         )
 
     assert FakeWorkflowEngine.calls == []

@@ -1,4 +1,5 @@
-from apps.shared.db.session import get_db
+"""Workflow Engine composition provider for deployment runtime policy."""
+
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     DeploymentRuntimePolicy,
@@ -6,8 +7,8 @@ from apps.shared.domain.deployment_runtime_policy import (
 
 
 def get_deployment_runtime_policy() -> DeploymentRuntimePolicy:
-    """Return the immutable default policy for FastAPI dependency injection."""
+    """Return the process-local immutable runtime policy."""
     return DEFAULT_DEPLOYMENT_RUNTIME_POLICY
 
 
-__all__ = ["get_db", "get_deployment_runtime_policy"]
+__all__ = ["get_deployment_runtime_policy"]

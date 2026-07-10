@@ -3,7 +3,7 @@ import inspect
 import unittest
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
@@ -13,6 +13,11 @@ from apps.gateway.api.v1.endpoints.webhook import CAPTURE_SESSIONS
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.session import get_db
+from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    SURFACE_WEBHOOK_RUN,
+)
 
 
 class _FakeRequest:
@@ -42,7 +47,12 @@ class TestWebhookApi(unittest.TestCase):
         app.dependency_overrides = {}
         CAPTURE_SESSIONS.clear()
 
-    def _mock_db_with_app(self, *, active_deployment=False):
+    def _mock_db_with_app(
+        self,
+        *,
+        active_deployment=False,
+        deployment_type=DeploymentType.WEBHOOK,
+    ):
         mock_db_session = MagicMock()
         mock_app = MagicMock()
         mock_app.id = uuid4()
@@ -55,6 +65,7 @@ class TestWebhookApi(unittest.TestCase):
 
         mock_deployment = MagicMock()
         mock_deployment.id = mock_app.active_deployment_id
+        mock_deployment.type = deployment_type
 
         def query(model):
             result = MagicMock()
@@ -473,6 +484,7 @@ class TestWebhookApi(unittest.TestCase):
                         payload={"event": "after_cancel"},
                     ),
                     BackgroundTasks(),
+                    runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                     db=mock_db_session,
                 )
             )
@@ -484,6 +496,49 @@ class TestWebhookApi(unittest.TestCase):
             webhook_endpoint.WorkflowBudgetService.ensure_workflow_budget_allows_execution = (
                 original_budget_check
             )
+
+    def test_non_webhook_deployments_are_rejected_without_budget_or_dispatch(self):
+        disallowed_types = [
+            deployment_type
+            for deployment_type in DeploymentType
+            if deployment_type is not DeploymentType.WEBHOOK
+        ] + [None, "future"]
+
+        for deployment_type in disallowed_types:
+            with self.subTest(deployment_type=deployment_type):
+                mock_db_session = self._mock_db_with_app(
+                    active_deployment=True,
+                    deployment_type=deployment_type,
+                )
+                background_tasks = BackgroundTasks()
+                budget_check = MagicMock()
+
+                with patch.object(
+                    webhook_endpoint.WorkflowBudgetService,
+                    "ensure_workflow_budget_allows_execution",
+                    budget_check,
+                ):
+                    with self.assertRaises(HTTPException) as exc:
+                        asyncio.run(
+                            webhook_endpoint.receive_webhook(
+                                self.url_slug,
+                                _FakeRequest(
+                                    query_params={"token": self.auth_secret},
+                                    payload={"event": "must-not-dispatch"},
+                                ),
+                                background_tasks,
+                                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                                db=mock_db_session,
+                            )
+                        )
+
+                self.assertEqual(exc.exception.status_code, 404)
+                self.assertEqual(
+                    exc.exception.detail,
+                    "Active deployment not found",
+                )
+                budget_check.assert_not_called()
+                self.assertEqual(background_tasks.tasks, [])
 
     def test_webhook_invalid_token(self):
         """잘못된 토큰으로 웹훅 수신 시 거부 테스트"""
@@ -498,11 +553,39 @@ class TestWebhookApi(unittest.TestCase):
                         payload={},
                     ),
                     BackgroundTasks(),
+                    runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                     db=mock_db_session,
                 )
             )
 
         self.assertEqual(exc.exception.status_code, 403)
+
+    def test_webhook_uses_injected_runtime_policy(self):
+        mock_db_session = self._mock_db_with_app(active_deployment=True)
+        background_tasks = BackgroundTasks()
+        injected_policy = (
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+                SURFACE_WEBHOOK_RUN,
+                set(),
+            )
+        )
+
+        with self.assertRaises(HTTPException) as exc:
+            asyncio.run(
+                webhook_endpoint.receive_webhook(
+                    self.url_slug,
+                    _FakeRequest(
+                        query_params={"token": self.auth_secret},
+                        payload={},
+                    ),
+                    background_tasks,
+                    runtime_policy=injected_policy,
+                    db=mock_db_session,
+                )
+            )
+
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(background_tasks.tasks, [])
 
 
 if __name__ == "__main__":

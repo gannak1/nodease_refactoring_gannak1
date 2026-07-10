@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.services.audit_records import add_data_change_audit
+from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.gateway.utils.api_errors import (
     auth_error_code,
     auth_error_message,
@@ -17,19 +18,8 @@ from apps.gateway.utils.api_errors import (
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.knowledge import KnowledgeBase
-from apps.shared.db.models.team import (
-    Team,
-    TeamKnowledgePermission,
-    TeamLLMPermission,
-    TeamWorkflowPermission,
-    UserKnowledgePermission,
-    UserLLMPermission,
-    UserWorkflowPermission,
-)
+from apps.shared.db.models.team import Team
 from apps.shared.db.models.user import User
-from apps.shared.db.models.llm import LLMCredential
-from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
 from apps.shared.services.permissions import (
     has_active_organization_membership,
@@ -51,6 +41,23 @@ from apps.shared.schemas.permission import (
 from apps.shared.schemas.team import ResourcePermissionListResponse
 
 router = APIRouter()
+
+_WORKFLOW_PERMISSION_SPEC = resource_permission_spec("workflow")
+_KNOWLEDGE_PERMISSION_SPEC = resource_permission_spec("knowledge_base")
+_LLM_PERMISSION_SPEC = resource_permission_spec("llm_credential")
+
+# Production permission endpoints resolve every target/team/user table through
+# the same fail-closed registry used by generic service paths. Resource-specific
+# HTTP/audit contracts remain in this adapter during the incremental migration.
+Workflow = _WORKFLOW_PERMISSION_SPEC.target_model
+TeamWorkflowPermission = _WORKFLOW_PERMISSION_SPEC.team_route.model
+UserWorkflowPermission = _WORKFLOW_PERMISSION_SPEC.user_route.model
+KnowledgeBase = _KNOWLEDGE_PERMISSION_SPEC.target_model
+TeamKnowledgePermission = _KNOWLEDGE_PERMISSION_SPEC.team_route.model
+UserKnowledgePermission = _KNOWLEDGE_PERMISSION_SPEC.user_route.model
+LLMCredential = _LLM_PERMISSION_SPEC.target_model
+TeamLLMPermission = _LLM_PERMISSION_SPEC.team_route.model
+UserLLMPermission = _LLM_PERMISSION_SPEC.user_route.model
 
 
 def _authenticate(

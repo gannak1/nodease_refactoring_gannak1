@@ -145,7 +145,10 @@ class AppService:
         if app.active_deployment_id:
             deployment = (
                 db.query(WorkflowDeployment)
-                .filter(WorkflowDeployment.id == app.active_deployment_id)
+                .filter(
+                    WorkflowDeployment.id == app.active_deployment_id,
+                    WorkflowDeployment.app_id == app.id,
+                )
                 .first()
             )
             if deployment:
@@ -984,7 +987,10 @@ class AppService:
         # 3. 배포 데이터 조회
         deployment = (
             db.query(WorkflowDeployment)
-            .filter(WorkflowDeployment.id == source_app.active_deployment_id)
+            .filter(
+                WorkflowDeployment.id == source_app.active_deployment_id,
+                WorkflowDeployment.app_id == source_app.id,
+            )
             .first()
         )
 
