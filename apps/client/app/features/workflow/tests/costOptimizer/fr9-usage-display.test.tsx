@@ -288,7 +288,6 @@ describe('FR-009 Cost Optimizer usage display', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
-
     expect(screen.getByText('이전 실험 이력')).toBeInTheDocument();
     expect(screen.getByLabelText('후보 상태')).toBeInTheDocument();
     expect(screen.getByLabelText('모델 필터')).toBeInTheDocument();
@@ -320,7 +319,6 @@ describe('FR-009 Cost Optimizer usage display', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
-
     fireEvent.change(screen.getByLabelText('시작일'), {
       target: { value: '2026-07-01' },
     });

@@ -74,27 +74,7 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     vi.restoreAllMocks();
   });
 
-  it('baseline 선택 화면은 최신 실행 로그와 이전 실행 로그 선택 CTA를 제공한다', async () => {
-    const CostOptimizerBaselineSelection = await loadBaselineSelection();
-
-    render(
-      <CostOptimizerBaselineSelection
-        workflowId="workflow-1"
-        nodeId="llm-triage"
-        onBaselineSelected={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
-
-    expect(
-      screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
-    ).toBeInTheDocument();
-  });
-
-  it('baseline 선택 화면은 최신 실행 로그 요약을 먼저 보여준다', async () => {
+  it('baseline 선택 화면은 최신 자동 선택 없이 실행 로그 목록을 바로 제공한다', async () => {
     const CostOptimizerBaselineSelection = await loadBaselineSelection();
 
     render(
@@ -107,26 +87,32 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     );
 
     await waitFor(() => {
-      expect(workflowApiMock.getCostOptimizerLatestBaseline).toHaveBeenCalledWith(
+      expect(workflowApiMock.listCostOptimizerBaselines).toHaveBeenCalledWith(
         'workflow-1',
         'llm-triage',
+        expect.objectContaining({ limit: 20, offset: 0 }),
       );
     });
 
+    expect(
+      screen.queryByRole('button', { name: /최신 실행 로그로 비교하기/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('searchbox', { name: /baseline 검색/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
-    expect(screen.getByText(/420/)).toBeInTheDocument();
-    expect(screen.getByText(/1.8s/)).toBeInTheDocument();
-    expect(screen.getByText(/0.0012/)).toBeInTheDocument();
-    expect(screen.getByText(/billing escalation/)).toBeInTheDocument();
-    expect(screen.getByText(/enterprise response/)).toBeInTheDocument();
   });
 
   it('baseline preview는 긴 값과 여러 JSON field를 임의로 줄이지 않고 표시한다', async () => {
     const CostOptimizerBaselineSelection = await loadBaselineSelection();
     const longMessage =
       'enterprise 고객의 정산 파일이 다시 생성되지 않아 월말 마감이 지연되고 있으며 담당자가 다운로드 위치와 재처리 방법을 확인해야 합니다.';
-    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
-      baseline: {
+    workflowApiMock.listCostOptimizerBaselines.mockResolvedValue({
+      total: 1,
+      limit: 20,
+      offset: 0,
+      items: [
+        {
         ...comparableBaseline,
         input_preview: JSON.stringify({
           message: longMessage,
@@ -142,7 +128,8 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
           owner: 'billing-ops',
           confidence: 0.91,
         }),
-      },
+        },
+      ],
     });
 
     render(
@@ -155,17 +142,21 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
     );
 
     expect(await screen.findByText(new RegExp(longMessage))).toBeInTheDocument();
-    expect(screen.getByText('severity')).toBeInTheDocument();
+    expect(screen.getByText('긴급도')).toBeInTheDocument();
     expect(screen.getByText('high')).toBeInTheDocument();
     expect(screen.getByText('confidence')).toBeInTheDocument();
     expect(screen.getByText('0.91')).toBeInTheDocument();
     expect(screen.queryByText(/\.{3}/)).not.toBeInTheDocument();
   });
 
-  it('baseline 최신 preview는 LLM text 안의 JSON 문자열도 viewer로 풀어서 표시한다', async () => {
+  it('baseline preview는 LLM text 안의 JSON 문자열도 viewer로 풀어서 표시한다', async () => {
     const CostOptimizerBaselineSelection = await loadBaselineSelection();
-    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
-      baseline: {
+    workflowApiMock.listCostOptimizerBaselines.mockResolvedValue({
+      total: 1,
+      limit: 20,
+      offset: 0,
+      items: [
+        {
         ...comparableBaseline,
         output_preview: JSON.stringify({
           cost: 0.0012,
@@ -175,7 +166,8 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
           }),
           model: 'gpt-4.1',
         }),
-      },
+        },
+      ],
     });
 
     render(
@@ -189,16 +181,20 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
 
     expect(await screen.findByText('approvalRequired')).toBeInTheDocument();
     expect(screen.getByText('false')).toBeInTheDocument();
-    expect(screen.getByText('mailDraft')).toBeInTheDocument();
+    expect(screen.getByText('답변 초안')).toBeInTheDocument();
     expect(
       screen.getByText('고객에게 정산 파일 재생성 방법을 안내합니다.'),
     ).toBeInTheDocument();
   });
 
-  it('baseline 최신 preview는 잘린 output_preview보다 보존된 output payload를 우선 표시한다', async () => {
+  it('baseline preview는 잘린 output_preview보다 보존된 output payload를 우선 표시한다', async () => {
     const CostOptimizerBaselineSelection = await loadBaselineSelection();
-    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
-      baseline: {
+    workflowApiMock.listCostOptimizerBaselines.mockResolvedValue({
+      total: 1,
+      limit: 20,
+      offset: 0,
+      items: [
+        {
         ...comparableBaseline,
         output_preview: '{"cost":0.0012,"text":"{\\"approvalRequired\\":false',
         output: {
@@ -208,7 +204,8 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
             mailDraft: 'preview가 잘려도 이 전체 답변 초안을 보여줘야 합니다.',
           }),
         },
-      },
+        },
+      ],
     });
 
     render(
@@ -220,76 +217,11 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
-    expect(await screen.findByText('mailDraft')).toBeInTheDocument();
+    expect(await screen.findByText('답변 초안')).toBeInTheDocument();
     expect(
       screen.getByText('preview가 잘려도 이 전체 답변 초안을 보여줘야 합니다.'),
     ).toBeInTheDocument();
     expect(screen.queryByText(/approvalRequired\\":false/)).not.toBeInTheDocument();
-  });
-
-  it('최신 실행 로그 선택은 latest baseline API를 호출하고 선택 결과를 전달한다', async () => {
-    const CostOptimizerBaselineSelection = await loadBaselineSelection();
-    const onBaselineSelected = vi.fn();
-
-    render(
-      <CostOptimizerBaselineSelection
-        workflowId="workflow-1"
-        nodeId="llm-triage"
-        onBaselineSelected={onBaselineSelected}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await screen.findByText('gpt-4.1-mini');
-    fireEvent.click(
-      screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
-    );
-
-    expect(
-      screen.queryByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /나가기/i }),
-    ).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(workflowApiMock.getCostOptimizerLatestBaseline).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-triage',
-      );
-      expect(onBaselineSelected).toHaveBeenCalledWith(comparableBaseline);
-    });
-  });
-
-  it('비교 가능한 최신 실행 로그가 없으면 최신 선택 CTA를 사용할 수 없고 안내를 표시한다', async () => {
-    workflowApiMock.getCostOptimizerLatestBaseline.mockRejectedValue({
-      response: { status: 400, data: { detail: 'cost_optimizer.no_baseline' } },
-    });
-    const CostOptimizerBaselineSelection = await loadBaselineSelection();
-
-    render(
-      <CostOptimizerBaselineSelection
-        workflowId="workflow-1"
-        nodeId="llm-triage"
-        onBaselineSelected={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
-      ).toBeDisabled();
-    });
-    expect(
-      screen.getByText(/비교 가능한 최신 실행 로그가 없습니다/i),
-    ).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /최신 실행 로그로 비교하기/i }),
-    );
-
-    expect(screen.queryByText(/비교할 실행 로그가 없습니다/i)).not.toBeInTheDocument();
   });
 
   it('이전 실행 로그 picker는 baseline row의 핵심 정보를 표시한다', async () => {
@@ -304,15 +236,11 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
-    );
-
     expect(
       screen.queryByRole('button', { name: /최신 실행 로그로 비교하기/i }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /나가기/i }),
+      screen.getByRole('button', { name: /닫기/i }),
     ).toBeInTheDocument();
 
     await waitFor(() => {
@@ -344,10 +272,6 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
-    );
-
     await screen.findByText(/비교 불가/);
     fireEvent.click(screen.getByText(/retained output/));
 
@@ -369,9 +293,6 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
-    );
     fireEvent.change(await screen.findByRole('searchbox'), {
       target: { value: 'billing' },
     });
@@ -438,10 +359,6 @@ describe('FR-002 Cost Optimizer baseline 선택', () => {
         onBaselineSelected={vi.fn()}
         onClose={vi.fn()}
       />,
-    );
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /이전 실행 로그 선택해서 비교하기/i }),
     );
 
     await screen.findByText(/총 3개 중 2개 표시/);

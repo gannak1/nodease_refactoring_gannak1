@@ -11,9 +11,14 @@ const routerMock = vi.hoisted(() => ({
   push: vi.fn(),
 }));
 
+const searchParamsMock = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
+
 const workflowApiMock = vi.hoisted(() => ({
   getDraftWorkflow: vi.fn(),
   getCostOptimizerAvailability: vi.fn(),
+  getCostOptimizerLatestBaseline: vi.fn(),
   compareCostOptimizerCandidate: vi.fn(),
   listCostOptimizerExperiments: vi.fn(),
 }));
@@ -21,7 +26,7 @@ const workflowApiMock = vi.hoisted(() => ({
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'workflow-1', nodeId: 'llm-1' }),
   useRouter: () => routerMock,
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => searchParamsMock,
 }));
 
 vi.mock('../../api/workflowApi', () => ({
@@ -122,15 +127,22 @@ vi.mock('../../components/costOptimizer/NodeSettingsComparisonPanel', () => ({
     readOnly,
     onChange,
     onNodeDataChange,
+    draft,
   }: {
     title: string;
     hideTitle?: boolean;
     readOnly?: boolean;
     onChange?: (key: string, value: string) => void;
     onNodeDataChange?: (updates: Record<string, unknown>) => void;
+    draft?: { model_id?: string; max_tokens?: number };
   }) => (
     <section aria-label={title}>
-      {hideTitle ? '설정 패널' : title}
+      {hideTitle
+        ? '설정 패널'
+        : `${title}:${draft?.model_id || '-'}:${draft?.max_tokens || '-'}`}
+      <span data-testid={`draft-${title}`}>
+        {`${draft?.model_id || '-'}:${draft?.max_tokens || '-'}`}
+      </span>
       {!readOnly && onChange ? (
         <button
           type="button"
@@ -167,6 +179,7 @@ const loadPlaygroundPage = async () => {
 describe('FR-006 Cost Optimizer playground mode switch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    searchParamsMock.get.mockReturnValue(null);
     global.ResizeObserver = class ResizeObserver {
       observe = vi.fn();
       unobserve = vi.fn();
@@ -204,6 +217,26 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
           },
         },
       ],
+    });
+    workflowApiMock.getCostOptimizerLatestBaseline.mockResolvedValue({
+      baseline: {
+        baseline_id: 'latest-baseline-1',
+        model: 'gpt-4.1',
+        cost: 0.0012,
+        total_tokens: 249,
+        latency_ms: 1600,
+        input_preview: '{"message":"latest input"}',
+        output_preview: '{"text":"latest output"}',
+        node_options: {
+          model_id: 'gpt-4.1',
+          provider: 'openai',
+          system_prompt: 'latest system',
+          user_prompt: 'latest user',
+          assistant_prompt: '',
+          parameters: { max_tokens: 800, temperature: 0.2 },
+          knowledgeBases: [],
+        },
+      },
     });
     workflowApiMock.compareCostOptimizerCandidate.mockResolvedValue({
       comparison_id: 'comparison-1',
@@ -257,6 +290,7 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
 
   afterEach(() => {
     cleanup();
+    window.sessionStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -306,6 +340,52 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(
       screen.queryByRole('button', { name: '결과 분석' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('legacy baseline=latest 진입도 기준 로그를 자동 선택하지 않는다', async () => {
+    searchParamsMock.get.mockImplementation((key: string) =>
+      key === 'baseline' ? 'latest' : null,
+    );
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+
+    expect(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    ).toBeInTheDocument();
+    expect(workflowApiMock.getCostOptimizerLatestBaseline).not.toHaveBeenCalled();
+    expect(screen.queryByText('B candidate')).not.toBeInTheDocument();
+  });
+
+  it('추천 테스트 진입은 baseline 선택 후에만 추천 설정을 B 후보에 반영한다', async () => {
+    const presetKey = 'cost-optimizer-recommendations:workflow-1:llm-1:1';
+    window.sessionStorage.setItem(
+      presetKey,
+      JSON.stringify([{ parameters: { max_tokens: 600 } }]),
+    );
+    searchParamsMock.get.mockImplementation((key: string) =>
+      key === 'recommendationPresetKey' ? presetKey : null,
+    );
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await screen.findByRole('button', { name: '테스트 baseline 선택' });
+    expect(screen.queryByText('B candidate')).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+
+    expect(screen.getByTestId('draft-후보 옵션')).toHaveTextContent(
+      'gpt-4.1:600',
+    );
   });
 
   it('닫기와 워크플로우로 가기는 대상 노드 상세 화면으로 이동한다', async () => {

@@ -22,14 +22,19 @@ interface CostOptimizerOutputPreviewPanelProps {
 }
 
 const keyLabelMap: Record<string, string> = {
+  answer: '답변',
   completion_tokens: '응답 토큰',
   cost: '비용',
   input_tokens: '입력 토큰',
   latency_ms: 'Latency',
+  mailDraft: '답변 초안',
   output_tokens: '응답 토큰',
   prompt_tokens: '프롬프트 토큰',
+  severity: '긴급도',
+  text: '텍스트',
   total_cost: '총 비용',
   total_tokens: '전체 토큰',
+  usage: '사용량',
 };
 
 const formatPreviewKey = (key: string) => keyLabelMap[key] || key;

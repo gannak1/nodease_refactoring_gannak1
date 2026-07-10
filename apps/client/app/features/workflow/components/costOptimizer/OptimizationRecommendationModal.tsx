@@ -218,7 +218,7 @@ export function OptimizationRecommendationModal({
     const presetKey = `cost-optimizer-recommendations:${workflowId}:${selectedNodeId}:${Date.now()}`;
     window.sessionStorage.setItem(presetKey, JSON.stringify(patches));
     router.push(
-      `/modules/${workflowId}/cost-optimizer/${selectedNodeId}?baseline=latest&recommendationPresetKey=${encodeURIComponent(
+      `/modules/${workflowId}/cost-optimizer/${selectedNodeId}?recommendationPresetKey=${encodeURIComponent(
         presetKey,
       )}`,
     );
@@ -462,9 +462,10 @@ export function OptimizationRecommendationModal({
           </div>
 
           <div className="mt-5 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-            테스트하기는 최신 실행 로그를 A 기준으로 잡고 선택한 추천을 B
-            후보 설정에 넣어 A/B 화면으로 이동합니다. 적용하기는 자동 모델
-            라우팅 정책처럼 즉시 반영 가능한 추천에만 사용할 수 있습니다.
+            테스트하기는 선택한 추천을 B 후보 설정에 넣어 A/B 화면으로
+            이동합니다. A 기준 실행 로그는 이동한 화면에서 직접 선택합니다.
+            적용하기는 자동 모델 라우팅 정책처럼 즉시 반영 가능한 추천에만
+            사용할 수 있습니다.
           </div>
 
           {actionError ? (

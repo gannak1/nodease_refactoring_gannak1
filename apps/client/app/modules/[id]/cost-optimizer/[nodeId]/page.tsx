@@ -647,7 +647,6 @@ export default function CostOptimizerPlaygroundPage() {
   const searchParams = useSearchParams();
   const workflowId = params.id;
   const nodeId = params.nodeId;
-  const shouldUseLatestBaseline = searchParams.get('baseline') === 'latest';
   const recommendationPresetKey = searchParams.get('recommendationPresetKey');
 
   const [targetNode, setTargetNode] = useState<AppNode | null>(null);
@@ -749,33 +748,6 @@ export default function CostOptimizerPlaygroundPage() {
         setWorkflowNodes(nodesFromDraft(draft));
         setWorkflowTitle(nextWorkflowTitle?.trim() || workflowId);
         setTargetNode(node);
-        if (shouldUseLatestBaseline) {
-          try {
-            const latest = await workflowApi.getCostOptimizerLatestBaseline(
-              workflowId,
-              nodeId,
-            );
-            if (!active) return;
-            const latestBaseline = latest.baseline;
-            const baseCandidate = candidateFromOptions(
-              baselineOptionsOf(latestBaseline) ||
-                ((node?.data || {}) as BaselineNodeOptions),
-            );
-            const patches =
-              readRecommendationPresetPatches(recommendationPresetKey);
-            setBaseline(latestBaseline);
-            setCandidate(applyCandidatePatchesToDraft(baseCandidate, patches));
-            setActiveMode('setup');
-            setTestName('추천 설정 검증');
-            setCandidateError('');
-            return;
-          } catch {
-            if (!active) return;
-            setCandidateError(
-              '최신 실행 로그를 자동으로 선택하지 못했습니다. 이전 실행 로그를 선택해 주세요.',
-            );
-          }
-        }
         setCandidate(candidateFromNode(node));
       } catch {
         if (!active) return;
@@ -792,7 +764,7 @@ export default function CostOptimizerPlaygroundPage() {
     return () => {
       active = false;
     };
-  }, [nodeId, recommendationPresetKey, shouldUseLatestBaseline, workflowId]);
+  }, [nodeId, recommendationPresetKey, workflowId]);
 
   useEffect(() => {
     if (!baseline || activeMode !== 'report') return;
@@ -894,6 +866,26 @@ export default function CostOptimizerPlaygroundPage() {
   const targetNodeDetailPath = useMemo(
     () => `/modules/${workflowId}?node=${encodeURIComponent(nodeId)}`,
     [nodeId, workflowId],
+  );
+  const handleBaselineSelected = useCallback(
+    (selectedBaseline: CostOptimizerBaselineRow) => {
+      const baseCandidate = candidateFromOptions(
+        baselineOptionsOf(selectedBaseline) ||
+          ((targetNode?.data || {}) as BaselineNodeOptions),
+      );
+      const patches = readRecommendationPresetPatches(recommendationPresetKey);
+
+      setBaseline(selectedBaseline);
+      setCandidate(applyCandidatePatchesToDraft(baseCandidate, patches));
+      setActiveMode('setup');
+      setIsStale(false);
+      setCompareResult(null);
+      setSelectedHistoryTarget(null);
+      setCandidateError('');
+      setApplyError('');
+      setApplySuccess(false);
+    },
+    [recommendationPresetKey, targetNode],
   );
 
   const baselineNodeOptions = baselineOptionsOf(baseline);
@@ -1649,22 +1641,7 @@ export default function CostOptimizerPlaygroundPage() {
               <CostOptimizerBaselineSelection
                 workflowId={workflowId}
                 nodeId={nodeId}
-                onBaselineSelected={(selectedBaseline) => {
-                  setBaseline(selectedBaseline);
-                  setCandidate(
-                    candidateFromOptions(
-                      baselineOptionsOf(selectedBaseline) ||
-                        ((targetNode?.data || {}) as BaselineNodeOptions),
-                    ),
-                  );
-                  setActiveMode('setup');
-                  setIsStale(false);
-                  setCompareResult(null);
-                  setSelectedHistoryTarget(null);
-                  setCandidateError('');
-                  setApplyError('');
-                  setApplySuccess(false);
-                }}
+                onBaselineSelected={handleBaselineSelected}
                 onClose={() => router.push(targetNodeDetailPath)}
               />
             </div>
@@ -1728,21 +1705,7 @@ export default function CostOptimizerPlaygroundPage() {
                 <CostOptimizerBaselineSelection
                   workflowId={workflowId}
                   nodeId={nodeId}
-                  onBaselineSelected={(selectedBaseline) => {
-                    setBaseline(selectedBaseline);
-                    setCandidate(
-                      candidateFromOptions(
-                        baselineOptionsOf(selectedBaseline) ||
-                          ((targetNode?.data || {}) as BaselineNodeOptions),
-                      ),
-                    );
-                    setIsStale(false);
-                    setCompareResult(null);
-                    setSelectedHistoryTarget(null);
-                    setCandidateError('');
-                    setApplyError('');
-                    setApplySuccess(false);
-                  }}
+                  onBaselineSelected={handleBaselineSelected}
                   onClose={() => router.push(targetNodeDetailPath)}
                 />
               )}

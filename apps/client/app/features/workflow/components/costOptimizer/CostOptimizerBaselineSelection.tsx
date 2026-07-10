@@ -6,8 +6,6 @@ import {
   ArrowLeft,
   Clock3,
   GitCommitHorizontal,
-  ListFilter,
-  Sparkles,
 } from 'lucide-react';
 import { workflowApi } from '../../api/workflowApi';
 import type {
@@ -27,55 +25,6 @@ const DEFAULT_LIMIT = 20;
 
 const unavailableMessage =
   '입력 기록이 보관 기간 만료 또는 보안 정책으로 인해 이 실행 로그로는 A/B 테스트를 시작할 수 없습니다.';
-
-const noBaselineMessage =
-  '비교할 실행 로그가 없습니다. 먼저 테스트 실행을 완료해 주세요.';
-
-const parsePreview = (value: string): unknown => {
-  const trimmed = value.trim();
-  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
-    return value;
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-};
-
-const collectPreviewParts = (
-  value: unknown,
-  prefix = '',
-  parts: string[] = [],
-): string[] => {
-  if (value === null || value === undefined) return parts;
-
-  if (typeof value !== 'object') {
-    const label = prefix.split('.').pop() || prefix;
-    const text = String(value).replace(/\s+/g, ' ').trim();
-    if (text) parts.push(label ? `${label}: ${text}` : text);
-    return parts;
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => {
-      collectPreviewParts(item, `${prefix}[${index}]`, parts);
-    });
-    return parts;
-  }
-
-  Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
-    const nextPrefix = prefix ? `${prefix}.${key}` : key;
-    collectPreviewParts(item, nextPrefix, parts);
-  });
-  return parts;
-};
-
-const readablePreview = (value: string) => {
-  if (!value) return '';
-  const parts = collectPreviewParts(parsePreview(value));
-  return (parts.length > 0 ? parts.join(' · ') : value).replace(/\s+/g, ' ').trim();
-};
 
 const formatCost = (cost: number) => {
   if (!Number.isFinite(cost)) return '-';
@@ -99,13 +48,15 @@ const formatRunTime = (value: string) => {
   }).format(date);
 };
 
+const previewValueOf = (payload: unknown, preview: string) =>
+  payload === null || payload === undefined ? preview : payload;
+
 export function CostOptimizerBaselineSelection({
   workflowId,
   nodeId,
   onBaselineSelected,
   onClose,
 }: CostOptimizerBaselineSelectionProps) {
-  const [mode, setMode] = useState<'initial' | 'picker'>('initial');
   const [rows, setRows] = useState<CostOptimizerBaselineRow[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -117,10 +68,6 @@ export function CostOptimizerBaselineSelection({
   const [dateTo, setDateTo] = useState('');
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
-  const [latestBaseline, setLatestBaseline] =
-    useState<CostOptimizerBaselineRow | null>(null);
-  const [isLatestLoading, setIsLatestLoading] = useState(false);
-  const [latestUnavailable, setLatestUnavailable] = useState(false);
 
   const listParams = useMemo<CostOptimizerBaselineListParams>(
     () => ({
@@ -158,53 +105,8 @@ export function CostOptimizerBaselineSelection({
   }, [listParams, nodeId, workflowId]);
 
   useEffect(() => {
-    if (mode === 'picker') {
-      void loadRows();
-    }
-  }, [loadRows, mode]);
-
-  const loadLatestBaseline = useCallback(async () => {
-    setIsLatestLoading(true);
-    setLatestUnavailable(false);
-    try {
-      const response = await workflowApi.getCostOptimizerLatestBaseline(
-        workflowId,
-        nodeId,
-      );
-      setLatestBaseline(response.baseline);
-      return response.baseline;
-    } catch {
-      setLatestBaseline(null);
-      setLatestUnavailable(true);
-      return null;
-    } finally {
-      setIsLatestLoading(false);
-    }
-  }, [nodeId, workflowId]);
-
-  useEffect(() => {
-    if (mode === 'initial') {
-      void loadLatestBaseline();
-    }
-  }, [loadLatestBaseline, mode]);
-
-  const handleLatest = async () => {
-    setMode('picker');
-    setIsLoading(true);
-    setMessage(null);
-    try {
-      const baseline = latestBaseline || (await loadLatestBaseline());
-      if (!baseline) {
-        setMessage(noBaselineMessage);
-        return;
-      }
-      onBaselineSelected(baseline);
-    } catch {
-      setMessage(noBaselineMessage);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    void loadRows();
+  }, [loadRows]);
 
   const handleRowSelect = (row: CostOptimizerBaselineRow) => {
     if (!row.compare_available) {
@@ -212,14 +114,6 @@ export function CostOptimizerBaselineSelection({
       return;
     }
     onBaselineSelected(row);
-  };
-
-  const resetToInitial = () => {
-    setMode('initial');
-    setMessage(null);
-    setRows([]);
-    setOffset(0);
-    setTotal(0);
   };
 
   const resetPagination = () => {
@@ -271,103 +165,14 @@ export function CostOptimizerBaselineSelection({
         </p>
       </div>
 
-      {mode === 'initial' ? (
-        <div className="flex flex-col gap-3">
-          <button
-            type="button"
-            disabled={isLatestLoading || latestUnavailable}
-            className="group w-full rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-left transition-colors hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:hover:border-slate-200 disabled:hover:bg-slate-50"
-            onClick={handleLatest}
-          >
-            <span className="flex items-center gap-2 text-sm font-bold text-emerald-800">
-              <Sparkles className="h-4 w-4" />
-              최신 실행 로그로 비교하기
-            </span>
-            <span className="mt-1 block text-xs leading-relaxed text-emerald-700">
-              가장 최근의 비교 가능한 성공 로그를 바로 기준으로 사용합니다.
-            </span>
-            <span className="mt-3 block rounded-md border border-emerald-200 bg-white/70 px-3 py-2 text-xs text-emerald-950">
-              {isLatestLoading ? (
-                <span className="text-emerald-700">
-                  최신 실행 로그를 확인하는 중입니다.
-                </span>
-              ) : latestBaseline ? (
-                <span className="grid gap-2">
-                  <span className="flex flex-wrap gap-x-2 gap-y-1 font-semibold">
-                    <span>{formatRunTime(latestBaseline.run_started_at)}</span>
-                    <span>{latestBaseline.model}</span>
-                    <span>
-                      {latestBaseline.total_tokens.toLocaleString('ko-KR')} tokens
-                    </span>
-                    <span>{formatCost(latestBaseline.cost)}</span>
-                    <span>{formatLatency(latestBaseline.latency_ms)}</span>
-                  </span>
-                  <span className="grid gap-2 text-emerald-800">
-                    <span className="grid gap-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">
-                        입력
-                      </span>
-                      <CostOptimizerPreviewViewer
-                        value={latestBaseline.input ?? latestBaseline.input_preview}
-                        emptyText="입력 미보관"
-                        className="border border-emerald-100 bg-white/80 text-emerald-950"
-                      />
-                    </span>
-                    <span className="grid gap-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">
-                        출력
-                      </span>
-                      <CostOptimizerPreviewViewer
-                        value={latestBaseline.output ?? latestBaseline.output_preview}
-                        emptyText="출력 미보관"
-                        className="border border-emerald-100 bg-white/80 text-emerald-950"
-                      />
-                    </span>
-                  </span>
-                </span>
-              ) : latestUnavailable ? (
-                <span className="text-amber-700">
-                  비교 가능한 최신 실행 로그가 없습니다. 이전 실행 로그 선택을
-                  사용하세요.
-                </span>
-              ) : (
-                <span className="text-emerald-700">
-                  최신 실행 로그 요약이 이곳에 표시됩니다.
-                </span>
-              )}
-            </span>
-          </button>
-          <button
-            type="button"
-            className="group w-full rounded-lg border border-slate-200 bg-white p-4 text-left transition-colors hover:border-slate-300 hover:bg-slate-50"
-            onClick={() => setMode('picker')}
-          >
-            <span className="flex items-center gap-2 text-sm font-bold text-slate-900">
-              <ListFilter className="h-4 w-4" />
-              이전 실행 로그 선택해서 비교하기
-            </span>
-            <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-              과거 로그를 검색하고 비용, 토큰, 결과를 확인한 뒤 선택합니다.
-            </span>
-          </button>
-          <button
-            type="button"
-            className="w-full rounded-md px-3 py-2 text-left text-xs font-semibold text-slate-500 hover:bg-slate-50"
-            onClick={onClose}
-          >
-            닫기
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50"
-          onClick={resetToInitial}
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          나가기
-        </button>
-      )}
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50"
+        onClick={onClose}
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        닫기
+      </button>
 
       {message ? (
         <p
@@ -381,8 +186,7 @@ export function CostOptimizerBaselineSelection({
         <p className="text-xs text-gray-500">실행 로그를 불러오는 중입니다.</p>
       ) : null}
 
-      {mode === 'picker' ? (
-        <div className="space-y-3">
+      <div className="space-y-3">
           <div className="grid gap-2">
             <input
               aria-label="baseline 검색"
@@ -530,17 +334,21 @@ export function CostOptimizerBaselineSelection({
                     <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">
                       입력
                     </div>
-                    <p className="break-words text-xs leading-relaxed text-slate-700">
-                      {readablePreview(row.input_preview) || '입력 미보관'}
-                    </p>
+                    <CostOptimizerPreviewViewer
+                      value={previewValueOf(row.input, row.input_preview)}
+                      emptyText="입력 미보관"
+                      className="border border-slate-100 bg-slate-50"
+                    />
                   </div>
                   <div className="rounded-md border border-slate-100 bg-white px-3 py-2">
                     <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">
                       출력
                     </div>
-                    <p className="break-words text-xs leading-relaxed text-slate-700">
-                      {readablePreview(row.output_preview) || '출력 미보관'}
-                    </p>
+                    <CostOptimizerPreviewViewer
+                      value={previewValueOf(row.output, row.output_preview)}
+                      emptyText="출력 미보관"
+                      className="border border-slate-100 bg-white"
+                    />
                   </div>
                 </div>
               </button>
@@ -564,8 +372,7 @@ export function CostOptimizerBaselineSelection({
               </button>
             ) : null}
           </div>
-        </div>
-      ) : null}
+      </div>
     </section>
   );
 }
