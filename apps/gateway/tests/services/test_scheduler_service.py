@@ -68,6 +68,32 @@ class FakeScheduler:
         return SimpleNamespace(next_run_time=self.next_run_time)
 
 
+class CaptureLoadQuery:
+    def __init__(self):
+        self.joins = []
+        self.filters = []
+
+    def join(self, model, on_clause):
+        self.joins.append((model, on_clause))
+        return self
+
+    def filter(self, *expressions):
+        self.filters.extend(expressions)
+        return self
+
+    def all(self):
+        return []
+
+
+class CaptureLoadDb:
+    def __init__(self):
+        self.captured_query = CaptureLoadQuery()
+
+    def query(self, model):
+        assert model is Schedule
+        return self.captured_query
+
+
 def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
     """Scheduled LLM runtime keeps the app organization scope in execution context. MBA-43"""
     deployment_id = uuid.uuid4()
@@ -90,6 +116,7 @@ def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
         id=app_id,
         workflow_id=workflow_id,
         organization_id=organization_id,
+        active_deployment_id=deployment_id,
     )
     schedule = SimpleNamespace(
         id=schedule_id,
@@ -148,6 +175,7 @@ def test_scheduler_does_not_dispatch_non_schedule_deployment(monkeypatch):
         id=app_id,
         workflow_id=workflow_id,
         organization_id=organization_id,
+        active_deployment_id=deployment_id,
     )
     schedule = SimpleNamespace(
         id=schedule_id,
@@ -170,3 +198,73 @@ def test_scheduler_does_not_dispatch_non_schedule_deployment(monkeypatch):
     assert db.committed is False
     assert db.rolled_back is False
     assert db.closed is True
+
+
+def test_scheduler_does_not_dispatch_stale_non_current_deployment(monkeypatch):
+    deployment_id = uuid.uuid4()
+    schedule_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    deployment = SimpleNamespace(
+        id=deployment_id,
+        app_id=app_id,
+        created_by=uuid.uuid4(),
+        graph_snapshot={"nodes": []},
+        is_active=True,
+        type=DeploymentType.SCHEDULE,
+    )
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        active_deployment_id=uuid.uuid4(),
+    )
+    schedule = SimpleNamespace(
+        id=schedule_id,
+        last_run_at=None,
+        next_run_at=None,
+    )
+    db = FakeSession(deployment=deployment, app=app, schedule=schedule)
+    celery = FakeCeleryApp()
+
+    celery_module = importlib.import_module("apps.shared.celery_app")
+    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
+    monkeypatch.setattr(celery_module, "celery_app", celery)
+
+    service = object.__new__(SchedulerService)
+    service.scheduler = FakeScheduler(None)
+
+    service._run_workflow(deployment_id, schedule_id)
+
+    assert celery.calls == []
+    assert schedule.last_run_at is None
+    assert db.committed is False
+    assert db.rolled_back is False
+    assert db.closed is True
+
+
+def test_scheduler_load_query_requires_current_app_active_deployment():
+    db = CaptureLoadDb()
+    service = object.__new__(SchedulerService)
+
+    service.load_schedules_from_db(db)
+
+    assert [model for model, _clause in db.captured_query.joins] == [
+        WorkflowDeployment,
+        App,
+    ]
+    join_pairs = {
+        (clause.left.key, clause.right.key)
+        for _model, clause in db.captured_query.joins
+    }
+    assert join_pairs == {
+        ("deployment_id", "id"),
+        ("id", "app_id"),
+    }
+    active_pointer_filters = [
+        expression
+        for expression in db.captured_query.filters
+        if getattr(getattr(expression, "left", None), "key", None)
+        == "active_deployment_id"
+    ]
+    assert len(active_pointer_filters) == 1
+    assert active_pointer_filters[0].right.key == "id"

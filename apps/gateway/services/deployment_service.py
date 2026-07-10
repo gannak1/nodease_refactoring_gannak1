@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import desc, func
+from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.services.knowledge_deployment_preflight_service import (
@@ -344,7 +344,13 @@ class DeploymentService:
         # (WorkflowDeployment와 App을 조인하여 최신 정보 가져옴)
         query = (
             db.query(App, WorkflowDeployment)
-            .join(WorkflowDeployment, App.active_deployment_id == WorkflowDeployment.id)
+            .join(
+                WorkflowDeployment,
+                and_(
+                    App.active_deployment_id == WorkflowDeployment.id,
+                    App.id == WorkflowDeployment.app_id,
+                ),
+            )
             .filter(WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE)
             .filter(WorkflowDeployment.is_active.is_(True))
         )
@@ -416,7 +422,10 @@ class DeploymentService:
 
         deployment = (
             db.query(WorkflowDeployment)
-            .filter(WorkflowDeployment.id == app.active_deployment_id)
+            .filter(
+                WorkflowDeployment.id == app.active_deployment_id,
+                WorkflowDeployment.app_id == app.id,
+            )
             .first()
         )
 

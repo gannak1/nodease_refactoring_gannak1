@@ -190,6 +190,18 @@ def test_public_run_rejects_workflow_node_deployment(monkeypatch):
     assert exc_info.value.detail == "Deployment not found."
 
 
+def test_public_slug_run_rejects_cross_app_active_deployment_pointer(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    deployment_row.app_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_public(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment data not found."
+
+
 @pytest.mark.parametrize(
     "deployment_type",
     [
@@ -227,6 +239,36 @@ def test_api_slug_run_allows_api_deployment(monkeypatch):
 
     assert _captured_context(celery)["trigger_mode"] == "api"
     assert result["status"] == "success"
+
+
+def test_api_slug_run_rejects_cross_app_active_deployment_pointer(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.API)
+    deployment_row.app_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_api_secret(db, app_row.url_slug, {"question": "x"}, monkeypatch)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Deployment data not found."
+
+
+def test_workflow_node_listing_join_requires_active_deployment_owner():
+    from apps.gateway.services.deployment_service import DeploymentService
+
+    query = _JoinCaptureQuery()
+    db = _JoinCaptureDb(query)
+
+    assert DeploymentService.list_workflow_node_deployments(db, uuid4()) == []
+
+    clauses = list(query.join_clause.clauses)
+    column_pairs = {
+        (expression.left.key, expression.right.key) for expression in clauses
+    }
+    assert column_pairs == {
+        ("active_deployment_id", "id"),
+        ("id", "app_id"),
+    }
 
 
 @pytest.mark.parametrize(
@@ -578,3 +620,26 @@ class _Db:
 
     def close(self):
         pass
+
+
+class _JoinCaptureQuery:
+    def __init__(self):
+        self.join_clause = None
+
+    def join(self, _model, on_clause):
+        self.join_clause = on_clause
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return []
+
+
+class _JoinCaptureDb:
+    def __init__(self, query):
+        self.query_result = query
+
+    def query(self, *args, **kwargs):
+        return self.query_result

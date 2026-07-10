@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.sql.operators import eq
 
 from apps.gateway.api.v1.endpoints import deployment as deployment_endpoint
 from apps.shared.db.models.app import App
@@ -39,6 +40,46 @@ class FakeModelDb:
 
     def query(self, model, *args, **kwargs):
         return FakeQuery(self.rows_by_model.get(model))
+
+
+class FilteringQuery:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.expressions = []
+
+    def filter(self, *expressions):
+        self.expressions.extend(expressions)
+        return self
+
+    def first(self):
+        return next(
+            (
+                row
+                for row in self.rows
+                if all(self._matches(row, expression) for expression in self.expressions)
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _matches(row, expression):
+        left = getattr(expression, "left", None)
+        if left is None or expression.operator is not eq:
+            return True
+        column = getattr(left, "key", None)
+        if not column or not hasattr(row, column):
+            return False
+        right = expression.right
+        expected = right.value if hasattr(right, "value") else right
+        return getattr(row, column) == expected
+
+
+class FilteringModelDb:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    def query(self, model, *args, **kwargs):
+        return FilteringQuery(row for row in self.rows if isinstance(row, model))
 
 
 def test_get_deployments_authorizes_app_workflow_when_app_and_workflow_supplied(
@@ -221,6 +262,35 @@ def test_public_deployment_info_rejects_workflow_node_deployment():
             app.url_slug,
             SimpleNamespace(headers={}),
             db=FakeModelDb({App: app, WorkflowDeployment: deployment}),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
+
+
+def test_public_deployment_info_rejects_cross_app_active_deployment_pointer():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        url_slug="cross-app-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=uuid.uuid4(),
+        version=1,
+        type=DeploymentType.CHATBOT,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint.get_deployment_info_public(
+            app.url_slug,
+            SimpleNamespace(headers={}),
+            db=FilteringModelDb([app, deployment]),
         )
 
     assert exc_info.value.status_code == 404

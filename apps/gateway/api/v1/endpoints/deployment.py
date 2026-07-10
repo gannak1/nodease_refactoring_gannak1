@@ -342,7 +342,10 @@ def get_deployment_info_public(
 
     deployment = (
         db.query(WorkflowDeployment)
-        .filter(WorkflowDeployment.id == app.active_deployment_id)
+        .filter(
+            WorkflowDeployment.id == app.active_deployment_id,
+            WorkflowDeployment.app_id == app.id,
+        )
         .first()
     )
 

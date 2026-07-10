@@ -51,9 +51,11 @@ class SchedulerService:
         schedules = (
             db.query(Schedule)
             .join(WorkflowDeployment, Schedule.deployment_id == WorkflowDeployment.id)
+            .join(App, App.id == WorkflowDeployment.app_id)
             .filter(
                 WorkflowDeployment.is_active.is_(True),
                 WorkflowDeployment.type == DeploymentType.SCHEDULE,
+                App.active_deployment_id == WorkflowDeployment.id,
             )
             .all()
         )
@@ -183,6 +185,14 @@ class SchedulerService:
 
             # App 조회하여 workflow_id 가져오기
             app = db.query(App).filter(App.id == deployment.app_id).first()
+            if not app or str(getattr(app, "active_deployment_id", "")) != str(
+                deployment.id
+            ):
+                logger.warning(
+                    "Schedule deployment is not the current app deployment: %s",
+                    deployment_id,
+                )
+                return
 
             # 예산 초과 차단 — 바깥 generic except가 삼켜 rollback하면 차단
             # audit까지 사라지므로, 여기서 직접 잡고 dispatch만 생략한다.
