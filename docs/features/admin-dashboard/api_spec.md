@@ -3,6 +3,8 @@
 Status: Draft
 Verified Against: feature/mba-147 @ e1a04e9
 
+MBA-188 target fields are not included in the verification value above.
+
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.
 
 ## Endpoints
@@ -60,7 +62,24 @@ Response `200`: 기존 `AuditLogListResponse` 재사용.
 
 ### GET /admin/audit-logs/{audit_log_id}
 
-Response `200`: 목록 항목과 동일한 필드 + `audit_metadata` 중 allowlist 값(`request_id`, `reason` 등 운영 summary 계열)만 포함한다. raw payload, secret 계열 값은 포함하지 않는다 (NFR-004). raw payload 접근은 이 API가 아니라 trace visibility policy와 `raw_auditor` 권한의 별도 경로다.
+Response `200`: 목록 항목과 동일한 필드 + `audit_metadata` 중 allowlist 값만 포함한다. 허용 key는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. raw payload, secret 계열 값, target name/email, expected/current snapshot은 포함하지 않는다 (NFR-004). raw payload 접근은 이 API가 아니라 trace visibility policy와 `raw_auditor` 권한의 별도 경로다.
+
+MBA-188 target response는 optional `change_summary`를 additive하게 포함한다.
+
+```json
+{
+  "change_summary": {
+    "before": { "membership_state": "active" },
+    "after": { "membership_state": "suspended" }
+  }
+}
+```
+
+- `change_summary`는 organization membership, team membership, user direct resource permission, App creation permission처럼 명시적으로 지원하는 target/action에만 반환한다.
+- Generic AuditLog `before`/`after`를 그대로 직렬화하지 않고 target/action별 allowlist를 적용한다.
+- Unknown target/action 또는 safe field가 없는 event는 `change_summary: null`이다.
+- `policy.block`은 mutation이 아니므로 `change_summary: null`이다. Scoped `target_user_id`, sanitized `requested_action`/`policy_reason`/optional `reason`과 scope가 확인된 opaque resource/team id만 표시한다.
+- Actor access profile/team-membership/resource/action API는 [organization API spec](../organization/api_spec.md)의 member access-management 계약을 사용한다. Audit endpoint가 RBAC mutation을 직접 수행하지 않는다.
 
 ### GET /admin/usage/workflows
 
@@ -238,8 +257,10 @@ Side effects ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-cre
 | Endpoint | 판정 |
 | --- | --- |
 | `GET /admin/audit-logs`, `GET /admin/audit-logs/{id}` | audit auth_state `auditor` 이상 (organization owner/manager는 audit matrix상 manager로 충족) |
+| actor access profile/team membership/resource source/action | [organization API spec](../organization/api_spec.md) 기준 ADR-0009 organization manager 판정 |
 | 나머지 전부 | organization owner/manager 전용. `auditor`/`raw_auditor`는 접근 불가 |
 
 - 모든 판정은 Gateway service/helper 경계에서 수행한다 (NFR-001). 프론트 차단은 UX 보조일 뿐이다.
 - audit `auditor` 판정은 `team_audit_permissions` 기반 audit matrix(`none < auditor < raw_auditor < manager`)를 따른다. 조직 단위 audit 조회 enforcement는 이 API가 첫 적용 지점이다.
+- Audit `auditor` 판정 결과를 actor access mutation authorization으로 재사용하지 않는다 ([ADR-0023](../../decisions/ADR-0023-audit-actor-access-management-boundary.md)).
 - raw payload(`view_raw`)는 이 API 범위 밖이며 trace visibility policy를 따른다.

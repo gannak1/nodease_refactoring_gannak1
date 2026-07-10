@@ -3,6 +3,8 @@
 Status: Draft
 Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 제외)
 
+MBA-188 target sections are not included in the verification value above.
+
 ## Screens
 
 - 스크린샷: 없음
@@ -154,6 +156,45 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
   - non-removed member: `제거`
 - 상호작용:
   - organization_auth_state 변경과 제거는 AdminConsolePage confirm dialog를 거친다.
+
+### ActorAccessDrawer (MBA-188 target)
+
+- 출처: `apps/client/app/features/admin/components/ActorAccessDrawer.tsx` target.
+- 책임: audit actor 또는 member row에서 current organization member의 membership, role, team, App 생성 권한, direct/team-inherited resource access를 user 중심으로 조회하고 항목별 관리 action을 제공한다.
+- 진입:
+  - AuditSearchTab의 user actor button
+  - 필요 시 MembersTab의 동일 member detail action
+- 데이터 원천:
+  - `GET /organizations/{organization_id}/members/{user_id}/access-profile`
+  - `GET /organizations/{organization_id}/members/{user_id}/team-memberships`
+  - `GET /organizations/{organization_id}/members/{user_id}/resource-access`
+  - `POST /organizations/{organization_id}/members/{user_id}/access-actions`
+- 렌더링:
+  - user name/email, global user active state, membership state, organization role
+  - effective access enabled/disabled 상태
+  - manager override와 action별 allow/block reason. Role set은 desired `member`/`manager`별 control을 각각 표시
+  - paginated active/inactive team membership 목록과 type별 inherited resource count. Inactive team은 effective source가 아닌 cleanup 대상으로 표시
+  - App 생성 effective source와 별도의 stored direct row
+  - resource type/source filter와 paginated resource access
+  - direct permission과 team source를 분리한 auth state
+- 제한:
+  - ADR-0009의 organization manager 판정을 통과한 caller에게만 control을 제공한다.
+  - system/null actor와 invited/removed/missing historical actor는 drawer를 열지 않고 audit detail만 유지한다.
+  - active manager target은 role 강등 전 resource/team/App-creation mutation을 비활성화한다. Suspended manager role은 active override가 아니다.
+  - suspended target은 stored grant를 표시하지만 role promotion/direct grant/team add/App-creation grant는 재활성화 후 제공한다. Manager-to-member 강등, existing direct/App revoke와 team remove는 cleanup 목적으로 허용한다.
+  - globally deactivated target은 effective disabled와 cleanup-only 상태를 표시한다. Global account reactivation control은 제공하지 않는다.
+
+### Actor Access Confirm Dialog (MBA-188 target)
+
+- 모든 suspend/reactivate, role, team, direct permission, App-creation action 전에 표시한다.
+- Target user, action, resource/team, current/next state와 effective impact를 표시한다.
+- Team membership remove confirm은 조회 snapshot의 workflow/Knowledge Base/LLM credential inherited resource source count를 표시하고 한 team 제거가 해당 team의 모든 current source에 영향을 준다고 명시한다. Count는 mutation precondition이 아니고 direct/다른 team source가 남을 수 있으므로 exact effective access loss 수로 표현하지 않는다. 응답의 transaction-observed source count와 재조회 결과로 완료 상태를 갱신한다.
+- Optional reason textarea는 최대 500자이며 blank는 null로 전송한다.
+- Client는 CRLF normalization 후 Unicode code point 기준으로 길이를 계산하고 forbidden control/bidi 문자를 제출하지 않는다. Server validation과 redaction이 최종 경계다.
+- 한 confirm은 한 access action만 제출한다.
+- 제출 payload는 drawer snapshot의 user-active/membership id/state/role과 action별 source row id/auth-state/absence precondition을 포함한다.
+- 처리 중 confirm action을 비활성화하고 성공/409/404 이후 profile을 서버에서 재조회한다.
+- Team membership action 뒤에는 profile count와 team-membership page를 함께 재조회한다.
 
 ### TeamsTab
 
@@ -420,6 +461,19 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - member state update는 `organizationApi.updateMember`를 호출한다.
 - organization auth state 변경은 confirm dialog를 거친다.
 - member removal은 confirm dialog를 거쳐 `organizationApi.removeMember`를 호출하고 cleanup count를 notice/toast로 표시한다.
+- MBA-188 이후 audit actor/member detail은 ActorAccessDrawer를 재사용한다. Drawer mutation은 기존 member/team/permission 의미를 재정의하지 않고 access-management use case를 호출한다.
+
+### Actor Access Management
+
+- Audit actor button은 audit row click propagation을 중단하고 ActorAccessDrawer를 연다.
+- ActorAccessDrawer는 profile을 먼저 조회한 뒤 resource tab/filter 선택 시 paginated resource access를 조회한다.
+- Direct permission revoke 이후 team source가 남아 있으면 effective auth state가 유지됨을 결과에 반영한다.
+- Team membership 제거 confirm에는 해당 team에서 파생되는 여러 resource access가 함께 사라질 수 있음을 표시한다.
+- Direct permission restore는 이전 audit 값을 자동 선택하지 않고 manager가 resource와 canonical auth state를 선택한다.
+- Actor direct grant picker는 `viewer`, `operator`, `builder`, `manager`만 제공하고 `none`은 revoke action으로 표현한다. Legacy none row는 inert source로 표시하고 revoke할 수 있다.
+- Restore/grant resource picker는 기존 organization-scoped workflow/Knowledge Base/LLM credential catalog를 사용한다. Resource access source 응답은 현재 source가 있는 resource만 반환하므로 전체 catalog로 사용하지 않는다.
+- Mutation 성공 후 actor profile/resource access/audit detail을 필요한 범위에서 재조회한다. Client state를 authorization source로 사용하지 않는다.
+- Desired-state unchanged도 profile을 재조회한다. `stale_state`는 최신 profile로 갱신한 뒤 사용자가 다시 확인하게 하며 자동 재시도하지 않는다.
 
 ### Team Management
 
@@ -470,6 +524,8 @@ Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 
 - Admin tab navigation은 `<button>` 요소로 구현되어 키보드 focus가 가능하지만 `role="tablist"`/`role="tab"` 속성은 없다.
 - MembersTab과 TeamsTab은 table markup을 사용하고 header cell을 제공한다.
 - Member/team/permission destructive actions는 confirm dialog를 거치지만, 현재 confirm dialog와 side panel에 명시적인 `role="dialog"`/`aria-modal` 연결은 확인되지 않는다.
+- ActorAccessDrawer와 confirm dialog는 `role="dialog"`, `aria-modal`, focus trap, ESC/overlay close를 제공하고 닫힌 뒤 actor button으로 focus를 복원한다.
+- Actor button은 native button 또는 link semantics를 사용하고 row click과 분리된 keyboard action을 제공한다.
 - icon-only buttons 일부는 `title`을 제공한다.
 - `ActiveOrganizationMemberPicker`는 native `<select>`를 사용한다. 별도 `<label>`은 호출자가 제공해야 한다.
 - inline error/notice blocks는 시각적으로 구분되지만 `role="alert"`나 `aria-live`는 확인되지 않는다.

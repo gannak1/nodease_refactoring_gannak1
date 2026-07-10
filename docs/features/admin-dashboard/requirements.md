@@ -5,13 +5,14 @@ Related Features: auth, organization, audit-tracing, budget-management, cost-opt
 
 ## Purpose
 
-이미 축적되는 `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터를 플랫폼 관리자와 감사자가 조회하는 관리자 화면을 제공한다. [PRD](../../PRD.md)의 FR-011~FR-015를 담당한다. 데이터 수집 경로는 구현돼 있으므로 이 feature의 범위는 조회/집계 UI와 그 권한 경계, 그리고 권한 신청의 관리자 측 처리(목록 조회/승인/거절)와 부여된 App 생성 권한의 관리(보유 목록 조회/회수)다.
+이미 축적되는 `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터를 플랫폼 관리자와 감사자가 조회하는 관리자 화면을 제공한다. [PRD](../../PRD.md)의 FR-011~FR-018을 담당한다. 이 feature의 범위는 조회/집계 UI와 그 권한 경계, 권한 신청의 관리자 측 처리, 부여된 App 생성 권한 관리, audit actor에서 Organization/RBAC access-management flow로 연결하는 관리자 표면이다. Actor mutation 정책과 API는 organization/access-management 경계가 소유한다.
 
 권한 신청의 제출(신청자 측 차단 안내와 신청 폼)은 [organization](../organization/requirements.md) 범위(PRD FR-041)이고, workflow 예산의 설정/수정은 [budget-management](../budget-management/requirements.md) 범위(PRD FR-051)다. 이 feature는 그 결과 데이터를 조회하고 처리하는 표면이다.
 
 ## User Stories
 
 - 플랫폼 관리자로서, 누가 언제 무엇을 했는지 audit log를 검색하고 개별 기록의 상세를 확인하고 싶다.
+- 플랫폼 관리자로서, audit log의 user actor를 현재 organization member와 연결해 상태와 permission source를 확인하고 필요한 access action을 수행하고 싶다.
 - 플랫폼 관리자로서, workflow별 LLM 사용량과 비용을 확인해 비용이 큰 workflow를 찾고 싶다.
 - 플랫폼 관리자로서, 멤버의 workflow 생성/배포 권한 신청을 확인하고 승인/거절하고 싶다.
 - 플랫폼 관리자로서, 현재 App 생성 권한을 보유한 멤버를 확인하고, 더 이상 필요하지 않은 권한을 회수하고 싶다.
@@ -28,13 +29,19 @@ Related Features: auth, organization, audit-tracing, budget-management, cost-opt
 - FR-014: workflow 생성/배포 권한 신청 목록을 조회하고 승인/거절한다. 목록에는 요청자, 요청 권한, 신청 사유를 표시한다. 요청 권한의 실체는 조직 수준 App 생성 능력(`app.create`)이며, 원천은 `permission_requests` 테이블이다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)). 승인 시 요청된 권한이 부여되고, 신청 제출/승인/거절은 canonical action `permission_request.created`/`permission_request.approved`/`permission_request.rejected`로 audit에 기록한다 (PRD FR-042, [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - FR-014 (회수 확장): 부여된 App 생성 권한(`user_app_creation_permissions` row) 보유 목록을 조회하고 개별 회수한다. 목록에는 보유자, 부여자, 부여 시각을 표시한다. 회수는 row 삭제로 표현하고 canonical action `user_app_creation_permission.deleted`로 audit에 기록한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md), [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)). 회수된 사용자의 App 생성은 다시 `403 permission.denied`로 차단되고, 사용자는 권한을 재신청할 수 있다.
 - FR-015: 조직의 이번 달 LLM 비용 합계와 예산 위험 workflow 비율을 요약해 표시한다. 예산 사용률(당월 비용 / 예산)이 90% 이상이면 위험, 100%를 초과하면 초과로 판정한다. 부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이다 (FR-013과 함께 복원).
+- FR-016: Audit log의 user actor를 클릭하면 current organization member access drawer를 열어 membership state, organization role, team membership, App 생성 권한, workflow/Knowledge Base/LLM credential direct 및 team-inherited permission source를 조회한다. Access profile과 mutation은 organization manager 전용이며, auditor-only 사용자는 기존 audit list/detail만 사용할 수 있다 ([ADR-0023](../../decisions/ADR-0023-audit-actor-access-management-boundary.md)).
+- FR-017: Actor access drawer는 suspend/reactivate, desired role별 role set, team membership add/remove, direct permission grant/revoke, App creation grant/revoke를 항목별로 제공한다. Suspended 또는 globally deactivated target은 promotion/add/grant를 제공하지 않고 cleanup action만 허용한다. 모든 action은 confirm dialog와 optional reason을 거치고 한 요청에서 한 항목만 변경한다.
+- FR-018: Audit detail은 supported access-management target/action에 대해 target별 allowlist로 생성한 optional change summary를 표시한다. Generic raw before/after, raw payload, secret, hidden resource reference는 표시하지 않는다.
 
 ## Policies And Edge Cases
 
 - 대시보드 조회 자체에도 서버(Gateway) 권한 판정이 필요하다 (NFR-001). audit 검색/상세(FR-011)는 audit auth_state `auditor` 이상, raw payload 접근은 `raw_auditor` 이상과 trace visibility policy를 따른다.
 - 비용/예산 요약(FR-012, FR-015)과 권한 신청 목록/승인/거절, App 생성 권한 보유 목록/회수(FR-014)는 organization owner/manager 전용이다. `auditor`/`raw_auditor`는 audit 조회(FR-011)만 접근할 수 있다.
+- Actor access profile과 모든 access action(FR-016, FR-017)은 ADR-0009의 organization manager 판정을 통과한 caller 전용이다. Audit actor가 clickable user처럼 보여도 `auditor`/`raw_auditor`에게 mutation control을 노출하거나 API를 허용하지 않는다. Auditor-only admin page 노출은 기존 후순위 범위이며, MBA-188이 그 page gate를 확장하지 않는다.
 - 조회 범위는 `X-Organization-Id` 요청 organization scope 안으로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md), NFR-002).
 - audit metadata의 raw payload, secret 계열 값은 대시보드 응답에 노출하지 않는다 (NFR-004).
+- Audit actor id는 scope proof가 아니다. Gateway는 target user의 current organization membership과 변경 대상 team/resource organization을 다시 검증하고 scope 밖 대상은 404로 숨긴다.
+- System/null actor와 current organization에서 active/suspended membership이 없는 invited/removed/missing historical actor는 audit detail만 표시하고 access drawer control을 제공하지 않는다.
 - 권한 신청 승인은 신청자에게 `user_app_creation_permissions` row를 생성해 조직 수준 App 생성 능력을 부여한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)). 승인 audit은 `permission_request.approved`(신청 처리)와 `user_app_creation_permission.created`(권한 부여)를 각각 기록한다. 배포 권한은 생성자에게 자동 부여되는 workflow manager permission으로 따라오므로 별도 부여가 없다.
 - 이미 처리된(승인/거절) 권한 신청에 대한 중복 처리 요청은 거부한다.
 - 승인 시점에 신청자가 조직의 active member가 아니면(제거/정지) 승인을 거부한다. 권한 부여와 부여 audit은 발생하지 않는다.

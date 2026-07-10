@@ -38,12 +38,22 @@ Status: Draft
 | ORG-TC-U009 | invited/removed member는 PATCH로 active/suspended 전환할 수 없어야 한다. | invited 또는 removed member update가 성공한다. | `409`. |
 | ORG-TC-U010 | member update는 빈 update와 no-op audit을 구분해야 한다. | 빈 body가 성공하거나 no-op PATCH가 audit row를 만든다. | 빈 body는 `400`, no-op은 audit 없음. |
 | ORG-TC-U011 | 자기 자신 또는 마지막 active manager의 상태/권한 변경은 거부해야 한다. | self update 또는 마지막 manager 강등/제거가 성공한다. | `400` 또는 `409`. |
+| ORG-TC-U011a | last active manager count는 globally deactivated manager-role membership을 제외해야 한다. | 실제 active manager 1명 + deactivated manager-role 1명에서 실제 manager 강등이 성공한다. | 409, globally active manager 1명 이상 유지. |
 | ORG-TC-U012 | member removal은 team membership, user direct permission, App 생성 권한 row를 정리해야 한다. | removed 처리 후 team membership, user workflow/Knowledge Base/LLM direct permission, `user_app_creation_permissions` row 중 하나가 남는다. | cleanup count와 삭제가 일치한다. |
 | ORG-TC-U013 | 이미 removed인 member removal은 idempotent해야 한다. | removed member DELETE가 404 또는 409를 반환한다. | `status=removed`, cleanup count 0. |
 | ORG-TC-U014 | team mutation은 organization manager scope 안에서만 수행되어야 한다. | scope 밖 user나 non-manager가 team create/update/member mutation에 성공한다. | `404` 또는 `403`. |
 | ORG-TC-U015 | team `managed_by`와 team member add는 active organization user만 허용해야 한다. | scope 밖, inactive, membership 없는 user가 저장된다. | `400` 또는 `404`. |
 | ORG-TC-U016 | permission grant는 active team 또는 active organization member만 grantee로 허용해야 한다. | inactive team이나 inactive/scope 밖 user에게 permission row가 생성된다. | `400` 또는 `404`. |
 | ORG-TC-U017 | effective resource permission은 additive allow와 fail-closed를 지켜야 한다. | user direct가 team 권한을 낮추거나 invalid/audit-only auth_state가 operational permission을 허용한다. | 가장 강한 유효 권한 또는 deny. |
+| ORG-TC-U018 | actor access policy는 audit visibility와 organization mutation authority를 분리해야 한다. | auditor-only user가 profile 또는 action을 수행한다. | 403. |
+| ORG-TC-U019 | suspension은 stored grant를 보존하면서 effective access와 latent privilege 증가를 차단해야 한다. | suspend가 team/direct/App row를 삭제하거나 suspended member의 promotion/add/grant가 성공한다. | row 보존, effective access none, reactivation/cleanup 외 state-changing action 409. |
+| ORG-TC-U020 | active manager-override target의 resource mutation은 silent no-effect로 성공하지 않아야 한다. | manager override 상태에서 direct/team/App revoke가 applied로 반환된다. | 409 `manager_override_active`. |
+| ORG-TC-U021 | direct restore는 explicit canonical re-grant여야 한다. | AuditLog 또는 deleted row id에서 auth_state를 자동 복원한다. | manager가 선택한 auth_state로 새 grant/upsert. |
+| ORG-TC-U022 | access action audit 실패는 mutation을 rollback해야 한다. | permission/membership row는 바뀌었지만 AuditLog add/flush가 실패한다. | mutation과 audit 모두 미커밋. |
+| ORG-TC-U023 | access action no-op은 audit을 만들지 않아야 한다. | same state/role/auth_state 또는 existing team add가 canonical audit을 추가한다. | unchanged, audit 없음. |
+| ORG-TC-U024 | manager override는 active membership + manager role에만 적용되어야 한다. | suspended manager-role target의 cleanup revoke가 override conflict로 막히거나 effective manager로 계산된다. | override false, stored source 표시, effective none. |
+| ORG-TC-U025 | legacy direct `none` row는 allow source로 계산하지 않아야 한다. | none row가 effective/count allow를 높이거나 actor grant가 새 none row를 만든다. | inert row 표시/회수 가능, 신규 none은 422. |
+| ORG-TC-U026 | management reason은 durable 저장 전에 fail-closed sanitize되어야 한다. | secret/PII가 raw reason으로 저장되거나 sanitizer 실패 뒤 mutation이 commit된다. | redacted reason 또는 전체 rollback. |
 
 ## API Tests
 
@@ -69,6 +79,38 @@ Status: Draft
 | ORG-TC-A017 | permission DELETE는 missing row를 숨기고, existing direct row는 target user active 여부와 무관하게 회수해야 한다. | missing row가 success거나 deactivated/removed user의 existing direct row 삭제가 실패한다. | `404` 또는 permission row 삭제. |
 | ORG-TC-A018 | 권한 신청 제출 wrapper는 `app.create`와 신청 사유를 보내야 한다. | `requested_permission`이 빠지거나 `reason`이 변형되어 전송된다. | `POST /permission-requests` payload가 `{ requested_permission: "app.create", reason }`이다. |
 | ORG-TC-A019 | `GET /notifications`는 현재 user의 초대 알림 목록을 반환해야 한다. | 다른 user 또는 non-invited membership이 포함된다. | `{ items: [...] }` 안에 현재 user invited만 포함. |
+| ORG-TC-A020 | member access profile은 manager와 same-org membership을 요구하고 unbounded team list를 포함하지 않아야 한다. | auditor-only/cross-org target으로 profile이 반환되거나 team row 전체가 profile에 포함된다. | 403/404 또는 team count-only profile. |
+| ORG-TC-A021 | resource access list는 direct/team source와 effective auth_state를 분리하고 paginate해야 한다. | team source에 remove precondition용 membership id가 없거나 source가 섞이거나 stable tie-break 없이 page가 중복/누락된다. | `team_membership_id` 포함 schema와 stable distinct-resource pagination 통과. |
+| ORG-TC-A022 | access action discriminator는 action별 필수/금지 field를 검증해야 한다. | revoke에 auth_state가 들어가거나 grant에 resource_id가 없다. | 422. |
+| ORG-TC-A023 | access action reason은 JSON body에서 blank/null/길이/control 문자를 검증해야 한다. | query reason을 사용하거나 500자 초과/control 문자가 저장된다. | normalized null 또는 422. |
+| ORG-TC-A024 | cross-org actor/resource/team id는 존재를 숨겨야 한다. | 다른 organization 이름/id가 response 또는 error detail에 노출된다. | 404 `resource.not_found`. |
+| ORG-TC-A025 | concurrent last-two-manager mutation은 하나만 성공해야 한다. | 두 manager가 동시에 suspended/member가 되어 active manager가 0명이 된다. | 하나 성공, 하나 409. |
+| ORG-TC-A026 | concurrent permission/App revoke는 canonical audit을 정확히 한 번 기록해야 한다. | 두 요청이 success하거나 audit이 중복된다. | 하나 applied, 나머지 404, audit 1건. |
+| ORG-TC-A027 | stale actor action은 다른 manager의 최신 변경을 덮어쓰지 않아야 한다. | profile 이후 role/auth-state/row id가 바뀌었는데 이전 expected state action이 성공한다. | 409 `stale_state`, mutation/row-level audit 없음, safe `policy.block` 1건. |
+| ORG-TC-A028 | 모든 action variant는 common user/membership snapshot과 action별 row precondition을 검증해야 한다. | user active/membership id/state/role 누락, create/update precondition 혼합, 다른 variant field가 통과한다. | 422 `validation.failed`. |
+| ORG-TC-A029 | desired-state no-op과 destructive missing/stale 판정 순서를 구분해야 한다. | membership/user identity mismatch가 no-op으로 숨겨지거나 same-row retry가 stale이거나 missing direct/App revoke가 unchanged이거나 row ABA가 적용된다. | identity/global state 및 ABA mismatch는 409, same-row/same-value retry와 team remove missing은 unchanged, missing direct/App revoke는 404. |
+| ORG-TC-A030 | actor profile target은 active/suspended membership으로 제한해야 한다. | invited/removed/missing actor profile이 반환된다. | 404 `resource.not_found`. |
+| ORG-TC-A031 | manager caller 판정은 membership-first legacy fallback을 지켜야 한다. | membership 있는 non-manager legacy owner가 fallback으로 허용되거나 membership 없는 legacy owner가 기존 정책과 달리 거부된다. | ADR-0009 판정과 일치. |
+| ORG-TC-A032 | reason normalization과 redaction은 server 기준으로 적용되어야 한다. | CRLF/trim/Unicode 길이, forbidden control/bidi, common secret/PII, sanitizer failure 중 하나가 raw 저장된다. | normalized/redacted 또는 422/rollback. |
+| ORG-TC-A033 | last-manager와 일반 access action은 canonical lock order를 지켜야 한다. | 서로 다른 manager target을 먼저 lock한 뒤 manager set lock으로 deadlock 나거나 legacy route가 lock을 우회한다. | active-manager id-order 또는 target/resource/child order, invariant 유지. |
+| ORG-TC-A034 | action response는 row 변경과 effective access 변경을 구분해야 한다. | direct revoke가 applied이고 stronger team source가 남는데 `effective_access_changed=true`다. | `status=applied`, `effective_access_changed=false`. |
+| ORG-TC-A034a | team membership action response는 multi-resource source impact를 단일 effective boolean으로 축약하지 않아야 한다. | team remove가 source count를 exact effective loss로 표시하거나 `effective_access_changed=true/false`로 단정한다. | effective field null, transaction-observed advisory source count 반환, UI 재조회. |
+| ORG-TC-A035 | actor access policy block과 permission denial은 canonical failure audit을 구분해야 한다. | self/last-manager/stale가 row-level mutation action으로 기록되거나 non-manager 403이 policy.block으로 기록된다. | `policy.block` 또는 `permission.denied`, safe reason metadata. |
+| ORG-TC-A036 | hidden/validation/no-op은 actor access audit side channel을 만들지 않아야 한다. | cross-org 404, malformed 422, unchanged가 target-aware audit을 남긴다. | actor access audit 없음. |
+| ORG-TC-A037 | policy-block audit 실패는 원래 400/409를 성공처럼 반환하지 않아야 한다. | block audit commit 실패 뒤 원래 conflict만 반환하거나 mutation이 생긴다. | 500, mutation 없음. |
+| ORG-TC-A038 | access-management package는 ADR-0022 import/composition 경계를 지켜야 한다. | application이 FastAPI/SQLAlchemy/concrete adapter를 import하거나 router가 query/commit한다. | static boundary test 통과, composition root는 application 밖. |
+| ORG-TC-A039 | legacy route 위임은 기존 authorization과 latent-row 정책을 보존해야 한다. | resource manager가 actor manager-only guard로 403이 되거나 active manager target의 latent row/team mutation이 actor-only override block으로 409가 된다. | 기존 authorization/status/policy 유지, mutation coordinator만 공유. |
+| ORG-TC-A040 | globally deactivated target은 cleanup-only profile/action을 제공해야 한다. | effective access/manager override가 enabled이거나 reactivate/promotion/add/grant가 성공하거나 revoke/remove가 막힌다. | effective none, cleanup 허용, privilege increase 409. |
+| ORG-TC-A041 | target User active snapshot과 row lock은 actor action의 global-state snapshot을 안정화해야 한다. | profile 뒤 global state가 먼저 바뀌었는데 이전 action이 no-op 또는 applied로 처리된다. | 409 stale_state + policy.block, mutation 없음. Actor action commit 뒤 별도 lifecycle 변경은 이 계약 밖. |
+| ORG-TC-A042 | last-manager lock은 membership과 corresponding User row를 두 단계 안정 순서로 잠가야 한다. | membership/User lock 순서가 요청마다 달라 deadlock 나거나 lock 뒤 global eligibility를 다시 계산하지 않는다. | membership id 순 lock, 대응 User same-order lock, actor action 시점 invariant 유지. |
+| ORG-TC-A043 | role control과 policy는 promotion/demotion 방향을 구분해야 한다. | last/self/suspended/globally inactive target에 하나의 role boolean을 적용해 허용된 demotion이 막히거나 promotion이 열린다. | `member`/`manager` desired control 분리, server policy와 일치. |
+| ORG-TC-A044 | inactive team membership은 cleanup과 effective source를 구분해야 한다. | inactive team이 effective permission/count 또는 add catalog에 포함되거나 stored membership을 정리할 수 없다. | profile에는 cleanup row 표시 가능, effective/add 제외, remove 허용. |
+| ORG-TC-A045 | version 없는 current-state ABA 정책을 명시적으로 지켜야 한다. | same row가 expected/desired value로 돌아온 요청을 무조건 stale로 보거나, 다른 row id로 재생성된 ABA를 unchanged로 본다. | same-row value-only ABA는 current-state semantics, row-id ABA는 409, 중간 변경은 audit 보존. |
+| ORG-TC-A046 | inert direct/team permission state의 actor projection을 구분해야 한다. | user-direct none이 cleanup에서 사라지거나 team none/audit-only row가 effective source/count/projection을 만든다. | direct none은 inert cleanup row, team non-operational state는 actor projection 제외. |
+| ORG-TC-A047 | access-management port는 capability별 최소·framework-independent 계약이어야 한다. | 하나의 repository protocol이 read projection, 모든 mutation, audit, transaction을 모두 노출하거나 ORM object/listener token이 application port를 통과한다. | query/membership/team/direct/App/resource-scope/audit/UoW port 분리, pure mutation descriptor 사용, concrete adapter 다중 구현은 허용. |
+| ORG-TC-A048 | member team membership 목록은 active/inactive row와 inherited impact를 안정적으로 paginate해야 한다. | join duplicate/불안정 정렬로 page가 중복·누락되거나 item별 count N+1이 발생하거나 inactive row가 effective source/add 대상이 된다. | `{total,items}`, team name/id stable order, batched type별 distinct count, inactive count 0/cleanup-only. |
+| ORG-TC-A049 | expected-absent retry는 같은 natural key와 desired value일 때만 unchanged여야 한다. | Existing direct row가 다른 auth state인데 expected-absent grant가 unchanged 또는 overwrite로 처리된다. | 409 `stale_state`; same desired team/direct/App row만 unchanged. |
+| ORG-TC-A050 | Policy와 no-op의 판정 우선순위는 identity/global-state/row-id stale을 약화하지 않아야 한다. | Globally inactive 또는 manager-override target의 desired-state retry가 policy block이 되거나, membership/user-active/row-id mismatch가 no-op으로 숨겨진다. | same desired retry는 unchanged, identity/global-state/row-id mismatch는 먼저 409 stale. |
 
 ## E2E Tests
 
@@ -94,6 +136,14 @@ Status: Draft
 | ORG-TC-E018 | Sidebar organization switcher는 현재 organization과 소속 구분을 표시해야 한다. | 현재 organization 이름 또는 `내 조직`/`멤버 조직` badge가 없다. | 현재 organization 이름과 구분 badge 표시. |
 | ORG-TC-E019 | Sidebar organization switcher는 active organization 목록을 dropdown으로 전환할 수 있어야 한다. | organization이 2개 이상인데 dropdown이 열리지 않거나 선택 시 active organization이 저장되지 않는다. | dropdown 표시, 선택 item 저장, `/dashboard` 이동. |
 | ORG-TC-E020 | Dashboard home은 active organization 변경 event를 받으면 데이터를 재조회해야 한다. | organization 전환 후 dashboard home이 이전 organization 데이터를 유지한다. | `nodease-active-organization-changed` 수신 후 dashboard home 재조회. |
+| ORG-TC-E021 | audit actor button과 audit row click은 서로 다른 drawer를 열어야 한다. | actor click이 row detail까지 함께 열거나 propagation을 막지 못한다. | actor access drawer만 열림. |
+| ORG-TC-E022 | actor drawer는 manager이고 관리 가능한 user actor일 때만 control을 제공해야 한다. | auditor/system/null/historical actor에 mutation button이 보인다. | audit detail만 가능, control 없음. |
+| ORG-TC-E023 | actor access action은 confirm과 optional reason을 거쳐 한 항목만 전송해야 한다. | confirm 없이 호출하거나 한 request에 여러 mutation이 포함된다. | single discriminated action body. |
+| ORG-TC-E024 | suspended member drawer는 stored grant와 effective disabled를 함께 표시해야 한다. | grant가 사라져 보이거나 effective access가 enabled로 보인다. | source 보존, effective disabled. |
+| ORG-TC-E025 | direct revoke 후 team source가 남으면 effective access가 유지됨을 표시해야 한다. | UI가 access 완전 회수로 표시한다. | remaining team source/effective state 표시. |
+| ORG-TC-E026 | manager override target은 role 강등 전 resource control이 비활성화되어야 한다. | 무효한 revoke action을 제출할 수 있다. | disabled + server 409 방어. |
+| ORG-TC-E027 | stale actor action은 자동 재시도하지 않아야 한다. | 409 뒤 이전 payload를 다시 보내 최신 상태를 덮어쓴다. | profile refresh 후 새 confirm 필요. |
+| ORG-TC-E028 | actor action payload는 drawer snapshot precondition을 포함해야 한다. | membership id/state/role 또는 source row precondition 없이 API를 호출한다. | client test 실패/API 422. |
 
 ## Permission Tests
 
