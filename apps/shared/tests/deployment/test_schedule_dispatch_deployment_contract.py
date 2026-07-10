@@ -64,3 +64,17 @@ def test_raw_manifests_and_compose_keep_gateway_worker_schedule_settings_aligned
     for env_name in SCHEDULE_ENV_NAMES:
         assert f"{env_name}:" in compose
         assert f"${{{env_name}:-" in compose
+
+
+def test_dev_deploy_runs_migration_before_application_rollout():
+    workflow = _read(".github/workflows/deploy-dev-namespace.yml")
+    migration = workflow.index("name: Run Alembic Migration")
+    deployment = workflow.index("name: Deploy to dev namespace")
+    assert migration < deployment
+
+
+def test_eks_gateway_deploy_runs_migration_before_application_rollout():
+    workflow = _read(".github/workflows/deploy-eks-gateway.yml")
+    migration = workflow.index("name: Run Alembic Migration")
+    deployment = workflow.index("name: Apply deployment configuration")
+    assert migration < deployment
