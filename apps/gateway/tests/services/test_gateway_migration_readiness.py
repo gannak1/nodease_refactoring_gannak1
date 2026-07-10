@@ -57,6 +57,51 @@ def test_claim_mode_fails_when_claim_schema_is_missing(monkeypatch):
         )
 
 
+def test_claim_mode_fails_when_required_column_is_missing(monkeypatch):
+    class _Inspector:
+        def has_table(self, _table_name):
+            return True
+
+        def get_columns(self, table_name):
+            columns = {
+                "schedule_dispatch_claims": ["id", "schedule_id"],
+                "workflow_runs": ["user_id", "trigger_mode", "workflow_task_id"],
+            }
+            return [{"name": name} for name in columns[table_name]]
+
+    monkeypatch.setattr(migration_readiness, "inspect", lambda _engine: _Inspector())
+    monkeypatch.setattr(
+        migration_readiness,
+        "gateway_alembic_readiness",
+        lambda _inspector: SimpleNamespace(ready=True),
+    )
+
+    with pytest.raises(GatewayMigrationNotReadyError):
+        require_schedule_dispatch_migration_ready(
+            object(),
+            settings=ScheduleDispatchSettings(mode="claim"),
+        )
+
+
+def test_claim_mode_fails_closed_when_schema_introspection_raises(monkeypatch):
+    class _Inspector:
+        def has_table(self, _table_name):
+            raise RuntimeError("database details must not escape")
+
+    monkeypatch.setattr(migration_readiness, "inspect", lambda _engine: _Inspector())
+    monkeypatch.setattr(
+        migration_readiness,
+        "gateway_alembic_readiness",
+        lambda _inspector: SimpleNamespace(ready=True),
+    )
+
+    with pytest.raises(GatewayMigrationNotReadyError):
+        require_schedule_dispatch_migration_ready(
+            object(),
+            settings=ScheduleDispatchSettings(mode="claim"),
+        )
+
+
 def test_claim_mode_accepts_current_single_head(monkeypatch):
     class _Inspector:
         def has_table(self, _table_name):
