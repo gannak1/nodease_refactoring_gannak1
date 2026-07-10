@@ -52,9 +52,13 @@ class KnowledgeLifecycleService:
             raise KnowledgeLifecycleNotFound
 
         self._delete_document_files_best_effort(kb)
-        self._delete_direct_permission_rows(kb)
-        self.db.delete(kb)
-        self.db.commit()
+        try:
+            self._delete_direct_permission_rows(kb)
+            self.db.delete(kb)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     def _delete_document_files_best_effort(self, kb: KnowledgeBase) -> None:
         try:

@@ -38,6 +38,7 @@ def _db_url(database: str) -> URL:
         host=os.getenv("DB_HOST", "localhost"),
         port=int(port) if port.isdigit() else None,
         database=database,
+        query={"connect_timeout": "5"},
     )
 
 

@@ -27,16 +27,21 @@ class _LifecycleQuery:
         return None
 
     def delete(self, **_kwargs):
+        if self.db.delete_error_model is self.model:
+            raise RuntimeError("permission cleanup failed")
         self.db.operations.append(("permission_delete", self.model))
         return 1
 
 
 class _LifecycleDb:
-    def __init__(self, kb):
+    def __init__(self, kb, *, commit_error=None, delete_error_model=None):
         self.kb = kb
+        self.commit_error = commit_error
+        self.delete_error_model = delete_error_model
         self.operations = []
         self.filters = []
         self.committed = False
+        self.rolled_back = False
 
     def query(self, model):
         return _LifecycleQuery(self, model)
@@ -45,7 +50,12 @@ class _LifecycleDb:
         self.operations.append(("kb_delete", row))
 
     def commit(self):
+        if self.commit_error is not None:
+            raise self.commit_error
         self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 class _Storage:
@@ -142,6 +152,81 @@ def test_delete_owned_knowledge_base_storage_factory_failure_is_best_effort(capl
     assert "hidden/path" not in caplog.text
 
 
+def test_delete_owned_knowledge_base_continues_after_one_storage_delete_failure(
+    caplog,
+):
+    first_path = "private/failing.pdf"
+    second_path = "private/succeeds.pdf"
+    first_doc = SimpleNamespace(id=uuid.uuid4(), file_path=first_path)
+    second_doc = SimpleNamespace(id=uuid.uuid4(), file_path=second_path)
+    kb = _kb(documents=[first_doc, second_doc])
+    db = _LifecycleDb(kb)
+
+    class _PartiallyFailingStorage:
+        def __init__(self):
+            self.deleted_paths = []
+
+        def delete(self, file_path):
+            self.deleted_paths.append(file_path)
+            if file_path == first_path:
+                raise OSError("provider detail must not be logged")
+
+    storage = _PartiallyFailingStorage()
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="apps.gateway.services.knowledge_lifecycle_service",
+    ):
+        KnowledgeLifecycleService(
+            db,
+            storage_service_factory=lambda: storage,
+        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+
+    assert storage.deleted_paths == [first_path, second_path]
+    assert db.committed is True
+    assert str(first_doc.id) in caplog.text
+    assert "OSError" in caplog.text
+    assert first_path not in caplog.text
+    assert second_path not in caplog.text
+    assert "provider detail must not be logged" not in caplog.text
+
+
+def test_delete_owned_knowledge_base_rolls_back_and_propagates_commit_failure():
+    doc = SimpleNamespace(id=uuid.uuid4(), file_path="private/document.pdf")
+    kb = _kb(documents=[doc])
+    commit_error = RuntimeError("commit failed")
+    db = _LifecycleDb(kb, commit_error=commit_error)
+    storage = _Storage()
+
+    with pytest.raises(RuntimeError, match="commit failed") as exc_info:
+        KnowledgeLifecycleService(
+            db,
+            storage_service_factory=lambda: storage,
+        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+
+    assert exc_info.value is commit_error
+    assert db.committed is False
+    assert db.rolled_back is True
+    assert storage.deleted_paths == [doc.file_path]
+
+
+def test_delete_owned_knowledge_base_rolls_back_permission_cleanup_failure():
+    kb = _kb()
+    db = _LifecycleDb(kb, delete_error_model=TeamKnowledgePermission)
+
+    with pytest.raises(RuntimeError, match="permission cleanup failed"):
+        KnowledgeLifecycleService(
+            db,
+            storage_service_factory=lambda: _Storage(),
+        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+
+    assert db.operations == [
+        ("permission_delete", UserKnowledgePermission),
+    ]
+    assert db.committed is False
+    assert db.rolled_back is True
+
+
 def test_delete_owned_knowledge_base_missing_owned_kb_does_not_mutate():
     db = _LifecycleDb(kb=None)
     storage_called = False
@@ -160,3 +245,4 @@ def test_delete_owned_knowledge_base_missing_owned_kb_does_not_mutate():
     assert storage_called is False
     assert db.operations == []
     assert db.committed is False
+    assert db.rolled_back is False
