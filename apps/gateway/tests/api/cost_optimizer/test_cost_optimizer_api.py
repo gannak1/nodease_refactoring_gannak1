@@ -197,6 +197,167 @@ class TestCostOptimizerAvailabilityApi:
         ensure_builder.assert_called_once()
         assert ensure_builder.call_args.args[3] == "write"
 
+
+class TestModelRoutingPolicyApi:
+    def setup_method(self):
+        self.client = TestClient(app)
+
+    def teardown_method(self):
+        app.dependency_overrides = {}
+
+    def test_fr11_policy_get_returns_persisted_active_policy(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {"auto_model_routing": True},
+                }
+            ],
+        )
+        policy = SimpleNamespace(
+            id=uuid4(),
+            enabled=True,
+            status="active",
+            policy_version="router-policy-v2",
+            active_policy={"default_model_id": "gpt-4.1-mini", "rules": []},
+            pending_policy=None,
+            refresh_every_runs=20,
+            eligible_runs_since_last_refresh=7,
+            last_refresh_result="applied",
+            last_refreshed_at=None,
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ):
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["policy_id"] == str(policy.id)
+        assert body["status"] == "active"
+        assert body["refresh"]["eligible_runs_since_last_refresh"] == 7
+        assert body["refresh"]["next_refresh_after_runs"] == 13
+
+    def test_fr11_policy_get_returns_latest_refresh_safe_summary(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [{"id": "llm-triage", "type": "llmNode", "data": {"auto_model_routing": True}}],
+        )
+        policy = SimpleNamespace(
+            id=uuid4(),
+            enabled=True,
+            status="active",
+            policy_version="router-policy-v2",
+            active_policy={"default_model_id": "gpt-4.1-mini", "rules": []},
+            pending_policy=None,
+            refresh_every_runs=20,
+            eligible_runs_since_last_refresh=0,
+            last_refresh_result="applied",
+            last_refreshed_at=None,
+        )
+        latest_update = SimpleNamespace(
+            id=uuid4(),
+            trigger="auto_n_runs",
+            status="applied",
+            eligible_run_count=20,
+            excluded_run_count=2,
+            judge_provider="openai",
+            judge_model="gpt-4.1-mini",
+            judge_usage_log_id=uuid4(),
+            prompt_version="model-routing-policy-judge-v1",
+            new_policy_version="router-policy-v2",
+            output_summary={"judge_cost": 0.0012},
+            created_at=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        )
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            latest_update
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ):
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
+            )
+
+        assert response.status_code == 200
+        assert response.json()["last_update"] == {
+            "id": str(latest_update.id),
+            "trigger": "auto_n_runs",
+            "status": "applied",
+            "eligible_run_count": 20,
+            "excluded_run_count": 2,
+            "judge_provider": "openai",
+            "judge_model": "gpt-4.1-mini",
+            "judge_usage_log_id": str(latest_update.judge_usage_log_id),
+            "prompt_version": "model-routing-policy-judge-v1",
+            "new_policy_version": "router-policy-v2",
+            "judge_cost": 0.0012,
+            "created_at": "2026-07-10T00:00:00+00:00",
+        }
+
+    def test_fr11_manual_refresh_marks_policy_and_schedules_task(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [{"id": "llm-triage", "type": "llmNode", "data": {}}],
+        )
+        policy = SimpleNamespace(
+            id=uuid4(), enabled=True, refresh_requested_at=None, status="active", judge_user_id=None
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task"
+        ) as send_task:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy/refresh"
+            )
+
+        assert response.status_code == 200
+        assert policy.status == "refreshing"
+        assert policy.judge_user_id == user_id
+        db.commit.assert_called_once()
+        send_task.assert_called_once_with(
+            "workflow.model_routing.refresh_policy",
+            args=[str(policy.id), "manual_refresh"],
+        )
+
     def test_fr10_cost_optimizer_endpoints_require_builder_permission(self):
         workflow_id = uuid4()
         user_id = uuid4()
