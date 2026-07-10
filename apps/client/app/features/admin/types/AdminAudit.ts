@@ -20,6 +20,10 @@ export type AuditLogListResponse = {
 
 export type AuditLogDetailResponse = AuditLogItem & {
   audit_metadata: Record<string, unknown>;
+  change_summary?: {
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+  } | null;
 };
 
 export type AuditLogSearchFilters = {

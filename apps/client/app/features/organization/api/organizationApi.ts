@@ -12,6 +12,14 @@ import type {
   PermissionRequestCreateRequest,
   PermissionRequestResponse,
 } from '../types/Organization';
+import type {
+  ActorResourceType,
+  MemberAccessAction,
+  MemberAccessActionResponse,
+  MemberAccessProfile,
+  MemberResourceAccessList,
+  MemberTeamMembershipList,
+} from '../../admin/types/ActorAccess';
 
 export const organizationApi = {
   listOrganizations: async (): Promise<OrganizationResponse[]> => {
@@ -92,6 +100,60 @@ export const organizationApi = {
   ): Promise<OrganizationMemberRemoveResponse> => {
     const response = await apiClient.delete(
       `/organizations/${organizationId}/members/${userId}`,
+      { headers: activeOrganizationHeaders(organizationId) },
+    );
+    return response.data;
+  },
+
+  getMemberAccessProfile: async (
+    organizationId: string,
+    userId: string,
+  ): Promise<MemberAccessProfile> => {
+    const response = await apiClient.get(
+      `/organizations/${organizationId}/members/${userId}/access-profile`,
+      { headers: activeOrganizationHeaders(organizationId) },
+    );
+    return response.data;
+  },
+
+  listMemberTeamMemberships: async (
+    organizationId: string,
+    userId: string,
+    params: { teamId?: string; page?: number; limit?: number } = {},
+  ): Promise<MemberTeamMembershipList> => {
+    const response = await apiClient.get(
+      `/organizations/${organizationId}/members/${userId}/team-memberships`,
+      { headers: activeOrganizationHeaders(organizationId), params },
+    );
+    return response.data;
+  },
+
+  listMemberResourceAccess: async (
+    organizationId: string,
+    userId: string,
+    params: {
+      resourceType: ActorResourceType;
+      resourceId?: string;
+      source?: 'all' | 'direct' | 'team';
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<MemberResourceAccessList> => {
+    const response = await apiClient.get(
+      `/organizations/${organizationId}/members/${userId}/resource-access`,
+      { headers: activeOrganizationHeaders(organizationId), params },
+    );
+    return response.data;
+  },
+
+  executeMemberAccessAction: async (
+    organizationId: string,
+    userId: string,
+    payload: MemberAccessAction,
+  ): Promise<MemberAccessActionResponse> => {
+    const response = await apiClient.post(
+      `/organizations/${organizationId}/members/${userId}/access-actions`,
+      payload,
       { headers: activeOrganizationHeaders(organizationId) },
     );
     return response.data;
