@@ -728,15 +728,18 @@ export function ActorAccessDrawer({
                   control={
                     selectedTeamId &&
                     !selectedTeamLoading &&
+                    !selectedTeamError &&
                     !selectedTeamMembership
                       ? profile.control.actions.team_membership_add
                       : {
                           allowed: false,
                           reason: selectedTeamLoading
                             ? 'selection_loading'
-                            : selectedTeamMembership
-                              ? 'team_already_assigned'
-                              : 'team_required',
+                            : selectedTeamError
+                              ? 'selection_failed'
+                              : selectedTeamMembership
+                                ? 'team_already_assigned'
+                                : 'team_required',
                         }
                   }
                   onClick={() =>
@@ -930,13 +933,17 @@ export function ActorAccessDrawer({
                   }
                   icon={Check}
                   control={
-                    selectedResourceId && !selectedAccessLoading
+                    selectedResourceId &&
+                    !selectedAccessLoading &&
+                    !selectedAccessError
                       ? profile.control.actions.direct_permission_grant
                       : {
                           allowed: false,
                           reason: selectedAccessLoading
                             ? 'selection_loading'
-                            : 'resource_required',
+                            : selectedAccessError
+                              ? 'selection_failed'
+                              : 'resource_required',
                         }
                   }
                   onClick={() => {
@@ -1277,6 +1284,7 @@ function controlReasonLabel(reason: string | null) {
     team_already_assigned: '이미 소속된 팀입니다.',
     resource_required: 'Resource를 선택하고 최신 상태를 확인해야 합니다.',
     selection_loading: '최신 상태를 확인하는 중입니다.',
+    selection_failed: '최신 상태 확인에 실패했습니다. 다시 확인해야 합니다.',
   };
   return reason ? labels[reason] || reason : '수행할 수 없습니다.';
 }

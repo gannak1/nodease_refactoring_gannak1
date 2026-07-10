@@ -289,6 +289,51 @@ describe('ActorAccessDrawer', () => {
     expect(screen.getByRole('button', { name: /^추가:/ })).toBeDisabled();
   });
 
+  it('team/resource exact 조회 실패 시 absence precondition action을 차단한다', async () => {
+    mockedProfile.mockResolvedValue(profile);
+    mockedTeams.mockImplementation(async (_organizationId, _userId, params) => {
+      if (params.teamId) throw new Error('team lookup failed');
+      return { total: 0, items: [] };
+    });
+    mockedResources.mockImplementation(
+      async (_organizationId, _userId, params) => {
+        if (params.resourceId) throw new Error('resource lookup failed');
+        return { total: 0, items: [] };
+      },
+    );
+    render(
+      <ActorAccessDrawer
+        organizationId="org-1"
+        userId="user-1"
+        teams={[{ id: 'team-1', name: 'Builders', is_active: true }]}
+        resources={[
+          { id: 'workflow-1', name: 'Workflow', resourceType: 'workflow' },
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('김멤버 · member@example.com');
+    fireEvent.change(screen.getByLabelText('추가할 팀'), {
+      target: { value: 'team-1' },
+    });
+    expect(
+      await screen.findByText('선택한 팀 소속의 최신 상태를 확인하지 못했습니다.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^추가:/ })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('직접 권한 resource'), {
+      target: { value: 'workflow-1' },
+    });
+    expect(
+      await screen.findByText(
+        '선택한 Resource의 최신 접근 상태를 확인하지 못했습니다.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^부여:/ })).toBeDisabled();
+    expect(mockedAction).not.toHaveBeenCalled();
+  });
+
   it('confirm reason을 정규화하고 profile snapshot precondition을 전송한다', async () => {
     mockedAction.mockResolvedValue({
       status: 'applied',
