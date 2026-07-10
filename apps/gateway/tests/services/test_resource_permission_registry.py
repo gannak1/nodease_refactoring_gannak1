@@ -3,6 +3,7 @@ from typing import get_args
 
 import pytest
 
+from apps.gateway.api.v1.endpoints import permissions as permissions_endpoint
 from apps.gateway.services import resource_permission_registry as registry_module
 from apps.gateway.services.resource_permission_registry import (
     effective_resource_auth_state,
@@ -68,6 +69,23 @@ def test_registry_maps_resource_targets_and_permission_tables():
     assert llm.target_model is LLMCredential
     assert llm.team_route.model is TeamLLMPermission
     assert llm.user_route.model is UserLLMPermission
+
+
+def test_production_permission_api_models_are_resolved_from_registry():
+    workflow = resource_permission_spec("workflow")
+    assert permissions_endpoint.Workflow is workflow.target_model
+    assert permissions_endpoint.TeamWorkflowPermission is workflow.team_route.model
+    assert permissions_endpoint.UserWorkflowPermission is workflow.user_route.model
+
+    knowledge = resource_permission_spec("knowledge_base")
+    assert permissions_endpoint.KnowledgeBase is knowledge.target_model
+    assert permissions_endpoint.TeamKnowledgePermission is knowledge.team_route.model
+    assert permissions_endpoint.UserKnowledgePermission is knowledge.user_route.model
+
+    llm = resource_permission_spec("llm_credential")
+    assert permissions_endpoint.LLMCredential is llm.target_model
+    assert permissions_endpoint.TeamLLMPermission is llm.team_route.model
+    assert permissions_endpoint.UserLLMPermission is llm.user_route.model
 
 
 @pytest.mark.parametrize(
