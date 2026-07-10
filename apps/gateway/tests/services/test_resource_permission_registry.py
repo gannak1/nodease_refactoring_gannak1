@@ -54,6 +54,13 @@ def test_registry_resource_types_match_public_schemas():
     )
 
 
+def test_registry_mapping_is_immutable():
+    with pytest.raises(TypeError):
+        registry_module.RESOURCE_PERMISSION_REGISTRY["document"] = resource_permission_spec(
+            "workflow"
+        )
+
+
 def test_registry_maps_resource_targets_and_permission_tables():
     workflow = resource_permission_spec("workflow")
     assert workflow.target_model is Workflow

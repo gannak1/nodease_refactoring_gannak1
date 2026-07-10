@@ -8,7 +8,8 @@ mistyped resource type appears.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from types import MappingProxyType
+from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
 
@@ -83,7 +84,7 @@ class ResourcePermissionSpec:
         raise ResourceTypeNotRegistered(f"{self.resource_type}:{grantee_type}")
 
 
-RESOURCE_PERMISSION_REGISTRY: dict[str, ResourcePermissionSpec] = {
+RESOURCE_PERMISSION_REGISTRY: Mapping[str, ResourcePermissionSpec] = MappingProxyType({
     "workflow": ResourcePermissionSpec(
         resource_type="workflow",
         target_model=Workflow,
@@ -166,7 +167,7 @@ RESOURCE_PERMISSION_REGISTRY: dict[str, ResourcePermissionSpec] = {
             action,
         ),
     ),
-}
+})
 
 
 def registered_resource_types() -> frozenset[str]:
