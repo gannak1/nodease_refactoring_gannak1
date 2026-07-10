@@ -3,6 +3,8 @@ import pathlib
 import sys
 import uuid
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PARENT_OF_ROOT = ROOT.parent
 for p in [ROOT, PARENT_OF_ROOT]:
@@ -88,8 +90,22 @@ def _request(current_policy=None, *, include_candidate_quality=True, recent_runs
             _candidate("gpt-4.1-mini", 0.01),
             _candidate("gpt-4.1", 0.1),
         ],
+        judge_model_id="gpt-4.1-mini",
         recent_runs=recent_runs if recent_runs is not None else default_recent_runs,
     )
+
+
+def test_policy_refresh_request_requires_explicit_judge_model():
+    """정책 갱신은 특정 provider의 judge 기본값에 의존하지 않는다."""
+    with pytest.raises(TypeError, match="judge_model_id"):
+        ModelRoutingPolicyRefreshRequest(
+            workflow_id="workflow-1",
+            node_id="llm-1",
+            user_id=uuid.uuid4(),
+            organization_id=uuid.uuid4(),
+            current_policy=None,
+            candidate_models=[],
+        )
 
 
 def test_default_rule_policy_avoids_nano_for_short_json_schema_rule():

@@ -26,10 +26,10 @@ class ModelRoutingPolicyRefreshRequest:
     organization_id: uuid.UUID
     current_policy: Optional[dict[str, Any]]
     candidate_models: list[ModelCandidate]
+    judge_model_id: str
     recent_runs: list[dict[str, Any]] = field(default_factory=list)
     node_summary: dict[str, Any] = field(default_factory=dict)
     trigger: str = "manual_refresh"
-    judge_model_id: str = "gpt-4.1-mini"
 
 
 @dataclass(frozen=True)
