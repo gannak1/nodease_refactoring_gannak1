@@ -1,5 +1,4 @@
 import os
-import re
 import subprocess
 import sys
 import uuid
@@ -7,7 +6,6 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -23,39 +21,21 @@ from apps.shared.db.models.team import (
     UserKnowledgePermission,
 )
 from apps.shared.db.models.user import User
+from apps.shared.tests.helpers.disposable_postgres import (
+    DisposablePostgresConfig,
+    DisposablePostgresConfigurationError,
+    quote_disposable_database_name,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
-DB_NAME_RE = re.compile(r"^mbased_lifecycle_[a-f0-9]{12}$")
+DB_PREFIX = "mbased_lifecycle"
 
 
-def _db_url(database: str) -> URL:
-    port = os.getenv("DB_PORT", "5432")
-    return URL.create(
-        "postgresql",
-        username=os.getenv("DB_USER", "admin"),
-        password=os.getenv("DB_PASSWORD", "admin123"),
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(port) if port.isdigit() else None,
+def _run_alembic(database: str, config: DisposablePostgresConfig) -> None:
+    env = config.subprocess_environment(
         database=database,
-        query={"connect_timeout": "5"},
-    )
-
-
-def _quote_disposable_db_name(database: str) -> str:
-    if not DB_NAME_RE.fullmatch(database):
-        raise ValueError("unsafe disposable database name")
-    return f'"{database}"'
-
-
-def _run_alembic(database: str) -> None:
-    env = os.environ.copy()
-    env.update(
-        {
-            "DB_NAME": database,
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": str(ROOT_DIR),
-        }
+        root_dir=ROOT_DIR,
     )
     result = subprocess.run(
         [
@@ -96,11 +76,18 @@ class _Storage:
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL lifecycle integration",
 )
 def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
-    database = f"mbased_lifecycle_{uuid.uuid4().hex[:12]}"
-    quoted_database = _quote_disposable_db_name(database)
-    maintenance_database = os.getenv("NODEASE_DISPOSABLE_DB_MAINTENANCE_DB", "postgres")
+    try:
+        config = DisposablePostgresConfig.from_environment()
+    except DisposablePostgresConfigurationError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL connection settings are not safely configured",
+            pytrace=False,
+        ) from None
+
+    database = f"{DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+    quoted_database = quote_disposable_database_name(database, prefix=DB_PREFIX)
     admin_engine = create_engine(
-        _db_url(maintenance_database),
+        config.database_url(config.maintenance_database),
         isolation_level="AUTOCOMMIT",
     )
     database_created = False
@@ -112,14 +99,14 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
             conn.execute(text(f"CREATE DATABASE {quoted_database}"))
         database_created = True
 
-        engine = create_engine(_db_url(database))
+        engine = create_engine(config.database_url(database))
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         engine.dispose()
         engine = None
 
-        _run_alembic(database)
-        engine = create_engine(_db_url(database))
+        _run_alembic(database, config)
+        engine = create_engine(config.database_url(database))
         db = sessionmaker(bind=engine, expire_on_commit=False)()
 
         owner_id = uuid.uuid4()
@@ -242,12 +229,14 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
         assert db.query(KnowledgeBase).filter_by(id=kb_id).count() == 1
         assert db.query(Document).filter_by(id=document_id).count() == 1
         assert db.query(DocumentChunk).filter_by(id=chunk_id).count() == 1
-        assert db.query(UserKnowledgePermission).filter_by(
-            knowledge_base_id=kb_id
-        ).count() == 1
-        assert db.query(TeamKnowledgePermission).filter_by(
-            knowledge_base_id=kb_id
-        ).count() == 1
+        assert (
+            db.query(UserKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
+            == 1
+        )
+        assert (
+            db.query(TeamKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
+            == 1
+        )
         assert storage.deleted_paths == []
 
         def fail_before_commit(_session) -> None:
@@ -261,12 +250,14 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
         assert db.query(KnowledgeBase).filter_by(id=kb_id).count() == 1
         assert db.query(Document).filter_by(id=document_id).count() == 1
         assert db.query(DocumentChunk).filter_by(id=chunk_id).count() == 1
-        assert db.query(UserKnowledgePermission).filter_by(
-            knowledge_base_id=kb_id
-        ).count() == 1
-        assert db.query(TeamKnowledgePermission).filter_by(
-            knowledge_base_id=kb_id
-        ).count() == 1
+        assert (
+            db.query(UserKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
+            == 1
+        )
+        assert (
+            db.query(TeamKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
+            == 1
+        )
         # Physical cleanup-before-commit is the documented transitional baseline;
         # durable cleanup moves to the MBA-184 outbox/reconciler boundary.
         assert storage.deleted_paths == ["private/policy.txt"]
@@ -277,12 +268,14 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
         assert db.query(KnowledgeBase).filter_by(id=kb_id).count() == 0
         assert db.query(Document).filter_by(id=document_id).count() == 0
         assert db.query(DocumentChunk).filter_by(id=chunk_id).count() == 0
-        assert db.query(UserKnowledgePermission).filter_by(
-            knowledge_base_id=kb_id
-        ).count() == 0
-        assert db.query(TeamKnowledgePermission).filter_by(
-            knowledge_base_id=kb_id
-        ).count() == 0
+        assert (
+            db.query(UserKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
+            == 0
+        )
+        assert (
+            db.query(TeamKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
+            == 0
+        )
         assert db.query(Team).filter_by(id=legacy_team_id).count() == 1
         assert storage.deleted_paths == ["private/policy.txt"]
         db.close()
