@@ -4,6 +4,7 @@ import pytest
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.db.models.workflow_run import RunTriggerMode
 from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     DEPLOYMENT_API,
     DEPLOYMENT_CHATBOT,
     DEPLOYMENT_MCP,
@@ -13,6 +14,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     DEPLOYMENT_WIDGET,
     DEPLOYMENT_WORKFLOW_NODE,
     KNOWN_DEPLOYMENT_TYPES,
+    PUBLIC_APP_DEPLOYMENT_TYPES,
     SURFACE_API_SECRET_RUN,
     SURFACE_APP_PUBLIC_RUN,
     SURFACE_AUTHENTICATED_RUN,
@@ -40,15 +42,7 @@ class FakeDeploymentType(str, Enum):
     [
         (
             SURFACE_PUBLIC_INFO,
-            {
-                DEPLOYMENT_API,
-                DEPLOYMENT_WEBAPP,
-                DEPLOYMENT_WIDGET,
-                DEPLOYMENT_CHATBOT,
-                DEPLOYMENT_MCP,
-                DEPLOYMENT_SCHEDULE,
-                DEPLOYMENT_WEBHOOK,
-            },
+            PUBLIC_APP_DEPLOYMENT_TYPES,
         ),
         (
             SURFACE_AUTHENTICATED_RUN_INFO,
@@ -98,9 +92,8 @@ def test_runtime_surface_matrix_allows_only_documented_types(surface, allowed):
 
     assert allowed_deployment_types_for_surface(surface) == allowed
     for deployment_type in all_types:
-        assert (
-            is_deployment_type_allowed_for_surface(deployment_type, surface)
-            is (deployment_type in allowed)
+        assert is_deployment_type_allowed_for_surface(deployment_type, surface) is (
+            deployment_type in allowed
         )
 
 
@@ -112,6 +105,28 @@ def test_runtime_policy_fails_closed_for_unknown_surface_or_type():
     unknown_type = evaluate_deployment_runtime_surface("future", SURFACE_PUBLIC_INFO)
     assert unknown_type.allowed is False
     assert unknown_type.reason == "deployment_type_not_allowed_for_surface"
+
+
+def test_runtime_policy_can_be_replaced_by_explicit_immutable_injection():
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_PUBLIC_INFO,
+        {DEPLOYMENT_API},
+    )
+
+    assert is_deployment_type_allowed_for_surface(
+        DEPLOYMENT_API,
+        SURFACE_PUBLIC_INFO,
+        policy=injected_policy,
+    )
+    assert not is_deployment_type_allowed_for_surface(
+        DEPLOYMENT_WEBAPP,
+        SURFACE_PUBLIC_INFO,
+        policy=injected_policy,
+    )
+    assert not is_deployment_type_allowed_for_surface(
+        DEPLOYMENT_API,
+        SURFACE_PUBLIC_INFO,
+    )
 
 
 def test_runtime_policy_normalizes_enum_like_values():

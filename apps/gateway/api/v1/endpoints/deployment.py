@@ -1,11 +1,12 @@
 import uuid
-from typing import Any, List
+from typing import Annotated, Any, List
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
@@ -17,6 +18,7 @@ from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_PUBLIC_INFO,
+    DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
 )
 from apps.shared.db.session import get_db
@@ -79,9 +81,7 @@ def _ensure_app_matches_active_organization(
         raise HTTPException(status_code=404, detail="Deployment not found")
 
 
-def _deployment_toggle_audit_action(
-    deployment: WorkflowDeployment, app: App
-) -> str:
+def _deployment_toggle_audit_action(deployment: WorkflowDeployment, app: App) -> str:
     if (
         not deployment.is_active
         and app.active_deployment_id is not None
@@ -308,7 +308,13 @@ def get_deployment(
 
 @router.get("/public/{url_slug}/info")
 def get_deployment_info_public(
-    url_slug: str, response: Response, db: Session = Depends(get_db)
+    url_slug: str,
+    response: Response,
+    runtime_policy: Annotated[
+        DeploymentRuntimePolicy,
+        Depends(get_deployment_runtime_policy),
+    ],
+    db: Session = Depends(get_db),
 ):
     """
     배포 정보 공개 조회 (웹 앱/임베딩용, 인증 불필요)
@@ -357,6 +363,7 @@ def get_deployment_info_public(
     if not is_deployment_type_allowed_for_surface(
         deployment.type,
         SURFACE_PUBLIC_INFO,
+        policy=runtime_policy,
     ):
         raise HTTPException(status_code=404, detail="Active deployment not found")
 

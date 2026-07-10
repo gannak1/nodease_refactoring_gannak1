@@ -3,12 +3,18 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy.sql.operators import eq
 
+from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.gateway.api.v1.endpoints import deployment as deployment_endpoint
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    SURFACE_PUBLIC_INFO,
+)
 from apps.shared.schemas.deployment import (
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
@@ -56,7 +62,9 @@ class FilteringQuery:
             (
                 row
                 for row in self.rows
-                if all(self._matches(row, expression) for expression in self.expressions)
+                if all(
+                    self._matches(row, expression) for expression in self.expressions
+                )
             ),
             None,
         )
@@ -261,6 +269,7 @@ def test_public_deployment_info_rejects_workflow_node_deployment():
         deployment_endpoint.get_deployment_info_public(
             app.url_slug,
             SimpleNamespace(headers={}),
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             db=FakeModelDb({App: app, WorkflowDeployment: deployment}),
         )
 
@@ -290,11 +299,128 @@ def test_public_deployment_info_rejects_cross_app_active_deployment_pointer():
         deployment_endpoint.get_deployment_info_public(
             app.url_slug,
             SimpleNamespace(headers={}),
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
             db=FilteringModelDb([app, deployment]),
         )
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Active deployment not found"
+
+
+@pytest.mark.parametrize(
+    "deployment_type",
+    [
+        DeploymentType.API,
+        DeploymentType.MCP,
+        DeploymentType.SCHEDULE,
+        DeploymentType.WEBHOOK,
+    ],
+)
+def test_public_deployment_info_rejects_non_public_metadata_types(deployment_type):
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        url_slug=f"private-info-{deployment_type.value}",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=deployment_type,
+        graph_snapshot={"nodes": [], "edges": []},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint.get_deployment_info_public(
+            app.url_slug,
+            SimpleNamespace(headers={}),
+            DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            db=FilteringModelDb([app, deployment]),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Active deployment not found"
+
+
+def test_public_deployment_info_uses_injected_runtime_policy():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        name="Injected policy app",
+        url_slug="injected-policy-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=DeploymentType.API,
+        graph_snapshot={"nodes": [], "edges": []},
+        input_schema={},
+        output_schema={},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_PUBLIC_INFO,
+        {DeploymentType.API},
+    )
+
+    result = deployment_endpoint.get_deployment_info_public(
+        app.url_slug,
+        SimpleNamespace(headers={}),
+        injected_policy,
+        db=FilteringModelDb([app, deployment]),
+    )
+
+    assert result.type == DeploymentType.API.value
+
+
+def test_public_deployment_info_policy_is_replaceable_at_fastapi_composition_boundary():
+    app = App(
+        id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        name="Injected HTTP policy app",
+        url_slug="injected-http-policy-info",
+        active_deployment_id=uuid.uuid4(),
+        created_by=uuid.uuid4(),
+    )
+    deployment = WorkflowDeployment(
+        id=app.active_deployment_id,
+        app_id=app.id,
+        version=1,
+        type=DeploymentType.API,
+        graph_snapshot={"nodes": [], "edges": []},
+        input_schema={},
+        output_schema={},
+        is_active=True,
+        created_by=uuid.uuid4(),
+    )
+    injected_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
+        SURFACE_PUBLIC_INFO,
+        {DeploymentType.API},
+    )
+    test_app = FastAPI()
+    test_app.include_router(deployment_endpoint.router, prefix="/deployments")
+    test_app.dependency_overrides[deployment_endpoint.get_db] = lambda: FilteringModelDb(
+        [app, deployment]
+    )
+    test_app.dependency_overrides[get_deployment_runtime_policy] = lambda: injected_policy
+
+    response = TestClient(test_app).get(
+        f"/deployments/public/{app.url_slug}/info"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == DeploymentType.API.value
+    assert DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface[
+        SURFACE_PUBLIC_INFO
+    ] == {"webapp", "widget", "chatbot"}
 
 
 def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
