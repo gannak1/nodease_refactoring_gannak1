@@ -1,7 +1,9 @@
 # Audit Tracing Component Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-188 @ 59d1cc51
+
+검증 값은 MBA-188 SafeChangeSummary와 audit actor management 연동에 적용한다. 다른 trace UI는 각 feature 구현 기준을 따른다.
 
 ## Screens
 

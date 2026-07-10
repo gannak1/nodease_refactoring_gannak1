@@ -1,9 +1,9 @@
 # Admin Dashboard API Spec
 
 Status: Draft
-Verified Against: feature/mba-147 @ e1a04e9
+Verified Against: feature/mba-188 @ 59d1cc51
 
-MBA-188 target fields are not included in the verification value above.
+검증 값은 MBA-188 audit detail의 metadata/change summary 확장에 적용한다. 기존 usage/summary/permission-request 계약의 기준은 해당 feature 문서와 git history를 따른다.
 
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.
 
@@ -62,15 +62,25 @@ Response `200`: 기존 `AuditLogListResponse` 재사용.
 
 ### GET /admin/audit-logs/{audit_log_id}
 
-Response `200`: 목록 항목과 동일한 필드 + `audit_metadata` 중 allowlist 값만 포함한다. 허용 key는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. raw payload, secret 계열 값, target name/email, expected/current snapshot은 포함하지 않는다 (NFR-004). raw payload 접근은 이 API가 아니라 trace visibility policy와 `raw_auditor` 권한의 별도 경로다.
+Response `200`: 목록 항목과 동일한 필드 + `audit_metadata` 중 allowlist 값만 포함한다. 허용 key는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. UUID field는 유효한 UUID, count는 boolean이 아닌 0 이상 integer, reason/request/action은 string, resource/policy reason은 canonical allowlist 값일 때만 반환한다. 기존 `summary`는 secret-like key를 재귀 제거한 JSON scalar/list/object 계약을 유지하고, 그 외 허용 key의 nested object나 잘못된 타입은 생략한다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. raw payload, secret 계열 값, target name/email, expected/current snapshot은 포함하지 않는다 (NFR-004). raw payload 접근은 이 API가 아니라 trace visibility policy와 `raw_auditor` 권한의 별도 경로다.
 
-MBA-188 target response는 optional `change_summary`를 additive하게 포함한다.
+응답은 optional `change_summary`를 additive하게 포함한다.
 
 ```json
 {
   "change_summary": {
-    "before": { "membership_state": "active" },
-    "after": { "membership_state": "suspended" }
+    "before": {
+      "organization_id": "<uuid>",
+      "user_id": "<uuid>",
+      "membership_state": "active",
+      "organization_auth_state": "member"
+    },
+    "after": {
+      "organization_id": "<uuid>",
+      "user_id": "<uuid>",
+      "membership_state": "suspended",
+      "organization_auth_state": "member"
+    }
   }
 }
 ```

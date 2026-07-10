@@ -1,7 +1,9 @@
 # Audit Tracing API Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-188 @ 59d1cc51
+
+검증 값은 actor access audit recorder, organization-scoped detail metadata와 change summary 계약에 적용한다. 다른 Knowledge/RAG trace target은 각 feature 구현 기준을 따른다.
 
 ## Gateway Query Surface
 
@@ -18,16 +20,22 @@ Actor access profile/team-membership/resource source/action은 [Organization API
 
 ### `AuditLogDetailResponse`
 
-기존 audit list item field와 sanitized `audit_metadata`를 포함한다. MBA-188 safe metadata에는 team membership action의 advisory `affected_resource_source_count`가 포함될 수 있다. MBA-188 target은 다음 additive field를 포함한다.
+기존 audit list item field와 sanitized `audit_metadata`를 포함한다. Team membership action의 safe metadata에는 advisory `affected_resource_source_count`가 포함될 수 있다. 응답은 다음 additive field를 포함한다.
 
 ```json
 {
   "change_summary": {
     "before": {
-      "membership_state": "active"
+      "organization_id": "<uuid>",
+      "user_id": "<uuid>",
+      "membership_state": "active",
+      "organization_auth_state": "member"
     },
     "after": {
-      "membership_state": "suspended"
+      "organization_id": "<uuid>",
+      "user_id": "<uuid>",
+      "membership_state": "suspended",
+      "organization_auth_state": "member"
     }
   }
 }
@@ -48,7 +56,7 @@ Target/action이 allowlist에 없거나 safe field가 없으면 null을 반환�
 
 MBA-188 manual audit은 update에도 target별 complete safe snapshot을 저장한다. Create는 `after`, delete는 `before`, update는 `before`와 `after`의 `organization_id`/`grantee_organization_id`가 모두 request organization과 일치해야 summary를 반환한다. Historical same-organization opaque UUID는 유지할 수 있지만 current resource name/path를 resolve하지 않는다. 필요한 snapshot의 organization provenance가 없거나 다르면 null이다.
 
-`policy.block` failure event는 row 변경이 아니므로 `change_summary`가 null이다. Audit detail metadata allowlist는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. 임의 nested request body, target name/email, expected/current snapshot은 포함하지 않는다.
+`policy.block` failure event는 row 변경이 아니므로 `change_summary`가 null이다. Audit detail metadata allowlist는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. UUID field는 유효한 UUID, count는 boolean이 아닌 0 이상 integer, string field와 resource/policy reason은 정해진 scalar/enum 값일 때만 반환한다. 기존 `summary`는 secret-like key를 재귀 제거한 JSON scalar/list/object 계약을 유지하고, 그 외 허용 key의 nested object나 잘못된 타입은 생략한다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. 임의 nested request body, target name/email, expected/current snapshot은 포함하지 않는다.
 
 ### `AuditRecorder` application port
 

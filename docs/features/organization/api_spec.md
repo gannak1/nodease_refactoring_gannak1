@@ -1,6 +1,9 @@
 # Organization API Spec
 
 Status: Draft
+Verified Against: feature/mba-188 @ 59d1cc51
+
+검증 값은 actor access profile/team/resource/action과 MBA-188이 보강한 member/team/user-direct/App 권한 mutation 계약에 적용한다. 다른 organization endpoint는 각 구현 이력의 기준을 따른다.
 
 기본 경로: `/api/v1`
 
@@ -308,8 +311,6 @@ data: {}
 
 ### `GET /organizations/{organization_id}/members/{user_id}/access-profile`
 
-Target contract이며 MBA-188 구현 전까지 endpoint는 존재하지 않는다.
-
 요청 header: matching `X-Organization-Id`.
 
 성공 응답: `200 OK`, `MemberAccessProfileResponse`.
@@ -374,14 +375,13 @@ Target contract이며 MBA-188 구현 전까지 endpoint는 존재하지 않는�
 
 ### `GET /organizations/{organization_id}/members/{user_id}/team-memberships`
 
-Target contract이며 MBA-188 구현 전까지 endpoint는 존재하지 않는다.
-
 Authorization과 target eligibility는 access-profile endpoint와 같다. Active/suspended membership의 globally deactivated target도 cleanup 목록을 반환한다.
 
 Query parameter:
 
 | 이름 | 타입 | 필수 | 기본값 | 비고 |
 | --- | --- | --- | --- | --- |
+| `teamId` | UUID | 아니오 | - | 특정 catalog team의 stored membership 존재 여부를 exact 조회한다. |
 | `page` | integer | 아니오 | 1 | 1 이상. |
 | `limit` | integer | 아니오 | 20 | 1 이상 100 이하. |
 
@@ -410,9 +410,9 @@ Query parameter:
 
 Current organization의 active/inactive team membership row를 team name과 id로 안정 정렬한다. `inherited_resource_counts`는 조회 snapshot에서 active team의 operational allow permission에 연결되는 distinct resource source 수를 type별/전체로 집계하며 inactive team은 모두 0이다. 이는 team remove로 사라지는 source impact이지, direct/다른 team source까지 반영한 effective access loss 수나 mutation precondition이 아니다. Page에 선택된 team id 집합을 grouped batch로 집계하고 item별 count query를 실행하지 않는다. Inactive team은 stored membership 정리 대상으로만 표시하고 effective permission source나 add 대상에는 포함하지 않는다. `total`은 pagination 전 membership row 수다.
 
-### `GET /organizations/{organization_id}/members/{user_id}/resource-access`
+`teamId`가 있으면 나머지 scope/lifecycle 규칙은 유지한 채 해당 team membership만 필터링하며 `total`은 0 또는 1이다. Paginated UI는 catalog team 추가 confirm을 만들기 전에 이 exact 조회로 다른 page에 이미 존재하는 membership을 확인한다. 이 값은 authorization source가 아니며 mutation endpoint가 row 존재와 precondition을 다시 검증한다.
 
-Target contract이며 MBA-188 구현 전까지 endpoint는 존재하지 않는다.
+### `GET /organizations/{organization_id}/members/{user_id}/resource-access`
 
 Authorization과 target eligibility는 access-profile endpoint와 같다. Globally deactivated 또는 suspended target은 stored source를 조회할 수 있지만 effective state는 `none`이다.
 
@@ -421,6 +421,7 @@ Query parameter:
 | 이름 | 타입 | 필수 | 기본값 | 비고 |
 | --- | --- | --- | --- | --- |
 | `resourceType` | `workflow \| knowledge_base \| llm_credential` | 예 | - | 중앙 resource permission registry에 등록된 operational resource만 허용한다. |
+| `resourceId` | UUID | 아니오 | - | 선택한 catalog resource의 current source projection을 exact 조회한다. |
 | `source` | `all \| direct \| team` | 아니오 | `all` | direct와 team-inherited source filter. |
 | `page` | integer | 아니오 | 1 | 1 이상. |
 | `limit` | integer | 아니오 | 20 | 1 이상 100 이하. |
@@ -462,11 +463,11 @@ Resource는 이름과 id로 안정 정렬하고 id를 tie-break로 사용한다.
 
 Pagination은 filtered distinct resource id/name 집합에 먼저 적용하고, 선택된 page id의 direct/team source를 bounded batch로 조회한다. Source join row에 직접 offset/limit을 적용해 duplicate resource가 page를 왜곡하거나 item별 source query로 N+1을 만들면 안 된다.
 
+`resourceId`가 있으면 lifecycle/scope/source filter를 모두 적용한 뒤 해당 resource projection만 반환하며 `total`은 0 또는 1이다. Catalog picker는 grant/update confirm 전에 `source=all`, `resourceId`, `page=1`, `limit=1`로 exact current direct row id/auth state를 확인한다. 다른 page의 existing row를 `expected_absent` create로 오판해서는 안 되며, mutation endpoint가 exact 조회 이후의 race를 optimistic precondition으로 다시 차단한다.
+
 `effective_auth_state`는 target global user/membership gate와 active manager override까지 적용한 최종 값이다. Globally deactivated 또는 suspended target은 stored `direct_permission`/`team_sources`를 반환하더라도 `effective_auth_state="none"`이고, globally active + active manager target은 listed source보다 강한 `manager`다. Legacy workflow/LLM user-direct `none` row는 actor가 직접 revoke할 수 있으므로 cleanup용 `source=direct` projection과 `total`에 포함하지만 allow count나 effective allow source로 합산하지 않는다. Team permission의 `none` 또는 operational allow가 아닌 state는 actor `team_sources`, projection, count에서 제외하고 resource-centric permission UI에서 관리한다.
 
 ### `POST /organizations/{organization_id}/members/{user_id}/access-actions`
-
-Target contract이며 MBA-188 구현 전까지 endpoint는 존재하지 않는다.
 
 한 요청은 정확히 하나의 action만 수행한다. 모든 variant는 다음 common field를 가진다.
 

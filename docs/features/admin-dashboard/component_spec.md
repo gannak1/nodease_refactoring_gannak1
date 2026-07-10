@@ -1,9 +1,9 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: feature/mba-147 @ e1a04e9
+Verified Against: feature/mba-188 @ 59d1cc51
 
-MBA-188 target sections are not included in the verification value above.
+검증 값은 MBA-188 actor access, audit detail 연동 섹션에 적용한다. 기존 비용/권한 신청 섹션의 기준은 해당 feature 문서와 git history를 따른다.
 
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
@@ -66,6 +66,7 @@ MBA-188 target sections are not included in the verification value above.
 - Summary 영역: actor name/email, global user active state, membership state, organization role, effective access, control block reason. Role set은 `member`/`manager` desired value별 control을 구분한다.
 - Source 영역: team membership count와 paginated active/inactive membership, App creation source, direct/team resource source counts.
 - Resource 영역: workflow/Knowledge Base/LLM credential filter, direct/team source filter, pagination. Team membership 목록도 별도 pagination을 사용한다.
+- Catalog team/resource 선택은 exact `teamId`/`resourceId` 조회로 current page 밖 existing row를 확인한 뒤 confirm precondition을 구성한다. Exact 조회가 실패하면 absence로 간주하지 않고 추가/부여 action을 disabled 처리한다.
 - Action 영역: suspend/reactivate, role set, team membership add/remove, direct permission grant/revoke, App creation grant/revoke.
 - Active manager override target은 role 강등 전 resource/team/App action을 disabled 처리한다. Suspended target의 stored manager role은 override로 표시하지 않는다. Server 409가 최종 방어다.
 - Suspended target은 stored source를 표시하되 role promotion과 신규 grant/restore control은 reactivation 전 disabled 처리한다. Manager-to-member 강등과 remove/revoke cleanup은 허용한다.
@@ -78,7 +79,7 @@ MBA-188 target sections are not included in the verification value above.
 - Client는 server와 같은 newline/code-point/control/bidi validation을 적용하되, durable redaction과 authorization source로 사용하지 않는다.
 - Confirm 한 번에 access action 하나만 제출한다.
 - Payload에는 profile user-active/membership id/state/role과 action별 source row precondition을 포함한다.
-- 처리 중 confirm button을 disabled 처리하고 성공 또는 stale/conflict 응답 후 profile을 재조회한다.
+- 처리 중 confirm button을 disabled 처리한다. 성공 후 profile/source를 재조회하고, stale/conflict/not-found 응답은 기존 confirm을 닫아 stale payload 재제출을 막은 뒤 최신 상태를 재조회한다.
 
 ### PermissionRequestsTab (FR-014)
 

@@ -111,6 +111,8 @@ Status: Draft
 | ORG-TC-A048 | member team membership 목록은 active/inactive row와 inherited impact를 안정적으로 paginate해야 한다. | join duplicate/불안정 정렬로 page가 중복·누락되거나 item별 count N+1이 발생하거나 inactive row가 effective source/add 대상이 된다. | `{total,items}`, team name/id stable order, batched type별 distinct count, inactive count 0/cleanup-only. |
 | ORG-TC-A049 | expected-absent retry는 같은 natural key와 desired value일 때만 unchanged여야 한다. | Existing direct row가 다른 auth state인데 expected-absent grant가 unchanged 또는 overwrite로 처리된다. | 409 `stale_state`; same desired team/direct/App row만 unchanged. |
 | ORG-TC-A050 | Policy와 no-op의 판정 우선순위는 identity/global-state/row-id stale을 약화하지 않아야 한다. | Globally inactive 또는 manager-override target의 desired-state retry가 policy block이 되거나, membership/user-active/row-id mismatch가 no-op으로 숨겨진다. | same desired retry는 unchanged, identity/global-state/row-id mismatch는 먼저 409 stale. |
+| ORG-TC-A051 | Paginated catalog 선택은 exact team/resource source 조회로 precondition을 구성해야 한다. | Current page 밖 existing team/direct row 또는 조회 실패를 absent로 오판해 create confirm을 연다. | `teamId`/`resourceId` exact 조회 0/1 결과로 row id/auth-state 또는 absence를 구성하고 mutation에서 재검증. 조회 실패는 action disabled + 명시적 retry. |
+| ORG-TC-A052 | 404/409 이후 stale confirm payload를 다시 제출할 수 없어야 한다. | Profile을 갱신해도 열린 dialog가 이전 expected snapshot을 유지해 재제출한다. | Dialog 닫기, 최신 profile/source 조회, 사용자 재선택, 자동 재시도 없음. |
 
 ## E2E Tests
 

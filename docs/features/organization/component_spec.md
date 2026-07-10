@@ -1,9 +1,9 @@
 # Organization Component Spec
 
 Status: Draft
-Verified Against: feature/mba-119 @ 7aefa84 (App 생성 권한 신청 UI 섹션 제외)
+Verified Against: feature/mba-188 @ 59d1cc51
 
-MBA-188 target sections are not included in the verification value above.
+검증 값은 ActorAccessDrawer/confirm과 관련 organization API wrapper에 적용한다. 기존 organization 관리 UI의 나머지 섹션은 각 구현 이력의 기준을 따른다.
 
 ## Screens
 
@@ -157,9 +157,9 @@ MBA-188 target sections are not included in the verification value above.
 - 상호작용:
   - organization_auth_state 변경과 제거는 AdminConsolePage confirm dialog를 거친다.
 
-### ActorAccessDrawer (MBA-188 target)
+### ActorAccessDrawer
 
-- 출처: `apps/client/app/features/admin/components/ActorAccessDrawer.tsx` target.
+- 출처: `apps/client/app/features/admin/components/ActorAccessDrawer.tsx`.
 - 책임: audit actor 또는 member row에서 current organization member의 membership, role, team, App 생성 권한, direct/team-inherited resource access를 user 중심으로 조회하고 항목별 관리 action을 제공한다.
 - 진입:
   - AuditSearchTab의 user actor button
@@ -177,6 +177,7 @@ MBA-188 target sections are not included in the verification value above.
   - App 생성 effective source와 별도의 stored direct row
   - resource type/source filter와 paginated resource access
   - direct permission과 team source를 분리한 auth state
+- Catalog team/resource 선택 시 `teamId`/`resourceId` exact 조회로 다른 page의 existing row를 확인한 뒤 create/update precondition을 구성한다. Paginated current page만 보고 absence를 추론하지 않으며 exact 조회가 실패하면 추가/부여 confirm을 열지 않고 재조회 control을 제공한다.
 - 제한:
   - ADR-0009의 organization manager 판정을 통과한 caller에게만 control을 제공한다.
   - system/null actor와 invited/removed/missing historical actor는 drawer를 열지 않고 audit detail만 유지한다.
@@ -184,7 +185,7 @@ MBA-188 target sections are not included in the verification value above.
   - suspended target은 stored grant를 표시하지만 role promotion/direct grant/team add/App-creation grant는 재활성화 후 제공한다. Manager-to-member 강등, existing direct/App revoke와 team remove는 cleanup 목적으로 허용한다.
   - globally deactivated target은 effective disabled와 cleanup-only 상태를 표시한다. Global account reactivation control은 제공하지 않는다.
 
-### Actor Access Confirm Dialog (MBA-188 target)
+### Actor Access Confirm Dialog
 
 - 모든 suspend/reactivate, role, team, direct permission, App-creation action 전에 표시한다.
 - Target user, action, resource/team, current/next state와 effective impact를 표시한다.
@@ -193,7 +194,8 @@ MBA-188 target sections are not included in the verification value above.
 - Client는 CRLF normalization 후 Unicode code point 기준으로 길이를 계산하고 forbidden control/bidi 문자를 제출하지 않는다. Server validation과 redaction이 최종 경계다.
 - 한 confirm은 한 access action만 제출한다.
 - 제출 payload는 drawer snapshot의 user-active/membership id/state/role과 action별 source row id/auth-state/absence precondition을 포함한다.
-- 처리 중 confirm action을 비활성화하고 성공/409/404 이후 profile을 서버에서 재조회한다.
+- 처리 중 confirm action을 비활성화한다. 성공 후 profile/source를 재조회하며, 409/404에서는 stale confirm payload를 폐기하고 dialog를 닫은 뒤 최신 profile/source를 재조회한다. 사용자가 새 snapshot에서 action을 다시 선택해야 하며 자동 재시도하지 않는다.
+- Confirm dialog는 초기 focus, ESC 취소, 양방향 focus trap과 trigger focus 복귀를 제공하고 열린 동안 바깥 drawer를 inert/hidden 처리한다.
 - Team membership action 뒤에는 profile count와 team-membership page를 함께 재조회한다.
 
 ### TeamsTab

@@ -1,9 +1,9 @@
 # Admin Dashboard Test Cases
 
 Status: Draft
-Verified Against: feature/mba-147 @ e1a04e9
+Verified Against: feature/mba-188 @ 59d1cc51
 
-MBA-188 target cases are planned contracts and are not included in the verification value above.
+검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.
 
 [requirements.md](requirements.md)의 FR-011~FR-018과 [api_spec.md](api_spec.md), [component_spec.md](component_spec.md)를 검증한다. 신청 제출 측(FR-041)의 인수 조건은 [organization](../organization/requirements.md) 범위이며, 여기서는 관리자 측 흐름과 E2E 연결만 다룬다.
 
@@ -75,9 +75,13 @@ MBA-188 target cases are planned contracts and are not included in the verificat
 - Given historical permission audit, When stored grantee organization이 request organization과 일치하면, Then opaque resource id만 표시하고 current name/path는 resolve하지 않는다. Provenance가 없거나 다르면 summary는 null이다.
 - Given concurrent last-two-manager mutation 또는 permission revoke, When 요청이 경합하면, Then 불변식을 지키며 canonical audit은 applied mutation당 정확히 한 건이다.
 - Given actor drawer snapshot 이후 global user state, membership identity/role 또는 source row가 바뀜, When 이전 action을 제출하면, Then identity/global-state/ABA mismatch는 no-op보다 먼저 409가 되고 profile을 갱신하며 자동 재시도하지 않는다. Same-row desired-state retry만 unchanged다.
+- Given team/resource source가 여러 page에 걸쳐 있음, When catalog item을 선택하면, Then `teamId`/`resourceId` exact 조회로 다른 page의 existing row를 확인하고 row id/auth-state 또는 absence precondition을 구성한다.
+- Given team/resource exact 조회가 실패함, When catalog item이 선택되어 있어도, Then 실패를 absence로 해석하지 않고 추가/부여 action을 disabled 처리하며 재조회 control을 제공한다.
+- Given access action이 404/409를 반환함, When 최신 profile/source를 재조회하면, Then 기존 confirm dialog와 payload는 폐기되고 사용자가 새 snapshot에서 action을 다시 선택해야 한다.
 - Given reason에 common secret/PII pattern 또는 forbidden control/bidi가 포함됨, When action을 제출하면, Then raw reason은 audit/detail에 남지 않고 validation/redaction failure 시 mutation도 성공하지 않는다.
 - Given sanitized reason에 HTML/script-like text가 포함됨, When audit detail을 렌더링하면, Then text node로 표시되고 HTML 실행이나 `dangerouslySetInnerHTML` 경로를 사용하지 않는다.
 - Given scope 안 actor policy block, When audit detail을 열면, Then `policy.block`, failure status, scoped target user, requested action, machine policy reason와 sanitized optional reason만 safe metadata로 표시된다. Scope가 확인된 opaque resource/team id 외 `change_summary`/name/email/raw request/expected snapshot은 없다.
+- Given `summary` 외 allowlist metadata key에 nested object, malformed UUID, unknown resource/policy reason 또는 boolean count가 저장됨, When audit detail을 열면, Then 해당 malformed field는 생략되고 detail 전체가 500으로 실패하지 않는다. 기존 `summary`는 secret-like nested key를 제거하는 sanitized JSON 계약을 유지한다.
 
 ## Unit Tests
 
