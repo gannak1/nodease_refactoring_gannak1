@@ -32,6 +32,76 @@ _DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS = frozenset(
 )
 
 
+@celery_app.task(name="workflow.model_routing.record_run", bind=True, max_retries=3)
+def record_model_routing_operational_run(self, workflow_run_id: str):
+    """완료된 LLM node run을 정책 갱신 카운터에 반영하고 필요할 때만 refresh task를 예약한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    session = SessionLocal()
+    try:
+        policy_ids = ModelRoutingPolicyStore.record_completed_deployed_run(
+            session,
+            workflow_run_id=workflow_run_id,
+        )
+        session.commit()
+        for policy_id in policy_ids:
+            celery_app.send_task(
+                "workflow.model_routing.refresh_policy",
+                args=[str(policy_id), "auto_n_runs"],
+            )
+        return {"status": "success", "scheduled_policy_ids": [str(item) for item in policy_ids]}
+    except Exception as exc:
+        session.rollback()
+        logger.error("[Model-Routing] run event record failed: %s", exc)
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
+
+
+@celery_app.task(name="workflow.model_routing.refresh_policy", bind=True, max_retries=2)
+def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_refresh"):
+    """Judge를 한 번 호출해 persisted policy rule set만 갱신한다. runtime에서는 호출하지 않는다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    session = SessionLocal()
+    try:
+        if trigger == "auto_n_runs":
+            from apps.workflow_engine.services.model_routing_policy_store import (
+                ModelRoutingPolicyStore,
+            )
+
+            if (
+                ModelRoutingPolicyStore.claim_pending_auto_refresh(
+                    session,
+                    policy_id=policy_id,
+                )
+                is None
+            ):
+                session.rollback()
+                return {"status": "skipped", "update_id": None, "result": None}
+        update = PersistedModelRoutingPolicyRefreshService.refresh(
+            session,
+            policy_id=policy_id,
+            trigger=trigger,
+        )
+        session.commit()
+        return {
+            "status": "success" if update is not None else "not_found",
+            "update_id": str(update.id) if update is not None else None,
+            "result": update.status if update is not None else None,
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error("[Model-Routing] policy refresh failed: %s", exc)
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
+
+
 def _sync_skipped_result(reason: str) -> Dict[str, Any]:
     """Knowledge sync를 실행하지 않았음을 task 응답에 안전하게 표시한다."""
     return {

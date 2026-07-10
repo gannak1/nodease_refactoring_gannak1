@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
+Verified Against: feature/mba-166 @ 034a716
 
 ## Purpose
 
@@ -10,12 +10,14 @@ FR-011 모델 라우팅은 LLM 노드 상세 화면의 `자동 모델 라우팅`
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
+현재 구현 기준으로 `최적화`와 `비교 분석 테스트`는 LLM 노드 상세 상단의 별도 액션이다. `최적화`는 추천 모달을 열고, 추천 모달의 `테스트하기`는 baseline을 자동 선택하지 않은 채 Cost Optimizer workspace로 이동한다. `비교 분석 테스트`는 사용자가 baseline 목록에서 기준 실행을 직접 선택하는 전용 workspace로 이동한다.
+
 ## FR Mapping
 
 | FR | 화면/컴포넌트 | UI 책임 |
 | --- | --- | --- |
 | FR-001 | LLM node detail action | LLM 노드에서만 A/B 테스트 진입 액션을 제공한다. |
-| FR-002 | Baseline log picker | 최신 실행 로그 또는 이전 실행 로그를 A baseline으로 선택한다. |
+| FR-002 | Baseline log picker | baseline 목록에서 사용자가 A 기준 실행 로그를 직접 선택한다. |
 | FR-003 | Candidate editor | B 후보의 모델, prompt, parameter, 출력 형식을 편집한다. |
 | FR-004 | Baseline input lock display | A baseline 입력이 B 후보 실행 입력으로 고정됨을 보여준다. |
 | FR-005 | Hybrid compare flow | A는 재실행하지 않고 B만 실행하는 비교 흐름을 안내한다. |
@@ -24,8 +26,8 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Model routing policy controls | LLM 노드 상세 화면에서 자동 모델 라우팅 ON/OFF, 정책 상태, 20회 갱신 진행도, 수동 정책 갱신 액션을 제공한다. |
-| FR-012 | Parameter recommendation modal | 워크플로우 최적화 권장 항목에서 LLM 파라미터 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 A/B 후보를 만들 수 있게 한다. |
+| FR-011 | Model routing policy controls / model-routing route | LLM 노드 상세 화면에서 자동 모델 라우팅 ON/OFF와 정책 상태를 표시하고, 전용 model-routing 화면에서 검증된 후보 실험 이력 기반 추천을 보여준다. |
+| FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 
 ## Implementation Tracking
 
@@ -43,8 +45,8 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
 | FR-009 | Cost/usage metric display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-011 | Model routing policy controls | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/ModelRoutingPolicyPanel.tsx` | 미구현 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-model-routing-policy.test.tsx` | 미작성 |
-| FR-012 | Parameter recommendation modal | `apps/client/app/dashboard/mymodule/page.tsx`, 후속 `ParameterRecommendationModal` | 미구현 | `apps/client/app/features/workflow/tests/costOptimizer/fr12-parameter-recommendations.test.tsx` | 미작성 |
+| FR-011 | Model routing policy controls, model-routing recommendation route, refresh result summary | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | policy toggle/주기 저장, manual refresh 요청, 마지막 judge 결과·비용 표시 검증 |
+| FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 
 ## Screens
 
@@ -85,18 +87,11 @@ A/B 테스트 진입 액션은 LLM 노드 상세 패널의 상단 헤더 우측 
 
 관련 FR: FR-002, FR-004, FR-005
 
-`A/B 테스트`를 누르면 A baseline 선택 화면을 먼저 연다.
+`비교 분석 테스트` 또는 추천 모달의 `테스트하기`를 누르면 A baseline 선택 화면을 먼저 연다.
 
-화면은 두 가지 선택지를 제공한다.
+현재 baseline 선택 화면은 최신 로그 CTA로 baseline을 자동 고정하지 않는다. 화면은 검색/필터/정렬 가능한 baseline log picker를 바로 보여주고, 사용자가 특정 row를 직접 선택해야 A/B workspace가 열린다.
 
-- `최신 실행 로그로 비교하기`
-- `이전 실행 로그 선택해서 비교하기`
-
-`최신 실행 로그로 비교하기`는 target LLM node의 성공한 실행 기록 중 `input_available=true`, `output_available=true`, `usage_available=true`를 모두 만족하는 가장 최근 baseline을 자동 선택한다.
-
-baseline 선택 화면은 진입 시 최신 baseline을 미리 조회하고, `최신 실행 로그로 비교하기` CTA 안에 최신 로그 요약을 표시한다. 사용자는 CTA를 누르기 전에 어떤 실행 로그가 A 기준으로 고정될지 확인할 수 있어야 한다.
-
-최신 로그 요약은 다음 정보를 표시한다.
+baseline row는 다음 정보를 표시한다.
 
 - 실행 시각
 - 모델
@@ -105,10 +100,9 @@ baseline 선택 화면은 진입 시 최신 baseline을 미리 조회하고, `�
 - 실행 시간
 - 입력 preview
 - 출력 preview
-
-최신 비교 가능 baseline이 없으면 최신 CTA 영역에 로그 없음 안내를 표시하고, `이전 실행 로그 선택해서 비교하기` 경로를 사용할 수 있게 한다.
-
-`이전 실행 로그 선택해서 비교하기`는 baseline log picker를 연다.
+- trace 존재 여부
+- downstream 호환성 상태
+- 비교 가능 여부
 
 ### Baseline Log Picker
 
@@ -233,9 +227,9 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 - 기본 모델 선택 UI를 숨긴다.
 - fallback 모델 선택 UI를 숨긴다.
-- active policy 상태 panel을 표시한다.
+- active policy 상태 panel을 표시한다. panel은 `GET /model-routing/policy` 응답을 우선 사용한다.
 - runtime은 active policy를 사용해 모델을 선택한다.
-- active policy가 없으면 `collecting` 상태로 표시하고, runtime은 보수적으로 저장된 안정 모델을 사용한다.
+- active policy가 없으면 `collecting` 상태로 표시하고, runtime은 node에 저장된 `model_id`/`fallback_model_id`를 그대로 사용한다. bootstrap은 새 모델이나 rule을 만들지 않는다.
 - judge LLM은 일반 실행 중 호출하지 않는다.
 
 정책 상태 panel은 다음 정보를 보여준다.
@@ -254,21 +248,27 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 | 상태 | 표시 | 사용자 액션 |
 | --- | --- | --- |
 | `off` | 자동 라우팅 꺼짐 | 토글 ON |
-| `collecting` | 운영 로그 수집 중, `n/20회` | 수동 갱신 가능, 로그 부족이면 실패 안내 |
+| `collecting` + policy id 없음 | 첫 배포 운영 실행 대기 | `자동 정책 갱신하기` disabled, `첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다.` 안내 |
+| `collecting` + policy id 있음 | 운영 로그 수집 중, `n/20회` | 수동 갱신 가능. 로그/후보 근거가 부족하면 최종 결과에서 실패 또는 기존 policy 유지 안내 |
 | `active` | active policy로 실행 중 | 수동 갱신 가능 |
 | `refreshing` | 정책 갱신 중 | 중복 갱신 버튼 disabled |
 | `pending_review` | 새 정책 보류, 기존 정책 유지 | 보류 사유 확인 |
 | `failed` | 마지막 갱신 실패 | 실패 사유 확인 후 재시도 |
 
-`자동 정책 갱신하기` 버튼을 누르면 즉시 정책 갱신 요청을 보낸다.
+`자동 정책 갱신하기` 버튼을 누르면 `POST /model-routing/policy/refresh`로 즉시 정책 갱신 작업을 예약한다.
 
-- 요청 중에는 버튼을 disabled 처리한다.
-- 성공하면 새 policy version과 적용 결과를 표시한다.
+- 요청 중에는 버튼을 disabled 처리한다. policy id가 없는 초기 `collecting` 상태에서도 disabled 처리한다.
+- 요청 성공은 judge 완료가 아니라 `refreshing` 상태 전환을 뜻한다. UI는 policy 조회를 다시 수행해 새 policy version과 최종 적용 결과를 표시한다.
 - `kept_current`이면 정책 재평가는 끝났지만 검증된 변경 후보가 없어 기존 active policy를 유지했다는 문구를 표시한다.
 - `pending_review`이면 새 정책이 운영에 반영되지 않았고 기존 active policy가 유지된다는 문구를 표시한다.
 - 실패하면 로그 부족, credential/model 사용 불가, judge 호출 실패 같은 safe reason을 표시한다.
+- active policy의 default/rule/fallback 중 현재 사용자의 credential `use` 권한으로 실행 가능한 모델이 없으면 provider 호출 전에 실행이 차단된다는 안내를 표시한다.
 
 정책 갱신 결과의 judge 호출 비용은 숨기지 않는다. UI는 policy update summary에서 judge 모델, token/cost, 갱신 trigger를 확인할 수 있어야 한다. 단 raw prompt, raw output, credential 원문, API key, raw trace payload는 표시하지 않는다.
+
+현재 구현은 policy 조회 응답의 `last_update` safe summary를 사용해 `최근 정책 점검`, 자동/수동 갱신 여부, `반영됨`/보류/실패 상태, judge 모델과 judge 비용을 표시한다. 사용자는 judge usage log id를 원문 로그로 열람하지 않고 추적 식별자로만 확인한다.
+
+자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 target LLM node가 성공한 terminal 운영 workflow 완료가 policy row를 생성한다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
@@ -462,6 +462,7 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 
 - text 출력이면 전체 텍스트를 줄바꿈과 내부 스크롤로 표시한다.
 - JSON 출력이면 field 단위로 펼쳐서 볼 수 있어야 한다.
+- JSON field 표시명은 해당 node 실행 시점 JSON Schema의 `properties.{key}.title`이 있을 때만 사용한다. title이 없으면 원본 key를 그대로 표시하며, 공통 preview 컴포넌트에 workflow 도메인별 key-label mapping을 두지 않는다.
 - JSON schema가 있으면 필수 field 충족 여부, 누락 field, type mismatch를 표시한다.
 - 긴 값은 화면에서 임의로 `...` 처리하지 않는다. 패널 내부 스크롤을 사용한다.
 
@@ -551,8 +552,8 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | --- | --- | --- | --- | --- |
 | `model_id` | `data.model_id` | `candidate.model_id` | `candidate_settings.model_id` | 기존 모델 선택 목록을 재사용한다. |
 | `fallback_model_id` | `data.fallback_model_id` | `candidate.fallback_model_id` | `candidate_settings.fallback_model_id` | 기본 모델과 같으면 validation 대상이다. |
-| `auto_model_routing` | `data.auto_model_routing` | 사용하지 않음 | 사용하지 않음 | LLM 노드 자동 모델 라우팅 ON/OFF 저장값이다. ON이면 런타임은 active policy를 우선 평가한다. Cost Optimizer A/B 후보 설정에는 포함하지 않는다. |
-| `model_routing_context` | `data.model_routing_context` | 사용하지 않음 | 사용하지 않음 | 런타임 policy rule 평가에 쓰는 명시적 일반 힌트다. 예: `customer_facing`, `node_task`. 도메인 키워드 목록은 여기에 넣지 않고 policy rule의 `when.keyword_any`에 저장한다. |
+| `auto_model_routing` | `data.auto_model_routing` | `candidate.auto_model_routing` | `candidate_settings.auto_model_routing` | LLM 노드 자동 모델 라우팅 ON/OFF 저장값이다. ON인 후보에 active policy가 없으면 Gateway는 후보가 명시한 모델을 보존한 rule 없는 cold-start policy를 materialize한다. |
+| `model_routing_context` | `data.model_routing_context` | 사용하지 않음 | 사용하지 않음 | 런타임 policy rule 평가에 쓰는 명시적 일반 힌트다. 예: `customer_facing`, `node_task`. 현재 자동 refresh는 raw 입력을 받지 않으므로 도메인 키워드 rule을 추정 생성하지 않고 이 일반 feature의 segment 근거만 사용한다. |
 | `task_type` | 내부 기본값 | 내부 기본값 | `candidate_settings.task_type` | 사용자 입력으로 노출하지 않는다. 후속 라우터/분석 내부 판단값으로만 사용한다. |
 | `system_prompt` | `data.system_prompt` | `candidate.system_prompt` | `candidate_settings.system_prompt` | 변수 삽입 지원. |
 | `user_prompt` | `data.user_prompt` | `candidate.user_prompt` | `candidate_settings.user_prompt` | 변수 삽입 지원. |

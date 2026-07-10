@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
+Verified Against: feature/mba-166 @ 034a716
 
 ## Purpose
 
@@ -9,6 +9,10 @@ Verified Against: feature/mba-112 @ df9ed6df92c2c8177cc9ef0fe2f2c50967e423f6
 FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 저장된 active policy를 사용해 모델을 선택한다. Judge LLM은 매 실행마다 호출하지 않고 정책 갱신 endpoint 또는 background job에서만 호출한다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
+
+모델 라우팅 policy 전용 REST API와 `llm_node_model_routing_policies` table이 자동 라우팅의 source of truth다. LLM node data의 `auto_model_routing`, `refresh_every_runs`는 policy 설정을 갱신하는 입력이며, 일반 배포 runtime은 DB의 active policy snapshot만 읽는다.
+
+파라미터 추천 API는 구현되어 있다. `GET /cost-optimizer/parameter-recommendations`는 운영 로그 기반 추천을 반환하고, `PATCH /cost-optimizer/apply-recommendations`는 `direct_policy_update` 추천만 현재 draft에 즉시 반영한다.
 
 ## FR Mapping
 
@@ -24,8 +28,8 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | LLM node별 모델 라우팅 policy 조회/수정/수동 갱신 API를 제공한다. runtime은 active policy를 사용하고, judge 호출은 정책 갱신 작업에서만 수행한다. |
-| FR-012 | 현재 Cost Optimizer API는 LLM 파라미터 추천 endpoint를 제공하지 않는다. 후속 API는 운영 로그와 trace summary를 분석해 파라미터 조정 후보를 반환하고, 직접 적용 대신 compare candidate 생성을 기본으로 한다. |
+| FR-011 | policy 조회/설정/refresh API와 배포 후 run 완료 event가 policy table을 관리한다. runtime은 active policy만 평가하고 judge 호출은 하지 않는다. |
+| FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 
 ## Endpoints
 
@@ -35,11 +39,13 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest` | 최신 baseline 실행 로그 조회 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines` | baseline 실행 로그 목록 검색/필터/정렬 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments` | 과거 experiment/candidate 결과 목록 조회 | FR-006, FR-009, FR-010 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations` | 운영 로그 기반 LLM 파라미터/모델 라우팅 추천 조회 | FR-012 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations` | `direct_policy_update` 추천을 현재 draft에 즉시 적용 | FR-012 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보 실행 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
-| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 모델 라우팅 policy 상태 조회 | FR-011 | builder 이상 |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 policy 설정 수정 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 운영 로그 기반 policy 수동 갱신 요청 | FR-011 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 정책 점검 주기 변경 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
 
 ## Implementation Tracking
 
@@ -57,14 +63,16 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | `PATCH apply` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-011 | model routing policy API/runtime contract | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/services/model_routing_policy_service.py`, `apps/shared/db/models/model_routing_policy.py` | 미구현 | `apps/gateway/tests/api/cost_optimizer/test_model_routing_policy_api.py`, `apps/workflow_engine/tests/services/test_model_routing_policy.py` | 미작성 |
-| FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py` 또는 workflow endpoint helper | 미구현 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 미작성 |
+| FR-011 | policy persistence, event idempotency, refresh task, runtime lookup, judge usage tracking | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | `apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/log_system/tests/test_model_routing_policy_hook.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 관련 targeted test 통과 |
+| FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 
 ## Model Routing Policy Contract
 
 이 섹션은 FR-011 정책 기반 자동 모델 라우팅의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, judge LLM은 호출하지 않는다. Judge LLM 호출은 policy refresh 작업에서만 수행한다.
 
-Policy refresh는 모델 변경을 의미하지 않는다. `auto_20_runs` 또는 `manual_refresh`는 active policy 재평가 trigger이며, 검증된 저비용 후보가 품질 gate를 통과한 경우에만 active policy를 변경한다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
+이 계약의 source of truth는 `llm_node_model_routing_policies`다. Cost Optimizer candidate의 policy JSON은 compare/apply 호환을 위한 candidate snapshot이며, 일반 배포 실행은 policy table의 active policy만 사용한다. Gateway의 `GET/PATCH/POST /model-routing/policy`는 이 table과 refresh task를 관리하고, Workflow Engine의 `LLMNode._resolve_model_routing_policy()`는 runtime DB lookup 결과를 `ModelRouter.resolve_policy()`에 전달한다.
+
+Policy refresh는 모델 변경을 의미하지 않는다. `auto_n_runs` 또는 `manual_refresh`는 active policy 재평가 trigger이며, 검증된 저비용 후보가 품질 gate를 통과한 경우에만 active policy를 변경한다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
 
 예상 service/API entrypoint:
 
@@ -109,16 +117,6 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
         "reason_code": "short_structured_input_uses_low_cost_model",
         "selected_model_id": "gpt-4.1-mini",
         "fallback_model_id": "gpt-4.1"
-      },
-      {
-        "id": "domain-risk-terms",
-        "priority": 20,
-        "when": {
-          "keyword_any": ["SLA", "보상", "장애"]
-        },
-        "reason_code": "judge_generated_domain_keyword_rule",
-        "selected_model_id": "gpt-4.1",
-        "fallback_model_id": null
       }
     ]
   },
@@ -134,6 +132,27 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 }
 ```
 
+응답에는 마지막 정책 갱신의 safe summary도 포함한다. summary에는 judge 모델/provider, 갱신 결과, 운영 표본 수, judge usage log id와 계산 비용만 포함하며 judge prompt/응답 원문이나 credential은 포함하지 않는다.
+
+```json
+{
+  "last_update": {
+    "id": "uuid",
+    "trigger": "auto_n_runs",
+    "status": "applied",
+    "eligible_run_count": 20,
+    "excluded_run_count": 2,
+    "judge_provider": "openai",
+    "judge_model": "gpt-4.1-mini",
+    "judge_usage_log_id": "uuid",
+    "prompt_version": "model-routing-policy-judge-v1",
+    "new_policy_version": "router-policy-v4",
+    "judge_cost": 0.0012,
+    "created_at": "2026-07-10T00:00:00Z"
+  }
+}
+```
+
 ### PATCH Policy Request
 
 ```json
@@ -143,33 +162,24 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 }
 ```
 
-`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. active policy가 없으면 status는 `collecting`이고, runtime은 보수적 fallback으로 저장 모델을 사용한다.
+`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. active policy가 없으면 status는 `collecting`이고, runtime은 보수적으로 저장 모델을 사용한다. 정책 row는 `auto_model_routing=true`가 포함된 deployment snapshot의 target LLM node가 성공한 terminal 운영 workflow 완료 hook에서 생성한다. 따라서 draft의 PATCH만으로는 `policy_id`가 생기거나 운영 run이 집계되지 않는다.
 
 ### POST Policy Refresh Response
 
 ```json
 {
-  "update_id": "uuid",
-  "status": "applied",
+  "policy_id": "uuid",
+  "status": "refreshing",
   "trigger": "manual_refresh",
-  "eligible_run_count": 20,
-  "excluded_run_count": 7,
-  "judge_usage_log_id": "uuid",
-  "new_policy_version": "router-policy-v4",
-  "warnings": []
+  "scheduled": true
 }
 ```
 
-`status` 값:
-
-- `applied`: 품질 gate를 통과해 active policy로 반영됐다.
-- `kept_current`: 정책 재평가는 성공했지만 검증된 변경 후보가 없어 기존 active policy를 유지했다.
-- `pending_review`: 새 정책안은 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 운영에 반영하지 않았다.
-- `failed`: 로그 부족, credential/model 사용 불가, judge 호출 실패 등으로 갱신하지 못했다.
+POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아니다. 최종 `applied`, `kept_current`, `pending_review`, `failed` 결과와 update summary는 이후 GET policy 응답의 `last_update`에서 조회한다. policy row가 아직 없거나 자동 라우팅이 꺼져 있으면 POST는 `409 model_routing.policy_not_ready`를 반환한다.
 
 ### Persistence Model
 
-정책 저장 source of truth는 별도 테이블이다.
+정책 저장 source of truth는 별도 table이다. policy 본문은 LLM node data나 Cost Optimizer candidate JSON에만 두지 않는다.
 
 #### `llm_node_model_routing_policies`
 
@@ -187,6 +197,9 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 | `refresh_every_runs` | integer | 기본값 20 |
 | `last_refreshed_at` | datetime nullable | 마지막 정책 갱신 시각 |
 | `last_refresh_result` | string nullable | `applied`, `kept_current`, `pending_review`, `failed` |
+| `eligible_runs_since_last_refresh` | integer | 마지막 갱신 이후 중복 제거된 배포 후 운영 실행 수 |
+| `refresh_requested_at` | datetime nullable | refresh task가 예약된 시각. 실행 중복 예약 방지에 사용 |
+| `judge_user_id` | UUID nullable | judge credential 사용 권한을 검증할 사용자 |
 | `created_by`, `updated_by` | UUID nullable | 변경 사용자 |
 
 #### `llm_node_model_routing_policy_updates`
@@ -209,43 +222,56 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 | `new_policy_version` | string nullable | 생성된 policy version |
 | `error_code` | string nullable | 실패 사유 |
 
+#### `llm_node_model_routing_policy_run_events`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | UUID | event id |
+| `policy_id` | UUID | 대상 policy |
+| `workflow_run_id` | UUID | 완료된 배포 후 운영 run |
+| `created_at` | datetime | 기록 시각 |
+
+`(policy_id, workflow_run_id)`는 unique다. Celery retry, webhook 재전달, 완료 hook 중복 호출이 있어도 한 workflow run은 policy 누적 수를 한 번만 증가시킨다.
+
 ### Runtime Metadata
 
-LLM node 실행 시점 metadata는 선택 결과만 safe summary로 남긴다.
+LLM node 실행 시점 metadata는 선택 결과와 추천/품질 판단에 필요한 safe summary를 canonical `workflow_node_runs.trace_metadata.llm` 및 `.rag`에 남긴다. `model_routing`을 중첩한 별도 section으로 저장하지 않는다.
 
 ```json
 {
   "llm": {
-    "model_routing": {
-      "enabled": true,
-      "policy_id": "uuid",
-      "policy_version": "router-policy-v4",
-      "selected_model": "gpt-4.1-mini",
-      "fallback_model": "gpt-4.1",
-      "decision_source": "active_policy",
-      "matched_rule_id": "short-json-no-knowledge",
-      "reason_code": "short_structured_input_uses_low_cost_model",
-      "runtime_context": {
-        "intent": "generate",
-        "risk_level": "medium",
-        "customer_facing": false,
-        "knowledge_enabled": false,
-        "output_format": "json",
-        "schema_required": true,
-        "has_file_input": false,
-        "input_length": 180,
-        "input_length_bucket": "short",
-        "prompt_length": 920,
-        "prompt_length_bucket": "medium",
-        "node_task": "generate"
-      },
-      "judge_called": false
-    }
+    "model": "gpt-4.1-mini",
+    "policy_id": "uuid",
+    "policy_version": "router-policy-v4",
+    "selected_model": "gpt-4.1-mini",
+    "fallback_model": "gpt-4.1",
+    "decision_source": "active_policy",
+    "matched_rule_id": "short-json-no-knowledge",
+    "reason_code": "short_structured_input_uses_low_cost_model",
+    "judge_called": false,
+    "finish_reason": "stop",
+    "schema_status": "passed",
+    "downstream_status": "passed",
+    "fallback_used": false,
+    "repetition_rate": 0.02,
+    "customer_facing": false,
+    "knowledge_enabled": false,
+    "output_format": "json",
+    "schema_required": true,
+    "has_file_input": false,
+    "input_length_bucket": "short",
+    "prompt_length_bucket": "medium",
+    "node_task": "generate"
+  },
+  "rag": {
+    "context_token_estimate": 420,
+    "retrieved_chunk_count": 3,
+    "evidence_sufficient": true
   }
 }
 ```
 
-런타임은 도메인 키워드 목록을 코드 상수로 갖지 않는다. `keyword_any`는 judge policy refresh가 생성해 저장한 policy rule 조건일 때만 평가된다.
+런타임은 도메인 키워드 목록을 코드 상수로 갖지 않는다. 현재 judge refresh는 raw 입력을 받지 않으므로 `keyword_any`를 추정 생성하지 않는다. 자동 반영 rule은 동일 조건의 segment 성능 근거가 있는 일반 feature 조건만 사용한다. 이미 검토된 저장 policy의 `keyword_any`는 호환 경로로 평가할 수 있지만, judge가 새로 만들지는 않는다.
 
 ### Refresh Metadata
 
@@ -264,13 +290,13 @@ LLM node 실행 시점 metadata는 선택 결과만 safe summary로 남긴다.
 }
 ```
 
-Judge 입력에는 raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content를 포함하지 않는다. 입력은 모델별 비용/token/latency 평균, schema/downstream/fallback/retry safe summary, candidate model 사용 가능성 summary로 제한한다.
+Judge 입력에는 raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content를 포함하지 않는다. 입력은 모델별 비용/token/latency 평균, schema/downstream/fallback/retry safe summary, 현재 사용자 기준 candidate model 사용 가능성, 그리고 일반 feature 조건별 segment 성능 summary로 제한한다.
 
 ## LLM Parameter Recommendation Contract
 
 관련 FR: FR-012
 
-LLM 파라미터 추천은 모델 라우팅과 별도 계약으로 다룬다. 이 API는 target LLM node의 배포 후 운영 로그와 Cost Optimizer 후보 실험 이력을 분석해 `max_tokens`, `temperature`, RAG context 같은 조정 후보를 반환한다.
+LLM 파라미터 추천은 모델 라우팅과 별도 계약으로 다룬다. 이 API는 현재 draft와 동일한 활성 deployment snapshot의 target LLM node 배포 후 운영 로그를 분석해 `max_tokens`, `temperature`, RAG context 같은 조정 후보를 반환한다. Cost Optimizer 후보 실험은 운영 통계에 섞지 않는다.
 
 예상 service/API entrypoint:
 
@@ -304,7 +330,7 @@ LLMParameterRecommendationService.recommend(
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `analysis_stage` | `insufficient_logs` \| `recommendations_available` | 추천 가능한 운영 로그가 충분한지 |
+| `analysis_stage` | `insufficient_logs` \| `recommendations_available` \| `draft_not_deployed` \| `deployment_unavailable` | 추천 가능한 운영 로그와 현재 draft/deployment cohort 상태 |
 | `recommendations` | array | 파라미터 추천 목록 |
 | `warnings` | array | 추천 불가 또는 적용 주의 사유 |
 | `policy_version` | string | 추천 룰셋 버전 |
@@ -359,12 +385,12 @@ LLMParameterRecommendationService.recommend(
 | `workflow_node_runs` | target LLM node의 status, duration, output 존재 여부, trace metadata |
 | `workflow_runs` | 배포 후 운영 실행 여부, 전체 성공/실패 상태 |
 | `llm_usage_logs` | prompt/completion token, cost, latency, model, node id |
-| Cost Optimizer candidates | 과거 후보의 schema/downstream/cost 결과 |
-| RAG trace summary | `context_token_estimate`, `retrieved_chunk_count`, `evidence_sufficient` |
+| canonical `trace_metadata.llm` | finish reason, schema/downstream status, fallback used, output repetition rate, routing safe summary |
+| canonical `trace_metadata.rag` | `context_token_estimate`, `retrieved_chunk_count`, `evidence_sufficient` |
 
-추천 profile에는 `workflow_runs.deployment_id IS NOT NULL`인 배포 후 운영 실행만 기본 포함한다. 배포 전 테스트 실행과 Cost Optimizer compare 실행은 운영 profile에 포함하지 않고 후보 검토 자료로만 사용할 수 있다.
+추천 profile에는 `workflow_runs.deployment_id IS NOT NULL`인 배포 후 terminal 운영 실행만 포함한다. 대상은 활성 deployment snapshot과 비용/품질 관련 node 설정 fingerprint가 같은 target node다. 배포 전 테스트 실행과 Cost Optimizer compare 실행은 운영 profile에 포함하지 않는다. 성공 usage는 token/cost p95에 사용하고, terminal 실패 node/workflow는 schema/downstream/RAG 품질 실패율에 포함한다.
 
-`max_tokens` 추천은 `completion_tokens` p95/p99와 현재 `parameters.max_tokens`를 비교한다. provider `finish_reason`이 저장되지 않았거나 길이 잘림 여부를 알 수 없으면 confidence를 `medium` 이하로 낮춘다.
+`max_tokens` 추천은 성공 usage의 `completion_tokens` p95/p99와 현재 `parameters.max_tokens`를 비교한다. `finish_reason` 또는 structured output의 schema signal이 누락되면 confidence를 낮추거나 추천을 만들지 않는다.
 
 `temperature` 추천은 output format, JSON schema, schema 실패율, retry/fallback 추세를 사용한다. JSON/schema/분류/추출 성격의 노드에서 `temperature`가 높고 실패율이 있으면 낮은 후보값을 제안한다.
 

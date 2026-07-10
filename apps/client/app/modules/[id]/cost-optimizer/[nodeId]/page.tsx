@@ -21,6 +21,7 @@ import {
 
 import { CostOptimizerBaselineSelection } from '@/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection';
 import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
+import { fieldLabelsFromOutputFormat } from '@/app/features/workflow/components/costOptimizer/costOptimizerPreviewLabels';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
 import {
   applyCandidatePatchesToDraft,
@@ -647,7 +648,6 @@ export default function CostOptimizerPlaygroundPage() {
   const searchParams = useSearchParams();
   const workflowId = params.id;
   const nodeId = params.nodeId;
-  const shouldUseLatestBaseline = searchParams.get('baseline') === 'latest';
   const recommendationPresetKey = searchParams.get('recommendationPresetKey');
 
   const [targetNode, setTargetNode] = useState<AppNode | null>(null);
@@ -749,33 +749,6 @@ export default function CostOptimizerPlaygroundPage() {
         setWorkflowNodes(nodesFromDraft(draft));
         setWorkflowTitle(nextWorkflowTitle?.trim() || workflowId);
         setTargetNode(node);
-        if (shouldUseLatestBaseline) {
-          try {
-            const latest = await workflowApi.getCostOptimizerLatestBaseline(
-              workflowId,
-              nodeId,
-            );
-            if (!active) return;
-            const latestBaseline = latest.baseline;
-            const baseCandidate = candidateFromOptions(
-              baselineOptionsOf(latestBaseline) ||
-                ((node?.data || {}) as BaselineNodeOptions),
-            );
-            const patches =
-              readRecommendationPresetPatches(recommendationPresetKey);
-            setBaseline(latestBaseline);
-            setCandidate(applyCandidatePatchesToDraft(baseCandidate, patches));
-            setActiveMode('setup');
-            setTestName('추천 설정 검증');
-            setCandidateError('');
-            return;
-          } catch {
-            if (!active) return;
-            setCandidateError(
-              '최신 실행 로그를 자동으로 선택하지 못했습니다. 이전 실행 로그를 선택해 주세요.',
-            );
-          }
-        }
         setCandidate(candidateFromNode(node));
       } catch {
         if (!active) return;
@@ -792,7 +765,7 @@ export default function CostOptimizerPlaygroundPage() {
     return () => {
       active = false;
     };
-  }, [nodeId, recommendationPresetKey, shouldUseLatestBaseline, workflowId]);
+  }, [nodeId, recommendationPresetKey, workflowId]);
 
   useEffect(() => {
     if (!baseline || activeMode !== 'report') return;
@@ -894,6 +867,26 @@ export default function CostOptimizerPlaygroundPage() {
   const targetNodeDetailPath = useMemo(
     () => `/modules/${workflowId}?node=${encodeURIComponent(nodeId)}`,
     [nodeId, workflowId],
+  );
+  const handleBaselineSelected = useCallback(
+    (selectedBaseline: CostOptimizerBaselineRow) => {
+      const baseCandidate = candidateFromOptions(
+        baselineOptionsOf(selectedBaseline) ||
+          ((targetNode?.data || {}) as BaselineNodeOptions),
+      );
+      const patches = readRecommendationPresetPatches(recommendationPresetKey);
+
+      setBaseline(selectedBaseline);
+      setCandidate(applyCandidatePatchesToDraft(baseCandidate, patches));
+      setActiveMode('setup');
+      setIsStale(false);
+      setCompareResult(null);
+      setSelectedHistoryTarget(null);
+      setCandidateError('');
+      setApplyError('');
+      setApplySuccess(false);
+    },
+    [recommendationPresetKey, targetNode],
   );
 
   const baselineNodeOptions = baselineOptionsOf(baseline);
@@ -1236,6 +1229,20 @@ export default function CostOptimizerPlaygroundPage() {
       selectedHistoryRow.candidate.output_preview ??
       '선택한 이전 실험의 B candidate 출력이 저장되어 있지 않습니다.'
     : candidateResult?.output;
+  const baselineOutputFieldLabels = fieldLabelsFromOutputFormat(
+    baselineNodeOptions?.output_format,
+  );
+  const activeCandidateActualModel =
+    candidateModelRoutingSummary?.selectedModel ||
+    (isUnknownRecord(activeCandidateOutput)
+      ? stringValue(activeCandidateOutput.model)
+      : undefined) ||
+    (selectedHistoryRow ? selectedHistoryRow.candidate.model_id : undefined) ||
+    candidate.model_id ||
+    '-';
+  const hasCandidateRoutingModelDiff =
+    Boolean(candidate.auto_model_routing || candidateModelRoutingSummary) &&
+    activeCandidateActualModel !== (candidate.model_id || '-');
   const activeCandidateUsage = selectedHistoryRow
     ? {
         cost: activeCandidateCost,
@@ -1638,22 +1645,7 @@ export default function CostOptimizerPlaygroundPage() {
               <CostOptimizerBaselineSelection
                 workflowId={workflowId}
                 nodeId={nodeId}
-                onBaselineSelected={(selectedBaseline) => {
-                  setBaseline(selectedBaseline);
-                  setCandidate(
-                    candidateFromOptions(
-                      baselineOptionsOf(selectedBaseline) ||
-                        ((targetNode?.data || {}) as BaselineNodeOptions),
-                    ),
-                  );
-                  setActiveMode('setup');
-                  setIsStale(false);
-                  setCompareResult(null);
-                  setSelectedHistoryTarget(null);
-                  setCandidateError('');
-                  setApplyError('');
-                  setApplySuccess(false);
-                }}
+                onBaselineSelected={handleBaselineSelected}
                 onClose={() => router.push(targetNodeDetailPath)}
               />
             </div>
@@ -1717,21 +1709,7 @@ export default function CostOptimizerPlaygroundPage() {
                 <CostOptimizerBaselineSelection
                   workflowId={workflowId}
                   nodeId={nodeId}
-                  onBaselineSelected={(selectedBaseline) => {
-                    setBaseline(selectedBaseline);
-                    setCandidate(
-                      candidateFromOptions(
-                        baselineOptionsOf(selectedBaseline) ||
-                          ((targetNode?.data || {}) as BaselineNodeOptions),
-                      ),
-                    );
-                    setIsStale(false);
-                    setCompareResult(null);
-                    setSelectedHistoryTarget(null);
-                    setCandidateError('');
-                    setApplyError('');
-                    setApplySuccess(false);
-                  }}
+                  onBaselineSelected={handleBaselineSelected}
                   onClose={() => router.push(targetNodeDetailPath)}
                 />
               )}
@@ -2399,6 +2377,7 @@ export default function CostOptimizerPlaygroundPage() {
                     <CostOptimizerOutputPreviewPanel
                       title="A baseline 출력"
                       value={activeBaselineOutput}
+                      fieldLabels={baselineOutputFieldLabels}
                       usage={
                         selectedHistoryRow || baseline
                           ? {
@@ -2647,8 +2626,32 @@ export default function CostOptimizerPlaygroundPage() {
                             모델 차이
                           </dt>
                           <dd className="font-semibold">
-                            {activeBaselineModel} →{' '}
-                            {candidate.model_id || '-'}
+                            <div>
+                              설정 모델: {activeBaselineModel} →{' '}
+                              {candidate.model_id || '-'}
+                            </div>
+                            {candidate.auto_model_routing ||
+                            candidateModelRoutingSummary ? (
+                              <div
+                                className={
+                                  hasCandidateRoutingModelDiff
+                                    ? 'mt-1 text-emerald-700'
+                                    : 'mt-1 text-slate-600'
+                                }
+                              >
+                                실제 실행 모델: {activeBaselineModel} →{' '}
+                                {activeCandidateActualModel}
+                              </div>
+                            ) : null}
+                            {candidateModelRoutingSummary ? (
+                              <div className="mt-1 text-[11px] font-medium text-slate-500">
+                                규칙:{' '}
+                                {candidateModelRoutingSummary.matchedRuleId ||
+                                  '-'}{' '}
+                                · 근거:{' '}
+                                {candidateModelRoutingSummary.reasonCode || '-'}
+                              </div>
+                            ) : null}
                           </dd>
                         </div>
                         <div className="grid gap-1">

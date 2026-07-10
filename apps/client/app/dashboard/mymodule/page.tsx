@@ -1181,7 +1181,7 @@ function OptimizationRecommendationModal({
     const presetKey = `cost-optimizer-recommendations:${row.app.workflow_id}:${selectedNodeId}:${Date.now()}`;
     window.sessionStorage.setItem(presetKey, JSON.stringify(patches));
     router.push(
-      `/modules/${row.app.workflow_id}/cost-optimizer/${selectedNodeId}?baseline=latest&recommendationPresetKey=${encodeURIComponent(
+      `/modules/${row.app.workflow_id}/cost-optimizer/${selectedNodeId}?recommendationPresetKey=${encodeURIComponent(
         presetKey,
       )}`,
     );

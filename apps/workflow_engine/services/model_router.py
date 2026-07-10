@@ -128,6 +128,7 @@ class ModelPerformance:
     fallback_count: int = 0
     retry_count: int = 0
     total_cost: float = 0.0
+    total_tokens: int = 0
     total_latency_ms: int = 0
 
     @property
@@ -152,6 +153,18 @@ class ModelPerformance:
             return None
         return self.total_cost / self.run_count
 
+    @property
+    def avg_total_tokens(self) -> Optional[float]:
+        if self.run_count <= 0:
+            return None
+        return self.total_tokens / self.run_count
+
+    @property
+    def avg_latency_ms(self) -> Optional[float]:
+        if self.run_count <= 0:
+            return None
+        return self.total_latency_ms / self.run_count
+
     def as_summary(self) -> dict[str, Any]:
         return {
             "run_count": self.run_count,
@@ -161,6 +174,8 @@ class ModelPerformance:
             "fallback_rate": self.fallback_rate,
             "retry_count": self.retry_count,
             "avg_cost": self.avg_cost,
+            "avg_total_tokens": self.avg_total_tokens,
+            "avg_latency_ms": self.avg_latency_ms,
         }
 
 
@@ -168,6 +183,7 @@ class ModelPerformance:
 class NodeRunProfile:
     operational_usable_runs: int = 0
     model_performance: dict[str, ModelPerformance] = field(default_factory=dict)
+    segment_performance: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def as_snapshot(self) -> dict[str, Any]:
         return {
@@ -176,6 +192,18 @@ class NodeRunProfile:
                 model_id: performance.as_summary()
                 for model_id, performance in self.model_performance.items()
             },
+            "segment_performance": [
+                {
+                    "conditions": segment["conditions"],
+                    "model_performance": {
+                        model_id: performance.as_summary()
+                        for model_id, performance in segment[
+                            "model_performance"
+                        ].items()
+                    },
+                }
+                for _key, segment in sorted(self.segment_performance.items())
+            ],
         }
 
 
@@ -184,6 +212,7 @@ class ModelRouterContext:
     workflow_id: str
     node_id: str
     current_model_id: Optional[str]
+    deployment_id: Optional[str] = None
     candidate_models: Iterable[ModelCandidate] = field(default_factory=list)
     node_profile: Optional[NodeRunProfile] = None
     fallback_model_id: Optional[str] = None
@@ -410,11 +439,26 @@ class ModelRouter:
                 runtime_context=runtime_context,
             )
 
-        selected_model = cls._first_available_model([default_model_id], allowed_models)
+        selected_model = cls._first_available_model(
+            [
+                default_model_id,
+                fallback_model_id,
+                getattr(node_data, "model_id", None),
+                getattr(node_data, "fallback_model_id", None),
+            ],
+            allowed_models,
+        )
         if not selected_model:
-            selected_model = default_model_id
+            raise ModelRoutingUnavailableError(
+                "No policy model is currently available to the execution subject."
+            )
         resolved_fallback = cls._first_available_model(
-            [fallback_model_id],
+            [
+                fallback_model_id,
+                default_model_id,
+                getattr(node_data, "fallback_model_id", None),
+                getattr(node_data, "model_id", None),
+            ],
             allowed_models,
             exclude=selected_model,
         )
@@ -483,7 +527,13 @@ class ModelRouter:
             workflow_uuid = uuid.UUID(str(context.workflow_id))
         except (TypeError, ValueError):
             return NodeRunProfile()
-        rows = (
+        deployment_uuid = None
+        if context.deployment_id:
+            try:
+                deployment_uuid = uuid.UUID(str(context.deployment_id))
+            except (TypeError, ValueError):
+                return NodeRunProfile()
+        query = (
             db.query(WorkflowNodeRun, WorkflowRun, LLMUsageLog, LLMModel)
             .join(WorkflowRun, WorkflowNodeRun.workflow_run_id == WorkflowRun.id)
             .outerjoin(
@@ -491,6 +541,7 @@ class ModelRouter:
                 and_(
                     LLMUsageLog.workflow_run_id == WorkflowRun.id,
                     LLMUsageLog.node_id == WorkflowNodeRun.node_id,
+                    LLMUsageLog.cost_optimizer_candidate_id.is_(None),
                 ),
             )
             .outerjoin(LLMModel, LLMUsageLog.model_id == LLMModel.id)
@@ -500,42 +551,66 @@ class ModelRouter:
             .filter(WorkflowRun.status.in_([RunStatus.SUCCESS, RunStatus.FAILED]))
             .filter(WorkflowNodeRun.node_id == context.node_id)
             .filter(WorkflowNodeRun.node_type == "llmNode")
-            .order_by(WorkflowNodeRun.started_at.desc())
-            .limit(200)
-            .all()
+            .filter(WorkflowNodeRun.status.in_([NodeRunStatus.SUCCESS, NodeRunStatus.FAILED]))
         )
+        if deployment_uuid is not None:
+            query = query.filter(WorkflowRun.deployment_id == deployment_uuid)
+        rows = query.order_by(WorkflowNodeRun.started_at.desc()).limit(200).all()
 
         performances: dict[str, ModelPerformance] = {}
+        segment_performance: dict[str, dict[str, Any]] = {}
         usable_runs = 0
         for node_run, workflow_run, usage_log, model in rows:
+            metadata = (
+                node_run.trace_metadata
+                if isinstance(getattr(node_run, "trace_metadata", None), dict)
+                else {}
+            )
+            llm_metadata = metadata.get("llm")
+            llm_metadata = llm_metadata if isinstance(llm_metadata, dict) else {}
             model_id = (
                 getattr(model, "model_id_for_api_call", None)
                 or getattr(usage_log, "model_id", None)
-                or context.current_model_id
+                or llm_metadata.get("selected_model")
             )
             if not model_id:
                 continue
-            if usage_log is None or node_run.outputs is None:
-                continue
+
+            # usage가 누락된 실패 run도 정책의 품질 판단에는 포함한다. 비용/토큰은
+            # 알 수 없지만, model_routing trace가 선택 모델을 남기므로 실패율과
+            # downstream 결과를 그 모델에 귀속할 수 있다.
             usable_runs += 1
             performance = performances.setdefault(
                 str(model_id), ModelPerformance(model_id=str(model_id))
             )
             performance.run_count += 1
-            if node_run.status == NodeRunStatus.SUCCESS and usage_log.status == "success":
+            usage_succeeded = usage_log is None or getattr(usage_log, "status", None) == "success"
+            if node_run.status == NodeRunStatus.SUCCESS and usage_succeeded:
                 performance.success_count += 1
-            performance.total_cost += float(usage_log.total_cost or 0)
-            performance.total_latency_ms += int(usage_log.latency_ms or 0)
+            performance.total_cost += float(getattr(usage_log, "total_cost", 0) or 0)
+            performance.total_tokens += int(
+                getattr(usage_log, "prompt_tokens", 0) or 0
+            ) + int(getattr(usage_log, "completion_tokens", 0) or 0)
+            performance.total_latency_ms += int(
+                getattr(usage_log, "latency_ms", 0) or 0
+            )
             performance.retry_count += int(node_run.retry_count or 0)
 
-            metadata = node_run.trace_metadata or {}
-            schema_status = metadata.get("schema_status") or metadata.get("schema")
+            # workflow engine이 저장하는 canonical contract는 trace_metadata.llm/rag다.
+            # 최상위 키는 기존 실행 이력 호환을 위한 fallback으로만 유지한다.
+            schema_status = (
+                llm_metadata.get("schema_status")
+                or metadata.get("schema_status")
+                or metadata.get("schema")
+            )
             if schema_status is not None:
                 performance.schema_eval_count += 1
                 if schema_status in ("passed", "pass", "valid", True):
                     performance.schema_pass_count += 1
-            downstream_status = metadata.get("downstream_status") or metadata.get(
-                "downstream"
+            downstream_status = (
+                llm_metadata.get("downstream_status")
+                or metadata.get("downstream_status")
+                or metadata.get("downstream")
             )
             if downstream_status is not None:
                 performance.downstream_eval_count += 1
@@ -547,14 +622,80 @@ class ModelRouter:
                 performance.downstream_eval_count += 1
                 if workflow_run.status == RunStatus.SUCCESS:
                     performance.downstream_success_count += 1
-            llm_metadata = metadata.get("llm") if isinstance(metadata, dict) else None
-            if isinstance(llm_metadata, dict) and llm_metadata.get("fallback_used"):
+            if llm_metadata.get("fallback_used"):
                 performance.fallback_count += 1
+
+            conditions = cls._segment_conditions(llm_metadata)
+            if conditions:
+                segment_key = json.dumps(
+                    conditions,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                segment = segment_performance.setdefault(
+                    segment_key,
+                    {"conditions": conditions, "model_performance": {}},
+                )
+                segment_model_performance = segment["model_performance"].setdefault(
+                    str(model_id),
+                    ModelPerformance(model_id=str(model_id)),
+                )
+                segment_model_performance.run_count += 1
+                if node_run.status == NodeRunStatus.SUCCESS and usage_succeeded:
+                    segment_model_performance.success_count += 1
+                segment_model_performance.total_cost += float(
+                    getattr(usage_log, "total_cost", 0) or 0
+                )
+                segment_model_performance.total_tokens += int(
+                    getattr(usage_log, "prompt_tokens", 0) or 0
+                ) + int(getattr(usage_log, "completion_tokens", 0) or 0)
+                segment_model_performance.total_latency_ms += int(
+                    getattr(usage_log, "latency_ms", 0) or 0
+                )
+                segment_model_performance.retry_count += int(node_run.retry_count or 0)
+                schema_status = llm_metadata.get("schema_status")
+                if schema_status in ("passed", "pass", "valid", True):
+                    segment_model_performance.schema_eval_count += 1
+                    segment_model_performance.schema_pass_count += 1
+                elif schema_status in ("failed", "schema_failed", "truncated"):
+                    segment_model_performance.schema_eval_count += 1
+                downstream_status = llm_metadata.get("downstream_status")
+                if downstream_status in ("passed", "pass", "compatible", True):
+                    segment_model_performance.downstream_eval_count += 1
+                    segment_model_performance.downstream_success_count += 1
+                elif downstream_status in ("failed", "incompatible"):
+                    segment_model_performance.downstream_eval_count += 1
+                elif workflow_run.status in (RunStatus.SUCCESS, RunStatus.FAILED):
+                    segment_model_performance.downstream_eval_count += 1
+                    if workflow_run.status == RunStatus.SUCCESS:
+                        segment_model_performance.downstream_success_count += 1
+                if llm_metadata.get("fallback_used"):
+                    segment_model_performance.fallback_count += 1
 
         return NodeRunProfile(
             operational_usable_runs=usable_runs,
             model_performance=performances,
+            segment_performance=segment_performance,
         )
+
+    @staticmethod
+    def _segment_conditions(llm_metadata: dict[str, Any]) -> dict[str, Any]:
+        """입력 원문 없이 policy rule에 쓸 수 있는 일반적인 실행 특징만 남긴다."""
+        allowed = (
+            "customer_facing",
+            "knowledge_enabled",
+            "output_format",
+            "schema_required",
+            "has_file_input",
+            "input_length_bucket",
+            "prompt_length_bucket",
+            "node_task",
+        )
+        return {
+            key: llm_metadata[key]
+            for key in allowed
+            if key in llm_metadata and llm_metadata[key] is not None
+        }
 
     @classmethod
     def collect_candidates(

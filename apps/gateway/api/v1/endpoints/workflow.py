@@ -37,6 +37,11 @@ from apps.shared.db.models.cost_optimizer import (
     CostOptimizerExperiment,
 )
 from apps.shared.db.models.llm import LLMUsageLog
+from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingPolicy,
+    LLMNodeModelRoutingPolicyUpdate,
+)
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import workflow_auth_state_allows
@@ -148,6 +153,15 @@ class CostOptimizerApplyRequest(BaseModel):
 
 class CostOptimizerRecommendationApplyRequest(BaseModel):
     recommendation_ids: list[str] = Field(default_factory=list)
+
+
+class ModelRoutingPolicyPatchRequest(BaseModel):
+    enabled: bool
+    refresh_every_runs: int = Field(default=20, ge=5, le=100)
+
+
+class ModelRoutingPolicyRefreshRequest(BaseModel):
+    pass
 
 
 def _raise_invalid_cost_optimizer_candidate() -> None:
@@ -521,10 +535,26 @@ def _default_cost_optimizer_model_routing_policy(
     if not candidate_models:
         raise HTTPException(status_code=422, detail="cost_optimizer.model_unavailable")
 
+    available_model_ids = {model.model_id for model in candidate_models}
+    requested_model_id = str(candidate.model_id or "").strip()
+    default_model_id = (
+        requested_model_id
+        if requested_model_id in available_model_ids
+        else candidate_models[0].model_id
+    )
+    requested_fallback_id = str(candidate.fallback_model_id or "").strip()
+    fallback_model_id = (
+        requested_fallback_id
+        if requested_fallback_id in available_model_ids
+        and requested_fallback_id != default_model_id
+        else None
+    )
+
     return ModelRoutingPolicyRefreshService.default_rule_policy(
         policy_id="cost-optimizer-cold-start-default",
         policy_version="gateway-cold-start-v1",
-        candidate_models=candidate_models,
+        default_model_id=default_model_id,
+        fallback_model_id=fallback_model_id,
         refresh_every_runs=_candidate_refresh_every_runs(candidate),
     )
 
@@ -554,6 +584,11 @@ def _materialize_cost_optimizer_candidate_model_routing_policy(
         existing_policy,
         default_policy,
     )
+    active_policy = default_policy["active_policy"]
+    if not str(candidate_data.get("model_id") or "").strip():
+        candidate_data["model_id"] = active_policy["default_model_id"]
+    if not str(candidate_data.get("fallback_model_id") or "").strip():
+        candidate_data["fallback_model_id"] = active_policy.get("fallback_model_id")
     return CostOptimizerCandidateRequest(**candidate_data)
 
 
@@ -592,6 +627,127 @@ def _ensure_cost_optimizer_llm_node(workflow: Workflow, node_id: str) -> dict[st
         raise HTTPException(status_code=400, detail="cost_optimizer.not_llm_node")
 
     return node
+
+
+def _active_deployment_for_workflow(
+    db: Session, workflow: Workflow
+) -> WorkflowDeployment | None:
+    return (
+        db.query(WorkflowDeployment)
+        .join(App, App.id == WorkflowDeployment.app_id)
+        .filter(App.workflow_id == workflow.id)
+        .filter(WorkflowDeployment.is_active.is_(True))
+        .order_by(WorkflowDeployment.created_at.desc())
+        .first()
+    )
+
+
+def _model_routing_policy_response(
+    policy: LLMNodeModelRoutingPolicy | None,
+    *,
+    enabled: bool,
+    latest_update: LLMNodeModelRoutingPolicyUpdate | None = None,
+) -> dict[str, Any]:
+    last_update = _model_routing_policy_update_summary(latest_update)
+    if policy is None:
+        return {
+            "enabled": enabled,
+            "status": "collecting" if enabled else "off",
+            "policy_id": None,
+            "policy_version": None,
+            "active_policy": None,
+            "pending_policy": None,
+            "refresh": {
+                "refresh_every_runs": 20,
+                "eligible_runs_since_last_refresh": 0,
+                "next_refresh_after_runs": 20,
+                "last_refresh_result": None,
+                "last_refresh_at": None,
+            },
+            "last_update": last_update,
+        }
+
+    refresh_every_runs = policy.refresh_every_runs
+    eligible = policy.eligible_runs_since_last_refresh
+    return {
+        "enabled": policy.enabled,
+        "status": policy.status,
+        "policy_id": str(policy.id),
+        "policy_version": policy.policy_version,
+        "active_policy": policy.active_policy or None,
+        "pending_policy": policy.pending_policy,
+        "refresh": {
+            "refresh_every_runs": refresh_every_runs,
+            "eligible_runs_since_last_refresh": eligible,
+            "next_refresh_after_runs": max(0, refresh_every_runs - eligible),
+            "last_refresh_result": policy.last_refresh_result,
+            "last_refresh_at": policy.last_refreshed_at.isoformat()
+            if policy.last_refreshed_at
+            else None,
+        },
+        "last_update": last_update,
+    }
+
+
+def _model_routing_policy_update_summary(
+    update: LLMNodeModelRoutingPolicyUpdate | None,
+) -> dict[str, Any] | None:
+    """정책 갱신 이력에서 UI에 필요한 safe summary만 반환한다."""
+    if update is None:
+        return None
+    output_summary = update.output_summary if isinstance(update.output_summary, dict) else {}
+    judge_cost = output_summary.get("judge_cost")
+    try:
+        judge_cost = float(judge_cost) if judge_cost is not None else None
+    except (TypeError, ValueError):
+        judge_cost = None
+    return {
+        "id": str(update.id),
+        "trigger": update.trigger,
+        "status": update.status,
+        "eligible_run_count": update.eligible_run_count,
+        "excluded_run_count": update.excluded_run_count,
+        "judge_provider": update.judge_provider,
+        "judge_model": update.judge_model,
+        "judge_usage_log_id": str(update.judge_usage_log_id)
+        if update.judge_usage_log_id
+        else None,
+        "prompt_version": update.prompt_version,
+        "new_policy_version": update.new_policy_version,
+        "judge_cost": judge_cost,
+        "created_at": update.created_at.isoformat() if update.created_at else None,
+    }
+
+
+def _get_model_routing_policy_for_workflow(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+) -> LLMNodeModelRoutingPolicy | None:
+    deployment = _active_deployment_for_workflow(db, workflow)
+    if deployment is None:
+        return None
+    return (
+        db.query(LLMNodeModelRoutingPolicy)
+        .filter(LLMNodeModelRoutingPolicy.workflow_id == workflow.id)
+        .filter(LLMNodeModelRoutingPolicy.deployment_id == deployment.id)
+        .filter(LLMNodeModelRoutingPolicy.node_id == node_id)
+        .first()
+    )
+
+
+def _get_latest_model_routing_policy_update(
+    db: Session,
+    policy: LLMNodeModelRoutingPolicy | None,
+) -> LLMNodeModelRoutingPolicyUpdate | None:
+    if policy is None:
+        return None
+    return (
+        db.query(LLMNodeModelRoutingPolicyUpdate)
+        .filter(LLMNodeModelRoutingPolicyUpdate.policy_id == policy.id)
+        .order_by(LLMNodeModelRoutingPolicyUpdate.created_at.desc())
+        .first()
+    )
 
 
 def _canonical_json_hash(value: Any) -> str:
@@ -2935,6 +3091,135 @@ def _format_compare_variant(
         if isinstance(node_output, dict)
         else 0.0,
         "latency_ms": usage.get("latency_ms") or latency_ms,
+    }
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy")
+def get_model_routing_policy_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """현재 배포에서 사용 중인 LLM node routing policy 상태를 조회한다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
+    latest_update = _get_latest_model_routing_policy_update(db, policy)
+    return _model_routing_policy_response(
+        policy,
+        enabled=bool(node_data.get("auto_model_routing")),
+        latest_update=latest_update,
+    )
+
+
+@router.patch("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy")
+def patch_model_routing_policy_endpoint(
+    workflow_id: str,
+    node_id: str,
+    request_body: ModelRoutingPolicyPatchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """draft의 자동 라우팅 설정과 현재 배포 policy의 갱신 기준을 함께 갱신한다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    next_graph = copy.deepcopy(workflow.graph or {})
+    node = _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
+    )
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    node_data["auto_model_routing"] = request_body.enabled
+    legacy_policy = node_data.get("model_routing_policy")
+    if not isinstance(legacy_policy, dict):
+        legacy_policy = {}
+    legacy_refresh = legacy_policy.get("refresh")
+    if not isinstance(legacy_refresh, dict):
+        legacy_refresh = {}
+    legacy_refresh["refresh_every_runs"] = request_body.refresh_every_runs
+    legacy_policy["refresh"] = legacy_refresh
+    node_data["model_routing_policy"] = legacy_policy
+    node["data"] = node_data
+    workflow.graph = next_graph
+
+    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
+    if policy is not None:
+        policy.enabled = request_body.enabled
+        policy.refresh_every_runs = request_body.refresh_every_runs
+        policy.judge_user_id = current_user.id
+        if not request_body.enabled:
+            policy.status = "off"
+            policy.refresh_requested_at = None
+        elif policy.active_policy:
+            policy.status = "active"
+        else:
+            policy.status = "collecting"
+    db.commit()
+    return _model_routing_policy_response(policy, enabled=request_body.enabled)
+
+
+@router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh")
+def refresh_model_routing_policy_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """사용자 요청으로 policy judge refresh를 한 번 예약한다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
+    if policy is None or not policy.enabled:
+        raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
+    if policy.refresh_requested_at is not None:
+        try:
+            # DB에 남은 pending 요청은 이전 publish 실패 또는 broker 재시도의
+            # 복구 경로일 수 있으므로 manual 요청으로 다시 발행한다.
+            celery_app.send_task(
+                "workflow.model_routing.refresh_policy",
+                args=[str(policy.id), "manual_refresh"],
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="model_routing.refresh_schedule_failed",
+            ) from exc
+        return {
+            "policy_id": str(policy.id),
+            "status": "refreshing",
+            "trigger": "manual_refresh",
+            "scheduled": True,
+        }
+
+    previous_status = policy.status
+    previous_refresh_requested_at = policy.refresh_requested_at
+    previous_judge_user_id = policy.judge_user_id
+    policy.status = "refreshing"
+    policy.refresh_requested_at = datetime.now(timezone.utc)
+    policy.judge_user_id = current_user.id
+    db.commit()
+    try:
+        celery_app.send_task(
+            "workflow.model_routing.refresh_policy",
+            args=[str(policy.id), "manual_refresh"],
+        )
+    except Exception as exc:
+        policy.status = previous_status
+        policy.refresh_requested_at = previous_refresh_requested_at
+        policy.judge_user_id = previous_judge_user_id
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="model_routing.refresh_schedule_failed",
+        ) from exc
+    return {
+        "policy_id": str(policy.id),
+        "status": "refreshing",
+        "trigger": "manual_refresh",
+        "scheduled": True,
     }
 
 

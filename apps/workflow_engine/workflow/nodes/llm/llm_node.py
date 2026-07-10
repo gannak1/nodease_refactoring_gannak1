@@ -340,7 +340,7 @@ class LLMNode(Node[LLMNodeData]):
     node_type = "llmNode"
 
     def _resolve_model_routing_policy(
-        self, inputs: Dict[str, Any]
+        self, inputs: Dict[str, Any], db_session=None
     ) -> tuple[str, Optional[str], Optional[dict]]:
         """저장된 active policy snapshot으로 실행 모델을 결정한다.
 
@@ -353,6 +353,34 @@ class LLMNode(Node[LLMNodeData]):
             return selected_model_id, fallback_model_id, None
 
         policy = self.data.model_routing_policy or {}
+        is_deployed_execution = bool(self.execution_context.get("deployment_id"))
+        if db_session is not None:
+            from apps.workflow_engine.services.model_routing_policy_store import (
+                ModelRoutingPolicyStore,
+            )
+
+            persisted_policy = ModelRoutingPolicyStore.get_runtime_policy(
+                db_session,
+                workflow_id=self.execution_context.get("workflow_id"),
+                deployment_id=self.execution_context.get("deployment_id"),
+                node_id=self.id,
+            )
+            if persisted_policy is not None and persisted_policy.enabled:
+                policy = {
+                    "status": persisted_policy.status,
+                    "policy_id": str(persisted_policy.id),
+                    "policy_version": persisted_policy.policy_version,
+                    "active_policy": persisted_policy.active_policy,
+                    "refresh": {
+                        "refresh_every_runs": persisted_policy.refresh_every_runs,
+                        "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
+                    },
+                }
+            elif is_deployed_execution:
+                # 배포 runtime의 source of truth는 policy table이다. 첫 성공 실행이
+                # policy row를 만들기 전까지 graph에 남은 legacy snapshot을 평가하면
+                # 저장 모델과 다른 과거 후보로 임의 라우팅될 수 있다.
+                policy = {}
         if not isinstance(policy, dict):
             return selected_model_id, fallback_model_id, {
                 "enabled": True,
@@ -373,20 +401,27 @@ class LLMNode(Node[LLMNodeData]):
             }
 
         try:
+            available_model_ids = self._available_routing_model_ids(db_session)
             decision = ModelRouter.resolve_policy(
                 policy,
                 inputs=inputs,
                 node_data=self.data,
+                available_model_ids=available_model_ids,
             )
             selected_model_id = decision.selected_model_id
             fallback_model_id = decision.fallback_model_id
             matched_rule_id = decision.matched_rule_id
             reason_code = decision.reason_code
             routing_context = decision.runtime_context.as_metadata()
-        except ModelRoutingUnavailableError:
-            matched_rule_id = None
-            reason_code = "policy_unavailable"
-            routing_context = None
+        except ModelRoutingUnavailableError as exc:
+            # active policy가 있는데 실행 주체가 사용할 모델이 하나도 없으면
+            # 저장 모델로 되돌아가 provider 호출을 시도하지 않는다. credential
+            # 회수 뒤 stale policy가 실제 요청을 보내는 경로를 차단한다.
+            raise LLMCredentialNotAvailableError(
+                "model_routing_no_available_model",
+                "자동 모델 라우팅 정책에서 현재 실행 주체가 사용할 수 있는 모델을 찾지 못했습니다.",
+                model_id=selected_model_id,
+            ) from exc
 
         if fallback_model_id == selected_model_id:
             fallback_model_id = None
@@ -403,6 +438,27 @@ class LLMNode(Node[LLMNodeData]):
             "runtime_context": routing_context,
             "judge_called": False,
         }
+
+    def _available_routing_model_ids(self, db_session) -> list[str] | None:
+        """현재 execution subject가 실제로 호출할 수 있는 모델만 policy 평가에 넘긴다."""
+        if db_session is None:
+            return None
+        user_id_value = self.execution_context.get("user_id")
+        if not user_id_value:
+            return []
+        try:
+            user_id = uuid.UUID(str(user_id_value))
+        except (TypeError, ValueError):
+            return []
+        organization_id = self._require_runtime_organization_id(
+            user_id,
+            self.data.model_id,
+        )
+        return LLMService.get_runtime_available_model_ids_for_user(
+            db_session,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
 
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -425,14 +481,19 @@ class LLMNode(Node[LLMNodeData]):
         temp_session = None
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
-        selected_model_id, fallback_model_id, model_routing_metadata = (
-            self._resolve_model_routing_policy(inputs)
-        )
-
-        if not client_override or self.data.knowledgeBases:
+        if not client_override or self.data.knowledgeBases or self.data.auto_model_routing:
             db_session, should_close_session = self._borrow_db_session()
             if should_close_session:
                 temp_session = db_session
+
+        selected_model_id, fallback_model_id, model_routing_metadata = (
+            self._resolve_model_routing_policy(inputs, db_session)
+        )
+        routing_context = ModelRouter.infer_runtime_context(
+            inputs,
+            self.data,
+        ).as_metadata()
+        fallback_used = False
 
         try:
             if client_override:
@@ -496,6 +557,7 @@ class LLMNode(Node[LLMNodeData]):
                             client = runtime_selection.client
                             selected_credential_id = runtime_selection.credential_id
                             selected_model_id = runtime_selection.model_id
+                            fallback_used = True
                         except Exception as fallback_client_error:
                             logger.error(
                                 f"[LLMNode] Fallback model client also failed: {fallback_client_error}"
@@ -601,9 +663,7 @@ class LLMNode(Node[LLMNodeData]):
                         "knowledge_search": knowledge_metadata
                         if knowledge_metadata
                         else None,
-                        "rag": self._rag_evidence_summary(
-                            knowledge_result.evidence_decision
-                        ),
+                        "rag": self._rag_result_metadata(knowledge_result),
                     },
                 }
 
@@ -733,6 +793,7 @@ class LLMNode(Node[LLMNodeData]):
                 except Exception as fallback_error:
                     raise fallback_error from primary_error
                 used_model_id = fallback_model_id
+                fallback_used = True
 
             # OpenAI 응답 포맷에서 텍스트/usage 추출 (missing 시 안전하게 빈 값)
             text = ""
@@ -747,6 +808,9 @@ class LLMNode(Node[LLMNodeData]):
             usage = self._safe_usage_metadata(
                 response.get("usage", {}) if isinstance(response, dict) else {}
             )
+            finish_reason = self._finish_reason(response)
+            schema_status = self._schema_status(text)
+            repetition_rate = self._repetition_rate(text)
             answer_grounding = self._build_answer_grounding_metadata(
                 text, knowledge_context
             )
@@ -849,13 +913,16 @@ class LLMNode(Node[LLMNodeData]):
                 "cost": cost,
                 "metadata": {
                     "model_routing": model_routing_metadata,
+                    "routing_context": routing_context,
+                    "fallback_used": fallback_used,
+                    "finish_reason": finish_reason,
+                    "schema_status": schema_status,
+                    "repetition_rate": repetition_rate,
                     "knowledge_search": knowledge_metadata
                     if knowledge_metadata
                     else None,
                     "answer_grounding": answer_grounding,
-                    "rag": self._rag_evidence_summary(
-                        knowledge_result.evidence_decision
-                    )
+                    "rag": self._rag_result_metadata(knowledge_result)
                     if knowledge_result
                     else None,
                 },
@@ -864,6 +931,50 @@ class LLMNode(Node[LLMNodeData]):
             # [FIX] 세션은 메서드 종료 시 닫음 (기존: 클라이언트 생성 직후)
             if temp_session is not None:
                 temp_session.close()
+
+    @staticmethod
+    def _finish_reason(response: Any) -> str | None:
+        if not isinstance(response, dict):
+            return None
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            reason = choices[0].get("finish_reason")
+            return str(reason) if reason else None
+        return None
+
+    def _schema_status(self, text: str) -> str:
+        """일반 workflow 실행의 JSON schema 결과를 raw output 없이 summary로 남긴다."""
+        output_format = self.data.output_format
+        if not isinstance(output_format, dict) or output_format.get("type") != "json":
+            return "not_required"
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "failed"
+
+        schema = output_format.get("schema")
+        if not isinstance(schema, dict) or not schema:
+            return "passed"
+        try:
+            from jsonschema import Draft202012Validator
+            from jsonschema.exceptions import SchemaError, ValidationError
+
+            Draft202012Validator(schema).validate(payload)
+        except ValidationError:
+            return "failed"
+        except SchemaError:
+            return "not_evaluated"
+        return "passed"
+
+    @staticmethod
+    def _repetition_rate(text: str) -> float:
+        """출력 원문을 저장하지 않고 반복된 인접 token 비율만 요약한다."""
+        tokens = re.findall(r"[A-Za-z0-9_]+|[가-힣]+", str(text or "").casefold())
+        if len(tokens) < 4:
+            return 0.0
+        bigrams = list(zip(tokens, tokens[1:]))
+        duplicate_count = len(bigrams) - len(set(bigrams))
+        return round(max(0.0, duplicate_count / len(bigrams)), 4)
 
     def _prompt_trace_payload(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Durable prompt trace에서 RAG evidence 원문을 중복 저장하지 않는다."""
@@ -1921,6 +2032,19 @@ class LLMNode(Node[LLMNodeData]):
             ),
             "failure_policy": self.data.ragFailurePolicy,
         }
+
+    def _rag_result_metadata(
+        self,
+        knowledge_result: WorkflowRAGSearchResult,
+    ) -> Dict[str, Any]:
+        """추천/trace용 RAG 집계값만 합치고 검색 원문은 포함하지 않는다."""
+        summary = (
+            dict(knowledge_result.trace_summary)
+            if isinstance(knowledge_result.trace_summary, dict)
+            else {}
+        )
+        summary.update(self._rag_evidence_summary(knowledge_result.evidence_decision))
+        return summary
 
     def _rag_decision_with_operational_failures(
         self,

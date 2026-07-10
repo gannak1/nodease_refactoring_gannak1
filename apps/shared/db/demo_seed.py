@@ -92,6 +92,10 @@ DEMO_SEED_VERSION = "final-demo-2026-07"
 DEMO_PASSWORD = "123123"
 DEMO_CHAT_MODEL = "gpt-5.4"
 DEMO_CHAT_MINI_MODEL = "gpt-5.4-mini"
+DEMO_MODEL_ROUTER_BASE_MODEL = "gpt-5-mini"
+DEMO_MODEL_ROUTER_FALLBACK_MODEL = "gpt-4.1"
+DEMO_MODEL_ROUTER_CHEAP_MODEL = "gpt-4o-mini"
+DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -192,6 +196,10 @@ CREDENTIAL_MODEL_REL_IDS = {
     DEMO_CHAT_MODEL: _uuid(921),
     DEMO_CHAT_MINI_MODEL: _uuid(922),
     DEMO_EMBEDDING_MODEL: _uuid(923),
+    DEMO_MODEL_ROUTER_BASE_MODEL: _uuid(924),
+    DEMO_MODEL_ROUTER_FALLBACK_MODEL: _uuid(925),
+    DEMO_MODEL_ROUTER_CHEAP_MODEL: _uuid(926),
+    DEMO_MODEL_ROUTER_BALANCED_MODEL: _uuid(927),
 }
 
 TEAM_LLM_PERMISSION_IDS = {
@@ -255,17 +263,24 @@ APP_IDS = {
     "ticket_ops_risk": _uuid(403),
     "ticket_ops_paused": _uuid(404),
     "test_inquiry": _uuid(405),
+    "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
 }
 
 WORKFLOW_IDS = {
     key: _uuid(500 + index)
     for index, key in enumerate(APP_IDS.keys())
 }
+WORKFLOW_IDS["model_router_ticket_ops"] = uuid.UUID(
+    "91000000-0000-0000-0000-000000000002"
+)
 
 DEPLOYMENT_IDS = {
     key: _uuid(600 + index)
     for index, key in enumerate(APP_IDS.keys())
 }
+DEPLOYMENT_IDS["model_router_ticket_ops"] = uuid.UUID(
+    "91000000-0000-0000-0000-000000000003"
+)
 
 LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
@@ -274,6 +289,7 @@ TEAM_PERMISSION_IDS = {
     "hr_bot": _uuid(801),
     "test_builder": _uuid(802),
     "test_member": _uuid(803),
+    "model_router_ticket": _uuid(804),
 }
 
 
@@ -1837,6 +1853,48 @@ def _ticket_ops_graph() -> dict[str, Any]:
     }
 
 
+def _model_router_ticket_ops_graph() -> dict[str, Any]:
+    graph = _ticket_ops_graph()
+    for node in graph["nodes"]:
+        if node["id"] != "llm-triage":
+            continue
+        node["data"].update(
+            {
+                "title": "보상/SLA 위험 판단",
+                "description": "고객 보상, SLA, 장애 영향 범위를 보수적으로 판단합니다.",
+                "model_id": DEMO_MODEL_ROUTER_BASE_MODEL,
+                "fallback_model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
+                "auto_model_routing": False,
+                "model_routing_policy": {"refresh": {"refresh_every_runs": 20}},
+                "knowledgeBases": [],
+                "dedupeRetrievedContext": False,
+                "system_prompt": (
+                    "고객지원 티켓을 처리하는 AI입니다."
+                    "필드는 \"긴급도\", \"답변 초안\" 두 개만 사용합니다. "
+                    "답변 초안은 고객에게 보낼 수 있는 3문장 이내의 간결한 문장으로 작성하세요."
+                ),
+                "user_prompt": (
+                    "고객 등급: {{ customerTier }}\n"
+                    "문의: {{ message }}\n"
+                    "승인 필요 여부와 고객 답변 초안을 작성하세요."
+                ),
+                "parameters": {"temperature": 0.2, "max_tokens": 700},
+                "output_format": {
+                    "type": "json",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "긴급도": {"type": "boolean"},
+                            "답변 초안": {"type": "string"},
+                        },
+                        "required": ["긴급도", "답변 초안"],
+                    },
+                },
+            }
+        )
+    return graph
+
+
 def _test_inquiry_graph() -> dict[str, Any]:
     return {
         "nodes": [
@@ -2354,6 +2412,30 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             Decimal("0.004500"),
             400000,
         ),
+        DEMO_MODEL_ROUTER_BASE_MODEL: (
+            "chat",
+            Decimal("0.000250"),
+            Decimal("0.002000"),
+            400000,
+        ),
+        DEMO_MODEL_ROUTER_FALLBACK_MODEL: (
+            "chat",
+            Decimal("0.002000"),
+            Decimal("0.008000"),
+            1000000,
+        ),
+        DEMO_MODEL_ROUTER_CHEAP_MODEL: (
+            "chat",
+            Decimal("0.000150"),
+            Decimal("0.000600"),
+            128000,
+        ),
+        DEMO_MODEL_ROUTER_BALANCED_MODEL: (
+            "chat",
+            Decimal("0.000400"),
+            Decimal("0.001600"),
+            1000000,
+        ),
         DEMO_EMBEDDING_MODEL: (
             "embedding",
             Decimal("0.000020"),
@@ -2420,7 +2502,11 @@ def _upsert_app_workflow(
             "organization_id": ORG_ID,
             "name": name,
             "description": description,
-            "icon": _icon("🧭" if key == "ticket_ops" else "📘"),
+            "icon": _icon(
+                "🧭"
+                if key in {"ticket_ops", "model_router_ticket_ops"}
+                else "📘"
+            ),
             "url_slug": f"demo-{key.replace('_', '-')}",
             "auth_secret": f"sk-demo-{key}",
             "is_api_enabled": True,
@@ -2501,6 +2587,16 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.WEBHOOK,
         ),
+        "model_router_ticket_ops": _upsert_app_workflow(
+            db,
+            "model_router_ticket_ops",
+            "모델 라우팅 검증용 고객 티켓 처리",
+            "자동 모델 라우팅과 비용 최적화 A/B 검증을 시연하기 위한 고객지원 workflow",
+            "author",
+            _model_router_ticket_ops_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.WEBHOOK,
+        ),
         "test_inquiry": _upsert_app_workflow(
             db,
             "test_inquiry",
@@ -2544,6 +2640,19 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "manager",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options("permission-customer-ticket"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["model_router_ticket"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["customer_support_ops"],
+                "workflow_id": WORKFLOW_IDS["model_router_ticket_ops"],
+                "auth_state": "manager",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options("permission-model-router-ticket"),
                 "flags": 0,
             },
         ),
@@ -2849,7 +2958,14 @@ def _seed_llm_credential(
             "quota_used": 0,
         },
     )
-    relation_model_names = [DEMO_CHAT_MODEL, DEMO_CHAT_MINI_MODEL]
+    relation_model_names = [
+        DEMO_CHAT_MODEL,
+        DEMO_CHAT_MINI_MODEL,
+        DEMO_MODEL_ROUTER_BASE_MODEL,
+        DEMO_MODEL_ROUTER_FALLBACK_MODEL,
+        DEMO_MODEL_ROUTER_CHEAP_MODEL,
+        DEMO_MODEL_ROUTER_BALANCED_MODEL,
+    ]
     if runtime_credential_enabled:
         relation_model_names.append(DEMO_EMBEDDING_MODEL)
     else:
@@ -2930,6 +3046,32 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
         ("ticket_ops_warning", "author", RunStatus.SUCCESS, 5.2, 11200, Decimal("0.0910"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 9100, 2100, 5200),
         ("ticket_ops_risk", "author", RunStatus.SUCCESS, 4.9, 10800, Decimal("0.0880"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 8700, 2100, 4900),
         ("ticket_ops_paused", "author", RunStatus.FAILED, 0.4, 0, Decimal("0.0000"), None, DEMO_CHAT_MODEL, 0, 0, 0),
+        (
+            "model_router_ticket_ops",
+            "author",
+            RunStatus.SUCCESS,
+            3.2,
+            1218,
+            Decimal("0.001920"),
+            '{"긴급도": true, "답변 초안": "먼저 불편을 드린 점 진심으로 사과드립니다. 현재 해당 장애가 SLA 위반 가능성이 있어 크레딧 보상 검토가 필요하며, 승인 결과는 48시간 내 안내드리겠습니다. 추가 영향 범위 확인을 위해 실패한 정산 파일 생성 시각과 요청 ID를 공유해 주세요."}',
+            DEMO_MODEL_ROUTER_BASE_MODEL,
+            295,
+            923,
+            3200,
+        ),
+        (
+            "model_router_ticket_ops",
+            "author",
+            RunStatus.SUCCESS,
+            2.7,
+            1045,
+            Decimal("0.001740"),
+            '{"긴급도": false, "답변 초안": "문의하신 정산 파일 재생성 방법과 다운로드 위치를 안내드리겠습니다. 관리자 페이지의 정산 메뉴에서 파일을 다시 생성한 뒤 완료 알림 후 다운로드할 수 있습니다. 추가 오류가 발생하면 요청 ID와 발생 시각을 함께 알려 주세요."}',
+            DEMO_MODEL_ROUTER_BASE_MODEL,
+            280,
+            765,
+            2700,
+        ),
     ]
 
     for index, spec in enumerate(run_specs):

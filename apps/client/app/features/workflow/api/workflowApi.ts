@@ -26,6 +26,9 @@ import {
   CostOptimizerLatestBaselineResponse,
   CostOptimizerParameterRecommendationsResponse,
   CostOptimizerRecommendationApplyRequest,
+  ModelRoutingPolicyPatchRequest,
+  ModelRoutingPolicyRefreshResponse,
+  ModelRoutingPolicyResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -362,6 +365,38 @@ export const workflowApi = {
   ): Promise<CostOptimizerParameterRecommendationsResponse> => {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/parameter-recommendations`,
+    );
+    return response.data;
+  },
+
+  getModelRoutingPolicy: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<ModelRoutingPolicyResponse> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy`,
+    );
+    return response.data;
+  },
+
+  patchModelRoutingPolicy: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingPolicyPatchRequest,
+  ): Promise<ModelRoutingPolicyResponse> => {
+    const response = await api.patch(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy`,
+      data,
+    );
+    return response.data;
+  },
+
+  refreshModelRoutingPolicy: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<ModelRoutingPolicyRefreshResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy/refresh`,
     );
     return response.data;
   },

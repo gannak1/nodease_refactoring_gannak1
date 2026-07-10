@@ -169,6 +169,57 @@ export interface CostOptimizerRecommendationApplyRequest {
   recommendation_ids: string[];
 }
 
+export interface ModelRoutingPolicyResponse {
+  enabled: boolean;
+  status: 'off' | 'collecting' | 'active' | 'refreshing' | 'pending_review' | 'failed';
+  policy_id: string | null;
+  policy_version: string | null;
+  active_policy: {
+    default_model_id?: string;
+    fallback_model_id?: string | null;
+    rules?: Array<{
+      id?: string;
+      selected_model_id?: string;
+      fallback_model_id?: string | null;
+      reason_code?: string;
+    }>;
+  } | null;
+  pending_policy: Record<string, unknown> | null;
+  refresh: {
+    refresh_every_runs: number;
+    eligible_runs_since_last_refresh: number;
+    next_refresh_after_runs: number;
+    last_refresh_result: string | null;
+    last_refresh_at: string | null;
+  };
+  last_update: {
+    id: string;
+    trigger: string;
+    status: string;
+    eligible_run_count: number;
+    excluded_run_count: number;
+    judge_provider: string | null;
+    judge_model: string | null;
+    judge_usage_log_id: string | null;
+    prompt_version: string | null;
+    new_policy_version: string | null;
+    judge_cost: number | null;
+    created_at: string | null;
+  } | null;
+}
+
+export interface ModelRoutingPolicyPatchRequest {
+  enabled: boolean;
+  refresh_every_runs: number;
+}
+
+export interface ModelRoutingPolicyRefreshResponse {
+  policy_id: string;
+  status: 'refreshing';
+  trigger: 'manual_refresh';
+  scheduled: boolean;
+}
+
 export interface CostOptimizerDownstreamCompatibility {
   state: string;
   label?: string;

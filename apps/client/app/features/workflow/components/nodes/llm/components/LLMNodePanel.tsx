@@ -12,6 +12,7 @@ import {
   MousePointerClick,
   Wand2,
   FileJson,
+  RefreshCw,
 } from 'lucide-react';
 import { PromptWizardModal } from '../../../modals/PromptWizardModal';
 import { ModelSelectDropdown } from './ModelSelectDropdown';
@@ -33,6 +34,8 @@ import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
 import { OptimizationRecommendationModal } from '../../../costOptimizer/OptimizationRecommendationModal';
+import { workflowApi } from '@/app/features/workflow/api/workflowApi';
+import type { ModelRoutingPolicyResponse } from '@/app/features/workflow/types/Api';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -335,6 +338,11 @@ export function LLMNodePanel({
   const [draftJsonSchemaFields, setDraftJsonSchemaFields] = useState<
     JsonSchemaField[]
   >(() => schemaFieldsFromOutputFormat(data.output_format));
+  const [persistedRoutingPolicy, setPersistedRoutingPolicy] =
+    useState<ModelRoutingPolicyResponse | null>(null);
+  const [routingPolicyError, setRoutingPolicyError] = useState<string | null>(null);
+  const [isRoutingPolicyRefreshing, setIsRoutingPolicyRefreshing] =
+    useState(false);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -414,8 +422,9 @@ export function LLMNodePanel({
   }, [fallbackCandidates, data.model_id, selectedModel]);
   const fallbackDisabled = !data.model_id?.trim();
   const routingPolicySummary = useMemo(() => {
-    const policy = data.model_routing_policy;
-    const activePolicy = policy?.active_policy;
+    const policy = persistedRoutingPolicy;
+    const legacyPolicy = data.model_routing_policy;
+    const activePolicy = policy?.active_policy ?? legacyPolicy?.active_policy;
     const firstRule = activePolicy?.rules?.find(Boolean);
     const selectedModelId =
       firstRule?.selected_model_id ||
@@ -427,26 +436,36 @@ export function LLMNodePanel({
       activePolicy?.fallback_model_id ||
       data.fallback_model_id ||
       '';
-    const runsSinceLastRefresh = policy?.refresh?.runs_since_last_refresh ?? 0;
-    const refreshEveryRuns = policy?.refresh?.refresh_every_runs ?? 20;
+    const runsSinceLastRefresh =
+      policy?.refresh?.eligible_runs_since_last_refresh ??
+      legacyPolicy?.refresh?.runs_since_last_refresh ??
+      0;
+    const refreshEveryRuns =
+      legacyPolicy?.refresh?.refresh_every_runs ??
+      policy?.refresh?.refresh_every_runs ??
+      20;
     const status =
       policy?.status ||
+      legacyPolicy?.status ||
       (activePolicy ? 'active' : data.auto_model_routing ? 'collecting' : 'off');
 
     return {
       status,
       selectedModelId,
       fallbackModelId,
-      policyVersion: policy?.policy_version || '정책 없음',
+      policyVersion:
+        policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
       reasonCode: firstRule?.reason_code || '정책 대기 중',
       runsSinceLastRefresh,
       refreshEveryRuns,
+      lastUpdate: policy?.last_update ?? null,
     };
   }, [
     data.auto_model_routing,
     data.fallback_model_id,
     data.model_id,
     data.model_routing_policy,
+    persistedRoutingPolicy,
   ]);
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
@@ -590,6 +609,83 @@ export function LLMNodePanel({
     },
     [data.model_routing_policy, nodeId, updateNodeData],
   );
+
+  const loadRoutingPolicy = useCallback(async () => {
+    if (!activeWorkflowId) return;
+    try {
+      const policy = await workflowApi.getModelRoutingPolicy(
+        activeWorkflowId,
+        nodeId,
+      );
+      setPersistedRoutingPolicy(policy);
+      setRoutingPolicyError(null);
+    } catch {
+      setPersistedRoutingPolicy(null);
+      setRoutingPolicyError('정책 상태를 불러오지 못했습니다.');
+    }
+  }, [activeWorkflowId, nodeId]);
+
+  const syncRoutingPolicy = useCallback(
+    async (enabled: boolean, refreshEveryRuns: number) => {
+      if (!activeWorkflowId) return;
+      try {
+        const policy = await workflowApi.patchModelRoutingPolicy(
+          activeWorkflowId,
+          nodeId,
+          {
+            enabled,
+            refresh_every_runs: refreshEveryRuns,
+          },
+        );
+        setPersistedRoutingPolicy(policy);
+        setRoutingPolicyError(null);
+      } catch {
+        setRoutingPolicyError('정책 설정을 저장하지 못했습니다.');
+      }
+    },
+    [activeWorkflowId, nodeId],
+  );
+
+  const handleAutoModelRoutingChange = useCallback(
+    (enabled: boolean) => {
+      handleUpdateData('auto_model_routing', enabled);
+      void syncRoutingPolicy(enabled, routingPolicySummary.refreshEveryRuns);
+    },
+    [handleUpdateData, routingPolicySummary.refreshEveryRuns, syncRoutingPolicy],
+  );
+
+  const handleRoutingRefreshEveryRunsCommit = useCallback(() => {
+    void syncRoutingPolicy(
+      Boolean(data.auto_model_routing),
+      routingPolicySummary.refreshEveryRuns,
+    );
+  }, [data.auto_model_routing, routingPolicySummary.refreshEveryRuns, syncRoutingPolicy]);
+
+  const handleManualRoutingPolicyRefresh = useCallback(async () => {
+    if (
+      !activeWorkflowId ||
+      !persistedRoutingPolicy?.policy_id ||
+      isRoutingPolicyRefreshing
+    ) {
+      return;
+    }
+    try {
+      setIsRoutingPolicyRefreshing(true);
+      await workflowApi.refreshModelRoutingPolicy(activeWorkflowId, nodeId);
+      await loadRoutingPolicy();
+      setRoutingPolicyError(null);
+    } catch {
+      setRoutingPolicyError('정책 갱신을 요청하지 못했습니다.');
+    } finally {
+      setIsRoutingPolicyRefreshing(false);
+    }
+  }, [
+    activeWorkflowId,
+    isRoutingPolicyRefreshing,
+    loadRoutingPolicy,
+    nodeId,
+    persistedRoutingPolicy?.policy_id,
+  ]);
 
   // Claude 계열 여부 판별 (모델 옵션 우선, 실패 시 이름 프리픽스 판단)
   const isAnthropicModelId = useCallback(
@@ -793,6 +889,14 @@ export function LLMNodePanel({
   }, []);
 
   useEffect(() => {
+    if (!data.auto_model_routing) {
+      setPersistedRoutingPolicy(null);
+      return;
+    }
+    void loadRoutingPolicy();
+  }, [data.auto_model_routing, loadRoutingPolicy]);
+
+  useEffect(() => {
     if (!data.knowledgeBases || data.knowledgeBases.length === 0) return;
     let active = true;
     const syncKnowledgeBases = async () => {
@@ -889,7 +993,7 @@ export function LLMNodePanel({
               nodeId={nodeId}
               workflowAccess={workflowAccess}
               hasUnsavedChanges={hasUnsavedChanges}
-              label="모델 라우팅 최적화"
+              label="최적화"
               destination="model-routing"
               title="운영 로그 기반 LLM 노드 설정 추천을 검토합니다."
               onOpen={() => setIsOptimizationModalOpen(true)}
@@ -944,12 +1048,7 @@ export function LLMNodePanel({
                   type="checkbox"
                   className="nodrag mt-0.5 h-4 w-4 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
                   checked={Boolean(data.auto_model_routing)}
-                  onChange={(event) =>
-                    handleUpdateData(
-                      'auto_model_routing',
-                      event.target.checked,
-                    )
-                  }
+                  onChange={(event) => handleAutoModelRoutingChange(event.target.checked)}
                   aria-label="자동 모델 라우팅"
                 />
                 <span className="min-w-0">
@@ -1017,6 +1116,58 @@ export function LLMNodePanel({
                   <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
                     갱신 근거: {routingPolicySummary.reasonCode}
                   </p>
+                  {routingPolicySummary.lastUpdate ? (
+                    <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-700">
+                          최근 정책 점검
+                        </span>
+                        <span className="font-semibold text-slate-600">
+                          {routingPolicySummary.lastUpdate.trigger ===
+                          'auto_n_runs'
+                            ? '자동 갱신'
+                            : '수동 갱신'}{' '}
+                          ·{' '}
+                          {routingPolicySummary.lastUpdate.status === 'applied'
+                            ? '반영됨'
+                            : routingPolicySummary.lastUpdate.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-slate-500">
+                        Judge:{' '}
+                        {routingPolicySummary.lastUpdate.judge_model || '없음'}
+                        {routingPolicySummary.lastUpdate.judge_cost !== null
+                          ? ` · 비용 $${routingPolicySummary.lastUpdate.judge_cost}`
+                          : ''}
+                      </p>
+                    </div>
+                  ) : null}
+                  {routingPolicyError ? (
+                    <p className="mt-2 text-[11px] text-rose-600">
+                      {routingPolicyError}
+                    </p>
+                  ) : null}
+                  {!persistedRoutingPolicy?.policy_id ? (
+                    <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+                      첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다.
+                    </p>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="nodrag mt-3 inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={handleManualRoutingPolicyRefresh}
+                    disabled={
+                      isRoutingPolicyRefreshing ||
+                      routingPolicySummary.status === 'refreshing' ||
+                      !activeWorkflowId ||
+                      !persistedRoutingPolicy?.policy_id
+                    }
+                  >
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${isRoutingPolicyRefreshing ? 'animate-spin' : ''}`}
+                    />
+                    자동 정책 갱신하기
+                  </button>
                   <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>
@@ -1060,6 +1211,9 @@ export function LLMNodePanel({
                               Number(event.target.value),
                             )
                           }
+                          onMouseUp={handleRoutingRefreshEveryRunsCommit}
+                          onTouchEnd={handleRoutingRefreshEveryRunsCommit}
+                          onKeyUp={handleRoutingRefreshEveryRunsCommit}
                           className="nodrag absolute inset-0 h-6 w-full cursor-pointer appearance-none bg-transparent accent-emerald-600
                             [&::-moz-range-track]:bg-transparent
                             [&::-ms-track]:bg-transparent

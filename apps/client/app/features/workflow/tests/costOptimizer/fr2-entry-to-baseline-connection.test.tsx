@@ -9,6 +9,7 @@ const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerParameterRecommendations: vi.fn(),
   getCostOptimizerLatestBaseline: vi.fn(),
   listCostOptimizerBaselines: vi.fn(),
+  getCostOptimizerParameterRecommendations: vi.fn(),
 }));
 
 const routerMock = vi.hoisted(() => ({
@@ -150,7 +151,7 @@ describe('FR-002 Cost Optimizer 진입-playground 연결', () => {
     render(<NodeInlinePanel node={createLlmNode()} />);
 
     fireEvent.click(
-      screen.getByRole('button', { name: /모델 라우팅 최적화/i }),
+      screen.getByRole('button', { name: /^최적화$/i }),
     );
 
     expect(

@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from apps.shared.audit.actions import AuditAction
+from apps.shared.audit.logger import record_audit
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App  # noqa: F401
 from apps.shared.db.models.connection import Connection  # noqa: F401
@@ -42,14 +44,38 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
-from apps.shared.audit.actions import AuditAction
-from apps.shared.audit.logger import record_audit
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from celery.exceptions import Retry
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
+
+def _schedule_model_routing_run_record(workflow_run: WorkflowRun) -> None:
+    """workflow terminal 상태 뒤에만 정책 run 집계를 별도 task로 넘긴다.
+
+    LLM node가 먼저 끝나는 시점에는 downstream 성공/실패가 아직 확정되지 않는다.
+    node finish가 뒤늦게 기록되는 경우에는 node log task도 이 helper를 다시 호출한다.
+    """
+    status = getattr(workflow_run.status, "value", workflow_run.status)
+    if status not in {RunStatus.SUCCESS.value, RunStatus.FAILED.value}:
+        return
+    celery_app.send_task(
+        "workflow.model_routing.record_run",
+        args=[str(workflow_run.id)],
+    )
+
+
+def _schedule_model_routing_run_record_after_llm_node_log(
+    session,
+    workflow_run_id,
+) -> None:
+    """늦게 확정된 LLM node log가 terminal workflow run에 집계될 기회를 다시 만든다."""
+    workflow_run = (
+        session.query(WorkflowRun).filter(WorkflowRun.id == workflow_run_id).first()
+    )
+    if workflow_run is not None:
+        _schedule_model_routing_run_record(workflow_run)
 
 
 def _serialize_uuid(obj):
@@ -122,6 +148,39 @@ def _record_workflow_execute_audit(run_log, status, reason_code=None):
         status=status,
         metadata=metadata,
     )
+
+
+def _finalize_llm_downstream_status(
+    session,
+    *,
+    workflow_run_id,
+    downstream_status: str,
+) -> None:
+    """terminal workflow 결과를 성공 LLM node trace의 downstream summary로 반영한다."""
+    node_runs = (
+        session.query(WorkflowNodeRun)
+        .filter(WorkflowNodeRun.workflow_run_id == workflow_run_id)
+        .filter(WorkflowNodeRun.node_type == "llmNode")
+        .filter(WorkflowNodeRun.status == NodeRunStatus.SUCCESS)
+        .all()
+    )
+    for node_run in node_runs:
+        trace_metadata = (
+            dict(node_run.trace_metadata)
+            if isinstance(node_run.trace_metadata, dict)
+            else {}
+        )
+        llm_metadata = (
+            dict(trace_metadata.get("llm"))
+            if isinstance(trace_metadata.get("llm"), dict)
+            else {}
+        )
+        llm_metadata["downstream_status"] = downstream_status
+        trace_metadata["llm"] = llm_metadata
+        node_run.trace_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_run.node_type,
+            trace_metadata,
+        )
 
 
 def _insert_trace_payloads(session, workflow_run_id, payload_records):
@@ -312,8 +371,14 @@ def update_run_log_finish(self, data: Dict[str, Any]):
             run_log.total_tokens = stats.total_tokens or 0
             run_log.total_cost = stats.total_cost or 0.0
 
+        _finalize_llm_downstream_status(
+            session,
+            workflow_run_id=run_id,
+            downstream_status="passed",
+        )
         _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
+        _schedule_model_routing_run_record(run_log)
         _record_workflow_execute_audit(run_log, "success")
 
         return {"status": "success", "run_id": str(run_id)}
@@ -346,7 +411,13 @@ def update_run_log_error(self, data: Dict[str, Any]):
         if run_log.started_at and finished_at:
             run_log.duration = (finished_at - run_log.started_at).total_seconds()
 
+        _finalize_llm_downstream_status(
+            session,
+            workflow_run_id=run_id,
+            downstream_status="failed",
+        )
         session.commit()
+        _schedule_model_routing_run_record(run_log)
         _record_workflow_execute_audit(
             run_log, "failure", reason_code="workflow.execute_failed"
         )
@@ -406,6 +477,11 @@ def create_node_log(self, data: Dict[str, Any]):
         session.flush()
         _insert_trace_payloads(session, workflow_run_id, data.get("trace_payloads") or [])
         session.commit()
+        if node_run.node_type == "llmNode":
+            _schedule_model_routing_run_record_after_llm_node_log(
+                session,
+                workflow_run_id,
+            )
 
         return {"status": "success", "node_id": data["node_id"]}
 
@@ -636,6 +712,11 @@ def update_node_log_error(self, data: Dict[str, Any]):
             node_run.retry_count = data.get("retry_count") or node_run.retry_count
 
         session.commit()
+        if node_run.node_type == "llmNode":
+            _schedule_model_routing_run_record_after_llm_node_log(
+                session,
+                workflow_run_id,
+            )
 
         return {"status": "success", "node_id": data["node_id"]}
 
