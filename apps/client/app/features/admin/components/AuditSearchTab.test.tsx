@@ -15,6 +15,14 @@ vi.mock('../api/adminApi', () => ({
   },
 }));
 
+vi.mock('./ActorAccessDrawer', () => ({
+  ActorAccessDrawer: ({ onClose }: { onClose: () => void }) => (
+    <div role="dialog" aria-label="행위자 접근 관리">
+      <button onClick={onClose}>행위자 관리 닫기</button>
+    </div>
+  ),
+}));
+
 import { adminApi } from '../api/adminApi';
 import { AuditSearchTab } from './AuditSearchTab';
 import type { OrganizationMember } from '../../organization/types/Organization';
@@ -28,7 +36,7 @@ const members = [
     user_id: 'user-1',
     user_name: '김관리',
     user_email: 'admin@example.com',
-    state: 'active',
+    membership_state: 'active',
     organization_auth_state: 'manager',
   },
 ] as unknown as OrganizationMember[];
@@ -44,6 +52,14 @@ const auditItem = {
   target_id: 'wf-1',
   status: 'success' as const,
   request_id: 'req-1',
+};
+
+const accessAuditItem = {
+  ...auditItem,
+  id: 'log-access-1',
+  action: 'organization.member.update',
+  target_type: 'organization_membership',
+  target_id: 'membership-1',
 };
 
 const forbiddenError = () => {
@@ -125,23 +141,29 @@ describe('AuditSearchTab', () => {
   });
 
   it('행을 클릭하면 상세 드로어가 열리고 allowlist metadata를 표시한다', async () => {
-    mockedList.mockResolvedValue({ total: 1, items: [auditItem] });
+    mockedList.mockResolvedValue({ total: 1, items: [accessAuditItem] });
     mockedDetail.mockResolvedValue({
-      ...auditItem,
+      ...accessAuditItem,
       audit_metadata: { request_id: 'req-1', reason: '데모 배포' },
+      change_summary: {
+        before: { membership_state: 'active' },
+        after: { membership_state: 'suspended' },
+      },
     });
 
     render(<AuditSearchTab members={members} />);
 
-    fireEvent.click(await screen.findByText('workflow.deploy'));
+    fireEvent.click(await screen.findByText('organization.member.update'));
 
     const drawer = await screen.findByRole('dialog', {
       name: '감사 로그 상세',
     });
     expect(drawer).toBeInTheDocument();
-    expect(mockedDetail).toHaveBeenCalledWith('log-1');
+    expect(mockedDetail).toHaveBeenCalledWith('log-access-1');
     expect(await screen.findByText('데모 배포')).toBeInTheDocument();
     expect(screen.getByText('req-1')).toBeInTheDocument();
+    expect(screen.getByText('변경 요약')).toBeInTheDocument();
+    expect(screen.getByText('suspended')).toBeInTheDocument();
 
     // ESC로 닫힌다.
     fireEvent.keyDown(drawer, { key: 'Escape' });
@@ -150,5 +172,60 @@ describe('AuditSearchTab', () => {
         screen.queryByRole('dialog', { name: '감사 로그 상세' }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it('행위자 관리 버튼은 row 상세 클릭과 분리되고 닫은 뒤 focus를 돌려준다', async () => {
+    mockedList.mockResolvedValue({ total: 1, items: [auditItem] });
+
+    render(
+      <AuditSearchTab
+        members={members}
+        organizationId="org-1"
+        canManageActors
+      />,
+    );
+
+    const actorButton = await screen.findByRole('button', {
+      name: '김관리 접근 관리',
+    });
+    fireEvent.click(actorButton);
+
+    expect(
+      screen.getByRole('dialog', { name: '행위자 접근 관리' }),
+    ).toBeInTheDocument();
+    expect(mockedDetail).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '행위자 관리 닫기' }));
+    await waitFor(() => expect(actorButton).toHaveFocus());
+  });
+
+  it('system actor는 current member와 id가 같아도 관리 버튼을 표시하지 않는다', async () => {
+    mockedList.mockResolvedValue({
+      total: 1,
+      items: [{ ...auditItem, actor_type: 'system' }],
+    });
+
+    render(
+      <AuditSearchTab
+        members={members}
+        organizationId="org-1"
+        canManageActors
+      />,
+    );
+
+    await screen.findByText('workflow.deploy');
+    expect(
+      screen.queryByRole('button', { name: '김관리 접근 관리' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('좁은 viewport에서도 표를 가로 스크롤 영역에 가둔다', async () => {
+    mockedList.mockResolvedValue({ total: 1, items: [auditItem] });
+
+    render(<AuditSearchTab members={members} />);
+
+    const table = await screen.findByRole('table');
+    expect(table).toHaveClass('min-w-[760px]');
+    expect(table.parentElement).toHaveClass('overflow-x-auto');
   });
 });
