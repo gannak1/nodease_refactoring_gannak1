@@ -61,16 +61,6 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 - Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
 - 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
 
-### Document Preview UI
-
-The document settings preview iframe renders `/api/v1/knowledge/{kb_id}/documents/{document_id}/content` as an untrusted preview surface.
-
-- The iframe sandbox must not include `allow-downloads`; preview load must not initiate a browser download.
-- The iframe may include `allow-scripts` only to support browser-native PDF preview.
-- Markdown and plain text previews rely on server-side escaped HTML, not raw file execution.
-- Unsupported or unsafe file types should show a safe preview-unavailable state rather than attachment-download fallback.
-- A download/export action, if added later, must be an explicit button backed by the raw/compliance access policy.
-
 ### KB Permission Management UI
 
 - MBA-176에서는 기존 admin/settings permission surface를 확장해 KB team permission과 user direct permission을 함께 관리한다. 새 독립 화면을 만들지 않는다.

@@ -19,35 +19,6 @@ type ActiveOrganizationState =
   | { status: 'select'; organizations: OrganizationResponse[] }
   | { status: 'error'; message: string };
 
-const ORGANIZATION_RESOLVE_MAX_ATTEMPTS = 5;
-const ORGANIZATION_RESOLVE_RETRY_DELAY_MS = 750;
-const TRANSIENT_ORGANIZATION_STATUS = new Set([502, 503, 504]);
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const errorStatus = (error: unknown) => {
-  if (!error || typeof error !== 'object') return null;
-  const response = (error as { response?: { status?: unknown } }).response;
-  return typeof response?.status === 'number' ? response.status : null;
-};
-
-const isTransientOrganizationError = (error: unknown) => {
-  const status = errorStatus(error);
-  if (status === null) {
-    return true;
-  }
-  return TRANSIENT_ORGANIZATION_STATUS.has(status);
-};
-
-const organizationErrorMessage = (error: unknown) => {
-  if (isTransientOrganizationError(error)) {
-    return '조직 API가 아직 준비되지 않았습니다. 잠시 후 다시 시도해주세요.';
-  }
-  return error instanceof Error
-    ? error.message
-    : '조직 정보를 확인하지 못했습니다.';
-};
-
 export default function ActiveOrganizationGate({
   children,
 }: {
@@ -61,63 +32,48 @@ export default function ActiveOrganizationGate({
     let ignore = false;
 
     const resolveOrganization = async () => {
-      let lastError: unknown = null;
+      try {
+        const response =
+          await publicApiClient.get<OrganizationResponse[]>('/organizations');
+        const organizations = response.data;
 
-      for (
-        let attempt = 1;
-        attempt <= ORGANIZATION_RESOLVE_MAX_ATTEMPTS;
-        attempt += 1
-      ) {
-        try {
-          const response =
-            await publicApiClient.get<OrganizationResponse[]>('/organizations');
-          const organizations = response.data;
-
-          if (!Array.isArray(organizations)) {
-            throw new Error('조직 목록을 불러오지 못했습니다.');
-          }
-
-          const storedOrganizationId = getStoredActiveOrganizationId();
-          const storedOrganization = organizations.find(
-            (organization) => organization.id === storedOrganizationId,
-          );
-          if (storedOrganization) {
-            if (!ignore) setState({ status: 'ready' });
-            return;
-          }
-
-          if (organizations.length === 1) {
-            setActiveOrganizationId(organizations[0].id);
-            if (!ignore) setState({ status: 'ready' });
-            return;
-          }
-
-          if (organizations.length > 1) {
-            if (!ignore) {
-              setState({ status: 'select', organizations });
-            }
-            return;
-          }
-
-          throw new Error('접근 가능한 조직이 없습니다.');
-        } catch (err) {
-          lastError = err;
-          if (
-            ignore ||
-            !isTransientOrganizationError(err) ||
-            attempt === ORGANIZATION_RESOLVE_MAX_ATTEMPTS
-          ) {
-            break;
-          }
-          await sleep(ORGANIZATION_RESOLVE_RETRY_DELAY_MS * attempt);
+        if (!Array.isArray(organizations)) {
+          throw new Error('조직 목록을 불러오지 못했습니다.');
         }
-      }
 
-      if (!ignore) {
-        setState({
-          status: 'error',
-          message: organizationErrorMessage(lastError),
-        });
+        const storedOrganizationId = getStoredActiveOrganizationId();
+        const storedOrganization = organizations.find(
+          (organization) => organization.id === storedOrganizationId,
+        );
+        if (storedOrganization) {
+          if (!ignore) setState({ status: 'ready' });
+          return;
+        }
+
+        if (organizations.length === 1) {
+          setActiveOrganizationId(organizations[0].id);
+          if (!ignore) setState({ status: 'ready' });
+          return;
+        }
+
+        if (organizations.length > 1) {
+          if (!ignore) {
+            setState({ status: 'select', organizations });
+          }
+          return;
+        }
+
+        throw new Error('접근 가능한 조직이 없습니다.');
+      } catch (err) {
+        if (!ignore) {
+          setState({
+            status: 'error',
+            message:
+              err instanceof Error
+                ? err.message
+                : '조직 정보를 확인하지 못했습니다.',
+          });
+        }
       }
     };
 

@@ -132,14 +132,6 @@ Status: Draft
 - KB 상세 source 목록은 `failed` document에 `재처리` action을 표시하고, `completed` document에는 처리 시작 CTA를 표시하지 않는다.
 - Pending/failed processing CTA는 document settings 화면으로 이동하며 raw file path, source title, hidden KB id를 새로 노출하지 않는다.
 
-## Document Preview Tests
-
-- Opening a FILE source document settings page must not trigger a browser download from the preview iframe.
-- The document preview iframe sandbox must not include `allow-downloads`.
-- PDF documents must still render through the browser preview path after download permission is removed from the iframe sandbox.
-- Markdown and plain text documents stored under extensionless object paths must use the original filename to select preview media type and must render as escaped HTML without attachment `Content-Disposition`.
-- Unsupported preview file types must return a safe preview-unavailable response instead of attachment download fallback.
-
 ## Retrieval And Agent Tests
 
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.

@@ -30,16 +30,6 @@ Status: Draft
 
 그 외 `/api/v1/knowledge/*` KB/list/detail/document/process/sync surface, `/api/v1/rag/upload/presigned-url`, `/api/v1/rag/document/*`, `/api/v1/rag/proxy/preview` 계열은 현재 동작 경로로 읽는다. 특정 endpoint가 helper 기반 KB permission enforcement를 명시하지 않는 한, 현재 `/api/v1/knowledge/*` endpoint는 owner/current-behavior filtered surface다. Document content/download/preview surface는 현재 raw 또는 source-derived content를 노출할 수 있으므로, KB 통합 cutover 전 target raw/compliance access 또는 redacted-preview policy로 재분류해야 한다. URL/proxy preview surface는 목표 `OutboundEgressGuard` 정렬 대상이며, 구현이 갱신되기 전에는 target egress 계약을 만족한다고 보지 않는다.
 
-### Current Document Preview Surface
-
-The current document preview endpoint, `/api/v1/knowledge/{kb_id}/documents/{document_id}/content`, is a user-facing preview surface, not an implicit download surface.
-
-- Browser preview responses must not trigger automatic downloads when the document settings page opens the preview iframe.
-- `.md` and `.txt` files are rendered through escaped, capped HTML preview. The response must not include an attachment `Content-Disposition`.
-- `.pdf` files may be returned inline for browser PDF preview, but the iframe must not grant `allow-downloads`.
-- File types that cannot be safely previewed should return a safe preview-unavailable HTML response instead of falling back to attachment download.
-- Dedicated raw/compliance export remains separate and must follow the raw content/export permission and audit requirements below.
-
 ## Target Endpoint Groups
 
 | 그룹 | 목표 path | 목적 |
