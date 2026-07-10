@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -16,6 +17,51 @@ class StorageReferenceError(StorageDeleteError):
 
 def _invalid_reference() -> StorageReferenceError:
     return StorageReferenceError("storage_reference_invalid")
+
+
+def _validate_storage_segment(value: object, *, max_bytes: int) -> str:
+    segment = str(value or "").strip()
+    if (
+        not segment
+        or segment in {".", ".."}
+        or "/" in segment
+        or "\\" in segment
+        or len(segment.encode("utf-8")) > max_bytes
+        or any(ord(character) < 32 or ord(character) == 127 for character in segment)
+    ):
+        raise _invalid_reference()
+    return segment
+
+
+def build_upload_object_name(
+    filename: object,
+    *,
+    object_token: object | None = None,
+) -> str:
+    """Build one canonical upload leaf name safe for local and S3 storage."""
+    safe_filename = _validate_storage_segment(filename, max_bytes=220)
+    safe_token = _validate_storage_segment(
+        object_token if object_token is not None else uuid.uuid4().hex,
+        max_bytes=64,
+    )
+    object_name = f"{safe_token}_{safe_filename}"
+    return _validate_storage_segment(object_name, max_bytes=255)
+
+
+def build_upload_object_key(
+    filename: object,
+    *,
+    user_id: object | None = None,
+    object_token: object | None = None,
+) -> str:
+    """Build a canonical S3 key accepted by the delete reference validator."""
+    segments = ["uploads"]
+    if user_id is not None:
+        segments.append(_validate_storage_segment(user_id, max_bytes=128))
+    segments.append(
+        build_upload_object_name(filename, object_token=object_token)
+    )
+    return _validate_s3_key("/".join(segments))
 
 
 def _validate_s3_key(key: str) -> str:

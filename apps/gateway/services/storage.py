@@ -1,8 +1,8 @@
 import logging
 import os
 import shutil
-import uuid
 from abc import ABC, abstractmethod
+from urllib.parse import quote
 
 import boto3
 from fastapi import UploadFile
@@ -11,6 +11,8 @@ from apps.gateway.core.config import settings
 from apps.gateway.services.storage_reference import (
     StorageDeleteError,
     StorageReferenceError,
+    build_upload_object_key,
+    build_upload_object_name,
     resolve_local_delete_path,
     resolve_s3_delete_key,
 )
@@ -40,8 +42,7 @@ class LocalStorageService(StorageService):
         os.makedirs(self.upload_dir, exist_ok=True)
 
     def upload(self, file: UploadFile) -> str:
-        # 안전한 파일명 생성
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
+        unique_filename = build_upload_object_name(file.filename)
         file_path = os.path.join(self.upload_dir, unique_filename)
 
         with open(file_path, "wb") as buffer:
@@ -94,8 +95,7 @@ class S3StorageService(StorageService):
             raise ValueError("S3_BUCKET_NAME is not set. ")
 
     def upload(self, file: UploadFile) -> str:
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
-        s3_key = f"uploads/{unique_filename}"
+        s3_key = build_upload_object_key(file.filename)
 
         try:
             self.s3_client.upload_fileobj(
@@ -119,7 +119,8 @@ class S3StorageService(StorageService):
                 pass
 
         # S3 URL
-        return f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{s3_key}"
+        encoded_key = quote(s3_key, safe="/")
+        return f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{encoded_key}"
 
     def generate_presigned_upload_url(
         self,
@@ -144,9 +145,7 @@ class S3StorageService(StorageService):
                 "method": "PUT"
             }
         """
-        # 고유한 파일명 생성 (충돌 방지)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        s3_key = f"uploads/{user_id}/{unique_filename}"
+        s3_key = build_upload_object_key(filename, user_id=user_id)
 
         try:
             # Presigned URL 생성 (PUT 방식)

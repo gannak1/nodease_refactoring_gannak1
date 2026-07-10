@@ -1,5 +1,7 @@
 import logging
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,9 +24,31 @@ class _FailingS3Client:
 class _CaptureS3Client:
     def __init__(self) -> None:
         self.calls = []
+        self.upload_calls = []
+        self.presigned_calls = []
 
     def delete_object(self, **kwargs) -> None:
         self.calls.append(kwargs)
+
+    def upload_fileobj(self, fileobj, bucket, key, ExtraArgs=None) -> None:
+        self.upload_calls.append(
+            {
+                "fileobj": fileobj,
+                "bucket": bucket,
+                "key": key,
+                "extra_args": ExtraArgs,
+            }
+        )
+
+    def generate_presigned_url(self, operation, Params, ExpiresIn):
+        self.presigned_calls.append(
+            {
+                "operation": operation,
+                "params": Params,
+                "expires_in": ExpiresIn,
+            }
+        )
+        return "https://signed.example/upload"
 
 
 def _s3_storage(client=None) -> S3StorageService:
@@ -79,6 +103,75 @@ def test_s3_delete_decodes_url_encoded_key_once():
     ]
 
 
+def test_s3_backend_upload_key_round_trips_through_delete_validator():
+    storage = _s3_storage()
+    upload = SimpleNamespace(
+        filename="신입 정책 guide.pdf",
+        file=BytesIO(b"document"),
+        content_type="application/pdf",
+    )
+
+    reference = storage.upload(upload)
+    storage.delete(reference)
+
+    generated_key = storage.s3_client.upload_calls[0]["key"]
+    assert generated_key.startswith("uploads/")
+    assert storage.s3_client.calls == [
+        {"Bucket": "knowledge-bucket", "Key": generated_key}
+    ]
+    assert "%EC%8B%A0%EC%9E%85" in reference
+
+
+def test_s3_presigned_upload_key_round_trips_through_delete_validator():
+    storage = _s3_storage()
+
+    result = storage.generate_presigned_upload_url(
+        filename="policy.pdf",
+        content_type="application/pdf",
+        user_id="user-123",
+    )
+    storage.delete(result["key"])
+
+    generated_key = storage.s3_client.presigned_calls[0]["params"]["Key"]
+    assert generated_key.startswith("uploads/user-123/")
+    assert result["key"] == generated_key
+    assert storage.s3_client.calls == [
+        {"Bucket": "knowledge-bucket", "Key": generated_key}
+    ]
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "folder/../policy.pdf",
+        "folder\\policy.pdf",
+        ".",
+        "..",
+        "bad\x00name.pdf",
+        "",
+    ],
+)
+def test_s3_upload_paths_reject_non_canonical_filename(filename):
+    storage = _s3_storage()
+    upload = SimpleNamespace(
+        filename=filename,
+        file=BytesIO(b"document"),
+        content_type="application/pdf",
+    )
+
+    with pytest.raises(StorageReferenceError, match="^storage_reference_invalid$"):
+        storage.upload(upload)
+    with pytest.raises(StorageReferenceError, match="^storage_reference_invalid$"):
+        storage.generate_presigned_upload_url(
+            filename=filename,
+            content_type="application/pdf",
+            user_id="user-123",
+        )
+
+    assert storage.s3_client.upload_calls == []
+    assert storage.s3_client.presigned_calls == []
+
+
 def test_s3_delete_supports_configured_bucket_path_style_url():
     storage = _s3_storage()
 
@@ -124,6 +217,33 @@ def test_local_delete_allows_only_files_inside_upload_root(tmp_path):
     storage.delete(str(target))
 
     assert not target.exists()
+
+
+def test_local_upload_path_round_trips_through_delete_validator(tmp_path):
+    upload_root = tmp_path / "uploads"
+    storage = LocalStorageService(str(upload_root))
+    upload = SimpleNamespace(
+        filename="policy guide.pdf",
+        file=BytesIO(b"document"),
+    )
+
+    reference = storage.upload(upload)
+    assert Path(reference).is_file()
+
+    storage.delete(reference)
+
+    assert not Path(reference).exists()
+
+
+def test_local_upload_rejects_non_canonical_filename(tmp_path):
+    storage = LocalStorageService(str(tmp_path / "uploads"))
+    upload = SimpleNamespace(
+        filename="folder/../policy.pdf",
+        file=BytesIO(b"document"),
+    )
+
+    with pytest.raises(StorageReferenceError, match="^storage_reference_invalid$"):
+        storage.upload(upload)
 
 
 def test_local_delete_rejects_path_outside_upload_root(tmp_path):
