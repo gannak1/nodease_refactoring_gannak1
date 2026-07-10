@@ -263,6 +263,27 @@ describe('useCanvasKeyboardShortcuts', () => {
     },
   );
 
+  it('일반 텍스트가 선택된 상태에서는 Ctrl+C를 브라우저 복사에 맡긴다', () => {
+    const actions = installActionSpies();
+    const target = document.createElement('p');
+    target.textContent = '선택할 텍스트';
+    document.body.appendChild(target);
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: false,
+      toString: () => '선택할 텍스트',
+    } as unknown as Selection);
+    renderHook(() => useCanvasKeyboardShortcuts(createOptions()));
+
+    const { preventDefault } = dispatchKeyDown(
+      'c',
+      { ctrlKey: true },
+      target,
+    );
+
+    expect(actions.copySelectedNodes).not.toHaveBeenCalled();
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+
   it('C/V/Z/Shift+Z/Y/B/Esc 핵심 단축키를 유지한다', () => {
     const actions = installActionSpies();
     const options = createOptions();
