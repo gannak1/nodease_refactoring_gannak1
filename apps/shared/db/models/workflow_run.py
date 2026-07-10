@@ -6,6 +6,7 @@ from typing import List, Optional
 from apps.shared.db.base import Base
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -50,6 +51,13 @@ class WorkflowRun(Base):
     """
 
     __tablename__ = "workflow_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "user_id IS NOT NULL OR "
+            "(trigger_mode = 'SCHEDULER' AND workflow_task_id LIKE 'schedule:%')",
+            name="ck_workflow_runs_system_schedule_executor",
+        ),
+    )
 
     # === 기본 식별자 ===
     id: Mapped[uuid.UUID] = mapped_column(
@@ -64,11 +72,11 @@ class WorkflowRun(Base):
         nullable=False,
         index=True,
     )
-    # 누가 실행했는지 (익명 실행이 없다면 nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    # System schedule만 nullable. 다른 실행 표면은 application validation에서 user 필수.
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     app_id: Mapped[Optional[uuid.UUID]] = mapped_column(

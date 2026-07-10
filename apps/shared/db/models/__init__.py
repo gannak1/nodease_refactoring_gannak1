@@ -46,6 +46,7 @@ from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_AUTH_MEMBER,
@@ -127,6 +128,7 @@ __all__ = [
     "LLMNodeModelRoutingPolicyRunEvent",
     "LLMNodeModelRoutingPolicyUpdate",
     "Schedule",
+    "ScheduleDispatchClaim",
     "Organization",
     "OrganizationMembership",
     "ORGANIZATION_MEMBERSHIP_INVITED",

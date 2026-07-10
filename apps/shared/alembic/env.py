@@ -44,6 +44,7 @@ from apps.shared.db.models import (  # noqa: F401
     LLMNodeVersion,
     OrganizationMembership,
     Schedule,
+    ScheduleDispatchClaim,
     TracePayload,
     TracePayloadAccessEvent,
     TraceRedactionPolicy,

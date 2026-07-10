@@ -32,7 +32,7 @@ class WorkflowRunSchema(BaseModel):
     id: UUID
     workflow_id: UUID
     app_id: Optional[UUID] = None
-    user_id: UUID
+    user_id: Optional[UUID]
     status: str
     trigger_mode: str
     inputs: Optional[Dict[str, Any]]
@@ -71,7 +71,7 @@ class WorkflowRunSummarySchema(BaseModel):
     id: UUID
     workflow_id: UUID
     app_id: Optional[UUID] = None
-    user_id: UUID
+    user_id: Optional[UUID]
     status: str
     trigger_mode: str
     inputs: Optional[Dict[str, Any]]
