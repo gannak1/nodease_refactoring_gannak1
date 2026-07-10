@@ -1,11 +1,11 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: feature/mba-166 @ 034a716
+Verified Against: feature/mba-197 @ e087119
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-012까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
 FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 active policy를 사용해 모델을 선택하고, judge LLM은 정책 갱신 시점에만 호출한다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트와 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다. 모델 라우팅은 LLM 노드 상세 화면의 자동 라우팅 토글, active policy runtime 선택, 20회 운영 로그 누적 갱신, 수동 정책 갱신, metadata redaction을 검증한다.
@@ -28,6 +28,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
 | FR-011 | Model routing policy controls / model-routing route | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 운영 표본 누적·품질 gate·judge usage 추적 기반 정책 갱신 | 작성 완료 | 통과 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
+| FR-013 | Recommendation inline verification panel | Recommendation verification API | 최신 성공 baseline 자동 확정, candidate 1회 실행, metric bar, 품질 judge, schema/downstream gate, 신규 비용, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
 
 ## Test Implementation Tracking
 
@@ -75,6 +76,9 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 대기 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 로컬 계정에서 OpenAI/Anthropic/Google credential 사용 권한이 없어 dry-run이 `credential_use_denied`/`credential_not_available`로 중단됨. 실제 provider 호출은 실행하지 않음 |
 | FR-012 | Gateway/service | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 운영 로그/trace 기반 LLM 파라미터 추천 룰셋, safe evidence, `direct_policy_update` 적용 경계 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 통과 기록 있음 |
 | FR-012 | Frontend component/API client | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 최적화 추천 모달, 추천 row 선택, 테스트하기 CTA, `direct_policy_update`만 직접 적용 | 작성 완료 | 관련 targeted test | 통과 기록 있음 |
+| FR-013 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 모달 내부 state 전이, 기준 실행 안내, 독립 metric bar, schema/downstream/quality 상태, scroll/sticky footer, apply/detail/close 액션, comparison/candidate deep link 결과 분석 진입 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
+| FR-013 | Frontend API client | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts` | verify endpoint, Idempotency-Key, response type, 상세 분석 deep link | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts` | 통과 |
+| FR-013 | Gateway API/service | `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | latest success cohort, recommendation stale 검증, candidate/judge usage, 품질 평가, schema/downstream gate, apply payload | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | 통과 |
 
 ## Model Routing Policy Tests
 
@@ -135,6 +139,30 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-012-R16 | terminal failure quality gate | 성공 usage 20건과 terminal schema/downstream 실패 run이 함께 있다 | 파라미터 추천 API를 호출한다 | 실패 run을 품질 실패율에 포함하고 `max_tokens` 또는 RAG context 축소 추천을 만들지 않는다. |
 | FR-012-R17 | deployment/config cohort | 현재 draft node 설정이 활성 deployment snapshot과 다르거나 다른 deployment run이 섞여 있다 | 파라미터 추천 API를 호출한다 | `draft_not_deployed` 또는 warning을 반환하고, 다른 설정의 token/cost 표본을 현재값 추천에 사용하지 않는다. |
 | FR-012-R18 | incomplete quality signal | structured output node의 schema signal 또는 RAG node의 retrieval summary가 일부 run에서 누락됐다 | 파라미터 추천 API를 호출한다 | schema/RAG 축소 추천을 만들지 않고 signal incomplete warning을 반환한다. |
+
+## FR-013 추천 설정 인라인 검증 및 출력 품질 평가
+
+| ID | 영역 | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| FR-013-R01 | modal flow | 추천 row가 선택되어 있다 | `테스트하기`를 클릭한다 | 기존 Cost Optimizer route로 즉시 이동하지 않고 모달 안에서 baseline 조회와 candidate 실행 상태를 표시한다. |
+| FR-013-R02 | latest baseline | 같은 active deployment/config cohort에 input/output/usage를 복원할 수 있는 성공 run과 더 최신의 실패·candidate run이 있다 | 빠른 검증을 요청한다 | 조건을 만족하는 가장 최근 성공 운영 node run 하나를 baseline으로 고정하고 실패·candidate run은 제외한다. |
+| FR-013-R03 | no baseline | 비교 가능한 최신 성공 run이 없다 | 빠른 검증을 요청한다 | provider를 호출하지 않고 `비교 가능한 최신 성공 기록이 없습니다.`를 표시한다. |
+| FR-013-R04 | hybrid execution | baseline이 확정되고 recommendation id가 유효하다 | 빠른 검증을 실행한다 | A는 재실행하지 않고 동일 input으로 B만 한 번 실행하며 experiment/candidate row와 usage를 저장한다. |
+| FR-013-R05 | recommendation freshness | recommendation policy version 또는 node setting fingerprint가 응답 이후 바뀌었다 | 빠른 검증을 요청한다 | `stale`로 거부하고 이전 candidate patch를 실행하지 않는다. |
+| FR-013-R06 | duplicate submit | 동일 Idempotency-Key로 요청이 재전송된다 | verify endpoint가 처리한다 | candidate와 quality judge를 중복 호출하지 않고 첫 verification 결과를 반환한다. |
+| FR-013-R07 | metric chart | A/B usage가 있다 | 결과 panel을 렌더링한다 | 비용, latency, token, 품질 점수를 서로 다른 metric card의 A/B 막대와 실제 값/delta로 표시한다. 다른 단위를 하나의 axis에 섞지 않는다. |
+| FR-013-R08 | baseline context | 결과 panel을 렌더링한다 | 사용자가 A 기준을 확인한다 | `최신 비교 가능한 성공 기록`, 실행 시각, 모델, baseline cost/latency/token을 표시한다. |
+| FR-013-R09 | quality judge | baseline/candidate output과 동일 input, node 목적이 있다 | 품질 평가를 실행한다 | A를 정답으로 취급하지 않는 blind pairwise judge가 두 variant의 0~100 점수, dimension, confidence, safe summary를 반환한다. |
+| FR-013-R10 | quality unavailable | candidate는 성공했지만 judge credential/model이 없거나 judge 호출이 실패했다 | 응답을 만든다 | `partial`과 `품질 평가 불가`를 반환하고 비용·latency·token·schema·downstream 결과는 유지한다. |
+| FR-013-R11 | JSON schema | candidate output format이 JSON이고 schema가 있다 | candidate output을 검증한다 | parse/schema 통과는 `passed`, 누락 field/type mismatch는 `failed`와 safe issue summary를 반환한다. |
+| FR-013-R12 | non-JSON schema | output format이 text이거나 JSON schema가 없다 | 결과 panel을 렌더링한다 | text는 `검사 대상 아님`, schema 없는 JSON은 `스키마 미설정`으로 표시하며 실패로 오인시키지 않는다. |
+| FR-013-R13 | downstream | candidate output을 직접 참조하는 후속 노드가 있다 | 기존 contract validator를 실행한다 | `compatible`, `warning`, `incompatible`, `unknown`과 검사 node 수를 반환한다. incompatible은 적용을 막는다. |
+| FR-013-R14 | incurred cost | candidate 실행과 quality judge 호출이 완료됐다 | 결과 panel을 렌더링한다 | candidate cost, judge cost, 신규 발생 합계를 구분하고 과거 baseline 비용은 합계에 더하지 않는다. 가격 정보가 없으면 0이 아닌 `계산 불가`로 표시한다. |
+| FR-013-R15 | apply gate | candidate 성공, schema passed/not-applicable, downstream compatible이고 result가 stale하지 않다 | `적용하기`를 누른다 | exact comparison/candidate settings를 기존 apply API로 current draft에 적용한다. |
+| FR-013-R16 | quality warning | candidate quality score가 baseline보다 낮거나 confidence가 low다 | `적용하기`를 누른다 | 품질 점수만으로 hard block하지 않고 경고와 명시적 확인을 요구한다. |
+| FR-013-R17 | detail analysis | 빠른 검증 결과가 있다 | `상세 비교 분석하기`를 누른다 | 같은 comparison_id/candidate_id의 기존 결과 분석 화면을 열며 B를 다시 실행하거나 LLM 비용을 중복 발생시키지 않는다. |
+| FR-013-R18 | scroll/footer | recommendation, chart, gate, cost content가 modal max height를 넘는다 | modal을 스크롤한다 | body만 세로 스크롤되고 `적용하기`, `상세 비교 분석하기`, `닫기` footer는 계속 접근 가능하다. |
+| FR-013-R19 | selection changed | 빠른 검증 이후 추천 선택 또는 target node draft가 바뀐다 | 기존 결과로 적용을 시도한다 | 결과를 `stale`로 표시하고 적용을 비활성화하며 다시 테스트하도록 안내한다. |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
 ## Knowledge/RAG Compare Tests

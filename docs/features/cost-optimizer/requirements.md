@@ -33,6 +33,7 @@ Cost Optimizer는 이 질문에 답하기 위한 기능이다.
 - 빌더로서, 후보별 비용, 토큰, 실행 시간, 출력 결과를 한 화면에서 보고 싶다.
 - 빌더로서, 더 저렴하지만 결과가 충분한 후보를 현재 LLM 노드 설정에 적용하고 싶다.
 - 빌더로서, 선택한 후보의 출력이 다음 노드에서 사용할 수 있는 형태인지 확인하고 싶다.
+- 빌더로서, 추천 모달을 벗어나지 않고 최신 성공 실행을 기준으로 추천 설정의 비용, 속도, 출력 품질, schema/downstream 안전성을 빠르게 검증하고 싶다.
 - 운영자로서, 비용 최적화 비교 실행에서 발생한 LLM 비용도 일반 실행 비용처럼 기록되기를 원한다.
 
 ## Current Implementation Snapshot
@@ -47,6 +48,8 @@ baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는�
 정책 기반 자동 모델 라우팅의 실행 기준은 별도 policy 저장소다. LLM node data의 `auto_model_routing`과 `refresh_every_runs`는 사용자의 설정값이고, 실제 active rule set, 누적 운영 실행 수, 갱신 이력은 policy table에서 관리한다. active policy가 없는 첫 구간은 저장 모델로 보수적으로 실행하며, 운영 로그가 기준 수에 도달하면 policy refresh가 정책을 생성한다.
 
 파라미터 추천은 미구현이 아니다. `GET /cost-optimizer/parameter-recommendations`는 배포 후 운영 로그 기반 추천을 반환하고, `PATCH /cost-optimizer/apply-recommendations`는 현재 `direct_policy_update` 성격의 추천만 즉시 draft에 반영한다. 일반 파라미터 변경 추천은 A/B 후보 실험을 거쳐 검증하는 흐름으로 다룬다.
+
+추천 모달 내부의 빠른 검증은 Gateway orchestration API, output quality judge, 프론트 modal panel까지 구현됐다. `테스트하기`는 별도 workspace로 즉시 이동하지 않고, 최신 비교 가능한 성공 실행을 A baseline으로 자동 선택해 모달 안에서 B 후보를 한 번 실행하고 결과를 시각화한다.
 
 ## Functional Requirements
 
@@ -84,6 +87,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
 | FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `구현 완료` | `정책 저장·terminal 운영 표본 집계·judge 갱신·품질 gate·runtime credential guard·safe metadata 구현` | LLM 노드는 policy table의 active rule set으로 실행 모델을 선택한다. target LLM node가 성공한 배포 후 운영 workflow가 terminal 상태가 된 뒤에만 표본을 중복 없이 집계하고, 설정 횟수만큼 누적되면 refresh task가 judge로 정책을 재평가한다. 검증 표본이 없는 모델이나 낮은 confidence 결과는 기존 active policy를 유지하며, judge 호출 비용도 usage log로 추적한다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
+| FR-013 | 추천 설정 인라인 검증 및 출력 품질 평가 | P1 | `구현 완료` | `Gateway API·quality judge·멱등 저장·모달/API client 구현 및 targeted test 통과` | 추천 모달에서 최신 성공 baseline과 추천 설정 B를 한 번 비교 실행해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 상세 분석으로 이어간다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
 
@@ -645,6 +649,70 @@ RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 
 
 자동 모델 라우팅 정책 갱신처럼 운영 정책만 바꾸는 항목은 후속 구현에서 `direct_policy_update`를 허용할 수 있다. 그러나 현재 LLM node의 prompt, parameter, Knowledge/RAG 설정값을 바꾸는 추천은 A/B 비교와 사용자 확인 없이 적용하지 않는다.
 
+### FR-013. 추천 설정 인라인 검증 및 출력 품질 평가
+
+추천 모달의 `테스트하기`는 더 이상 Cost Optimizer workspace로 즉시 이동하지 않는다. 사용자가 선택한 추천 설정을 현재 LLM node 설정 복사본에 적용한 B candidate를 만들고, 최신 비교 가능한 성공 실행을 A baseline으로 자동 선택해 모달 안에서 B를 한 번 실행한다.
+
+빠른 검증 baseline은 요청 시점의 target LLM node 실행 중 다음 조건을 모두 만족하는 가장 최근 실행이다.
+
+- 성공한 `workflow_node_runs`다.
+- input, output, usage를 복원할 수 있다.
+- Cost Optimizer candidate 실행이 아니다.
+- 현재 활성 deployment와 node 설정 fingerprint가 같은 운영 실행이다.
+
+baseline을 찾지 못하면 LLM 호출을 시작하지 않고 `비교 가능한 최신 성공 기록이 없습니다.`를 표시한다. 빠른 검증이 시작된 뒤에는 exact `baseline_node_run_id`를 결과에 고정하며, 실행 도중 더 최신 로그가 생겨도 baseline을 바꾸지 않는다.
+
+빠른 검증은 A를 다시 실행하지 않고, A의 복원된 입력을 B candidate에 고정해 B만 새로 실행한다. 선택한 추천 row 또는 target node draft가 바뀌면 기존 결과를 `stale`로 표시하고 적용을 막으며, 다시 테스트해야 한다.
+
+모달은 각 지표를 서로 다른 단위의 독립된 A/B 막대그래프로 표시한다.
+
+| 지표 | A baseline | B candidate | 변화 표시 |
+| --- | --- | --- | --- |
+| 비용 | 과거 baseline LLM 비용 | 이번 candidate LLM 비용 | 금액 차이와 절감률 |
+| 실행 시간 | baseline node latency | candidate node latency | ms/s 차이와 증감률 |
+| 입력/출력/전체 token | baseline usage | candidate usage | token 수와 증감률 |
+| 출력 품질 점수 | 같은 rubric으로 평가한 baseline 점수 | 같은 rubric으로 평가한 candidate 점수 | 0~100 점수 차이와 confidence |
+
+비용, latency, token, 품질 점수는 단위와 값 범위가 다르므로 하나의 공통 축에 섞지 않는다. 막대 길이는 각 metric 카드 안에서 A/B 상대 비교에만 사용하고 실제 숫자를 항상 함께 표시한다.
+
+`이번 테스트에서 새로 발생한 비용`은 다음 항목을 분리해 보여준다.
+
+- B candidate 실행 LLM 비용
+- 출력 품질 평가 judge 비용
+- 두 비용의 합계
+
+A baseline 비용은 과거 실행에서 이미 발생한 참고 비용이므로 이번 테스트 신규 비용 합계에 다시 더하지 않는다. candidate 또는 judge 가격 정보를 계산할 수 없으면 `계산 불가`를 표시하고 임의의 0원으로 보이지 않게 한다.
+
+출력 품질 평가는 Cost Optimizer 전용 LLM judge 기능으로 새로 구현한다.
+
+- baseline output을 정답으로 간주하지 않는다.
+- baseline과 candidate를 같은 input, target node prompt 목적, output contract에서 독립적으로 평가한다.
+- judge에는 A/B 순서를 무작위로 가린 pairwise payload를 전달해 위치 편향을 줄인다.
+- `instruction_fulfillment`, `relevance_completeness`, `clarity_consistency`, RAG 사용 시 `groundedness`를 평가해 0~100 점수와 confidence를 반환한다.
+- JSON schema 통과 여부와 downstream 호환성은 semantic 품질 점수에 섞지 않고 별도 deterministic gate로 표시한다.
+- judge가 실패하거나 실행 가능한 credential/model이 없으면 품질 점수만 `평가 불가`로 표시하고 비용·속도·schema·downstream 결과는 유지한다.
+- 품질 점수는 추천 근거이며 단독 hard block으로 사용하지 않는다. 낮은 점수 또는 낮은 confidence에서는 적용 전 경고와 명시적 확인을 요구한다.
+
+출력 schema 검증은 candidate의 `output_format.type=json`일 때만 수행한다.
+
+- JSON schema가 있으면 `passed` 또는 `failed`와 누락 field/type mismatch를 safe summary로 보여준다.
+- JSON 출력이지만 schema가 없으면 `not_configured`로 표시한다.
+- text 출력이면 `not_applicable`로 표시하고 schema 실패처럼 보이지 않게 한다.
+
+downstream 호환성은 기존 FR-007 contract validator를 재사용한다. `compatible`, `warning`, `incompatible`, `unknown` 상태와 검사한 직접 소비 노드를 표시한다. `incompatible`은 적용을 막고, `warning`은 사용자 확인 후 적용할 수 있다.
+
+빠른 검증 결과는 기존 Cost Optimizer experiment/candidate 이력으로 저장한다. 모달의 `상세 비교 분석하기`는 같은 `comparison_id`와 `candidate_id`를 기존 결과 분석 workspace에 전달하며 B를 다시 실행하거나 비용을 중복 발생시키지 않는다.
+
+검증 완료 후 모달 하단에는 다음 액션을 제공한다.
+
+| 버튼 | 동작 |
+| --- | --- |
+| `적용하기` | 성공한 exact candidate settings를 현재 target LLM node draft에 적용한다. schema failed 또는 downstream incompatible이면 비활성화한다. |
+| `상세 비교 분석하기` | 같은 experiment/candidate를 기존 Cost Optimizer 결과 분석 화면에서 연다. |
+| `닫기` | 결과를 이력에 남기고 모달만 닫는다. draft는 바꾸지 않는다. |
+
+모달 본문은 결과가 길어지면 내부 세로 스크롤을 제공하고, 하단 버튼 영역은 항상 접근할 수 있도록 고정한다. loading 중 중복 실행을 막고, 비용이 발생하는 실제 LLM 호출임을 실행 전에 안내한다.
+
 ## Policies And Edge Cases
 
 - 비교 실행은 실제 LLM 호출이므로 비용이 발생할 수 있다.
@@ -663,8 +731,6 @@ RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 
 다음 항목은 Cost Optimizer 방향에는 포함되지만, 1차 구현의 필수 범위에서는 제외하고 후속 기능으로 분리한다.
 
 - workflow 전체 A/B 테스트
-- 자동 품질 점수 산정
-- 일반 A/B 결과에 대한 LLM judge 기반 자동 품질 점수 산정
 - 사용자 클릭 기반 단발 모델 추천 화면
 - 최적화 에이전트
 - LLM response cache
@@ -707,6 +773,10 @@ Open Question 중요도는 다음 3단계로 나눈다.
 | Priority 1 | 적용 방식 | 선택 후보를 draft에 바로 적용할지, versioning과 연결할지 | 사용자가 실수로 기존 설정을 잃을 수 있다 | 결정: 현재 draft target LLM node에 후보 설정 전체를 적용하고 기존 저장/되돌리기 흐름을 따른다. |
 | Priority 2 | downstream 계약 검증 | 1차 구현에서 어떤 다음 노드 타입까지 계약 검증할지 | 지원하지 않는 노드가 있으면 검증 결과를 신뢰하기 어렵다 | 결정: target LLM node를 직접 참조하는 variable extraction mapping, condition selector, answer output selector, Slack referenced variable selector를 후보 출력 기준으로 검사한다. |
 | Priority 2 | 실패 후보 처리 | B 후보 실행이 실패했을 때 workspace 전체를 실패로 볼지 | 비교 UX가 달라진다 | 해당 B 실행만 `failed` 후보로 기록하고 A baseline과 기존 history는 유지한다 |
+| Priority 1 | 품질 점수 rubric/가중치 | instruction fulfillment, relevance/completeness, clarity/consistency, RAG groundedness를 어떤 비율로 100점에 합산할지 | 가중치가 제품의 품질 정의가 되며 node 유형마다 적합도가 다르다 | 1차는 node output contract 기반 공통 rubric을 사용하되 정확한 가중치는 구현 전 확정한다 |
+| Priority 1 | 품질 점수 경고 기준 | baseline 대비 몇 점 하락 또는 어느 confidence부터 적용 확인을 요구할지 | 너무 느슨하면 품질 저하를 놓치고 너무 엄격하면 비용 절감 후보를 적용하지 못한다 | 품질 점수 단독 hard block은 금지하고, threshold 미확정 동안 하락 또는 low confidence이면 항상 확인을 요구한다 |
+| Priority 2 | 품질 judge 모델 선택 | organization에 여러 provider/model credential이 있을 때 어떤 모델을 judge로 사용할지 | judge 품질과 빠른 검증 비용이 달라진다 | 현재 사용자가 실행 가능한 모델 중 별도 evaluator allowlist를 두고, 없으면 품질 평가만 `unavailable`로 처리한다 |
+| Priority 2 | 빠른 검증 baseline 범위 | 최신 성공 기록을 현재 active deployment/config cohort로 제한할지 전체 성공 기록에서 찾을지 | 과거 설정의 로그를 기준으로 추천 후보를 비교하면 결과 해석이 어긋난다 | active deployment와 node setting fingerprint가 같은 최신 성공 운영 로그로 제한한다 |
 | Priority 3 | 자동 추천 | 가격표 기반 단발 추천 화면을 별도로 둘지 | 정책 기반 자동 라우팅과 겹치면 사용자가 실행 정책과 단발 추천을 혼동할 수 있다 | FR-011은 정책 기반 자동 라우팅으로 결정하고, 단발 추천 화면은 후속으로 분리한다 |
 | Priority 3 | 모델 라우팅 정책 세부 gate | 정책 자동 반영의 정확한 schema/downstream/fallback/confidence 기준값을 어디까지 고정할지 | gate가 느슨하면 품질이 흔들리고, 너무 엄격하면 비용 절감 효과가 낮다 | 기본 원칙은 품질 gate 통과 시 조건부 자동 반영, 미통과 시 `pending_review`로 둔다 |
 | Priority 3 | 최적화 에이전트 | 에이전트가 어떤 근거로 모델/프롬프트/파라미터 최적화 후보를 제안할지 | 추천 자체도 비용이 들고 잘못된 추천은 workflow 품질을 해칠 수 있다 | 후속 기능으로 분리하고 자동 적용은 금지한다 |
