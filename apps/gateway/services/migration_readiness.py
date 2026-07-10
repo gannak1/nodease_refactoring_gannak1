@@ -20,6 +20,24 @@ class GatewayMigrationNotReadyError(RuntimeError):
     pass
 
 
+_REQUIRED_SCHEDULE_DISPATCH_SCHEMA = {
+    "schedule_dispatch_claims": {
+        "id",
+        "schedule_id",
+        "organization_id",
+        "deployment_id",
+        "scheduled_for",
+        "idempotency_key",
+        "status",
+        "attempt_count",
+        "claimed_at",
+        "workflow_run_id",
+        "execution_deadline_at",
+    },
+    "workflow_runs": {"user_id", "trigger_mode", "workflow_task_id"},
+}
+
+
 def gateway_alembic_readiness(
     schema_inspector,
     *,
@@ -40,11 +58,27 @@ def require_schedule_dispatch_migration_ready(
 ) -> None:
     if not settings.processes_existing_claims:
         return
-    result = gateway_alembic_readiness(inspect(engine))
-    if not result.ready:
+    inspector = inspect(engine)
+    result = gateway_alembic_readiness(inspector)
+    if not result.ready or not _required_schedule_dispatch_schema_exists(inspector):
         raise GatewayMigrationNotReadyError(
             "database migration is not ready for schedule dispatch"
         )
+
+
+def _required_schedule_dispatch_schema_exists(schema_inspector) -> bool:
+    try:
+        for table_name, required_columns in _REQUIRED_SCHEDULE_DISPATCH_SCHEMA.items():
+            if not schema_inspector.has_table(table_name):
+                return False
+            actual_columns = {
+                column["name"] for column in schema_inspector.get_columns(table_name)
+            }
+            if not required_columns <= actual_columns:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _script_directory() -> ScriptDirectory:

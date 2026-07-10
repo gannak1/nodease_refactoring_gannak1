@@ -168,3 +168,27 @@ def test_scheduled_task_rejects_invalid_locator_or_task_identity(claim_id, task_
 
 def test_claim_task_registration_has_no_automatic_retry():
     assert tasks.execute_scheduled_deployment.max_retries == 0
+
+
+def test_missing_claim_schema_is_safe_permanent_rejection(monkeypatch):
+    class _UnavailableUseCase:
+        def __init__(self, **kwargs):
+            pass
+
+        def admit(self, **kwargs):
+            raise RuntimeError("relation details must not escape")
+
+    monkeypatch.setattr(tasks, "SessionLocal", _Session)
+    monkeypatch.setattr(
+        application,
+        "ScheduledDeploymentExecutionUseCase",
+        _UnavailableUseCase,
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError) as exc_info:
+        tasks._execute_scheduled_deployment_claim(
+            str(uuid.uuid4()),
+            task_id=f"schedule:{uuid.uuid4()}",
+        )
+
+    assert str(exc_info.value) == "schedule admission is unavailable"
