@@ -344,6 +344,7 @@ def _record_team_knowledge_permission_audit(
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -351,7 +352,7 @@ def _record_team_knowledge_permission_audit(
 def _record_team_knowledge_permission_delete_audit(
     db: Session,
     current_user: User,
-    permission_id: UUID,
+    permission: TeamKnowledgePermission,
     before: dict,
 ) -> None:
     """team-KB 권한 회수 감사를 직접 남긴다."""
@@ -367,9 +368,10 @@ def _record_team_knowledge_permission_delete_audit(
         action="team_knowledge_permission.deleted",
         actor_id=current_user.id,
         target_type="team_knowledge_permission",
-        target_id=permission_id,
+        target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -409,6 +411,7 @@ def _record_user_workflow_permission_audit(
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -435,6 +438,7 @@ def _record_user_workflow_permission_delete_audit(
         target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -472,6 +476,7 @@ def _record_user_llm_permission_audit(
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -498,6 +503,7 @@ def _record_user_llm_permission_delete_audit(
         target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -535,6 +541,7 @@ def _record_user_knowledge_permission_audit(
         target_id=permission.id,
         before=audit_before,
         after=audit_after,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -542,7 +549,7 @@ def _record_user_knowledge_permission_audit(
 def _record_user_knowledge_permission_delete_audit(
     db: Session,
     current_user: User,
-    permission_id: UUID,
+    permission: UserKnowledgePermission,
     before: dict,
 ) -> None:
     """user-KB 직접 권한 회수 감사를 직접 남긴다."""
@@ -558,9 +565,10 @@ def _record_user_knowledge_permission_delete_audit(
         action="user_knowledge_permission.deleted",
         actor_id=current_user.id,
         target_type="user_knowledge_permission",
-        target_id=permission_id,
+        target_id=permission.id,
         before=before,
         after=None,
+        organization_id=permission.grantee_organization_id,
         metadata=metadata,
     )
 
@@ -2397,7 +2405,7 @@ def delete_team_knowledge_permission(
     _record_team_knowledge_permission_delete_audit(
         db,
         current_user,
-        permission_id,
+        permission,
         before,
     )
     db.commit()
@@ -2569,7 +2577,7 @@ def delete_user_knowledge_permission(
         lambda: _record_user_knowledge_permission_delete_audit(
             db,
             current_user,
-            permission_id,
+            permission,
             before,
         ),
     )

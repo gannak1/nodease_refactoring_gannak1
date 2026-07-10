@@ -400,6 +400,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.after["knowledge_base_id"], str(knowledge_base_id))
         self.assertEqual(audit.after["team_id"], str(team_id))
         self.assertIsInstance(audit.after["assigned_at"], str)
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         _assert_audit_added_before_commit(self, session)
 
     def test_put_team_knowledge_permission_updates_audit_row_for_manager(self):
@@ -527,6 +530,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertNotIn("assigned_at", audit.after)
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         _assert_audit_added_before_commit(self, session)
 
     def test_put_user_knowledge_permission_updates_audit_row_for_manager(self):
@@ -815,6 +821,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.before["auth_state"], "operator")
         self.assertIsInstance(audit.before["assigned_at"], str)
         self.assertIsNone(audit.after)
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         _assert_audit_added_before_commit(self, session)
 
     def test_put_team_workflow_permission_updates_row_for_workflow_manager(self):
@@ -2000,6 +2009,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.target_id, str(upsert_result.id))
         self.assertEqual(audit.after["user_id"], str(target_user_id))
         self.assertEqual(audit.after["auth_state"], "builder")
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         _assert_audit_added_before_commit(self, session)
 
     def test_put_user_workflow_permission_rolls_back_when_audit_add_fails(self):
@@ -2219,6 +2231,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.target_id, str(upsert_result.id))
         self.assertEqual(audit.after["user_id"], str(target_user_id))
         self.assertEqual(audit.after["auth_state"], "operator")
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         _assert_audit_added_before_commit(self, session)
 
     def test_put_user_llm_permission_allows_credential_manager(self):
@@ -2813,6 +2828,9 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit.before["user_id"], str(target_user_id))
         self.assertEqual(audit.before["auth_state"], "builder")
         self.assertIsNone(audit.after)
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         _assert_audit_added_before_commit(self, session)
 
@@ -3028,6 +3046,9 @@ class TestPermissionsApi(unittest.TestCase):
             str(credential_id),
         )
         self.assertEqual(audit.before["auth_state"], "operator")
+        self.assertEqual(
+            audit.audit_metadata["organization_id"], str(organization_id)
+        )
         self.assertIsNone(audit.after)
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         _assert_audit_added_before_commit(self, session)
