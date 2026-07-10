@@ -199,4 +199,46 @@ describe('KnowledgeDetailPage source processing actions', () => {
     expect(alertSpy).not.toHaveBeenCalled();
     expect(routerPush).not.toHaveBeenCalled();
   });
+
+  it('generates and saves KB safe metadata from the detail page', async () => {
+    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValue({
+      ...knowledgeBaseFixture,
+      name: 'People Ops KB',
+      description: 'Onboarding guide for benefits',
+      safe_metadata: {},
+    });
+    mockedKnowledgeApi.updateKnowledgeBase.mockResolvedValue({
+      ...knowledgeBaseFixture,
+      name: 'People Ops KB',
+      safe_metadata: {
+        safe_label: 'People Ops KB',
+        kb_safe_topics: ['People', 'Ops', 'KB', 'Onboarding', 'guide', 'benefits'],
+      },
+    });
+
+    render(<KnowledgeDetailPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'People Ops KB' }),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'generate safe label' }));
+    fireEvent.click(screen.getByRole('button', { name: 'generate safe topics' }));
+
+    expect(screen.getByLabelText('KB safe label')).toHaveValue('People Ops KB');
+    expect(screen.getByLabelText('KB safe topics')).toHaveValue(
+      'People, Ops, KB, Onboarding, guide, benefits',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'save safe metadata' }));
+
+    await waitFor(() => {
+      expect(mockedKnowledgeApi.updateKnowledgeBase).toHaveBeenCalledWith('kb-1', {
+        safe_metadata: {
+          safe_label: 'People Ops KB',
+          kb_safe_topics: ['People', 'Ops', 'KB', 'Onboarding', 'guide', 'benefits'],
+        },
+      });
+    });
+  });
 });

@@ -344,7 +344,12 @@ export const knowledgeApi = {
   // 지식 수정, 재인덱싱
   updateKnowledgeBase: async (
     id: string,
-    data: { name?: string; description?: string; embedding_model?: string },
+    data: {
+      name?: string;
+      description?: string;
+      embedding_model?: string;
+      safe_metadata?: Record<string, unknown>;
+    },
   ): Promise<KnowledgeBaseResponse> => {
     const response = await api.patch(`/knowledge/${id}`, data);
     return response.data;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Database,
@@ -30,6 +30,13 @@ import {
 import CreateKnowledgeModal from '@/app/features/knowledge/components/create-knowledge-modal';
 import KnowledgeSearchModal from '@/app/features/knowledge/components/knowledge-search-modal';
 import ChangeEmbeddingModelModal from '@/app/features/knowledge/components/change-embedding-model-modal';
+import {
+  generateKnowledgeSafeLabel,
+  generateKnowledgeSafeTopics,
+  mergeKnowledgeSafeMetadata,
+  readKnowledgeSafeLabel,
+  readKnowledgeSafeTopics,
+} from '@/app/features/knowledge/utils/knowledgeSafeMetadata';
 import { toast } from 'sonner';
 import Link from 'next/link';
 
@@ -53,8 +60,13 @@ export default function KnowledgeDetailPage() {
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [isEditingDesc, setIsEditingDesc] = useState(false);
+  const [isEditingSafeMetadata, setIsEditingSafeMetadata] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [safeLabelInput, setSafeLabelInput] = useState('');
+  const [safeTopicsInput, setSafeTopicsInput] = useState('');
+  const [isSavingSafeMetadata, setIsSavingSafeMetadata] = useState(false);
+  const isEditingSafeMetadataRef = useRef(false);
 
   // Delete Modal State (Knowledge Base)
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -71,6 +83,10 @@ export default function KnowledgeDetailPage() {
   // Embedding Model Change Modal State
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
 
+  useEffect(() => {
+    isEditingSafeMetadataRef.current = isEditingSafeMetadata;
+  }, [isEditingSafeMetadata]);
+
   // 데이터 조회
   const fetchKnowledgeBase = useCallback(
     async (isBackground = false) => {
@@ -86,6 +102,12 @@ export default function KnowledgeDetailPage() {
         }
         if (!isEditingDesc) {
           setEditDesc(data.description || '');
+        }
+        if (!isEditingSafeMetadataRef.current) {
+          setSafeLabelInput(readKnowledgeSafeLabel(data.safe_metadata));
+          setSafeTopicsInput(
+            readKnowledgeSafeTopics(data.safe_metadata).join(', '),
+          );
         }
       } catch (error) {
         if (!isBackground) {
@@ -335,6 +357,47 @@ export default function KnowledgeDetailPage() {
     }
   };
 
+  const handleGenerateSafeLabel = () => {
+    if (!knowledgeBase) return;
+    setSafeLabelInput(generateKnowledgeSafeLabel(knowledgeBase.name));
+    setIsEditingSafeMetadata(true);
+  };
+
+  const handleGenerateSafeTopics = () => {
+    if (!knowledgeBase) return;
+    setSafeTopicsInput(
+      generateKnowledgeSafeTopics({
+        name: knowledgeBase.name,
+        description: knowledgeBase.description,
+      }).join(', '),
+    );
+    setIsEditingSafeMetadata(true);
+  };
+
+  const handleSafeMetadataSave = async () => {
+    if (!knowledgeBase) return;
+    const safeTopics = safeTopicsInput
+      .split(/[,;\n\r]+/)
+      .map((topic) => topic.trim())
+      .filter(Boolean);
+    try {
+      setIsSavingSafeMetadata(true);
+      await knowledgeApi.updateKnowledgeBase(id, {
+        safe_metadata: mergeKnowledgeSafeMetadata(knowledgeBase.safe_metadata, {
+          safeLabel: safeLabelInput,
+          safeTopics,
+        }),
+      });
+      setIsEditingSafeMetadata(false);
+      toast.success('KB safe metadata saved.');
+      fetchKnowledgeBase();
+    } catch {
+      toast.error('KB safe metadata save failed.');
+    } finally {
+      setIsSavingSafeMetadata(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -509,6 +572,79 @@ export default function KnowledgeDetailPage() {
           </button>
         </div>
       </div>
+
+      <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="grid gap-3 lg:grid-cols-[1fr_1.5fr_auto] lg:items-end">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              추천 표시명
+            </span>
+            <div className="flex gap-2">
+              <input
+                aria-label="KB safe label"
+                value={safeLabelInput}
+                onChange={(event) => {
+                  setSafeLabelInput(event.target.value);
+                  setIsEditingSafeMetadata(true);
+                }}
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                placeholder="Knowledge Base"
+              />
+              <button
+                type="button"
+                aria-label="generate safe label"
+                onClick={handleGenerateSafeLabel}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-300 text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                title="추천 표시명 자동 생성"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+            </div>
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              추천 토픽
+            </span>
+            <div className="flex gap-2">
+              <input
+                aria-label="KB safe topics"
+                value={safeTopicsInput}
+                onChange={(event) => {
+                  setSafeTopicsInput(event.target.value);
+                  setIsEditingSafeMetadata(true);
+                }}
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                placeholder="topic1, topic2"
+              />
+              <button
+                type="button"
+                aria-label="generate safe topics"
+                onClick={handleGenerateSafeTopics}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-300 text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                title="추천 토픽 자동 생성"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+            </div>
+          </label>
+
+          <button
+            type="button"
+            aria-label="save safe metadata"
+            onClick={handleSafeMetadataSave}
+            disabled={isSavingSafeMetadata}
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSavingSafeMetadata ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle className="h-4 w-4" />
+            )}
+            저장
+          </button>
+        </div>
+      </section>
 
       {/* Source List */}
       <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden shadow-sm">

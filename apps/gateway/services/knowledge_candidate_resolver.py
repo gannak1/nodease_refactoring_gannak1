@@ -17,6 +17,12 @@ from apps.shared.schemas.knowledge import (
     KnowledgePermissionDecision,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_safe_text import (
+    safe_label_from_text,
+    safe_topics_from_texts,
+    sanitize_kb_safe_metadata,
+    sanitize_safe_text,
+)
 
 
 DEFAULT_MAX_COLLECTIONS = 20
@@ -351,6 +357,7 @@ class KnowledgeCandidateResolver:
 
         safe_metadata = dict(permission.safe_metadata)
         safe_metadata.update(self._active_version_safe_metadata(kb))
+        safe_metadata.update(self._kb_safe_metadata(kb))
         if extra_safe_metadata:
             safe_metadata.update(extra_safe_metadata)
         if runtime_reason_code:
@@ -375,11 +382,68 @@ class KnowledgeCandidateResolver:
 
     def _kb_safe_label(self, kb: KnowledgeBase) -> str | None:
         source_identity = getattr(kb, "source_identity", None)
-        if source_identity is None:
+        if source_identity is not None:
+            if getattr(source_identity, "display_policy_state", None) == "approved":
+                return safe_label_from_text(
+                    getattr(source_identity, "safe_display_name", None)
+                )
             return None
-        if getattr(source_identity, "display_policy_state", None) == "approved":
-            return getattr(source_identity, "safe_display_name", None)
-        return None
+        safe_metadata = sanitize_kb_safe_metadata(getattr(kb, "safe_metadata", None))
+        safe_label = safe_metadata.get("safe_label")
+        if isinstance(safe_label, str) and safe_label:
+            return safe_label
+        return safe_label_from_text(getattr(kb, "name", None))
+
+    def _kb_safe_metadata(self, kb: KnowledgeBase) -> dict:
+        source_identity = getattr(kb, "source_identity", None)
+        if source_identity is not None:
+            if getattr(source_identity, "display_policy_state", None) != "approved":
+                return {}
+            return self._source_identity_safe_metadata(source_identity)
+
+        metadata: dict[str, object] = {}
+        stored_metadata = sanitize_kb_safe_metadata(getattr(kb, "safe_metadata", None))
+        safe_description = stored_metadata.get("kb_safe_description")
+        if not isinstance(safe_description, str) or not safe_description:
+            safe_description = sanitize_safe_text(getattr(kb, "description", None))
+        if safe_description:
+            metadata["kb_safe_description"] = safe_description
+        topics = stored_metadata.get("kb_safe_topics")
+        if not isinstance(topics, list) or not topics:
+            topics = safe_topics_from_texts(
+                (
+                    getattr(kb, "name", None),
+                    getattr(kb, "description", None),
+                )
+            )
+        if topics:
+            metadata["kb_safe_topics"] = topics
+        return metadata
+
+    def _source_identity_safe_metadata(self, source_identity) -> dict:
+        metadata: dict[str, object] = {}
+        safe_description = sanitize_safe_text(
+            getattr(source_identity, "safe_display_description", None)
+        )
+        if safe_description:
+            metadata["kb_safe_description"] = safe_description
+        source_metadata = getattr(source_identity, "safe_metadata", None) or {}
+        raw_topics = (
+            source_metadata.get("kb_safe_topics")
+            or source_metadata.get("safe_topics")
+            or source_metadata.get("topics")
+        )
+        if isinstance(raw_topics, (list, tuple, set)):
+            topics = []
+            for value in raw_topics:
+                safe_topic = sanitize_safe_text(value)
+                if safe_topic and safe_topic not in topics:
+                    topics.append(safe_topic)
+                if len(topics) >= 10:
+                    break
+            if topics:
+                metadata["kb_safe_topics"] = topics
+        return metadata
 
     def _active_version_safe_metadata(self, kb: KnowledgeBase) -> dict:
         # Source tier는 권한이 통과된 KB의 active ready version에서만 safe ranking hint로 전달한다.

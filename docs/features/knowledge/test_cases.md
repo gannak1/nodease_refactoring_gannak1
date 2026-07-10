@@ -132,6 +132,14 @@ Status: Draft
 - KB 상세 source 목록은 `failed` document에 `재처리` action을 표시하고, `completed` document에는 처리 시작 CTA를 표시하지 않는다.
 - Pending/failed processing CTA는 document settings 화면으로 이동하며 raw file path, source title, hidden KB id를 새로 노출하지 않는다.
 
+## Document Preview Tests
+
+- Opening a FILE source document settings page must not trigger a browser download from the preview iframe.
+- The document preview iframe sandbox must not include `allow-downloads`.
+- PDF documents must still render through the browser preview path after download permission is removed from the iframe sandbox.
+- Markdown and plain text documents stored under extensionless object paths must use the original filename to select preview media type and must render as escaped HTML without attachment `Content-Disposition`.
+- Unsupported preview file types must return a safe preview-unavailable response instead of attachment download fallback.
+
 ## Retrieval And Agent Tests
 
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.
@@ -149,6 +157,10 @@ Status: Draft
 - Trusted backend/internal service boundary는 safe handle, authorized picker, server-resolved context를 통과한 경우에만 explicit KB 후보를 recommendation scope로 사용할 수 있다.
 - Recommendation response는 `status`, `resolution_id`, `requirement_id`, `recommendations`, `clarification_options`, `user_safe_warning`, `fallback_reason` top-level envelope를 사용해야 하며 recommendation item list만 단독으로 반환하지 않아야 한다.
 - Recommendation ranking은 `KnowledgeCandidateResolver`가 만든 server-issued reference 또는 같은 backend 내부 service call의 safe candidate set만 사용해야 하며, raw KB id나 raw source metadata로 권한 후보를 직접 만들지 않아야 한다. HTTP 또는 serialized boundary에서는 full candidate set 객체가 아니라 reference만 사용해야 한다.
+- Recommendation ranking의 `score`는 DB 저장값이 아니라 요청 시점 계산값이어야 한다. Agent Builder가 구조화한 `safe_query_topics`가 `kb_relevance` 1차 입력이어야 하며, `웹훅`, `워크플로우`, `챗봇`, `KB` 같은 action/UI terms는 relevance를 올리지 않아야 한다. Relevance matching은 `safe_label`, `kb_safe_description`, `kb_safe_topics`만 사용하고 `collection_safe_label`, `collection_safe_topics`, Collection name/description, collection id/count를 사용하지 않아야 한다.
+- Manual KB는 `name`/`description`을 sanitizer, length cap, secret/url/path 제거를 통과한 뒤 safe label/topics comparison text로 자동 생성할 수 있어야 한다. Source-managed KB는 display-policy-approved source safe metadata가 없으면 raw source-derived name/title/path/url을 safe label/topics 또는 keyword score 입력으로 사용하지 않아야 한다.
+- KB detail UI는 `safe_label`과 `kb_safe_topics` 자동 생성 버튼을 각각 제공해야 한다. 저장 시 `PATCH /api/v1/knowledge/{kb_id}`는 allowlisted `safe_metadata`만 저장하고 raw source URL/path/title, secret-like value를 제거해야 한다. 저장된 manual KB safe metadata는 Agent Builder recommendation에서 자동 생성값보다 우선해야 한다.
+- Recommendation tokenizer는 한국어/영어/숫자 혼합 builder intent에서 `사내문서1`, `KB`, `웹훅`, `사내`, `문서`, `챗봇` 같은 safe term을 분리할 수 있어야 한다.
 - Recommendation response item은 `score`, `confidence`, `reason_category`, `threshold_result`를 포함해야 하며 raw retrieval/provider score나 hidden resource identity를 노출하지 않아야 한다.
 - Recommendation threshold 값은 구현 설정값으로 관리되고, 테스트 fixture에서는 고정되어 `high_confidence`, `close_score`, `below_threshold` 분기가 재현 가능해야 한다.
 - Recommendation candidate set은 `source_deleted` KB, active ready document version과 legacy unversioned retrieval-visible chunk가 모두 없는 KB를 selectable ready 후보에서 제외해야 한다.

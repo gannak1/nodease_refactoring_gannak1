@@ -100,6 +100,7 @@ class KnowledgeBaseResponse(BaseModel):
     organization_id: Optional[UUID] = None
     name: str
     description: Optional[str] = None
+    safe_metadata: Dict[str, Any] = Field(default_factory=dict)
     document_count: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None  # 문서 최종 업데이트 시간
@@ -117,6 +118,7 @@ class KnowledgeUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     embedding_model: Optional[str] = None
+    safe_metadata: Optional[Dict[str, Any]] = None
 
 
 class DocumentResponse(BaseModel):

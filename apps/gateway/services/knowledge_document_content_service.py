@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 SAFE_INLINE_FILE_EXTENSIONS = {".md", ".pdf", ".txt"}
 SAFE_INLINE_MEDIA_TYPES = {"application/pdf", "text/markdown", "text/plain"}
+FALLBACK_MEDIA_TYPES_BY_EXTENSION = {
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+}
+TEXT_PREVIEW_EXTENSIONS = {".md", ".txt"}
+TEXT_PREVIEW_MAX_BYTES = 1024 * 1024
 HTML_PREVIEW_EXTENSIONS = {".xlsx", ".xls", ".csv", ".docx"}
 HTML_PREVIEW_CSP = (
     "default-src 'none'; "
@@ -31,6 +38,20 @@ HTML_PREVIEW_CSP = (
     "form-action 'none'; "
     "frame-ancestors 'self'"
 )
+
+
+def media_type_for_document(filename: str, file_path: str) -> str:
+    ext = os.path.splitext(str(filename or ""))[1].lower()
+    fallback_media_type = FALLBACK_MEDIA_TYPES_BY_EXTENSION.get(ext)
+    if fallback_media_type:
+        return fallback_media_type
+
+    media_type, _ = mimetypes.guess_type(str(filename or ""))
+    if media_type:
+        return media_type
+
+    media_type, _ = mimetypes.guess_type(str(file_path or ""))
+    return media_type or "application/octet-stream"
 
 
 def content_disposition_type_for_document(filename: str, media_type: str) -> str:
@@ -60,15 +81,19 @@ class KnowledgeDocumentContentService:
         if not is_external_file and not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="File not found on server")
 
-        media_type, _ = mimetypes.guess_type(file_path)
-        if not media_type:
-            media_type = "application/octet-stream"
+        media_type = media_type_for_document(filename, file_path)
         content_disposition_type = content_disposition_type_for_document(
             filename,
             media_type,
         )
 
         ext = os.path.splitext(filename)[1].lower()
+        if ext in TEXT_PREVIEW_EXTENSIONS:
+            return self._text_preview_response(
+                file_path=file_path,
+                is_external_file=is_external_file,
+            )
+
         if ext in HTML_PREVIEW_EXTENSIONS:
             preview_response = self._try_html_preview_response(
                 file_path=file_path,
@@ -77,6 +102,9 @@ class KnowledgeDocumentContentService:
             )
             if preview_response is not None:
                 return preview_response
+
+        if content_disposition_type != "inline":
+            return self._preview_unavailable_response(filename)
 
         if is_external_file:
             return self._external_file_response(
@@ -92,6 +120,54 @@ class KnowledgeDocumentContentService:
             media_type=media_type,
             content_disposition_type=content_disposition_type,
         )
+
+    def _text_preview_response(
+        self,
+        *,
+        file_path: str,
+        is_external_file: bool,
+    ) -> HTMLResponse:
+        content_bytes, truncated = self._read_preview_bytes(
+            file_path=file_path,
+            is_external_file=is_external_file,
+            max_bytes=TEXT_PREVIEW_MAX_BYTES,
+        )
+        text = content_bytes.decode("utf-8", errors="replace")
+        escaped_text = html.escape(text)
+        truncated_banner = (
+            "<div class='info-banner'>Preview is truncated to the first 1 MB.</div>"
+            if truncated
+            else ""
+        )
+        return self._html_preview_response(
+            f"{truncated_banner}<pre class='text-preview'>{escaped_text}</pre>"
+        )
+
+    def _read_preview_bytes(
+        self,
+        *,
+        file_path: str,
+        is_external_file: bool,
+        max_bytes: int,
+    ) -> tuple[bytes, bool]:
+        if is_external_file:
+            response = safe_http_request(
+                "GET",
+                file_path,
+                policy=EgressGuardPolicy(
+                    timeout_seconds=30.0,
+                    max_response_bytes=max_bytes + 1,
+                    allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
+                ),
+            )
+            if response.status_code >= 400:
+                raise RuntimeError("Remote file returned an error.")
+            content = response.content
+            return content[:max_bytes], len(content) > max_bytes
+
+        with open(file_path, "rb") as file:
+            content = file.read(max_bytes + 1)
+        return content[:max_bytes], len(content) > max_bytes
 
     def _try_html_preview_response(
         self,
@@ -198,6 +274,7 @@ class KnowledgeDocumentContentService:
                 tr:hover td {{ background-color: #f9fafb; }}
                 p {{ margin-bottom: 0.8em; color: #1f2937; }}
                 .docx-table td {{ border: 1px solid #e5e7eb; }}
+                .text-preview {{ white-space: pre-wrap; word-break: break-word; margin: 0; color: #1f2937; font-size: 13px; line-height: 1.6; }}
                 .info-banner {{
                     margin-bottom: 16px; padding: 10px 14px; background: #fffbeb; border: 1px solid #fcd34d;
                     color: #92400e; border-radius: 6px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px;
@@ -215,6 +292,15 @@ class KnowledgeDocumentContentService:
                 "Content-Security-Policy": HTML_PREVIEW_CSP,
                 "X-Content-Type-Options": "nosniff",
             },
+        )
+
+    def _preview_unavailable_response(self, filename: str) -> HTMLResponse:
+        safe_filename = html.escape(filename or "Document")
+        return self._html_preview_response(
+            "<div class='info-banner'>"
+            "This file type cannot be previewed in the browser."
+            "</div>"
+            f"<p>{safe_filename}</p>"
         )
 
     def _external_file_response(

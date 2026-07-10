@@ -237,6 +237,7 @@ class KnowledgeRAGRecommendationRequest(BaseModel):
         validation_alias=AliasChoices("node_purpose", "node_purpose_summary"),
     )
     knowledge_requirement: dict | None = None
+    safe_query_topics: list[str] = Field(default_factory=list, max_length=20)
     pending_resolution_ref: str | None = Field(default=None, max_length=255)
     authorized_safe_candidate_set_ref: str | None = Field(default=None, max_length=255)
     safe_workflow_context_summary: dict | None = None
@@ -259,6 +260,30 @@ class KnowledgeRAGRecommendationRequest(BaseModel):
         if not normalized:
             raise ValueError("text must not be empty")
         return normalized
+
+    @field_validator("safe_query_topics", mode="before")
+    @classmethod
+    def normalize_safe_query_topics(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_values = [value]
+        elif isinstance(value, (list, tuple, set)):
+            raw_values = list(value)
+        else:
+            return []
+
+        topics: list[str] = []
+        for item in raw_values:
+            normalized = normalize_recommendation_text(item if isinstance(item, str) else None)
+            if not normalized:
+                continue
+            normalized = normalized[:128]
+            if normalized not in topics:
+                topics.append(normalized)
+            if len(topics) >= 20:
+                break
+        return topics
 
 
 class KnowledgeBaseOptionRef(BaseModel):
@@ -286,7 +311,7 @@ class KnowledgeSourceCollectionSummary(BaseModel):
 
 
 class KnowledgeRAGRecommendationProvenance(BaseModel):
-    recommendation_strategy: str = "metadata_keyword_v1"
+    recommendation_strategy: str = "structured_kb_relevance_v2"
     safe_reason_code: str
     used_signals: list[str] = Field(default_factory=list)
     matched_safe_terms: list[str] = Field(default_factory=list)
@@ -321,7 +346,7 @@ class KnowledgeRAGRecommendationSummary(BaseModel):
     candidate_count_bucket: str = "0"
     recommendation_count_bucket: str = "0"
     hidden_or_unavailable_count_bucket: str = "0"
-    recommendation_strategy: str = "metadata_keyword_v1"
+    recommendation_strategy: str = "structured_kb_relevance_v2"
     warning_count_bucket: str = "0"
 
 

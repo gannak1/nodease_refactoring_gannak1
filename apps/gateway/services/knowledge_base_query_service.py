@@ -50,6 +50,7 @@ KNOWLEDGE_BASE_MUTATION_COLUMNS = {
         "source_identity_id",
         "sync_state",
         "lifecycle_state",
+        "safe_metadata",
     }
 }
 
@@ -142,6 +143,12 @@ def _clean_source_type(source_type) -> str:
 def _safe_meta_info(meta_info) -> dict:
     if isinstance(meta_info, dict):
         return meta_info
+    return {}
+
+
+def _safe_metadata_dict(safe_metadata) -> dict:
+    if isinstance(safe_metadata, dict):
+        return safe_metadata
     return {}
 
 
@@ -266,6 +273,7 @@ class KnowledgeBaseQueryService:
             organization_id=kb.organization_id,
             name=kb.name,
             description=kb.description,
+            safe_metadata=_safe_metadata_dict(getattr(kb, "safe_metadata", None)),
             document_count=0,
             created_at=kb.created_at,
             updated_at=kb.updated_at,
@@ -280,6 +288,7 @@ class KnowledgeBaseQueryService:
         organization_scope: UUID | None,
         has_organization_id: bool,
     ) -> list[KnowledgeBaseResponse]:
+        has_safe_metadata = self.has_column("knowledge_bases", "safe_metadata")
         organization_id_column = (
             KnowledgeBase.organization_id
             if has_organization_id
@@ -295,20 +304,28 @@ class KnowledgeBaseQueryService:
         ]
         if has_organization_id:
             group_by_columns.append(KnowledgeBase.organization_id)
-
-        query = (
-            self.db.query(
-                KnowledgeBase.id,
-                organization_id_column,
-                KnowledgeBase.name,
-                KnowledgeBase.description,
-                KnowledgeBase.embedding_model,
-                KnowledgeBase.created_at,
-                KnowledgeBase.updated_at,
+        select_columns = [
+            KnowledgeBase.id,
+            organization_id_column,
+            KnowledgeBase.name,
+            KnowledgeBase.description,
+            KnowledgeBase.embedding_model,
+            KnowledgeBase.created_at,
+            KnowledgeBase.updated_at,
+        ]
+        if has_safe_metadata:
+            select_columns.append(KnowledgeBase.safe_metadata)
+            group_by_columns.append(KnowledgeBase.safe_metadata)
+        select_columns.extend(
+            [
                 func.count(Document.id).label("document_count"),
                 func.max(Document.updated_at).label("last_updated_at"),
                 func.array_agg(Document.source_type).label("source_types"),
-            )
+            ]
+        )
+
+        query = (
+            self.db.query(*select_columns)
             .select_from(KnowledgeBase)
             .outerjoin(Document, KnowledgeBase.id == Document.knowledge_base_id)
             .filter(KnowledgeBase.user_id == user_id)
@@ -322,18 +339,35 @@ class KnowledgeBaseQueryService:
         )
 
         response: list[KnowledgeBaseResponse] = []
-        for (
-            kb_id,
-            organization_id,
-            name,
-            description,
-            embedding_model,
-            created_at,
-            updated_at,
-            doc_count,
-            last_updated_at,
-            source_types,
-        ) in results:
+        for row in results:
+            if has_safe_metadata and len(row) == 11:
+                (
+                    kb_id,
+                    organization_id,
+                    name,
+                    description,
+                    embedding_model,
+                    created_at,
+                    updated_at,
+                    safe_metadata,
+                    doc_count,
+                    last_updated_at,
+                    source_types,
+                ) = row
+            else:
+                (
+                    kb_id,
+                    organization_id,
+                    name,
+                    description,
+                    embedding_model,
+                    created_at,
+                    updated_at,
+                    doc_count,
+                    last_updated_at,
+                    source_types,
+                ) = row
+                safe_metadata = {}
             created_at = created_at or _max_datetime_or_now(
                 updated_at, last_updated_at
             )
@@ -346,6 +380,7 @@ class KnowledgeBaseQueryService:
                     organization_id=organization_id,
                     name=name,
                     description=description,
+                    safe_metadata=_safe_metadata_dict(safe_metadata),
                     document_count=int(doc_count or 0),
                     created_at=created_at,
                     updated_at=final_updated_at,
@@ -372,23 +407,27 @@ class KnowledgeBaseQueryService:
             "knowledge_bases",
             "active_document_version_id",
         )
+        has_safe_metadata = self.has_column("knowledge_bases", "safe_metadata")
         active_document_version_id_column = (
             KnowledgeBase.active_document_version_id
             if has_active_document_version_id
             else literal(None).label("active_document_version_id")
         )
+        kb_select_columns = [
+            KnowledgeBase.id,
+            organization_id_column,
+            KnowledgeBase.name,
+            KnowledgeBase.description,
+            KnowledgeBase.embedding_model,
+            KnowledgeBase.created_at,
+            KnowledgeBase.updated_at,
+            active_document_version_id_column,
+        ]
+        if has_safe_metadata:
+            kb_select_columns.append(KnowledgeBase.safe_metadata)
 
         kb_query = (
-            self.db.query(
-                KnowledgeBase.id,
-                organization_id_column,
-                KnowledgeBase.name,
-                KnowledgeBase.description,
-                KnowledgeBase.embedding_model,
-                KnowledgeBase.created_at,
-                KnowledgeBase.updated_at,
-                active_document_version_id_column,
-            )
+            self.db.query(*kb_select_columns)
             .select_from(KnowledgeBase)
             .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == user_id)
         )
@@ -399,16 +438,30 @@ class KnowledgeBaseQueryService:
         if not kb:
             raise KnowledgeBaseNotFound
 
-        (
-            kb_id,
-            organization_id,
-            name,
-            description,
-            embedding_model,
-            created_at,
-            updated_at,
-            active_document_version_id,
-        ) = kb
+        if has_safe_metadata and len(kb) == 9:
+            (
+                kb_id,
+                organization_id,
+                name,
+                description,
+                embedding_model,
+                created_at,
+                updated_at,
+                active_document_version_id,
+                safe_metadata,
+            ) = kb
+        else:
+            (
+                kb_id,
+                organization_id,
+                name,
+                description,
+                embedding_model,
+                created_at,
+                updated_at,
+                active_document_version_id,
+            ) = kb
+            safe_metadata = {}
 
         doc_rows_query = (
             self.db.query(
@@ -464,6 +517,7 @@ class KnowledgeBaseQueryService:
             organization_id=organization_id,
             name=name,
             description=description,
+            safe_metadata=_safe_metadata_dict(safe_metadata),
             document_count=len(doc_responses),
             created_at=created_at or _max_datetime_or_now(updated_at),
             updated_at=updated_at or created_at,
@@ -581,6 +635,7 @@ class KnowledgeBaseQueryService:
             organization_id=getattr(kb, "organization_id", None),
             name=kb.name,
             description=kb.description,
+            safe_metadata=_safe_metadata_dict(getattr(kb, "safe_metadata", None)),
             document_count=len(doc_responses),
             created_at=kb.created_at or _max_datetime_or_now(kb.updated_at),
             updated_at=kb.updated_at or kb.created_at,

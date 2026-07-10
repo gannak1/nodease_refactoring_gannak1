@@ -61,6 +61,9 @@ class KnowledgeBase(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    safe_metadata: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
     # 임베딩 모델 정보
     embedding_model: Mapped[str] = mapped_column(

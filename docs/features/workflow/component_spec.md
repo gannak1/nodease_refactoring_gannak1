@@ -3,6 +3,13 @@
 Status: Draft
 Verified Against: feature/mba-162 @ 419df74
 
+## Condition Exit Layout
+
+- Standard BaseNode input and output handles use the fixed vertical offset calculated from `WORKFLOW_NODE_SIZE.height / 2`, with their centers placed directly on the left and right node boundaries.
+- Canonical automatic layout top-aligns every rank instead of centering shorter ranks against the tallest rank.
+- A Condition node renders its Default exit first, aligns the Default target with the Condition node, and expands configured branch targets downward.
+- The Condition Default output handle uses the same fixed vertical coordinate as the standard input handle. Explicit branch handles are added below it at a stable `40px` interval, and the node shape grows to contain the final handle.
+
 ## Screens
 
 - Workflow Builder 화면: 캔버스, 노드 라이브러리, 상단 액션, 테스트 실행 사이드바, 하단 캔버스 도구를 포함한다.

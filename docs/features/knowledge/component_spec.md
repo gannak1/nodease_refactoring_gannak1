@@ -61,6 +61,16 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 - Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
 - 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
 
+### Document Preview UI
+
+The document settings preview iframe renders `/api/v1/knowledge/{kb_id}/documents/{document_id}/content` as an untrusted preview surface.
+
+- The iframe sandbox must not include `allow-downloads`; preview load must not initiate a browser download.
+- The iframe may include `allow-scripts` only to support browser-native PDF preview.
+- Markdown and plain text previews rely on server-side escaped HTML, not raw file execution.
+- Unsupported or unsafe file types should show a safe preview-unavailable state rather than attachment-download fallback.
+- A download/export action, if added later, must be an explicit button backed by the raw/compliance access policy.
+
 ### KB Permission Management UI
 
 - MBA-176에서는 기존 admin/settings permission surface를 확장해 KB team permission과 user direct permission을 함께 관리한다. 새 독립 화면을 만들지 않는다.
@@ -69,6 +79,8 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 - Effective permission 표시는 organization manager override와 team/user direct grant 중 가장 강한 additive allow로 계산된 값을 사용한다. User direct grant가 team grant를 낮추거나 deny할 수 있는 것처럼 표시하지 않는다.
 - `can_manage_kb`가 없는 사용자에게는 grant action을 숨기거나 disabled 처리하되, 최종 차단은 Gateway API가 수행한다.
 - `completed` document만 workflow builder/RAG 선택과 runtime retrieval에서 ready evidence 후보가 될 수 있다.
+
+KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 `PATCH /api/v1/knowledge/{kb_id}`의 allowlisted `safe_metadata`만 전송한다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
 
 ### Knowledge Collection Management UI
 

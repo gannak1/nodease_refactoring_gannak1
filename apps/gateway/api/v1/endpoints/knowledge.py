@@ -94,6 +94,7 @@ from apps.shared.services.knowledge_schema_readiness import (
     check_knowledge_schema_readiness,
     table_has_column,
 )
+from apps.shared.services.knowledge_safe_text import sanitize_kb_safe_metadata
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -852,6 +853,7 @@ def get_knowledge_base(
 def update_knowledge_base(
     kb_id: UUID,
     update_data: KnowledgeUpdate,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -859,6 +861,11 @@ def update_knowledge_base(
     """
     지식 베이스의 설정을 수정합니다. (이름, 설명, 즐겨찾기 임베딩 모델)
     """
+    _ensure_knowledge_schema_columns(
+        db,
+        request,
+        KNOWLEDGE_BASE_MUTATION_COLUMNS,
+    )
     kb = (
         db.query(KnowledgeBase)
         .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == current_user.id)
@@ -872,6 +879,10 @@ def update_knowledge_base(
         kb.name = update_data.name
     if update_data.description is not None:
         kb.description = update_data.description
+    if update_data.safe_metadata is not None:
+        current_safe_metadata = sanitize_kb_safe_metadata(kb.safe_metadata or {})
+        next_safe_metadata = sanitize_kb_safe_metadata(update_data.safe_metadata)
+        kb.safe_metadata = {**current_safe_metadata, **next_safe_metadata}
 
     # 임베딩 모델 변경 및 재인덱싱 트리거
     if (

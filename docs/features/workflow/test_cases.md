@@ -4,6 +4,8 @@ Status: Draft
 
 ## Test File Mapping
 
+- Top-aligned workflow ranks, boundary-centered BaseNode handles, Default/input alignment, and downward Condition branches: `apps/client/app/features/workflow/utils/nodeHandleLayout.test.ts`, `apps/client/app/features/workflow/utils/arrangeConditionNodes.test.ts`, `apps/shared/tests/test_workflow_layout.py`
+
 - 실행 편의성: `apps/client/app/features/workflow/tests/execution-convenience.test.ts`
 - 노드 조작 편의성: `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`
 - 워크플로우 조작 편의성: `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx`

@@ -43,6 +43,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0021](ADR-0021-webhook-capture-helper-security-boundary.md) | Accepted | Webhook capture helper security boundary | Capture start/status/cancel은 public trigger 실행 표면이 아니라 로그인 사용자 + target workflow `deploy` 권한이 필요한 디버그 helper다. App secret 인증만으로는 capture를 시작/조회/취소할 수 없고, captured payload는 raw 원문이 아니라 redacted/capped preview만 반환한다 |
 | [ADR-0022](ADR-0022-incremental-hexagonal-architecture-adoption.md) | Accepted | 헥사고널 아키텍처 점진 도입 | Gateway deployment preflight는 application use case/result/error/port, SQLAlchemy adapter, outer composition root와 compatibility facade로 이관되어 첫 reference pilot을 제공한다. 다른 domain package는 각 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만들고, mutation은 별도 UnitOfWork/audit transaction을 추가한다. 기존 router/service 대량 이동은 하지 않는다 |
 | [ADR-0023](ADR-0023-audit-actor-access-management-boundary.md) | Accepted | Audit actor 기반 organization access management 경계 | `access_management` application/port/SQLAlchemy·audit adapter, manager-only actor profile/team/resource/action API, transaction-bound audit, safe change summary와 Audit actor drawer가 구현됐다. 기존 member/team/user-direct/App 권한 경로는 동일 subject lock protocol과 transaction-bound audit을 사용하는 compatibility path로 보강됐다 |
+| [ADR-0024](ADR-0024-agent-builder-node-capability-catalog.md) | Accepted | Agent Builder node capability catalog | 버전 관리되는 공통 catalog가 구현 node type과 Agent Builder allowlist 계약을 소유한다. 현재 frontend/runtime에 구현된 16개 node type을 Builder에 허용하되 외부 action은 draft/apply-save 중 실행하지 않고 credential과 target 설정은 unresolved로 남긴다 |
 
 ## 참고 보고서
 

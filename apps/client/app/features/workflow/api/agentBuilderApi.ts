@@ -21,6 +21,53 @@ export type AgentBuilderValidationResult = {
   issues: Array<{ code: string; message: string; path?: string | null }>;
 };
 
+export type AgentBuilderMissingParameter = {
+  key: string;
+  label: string;
+};
+
+export type AgentBuilderNodeConfigurationIssue = {
+  node_id: string;
+  node_type: string;
+  node_label: string;
+  capability: string;
+  missing_parameters: AgentBuilderMissingParameter[];
+};
+
+export type AgentBuilderEditTargetReference = {
+  reference_type: 'natural_language_node' | 'selected_node' | 'selected_edge';
+  query?: string | null;
+  capabilities: string[];
+  node_types: string[];
+};
+
+export type AgentBuilderEditOperation = {
+  operation_id: string;
+  operation: 'insert';
+  placement: 'before' | 'after' | 'between';
+  step_refs: string[];
+  target: AgentBuilderEditTargetReference;
+};
+
+export type AgentBuilderStructuredRequest = {
+  request_type:
+    | 'new_workflow'
+    | 'modify_workflow'
+    | 'clarification'
+    | 'unsupported'
+    | 'validation_failure';
+  draft_mode: 'new_workflow' | 'modify_workflow' | 'replace_workflow';
+  intent_summary: string;
+  planned_steps: Array<Record<string, unknown>>;
+  knowledge_requirements: Array<Record<string, unknown>>;
+  required_capabilities: string[];
+  pending_resolution: Array<Record<string, unknown>>;
+  edit_operations: AgentBuilderEditOperation[];
+  missing_information: string[];
+  unsupported_requests: string[];
+  risk_flags: string[];
+};
+
 export type AgentBuilderDraftPreview = {
   draft_id: string;
   preview_graph: AgentBuilderGraph;
@@ -30,6 +77,7 @@ export type AgentBuilderDraftPreview = {
   node_detail_previews: Array<Record<string, unknown>>;
   validation_result: AgentBuilderValidationResult;
   safety_notices: string[];
+  configuration_issues?: AgentBuilderNodeConfigurationIssue[];
 };
 
 export type AgentBuilderSessionResponse = {
@@ -59,7 +107,7 @@ export type AgentBuilderSessionMessage =
 export type AgentBuilderMessageResponse = {
   request_id: string;
   status: AgentBuilderStatus;
-  structured_request?: Record<string, unknown> | null;
+  structured_request?: AgentBuilderStructuredRequest | null;
   clarification_questions: string[];
   clarification_options: Array<Record<string, unknown>>;
   draft_preview?: AgentBuilderDraftPreview | null;
@@ -116,6 +164,7 @@ export const agentBuilderApi = {
       selectedNodeId?: string | null;
       selectedEdgeId?: string | null;
       selectedKnowledgeCandidate?: AgentBuilderKnowledgeCandidateSelection | null;
+      selectedKnowledgeCandidates?: AgentBuilderKnowledgeCandidateSelection[] | null;
     },
   ): Promise<AgentBuilderMessageResponse> {
     const response = await apiClient.post(
@@ -127,6 +176,7 @@ export const agentBuilderApi = {
         selected_node_id: input.selectedNodeId ?? undefined,
         selected_edge_id: input.selectedEdgeId ?? undefined,
         selected_knowledge_candidate: input.selectedKnowledgeCandidate ?? undefined,
+        selected_knowledge_candidates: input.selectedKnowledgeCandidates ?? undefined,
       },
     );
     return response.data;

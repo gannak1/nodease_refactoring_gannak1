@@ -45,10 +45,11 @@ Answer/Output 계열 node의 output variable 목록, value selector, input/outpu
 | --- | --- |
 | `RequestContextResolver` | 인증 사용자, active organization, workflow/app scope, 권한 context 확정 |
 | `ConversationSessionService` | server-issued chat session, redaction된 사용자 message summary와 assistant response로 구성된 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
+| `LLMIntentExtractor` | redaction된 사용자 요청과 safe workflow node type/title/role 요약을 permission-aware LLM runtime에 전달하고 schema-validated 의미 후보를 반환. Raw graph, node/edge id, credential, raw provider response를 구조화 결과에 포함하지 않음 |
 | `StructuredRequestBuilder` | 자연어 의미 후보를 안전한 `StructuredRequest`로 정규화 |
 | `WorkflowContextSnapshotBuilder` | graph, selected node, selected edge, existing node/edge summary 생성 |
 | `TargetResolver` | 기존 workflow 수정 target 해석 |
-| `CapabilityCatalogProvider` | Agent Builder가 사용할 수 있는 capability allowlist 제공 |
+| `CapabilityCatalogProvider` | ADR-0024의 공통 Workflow Node Capability Catalog를 읽고 `implemented=true`, `agent_builder_supported=true`인 node/capability allowlist와 side effect/필수 설정 정책 제공 |
 | `KnowledgeRecommendationAdapterClient` | KB pending resolution을 Knowledge adapter request로 변환 |
 | `WorkflowDraftBuilder` | `StructuredRequest`와 resolver 결과를 workflow draft로 변환 |
 | `WorkflowDraftValidator` | schema, permission, side effect, missing config 검증 |
@@ -56,6 +57,26 @@ Answer/Output 계열 node의 output variable 목록, value selector, input/outpu
 | `WorkflowDraftApplyService` | draft metadata 조회, 권한 재확인, stale check, validation 재확인, workflow graph 저장, apply/save audit 기록. 저장 성공은 audit 기록 성공을 전제로 한다. |
 
 `WorkflowDraftApplyService`는 `base_graph_hash`와 workflow `version` 또는 `updated_at`을 최신 graph/context와 비교한다. Graph hash는 workflow 의미에 영향을 주는 node id, node type, node data/config, edge source/target/handle을 기준으로 계산하고 viewport, selection, panel state, preview state, timestamp, UI-only metadata, note/memo node와 해당 note/memo node에만 연결된 non-runtime edge는 제외한다.
+
+`StructuredRequestBuilder`는 수정 문장에서 기존 target과 신규 step을 분리해
+`edit_operations`를 만든다. `TargetResolver`는 server가 읽은 현재 저장 graph에서 자연어
+node type/role 후보를 찾고, 자연어 target을 우선한 뒤 selected node/edge를 후보 제한 또는
+tie-break hint로만 사용한다. `WorkflowDraftBuilder`는 신규 workflow용 full-chain 생성과
+기존 workflow용 edit operation 적용 경로를 분리하며, 후자는 신규 entry/answer wrapper를
+만들지 않고 resolved edge에 요청된 신규 step만 splice한다.
+
+운영 message 처리 경로의 자연어 해석은 `LLMIntentExtractor`가 담당한다. Extractor는
+발화 의도, 새 workflow와 기존 workflow 수정, 절 순서, 신규 capability, 기존 target,
+before/after/between placement, GitHub read/write 의도를 JSON 구조로 분리한다. Capability
+이름과 설명은 공통 catalog 기준 bounded guide를 사용하지만 자연어 활용형을 정규식 목록으로
+계속 추가하지 않는다.
+
+`StructuredRequestBuilder`는 LLM 결과를 그대로 graph로 만들지 않는다. Catalog 밖 capability,
+request type과 draft mode 불일치, 잘못된 target reference는 fail-closed 처리하고, step id,
+dependency, Knowledge pending slot, external configuration warning과 risk flag를 결정론적으로 다시
+계산한다. `TargetResolver`는 safe target query와 capability role을 server-loaded graph에 적용하며,
+동일한 `githubNode`가 여러 개이면 `get_pr`와 `comment_pr` role을 node type보다 우선한다.
+LLM 호출 또는 schema validation 실패 시 deterministic 자연어 parser로 silent fallback하지 않는다.
 
 Apply/save가 성공하면 backend는 저장된 workflow id와 최신 workflow version 또는 updated_at을 반환한다. 이 성공 응답은 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 상태는 허용하지 않는다. Frontend는 이 결과를 받은 뒤 Preview Mode를 종료하고 저장된 최신 workflow graph를 표시한다. 새 workflow draft 생성이 성공하면 새 workflow editor로 이동하거나 현재 editor context를 새 workflow로 전환한다.
 
@@ -75,9 +96,9 @@ Agent Builder는 Knowledge DB를 직접 조회하지 않는다.
 4. Adapter는 structured knowledge requirement, safe workflow context summary, HTTP boundary의 server-issued reference 또는 같은 backend 내부 service call의 authorized safe candidate set을 매칭하고, MVP에서 keyword/metadata deterministic ranking을 수행한다.
 5. Agent Builder는 결과를 resolved pending slot, clarification, validation failure 중 하나로 반영한다.
 
-Adapter result는 recommendation item마다 score, confidence, reason category, threshold result를 포함해야 한다. Agent Builder는 이 값을 기준으로 후보 1개 high confidence는 resolved 처리하고, 점수 근접 또는 후보 다중 상황은 clarification으로 전환한다.
+Adapter result는 recommendation item마다 score, confidence, reason category, threshold result를 포함해야 한다. Agent Builder는 KB 추천 후보가 1개여도 자동 resolved 처리하지 않고 clarification으로 전환해 사용자가 직접 후보 선택 상태를 확정하게 한다.
 
-KB clarification UI는 safe candidate handle과 safe label/confidence/score/reason category만 표시한다. 사용자가 후보를 선택하면 frontend는 raw KB id나 safe metadata 전체를 다시 보내지 않고 candidate safe handle과 선택적 resolution/requirement reference만 제출한다. Backend는 원 clarification option과 같은 session/context에서 온 선택인지 검증하고, apply/save 직전 runtime KB reference materialization을 다시 수행한다.
+KB clarification UI는 safe candidate handle과 safe label/confidence/score/reason category만 표시한다. 후보 목록은 한 번에 3개 카드 높이로 표시하고, 최대 20개 후보를 스크롤로 확인할 수 있어야 한다. 후보 카드는 토글 방식이며 사용자는 0개, 1개, 여러 개 후보를 선택할 수 있다. 사용자가 후보를 선택하면 frontend는 raw KB id나 safe metadata 전체를 다시 보내지 않고 candidate safe handle과 선택적 resolution/requirement reference만 제출한다. 사용자가 아무 후보도 선택하지 않고 제출하면 Knowledge Base binding 없이 draft 생성을 계속한다. 후보 선택 제출이 `draft_ready` 또는 다른 후속 assistant 응답으로 완료되면 해당 clarification은 해결된 상태가 되어 빈 입력 전송의 재사용 대상이 아니며, 과거 후보 카드는 채팅 기록으로 남아도 다시 선택할 수 없다. Backend는 직전 미해결 clarification과 같은 session/context에서 온 선택인지 검증하고, apply/save 직전 runtime KB reference materialization을 다시 수행한다.
 
 MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않는다. Agent Builder가 제안하는 RAG option은 ADR-0017 기본값과 safe candidate 설명 범위로 제한하고, Knowledge Skill 직접 사용과 고급 RAG option tuning은 후속 기능으로 둔다.
 
@@ -101,9 +122,11 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 ## Interaction Rules
 
 - Refresh 후에는 redaction된 사용자 message summary와 assistant response를 포함한 최근 대화, pending request 상태를 복구한다.
+- 사용자 요청, pending 상태, assistant 응답이 대화 목록에 추가되면 Agent Builder chat panel은 최신 메시지가 보이도록 대화 영역을 맨 아래로 자동 스크롤한다. KB 후보 목록 내부 스크롤은 대화 영역 스크롤과 별도로 유지한다.
 - Pending request가 있으면 새 submit은 막고 cancel은 허용한다.
 - Cancel 이후 도착한 결과는 draft preview, Preview Mode, apply/save로 이어질 수 없다.
 - 선택된 edge는 "이 연결 사이에" 같은 자연어 edge 문맥에서만 target hint로 사용하고, 권한/scope 판단에는 사용하지 않는다.
+- TargetResolver가 여러 workflow node 후보를 반환하면 client는 이를 Knowledge Base 후보와 구분된 node target option으로 표시한다. 사용자가 node option을 선택하면 원래 자연어 요청과 선택한 `selected_node_id`를 다시 보내며, KB candidate field로 변환하지 않는다.
 - Validation을 통과하지 않은 draft에는 `도안 생성 미리보기` 또는 `적용 및 저장` action을 표시하지 않는다.
 - Preview Mode 안내는 "미리보기 모드이며 아직 저장되지 않았다"는 상태를 명확히 표시한다. `적용 및 저장`과 `취소` action이 Agent Builder panel 안에 있다면 Preview Mode 동안 panel close를 차단해 action 경로가 사라지지 않게 한다.
 - `도안 생성 미리보기` audit 기록이 실패하면 Preview Mode에 진입하지 않고 재시도 안내를 표시한다.
@@ -111,7 +134,9 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 - MVP에서는 editor에 저장되지 않은 변경이 있으면 Agent Builder draft 생성, Preview Mode 진입, 또는 `적용 및 저장`을 차단하고 먼저 저장 또는 폐기를 요구한다.
 - MVP message request는 raw client graph snapshot을 보내지 않는다. Client는 selected node/edge hint만 보내며, apply/save 단계의 preview 확인과 stale guard에는 semantic graph hash만 사용한다. Hash 계산이 불가능하면 raw graph payload fallback을 보내지 않고 apply/save를 차단한다.
 - 후속 확장에서는 검증 가능한 client graph snapshot을 draft base로 삼는 정책을 도입할 수 있으나, 그 전까지 unsaved editor graph를 agent draft base로 자동 포함하지 않는다.
-- `적용 및 저장`은 workflow graph 저장까지 수행하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
+- `적용 및 저장`은 workflow graph 저장까지 수행하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, workflow node credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
+- GitHub, Slack, HTTP, Mail, Workflow 같은 외부 연동 node는 draft에 포함할 수 있지만 credential과 target 설정을 자동 주입하지 않는다. 미해결 설정은 `configuration_state=unresolved`로 표시하고 Preview/Node Detail에서 읽기 전용으로 확인한다.
+- 공통 외부 호출 차단 안내는 draft `safety_notices`에 한 번만 유지한다. 외부 연동 node의 미해결 설정은 `configuration_issues`에서 node별 표시명과 필요한 파라미터 목록으로 구분하며, 같은 type의 node가 여러 개여도 합치지 않는다. Session restore는 저장된 preview graph에서 이 목록을 다시 파생한다.
 - `적용 및 저장` 성공 시 Preview Mode를 종료하고 editor는 저장된 최신 workflow graph를 표시한다. 이 성공 상태는 backend 저장과 apply/save audit 기록 성공을 모두 통과한 경우에만 사용한다.
 - `적용 및 저장` 차단 또는 실패 시 Preview Mode를 유지하고 actual editor graph를 변경하지 않는다.
 - Stale check는 backend가 base graph hash와 workflow version/updated_at을 최신 값과 비교해 수행한다. Frontend의 stale warning은 사용자 안내일 뿐 최종 판정이 아니다.

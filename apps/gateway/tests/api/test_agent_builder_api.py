@@ -25,9 +25,10 @@ def test_agent_builder_session_uses_header_resolved_organization(monkeypatch):
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             captured["user_id"] = user.id
             captured["organization_id"] = organization_id
+            captured["intent_extractor"] = intent_extractor
 
         def create_or_restore_session(self, payload):
             captured["payload_has_organization_id"] = hasattr(payload, "organization_id")
@@ -71,8 +72,9 @@ def test_agent_builder_message_contract_does_not_accept_body_organization(monkey
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             captured["organization_id"] = organization_id
+            captured["intent_extractor"] = intent_extractor
 
         def submit_message(self, session_id_arg, payload):
             captured["session_id"] = session_id_arg
@@ -119,7 +121,7 @@ def test_agent_builder_message_rejects_raw_graph_payload_without_echo(monkeypatc
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             pass
 
         def submit_message(self, session_id_arg, payload):
@@ -161,7 +163,7 @@ def test_agent_builder_apply_rejects_raw_graph_payload_without_echo(monkeypatch)
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             pass
 
         def apply_draft(self, draft_id_arg, payload):
@@ -203,7 +205,7 @@ def test_agent_builder_apply_response_can_save_only_with_audit_recorded(monkeypa
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             pass
 
         def apply_draft(self, draft_id_arg, payload):
