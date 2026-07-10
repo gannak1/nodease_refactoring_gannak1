@@ -4,4 +4,3 @@ class ScheduleConfigurationError(ValueError):
 
 class ScheduleDispatchInvariantError(RuntimeError):
     """A canonical dispatch state did not match the requested transition."""
-

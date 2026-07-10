@@ -1,2 +1,1 @@
 """Schedule infrastructure adapters."""
-

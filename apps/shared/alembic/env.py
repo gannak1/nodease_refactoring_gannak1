@@ -26,10 +26,11 @@ if config.config_file_name is not None:
 
 # ========== 중요: SQLAlchemy Base 및 모델 임포트 ==========
 # db.base 모듈을 찾기 위해 sys.path 설정이 선행되어야 함
-from apps.shared.db.base import Base
+# isort: off
+from apps.shared.db.base import Base  # noqa: E402
 
 # models/__init__.py에서 모든 모델을 한 번에 import
-from apps.shared.db.models import (  # noqa: F401
+from apps.shared.db.models import (  # noqa: E402, F401
     App,
     AuditLog,
     Connection,
@@ -56,6 +57,7 @@ from apps.shared.db.models import (  # noqa: F401
     WorkflowNodeRun,
     WorkflowRun,
 )
+# isort: on
 
 # 모든 모델을 임포트해야 Alembic이 테이블을 인식합니다
 

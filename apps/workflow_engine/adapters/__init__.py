@@ -1,2 +1,1 @@
 """Workflow Engine outbound adapters."""
-
