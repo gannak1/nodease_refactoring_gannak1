@@ -34,6 +34,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-011: Schedule record와 scheduler job은 active `type=schedule` deployment에서만 생성/로드/실행한다. `scheduleTrigger` node가 `workflow_node`, `chatbot`, `api` 등 다른 deployment type graph에 포함되어도 schedule 실행 surface를 만들지 않는다.
 - DEP-REQ-012: Webhook 수신 endpoint는 active deployment가 target app 소유이고 active 상태이며 `type=webhook`일 때만 background execution을 예약한다. 같은 slug의 active deployment가 `api`, `chatbot`, `workflow_node`, `schedule` 등 다른 type이면 `accepted`를 반환하지 않고 dispatch 전에 safe 404로 거부한다.
 - DEP-REQ-013: Deployment 실행 surface와 `DeploymentType` allowlist는 Gateway endpoint, scheduler, Workflow Engine task의 개별 문자열 분기가 아니라 중앙 runtime policy matrix에서 판정해야 한다. Unknown surface 또는 unknown deployment type은 fail-closed로 거부한다.
+- DEP-REQ-014: 인증 없는 public deployment info는 기본 runtime policy에서 `webapp`, `widget`, `chatbot` metadata만 노출한다. API, MCP, schedule, webhook, workflow-node와 unknown type은 safe 404로 닫는다. Allowlist는 endpoint 문자열 분기나 환경변수가 아니라 불변 `DeploymentRuntimePolicy` dependency로 주입하며, 확장은 명시적 composition 변경과 계약 테스트를 요구한다.
 
 ## Runtime Audience Matrix
 
@@ -58,8 +59,9 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - Workflow-node nesting은 우선 한 단계 active target 검사를 baseline으로 삼는다. 순환 참조, 과도한 depth, target active deployment 부재는 subject 상속 여부와 무관한 구조적 오류이므로 active publish와 inactive preview 모두에서 safe blocked reason으로 유지한다.
 - Workflow-node runtime의 순환 참조, depth 초과, target unavailable 같은 복구 불가능한 설정 오류는 Celery retry 대상이 아니다. Runtime은 non-retryable error로 즉시 실패시켜 같은 잘못된 subworkflow 실행을 반복 예약하지 않는다.
 - `run.py`/`webhook.py`와 authenticated deployment run/run-info 같은 runtime endpoint는 실행 주체와 direct surface contract verification 대상이다. Preflight의 핵심 차단은 deployment create/toggle service boundary에서 수행하며, delete는 다른 deployment를 자동 승격하지 않아 우회 activation surface를 만들지 않는다.
+- Schedule dispatch는 graph snapshot을 queue payload에 직접 넣지 않고 deployment id를 worker에 전달한다. Worker는 실행 직전에 deployment active/type, app ownership과 current active pointer를 다시 확인하며, 삭제/비활성/stale/mismatched target은 retry하지 않는 permanent policy failure로 종료한다.
 - Preflight 예외는 broad catch에서 일반 `400`으로 감싸지 않고 `409 deployment.preflight.blocked` 또는 문서화된 error envelope을 보존해야 한다.
-- Public info, authenticated run/run-info, webhook dispatch, schedule dispatch, workflow-node child dispatch는 같은 runtime policy matrix를 사용해야 한다. Metadata 조회 가능 여부와 실제 execution 허용 여부는 별도 surface로 표현하며, public info 허용이 public execution 허용을 뜻하지 않는다.
+- Public info, authenticated run/run-info, webhook dispatch, schedule dispatch, workflow-node child dispatch는 같은 불변 runtime policy dependency를 사용해야 한다. Metadata 조회 가능 여부와 실제 execution 허용 여부는 별도 surface로 표현하며, public info 허용이 public execution 허용을 뜻하지 않는다. Production 기본 policy는 composition provider가 주입하고 임의 runtime mutation이나 환경변수 기반 allowlist 확장을 허용하지 않는다.
 
 ## Open Questions
 

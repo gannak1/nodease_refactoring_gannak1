@@ -11,6 +11,7 @@ Verified Against: TBD
 | POST | `/api/v1/deployments` | 배포 생성. `is_active=true`이면 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | PATCH | `/api/v1/deployments/{deployment_id}/toggle` | 배포 활성/비활성 전환. 활성화 시 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | DELETE | `/api/v1/deployments/{deployment_id}` | 배포 삭제. active 삭제 시 자동 승격하지 않는다 | 로그인 + workflow deploy/manage 권한 |
+| GET | `/api/v1/deployments/public/{url_slug}/info` | Public app 화면용 safe metadata 조회 | 인증 없음. 기본 policy는 `webapp`, `widget`, `chatbot`만 허용 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 로그인 사용자를 execution subject로 활성 deployment snapshot 실행 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | App secret via query token, Bearer header, or `X-Webhook-Secret` |
@@ -19,6 +20,12 @@ Verified Against: TBD
 | POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
 
 ## Request And Response Models
+
+### `GET /api/v1/deployments/public/{url_slug}/info`
+
+인증 없는 공유 화면에서 입력 폼을 구성하기 위한 metadata endpoint다. Production 기본 `DeploymentRuntimePolicy`는 active deployment가 target app 소유이고 `type`이 `webapp`, `widget`, `chatbot`인 경우에만 응답한다. API, MCP, schedule, webhook, workflow-node, unknown/empty type과 stale/cross-app active pointer는 safe `404`로 닫는다.
+
+응답은 `url_slug`, safe app name/description, deployment version/type, input/output schema만 포함하고 app secret, graph snapshot, workflow/internal organization identifier를 포함하지 않는다. Allowlist 교체는 FastAPI composition dependency에 불변 policy 객체를 명시적으로 주입하는 방식만 허용하며 환경변수 기반 확장은 지원하지 않는다.
 
 ### `POST /api/v1/deployments/preflight`
 

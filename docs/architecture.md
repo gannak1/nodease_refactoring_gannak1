@@ -164,9 +164,10 @@ Domain refactoring checklist:
 
 Critical policy ownership:
 
-- Deployment 실행 표면과 `DeploymentType` 허용 여부는 Gateway endpoint, scheduler, Workflow Engine task가 각자 문자열 분기로 판단하지 않고 shared pure policy를 통해 판정한다. Unknown surface 또는 unknown deployment type은 기본적으로 fail-closed다.
+- Deployment 실행 표면과 `DeploymentType` 허용 여부는 Gateway endpoint, scheduler, Workflow Engine task가 각자 문자열 분기로 판단하지 않고 shared pure policy를 통해 판정한다. Policy mapping은 불변 객체로 생성해 composition dependency로 명시적으로 주입하며, production 기본값을 환경변수나 전역 mutation으로 확장하지 않는다. Unknown surface 또는 unknown deployment type은 기본적으로 fail-closed다.
 - Generic resource permission routing은 Gateway registry/service boundary가 소유한다. `workflow`, `llm_credential`, `knowledge_base`별 target model, organization lookup, effective auth resolver, team/user permission table mapping은 schema enum과 함께 contract test로 고정한다.
 - Knowledge Base archive/delete 같은 lifecycle mutation은 endpoint가 직접 permission cleanup, storage cleanup, retrieval exclusion, audit orchestration을 조합하지 않고 lifecycle service boundary를 통과한다. Endpoint는 인증/권한 dependency, request parsing, response/error mapping만 담당한다. MBA-182의 current hard-delete facade는 permission/storage/DB orchestration만 이 경계로 이동한 과도기 예외이며, durable audit/outbox transaction과 cleanup retry cutover는 MBA-184에서 완성한다.
+- Physical storage delete adapter는 canonical reference validation 뒤에만 provider/filesystem 삭제를 수행한다. S3 adapter는 configured bucket의 승인 URL/key와 `uploads/` prefix를 확인하고, Local adapter는 service-owned root containment를 확인한다. Invalid reference는 raw path를 기록하지 않는 typed adapter error로 fail-closed한다.
 
 ## 2. 인증 방식
 
