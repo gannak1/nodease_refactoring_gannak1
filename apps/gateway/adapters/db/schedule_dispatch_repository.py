@@ -400,6 +400,7 @@ class SqlAlchemyScheduleDispatchRepository:
                 WorkflowDeployment.is_active.is_(True),
                 WorkflowDeployment.type == DeploymentType.SCHEDULE,
                 App.active_deployment_id == WorkflowDeployment.id,
+                App.organization_id.is_not(None),
             )
         )
 
