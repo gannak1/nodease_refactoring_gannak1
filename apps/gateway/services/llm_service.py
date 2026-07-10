@@ -1500,6 +1500,59 @@ class LLMService:
         )
 
     @staticmethod
+    def _agent_builder_draft_model_sort_key(
+        option: LLMCredentialModelOptionResponse,
+    ):
+        provider_name = option.provider_name.lower()
+        provider_order = {
+            name: index
+            for index, name in enumerate(LLMService.AGENT_BUILDER_PROVIDER_ORDER)
+        }
+        generation_major, generation_minor, tier = LLMService._agent_builder_model_rank(
+            provider_name,
+            option.model.model_id_for_api_call,
+        )
+        normalized_model_id = option.model.model_id_for_api_call.lower().replace(
+            "models/", ""
+        )
+        generation_unknown = generation_major == 0 and generation_minor == 0
+        mini_priority = 0 if "-mini" in normalized_model_id else 1
+        return (
+            provider_order.get(provider_name, len(provider_order)),
+            generation_unknown,
+            -generation_major,
+            -generation_minor,
+            mini_priority,
+            tier,
+            option.relation_priority,
+            option.model.name.lower(),
+            option.credential.credential_name.lower(),
+        )
+
+    @staticmethod
+    def get_agent_builder_draft_model_recommendation(
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+    ) -> Optional[LLMCredentialModelOptionResponse]:
+        """Return the authorized default for generated Agent Builder LLM nodes."""
+        supported_providers = set(LLMService.AGENT_BUILDER_PROVIDER_ORDER) - {
+            "llamaparse"
+        }
+        options = [
+            option
+            for option in LLMService.get_agent_answer_options(
+                db,
+                user_id,
+                organization_id,
+            )
+            if option.provider_name.lower() in supported_providers
+        ]
+        if not options:
+            return None
+        return min(options, key=LLMService._agent_builder_draft_model_sort_key)
+
+    @staticmethod
     def get_agent_builder_model_option_groups(
         db: Session,
         user_id: uuid.UUID,

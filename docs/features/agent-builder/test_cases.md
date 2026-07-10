@@ -11,6 +11,9 @@ Status: Draft
 - Message submit 직전 선택이 아직 확정되지 않았으면 화면에 표시할 같은 option 목록을 조회해 첫 option을 확정하며, option이 없으면 message를 전송하지 않는다.
 - Server는 선택된 credential/model 쌍을 매 요청 재검증하고 `use` 권한 또는 verified relation이 사라졌으면 LLM client를 생성하지 않는다.
 - Intent model 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장되지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason만 기록하며 credential 원문과 raw provider response는 API response, audit, trace에 포함되지 않는다.
+- Generated LLM node model 추천은 active organization의 valid credential, active chat model, verified relation, 사용자 `use` 권한을 통과한 후보만 사용한다.
+- Generated LLM node 추천은 `openai`, `anthropic`, `google` provider 순서와 provider별 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순서를 사용한다. 최신 세대에 `mini`가 없고 `nano`가 있으면 `nano`를 먼저 추천한다.
+- Generated LLM node graph에는 추천 model id만 저장하고 credential id/config는 저장하지 않는다. 권한 후보가 없으면 `model_id`가 비어 있는 `configuration_state=unresolved` node와 model 설정 필요 issue를 만들며 draft는 계속 생성된다.
 - `StructuredRequestBuilder`는 자연어 요청을 `request_type`, `intent_summary`, `planned_steps`, `knowledge_requirements`, `pending_resolution`, `missing_information`으로 분리한다.
 - `LLMIntentExtractor`는 redaction된 요청과 safe workflow context만 입력받고 JSON object를 반환하며, 절에 나타난 capability 순서와 기존 target/new step 역할을 보존한다.
 - LLM 출력에 catalog 밖 capability, node/edge id, 잘못된 request type/draft mode 조합이 있으면 `StructuredRequestBuilder`는 이를 graph로 materialize하지 않는다.
@@ -118,6 +121,8 @@ Status: Draft
 - Preview Mode 중 URL `?node=` 또는 browser popstate가 들어와도 actual workflow node editor를 열지 않고, preview node detail 경계만 유지한다.
 - Preview Mode action이 Agent Builder panel 안에 있으면 panel close를 차단해 `적용 및 저장`과 `취소` 경로가 유지된다.
 - workflow/app route scope가 바뀌면 이전 scope의 Agent Builder session, pending state, preview graph가 새 scope로 이어지지 않는다.
+- 같은 workflow의 apply/save 성공 후 server graph reconcile로 `app_id`가 `null`에서 실제 값으로 채워져도 Agent Builder panel은 열린 상태와 기존 대화를 유지한다.
+- 새 workflow apply/save 성공 시 DB session의 workflow scope가 `saved_workflow_id`로 같은 transaction에서 갱신되고, 새 route에서 같은 server-issued session id와 redaction된 대화를 복구한다.
 - Refresh 후 session 복구는 redaction된 사용자 message summary와 assistant response를 함께 복구하고, secret-like user input 원문을 다시 표시하지 않는다.
 - Preview Mode에서 node를 클릭하면 Node Detail Panel에 node type, 주요 설정, KB/Slack binding, credential 참조 상태, input/output mapping, validation 상태가 읽기 전용으로 표시된다.
 - Preview Mode의 Node Detail Panel은 canvas 왼쪽 영역에 표시되어 우측 또는 우측 하단 Agent Builder chat panel, `적용 및 저장`, `취소` action을 가리지 않는다.

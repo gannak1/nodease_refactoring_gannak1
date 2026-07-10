@@ -115,10 +115,24 @@ class KnowledgeBaseCreate(BaseModel):
 
 
 class KnowledgeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = None
     description: Optional[str] = None
     embedding_model: Optional[str] = None
-    safe_metadata: Optional[Dict[str, Any]] = None
+
+
+class KnowledgeSafeMetadataUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    safe_label: Optional[str] = None
+    kb_safe_description: Optional[str] = None
+    kb_safe_topics: Optional[List[str]] = None
+
+
+class KnowledgeSafeMetadataResponse(BaseModel):
+    safe_metadata: Dict[str, Any] = Field(default_factory=dict)
+    can_manage_safe_metadata: bool = True
 
 
 class DocumentResponse(BaseModel):
@@ -138,6 +152,8 @@ class DocumentResponse(BaseModel):
 
 class KnowledgeBaseDetailResponse(KnowledgeBaseResponse):
     documents: List[DocumentResponse]
+    can_edit_settings: bool = True
+    can_manage_safe_metadata: bool = True
 
 
 # --- Retrieval Schemas (Dev B) ---

@@ -80,7 +80,7 @@ The document settings preview iframe renders `/api/v1/knowledge/{kb_id}/document
 - `can_manage_kb`가 없는 사용자에게는 grant action을 숨기거나 disabled 처리하되, 최종 차단은 Gateway API가 수행한다.
 - `completed` document만 workflow builder/RAG 선택과 runtime retrieval에서 ready evidence 후보가 될 수 있다.
 
-KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 `PATCH /api/v1/knowledge/{kb_id}`의 allowlisted `safe_metadata`만 전송한다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
+KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 전용 `PATCH /api/v1/knowledge/{kb_id}/safe-metadata`로 allowlisted 필드만 전송한다. `can_manage_safe_metadata=true`일 때만 이 surface를 표시하고, `can_edit_settings=false`이면 이름·설명·embedding model·소스 추가/재처리/삭제 같은 owner-only 동작을 표시하거나 활성화하지 않는다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
 
 ### Knowledge Collection Management UI
 

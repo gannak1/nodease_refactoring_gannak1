@@ -1580,7 +1580,6 @@ export default function NodeCanvas() {
 
       {!isReadOnly && (
         <AgentBuilderPanel
-          key={`${activeWorkflowId}:${currentAppId ?? 'none'}`}
           workflowId={activeWorkflowId}
           appId={currentAppId}
           nodes={nodes}

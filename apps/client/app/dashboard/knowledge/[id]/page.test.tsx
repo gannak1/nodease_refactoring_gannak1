@@ -25,6 +25,7 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
     getKnowledgeBase: vi.fn(),
     deleteDocument: vi.fn(),
     updateKnowledgeBase: vi.fn(),
+    updateKnowledgeSafeMetadata: vi.fn(),
     deleteKnowledgeBase: vi.fn(),
   },
 }));
@@ -206,14 +207,15 @@ describe('KnowledgeDetailPage source processing actions', () => {
       name: 'People Ops KB',
       description: 'Onboarding guide for benefits',
       safe_metadata: {},
+      can_edit_settings: false,
+      can_manage_safe_metadata: true,
     });
-    mockedKnowledgeApi.updateKnowledgeBase.mockResolvedValue({
-      ...knowledgeBaseFixture,
-      name: 'People Ops KB',
+    mockedKnowledgeApi.updateKnowledgeSafeMetadata.mockResolvedValue({
       safe_metadata: {
         safe_label: 'People Ops KB',
         kb_safe_topics: ['People', 'Ops', 'KB', 'Onboarding', 'guide', 'benefits'],
       },
+      can_manage_safe_metadata: true,
     });
 
     render(<KnowledgeDetailPage />);
@@ -233,12 +235,38 @@ describe('KnowledgeDetailPage source processing actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'save safe metadata' }));
 
     await waitFor(() => {
-      expect(mockedKnowledgeApi.updateKnowledgeBase).toHaveBeenCalledWith('kb-1', {
-        safe_metadata: {
+      expect(
+        mockedKnowledgeApi.updateKnowledgeSafeMetadata,
+      ).toHaveBeenCalledWith('kb-1', {
           safe_label: 'People Ops KB',
           kb_safe_topics: ['People', 'Ops', 'KB', 'Onboarding', 'guide', 'benefits'],
-        },
       });
     });
+
+    expect(
+      screen.queryByRole('button', { name: '소스 추가' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '삭제' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides safe metadata editing without KB manage permission', async () => {
+    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValue({
+      ...knowledgeBaseFixture,
+      safe_metadata: { safe_label: 'People Ops' },
+      can_edit_settings: false,
+      can_manage_safe_metadata: false,
+    });
+
+    render(<KnowledgeDetailPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: '사내 문서' }),
+    ).toBeVisible();
+    expect(screen.queryByLabelText('KB safe label')).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText('save safe metadata'),
+    ).not.toBeInTheDocument();
   });
 });

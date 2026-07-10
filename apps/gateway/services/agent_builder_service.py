@@ -1,7 +1,6 @@
 import copy
 import hashlib
 import json
-import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -23,6 +22,7 @@ from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
+from apps.gateway.services.llm_service import LLMService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -307,7 +307,6 @@ ENGLISH_NODE_INSERT_RE = re.compile(
     r"(?P<placement>after|before)\s+(?P<target>.+?)(?:[.!?]|$)",
     re.IGNORECASE,
 )
-APPROVED_DRAFT_MODEL_ENV = "AGENT_BUILDER_DRAFT_MODEL_ID"
 SAFE_TRIGGER_TYPES = {"manual", "schedule", "api", "webhook"}
 
 
@@ -1203,29 +1202,6 @@ class AgentBuilderService:
                 target_resolution=target_resolution,
             )
         except HTTPException as exc:
-            if exc.detail == "DRAFT_MODEL_ROUTE_REQUIRED":
-                response = AgentBuilderMessageResponse(
-                    request_id=request_row.id,
-                    status="configuration_required",
-                    structured_request=structured,
-                    validation_result=AgentBuilderValidationResult(
-                        valid=False,
-                        issues=[
-                            AgentBuilderValidationIssue(
-                                code="DRAFT_MODEL_ROUTE_REQUIRED",
-                                message="승인된 draft generation model route가 필요합니다.",
-                                path="llm.model_id",
-                            )
-                        ],
-                    ),
-                    warnings=[
-                        "모델 route가 구성되지 않아 초안을 확정하지 않았습니다.",
-                        *structured_warnings,
-                    ],
-                )
-                self._finish_request(request_row, response)
-                self.db.commit()
-                return response
             raise
         except Exception:
             return self._fail_processing_request(request_row)
@@ -1832,6 +1808,8 @@ class AgentBuilderService:
             else:
                 workflow.graph = save_graph
                 workflow.updated_by = self.user.id
+            if draft.draft_mode == "new_workflow":
+                self._rebind_session_after_new_workflow_apply(draft, workflow)
             draft.status = "applied"
             draft.workflow_id = workflow.id
             saved_hash = calculate_graph_hash(save_graph)
@@ -1935,6 +1913,29 @@ class AgentBuilderService:
             raise HTTPException(status_code=404, detail="Agent Builder draft not found")
         return locked
 
+    def _rebind_session_after_new_workflow_apply(
+        self,
+        draft: AgentBuilderDraft,
+        workflow: Workflow,
+    ) -> None:
+        if not isinstance(self.db, Session):
+            return
+        session = (
+            self.db.query(AgentBuilderSession)
+            .filter(
+                AgentBuilderSession.id == draft.session_id,
+                AgentBuilderSession.user_id == self.user.id,
+                AgentBuilderSession.organization_id == self.organization_id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if session is None:
+            raise RuntimeError("Agent Builder session not found during apply")
+        session.workflow_id = workflow.id
+        session.app_id = workflow.app_id
+        session.updated_at = _now()
+
     def validate_preview_graph(
         self,
         graph: dict[str, Any] | None,
@@ -1961,7 +1962,10 @@ class AgentBuilderService:
                 )
             if node_type == "llmNode":
                 data = node.get("data") or {}
-                if not data.get("model_id"):
+                if (
+                    not data.get("model_id")
+                    and data.get("configuration_state") != "unresolved"
+                ):
                     issues.append(
                         AgentBuilderValidationIssue(
                             code="MISSING_LLM_MODEL",
@@ -3556,6 +3560,9 @@ class AgentBuilderService:
                 "title": "Knowledge Base-backed LLM" if kb_refs else "LLM",
                 "provider": "configured",
                 "model_id": model_id,
+                "configuration_state": (
+                    "resolved" if model_id else configuration_state
+                ),
                 "task_type": "answer",
                 "system_prompt": "입력을 안전하게 분석하고 결과를 생성합니다.",
                 "user_prompt": f"{{{{{source_output_key}}}}}",
@@ -3790,7 +3797,7 @@ class AgentBuilderService:
             capability in {"llm", "knowledge_backed_llm"}
             for capability in body_capabilities
         )
-        model_id = self._default_model_id() if uses_llm else None
+        model_id = self._recommended_draft_model_id() if uses_llm else None
         kb_refs = (
             [
                 {
@@ -3933,7 +3940,7 @@ class AgentBuilderService:
             capability in {"llm", "knowledge_backed_llm"}
             for capability in body_capabilities
         )
-        model_id = self._default_model_id() if uses_llm else None
+        model_id = self._recommended_draft_model_id() if uses_llm else None
         kb_refs = (
             [
                 {
@@ -4004,11 +4011,17 @@ class AgentBuilderService:
         graph.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})
         return graph
 
-    def _default_model_id(self) -> str:
-        model_id = os.getenv(APPROVED_DRAFT_MODEL_ENV, "").strip()
-        if model_id:
-            return model_id
-        raise HTTPException(status_code=409, detail="DRAFT_MODEL_ROUTE_REQUIRED")
+    def _recommended_draft_model_id(self) -> str | None:
+        if not isinstance(self.db, Session):
+            return None
+        recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+            self.db,
+            self.user.id,
+            self.organization_id,
+        )
+        if recommendation is None:
+            return None
+        return recommendation.model.model_id_for_api_call
 
     def _node_configuration_issues(
         self,

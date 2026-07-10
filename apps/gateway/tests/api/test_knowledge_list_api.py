@@ -232,6 +232,7 @@ def test_knowledge_list_route_returns_legacy_safe_response(monkeypatch):
             "organization_id": None,
             "name": "문서 없는 KB",
             "description": None,
+            "safe_metadata": {},
             "document_count": 0,
             "created_at": body[0]["created_at"],
             "updated_at": body[0]["updated_at"],

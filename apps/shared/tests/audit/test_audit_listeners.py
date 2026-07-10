@@ -5,6 +5,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.audit import listeners
 from apps.shared.db.models.connection import Connection
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.team import (
@@ -85,6 +86,7 @@ def test_layer_b_masks_sensitive_json_columns():
         "config",
     }
     assert listeners.SENSITIVE_FIELDS[TraceRedactionPolicy] >= {"regex_rules"}
+    assert listeners.SENSITIVE_FIELDS[KnowledgeBase] >= {"safe_metadata"}
 
 
 @pytest.fixture

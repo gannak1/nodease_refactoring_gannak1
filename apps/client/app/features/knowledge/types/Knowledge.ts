@@ -86,6 +86,13 @@ export interface DocumentResponse {
 
 export interface KnowledgeBaseDetailResponse extends KnowledgeBaseResponse {
   documents: DocumentResponse[];
+  can_edit_settings?: boolean;
+  can_manage_safe_metadata?: boolean;
+}
+
+export interface KnowledgeSafeMetadataResponse {
+  safe_metadata: Record<string, unknown>;
+  can_manage_safe_metadata: boolean;
 }
 
 export type KnowledgeCollectionAction = 'read' | 'route' | 'manage' | 'sync';

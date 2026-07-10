@@ -88,6 +88,7 @@ describe('AgentBuilderPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    window.sessionStorage.clear();
     useWorkflowStore.setState(initialState, true);
     vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({});
     vi.mocked(agentBuilderApi.getModelOptions).mockResolvedValue([
@@ -319,8 +320,28 @@ describe('AgentBuilderPanel', () => {
     vi.mocked(workflowApi.getWorkflow).mockResolvedValue({
       app_id: 'app-1',
     });
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-old',
+      'session-new-workflow',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-new-workflow',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [
+        {
+          kind: 'user',
+          request_id: 'request-new-workflow',
+          content: 'Create a new workflow and keep this conversation',
+          redacted: true,
+        },
+      ],
+      pending_request: null,
+      draft_preview: null,
+    });
 
-    render(
+    const { rerender, unmount } = render(
       <AgentBuilderPanel
         workflowId="workflow-old"
         appId="app-1"
@@ -331,6 +352,7 @@ describe('AgentBuilderPanel', () => {
     );
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByText('Create a new workflow and keep this conversation');
     fireEvent.click(screen.getByRole('button', { name: '적용 및 저장' }));
 
     await waitFor(() => {
@@ -342,6 +364,15 @@ describe('AgentBuilderPanel', () => {
       clientLatestGraphHash: expect.any(String),
     });
     expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem('agent-builder:workflow:workflow-new'),
+    ).toBe('session-new-workflow');
+    expect(
+      window.localStorage.getItem('agent-builder:workflow:workflow-old'),
+    ).toBeNull();
+    expect(
+      window.sessionStorage.getItem('agent-builder:reopen:workflow-new'),
+    ).not.toBeNull();
 
     const state = useWorkflowStore.getState();
     expect(state.activeWorkflowId).toBe('workflow-new');
@@ -365,6 +396,35 @@ describe('AgentBuilderPanel', () => {
         maxZoom: 1,
       });
     });
+
+    rerender(
+      <AgentBuilderPanel
+        workflowId="workflow-new"
+        appId="app-1"
+        nodes={savedNodes}
+        edges={newEdges}
+        hasUnsavedChanges={false}
+      />,
+    );
+    expect(
+      window.sessionStorage.getItem('agent-builder:reopen:workflow-new'),
+    ).not.toBeNull();
+
+    unmount();
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-new"
+        appId="app-1"
+        nodes={savedNodes}
+        edges={newEdges}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    await screen.findByText('Create a new workflow and keep this conversation');
+    expect(
+      window.sessionStorage.getItem('agent-builder:reopen:workflow-new'),
+    ).toBeNull();
   });
 
   it('workflow scope가 바뀌면 기존 preview 상태를 제거한다', async () => {
@@ -400,13 +460,13 @@ describe('AgentBuilderPanel', () => {
     });
   });
 
-  it('app scope가 바뀌면 기존 preview 상태를 제거한다', async () => {
+  it('workflow가 없는 app scope가 바뀌면 기존 preview 상태를 제거한다', async () => {
     const oldNodes = [node('old-node')];
     setPreviewState(oldNodes);
 
     const { rerender } = render(
       <AgentBuilderPanel
-        workflowId="workflow-old"
+        workflowId=""
         appId="app-1"
         nodes={oldNodes}
         edges={[]}
@@ -420,7 +480,7 @@ describe('AgentBuilderPanel', () => {
 
     rerender(
       <AgentBuilderPanel
-        workflowId="workflow-old"
+        workflowId=""
         appId="app-2"
         nodes={oldNodes}
         edges={[]}
@@ -536,6 +596,62 @@ describe('AgentBuilderPanel', () => {
       expect(agentBuilderApi.sendMessage).toHaveBeenCalled();
     });
     expect(screen.getByText('Summarize input and send to Slack')).toBeTruthy();
+  });
+
+  it('같은 workflow의 app metadata가 채워져도 열린 패널과 대화를 유지한다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-app-hydration',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+      draft_preview: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-app-hydration',
+      status: 'clarification_required',
+      structured_request: null,
+      clarification_questions: ['추가 정보를 알려주세요.'],
+      clarification_options: [],
+      draft_preview: null,
+      validation_result: null,
+      preview_prompt: null,
+      warnings: [],
+    });
+
+    const { rerender } = render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId={null}
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Keep this conversation after save' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: 'Enter',
+      code: 'Enter',
+    });
+
+    await screen.findByText('Keep this conversation after save');
+    rerender(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    expect(screen.getByText('Keep this conversation after save')).toBeTruthy();
+    expect(screen.getByRole('textbox')).toBeTruthy();
   });
 
   it('workflow target clarification에서 node를 선택해 같은 수정 요청을 재전송한다', async () => {

@@ -679,6 +679,106 @@ def test_agent_builder_model_options_use_provider_and_performance_order(monkeypa
     assert groups[3].unavailable_reason == "chat_model_not_supported"
 
 
+def test_agent_builder_draft_model_recommendation_prefers_latest_mini_then_low_tier(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+
+    def option(provider_name, model_id, name, priority=0):
+        return SimpleNamespace(
+            provider_name=provider_name,
+            model=SimpleNamespace(
+                id=uuid.uuid4(),
+                model_id_for_api_call=model_id,
+                name=name,
+            ),
+            credential=SimpleNamespace(
+                id=uuid.uuid4(),
+                credential_name=f"{provider_name}-credential",
+            ),
+            relation_priority=priority,
+        )
+
+    options = [
+        option("anthropic", "claude-haiku-5", "Claude Haiku 5"),
+        option("openai", "gpt-5.5-pro", "GPT-5.5 Pro"),
+        option("openai", "gpt-5.5", "GPT-5.5"),
+        option("openai", "gpt-5.5-nano", "GPT-5.5 Nano"),
+        option("openai", "gpt-5.4-mini", "GPT-5.4 Mini"),
+        option("openai", "gpt-5.5-mini", "GPT-5.5 Mini"),
+    ]
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: options,
+    )
+
+    recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+        object(),
+        user_id,
+        organization_id,
+    )
+
+    assert recommendation is not None
+    assert recommendation.model.model_id_for_api_call == "gpt-5.5-mini"
+
+
+def test_agent_builder_draft_model_recommendation_uses_nano_when_mini_is_absent(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    options = [
+        SimpleNamespace(
+            provider_name="openai",
+            model=SimpleNamespace(
+                id=uuid.uuid4(),
+                model_id_for_api_call=model_id,
+                name=model_id,
+            ),
+            credential=SimpleNamespace(
+                id=uuid.uuid4(),
+                credential_name="openai-credential",
+            ),
+            relation_priority=0,
+        )
+        for model_id in ("gpt-5.5-pro", "gpt-5.5", "gpt-5.5-nano")
+    ]
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: options,
+    )
+
+    recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+        object(),
+        user_id,
+        organization_id,
+    )
+
+    assert recommendation is not None
+    assert recommendation.model.model_id_for_api_call == "gpt-5.5-nano"
+
+
+def test_agent_builder_draft_model_recommendation_returns_none_without_authorized_option(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: [],
+    )
+
+    recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+        object(),
+        uuid.uuid4(),
+        uuid.uuid4(),
+    )
+
+    assert recommendation is None
+
+
 def test_agent_answer_options_endpoint_resolves_active_organization(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

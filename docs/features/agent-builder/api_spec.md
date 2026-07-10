@@ -22,6 +22,8 @@ Agent Builder API는 workflow draft 생성, clarification, validation, draft pre
 
 `session_id`는 server-issued identifier다. Server는 session을 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶어 관리한다. Client-generated session id는 권한, scope, organization, audit 판단에 사용하지 않는다.
 
+`draft_mode=new_workflow`의 `apply_and_save`가 성공하면 server는 workflow graph 저장과 같은 transaction에서 해당 draft의 session scope를 새 `saved_workflow_id`와 app으로 재결합한다. Client는 응답의 `saved_workflow_id` route로 이동할 때 기존 server-issued session id만 새 workflow storage key로 이전하며, 새 id를 만들거나 다른 scope의 session을 재사용하지 않는다.
+
 Session 조회/복구 response의 최근 메시지는 사용자 turn과 assistant response를 함께 복구할 수 있어야 한다. 사용자 turn은 redaction을 거친 `message_summary` 또는 동등한 safe content만 포함하고, assistant turn은 기존 Agent Builder message response와 같은 safe response payload를 포함한다. Legacy response-only message가 남아 있더라도 client는 이를 assistant turn으로 해석할 수 있지만, 신규 저장은 사용자 redacted turn과 assistant turn을 구분해야 한다.
 
 ## Message Request
@@ -41,6 +43,8 @@ Client request body는 organization override를 포함하지 않는다.
 | `intent_model_selection` | 내부 intent planner가 사용할 명시적 `credential_id`, `model_id` 쌍. Raw credential 또는 provider config를 포함하지 않음 |
 
 `GET /model-options`는 provider group을 `openai`, `anthropic`, `google`, `llamaparse` 순서로 반환한다. 각 `options` item은 safe model schema, safe credential option, relation priority만 포함한다. Model은 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 후보가 없는 chat provider는 `no_authorized_model`, LlamaParse는 `chat_model_not_supported`를 반환한다.
+
+이 endpoint의 순서는 내부 intent planner 선택 UI용이다. Draft generator가 LLM node를 만들 때는 같은 권한 확인 후보 집합에서 `openai`, `anthropic`, `google` provider 순서와 provider별 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순서를 사용해 기본 model을 추천한다. Preview/draft graph에는 추천된 safe model id만 포함하고 credential id/config는 포함하지 않는다. 후보가 없으면 `model_id=null`, `configuration_state=unresolved`와 model 설정 필요 `configuration_issues`를 반환하며, 고정 환경변수 fallback으로 바꾸거나 draft 전체를 실패시키지 않는다.
 
 Message submit은 `intent_model_selection`을 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Server는 요청마다 credential organization/validity/`use` permission과 model active chat type/provider/verified relation을 다시 검사한다. 선택이 없거나 유효하지 않으면 hidden fallback model을 자동 선택하지 않는다. Permission/runtime 차단 audit에는 safe credential/model ID, reason, runtime surface를 기록할 수 있지만 credential 원문과 raw provider response는 포함하지 않는다.
 

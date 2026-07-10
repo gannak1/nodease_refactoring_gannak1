@@ -394,9 +394,11 @@ class KnowledgeBaseQueryService:
         self,
         kb_id: UUID,
         *,
-        user_id: UUID,
+        user_id: UUID | None,
         organization_scope: UUID | None,
         has_organization_id: bool,
+        can_edit_settings: bool = True,
+        can_manage_safe_metadata: bool = True,
     ) -> KnowledgeBaseDetailResponse:
         organization_id_column = (
             KnowledgeBase.organization_id
@@ -426,11 +428,11 @@ class KnowledgeBaseQueryService:
         if has_safe_metadata:
             kb_select_columns.append(KnowledgeBase.safe_metadata)
 
-        kb_query = (
-            self.db.query(*kb_select_columns)
-            .select_from(KnowledgeBase)
-            .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == user_id)
+        kb_query = self.db.query(*kb_select_columns).select_from(KnowledgeBase).filter(
+            KnowledgeBase.id == kb_id
         )
+        if user_id is not None:
+            kb_query = kb_query.filter(KnowledgeBase.user_id == user_id)
         if organization_scope is not None:
             kb_query = kb_query.filter(KnowledgeBase.organization_id == organization_scope)
         kb = kb_query.first()
@@ -524,6 +526,8 @@ class KnowledgeBaseQueryService:
             source_types=_clean_source_types([row[6] for row in doc_rows]),
             embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
             documents=doc_responses,
+            can_edit_settings=can_edit_settings,
+            can_manage_safe_metadata=can_manage_safe_metadata,
         )
 
     def get_llm_rag_selectability(

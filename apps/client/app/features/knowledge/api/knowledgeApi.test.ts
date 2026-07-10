@@ -304,22 +304,27 @@ describe('knowledgeApi safe failure logging', () => {
 describe('knowledgeApi collection management', () => {
   it('updates Knowledge Base safe metadata', async () => {
     vi.mocked(apiClient.patch).mockResolvedValueOnce({
-      data: { id: 'kb-1' },
-    });
-
-    await knowledgeApi.updateKnowledgeBase('kb-1', {
-      safe_metadata: {
-        safe_label: 'People Ops',
-        kb_safe_topics: ['onboarding'],
+      data: {
+        safe_metadata: {
+          safe_label: 'People Ops',
+          kb_safe_topics: ['onboarding'],
+        },
+        can_manage_safe_metadata: true,
       },
     });
 
-    expect(apiClient.patch).toHaveBeenCalledWith('/knowledge/kb-1', {
-      safe_metadata: {
+    await knowledgeApi.updateKnowledgeSafeMetadata('kb-1', {
+      safe_label: 'People Ops',
+      kb_safe_topics: ['onboarding'],
+    });
+
+    expect(apiClient.patch).toHaveBeenCalledWith(
+      '/knowledge/kb-1/safe-metadata',
+      {
         safe_label: 'People Ops',
         kb_safe_topics: ['onboarding'],
       },
-    });
+    );
   });
 
   it('loads Knowledge Collections from the management endpoint', async () => {

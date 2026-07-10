@@ -13,6 +13,7 @@ MVP는 다음을 포함한다.
 
 - Workflow Editor 우측 하단 고정 launcher와 chatbot panel
 - Chatbot header의 permission-aware intent planner model selector
+- 생성 LLM node의 permission-aware 기본 model 추천
 - 자연어 요청을 `StructuredRequest`로 변환
 - 새 workflow draft 생성과 기존 workflow 수정 제안 구분
 - 공통 Workflow Node Capability Catalog에서 `implemented=true`, `agent_builder_supported=true`로 승인된 node capability 조합 제안
@@ -28,7 +29,7 @@ MVP는 다음을 포함하지 않는다.
 - 승인 없는 workflow 실행
 - draft 생성 시점 Knowledge Base retrieval
 - Slack/Jira/GitHub/Wiki 실제 외부 action 실행
-- workflow node credential 자동 생성, graph 주입, 원문 노출 또는 runtime 실행. 단, AB-FR-003의 자연어 구조화를 위한 permission-aware 내부 LLM planner 호출은 제외한다.
+- workflow node credential 자동 생성, graph 주입, 원문 노출 또는 runtime 실행. 단, AB-FR-003의 자연어 구조화를 위한 permission-aware 내부 LLM planner 호출과 AB-FR-009의 safe model id 추천은 제외한다.
 - 외부 MCP client/server 구현
 - catalog에 등록되지 않았거나 `implemented=false`인 node type 자동 생성
 - Guardrail node 자동 생성. MVP에서는 future allowlist 후보로만 남기고, 지원 capability로 노출하지 않는다.
@@ -83,6 +84,8 @@ LLM 의미 후보는 서버에서 다시 검증한다. 최종 schema 정규화, 
 구조화 LLM runtime은 인증 사용자와 active organization 범위에서 `use` 권한과 verified model relation을 통과한 credential/model 조합만 사용할 수 있다. Client는 화면에 표시된 조합 중 하나의 `credential_id`, `model_id`를 message request에 포함하고, server는 모든 요청에서 organization, credential validity, `use` 권한, active chat model, provider 일치, verified relation을 다시 검증한다. 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason을 기록할 수 있다. Credential 원문과 raw provider response는 prompt, API response, draft metadata, trace, audit에 저장하지 않는다. 사용할 runtime이 없으면 `configuration_required`, LLM 호출 또는 schema validation이 실패하면 `failed`를 반환하며 부분 draft를 확정하지 않는다.
 
 Model option은 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 이후 relation priority와 safe display name으로 결정적 순서를 보장한다. Agent Builder는 provider별 고정 저비용 model map으로 선택값을 숨겨 대체하지 않는다.
+
+이 순서는 intent planner header 표시 순서다. Generated workflow LLM node의 기본 model 추천은 AB-FR-009의 별도 비용 친화적 순서를 사용하며, header에서 사용자가 선택한 intent planner model을 workflow node model로 복사하지 않는다.
 
 `StructuredRequestBuilder`는 KB 후보 목록이나 KB safe metadata 목록을 입력으로 받지 않고, KB 후보를 선택하지도 않는다. 이 단계는 사용자 요청에서 어떤 지식이 필요한지(`knowledge_requirements`)와 어떤 값이 resolver로 해결되어야 하는지(`pending_resolution`)만 구조화한다.
 
@@ -182,6 +185,8 @@ Draft는 기존 workflow model/schema와 지원 capability allowlist를 따라�
 
 외부 action 또는 필수 runtime 설정이 필요한 node는 draft에 포함할 수 있지만 Agent Builder가 credential, token, password, repository, channel, URL, target workflow 같은 값을 임의 생성하거나 원문으로 채우지 않는다. 해결되지 않은 값은 빈 값과 `configuration_state=unresolved`로 표시하고 node별 `configuration_issues`에 필요한 파라미터를 남긴다. 같은 type의 node가 여러 개여도 issue를 합치지 않는다. Draft 생성, Preview Mode, apply/save는 해당 node를 실행하지 않으며, 실제 실행 전 기존 editor/runtime validation과 별도 사용자 동작이 필요하다.
 
+Generated LLM node의 기본 `model_id`는 active organization의 valid credential, active chat model, verified relation, 사용자 `use` 권한을 통과한 model 후보에서 추천한다. Provider는 `openai`, `anthropic`, `google` 순서로 평가하고, provider 안에서는 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순으로 추천한다. Workflow graph에는 model id만 저장하며 추천에 사용된 credential id나 원문은 저장하지 않는다. 후보가 없으면 model id를 비우고 `configuration_state=unresolved`와 model 설정 필요 warning을 남기며, 고정 환경변수 model route 때문에 draft 생성을 실패시키지 않는다.
+
 새 workflow draft는 시작 가능한 entry step을 포함해야 한다. 기존 workflow 수정 draft는 target resolution 결과와 graph validation을 만족해야 한다.
 
 ### AB-FR-010: Validation
@@ -238,6 +243,10 @@ MVP message request는 raw client graph snapshot을 받지 않는다. Client는 
 ### AB-FR-012: Conversation Session
 
 Agent Builder chatbot session은 refresh 이후에도 최근 대화와 pending request 상태를 복구할 수 있어야 한다. 최근 대화 복구는 redaction을 거친 사용자 message summary와 assistant response를 함께 포함해야 하며, 사용자 원문 또는 secret-like value를 그대로 저장/표시하지 않는다. Session identifier는 server-issued 값이어야 하며, 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶여야 한다. Client가 임의로 생성한 session id는 권한, scope, audit, stale 판단의 근거로 사용할 수 없다.
+
+같은 workflow의 `적용 및 저장` 성공 후 server graph를 reconcile하면서 기존에 비어 있던 `app_id`가 채워지는 것은 route scope 변경으로 보지 않는다. 이 경우 Agent Builder panel의 열린 상태와 현재 대화를 유지해야 한다. Workflow id가 실제로 바뀌거나 workflow가 없는 app-only route의 app id가 바뀌면 이전 scope의 session, pending state, preview graph를 이어받지 않는다.
+
+`draft_mode=new_workflow`의 저장 성공으로 새 workflow route로 이동하는 경우에는 저장 transaction 안에서 현재 Agent Builder session scope를 새 workflow와 해당 app으로 재결합해야 한다. Client는 같은 server-issued session id를 새 workflow storage key로 이전하고 panel을 다시 열어 redaction된 최근 대화를 복구한다. 임의 session id 생성이나 다른 사용자/조직 session 이전은 허용하지 않는다.
 
 Pending request가 있으면 중복 submit을 막고 cancel을 제공한다. Cancel된 request의 late result는 draft preview, Preview Mode 진입, apply/save로 이어질 수 없다.
 

@@ -83,6 +83,8 @@ from apps.shared.schemas.rag import (
     KnowledgeBaseCreate,
     KnowledgeBaseDetailResponse,
     KnowledgeBaseResponse,
+    KnowledgeSafeMetadataResponse,
+    KnowledgeSafeMetadataUpdate,
     KnowledgeUpdate,
 )
 from apps.shared.services.rag_hierarchy import (
@@ -90,6 +92,7 @@ from apps.shared.services.rag_hierarchy import (
     validate_chunking_request,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.permission_enforcement import PermissionEnforcementService
 from apps.shared.services.knowledge_schema_readiness import (
     check_knowledge_schema_readiness,
     table_has_column,
@@ -844,8 +847,132 @@ def get_knowledge_base(
             organization_scope=organization_scope,
             has_organization_id=has_organization_id,
         )
+    except KnowledgeBaseNotFound:
+        if organization_scope is None:
+            _raise_knowledge_query_service_error(request, KnowledgeBaseNotFound())
+
+    kb = (
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == kb_id,
+            KnowledgeBase.organization_id == organization_scope,
+        )
+        .first()
+    )
+    if kb is None or not PermissionEnforcementService.has_knowledge_base_manage_permission(
+        db,
+        organization_scope,
+        kb_id,
+        current_user.id,
+    ):
+        _raise_knowledge_query_service_error(request, KnowledgeBaseNotFound())
+
+    try:
+        return service.get_detail(
+            kb_id,
+            user_id=None,
+            organization_scope=organization_scope,
+            has_organization_id=has_organization_id,
+            can_edit_settings=False,
+            can_manage_safe_metadata=True,
+        )
     except KnowledgeBaseNotFound as exc:
         _raise_knowledge_query_service_error(request, exc)
+
+
+def _manageable_knowledge_base(
+    kb_id: UUID,
+    request: Request,
+    raw_organization_id: str | None,
+    db: Session,
+    current_user: User,
+) -> KnowledgeBase:
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        raw_organization_id,
+        current_user.id,
+    )
+    kb = (
+        db.query(KnowledgeBase)
+        .filter(
+            KnowledgeBase.id == kb_id,
+            KnowledgeBase.organization_id == organization_id,
+        )
+        .first()
+    )
+    if kb is None:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+    if kb.user_id == current_user.id:
+        return kb
+    if not PermissionEnforcementService.has_knowledge_base_manage_permission(
+        db,
+        organization_id,
+        kb_id,
+        current_user.id,
+    ):
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+    return kb
+
+
+@router.get(
+    "/{kb_id}/safe-metadata",
+    response_model=KnowledgeSafeMetadataResponse,
+)
+def get_knowledge_safe_metadata(
+    kb_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    kb = _manageable_knowledge_base(
+        kb_id,
+        request,
+        x_organization_id,
+        db,
+        current_user,
+    )
+    return KnowledgeSafeMetadataResponse(
+        safe_metadata=sanitize_kb_safe_metadata(kb.safe_metadata or {}),
+    )
+
+
+@router.patch(
+    "/{kb_id}/safe-metadata",
+    response_model=KnowledgeSafeMetadataResponse,
+)
+@audit(AuditAction.KNOWLEDGE_UPDATE, target_param="kb_id")
+def update_knowledge_safe_metadata(
+    kb_id: UUID,
+    update_data: KnowledgeSafeMetadataUpdate,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _ensure_knowledge_schema_columns(db, request, KNOWLEDGE_BASE_MUTATION_COLUMNS)
+    kb = _manageable_knowledge_base(
+        kb_id,
+        request,
+        x_organization_id,
+        db,
+        current_user,
+    )
+    requested = update_data.model_dump(exclude_unset=True)
+    sanitized = sanitize_kb_safe_metadata(requested)
+    current = sanitize_kb_safe_metadata(kb.safe_metadata or {})
+    for key in ("safe_label", "kb_safe_description", "kb_safe_topics"):
+        if key not in requested:
+            continue
+        if key in sanitized:
+            current[key] = sanitized[key]
+        else:
+            current.pop(key, None)
+    kb.safe_metadata = current
+    db.commit()
+    db.refresh(kb)
+    return KnowledgeSafeMetadataResponse(safe_metadata=current)
 
 
 @router.patch("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -879,11 +1006,6 @@ def update_knowledge_base(
         kb.name = update_data.name
     if update_data.description is not None:
         kb.description = update_data.description
-    if update_data.safe_metadata is not None:
-        current_safe_metadata = sanitize_kb_safe_metadata(kb.safe_metadata or {})
-        next_safe_metadata = sanitize_kb_safe_metadata(update_data.safe_metadata)
-        kb.safe_metadata = {**current_safe_metadata, **next_safe_metadata}
-
     # 임베딩 모델 변경 및 재인덱싱 트리거
     if (
         update_data.embedding_model is not None

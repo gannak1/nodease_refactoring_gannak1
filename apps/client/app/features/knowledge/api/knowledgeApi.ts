@@ -4,6 +4,7 @@ import {
   KnowledgeBaseCreate,
   KnowledgeBaseResponse,
   KnowledgeBaseDetailResponse,
+  KnowledgeSafeMetadataResponse,
   DocumentResponse,
   SourceType,
   KnowledgeCollectionAction,
@@ -348,10 +349,21 @@ export const knowledgeApi = {
       name?: string;
       description?: string;
       embedding_model?: string;
-      safe_metadata?: Record<string, unknown>;
     },
   ): Promise<KnowledgeBaseResponse> => {
     const response = await api.patch(`/knowledge/${id}`, data);
+    return response.data;
+  },
+
+  updateKnowledgeSafeMetadata: async (
+    id: string,
+    data: {
+      safe_label?: string;
+      kb_safe_description?: string;
+      kb_safe_topics?: string[];
+    },
+  ): Promise<KnowledgeSafeMetadataResponse> => {
+    const response = await api.patch(`/knowledge/${id}/safe-metadata`, data);
     return response.data;
   },
 

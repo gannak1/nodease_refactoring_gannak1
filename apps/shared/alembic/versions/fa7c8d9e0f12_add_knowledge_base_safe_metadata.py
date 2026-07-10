@@ -1,7 +1,7 @@
 """add knowledge base safe metadata
 
 Revision ID: fa7c8d9e0f12
-Revises: fa6b7c8d9e01
+Revises: fa7b8c9d0e12
 Create Date: 2026-07-09 00:00:00.000000
 
 """
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "fa7c8d9e0f12"
-down_revision: Union[str, Sequence[str], None] = "fa6b7c8d9e01"
+down_revision: Union[str, Sequence[str], None] = "fa7b8c9d0e12"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -193,7 +193,7 @@ apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --rese
 | `rookie@nodease.demo` | 신입사원 이서연 | 최초 생성/배포 권한 없음, 승인 후 workflow 생성/배포/사용 |
 | `author@nodease.demo` | 운영자 박민준 | 비용 위험 workflow 운영, trace 확인, LLM 노드 최적화 |
 | `tester.manager@nodease.demo` | 테스트 관리자 | manager 권한 확인 |
-| `tester.builder@nodease.demo` | 테스트 빌더 | workflow 생성/편집/배포 확인 |
+| `tester.builder@nodease.demo` | 테스트 빌더 | workflow 생성/편집/배포와 비민감 사내 onboarding/휴가/복지 KB 후보 선택 확인. runtime credential opt-in seed에서는 Agent Builder intent model `operator` 권한 포함 |
 | `tester.member@nodease.demo` | 테스트 멤버 | 일반 member 화면과 권한 제한 확인 |
 | `invited@nodease.demo` | 초대대기 한지민 | invited 상태 UI 확인 |
 | `suspended@nodease.demo` | 정지회원 최유진 | suspended 상태 UI 확인 |

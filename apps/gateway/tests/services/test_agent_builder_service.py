@@ -533,7 +533,7 @@ def test_named_existing_node_target_is_resolved_and_only_requested_node_is_splic
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(message="github 노드 뒤에 LLM 노드를 추가해줘"),
         workflow=workflow,
@@ -868,8 +868,7 @@ def test_structured_request_rejects_guardrail_node_in_mvp():
     assert validation.issues[0].code == "UNSUPPORTED_REQUEST"
 
 
-def test_input_output_request_builds_without_llm_model_route(monkeypatch):
-    monkeypatch.delenv(service_module.APPROVED_DRAFT_MODEL_ENV, raising=False)
+def test_input_output_request_builds_without_llm_model_recommendation():
     svc = AgentBuilderService(
         FakeDb(),
         user=SimpleNamespace(id=uuid.uuid4()),
@@ -902,7 +901,7 @@ def test_webhook_request_builds_webhook_trigger_preview(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
@@ -938,7 +937,7 @@ def test_github_pr_review_request_builds_read_review_and_comment_nodes(monkeypat
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
@@ -1003,7 +1002,7 @@ def test_explicit_new_workflow_supports_github_comment_registration_phrase(
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
@@ -1050,7 +1049,7 @@ def test_github_llm_review_without_comment_intent_does_not_add_comment_node(
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
@@ -1082,7 +1081,7 @@ def test_spaced_korean_webhook_and_github_upload_phrase_builds_two_github_nodes(
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
@@ -1147,7 +1146,7 @@ def test_submit_message_preserves_spaced_korean_github_workflow_capabilities(
         "_app_in_active_org",
         lambda _: SimpleNamespace(id=app_id),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     monkeypatch.setattr(
         service_module.AppService,
         "access_denial_status",
@@ -1272,7 +1271,7 @@ def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context
         "_app_in_active_org",
         lambda _: SimpleNamespace(id=app_id),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args: None)
     monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
 
@@ -1352,7 +1351,7 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
         "_app_in_active_org",
         lambda _: SimpleNamespace(id=app_id),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args: None)
     monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
 
@@ -1423,7 +1422,7 @@ def test_agent_builder_has_draft_template_for_every_supported_capability(
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
         draft_mode="new_workflow",
@@ -1457,7 +1456,7 @@ def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warnin
         AgentBuilderMessageRequest(message="Analyze the input and send it to Slack"),
         workflow=None,
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     preview_graph = svc._build_preview_graph(  # noqa: SLF001
         structured,
         workflow=None,
@@ -2298,8 +2297,6 @@ def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypa
 
 
 def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkeypatch):
-    monkeypatch.setenv(service_module.APPROVED_DRAFT_MODEL_ENV, "approved-draft-route")
-
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -3123,7 +3120,7 @@ def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkey
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
             message="이 연결 사이에 LLM 노드를 추가해줘",
@@ -3164,7 +3161,7 @@ def test_agent_builder_preview_auto_layouts_new_workflow_chain(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
         draft_mode="new_workflow",
@@ -3193,7 +3190,7 @@ def test_agent_builder_preview_generates_valid_slack_node_when_requested(monkeyp
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
         draft_mode="new_workflow",
@@ -3245,7 +3242,7 @@ def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypa
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
             message="이 노드 뒤에 LLM 노드를 추가해줘",
@@ -3487,29 +3484,56 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     assert {position["y"] for position in positions.values()} == {0}
 
 
-def test_agent_builder_model_route_requires_explicit_approved_env(monkeypatch):
+def test_agent_builder_draft_without_recommended_model_stays_unresolved():
     svc = AgentBuilderService(
         FakeDb(),
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.delenv(service_module.APPROVED_DRAFT_MODEL_ENV, raising=False)
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="LLM으로 입력을 요약하는 워크플로우를 만들어줘"),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+    llm_node = next(
+        node for node in preview_graph["nodes"] if node["type"] == "llmNode"
+    )
+    validation = svc.validate_preview_graph(preview_graph)
+    configuration_issues = svc._node_configuration_issues(  # noqa: SLF001
+        preview_graph
+    )
 
-    with pytest.raises(service_module.HTTPException) as exc:
-        svc._default_model_id()  # noqa: SLF001
+    assert llm_node["data"]["model_id"] is None
+    assert llm_node["data"]["configuration_state"] == "unresolved"
+    assert validation.valid is True
+    assert any(
+        issue.node_id == llm_node["id"]
+        and "model_id" in {parameter.key for parameter in issue.missing_parameters}
+        for issue in configuration_issues
+    )
 
-    assert exc.value.detail == "DRAFT_MODEL_ROUTE_REQUIRED"
 
-
-def test_agent_builder_model_route_uses_explicit_approved_env(monkeypatch):
+def test_agent_builder_draft_uses_permission_aware_model_recommendation(monkeypatch):
+    db = service_module.Session()
     svc = AgentBuilderService(
-        FakeDb(),
+        db,
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setenv(service_module.APPROVED_DRAFT_MODEL_ENV, "approved-draft-route")
+    monkeypatch.setattr(
+        service_module.LLMService,
+        "get_agent_builder_draft_model_recommendation",
+        lambda *args, **kwargs: SimpleNamespace(
+            model=SimpleNamespace(model_id_for_api_call="gpt-5.5-mini")
+        ),
+    )
 
-    assert svc._default_model_id() == "approved-draft-route"  # noqa: SLF001
+    assert svc._recommended_draft_model_id() == "gpt-5.5-mini"  # noqa: SLF001
+    db.close()
 
 
 def test_agent_builder_apply_save_failure_returns_safe_failure(monkeypatch):

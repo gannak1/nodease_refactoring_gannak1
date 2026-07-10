@@ -339,8 +339,12 @@ export function AgentBuilderPanel({
   const envVariables = useWorkflowStore((state) => state.envVariables);
   const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
 
-  const storageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
+  const storageKey = workflowId
+    ? `agent-builder:workflow:${workflowId}`
+    : `agent-builder:app:${appId ?? 'none'}`;
+  const legacyStorageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
   const scopeRef = useRef(storageKey);
+  const panelInstanceId = useRef(createLocalUserMessageId()).current;
   const conversationScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -417,9 +421,47 @@ export function AgentBuilderPanel({
   }, [storageKey, clearAgentBuilderPreview]);
 
   useEffect(() => {
+    if (!workflowId || typeof window === 'undefined') return;
+    const reopenKey = `agent-builder:reopen:${workflowId}`;
+    const rawMarker = window.sessionStorage.getItem(reopenKey);
+    if (!rawMarker) return;
+    let marker = { sessionId: rawMarker, sourceInstanceId: null as string | null };
+    try {
+      const parsed = JSON.parse(rawMarker) as unknown;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof (parsed as { sessionId?: unknown }).sessionId === 'string'
+      ) {
+        marker = {
+          sessionId: (parsed as { sessionId: string }).sessionId,
+          sourceInstanceId:
+            typeof (parsed as { sourceInstanceId?: unknown }).sourceInstanceId ===
+            'string'
+              ? (parsed as { sourceInstanceId: string }).sourceInstanceId
+              : null,
+        };
+      }
+    } catch {
+      marker = { sessionId: rawMarker, sourceInstanceId: null };
+    }
+    if (!marker.sessionId || marker.sourceInstanceId === panelInstanceId) return;
+    if (window.localStorage.getItem(storageKey) !== marker.sessionId) {
+      window.sessionStorage.removeItem(reopenKey);
+      return;
+    }
+    window.sessionStorage.removeItem(reopenKey);
+    setIsOpen(true);
+    setIsMinimized(false);
+  }, [panelInstanceId, storageKey, workflowId]);
+
+  useEffect(() => {
     if (!isOpen || sessionId || typeof window === 'undefined') return;
-    const storedSessionId = window.localStorage.getItem(storageKey);
+    const storedSessionId =
+      window.localStorage.getItem(storageKey) ??
+      window.localStorage.getItem(legacyStorageKey);
     if (!storedSessionId) return;
+    window.localStorage.setItem(storageKey, storedSessionId);
     let isCanceled = false;
     agentBuilderApi
       .getSession(storedSessionId)
@@ -464,7 +506,7 @@ export function AgentBuilderPanel({
     return () => {
       isCanceled = true;
     };
-  }, [isOpen, sessionId, storageKey]);
+  }, [isOpen, legacyStorageKey, sessionId, storageKey]);
 
   useEffect(() => {
     if (!isOpen || isMinimized) return;
@@ -727,6 +769,18 @@ export function AgentBuilderPanel({
           viewport: savedWorkflow.viewport ?? DEFAULT_WORKFLOW_VIEWPORT,
         };
         if (!isSameWorkflow) {
+          if (sessionId && typeof window !== 'undefined') {
+            const nextStorageKey = `agent-builder:workflow:${savedWorkflowId}`;
+            window.localStorage.setItem(nextStorageKey, sessionId);
+            window.localStorage.removeItem(storageKey);
+            window.sessionStorage.setItem(
+              `agent-builder:reopen:${savedWorkflowId}`,
+              JSON.stringify({
+                sessionId,
+                sourceInstanceId: panelInstanceId,
+              }),
+            );
+          }
           setActiveWorkflowIdSafe(savedWorkflowId);
         }
         setWorkflowData(

@@ -211,6 +211,7 @@ TEAM_LLM_PERMISSION_IDS = {
 
 USER_LLM_PERMISSION_IDS = {
     "author": _uuid(940),
+    "tester_builder": _uuid(941),
 }
 
 DOCUMENT_IDS = {
@@ -2122,6 +2123,14 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
             ("internal_cost_optimization_playbook", "customer_support_ops", "operator"),
         ]
     )
+    knowledge_permission_specs.extend(
+        (kb_key, "tester_builder", "operator")
+        for kb_key in (
+            "internal_onboarding",
+            "internal_leave_attendance",
+            "internal_benefits",
+        )
+    )
     return knowledge_permission_specs
 
 
@@ -2136,6 +2145,10 @@ def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, s
         ):
             for action in ("read", "route"):
                 collection_permission_specs.append((collection_key, team_key, action))
+    collection_permission_specs.extend(
+        ("internal_onboarding", "tester_builder", action)
+        for action in ("read", "route")
+    )
     return collection_permission_specs
 
 
@@ -3017,20 +3030,21 @@ def _seed_runtime_llm_permissions(db: Session) -> None:
             },
         )
 
-    _upsert_by_id(
-        db,
-        UserLLMPermission,
-        USER_LLM_PERMISSION_IDS["author"],
-        {
-            "grantee_organization_id": ORG_ID,
-            "user_id": USER_IDS["author"],
-            "llm_credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
-            "auth_state": "operator",
-            "assigned_by": USER_IDS["admin"],
-            "options": _demo_options("llm-permission-author"),
-            "flags": 0,
-        },
-    )
+    for user_key, permission_id in USER_LLM_PERMISSION_IDS.items():
+        _upsert_by_id(
+            db,
+            UserLLMPermission,
+            permission_id,
+            {
+                "grantee_organization_id": ORG_ID,
+                "user_id": USER_IDS[user_key],
+                "llm_credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(f"llm-permission-{user_key}"),
+                "flags": 0,
+            },
+        )
 
 
 def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
