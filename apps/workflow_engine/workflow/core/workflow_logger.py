@@ -207,7 +207,13 @@ class WorkflowLogger:
         external_run_id: Optional[str] = None,  # [NEW] 외부에서 전달받은 run_id
     ) -> Optional[uuid.UUID]:
         """워크플로우 실행 로그 생성"""
-        if not workflow_id or not user_id:
+        is_system_schedule = (
+            execution_context.get("trigger_mode") == "schedule"
+            and str(execution_context.get("workflow_task_id") or "").startswith(
+                "schedule:"
+            )
+        )
+        if not workflow_id or (not user_id and not is_system_schedule):
             return None
 
         # 외부 run_id가 있으면 사용, 없으면 새로 생성

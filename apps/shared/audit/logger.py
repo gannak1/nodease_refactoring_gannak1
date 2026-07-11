@@ -58,5 +58,9 @@ def record_audit(
             "occurred_at": datetime.now(timezone.utc),
         }
         celery_app.send_task("audit.record", args=[_serialize(data)])
-    except Exception as e:  # noqa: BLE001 - 감사 발행은 절대 본 요청을 막지 않는다
-        logger.error(f"[Audit] record 발행 실패 (action={action}): {e}")
+    except Exception as exc:  # noqa: BLE001 - 감사 발행은 절대 본 요청을 막지 않는다
+        logger.error(
+            "[Audit] record publish failed: action=%s error_type=%s",
+            action,
+            type(exc).__name__,
+        )

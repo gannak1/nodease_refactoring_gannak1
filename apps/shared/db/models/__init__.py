@@ -7,13 +7,13 @@ Celery Worker에서 모델을 import할 때 순서 문제를 방지합니다.
 
 # User 모델 먼저 import (다른 모델에서 참조)
 # 나머지 모델 import
-from apps.shared.db.models.app import App
-from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
     AgentBuilderRequest,
     AgentBuilderSession,
 )
+from apps.shared.db.models.app import App
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
@@ -23,9 +23,9 @@ from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
     DocumentVersion,
+    KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
-    KnowledgeBase,
     KnowledgeIngestionOutbox,
     KnowledgeSourceIdentity,
     RAGAnswerRun,
@@ -45,7 +45,7 @@ from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicyRunEvent,
     LLMNodeModelRoutingPolicyUpdate,
 )
-from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_AUTH_MEMBER,
@@ -55,29 +55,30 @@ from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_SUSPENDED,
     OrganizationMembership,
 )
-from apps.shared.db.models.team import (
-    Team,
-    TeamAuditPermission,
-    TeamAssignmentMixin,
-    TeamKnowledgePermission,
-    TeamKnowledgeCollectionPermission,
-    TeamLLMPermission,
-    TeamResourcePermissionMixin,
-    TeamMembership,
-    TeamWorkflowPermission,
-    UserLLMPermission,
-    UserKnowledgeCollectionPermission,
-    UserKnowledgePermission,
-    UserResourcePermissionMixin,
-    UserWorkflowPermission,
-)
-from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.permission_request import (
     PERMISSION_REQUEST_APPROVED,
     PERMISSION_REQUEST_PENDING,
     PERMISSION_REQUEST_REJECTED,
     REQUESTED_PERMISSION_APP_CREATE,
     PermissionRequest,
+)
+from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
+from apps.shared.db.models.team import (
+    Team,
+    TeamAssignmentMixin,
+    TeamAuditPermission,
+    TeamKnowledgeCollectionPermission,
+    TeamKnowledgePermission,
+    TeamLLMPermission,
+    TeamMembership,
+    TeamResourcePermissionMixin,
+    TeamWorkflowPermission,
+    UserKnowledgeCollectionPermission,
+    UserKnowledgePermission,
+    UserLLMPermission,
+    UserResourcePermissionMixin,
+    UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
 from apps.shared.db.models.user_app_creation_permission import (
@@ -127,6 +128,7 @@ __all__ = [
     "LLMNodeModelRoutingPolicyRunEvent",
     "LLMNodeModelRoutingPolicyUpdate",
     "Schedule",
+    "ScheduleDispatchClaim",
     "Organization",
     "OrganizationMembership",
     "ORGANIZATION_MEMBERSHIP_INVITED",

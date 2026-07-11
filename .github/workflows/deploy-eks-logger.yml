@@ -17,6 +17,10 @@ env:
   EKS_CLUSTER_NAME: moduly-cluster
   DEPLOYMENT_NAME: logger
 
+concurrency:
+  group: production-schema-rollout
+  cancel-in-progress: false
+
 jobs:
   deploy-logger:
     name: Build & Deploy Log System to EKS

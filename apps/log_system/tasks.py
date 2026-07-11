@@ -29,6 +29,7 @@ from apps.shared.db.models.llm import (  # noqa: F401
     LLMUsageLog,
 )
 from apps.shared.db.models.schedule import Schedule  # noqa: F401
+from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 
 # SQLAlchemy 모델 relationship 초기화를 위해 모든 모델을 명시적으로 import
 # 순서 중요: 의존성 순서대로 import해야 관계가 올바르게 초기화됨
@@ -78,6 +79,23 @@ def _schedule_model_routing_run_record_after_llm_node_log(
         _schedule_model_routing_run_record(workflow_run)
 
 
+class PermanentLogContractError(ValueError):
+    pass
+
+
+def _retry_workflow_run_log_task(task, *, operation: str, error: Exception) -> None:
+    """Retry a run-log write without retaining raw storage details."""
+    logger.error(
+        "[Log-System] workflow run log operation failed: operation=%s error_type=%s",
+        operation,
+        type(error).__name__,
+    )
+    raise task.retry(
+        exc=RuntimeError("workflow run log storage retry requested"),
+        countdown=2**task.request.retries,
+    )
+
+
 def _serialize_uuid(obj):
     """UUID를 문자열로 변환 (JSON 직렬화용)"""
     if isinstance(obj, uuid.UUID):
@@ -124,7 +142,53 @@ def _resolve_app_id(session, workflow_id, deployment_id=None):
     return None
 
 
-def _record_workflow_execute_audit(run_log, status, reason_code=None):
+def _schedule_audit_organization_id(session, run_log):
+    trigger_mode = getattr(run_log.trigger_mode, "value", run_log.trigger_mode)
+    task_id = str(run_log.workflow_task_id or "")
+    if trigger_mode not in {"schedule", "scheduler"} or not task_id.startswith(
+        "schedule:"
+    ):
+        return None
+
+    claim = (
+        session.query(ScheduleDispatchClaim)
+        .filter(
+            ScheduleDispatchClaim.idempotency_key == task_id,
+            ScheduleDispatchClaim.workflow_run_id == run_log.id,
+        )
+        .first()
+    )
+    if claim is None:
+        return None
+    if (
+        run_log.deployment_id is not None
+        and claim.deployment_id != run_log.deployment_id
+    ):
+        return None
+
+    deployment = (
+        session.query(WorkflowDeployment)
+        .filter(WorkflowDeployment.id == claim.deployment_id)
+        .first()
+    )
+    if deployment is not None:
+        if run_log.deployment_id != deployment.id:
+            return None
+        app = session.query(App).filter(App.id == deployment.app_id).first()
+        if app is None or app.workflow_id != run_log.workflow_id:
+            return None
+        if app.organization_id != claim.organization_id:
+            return None
+    return claim.organization_id
+
+
+def _record_workflow_execute_audit(
+    run_log,
+    status,
+    reason_code=None,
+    *,
+    organization_id=None,
+):
     metadata = {
         "policy_result": "allow",
         "workflow_run_id": str(run_log.id),
@@ -134,6 +198,8 @@ def _record_workflow_execute_audit(run_log, status, reason_code=None):
         "request_id": run_log.request_id,
         "correlation_id": run_log.correlation_id,
     }
+    if organization_id is not None:
+        metadata["organization_id"] = str(organization_id)
     if reason_code:
         metadata["reason_code"] = reason_code
         metadata["error_present"] = bool(run_log.error_message)
@@ -142,7 +208,7 @@ def _record_workflow_execute_audit(run_log, status, reason_code=None):
         action=AuditAction.WORKFLOW_EXECUTE,
         category="action",
         actor_id=run_log.user_id,
-        actor_type="user",
+        actor_type="system" if run_log.user_id is None else "user",
         target_type="workflow",
         target_id=run_log.workflow_id,
         status=status,
@@ -242,6 +308,8 @@ def create_run_log(self, data: Dict[str, Any]):
             "api": RunTriggerMode.API,
             "app": RunTriggerMode.API,
             "deployed": RunTriggerMode.API,
+            "schedule": RunTriggerMode.SCHEDULER,
+            "scheduler": RunTriggerMode.SCHEDULER,
         }
 
         normalized_trigger = None
@@ -258,7 +326,18 @@ def create_run_log(self, data: Dict[str, Any]):
         # UUID 변환
         run_id = _deserialize_uuid(data["run_id"])
         workflow_id = _deserialize_uuid(data["workflow_id"])
-        user_id = _deserialize_uuid(data["user_id"])
+        user_id = (
+            _deserialize_uuid(data.get("user_id"))
+            if data.get("user_id") is not None
+            else None
+        )
+        if user_id is None and not (
+            normalized_trigger == RunTriggerMode.SCHEDULER
+            and str(data.get("workflow_task_id") or "").startswith("schedule:")
+        ):
+            raise PermanentLogContractError(
+                "null executor is only valid for a correlated schedule run"
+            )
         deployment_id = (
             _deserialize_uuid(data.get("deployment_id"))
             if data.get("deployment_id")
@@ -308,7 +387,10 @@ def create_run_log(self, data: Dict[str, Any]):
 
         return {"status": "success", "run_id": str(run_id)}
 
-    except IntegrityError as e:
+    except PermanentLogContractError:
+        session.rollback()
+        raise
+    except IntegrityError as error:
         session.rollback()
         if run_id is not None:
             existing = (
@@ -317,11 +399,18 @@ def create_run_log(self, data: Dict[str, Any]):
             if existing:
                 # 동일 run_id 재시도 시 중복 insert는 정상으로 간주합니다.
                 return {"status": "success", "run_id": str(run_id)}
-        raise self.retry(exc=e, countdown=2**self.request.retries)
-    except Exception as e:
+        _retry_workflow_run_log_task(
+            self,
+            operation="create",
+            error=error,
+        )
+    except Exception as error:
         session.rollback()
-        logger.error(f"[Log-System] create_run_log 실패: {e}")
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+        _retry_workflow_run_log_task(
+            self,
+            operation="create",
+            error=error,
+        )
     finally:
         session.close()
 
@@ -379,14 +468,28 @@ def update_run_log_finish(self, data: Dict[str, Any]):
         _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
         _schedule_model_routing_run_record(run_log)
-        _record_workflow_execute_audit(run_log, "success")
+        audit_organization_id = _schedule_audit_organization_id(session, run_log)
+        if run_log.user_id is not None or audit_organization_id is not None:
+            _record_workflow_execute_audit(
+                run_log,
+                "success",
+                organization_id=audit_organization_id,
+            )
+        else:
+            logger.warning(
+                "System schedule audit correlation failed: run_id=%s",
+                run_id,
+            )
 
         return {"status": "success", "run_id": str(run_id)}
 
-    except Exception as e:
+    except Exception as error:
         session.rollback()
-        logger.error(f"[Log-System] update_run_log_finish 실패: {e}")
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+        _retry_workflow_run_log_task(
+            self,
+            operation="finish",
+            error=error,
+        )
     finally:
         session.close()
 
@@ -418,16 +521,29 @@ def update_run_log_error(self, data: Dict[str, Any]):
         )
         session.commit()
         _schedule_model_routing_run_record(run_log)
-        _record_workflow_execute_audit(
-            run_log, "failure", reason_code="workflow.execute_failed"
-        )
+        audit_organization_id = _schedule_audit_organization_id(session, run_log)
+        if run_log.user_id is not None or audit_organization_id is not None:
+            _record_workflow_execute_audit(
+                run_log,
+                "failure",
+                reason_code="workflow.execute_failed",
+                organization_id=audit_organization_id,
+            )
+        else:
+            logger.warning(
+                "System schedule audit correlation failed: run_id=%s",
+                run_id,
+            )
 
         return {"status": "success", "run_id": str(run_id)}
 
-    except Exception as e:
+    except Exception as error:
         session.rollback()
-        logger.error(f"[Log-System] update_run_log_error 실패: {e}")
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+        _retry_workflow_run_log_task(
+            self,
+            operation="error",
+            error=error,
+        )
     finally:
         session.close()
 

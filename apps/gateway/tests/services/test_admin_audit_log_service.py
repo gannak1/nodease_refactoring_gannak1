@@ -280,6 +280,58 @@ def test_detail_metadata_rejects_nested_or_malformed_typed_values(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("action", "target_type", "expected_operation_fields"),
+    [
+        (
+            "schedule_dispatch.outcome_reviewed",
+            "schedule_dispatch_claim",
+            {
+                "operation_correlation_id": "github-run:123",
+                "outcome_resolution_code": "confirmed_completed",
+            },
+        ),
+        ("schedule_dispatch.outcome_reviewed", "workflow", {}),
+        ("workflow.execute", "schedule_dispatch_claim", {}),
+    ],
+)
+def test_outcome_review_operation_metadata_requires_exact_action_and_target(
+    monkeypatch, action, target_type, expected_operation_fields
+):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action=action,
+        target_type=target_type,
+        target_id=str(uuid4()),
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        audit_metadata={
+            "organization_id": str(organization_id),
+            "operation_correlation_id": "github-run:123",
+            "outcome_resolution_code": "confirmed_completed",
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert detail.audit_metadata == {
+        "organization_id": str(organization_id),
+        **expected_operation_fields,
+    }
+
+
 def test_change_summary_requires_exact_action_target_and_complete_update_provenance(
     monkeypatch,
 ):

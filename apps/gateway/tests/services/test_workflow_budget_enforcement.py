@@ -28,7 +28,6 @@ from apps.shared.domain.deployment_runtime_policy import (
 )
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
-from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
@@ -175,6 +174,41 @@ def test_aggregation_failure_fails_closed():
     assert exc_info.value.status_code == 429
 
 
+def test_schedule_budget_decision_is_side_effect_free_and_distinguishes_unavailable():
+    workflow_id = uuid4()
+    db = _ExplodingAggregationDb(
+        rows=[_budget_row(uuid4(), workflow_id, Decimal("100.00"))]
+    )
+
+    decision = _service().evaluate_workflow_budget_execution(
+        db,
+        workflow_id=workflow_id,
+        now=NOW,
+    )
+
+    assert decision.status == "unavailable"
+    assert db.added_of(AuditLog) == []
+    assert db.commits == 0
+
+
+def test_schedule_budget_decision_returns_blocked_without_audit_or_commit():
+    workflow_id = uuid4()
+    db = _enforcement_db(
+        budget=_budget_row(uuid4(), workflow_id, Decimal("100.00")),
+        usage_logs=[_usage_log(workflow_id, Decimal("150.000000"))],
+    )
+
+    decision = _service().evaluate_workflow_budget_execution(
+        db,
+        workflow_id=workflow_id,
+        now=NOW,
+    )
+
+    assert decision.status == "blocked"
+    assert db.added_of(AuditLog) == []
+    assert db.commits == 0
+
+
 def test_judgment_is_recomputed_on_every_call():
     # 판정 결과를 캐시하지 않는다 (BGT-REQ-034).
     workflow_id = uuid4()
@@ -242,64 +276,6 @@ def test_run_deployment_blocks_exceeded_budget_before_dispatch(
     assert len(audits) == 1
     assert audits[0].audit_metadata["trigger_mode"] == trigger_mode
     assert audits[0].actor_id is None
-
-
-# --- schedule 실행 경로 --------------------------------------------------------
-
-
-def test_scheduler_run_skips_dispatch_and_records_audit_without_raising(
-    monkeypatch,
-):
-    # 차단이 scheduler 루프를 죽이거나(예외 전파) rollback으로 audit을
-    # 날리면 안 된다 (test_cases "실행 경로별 차단 연결").
-    from apps.gateway.services.scheduler_service import SchedulerService
-
-    organization_id = uuid4()
-    workflow_id = uuid4()
-    app_row, deployment_row = _deployed_app(
-        workflow_id,
-        organization_id,
-        deployment_type=DeploymentType.SCHEDULE,
-    )
-    schedule_id = uuid4()
-    schedule_row = Schedule(
-        id=schedule_id,
-        deployment_id=deployment_row.id,
-        node_id="schedule-trigger",
-        cron_expression="* * * * *",
-        timezone="UTC",
-    )
-    db = _enforcement_db(
-        budget=_budget_row(organization_id, workflow_id, Decimal("100.00")),
-        usage_logs=[_usage_log(workflow_id, Decimal("150.000000"), now_utc=True)],
-        extra_rows=[app_row, deployment_row, schedule_row],
-    )
-    # 문자열/import-as 대신 sys.modules의 진짜 모듈을 patch한다 —
-    # apps.shared 패키지가 celery_app 모듈을 동명 Celery 인스턴스 attr로
-    # 가리고 있어 attribute 기반 해석이 인스턴스를 집는다.
-    import importlib
-
-    celery_module = importlib.import_module("apps.shared.celery_app")
-    session_module = importlib.import_module("apps.shared.db.session")
-
-    monkeypatch.setattr(session_module, "SessionLocal", lambda: db)
-    monkeypatch.setattr(celery_module, "celery_app", _DispatchGuard())
-
-    SchedulerService._run_workflow(
-        SimpleNamespace(
-            scheduler=None,
-            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
-        ),
-        deployment_id=deployment_row.id,
-        schedule_id=schedule_id,
-    )  # 예외가 밖으로 나오면 안 된다
-
-    audits = db.added_of(AuditLog)
-    assert len(audits) == 1
-    assert audits[0].action == AuditAction.POLICY_BLOCK
-    assert audits[0].audit_metadata["trigger_mode"] == "schedule"
-    assert db.rollbacks == 0  # generic except로 삼켜져 rollback되면 audit이 사라진다
-    assert db.closed is True
 
 
 # --- fakes -------------------------------------------------------------------

@@ -1,4 +1,5 @@
 {{- if .Values.worker.enabled }}
+{{- include "moduly.validateScheduleDispatchMode" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,6 +16,7 @@ spec:
       labels:
         {{- include "moduly.componentSelectorLabels" (dict "component" "worker" "context" .) | nindent 8 }}
       annotations:
+        nodease.io/schedule-dispatch-fingerprint: {{ include "moduly.scheduleDispatchFingerprint" . | quote }}
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
@@ -71,6 +73,8 @@ spec:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: REDIS_PASSWORD
+
+        {{- include "moduly.scheduleDispatchEnv" . | nindent 8 }}
         
         # Sandbox configuration (for Code node execution)
         - name: SANDBOX_URL

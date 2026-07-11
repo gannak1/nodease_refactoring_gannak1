@@ -20,6 +20,7 @@ Verified Against: feature/mba-162 @ 419df74
 ## Screens
 
 - Workflow Builder 화면: 캔버스, 노드 라이브러리, 상단 액션, 테스트 실행 사이드바, 하단 캔버스 도구를 포함한다.
+- 실행 이력에서 actor를 표시하는 화면은 schedule system run의 null `user_id`를 `System`으로 표시하고 App creator를 fallback으로 합성하지 않는다.
 
 ## Components
 

@@ -11,6 +11,10 @@ import os
 
 from celery import Celery
 
+from apps.shared.domain.schedule_dispatch import (
+    schedule_dispatch_settings_from_environment,
+)
+
 # Redis 연결 설정 (개별 환경변수로 URL 동적 생성 )
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -61,6 +65,7 @@ celery_app.conf.update(
     worker_concurrency=100,  # [NEW] gevent pool: 높은 동시성 (4 → 100)
     # 결과 설정
     result_expires=3600,  # 결과 만료 시간 (1시간)
+    task_store_errors_even_if_ignored=False,
     # [NEW] 메모리 누수 방지 설정 (워커 재시작)
     worker_max_tasks_per_child=1000,  # [UPDATE] gevent: 1000개 태스크 처리 후 재시작
     worker_max_memory_per_child=500000,  # [UPDATE] gevent: 500MB 초과 시 재시작 (단일 프로세스)
@@ -79,42 +84,40 @@ celery_app.conf.update(
 
 # [FIX] 워커 프로세스 초기화 시 DB 커넥션 풀 리셋
 # gevent pool은 단일 프로세스지만 greenlet 간 DB 연결 공유 이슈 방지
-from celery.signals import worker_process_init  # noqa: E402
+from celery.signals import worker_init, worker_process_init  # noqa: E402
+
+
+@worker_init.connect
+def validate_worker_schedule_schema(**kwargs):
+    """Fail worker startup before consuming claim tasks on a stale schema."""
+    from apps.shared.db.session import engine
+    from apps.shared.services.schedule_dispatch_schema_readiness import (
+        require_schedule_dispatch_migration_ready,
+    )
+
+    settings = schedule_dispatch_settings_from_environment(os.environ)
+    require_schedule_dispatch_migration_ready(engine, settings=settings)
 
 
 @worker_process_init.connect
 def init_worker_process(**kwargs):
     """
     워커 프로세스가 시작될 때 실행됩니다.
-    1. .env 환경 변수를 다시 로드 (override=True)
-    2. 상속받은 SQL Engine의 커넥션 풀 폐기 (DB 연결 초기화)
+    상속받은 SQL Engine의 커넥션 풀을 폐기하고 startup에서 확정된
+    schedule schema/settings 계약을 다시 확인한다.
 
     Note: gevent pool은 단일 프로세스지만 초기화 시 DB 연결 리셋 필요
     """
-    import os
-    from pathlib import Path
-
-    # 1. 환경 변수 다시 로드 (설정 리로드)
-    try:
-        from dotenv import load_dotenv
-
-        # moduly 루트 디렉토리 찾기 (현재 파일: apps/shared/celery_app.py)
-        # ../../.env
-        current_dir = Path(__file__).resolve().parent
-        root_dir = current_dir.parent.parent
-        env_path = root_dir / ".env"
-
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=True)
-            print(f"Worker process ({os.getpid()}): .env reloaded.")
-    except ImportError:
-        pass
-
-    # 2. DB 연결 초기화
     from apps.shared.db.session import engine
+    from apps.shared.services.schedule_dispatch_schema_readiness import (
+        require_schedule_dispatch_migration_ready,
+    )
+
+    settings = schedule_dispatch_settings_from_environment(os.environ)
 
     # 기존 커넥션 풀 폐기 (연결 종료가 아니라 풀 객체만 리셋)
     engine.dispose()
+    require_schedule_dispatch_migration_ready(engine, settings=settings)
     print(
         f"Worker process initialized. (PID: {os.getpid()}) - DB Engine disposed, Config checked."
     )

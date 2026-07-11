@@ -17,6 +17,10 @@ from apps.gateway.services.admin_usage_service import (
     _total_cost_sum,
 )
 from apps.gateway.services.audit_records import add_action_audit
+from apps.shared.domain.workflow_budget import BudgetExecutionDecision
+from apps.shared.services.workflow_budget_execution import (
+    evaluate_workflow_budget_execution,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
@@ -119,6 +123,20 @@ class WorkflowBudgetService:
         )
 
     @staticmethod
+    def evaluate_workflow_budget_execution(
+        db: Session,
+        *,
+        workflow_id: Any,
+        now: datetime | None = None,
+    ) -> BudgetExecutionDecision:
+        """Return a side-effect-free budget decision for caller-owned transactions."""
+        return evaluate_workflow_budget_execution(
+            db,
+            workflow_id=workflow_id,
+            now=now or datetime.now(KST),
+        )
+
+    @staticmethod
     def ensure_workflow_budget_allows_execution(
         db: Session,
         *,
@@ -133,33 +151,20 @@ class WorkflowBudgetService:
         판정은 매 호출 새로 집계하며 (캐시 금지), 차단 audit은 요청 실패와
         무관하게 커밋한다.
         """
-        if workflow_id is None:
+        decision = WorkflowBudgetService.evaluate_workflow_budget_execution(
+            db,
+            workflow_id=workflow_id,
+            now=now,
+        )
+        if decision.status == "allowed":
             return
+        if decision.status == "unavailable":
+            raise _budget_exceeded_error()
 
         normalized_id = _normalize_workflow_id(workflow_id)
         budget = _find_budget(db, normalized_id)
         if budget is None:
-            return
-        if _active_budget_amount(budget.monthly_budget_usd, budget.is_enabled) is None:
-            return
-
-        try:
-            current_cost = WorkflowBudgetService.get_current_month_cost(
-                db,
-                workflow_id=normalized_id,
-                now=now or datetime.now(KST),
-            )
-        except Exception:
-            # 활성 예산 workflow의 집계 실패는 fail-closed 차단 (BGT-REQ-033).
             raise _budget_exceeded_error()
-
-        status = WorkflowBudgetService.classify_budget_usage(
-            current_cost,
-            budget.monthly_budget_usd,
-            budget.is_enabled,
-        )
-        if status != "exceeded":
-            return
 
         add_action_audit(
             db,
@@ -173,6 +178,23 @@ class WorkflowBudgetService:
         )
         db.commit()
         raise _budget_exceeded_error()
+
+
+class WorkflowBudgetDecisionAdapter:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def evaluate(
+        self,
+        *,
+        workflow_id: uuid.UUID | None,
+        now: datetime,
+    ) -> BudgetExecutionDecision:
+        return WorkflowBudgetService.evaluate_workflow_budget_execution(
+            self.db,
+            workflow_id=workflow_id,
+            now=now,
+        )
 
 
 def _budget_exceeded_error() -> HTTPException:

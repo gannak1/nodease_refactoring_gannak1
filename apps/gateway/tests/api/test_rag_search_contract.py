@@ -183,6 +183,7 @@ def test_authorize_rag_use_hides_source_acl_denial(monkeypatch):
 
 def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
     user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
     knowledge_base_id = uuid.uuid4()
     audit_calls = []
     monkeypatch.setattr(
@@ -194,6 +195,7 @@ def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
     rag._record_rag_retrieve_audit(
         _request(),
         SimpleNamespace(id=user_id),
+        organization_id,
         knowledge_base_id,
         metadata_filter=None,
         result_count=3,
@@ -202,6 +204,7 @@ def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
 
     assert audit_calls[0]["action"] == rag.AuditAction.RAG_RETRIEVE
     metadata = audit_calls[0]["metadata"]
+    assert metadata["organization_id"] == str(organization_id)
     assert metadata["result_count"] == 3
     assert metadata["policy_evaluated"] is False
     assert "policy_result" not in metadata

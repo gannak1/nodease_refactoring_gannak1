@@ -51,6 +51,56 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+  Schedule dispatch is intentionally explicit in both Gateway and Worker pods.
+  Keeping the values in one chart-level block prevents the two admission
+  boundaries from silently using different modes or deadlines.
+*/}}
+{{- define "moduly.scheduleDispatchFingerprint" -}}
+{{- printf "v1|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v" .Values.scheduleDispatch.mode .Values.scheduleDispatch.pollSeconds .Values.scheduleDispatch.occurrenceBatchSize .Values.scheduleDispatch.dispatchBatchSize .Values.scheduleDispatch.recoveryBatchSize .Values.scheduleDispatch.cleanupBatchSize .Values.scheduleDispatch.leaseSeconds .Values.scheduleDispatch.deliveryTimeoutSeconds .Values.scheduleDispatch.executionDeadlineSeconds .Values.scheduleDispatch.workflowRunVisibilityTimeoutSeconds .Values.scheduleDispatch.maxAttempts .Values.scheduleDispatch.retryBaseSeconds .Values.scheduleDispatch.retentionDays .Values.scheduleDispatch.deadLetterRetentionDays -}}
+{{- end }}
+
+{{- define "moduly.validateScheduleDispatchMode" -}}
+{{- if ne .Values.scheduleDispatch.mode "disabled" -}}
+{{- fail "non-disabled schedule dispatch requires the coordinated rollout workflow" -}}
+{{- end -}}
+{{- end }}
+
+{{- define "moduly.scheduleDispatchEnv" -}}
+- name: SCHEDULE_DISPATCH_MODE
+  value: {{ .Values.scheduleDispatch.mode | quote }}
+- name: SCHEDULE_DISPATCH_MODE_FINGERPRINT
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.annotations['nodease.io/schedule-dispatch-fingerprint']
+- name: SCHEDULE_DISPATCH_POLL_SECONDS
+  value: {{ .Values.scheduleDispatch.pollSeconds | quote }}
+- name: SCHEDULE_OCCURRENCE_BATCH_SIZE
+  value: {{ .Values.scheduleDispatch.occurrenceBatchSize | quote }}
+- name: SCHEDULE_DISPATCH_BATCH_SIZE
+  value: {{ .Values.scheduleDispatch.dispatchBatchSize | quote }}
+- name: SCHEDULE_RECOVERY_BATCH_SIZE
+  value: {{ .Values.scheduleDispatch.recoveryBatchSize | quote }}
+- name: SCHEDULE_CLEANUP_BATCH_SIZE
+  value: {{ .Values.scheduleDispatch.cleanupBatchSize | quote }}
+- name: SCHEDULE_DISPATCH_LEASE_SECONDS
+  value: {{ .Values.scheduleDispatch.leaseSeconds | quote }}
+- name: SCHEDULE_ENQUEUED_DELIVERY_TIMEOUT_SECONDS
+  value: {{ .Values.scheduleDispatch.deliveryTimeoutSeconds | quote }}
+- name: SCHEDULE_EXECUTION_DEADLINE_SECONDS
+  value: {{ .Values.scheduleDispatch.executionDeadlineSeconds | quote }}
+- name: SCHEDULE_WORKFLOW_RUN_VISIBILITY_TIMEOUT_SECONDS
+  value: {{ .Values.scheduleDispatch.workflowRunVisibilityTimeoutSeconds | quote }}
+- name: SCHEDULE_DISPATCH_MAX_ATTEMPTS
+  value: {{ .Values.scheduleDispatch.maxAttempts | quote }}
+- name: SCHEDULE_DISPATCH_RETRY_BASE_SECONDS
+  value: {{ .Values.scheduleDispatch.retryBaseSeconds | quote }}
+- name: SCHEDULE_DISPATCH_RETENTION_DAYS
+  value: {{ .Values.scheduleDispatch.retentionDays | quote }}
+- name: SCHEDULE_DISPATCH_DEAD_LETTER_RETENTION_DAYS
+  value: {{ .Values.scheduleDispatch.deadLetterRetentionDays | quote }}
+{{- end }}
+
+{{/*
 Component-specific labels
 Usage: {{ include "moduly.componentLabels" (dict "component" "gateway" "context" .) }}
 */}}

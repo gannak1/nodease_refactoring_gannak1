@@ -1,414 +1,407 @@
-import uuid
-import importlib
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
+from apps.gateway.application.deployment.schedule_errors import (
+    ScheduleConfigurationError,
+)
+from apps.gateway.application.deployment.schedule_models import (
+    SchedulePublishBatch,
+    SchedulePublishRequest,
+    SchedulePublishResult,
+)
+from apps.gateway.composition.deployment import (
+    build_schedule_dispatch_dependencies,
+    build_schedule_next_fire_calculator,
+)
 from apps.gateway.services.scheduler_service import SchedulerService
-from apps.shared.db.models.app import App
-from apps.shared.db.models.schedule import Schedule
-from apps.shared.db.models.workflow_budget import WorkflowBudget
-from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
-    SURFACE_SCHEDULE_RUN,
 )
+from apps.shared.domain.schedule_dispatch import ScheduleDispatchSettings
+
+NOW = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
 
 
-class FakeQuery:
-    def __init__(self, row):
-        self.row = row
-
-    def filter(self, *args, **kwargs):
-        return self
-
-    def first(self):
-        return self.row
+class _Scalar:
+    def scalar_one(self):
+        return NOW
 
 
-class FakeSession:
-    def __init__(self, *, deployment, app, schedule):
-        self.deployment = deployment
-        self.app = app
-        self.schedule = schedule
-        self.committed = False
-        self.rolled_back = False
-        self.closed = False
+class _Db:
+    def __init__(self):
+        self.commits = 0
 
-    def query(self, model):
-        if model is WorkflowDeployment:
-            return FakeQuery(self.deployment)
-        if model is App:
-            return FakeQuery(self.app)
-        if model is Schedule:
-            return FakeQuery(self.schedule)
-        if model is WorkflowBudget:
-            # 예산 미설정 — 실행 전 예산 확인은 통과한다
-            return FakeQuery(None)
-        raise AssertionError(f"unexpected query model: {model}")
+    def execute(self, _statement):
+        return _Scalar()
 
     def commit(self):
-        self.committed = True
-
-    def rollback(self):
-        self.rolled_back = True
-
-    def close(self):
-        self.closed = True
+        self.commits += 1
 
 
-class FakeCeleryApp:
-    def __init__(self):
-        self.calls = []
+class _Publisher:
+    def __init__(self, *, fails=False):
+        self.fails = fails
+        self.requests = []
 
-    def send_task(self, name, args=None, kwargs=None):
-        self.calls.append({"name": name, "args": args or [], "kwargs": kwargs or {}})
-
-
-class FakeScheduler:
-    def __init__(self, next_run_time):
-        self.next_run_time = next_run_time
-        self.removed = []
-
-    def get_job(self, job_id):
-        return SimpleNamespace(next_run_time=self.next_run_time)
-
-    def remove_job(self, job_id):
-        self.removed.append(job_id)
+    def publish(self, request):
+        self.requests.append(request)
+        if self.fails:
+            raise RuntimeError("provider detail must not escape")
 
 
-class CaptureLoadQuery:
-    def __init__(self):
-        self.joins = []
-        self.filters = []
-
-    def join(self, model, on_clause):
-        self.joins.append((model, on_clause))
-        return self
-
-    def filter(self, *expressions):
-        self.filters.extend(expressions)
-        return self
-
-    def all(self):
-        return []
-
-
-class CaptureLoadDb:
-    def __init__(self):
-        self.captured_query = CaptureLoadQuery()
-
-    def query(self, model):
-        assert model is Schedule
-        return self.captured_query
-
-
-class CaptureStaleScheduleQuery:
-    def __init__(self):
-        self.filters = []
-
-    def filter(self, *expressions):
-        self.filters.extend(expressions)
-        return self
-
-    def first(self):
-        return None
-
-
-class CaptureStaleScheduleDb:
-    def __init__(self):
-        self.query_capture = CaptureStaleScheduleQuery()
-        self.rolled_back = False
-        self.closed = False
-
-    def query(self, model):
-        assert model is Schedule
-        return self.query_capture
-
-    def rollback(self):
-        self.rolled_back = True
-
-    def close(self):
-        self.closed = True
-
-
-def test_scheduled_workflow_includes_app_organization_scope(monkeypatch):
-    """Scheduled LLM runtime keeps the app organization scope in execution context. MBA-43"""
-    deployment_id = uuid.uuid4()
-    schedule_id = uuid.uuid4()
-    app_id = uuid.uuid4()
-    workflow_id = uuid.uuid4()
-    organization_id = uuid.uuid4()
-    created_by = uuid.uuid4()
-    next_run_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    deployment = SimpleNamespace(
-        id=deployment_id,
-        app_id=app_id,
-        created_by=created_by,
-        graph_snapshot={"nodes": []},
-        is_active=True,
-        type=DeploymentType.SCHEDULE,
-    )
-    app = SimpleNamespace(
-        id=app_id,
-        workflow_id=workflow_id,
-        organization_id=organization_id,
-        active_deployment_id=deployment_id,
-    )
-    schedule = SimpleNamespace(
-        id=schedule_id,
-        last_run_at=None,
-        next_run_at=None,
-    )
-    db = FakeSession(deployment=deployment, app=app, schedule=schedule)
-    celery = FakeCeleryApp()
-
-    celery_module = importlib.import_module("apps.shared.celery_app")
-    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
-    monkeypatch.setattr(celery_module, "celery_app", celery)
-
-    service = object.__new__(SchedulerService)
-    service.scheduler = FakeScheduler(next_run_time)
-    service.runtime_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY
-
-    service._run_workflow(deployment_id, schedule_id)
-
-    assert len(celery.calls) == 1
-    task = celery.calls[0]
-    assert task["name"] == "workflow.execute_by_deployment"
-    assert task["kwargs"] == {}
-
-    queued_deployment_id, user_input, execution_context = task["args"]
-    assert queued_deployment_id == str(deployment_id)
-    assert user_input["schedule_id"] == str(schedule_id)
-    assert execution_context["trigger_mode"] == "schedule"
-    assert execution_context["workflow_id"] == str(workflow_id)
-    assert execution_context["organization_id"] == str(organization_id)
-    assert execution_context["app_id"] == str(app_id)
-    assert execution_context["deployment_id"] == str(deployment_id)
-    assert execution_context["user_id"] == str(created_by)
-    assert deployment.graph_snapshot not in task["args"]
-    assert schedule.last_run_at is not None
-    assert schedule.next_run_at == next_run_time
-    assert db.committed is True
-    assert db.rolled_back is False
-    assert db.closed is True
-
-
-def test_scheduler_does_not_dispatch_non_schedule_deployment(monkeypatch):
-    deployment_id = uuid.uuid4()
-    schedule_id = uuid.uuid4()
-    app_id = uuid.uuid4()
-    workflow_id = uuid.uuid4()
-    organization_id = uuid.uuid4()
-    created_by = uuid.uuid4()
-
-    deployment = SimpleNamespace(
-        id=deployment_id,
-        app_id=app_id,
-        created_by=created_by,
-        graph_snapshot={"nodes": []},
-        is_active=True,
-        type=DeploymentType.WORKFLOW_NODE,
-    )
-    app = SimpleNamespace(
-        id=app_id,
-        workflow_id=workflow_id,
-        organization_id=organization_id,
-        active_deployment_id=deployment_id,
-    )
-    schedule = SimpleNamespace(
-        id=schedule_id,
-        last_run_at=None,
-        next_run_at=None,
-    )
-    db = FakeSession(deployment=deployment, app=app, schedule=schedule)
-    celery = FakeCeleryApp()
-
-    celery_module = importlib.import_module("apps.shared.celery_app")
-    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
-    monkeypatch.setattr(celery_module, "celery_app", celery)
-
-    service = object.__new__(SchedulerService)
-    service.scheduler = FakeScheduler(None)
-    service.runtime_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY
-
-    service._run_workflow(deployment_id, schedule_id)
-
-    assert celery.calls == []
-    assert db.committed is False
-    assert db.rolled_back is False
-    assert db.closed is True
-
-
-def test_scheduler_uses_injected_runtime_policy(monkeypatch):
-    deployment_id = uuid.uuid4()
-    schedule_id = uuid.uuid4()
-    app_id = uuid.uuid4()
-    deployment = SimpleNamespace(
-        id=deployment_id,
-        app_id=app_id,
-        created_by=uuid.uuid4(),
-        is_active=True,
-        type=DeploymentType.SCHEDULE,
-    )
-    app = SimpleNamespace(
-        id=app_id,
-        workflow_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        active_deployment_id=deployment_id,
-    )
-    schedule = SimpleNamespace(id=schedule_id, last_run_at=None, next_run_at=None)
-    db = FakeSession(deployment=deployment, app=app, schedule=schedule)
-    celery = FakeCeleryApp()
-
-    celery_module = importlib.import_module("apps.shared.celery_app")
-    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
-    monkeypatch.setattr(celery_module, "celery_app", celery)
-
-    service = object.__new__(SchedulerService)
-    service.scheduler = FakeScheduler(None)
-    service.runtime_policy = (
-        DEFAULT_DEPLOYMENT_RUNTIME_POLICY.with_surface_allowed_types(
-            SURFACE_SCHEDULE_RUN,
-            set(),
-        )
-    )
-
-    service._run_workflow(deployment_id, schedule_id)
-
-    assert celery.calls == []
-    assert schedule.last_run_at is None
-    assert db.committed is False
-
-
-def test_scheduler_does_not_dispatch_stale_non_current_deployment(monkeypatch):
-    deployment_id = uuid.uuid4()
-    schedule_id = uuid.uuid4()
-    app_id = uuid.uuid4()
-    deployment = SimpleNamespace(
-        id=deployment_id,
-        app_id=app_id,
-        created_by=uuid.uuid4(),
-        graph_snapshot={"nodes": []},
-        is_active=True,
-        type=DeploymentType.SCHEDULE,
-    )
-    app = SimpleNamespace(
-        id=app_id,
-        workflow_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
-        active_deployment_id=uuid.uuid4(),
-    )
-    schedule = SimpleNamespace(
-        id=schedule_id,
-        last_run_at=None,
-        next_run_at=None,
-    )
-    db = FakeSession(deployment=deployment, app=app, schedule=schedule)
-    celery = FakeCeleryApp()
-
-    celery_module = importlib.import_module("apps.shared.celery_app")
-    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
-    monkeypatch.setattr(celery_module, "celery_app", celery)
-
-    service = object.__new__(SchedulerService)
-    service.scheduler = FakeScheduler(None)
-    service.runtime_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY
-
-    service._run_workflow(deployment_id, schedule_id)
-
-    assert celery.calls == []
-    assert schedule.last_run_at is None
-    assert db.committed is False
-    assert db.rolled_back is False
-    assert db.closed is True
-
-
-def test_scheduler_removes_stale_job_before_dispatch(monkeypatch):
-    deployment_id = uuid.uuid4()
-    schedule_id = uuid.uuid4()
-    db = FakeSession(
-        deployment=SimpleNamespace(
-            id=deployment_id,
-            app_id=uuid.uuid4(),
-            created_by=uuid.uuid4(),
-            is_active=True,
-            type=DeploymentType.SCHEDULE,
+def _service(*, mode="claim", publisher=None, maintenance_enabled=True):
+    return SchedulerService(
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        settings=ScheduleDispatchSettings(mode=mode),
+        session_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("unexpected session")
         ),
-        app=None,
-        schedule=None,
+        publisher=publisher or _Publisher(),
+        dependency_builder=build_schedule_dispatch_dependencies,
+        next_fire=build_schedule_next_fire_calculator(),
+        start_background=False,
+        maintenance_enabled=maintenance_enabled,
     )
-    celery = FakeCeleryApp()
-    scheduler = FakeScheduler(None)
-
-    celery_module = importlib.import_module("apps.shared.celery_app")
-    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
-    monkeypatch.setattr(celery_module, "celery_app", celery)
-
-    service = object.__new__(SchedulerService)
-    service.scheduler = scheduler
-    service.runtime_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY
-
-    service._run_workflow(deployment_id, schedule_id)
-
-    assert celery.calls == []
-    assert scheduler.removed == [str(schedule_id)]
-    assert db.committed is False
-    assert db.rolled_back is False
-    assert db.closed is True
 
 
-def test_scheduler_stale_lookup_matches_schedule_and_deployment_ids(monkeypatch):
-    deployment_id = uuid.uuid4()
-    schedule_id = uuid.uuid4()
-    db = CaptureStaleScheduleDb()
-    scheduler = FakeScheduler(None)
+def test_disabled_mode_is_a_kill_switch_without_legacy_fallback_scheduler():
+    service = _service(mode="disabled")
 
-    monkeypatch.setattr("apps.shared.db.session.SessionLocal", lambda: db)
-
-    service = object.__new__(SchedulerService)
-    service.scheduler = scheduler
-    service.runtime_policy = DEFAULT_DEPLOYMENT_RUNTIME_POLICY
-
-    service._run_workflow(deployment_id, schedule_id)
-
-    filter_values = {
-        expression.left.key: expression.right.value
-        for expression in db.query_capture.filters
-    }
-    assert filter_values == {
-        "id": schedule_id,
-        "deployment_id": deployment_id,
-    }
-    assert scheduler.removed == [str(schedule_id)]
-    assert db.rolled_back is False
-    assert db.closed is True
+    assert service.scheduler is None
+    service.run_tick_once()
 
 
-def test_scheduler_load_query_requires_current_app_active_deployment():
-    db = CaptureLoadDb()
-    service = object.__new__(SchedulerService)
+def test_disabled_mode_runs_only_visibility_and_retention_maintenance(monkeypatch):
+    service = _service(mode="disabled")
+    calls = []
+    monkeypatch.setattr(service, "_recover_critical", lambda: calls.append("recover"))
+    monkeypatch.setattr(
+        service,
+        "_maintain_visibility",
+        lambda: calls.append("visibility"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_cleanup_terminal_claims",
+        lambda: calls.append("cleanup"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_observe_claim_ages",
+        lambda: calls.append("claim_age"),
+    )
 
-    service.load_schedules_from_db(db)
+    service.run_tick_once()
 
-    assert [model for model, _clause in db.captured_query.joins] == [
-        WorkflowDeployment,
-        App,
+    assert calls == ["visibility", "cleanup", "claim_age"]
+
+
+def test_disabled_mode_skips_maintenance_when_schema_is_not_ready(monkeypatch):
+    service = _service(mode="disabled", maintenance_enabled=False)
+    calls = []
+    monkeypatch.setattr(
+        service,
+        "_maintain_visibility",
+        lambda: calls.append("visibility"),
+    )
+
+    service.run_tick_once()
+
+    assert calls == []
+
+
+def test_add_schedule_validates_and_sets_cursor_without_commit():
+    service = _service()
+    db = _Db()
+    schedule = SimpleNamespace(
+        cron_expression="0 * * * *",
+        timezone="UTC",
+        next_run_at=None,
+        configuration_error_code="schedule_configuration_invalid",
+    )
+
+    service.add_schedule(schedule, db)
+
+    assert schedule.next_run_at == datetime(
+        2026, 7, 10, 10, 0, tzinfo=timezone.utc
+    )
+    assert schedule.configuration_error_code is None
+    assert db.commits == 0
+
+
+def test_add_schedule_rejects_invalid_configuration_without_commit():
+    service = _service()
+    db = _Db()
+    schedule = SimpleNamespace(
+        cron_expression="invalid",
+        timezone="UTC",
+        next_run_at=None,
+    )
+
+    with pytest.raises(ScheduleConfigurationError):
+        service.add_schedule(schedule, db)
+
+    assert db.commits == 0
+
+
+def test_tick_publishes_after_prepare_and_records_success(monkeypatch):
+    publisher = _Publisher()
+    service = _service(publisher=publisher)
+    request = SchedulePublishRequest(
+        claim_id=__import__("uuid").uuid4(),
+        task_id="schedule:test",
+        lease_owner="owner",
+    )
+    order = []
+    monkeypatch.setattr(
+        service, "_recover_critical", lambda: order.append("recover")
+    )
+    monkeypatch.setattr(
+        service,
+        "_reconcile_uninitialized",
+        lambda: order.append("reconcile"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_claim_due_occurrences",
+        lambda: order.append("claim"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: (
+            order.append("prepare")
+            or SchedulePublishBatch(requests=(request,))
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_record_publish_result",
+        lambda _request, *, accepted: (
+            order.append(f"result:{accepted}")
+            or SchedulePublishResult(changed=True)
+        ),
+    )
+    monkeypatch.setattr(
+        service, "_maintain_visibility", lambda: order.append("visibility")
+    )
+    monkeypatch.setattr(
+        service, "_cleanup_terminal_claims", lambda: order.append("cleanup")
+    )
+
+    service.run_tick_once()
+
+    assert order == [
+        "recover",
+        "reconcile",
+        "claim",
+        "prepare",
+        "result:True",
+        "visibility",
+        "cleanup",
     ]
-    join_pairs = {
-        (clause.left.key, clause.right.key)
-        for _model, clause in db.captured_query.joins
-    }
-    assert join_pairs == {
-        ("deployment_id", "id"),
-        ("id", "app_id"),
-    }
-    active_pointer_filters = [
-        expression
-        for expression in db.captured_query.filters
-        if getattr(getattr(expression, "left", None), "key", None)
-        == "active_deployment_id"
+    assert publisher.requests == [request]
+
+
+def test_publish_provider_failure_is_recorded_as_failed_without_raising(
+    monkeypatch,
+    caplog,
+):
+    publisher = _Publisher(fails=True)
+    service = _service(publisher=publisher)
+    request = SchedulePublishRequest(
+        claim_id=__import__("uuid").uuid4(),
+        task_id="schedule:test",
+        lease_owner="owner",
+    )
+    results = []
+    monkeypatch.setattr(service, "_recover_critical", lambda: None)
+    monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
+    monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(requests=(request,)),
+    )
+    monkeypatch.setattr(
+        service,
+        "_record_publish_result",
+        lambda _request, *, accepted: (
+            results.append(accepted) or SchedulePublishResult(changed=True)
+        ),
+    )
+    monkeypatch.setattr(service, "_maintain_visibility", lambda: None)
+    monkeypatch.setattr(service, "_cleanup_terminal_claims", lambda: None)
+
+    service.run_tick_once()
+
+    assert results == [False]
+    assert str(request.claim_id) not in "\n".join(caplog.messages)
+    assert "provider detail must not escape" not in "\n".join(caplog.messages)
+
+
+def test_tick_emits_committed_dead_letter_reasons(monkeypatch):
+    service = _service()
+    signals = []
+    monkeypatch.setattr(service, "_recover_critical", lambda: None)
+    monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
+    monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(
+            requests=(),
+            enqueue_attempts_exhausted=2,
+            budget_evaluation_failed=1,
+        ),
+    )
+    monkeypatch.setattr(service, "_maintain_visibility", lambda: None)
+    monkeypatch.setattr(service, "_cleanup_terminal_claims", lambda: None)
+    monkeypatch.setattr(service, "_observe_claim_ages", lambda: None)
+    monkeypatch.setattr(
+        "apps.gateway.services.scheduler_service.emit_schedule_dispatch_signal",
+        lambda _logger, event, **kwargs: signals.append((event, kwargs)),
+    )
+
+    service.run_tick_once()
+
+    assert signals == [
+        (
+            "schedule_claim_dead_letter_total",
+            {
+                "value": 2,
+                "status": "dead_lettered",
+                "reason": "enqueue_attempts_exhausted",
+                "mode": "claim",
+            },
+        ),
+        (
+            "schedule_claim_dead_letter_total",
+            {
+                "value": 1,
+                "status": "dead_lettered",
+                "reason": "budget_evaluation_failed",
+                "mode": "claim",
+            },
+        ),
     ]
-    assert len(active_pointer_filters) == 1
-    assert active_pointer_filters[0].right.key == "id"
+
+
+def test_publish_result_failure_does_not_block_remaining_batch(
+    monkeypatch,
+    caplog,
+):
+    publisher = _Publisher()
+    service = _service(publisher=publisher)
+    requests = tuple(
+        SchedulePublishRequest(
+            claim_id=__import__("uuid").uuid4(),
+            task_id=f"schedule:test-{index}",
+            lease_owner="owner",
+        )
+        for index in range(2)
+    )
+    recorded = []
+    monkeypatch.setattr(service, "_recover_critical", lambda: None)
+    monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
+    monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(requests=requests),
+    )
+
+    def record(request, *, accepted):
+        recorded.append((request.claim_id, accepted))
+        if request is requests[0]:
+            raise RuntimeError("storage detail must not escape")
+        return SchedulePublishResult(changed=True)
+
+    monkeypatch.setattr(service, "_record_publish_result", record)
+    monkeypatch.setattr(service, "_maintain_visibility", lambda: None)
+    monkeypatch.setattr(service, "_cleanup_terminal_claims", lambda: None)
+
+    service.run_tick_once()
+
+    assert publisher.requests == list(requests)
+    assert recorded == [
+        (requests[0].claim_id, True),
+        (requests[1].claim_id, True),
+    ]
+    messages = "\n".join(caplog.messages)
+    assert all(str(request.claim_id) not in messages for request in requests)
+    assert "storage detail must not escape" not in messages
+
+
+def test_drain_mode_skips_new_occurrence_claiming(monkeypatch):
+    service = _service(mode="drain")
+    calls = []
+    monkeypatch.setattr(
+        service, "_recover_critical", lambda: calls.append("recover")
+    )
+    monkeypatch.setattr(
+        service,
+        "_reconcile_uninitialized",
+        lambda: calls.append("unexpected"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_claim_due_occurrences",
+        lambda: calls.append("unexpected"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(requests=()),
+    )
+    monkeypatch.setattr(
+        service, "_maintain_visibility", lambda: calls.append("visibility")
+    )
+    monkeypatch.setattr(
+        service, "_cleanup_terminal_claims", lambda: calls.append("cleanup")
+    )
+    monkeypatch.setattr(
+        service, "_observe_claim_ages", lambda: calls.append("claim_age")
+    )
+
+    service.run_tick_once()
+
+    assert calls == ["recover", "visibility", "cleanup", "claim_age"]
+
+
+def test_optional_maintenance_failures_do_not_block_dispatch(monkeypatch):
+    service = _service(mode="claim")
+    calls = []
+    monkeypatch.setattr(
+        service, "_recover_critical", lambda: calls.append("recover")
+    )
+    monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
+    monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: calls.append("dispatch") or SchedulePublishBatch(requests=()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_maintain_visibility",
+        lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_cleanup_terminal_claims",
+        lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_observe_claim_ages",
+        lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
+    )
+
+    service.run_tick_once()
+
+    assert calls == ["recover", "dispatch"]

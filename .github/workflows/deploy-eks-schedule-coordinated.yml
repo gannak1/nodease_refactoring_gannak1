@@ -1,0 +1,568 @@
+name: Deploy EKS Schedule Dispatch Coordinated
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous_fingerprint:
+        description: "Approved common live fingerprint before this rollout"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  EKS_CLUSTER_NAME: moduly-cluster
+
+concurrency:
+  group: production-schema-rollout
+  cancel-in-progress: false
+
+jobs:
+  coordinated-rollout:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build or reuse Gateway, Worker, and Logger images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          gateway_repository="$ECR_REGISTRY/moduly-gateway"
+          worker_repository="$ECR_REGISTRY/moduly-workflow-engine"
+          logger_repository="$ECR_REGISTRY/moduly-logger"
+          gateway_tagged_image="$gateway_repository:$IMAGE_TAG"
+          worker_tagged_image="$worker_repository:$IMAGE_TAG"
+          logger_tagged_image="$logger_repository:$IMAGE_TAG"
+
+          lookup_ecr_digest() {
+            repository_name=$1
+            digest=$(aws ecr describe-images \
+              --repository-name "$repository_name" \
+              --image-ids imageTag="$IMAGE_TAG" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text 2>/dev/null) || return 1
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            printf '%s' "$digest"
+          }
+
+          ensure_ecr_image() {
+            repository_name=$1
+            tagged_image=$2
+            dockerfile=$3
+            output_variable=$4
+            if digest=$(lookup_ecr_digest "$repository_name"); then
+              printf -v "$output_variable" '%s' "$digest"
+              return 0
+            fi
+
+            docker build -t "$tagged_image" -f "$dockerfile" .
+            docker push "$tagged_image"
+            for attempt in 1 2 3 4 5; do
+              if digest=$(lookup_ecr_digest "$repository_name"); then
+                printf -v "$output_variable" '%s' "$digest"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Unable to resolve an immutable ECR image identity." >&2
+            return 1
+          }
+
+          ensure_ecr_image \
+            moduly-gateway "$gateway_tagged_image" docker/gateway/Dockerfile gateway_digest
+          ensure_ecr_image \
+            moduly-workflow-engine "$worker_tagged_image" \
+            docker/workflow_engine/Dockerfile worker_digest
+          ensure_ecr_image \
+            moduly-logger "$logger_tagged_image" docker/log_system/Dockerfile logger_digest
+          gateway_image="$gateway_repository@$gateway_digest"
+          worker_image="$worker_repository@$worker_digest"
+          logger_image="$logger_repository@$logger_digest"
+          {
+            echo "gateway_repository=$gateway_repository"
+            echo "worker_repository=$worker_repository"
+            echo "logger_repository=$logger_repository"
+            echo "gateway_digest=$gateway_digest"
+            echo "worker_digest=$worker_digest"
+            echo "logger_digest=$logger_digest"
+            echo "gateway_image=$gateway_image"
+            echo "worker_image=$worker_image"
+            echo "logger_image=$logger_image"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+
+      - name: Validate current and desired fingerprints
+        env:
+          PREVIOUS_FINGERPRINT: ${{ inputs.previous_fingerprint }}
+        run: |
+          gateway_desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+            infra/k8s/namespaces/default/gateway-deployment.yaml | head -n 1)
+          worker_desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+            infra/k8s/namespaces/default/worker-deployment.yaml | head -n 1)
+          if [[ -z "$gateway_desired" || "$gateway_desired" != "$worker_desired" ]]; then
+            echo "Gateway and Worker desired fingerprints must match."
+            exit 1
+          fi
+          query_deployment() {
+            deployment=$1
+            error_file=$(mktemp)
+            if output=$(kubectl get deployment "$deployment" \
+              -o json \
+              2>"$error_file"); then
+              rm -f "$error_file"
+              live_fingerprint=$(jq -r \
+                '.spec.template.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] // ""' \
+                <<< "$output")
+              live_image=$(jq -r '.spec.template.spec.containers[0].image // ""' \
+                <<< "$output")
+              desired_replicas=$(jq -r '.spec.replicas // 1' <<< "$output")
+              generation=$(jq -r '.metadata.generation // 0' <<< "$output")
+              observed_generation=$(jq -r '.status.observedGeneration // 0' <<< "$output")
+              updated_replicas=$(jq -r '.status.updatedReplicas // 0' <<< "$output")
+              ready_replicas=$(jq -r '.status.readyReplicas // 0' <<< "$output")
+              available_replicas=$(jq -r '.status.availableReplicas // 0' <<< "$output")
+              unavailable_replicas=$(jq -r '.status.unavailableReplicas // 0' <<< "$output")
+              live_ready=false
+              if [[ -z "$live_image" ]]; then
+                echo "A live deployment is missing rollout identity."
+                exit 1
+              fi
+              if [[ -z "$live_fingerprint" ]]; then
+                if [[ "$gateway_desired" == v1\|disabled\|* ]]; then
+                  return
+                fi
+                echo "A live deployment is missing rollout identity."
+                exit 1
+              fi
+              pods=$(kubectl get pods -l app="$deployment" -o json)
+              pod_count=$(jq -r \
+                '[.items[] | select(.metadata.deletionTimestamp == null)] | length' \
+                <<< "$pods")
+              pods_converged=$(jq -r \
+                --arg image "$live_image" \
+                --arg fingerprint "$live_fingerprint" \
+                '[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+                all($pods[];
+                  (.spec.containers[0].name) as $container_name |
+                  (.status.phase == "Running") and
+                  (.spec.containers[0].image == $image) and
+                  (.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] == $fingerprint) and
+                  any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+                  any(.status.containerStatuses[]?;
+                    (.name == $container_name) and
+                    (((.imageID // "") | sub("^[A-Za-z0-9+.-]+://"; "")) == $image)))' \
+                <<< "$pods")
+              if (( desired_replicas > 0 )) && \
+                 [[ "$generation" == "$observed_generation" ]] && \
+                 [[ "$updated_replicas" == "$desired_replicas" ]] && \
+                 [[ "$ready_replicas" == "$desired_replicas" ]] && \
+                 [[ "$available_replicas" == "$desired_replicas" ]] && \
+                 [[ "$unavailable_replicas" == "0" ]] && \
+                 [[ "$pod_count" == "$desired_replicas" ]] && \
+                 [[ "$pods_converged" == "true" ]]; then
+                live_ready=true
+              fi
+            else
+              if grep -q '(NotFound)' "$error_file" && [[ "$gateway_desired" == v1\|disabled\|* ]]; then
+                rm -f "$error_file"
+                live_fingerprint=""
+                live_image=""
+                live_ready=false
+                return
+              fi
+              rm -f "$error_file"
+              echo "Unable to verify a live schedule dispatch fingerprint."
+              exit 1
+            fi
+          }
+          query_deployment api-server
+          gateway_current_fingerprint=$live_fingerprint
+          gateway_current_image=$live_image
+          gateway_current_ready=$live_ready
+          query_deployment worker
+          worker_current_fingerprint=$live_fingerprint
+          worker_current_image=$live_image
+          worker_current_ready=$live_ready
+          rollout_action=$(python -S apps/shared/domain/schedule_dispatch_rollout.py \
+            --desired "$gateway_desired" \
+            --previous "$PREVIOUS_FINGERPRINT" \
+            --desired-gateway-image "$gateway_image" \
+            --desired-worker-image "$worker_image" \
+            --gateway-fingerprint "$gateway_current_fingerprint" \
+            --gateway-image "$gateway_current_image" \
+            --gateway-ready "$gateway_current_ready" \
+            --worker-fingerprint "$worker_current_fingerprint" \
+            --worker-image "$worker_current_image" \
+            --worker-ready "$worker_current_ready")
+          echo "schedule_fingerprint=$gateway_desired" >> "$GITHUB_ENV"
+          echo "schedule_rollout_action=$rollout_action" >> "$GITHUB_ENV"
+
+      - name: Run Alembic Migration
+        run: |
+          migration_pod=alembic-coordinated-${{ github.run_id }}-${{ github.run_attempt }}
+          cleanup_migration_pod() {
+            kubectl delete pod "$migration_pod" --ignore-not-found=true >/dev/null
+          }
+          trap cleanup_migration_pod EXIT
+          overrides=$(jq -cn --arg image "$gateway_image" '{
+            apiVersion: "v1",
+            spec: {
+              containers: [{
+                name: "alembic",
+                image: $image,
+                command: ["/bin/sh", "-c"],
+                args: ["cd /app/apps/shared && alembic upgrade head"],
+                envFrom: [
+                  {configMapRef: {name: "api-server-config"}},
+                  {secretRef: {name: "app-secrets"}}
+                ]
+              }]
+            }
+          }')
+          kubectl run "$migration_pod" \
+            --image="$gateway_image" \
+            --restart=Never \
+            --attach=true \
+            --overrides="$overrides"
+          cleanup_migration_pod
+          trap - EXIT
+
+      - name: Render immutable deployment manifests
+        run: |
+          mkdir -p /tmp/nodease-gateway /tmp/nodease-worker /tmp/nodease-logger
+          cp infra/k8s/namespaces/default/gateway-deployment.yaml \
+            /tmp/nodease-gateway/resources.yaml
+          cp infra/k8s/namespaces/default/worker-deployment.yaml \
+            /tmp/nodease-worker/resources.yaml
+          cp infra/k8s/namespaces/default/logger-deployment.yaml \
+            /tmp/nodease-logger/resources.yaml
+          cat > /tmp/nodease-gateway/kustomization.yaml <<EOF
+          resources:
+            - resources.yaml
+          images:
+            - name: 912894834396.dkr.ecr.ap-northeast-2.amazonaws.com/moduly-gateway
+              newName: $gateway_repository
+              digest: $gateway_digest
+          EOF
+          cat > /tmp/nodease-worker/kustomization.yaml <<EOF
+          resources:
+            - resources.yaml
+          images:
+            - name: 912894834396.dkr.ecr.ap-northeast-2.amazonaws.com/moduly-workflow-engine
+              newName: $worker_repository
+              digest: $worker_digest
+          EOF
+          cat > /tmp/nodease-logger/kustomization.yaml <<EOF
+          resources:
+            - resources.yaml
+          images:
+            - name: 912894834396.dkr.ecr.ap-northeast-2.amazonaws.com/moduly-logger
+              newName: $logger_repository
+              digest: $logger_digest
+          EOF
+          kubectl kustomize /tmp/nodease-gateway > /tmp/gateway-rendered.yaml
+          kubectl kustomize /tmp/nodease-worker > /tmp/worker-rendered.yaml
+          kubectl kustomize /tmp/nodease-logger > /tmp/logger-rendered.yaml
+
+      - name: Apply and verify Logger prerequisite
+        run: |
+          verify_converged() {
+            deployment=$1
+            expected_image=$2
+            expected_fingerprint=${3:-}
+            kubectl rollout status deployment/"$deployment" --timeout=10m
+            state=$(kubectl get deployment "$deployment" -o json)
+            current_image=$(jq -r '.spec.template.spec.containers[0].image // ""' <<< "$state")
+            current_fingerprint=$(jq -r \
+              '.spec.template.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] // ""' \
+              <<< "$state")
+            desired_replicas=$(jq -r '.spec.replicas // 1' <<< "$state")
+            generation=$(jq -r '.metadata.generation // 0' <<< "$state")
+            observed_generation=$(jq -r '.status.observedGeneration // 0' <<< "$state")
+            updated_replicas=$(jq -r '.status.updatedReplicas // 0' <<< "$state")
+            ready_replicas=$(jq -r '.status.readyReplicas // 0' <<< "$state")
+            available_replicas=$(jq -r '.status.availableReplicas // 0' <<< "$state")
+            unavailable_replicas=$(jq -r '.status.unavailableReplicas // 0' <<< "$state")
+            pods=$(kubectl get pods -l app="$deployment" -o json)
+            pod_count=$(jq -r \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] | length' \
+              <<< "$pods")
+            pods_converged=$(jq -r \
+              --arg image "$expected_image" \
+              --arg fingerprint "$expected_fingerprint" \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+              all($pods[];
+                (.spec.containers[0].name) as $container_name |
+                (.status.phase == "Running") and
+                (.spec.containers[0].image == $image) and
+                (($fingerprint == "") or
+                  (.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] == $fingerprint)) and
+                any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+                any(.status.containerStatuses[]?;
+                  (.name == $container_name) and
+                  (((.imageID // "") | sub("^[A-Za-z0-9+.-]+://"; "")) == $image)))' \
+              <<< "$pods")
+            if [[ -n "$expected_fingerprint" && \
+                  "$current_fingerprint" != "$expected_fingerprint" ]]; then
+              echo "A deployment did not converge to the expected rollout identity."
+              exit 1
+            fi
+            if [[ "$current_image" != "$expected_image" || \
+                  "$generation" != "$observed_generation" || \
+                  "$updated_replicas" != "$desired_replicas" || \
+                  "$ready_replicas" != "$desired_replicas" || \
+                  "$available_replicas" != "$desired_replicas" || \
+                  "$unavailable_replicas" != "0" || \
+                  "$desired_replicas" == "0" || \
+                  "$pod_count" != "$desired_replicas" || \
+                  "$pods_converged" != "true" ]]; then
+              echo "A deployment did not converge to the expected rollout identity."
+              exit 1
+            fi
+          }
+
+          apply_logger_and_verify() {
+            kubectl apply -f /tmp/logger-rendered.yaml
+            verify_converged logger "$logger_image"
+          }
+
+          # New schedule run/log contracts must be live before any mode transition.
+          apply_logger_and_verify
+
+      - name: Check final schedule ledger and transition drain
+        env:
+          PREVIOUS_FINGERPRINT: ${{ inputs.previous_fingerprint }}
+        run: |
+          if [[ "$schedule_rollout_action" == "none" ]]; then
+            exit 0
+          fi
+          target_mode=$(printf '%s' "$schedule_fingerprint" | cut -d'|' -f2)
+          previous_mode=$(printf '%s' "$PREVIOUS_FINGERPRINT" | cut -d'|' -f2)
+          if [[ "$target_mode" == "claim" && "$previous_mode" != "claim" ]]; then
+            preflight_purpose=activation
+          elif [[ "$target_mode" == "disabled" ]]; then
+            if [[ "$previous_mode" != "drain" ]]; then
+              exit 0
+            fi
+            preflight_purpose=rollback
+          else
+            exit 0
+          fi
+
+          # Both activation and rollback must observe an empty durable claim ledger.
+          # The purpose only controls whether legacy Celery task names are also drained.
+          worker_pods=$(kubectl get pods -l app=worker -o json)
+          expected_workers=$(jq -r \
+            '[.items[] | select(.metadata.deletionTimestamp == null) |
+              select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) |
+              .metadata.name] | sort | join(",")' <<< "$worker_pods")
+          ready_worker_count=$(jq -r \
+            '[.items[] | select(.metadata.deletionTimestamp == null) |
+              select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] |
+              length' <<< "$worker_pods")
+          desired_worker_count=$(kubectl get deployment worker -o jsonpath='{.spec.replicas}')
+          if [[ -z "$expected_workers" || "$ready_worker_count" != "$desired_worker_count" ]]; then
+            echo "Transition drain requires the complete Ready Worker set."
+            exit 1
+          fi
+
+          preflight_pod=schedule-transition-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          cleanup_preflight_pod() {
+            kubectl delete pod "$preflight_pod" --ignore-not-found=true >/dev/null
+          }
+          trap cleanup_preflight_pod EXIT
+          overrides=$(jq -cn \
+            --arg image "$gateway_image" \
+            --arg purpose "$preflight_purpose" \
+            --arg expectedWorkers "$expected_workers" '{
+            apiVersion: "v1",
+            spec: {
+              containers: [{
+                name: "preflight",
+                image: $image,
+                command: ["python", "/app/scripts/check_schedule_dispatch_rollback.py"],
+                args: [
+                  "--purpose", $purpose,
+                  "--inspect-timeout", "10",
+                  "--expected-worker-nodes", $expectedWorkers,
+                  "--stable-observations", "2",
+                  "--stability-seconds", "2"
+                ],
+                envFrom: [
+                  {configMapRef: {name: "api-server-config"}},
+                  {secretRef: {name: "app-secrets"}}
+                ]
+              }]
+            }
+          }')
+          kubectl run "$preflight_pod" \
+            --image="$gateway_image" \
+            --restart=Never \
+            --attach=true \
+            --overrides="$overrides"
+          cleanup_preflight_pod
+          trap - EXIT
+
+      - name: Apply staged Gateway and Worker rollout
+        run: |
+          verify_converged() {
+            deployment=$1
+            expected_image=$2
+            kubectl rollout status deployment/"$deployment" --timeout=10m
+            state=$(kubectl get deployment "$deployment" -o json)
+            current_image=$(jq -r '.spec.template.spec.containers[0].image // ""' <<< "$state")
+            current_fingerprint=$(jq -r \
+              '.spec.template.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] // ""' \
+              <<< "$state")
+            desired_replicas=$(jq -r '.spec.replicas // 1' <<< "$state")
+            generation=$(jq -r '.metadata.generation // 0' <<< "$state")
+            observed_generation=$(jq -r '.status.observedGeneration // 0' <<< "$state")
+            updated_replicas=$(jq -r '.status.updatedReplicas // 0' <<< "$state")
+            ready_replicas=$(jq -r '.status.readyReplicas // 0' <<< "$state")
+            available_replicas=$(jq -r '.status.availableReplicas // 0' <<< "$state")
+            unavailable_replicas=$(jq -r '.status.unavailableReplicas // 0' <<< "$state")
+            pods=$(kubectl get pods -l app="$deployment" -o json)
+            pod_count=$(jq -r \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] | length' \
+              <<< "$pods")
+            pods_converged=$(jq -r \
+              --arg image "$expected_image" \
+              --arg fingerprint "$schedule_fingerprint" \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+              all($pods[];
+                (.spec.containers[0].name) as $container_name |
+                (.status.phase == "Running") and
+                (.spec.containers[0].image == $image) and
+                (.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] == $fingerprint) and
+                any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+                any(.status.containerStatuses[]?;
+                  (.name == $container_name) and
+                  (((.imageID // "") | sub("^[A-Za-z0-9+.-]+://"; "")) == $image)))' \
+              <<< "$pods")
+            if [[ "$current_image" != "$expected_image" || \
+                  "$current_fingerprint" != "$schedule_fingerprint" || \
+                  "$generation" != "$observed_generation" || \
+                  "$updated_replicas" != "$desired_replicas" || \
+                  "$ready_replicas" != "$desired_replicas" || \
+                  "$available_replicas" != "$desired_replicas" || \
+                  "$unavailable_replicas" != "0" || \
+                  "$desired_replicas" == "0" || \
+                  "$pod_count" != "$desired_replicas" || \
+                  "$pods_converged" != "true" ]]; then
+              echo "A staged rollout did not converge to the expected rollout identity."
+              exit 1
+            fi
+          }
+
+          apply_and_verify() {
+            manifest=$1
+            deployment=$2
+            expected_image=$3
+            kubectl apply -f "$manifest"
+            verify_converged "$deployment" "$expected_image"
+          }
+
+          target_mode=$(printf '%s' "$schedule_fingerprint" | cut -d'|' -f2)
+          case "$schedule_rollout_action" in
+            none)
+              ;;
+            gateway)
+              apply_and_verify /tmp/gateway-rendered.yaml api-server "$gateway_image"
+              ;;
+            worker)
+              apply_and_verify /tmp/worker-rendered.yaml worker "$worker_image"
+              ;;
+            all)
+              if [[ "$target_mode" == "claim" ]]; then
+                apply_and_verify /tmp/worker-rendered.yaml worker "$worker_image"
+                apply_and_verify /tmp/gateway-rendered.yaml api-server "$gateway_image"
+              else
+                apply_and_verify /tmp/gateway-rendered.yaml api-server "$gateway_image"
+                apply_and_verify /tmp/worker-rendered.yaml worker "$worker_image"
+              fi
+              ;;
+            *)
+              echo "Unknown schedule rollout action."
+              exit 1
+              ;;
+          esac
+
+      - name: Verify Logger, Gateway, and Worker convergence
+        run: |
+          verify_converged() {
+            deployment=$1
+            expected_image=$2
+            expected_fingerprint=${3:-}
+            kubectl rollout status deployment/"$deployment" --timeout=10m
+            state=$(kubectl get deployment "$deployment" -o json)
+            current_image=$(jq -r '.spec.template.spec.containers[0].image // ""' <<< "$state")
+            current_fingerprint=$(jq -r \
+              '.spec.template.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] // ""' \
+              <<< "$state")
+            desired_replicas=$(jq -r '.spec.replicas // 1' <<< "$state")
+            generation=$(jq -r '.metadata.generation // 0' <<< "$state")
+            observed_generation=$(jq -r '.status.observedGeneration // 0' <<< "$state")
+            updated_replicas=$(jq -r '.status.updatedReplicas // 0' <<< "$state")
+            ready_replicas=$(jq -r '.status.readyReplicas // 0' <<< "$state")
+            available_replicas=$(jq -r '.status.availableReplicas // 0' <<< "$state")
+            unavailable_replicas=$(jq -r '.status.unavailableReplicas // 0' <<< "$state")
+            pods=$(kubectl get pods -l app="$deployment" -o json)
+            pod_count=$(jq -r \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] | length' \
+              <<< "$pods")
+            pods_converged=$(jq -r \
+              --arg image "$expected_image" \
+              --arg fingerprint "$expected_fingerprint" \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+              all($pods[];
+                (.spec.containers[0].name) as $container_name |
+                (.status.phase == "Running") and
+                (.spec.containers[0].image == $image) and
+                (($fingerprint == "") or
+                  (.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] == $fingerprint)) and
+                any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+                any(.status.containerStatuses[]?;
+                  (.name == $container_name) and
+                  (((.imageID // "") | sub("^[A-Za-z0-9+.-]+://"; "")) == $image)))' \
+              <<< "$pods")
+            if [[ -n "$expected_fingerprint" && \
+                  "$current_fingerprint" != "$expected_fingerprint" ]]; then
+              echo "A rollout did not converge to the desired rollout identity."
+              exit 1
+            fi
+            if [[ "$current_image" != "$expected_image" || \
+                  "$generation" != "$observed_generation" || \
+                  "$updated_replicas" != "$desired_replicas" || \
+                  "$ready_replicas" != "$desired_replicas" || \
+                  "$available_replicas" != "$desired_replicas" || \
+                  "$unavailable_replicas" != "0" || \
+                  "$desired_replicas" == "0" || \
+                  "$pod_count" != "$desired_replicas" || \
+                  "$pods_converged" != "true" ]]; then
+              echo "A rollout did not converge to the desired rollout identity."
+              exit 1
+            fi
+          }
+          verify_converged logger "$logger_image"
+          verify_converged api-server "$gateway_image" "$schedule_fingerprint"
+          verify_converged worker "$worker_image" "$schedule_fingerprint"

@@ -27,9 +27,12 @@ from apps.shared.db.models.knowledge import (  # noqa: E402
 )
 from apps.shared.db.models.llm import LLMModel  # noqa: E402
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
+from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
 from apps.workflow_engine.services import (  # noqa: E402
     llm_service as workflow_llm_service,
+)
+from apps.workflow_engine.services import (  # noqa: E402
     retrieval as workflow_retrieval_service,
 )
 from apps.workflow_engine.services.llm_service import (  # noqa: E402
@@ -38,11 +41,11 @@ from apps.workflow_engine.services.llm_service import (  # noqa: E402
     LLMService,
 )
 from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
+    MAX_RAG_CHUNKS_PER_KB,
+    MAX_RAG_RETRIEVAL_KBS,
     KnowledgeBaseRef,
     LLMNodeData,
     LLMVariable,
-    MAX_RAG_CHUNKS_PER_KB,
-    MAX_RAG_RETRIEVAL_KBS,
 )
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     RAG_NO_EVIDENCE_MESSAGE,
@@ -51,7 +54,6 @@ from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     WorkflowRAGFanoutResult,
     WorkflowRAGSearchResult,
 )
-from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 
 
 class DummyClient:
@@ -416,6 +418,178 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
     # 응답 파싱 검증
     assert result["text"] == "hello world"
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
+
+
+def test_system_schedule_uses_credential_principal_without_rag_subject(monkeypatch):
+    credential_user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    captured = {}
+    usage_calls = []
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4.1",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-schedule",
+        data,
+        execution_context={
+            "db": object(),
+            "user_id": None,
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(credential_user_id),
+            },
+            "organization_id": str(organization_id),
+            "trigger_mode": "schedule",
+        },
+    )
+
+    def fake_runtime_client(db, *, user_id, model_id, organization_id):
+        captured.update(
+            user_id=user_id,
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+        return LLMRuntimeSelection(
+            client=DummyClient(),
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", fake_runtime_client)
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(
+        LLMService,
+        "log_usage",
+        lambda *args, **kwargs: usage_calls.append(kwargs),
+    )
+
+    result = node.execute({})
+
+    assert result["text"] == "hello world"
+    assert captured == {
+        "user_id": credential_user_id,
+        "model_id": "gpt-4.1",
+        "organization_id": organization_id,
+    }
+    assert usage_calls[0]["user_id"] == credential_user_id
+    assert node._resolve_rag_execution_subject() is None  # noqa: SLF001
+
+
+def test_system_schedule_uses_credential_principal_for_routing_models(monkeypatch):
+    credential_user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    node = LLMNode.__new__(LLMNode)
+    node.data = SimpleNamespace(model_id="gpt-4.1")
+    node.execution_context = {
+        "user_id": None,
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(credential_user_id),
+        },
+        "organization_id": str(organization_id),
+    }
+    captured = {}
+
+    def available(_db, *, user_id, organization_id):
+        captured.update(user_id=user_id, organization_id=organization_id)
+        return ["gpt-4.1", "gpt-4.1-mini"]
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_available_model_ids_for_user",
+        available,
+    )
+
+    assert node._available_routing_model_ids(object()) == [  # noqa: SLF001
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ]
+    assert captured == {
+        "user_id": credential_user_id,
+        "organization_id": organization_id,
+    }
+
+
+def test_system_schedule_provider_fallback_uses_credential_principal(monkeypatch):
+    credential_user_id = uuid.uuid4()
+    expected_organization_id = uuid.uuid4()
+    requested_models = []
+
+    class _PrimaryClient:
+        def invoke_sync(self, **_kwargs):
+            raise RuntimeError("raw provider response must not escape")
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-schedule-fallback",
+        data,
+        execution_context={
+            "db": object(),
+            "user_id": None,
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(credential_user_id),
+            },
+            "organization_id": str(expected_organization_id),
+            "trigger_mode": "schedule",
+        },
+    )
+
+    def runtime_client(_db, *, user_id, model_id, organization_id):
+        assert user_id == credential_user_id
+        assert organization_id == expected_organization_id
+        requested_models.append(model_id)
+        return LLMRuntimeSelection(
+            client=_PrimaryClient() if model_id == "gpt-4.1" else DummyClient(),
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", runtime_client)
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(LLMService, "log_usage", lambda *args, **kwargs: None)
+
+    result = node.execute({})
+
+    assert requested_models == ["gpt-4.1", "gpt-4.1-mini"]
+    assert result["model"] == "gpt-4.1-mini"
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        "not-an-object",
+        {"subject_type": "service_account", "subject_id": str(uuid.uuid4())},
+        {"subject_type": "user", "subject_id": "not-a-uuid"},
+    ],
+)
+def test_invalid_credential_principal_fails_closed(principal):
+    node = LLMNode.__new__(LLMNode)
+    node.execution_context = {"credential_principal": principal}
+
+    with pytest.raises(PermissionError):
+        node._resolve_credential_principal_user()  # noqa: SLF001
 
 
 def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subject(
@@ -1104,6 +1278,59 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
     assert cost_calls[0]["model_id"] == "fallback-model"
     assert log_calls[0]["model_id"] == "fallback-model"
     assert log_calls[0]["credential_id"] == fallback_credential_id
+
+
+def test_client_selection_fallback_is_not_invoked_twice_on_provider_failure(
+    monkeypatch,
+):
+    fallback_client = FailingClient()
+    organization_id = uuid.uuid4()
+    service_calls = []
+
+    def runtime_client(_db, user_id, model_id, organization_id=None):
+        service_calls.append(model_id)
+        if model_id == "primary-model":
+            raise LLMCredentialNotAvailableError(
+                "credential_use_denied",
+                "primary denied",
+                model_id=model_id,
+                organization_id=organization_id,
+            )
+        return SimpleNamespace(
+            client=fallback_client,
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", runtime_client)
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="primary-model",
+        fallback_model_id="fallback-model",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-fallback-once",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "db": object(),
+        },
+    )
+
+    with pytest.raises(RuntimeError):
+        node.execute({})
+
+    assert service_calls == ["primary-model", "fallback-model"]
+    assert len(fallback_client.calls) == 1
 
 
 def test_llm_node_logs_usage_with_selected_credential_id(monkeypatch):
@@ -2672,6 +2899,119 @@ def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
     assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
 
 
+@pytest.mark.parametrize(
+    ("audit_method", "expected_action", "call_kwargs"),
+    [
+        ("_record_rag_retrieve_audit", "rag.retrieve", {}),
+        (
+            "_record_rag_policy_block_audit",
+            "policy.block",
+            {"reason_code": "pii_policy_blocked"},
+        ),
+    ],
+)
+def test_system_schedule_rag_audit_does_not_promote_credential_principal(
+    monkeypatch,
+    audit_method,
+    expected_action,
+    call_kwargs,
+):
+    credential_principal_id = uuid.uuid4()
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": None,
+        "trigger_mode": "schedule",
+        "workflow_task_id": f"schedule:{uuid.uuid4()}",
+        "workflow_id": str(uuid.uuid4()),
+        "workflow_run_id": str(uuid.uuid4()),
+        "organization_id": str(uuid.uuid4()),
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(credential_principal_id),
+        },
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    if audit_method == "_record_rag_retrieve_audit":
+        getattr(node, audit_method)(None, str(uuid.uuid4()), 1)
+    else:
+        getattr(node, audit_method)(None, **call_kwargs)
+
+    assert audit_calls[0]["action"] == expected_action
+    assert audit_calls[0]["actor_id"] is None
+    assert audit_calls[0]["actor_type"] == "system"
+    assert audit_calls[0]["metadata"]["organization_id"] == node.execution_context[
+        "organization_id"
+    ]
+
+
+def test_interactive_rag_audit_uses_execution_subject_not_credential_principal(
+    monkeypatch,
+):
+    execution_subject_id = uuid.uuid4()
+    credential_principal_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": str(execution_subject_id),
+        "trigger_mode": "manual",
+        "workflow_task_id": str(uuid.uuid4()),
+        "organization_id": str(organization_id),
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(credential_principal_id),
+        },
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    node._record_rag_retrieve_audit(  # noqa: SLF001 - audit actor contract
+        execution_subject_id,
+        str(uuid.uuid4()),
+        1,
+    )
+
+    assert audit_calls[0]["actor_id"] == execution_subject_id
+    assert audit_calls[0]["actor_id"] != credential_principal_id
+    assert audit_calls[0]["actor_type"] == "user"
+    assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
+
+
+@pytest.mark.parametrize(
+    "audit_method",
+    ("_record_rag_retrieve_audit", "_record_rag_policy_block_audit"),
+)
+def test_rag_audit_omits_unscoped_invalid_organization(monkeypatch, audit_method):
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": str(uuid.uuid4()),
+        "organization_id": "not-a-uuid",
+        "trigger_mode": "manual",
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    if audit_method == "_record_rag_retrieve_audit":
+        getattr(node, audit_method)(uuid.uuid4(), str(uuid.uuid4()), 1)
+    else:
+        getattr(node, audit_method)(uuid.uuid4(), reason_code="pii_policy_blocked")
+
+    assert audit_calls == []
+
+
 def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):
     node = LLMNode(
         "llm-1",
@@ -2961,6 +3301,49 @@ def test_llm_runtime_permission_denied_uses_detailed_reason_and_unknown_target(
     assert audit_calls[0]["metadata"]["credential_id"] is None
     assert audit_calls[0]["metadata"]["model_id"] == "gpt-4o-mini"
     assert audit_calls[0]["metadata"]["reason"] == "model_relation_not_verified"
+
+
+def test_schedule_credential_denial_uses_system_audit_actor(monkeypatch):
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": None,
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(uuid.uuid4()),
+        },
+        "organization_id": str(uuid.uuid4()),
+        "workflow_id": str(uuid.uuid4()),
+        "workflow_run_id": str(uuid.uuid4()),
+        "trigger_mode": "schedule",
+        "workflow_task_id": f"schedule:{uuid.uuid4()}",
+    }
+    user_audits = []
+    system_audits = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
+        lambda **kwargs: user_audits.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_system_resource_permission_denied",
+        lambda **kwargs: system_audits.append(kwargs),
+    )
+
+    node._record_llm_runtime_permission_denied(  # noqa: SLF001
+        user_id=uuid.UUID(node.execution_context["credential_principal"]["subject_id"]),
+        model_id="gpt-4o-mini",
+        organization_id=node.execution_context["organization_id"],
+        error=LLMCredentialNotAvailableError(
+            "credential_use_denied",
+            "denied",
+            model_id="gpt-4o-mini",
+        ),
+    )
+
+    assert user_audits == []
+    assert len(system_audits) == 1
+    assert "user_id" not in system_audits[0]
+    assert system_audits[0]["metadata"]["reason"] == "credential_use_denied"
 
 
 def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
@@ -3814,6 +4197,7 @@ def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denie
     monkeypatch,
 ):
     user_id = uuid.uuid4()
+    credential_principal_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     allowed_kb_id = uuid.uuid4()
     denied_kb_id = uuid.uuid4()
@@ -3886,6 +4270,10 @@ def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denie
                 "subject_type": "user",
                 "subject_id": str(user_id),
             },
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(credential_principal_id),
+            },
             "workflow_id": str(uuid.uuid4()),
             "workflow_run_id": str(uuid.uuid4()),
         },
@@ -3925,6 +4313,8 @@ def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denie
     assert result.trace_summary["authorized_kb_count"] == 1
     assert result.trace_summary["selected_kb_count"] == 1
     assert result.metadata[0]["knowledge_base_id"] == str(allowed_kb_id)
+    assert retrieve_audit_calls[0][0] == user_id
+    assert retrieve_audit_calls[0][0] != credential_principal_id
     assert retrieve_audit_calls[0][1] == str(allowed_kb_id)
 
 

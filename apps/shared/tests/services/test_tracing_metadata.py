@@ -1,8 +1,43 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from apps.shared.schemas.tracing import TraceDetailSchema, TraceSummarySchema
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.query import TraceQueryService
+
+
+def _trace_schema_values(*, user_id):
+    return {
+        "id": uuid.uuid4(),
+        "workflow_id": uuid.uuid4(),
+        "app_id": uuid.uuid4(),
+        "user_id": user_id,
+        "deployment_id": uuid.uuid4(),
+        "status": "success",
+        "trigger_mode": "scheduler",
+        "started_at": datetime.now(timezone.utc),
+    }
+
+
+def test_trace_summary_and_detail_allow_null_system_schedule_actor():
+    values = _trace_schema_values(user_id=None)
+
+    summary = TraceSummarySchema.model_validate(values)
+    detail = TraceDetailSchema.model_validate(values)
+
+    assert summary.user_id is None
+    assert detail.user_id is None
+
+
+def test_trace_summary_preserves_interactive_user_actor():
+    user_id = uuid.uuid4()
+
+    summary = TraceSummarySchema.model_validate(
+        _trace_schema_values(user_id=user_id)
+    )
+
+    assert summary.user_id == user_id
 
 
 def test_span_metadata_allowlist_preserves_safe_response_summary_fields():

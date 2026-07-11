@@ -47,11 +47,13 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - BGT-REQ-033: 차단 판정은 fail-closed다. 활성 예산 workflow에서 당월 비용 집계에 실패하면 실행을 차단한다. 활성 예산이 없는 workflow는 판정 로직을 건너뛰어 기존 실행 경로가 깨지지 않아야 한다 (NFR-005).
 - BGT-REQ-034: 판정은 매 실행 요청마다 dispatch 직전에 DB 집계로 수행한다. 판정 결과를 캐시하거나 이전 요청의 판정을 재사용하지 않는다. 초과가 `llm_usage_logs`에 반영된 이후 도착하는 모든 신규 실행 요청은 경로와 무관하게 차단되어야 한다 (동시성 방어의 보장 하한선).
 - BGT-REQ-035: 동시 실행으로 인한 한시적 초과(overshoot)는 알려진 한계로 수용한다. 비용은 LLM 호출 완료 후 기록되므로 in-flight 실행의 비용은 dispatch 시점 판정에 반영될 수 없고, dispatch 직렬화(분산 락)로도 이 창은 닫히지 않는다. 초과 폭은 "차단 확정 전에 dispatch된 동시 실행들의 비용"으로 한정되며, 이미 시작된 실행은 중단하지 않는다. 실행 전 비용 예약(reservation) 모델은 1차 구현 범위 밖이다.
+- BGT-REQ-036: Schedule dispatch/admission transaction 안의 예산 조회·집계는 nested transaction/savepoint로 격리해야 한다. DB statement 실패를 `unavailable`로 변환할 때 실패한 savepoint를 먼저 rollback하여 caller가 보유한 canonical row lock과 outer UnitOfWork를 유지하고 bounded retry/dead-letter 상태를 같은 transaction에서 기록할 수 있어야 한다.
 
 ### Audit
 
 - BGT-REQ-040: 예산 생성/수정/비활성화는 canonical action `workflow_budget.created`/`workflow_budget.updated`로 audit에 기록한다. `audit_metadata`에는 `monthly_budget_usd`, `is_enabled` 같은 운영 summary만 포함한다. 비활성화는 `workflow_budget.updated`에 `is_enabled=false` metadata로 표현한다. [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md) canonical action table 갱신이 필요하다.
 - BGT-REQ-041: 예산 초과로 실행이 차단되면 `policy.block`(target_type `workflow`, status `failure`, `audit_metadata.reason='budget.exceeded'`, trigger mode 포함)으로 기록한다. 별도 결과 중심 action(`workflow.budget_blocked` 등)은 만들지 않는다 (ADR-0008 원인 중심 명명).
+- BGT-REQ-043: Schedule은 occurrence 생성, Gateway publish 직전, Worker admission 직전의 세 예산 판정에서 동일한 BGT-REQ-041 audit 계약을 사용한다. 최종 Worker 판정에서 차단되거나 budget 집계가 unavailable인 경우에도 claim 상태와 audit을 같은 transaction에 기록한다.
 - BGT-REQ-042: credential 원문, raw payload, secret 값은 예산 관련 응답/audit/trace에 노출하지 않는다 (NFR-004). 예산 금액과 비용 집계값은 secret이 아니며 관리자 표면과 audit metadata에 포함할 수 있다.
 
 ## Policies And Edge Cases

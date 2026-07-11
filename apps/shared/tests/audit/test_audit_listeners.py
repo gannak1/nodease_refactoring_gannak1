@@ -1,9 +1,6 @@
 import pytest
-from sqlalchemy import Integer, String, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-
-from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.audit import listeners
+from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.organization import Organization
@@ -26,6 +23,8 @@ from apps.shared.db.models.workflow_run import (
     TraceRetentionPolicy,
     TraceVisibilityPolicy,
 )
+from sqlalchemy import Integer, String, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
 class Base(DeclarativeBase):
@@ -87,6 +86,13 @@ def test_layer_b_masks_sensitive_json_columns():
     }
     assert listeners.SENSITIVE_FIELDS[TraceRedactionPolicy] >= {"regex_rules"}
     assert listeners.SENSITIVE_FIELDS[KnowledgeBase] >= {"safe_metadata"}
+
+
+def test_schedule_operational_cursors_are_excluded_from_generic_update_audit():
+    assert listeners.IGNORED_UPDATE_FIELDS[Schedule] == {
+        "last_run_at",
+        "next_run_at",
+    }
 
 
 @pytest.fixture

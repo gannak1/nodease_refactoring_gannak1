@@ -17,6 +17,10 @@ Verified Against: TBD
 - Scheduler service는 active `type=schedule` deployment만 로드/실행하고, non-schedule deployment id로 job이 호출되면 dispatch하지 않는다.
 - Preflight response sanitizer는 hidden KB id/name/path, exact denied count, raw source metadata, raw exception을 제거한다.
 - Central deployment runtime policy matrix는 public info, authenticated run/run-info, API secret run, webhook run, schedule run, workflow-node child run surface별 허용 deployment type을 고정하고 unknown surface/type을 fail-closed로 거부한다. 기본 policy는 불변 객체이며 composition dependency로 교체 주입할 수 있지만 환경변수나 전역 mutation으로 확장할 수 없다.
+- Schedule occurrence key/state/reason/settings helper는 DB/framework 없이 테스트하고 naive datetime, unknown state/reason, mutable settings input을 fail-closed한다.
+- Schedule application use case는 access-management command/model/port/recorder와 FastAPI/Celery/SQLAlchemy query를 import하지 않는다. Schedule 전용 audit port를 사용하고 concrete Gateway UnitOfWork만 composition에서 주입한다.
+- Schedule audit recorder는 system actor, canonical action/target과 strict metadata allowlist만 현재 UoW에 추가하며 commit/rollback하지 않는다.
+- System tick의 `Schedule.next_run_at`/`last_run_at`만 바뀌면 generic `schedule.updated`가 생성되지 않고 cron/timezone/lifecycle 또는 unrelated tracked mutation audit은 유지된다.
 
 ## API Tests
 
@@ -42,6 +46,8 @@ Verified Against: TBD
 - Active `type=workflow_node` deployment graph에 `scheduleTrigger`가 있어도 schedule record나 scheduler job을 생성하지 않는다.
 - Scheduler startup query와 dispatch 시점은 모두 schedule deployment가 해당 app의 현재 `active_deployment_id`인지 재확인한다. Queue에는 graph가 아니라 deployment id를 넣고, worker가 실행 직전 active/type/app/current pointer를 다시 확인해 enqueue 후 삭제/비활성/stale/non-current가 된 deployment를 retry 없이 종료한다.
 - APScheduler에 job이 남아 있어도 `Schedule.id + deployment_id` row가 없으면 queue와 budget service를 호출하지 않고 local job을 제거한다. Worker queue context에 다른 organization/workflow/app/deployment/version 또는 execution subject를 넣어도 DB의 canonical App/Deployment context로 덮어쓰거나 제거하고 correlation allowlist만 보존한다.
+- Invalid cron/timezone 활성화는 safe `422 deployment.schedule_configuration_invalid`로 실패하고 parser 원문을 노출하지 않으며 schedule/deployment partial mutation을 남기지 않는다.
+- Public route 목록에는 schedule claim 조회, status mutation, outcome acknowledgment 또는 redrive endpoint가 없어야 한다.
 - Blocking preflight 예외는 broad catch에서 generic `400`으로 변환되지 않는다.
 - Source-managed KB public 후보는 public exposure approval primitive가 없으면 blocked로 처리한다.
 - Webhook capture start/status rejects unauthenticated requests.
@@ -56,12 +62,45 @@ Verified Against: TBD
 
 - Deployment modal은 preflight preview가 blocked인 경우 safe reason과 required actions를 표시하고 hidden KB identity를 표시하지 않는다.
 - Inactive save 후 activation을 시도하면 같은 preflight blocker가 사용자에게 표시된다.
+- Disposable PostgreSQL에 연결한 dispatcher 두 개가 같은 occurrence를 동시에 처리해도 claim은 하나이고 `next_run_at`은 한 번만 전진한다.
+- Duplicate Celery task를 Worker 두 개가 받아도 stable workflow run identity 하나와 engine admission 한 번만 발생한다.
+- Disposable pgvector PostgreSQL CI는 실제 Alembic head에서 두 dispatcher session과 두 Worker admission session을 동시에 실행해 각각 winner가 하나임을 필수 검증한다. Opt-in skip만 존재하고 CI에서 실행되지 않는 상태는 완료 증거로 인정하지 않는다.
+- Broker publish 전후 장애와 Worker admission 전 종료는 bounded recovery되고, admission 후 종료는 outcome unknown으로 격리되어 자동 replay되지 않는다.
+- Migration-first, disabled rollout, drain, claim activation과 역순 rollback rehearsal에서 legacy direct dispatcher와 claim dispatcher가 동시에 활성화되지 않는다.
+- Coordinated rollout이 첫 서비스 적용 뒤 실패하면 같은 commit image와 desired fingerprint를 가진 선행 서비스, 승인된 previous fingerprint를 가진 나머지 서비스 조합만 재개한다. 반대 순서, 다른 image, 임의 third fingerprint, active claim 상태의 direct settings 변경은 fail-closed한다.
+- `claim -> disabled` 직접 전환은 evaluator가 거부한다. `disabled`/`drain -> claim` activation과 `drain -> disabled` rollback은 transition preflight가 nonterminal/unreviewed outcome을 하나라도 찾거나 DB 검사를 완료하지 못하면 두 deployment 적용 전에 중단한다.
+- Activation preflight는 legacy/new schedule task, rollback preflight는 new schedule task가 active/reserved/scheduled이거나 Redis workflow queue depth가 0이 아니면 중단한다. Redis inspection 실패도 fail-closed하며 payload/body를 파싱하거나 로그에 남기지 않는다.
+
+## Migration And Persistence Tests
+
+- Alembic 기준 merge head에서 upgrade는 single head를 유지하고 claim table/constraint/index와 schedule-only nullable WorkflowRun executor를 정확히 반영한다. Controlled downgrade/re-upgrade는 system WorkflowRun 이력, admitted claim의 durable run correlation, active/unreviewed claim, configuration quarantine이 모두 없는 경우에만 성공하며, 하나라도 있으면 첫 schedule DDL 전에 fail-closed하고 revision을 보존한다.
+- Claim `organization_id`는 non-null이고 canonical App과 일치하며 lifecycle FK cascade가 없다. Schedule/Deployment 삭제 뒤에도 outcome review organization provenance를 유지한다.
+- Claim 생성, `next_run_at`, budget policy audit은 한 commit이며 audit/claim/next-run 중 하나가 실패하면 모두 rollback한다.
+- Claim model은 generic ORM audit listener 대상이 아니며 raw input, graph, prompt/evidence, credential/provider response와 raw exception column이 없다.
+- Dead-letter reason/correlation DB constraint는 admission 전 reason에 run/start correlation을 금지하고 admission 후 reason에 task/enqueue/start/run correlation을 모두 요구한다. 기존 모순 row가 있으면 migration은 값을 추측해 보정하지 않고 constraint 교체 전에 fail-closed한다.
+- 실제 PostgreSQL은 null safe reason의 canceled/dead-lettered claim, null resolution의 completed outcome review, null task id의 system schedule WorkflowRun을 모두 거부한다.
+- `pending`/`dispatching`/`enqueued`에 `workflow_run_id`를 직접 기록하면 domain과 실제 PostgreSQL check constraint가 모두 거부한다. 한 claim의 publish 결과 write 실패 뒤에도 같은 prepared batch의 다음 claim은 publish/result 처리를 계속하며, terminal finalization 일시 실패는 engine call 1회를 유지한 채 fresh session write만 bounded 재시도한다.
+- Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
+- 기존 운영 Deployment에 fingerprint annotation이 없는 최초 `disabled` rollout은 bootstrap으로 진행되지만, `drain`/`claim` desired mode에서 annotation 누락은 fail-closed한다.
+- Coordinated claim rollout은 동일 commit Logger image를 Gateway/Worker보다 먼저 배포하고 image identity를 검증한다. 이전 Logger가 남아 있거나 Logger rollout이 실패하면 claim admission을 활성화하지 않는다.
+- Coordinated rollout 첫 시도에서 일부 image push 또는 Deployment 적용 후 실패한 뒤 같은 commit으로 재실행하면, 이미 존재하는 ECR digest를 재사용하고 immutable image identity로 남은 단계를 수행한다. 최종 성공은 Logger/Gateway/Worker의 observed generation, desired/updated/Ready/available replica와 non-terminating Pod spec image/container imageID/fingerprint/Ready condition이 모두 일치할 때만 허용한다.
+- Activation/rollback preflight에서 일부 Worker가 inspect에 응답하지 않거나 task가 queue 확인 사이 active로 이동하면 전환을 차단한다. 기대 Ready Worker 집합과 응답 집합이 일치하고 앞뒤 task/queue 관측이 연속 두 번 0일 때만 통과한다.
+- Lock 대기 또는 느린 budget 평가가 transaction 시작 뒤 발생해도 dispatch lease와 execution deadline은 전환 직전 DB wall clock 이후로 설정되고 commit 직후 만료되지 않는다.
+- `disabled` mode에서 신규 occurrence/dispatch/admission은 0건이지만 schema-ready DB의 visibility, terminal cleanup, pending/running age 관측은 계속 실행된다. Schema가 없는 최초 bootstrap에서는 maintenance를 시작하지 않는다.
+- Dev 일반 배포와 Helm render에서 non-disabled mode를 요청하면 coordinated workflow 안내와 함께 실패한다. Live Gateway/Worker가 claim/drain/mixed이거나 한쪽만 없는 bootstrap 상태, Deployment generation/replica 미수렴, terminating Pod를 제외한 실제 Pod의 Running/Ready/fingerprint 불일치 상태에서도 단독 disabled 전환을 거부한다. 양쪽이 이미 수렴한 disabled 상태이면 Gateway/Worker를 함께 배포할 때만 disabled fingerprint 설정 변경을 허용하고, 단독 service deploy는 live/desired fingerprint가 같아야 한다. Unrelated service만 배포할 때는 schedule component를 조회하거나 변경하지 않는다. Rollout status 실패는 무시되지 않는다.
+- 기본 환경에서 schedule schema downgrade를 시도하면 sibling migration DDL 전에 실패하고 Alembic head가 유지된다. 파괴적 opt-in 없는 성공 downgrade/re-upgrade는 안전성 증거로 인정하지 않는다.
+- Schedule Celery task의 producer와 task registration은 모두 `ignore_result=True`이고 `task_store_errors_even_if_ignored=False`다. 성공과 실패 실행 뒤 Redis result backend에는 workflow output, RAG evidence, sync 상세 또는 raw exception이 생성되지 않으며 task outcome은 claim/status/finalization summary로 제한된다. 실제 Redis key 부재는 opt-in integration evidence로 별도 실행한다.
+- Schedule structured signal capture와 Scheduler/Worker 오류 log capture에는 정의된 event/value/status/reason/mode 또는 operation/attempt/exception type만 존재하고 UUID, idempotency key, raw payload와 raw exception message가 없다.
+- 1024회를 넘는 고빈도 missed occurrence도 quarantine 없이 현재 시각 이후 첫 fire time으로 coalesce하고, 미래 cursor를 과거로 되돌리지 않는다.
 
 ## Permission Tests
 
 - Preflight preview는 workflow deploy/manage 권한 없이는 호출할 수 없다.
 - Organization member이지만 KB `use` 권한이 없는 사용자의 private KB 후보는 authenticated run에서는 denied 또는 unavailable로 표시되고, anonymous deployment에서는 blocked로 표시된다.
 - Client-supplied `audience` hint는 create/activation의 server-derived audience 차단을 완화하지 못한다.
+- System schedule의 LLM credential permission denial은 credential principal을 user audit actor로 사용하지 않고 system actor로 기록한다.
+- Terminal cleanup은 retention을 지난 일반 dead-letter와 검토 완료 `execution_outcome_unknown` claim을 정리하지만, `outcome_reviewed_at`이 null인 `execution_outcome_unknown` claim은 보존한다.
+- `disabled` mode는 BackgroundScheduler job 또는 legacy direct enqueue를 만들지 않는다. Schedule 실행이 필요한 환경은 drain 검증 없이 fallback하지 않고 `claim` mode activation 절차를 사용한다.
 
 ## Edge Cases
 

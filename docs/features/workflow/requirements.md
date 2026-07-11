@@ -49,6 +49,13 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
 - FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포는 deployment type에서 파생한 runtime audience 기준 preflight를 수행해야 한다. 사용자 subject가 없는 public/API/webhook/schedule/chatbot/MCP surface는 private KB 후보를 활성 배포로 올릴 수 없고 anonymous public-only 후보만 허용한다.
 - FR-009: Workflow-node 실행은 parent workflow의 execution context를 상속한다. Parent execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only로 낮춘다. Deployment preflight에서 workflow-node target은 node 설정의 `workflowNode.data.appId`를 기준으로 target app active deployment를 찾는다.
+- FR-010: System schedule execution은 App/deployment creator나 workflow owner를 executor로 기록하지 않아야 한다. Canonical schedule claim과 연결된 `WorkflowRun.user_id`는 null이고 audit actor는 system이어야 하며, 기존 manual/API/webhook interactive run의 사용자 attribution은 유지해야 한다.
+- FR-011: Schedule Worker admission winner는 claim을 `running`으로 전이하는 같은 원자적 write에서 stable workflow run id를 생성·저장하고 duplicate delivery에서 같은 id를 재사용해야 한다. Admission 이후 실패나 timeout으로 outcome이 불명확하면 engine을 자동 재실행하지 않아야 한다.
+- FR-012: Schedule execution context의 idempotency key는 node adapter까지 opaque correlation으로 전달할 수 있지만 prompt, user-visible output, durable raw trace에 복제하지 않아야 한다. 이 전달은 외부 provider의 exactly-once를 보장하지 않는다.
+- FR-013: 요청 사용자가 없는 system schedule이 LLM provider credential을 사용해야 할 때 runtime은 locked canonical deployment의 `created_by`를 user형 credential principal로만 사용할 수 있다. 이 principal은 queue 입력에서 받지 않으며 executor, audit actor 또는 Knowledge execution subject로 승격하지 않는다. Legacy `LLMUsageLog.user_id`에는 비용/credential 귀속을 위해 이 principal을 기록하되 WorkflowRun actor 의미로 해석하지 않는다. 별도 service account principal은 lifecycle과 권한 모델이 승인되기 전까지 합성하지 않는다.
+- FR-014: Code node는 sandbox tenant/fairness context에 canonical `execution_context.organization_id`를 전달해야 한다. `user_id`를 organization tenant로 해석하거나 system schedule의 null executor 때문에 canonical organization을 누락해서는 안 된다.
+- FR-015: RAG retrieval 및 evidence policy block audit의 user actor는 실제 user형 `execution_subject`에서만 가져온다. System schedule은 `actor_id=NULL`, `actor_type=system`으로 기록하며, credential principal은 query embedding/LLM credential 선택에 사용할 수 있지만 RAG audit actor로 승격하지 않는다.
+- FR-016: 실행 전 Knowledge sync는 best-effort 전처리다. Connector 또는 DB 동기화가 일시적으로 실패해도 이미 색인된 evidence로 Workflow Engine 실행을 계속하며, task 결과와 로그에는 raw 예외 없이 safe sync failure reason만 남긴다.
 
 
 ### 1. 실행 편의성

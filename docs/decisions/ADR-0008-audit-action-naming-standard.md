@@ -49,6 +49,11 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | deployment 일반 활성/비활성 toggle | `deployment.toggle` | MVP 1 |
 | 다른 deployment가 active인 상태에서 이전 deployment 재활성화 | `deployment.activate_previous` | MVP 1 |
 | deployment 삭제 | `deployment.delete` | MVP 1 |
+| schedule dispatch outcome unknown 운영 검토 완료 | `schedule_dispatch.outcome_reviewed` | MBA-187 목표. system actor와 exact claim target 사용 |
+| schedule WorkflowRun visibility grace 초과 감지 | `schedule_dispatch.workflow_run_missing` | MBA-187 목표. system actor와 exact claim target 사용, replay 없음 |
+| schedule claim이 canonical resource/runtime 상태 변경으로 취소됨 | `schedule_dispatch.canceled` | system actor, exact claim target, allowlisted safe reason |
+| schedule claim이 일시 장애로 재평가 대기 상태가 됨 | `schedule_dispatch.deferred` | system actor, exact claim target, status success는 재시도 예정이라는 뜻이며 실행 성공이 아님 |
+| schedule claim이 재시도 한도 소진으로 terminal 격리됨 | `schedule_dispatch.failed` | system actor, exact claim target, status failure |
 
 `workflow.blocked`는 `audit_logs.action`으로 저장하지 않는다. UI에서 "workflow 차단" 표시가 필요하면 `target_type='workflow'`, `status='failure'`, `action='permission.denied'` 또는 `action='policy.block'`, `audit_metadata.policy_result`를 조합해 파생한다.
 
@@ -75,6 +80,9 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - `rag_answer_runs.status="blocked"`는 scope 안 resource가 확인된 뒤 policy 또는 permission 때문에 answer delta를 만들지 못한 경우에만 사용한다. 별도 `rag.answer.blocked` action은 만들지 않는다. PII/classification/metadata policy 차단은 `policy.block`, KB/credential/model permission preflight 차단은 `permission.denied`와 answer run status 조합으로 표현한다. `resource.not_found`, scope 밖, organization mismatch, invalid organization header, validation 실패에는 answer run과 lifecycle audit을 만들지 않는다.
 - `rag.answer.purge`는 retention purge aggregate event다. 기본 aggregate event는 `target_type='rag_answer_runs'`, `target_id=null`로 기록하고, `audit_metadata`는 `organization_id`, `cutoff`, `purged_count`, `failed_count`, `retryable`, `status` 같은 운영 summary allowlist로 제한한다. Raw answer/query/chunk content는 metadata에 넣지 않는다.
 - Workflow 예산 생성/수정/비활성화는 `workflow_budget.created`/`workflow_budget.updated`를 사용한다. 예산 초과 실행 차단은 별도 결과 중심 action을 만들지 않고 `policy.block`에 `audit_metadata.reason='budget.exceeded'`로 표현한다.
+- Schedule의 occurrence 생성, Gateway dispatch, Worker 최종 admission 중 어느 단계에서 예산 초과가 확인되더라도 `policy.block`, `target_type='workflow'`, `trigger_mode='scheduler'` 계약을 동일하게 사용한다. Claim의 operational 상태는 별도 `schedule_dispatch.*` action으로 기록할 수 있지만 예산 차단 원인 action을 대체하지 않는다.
+- Schedule dispatch의 outcome unknown acknowledgment는 workflow 실행 성공/실패를 다시 판정하는 action이 아니라 운영 검토 완료 사건이므로 `schedule_dispatch.outcome_reviewed`를 사용한다. `target_type='schedule_dispatch_claim'`, system actor, organization/operation correlation/resolution allowlist만 저장하며 자동 redrive를 의미하지 않는다 ([ADR-0029](ADR-0029-distributed-schedule-dispatch-claim.md)).
+- Schedule WorkflowRun visibility grace를 넘긴 signal은 실행 성공/실패를 판정하거나 Log System row를 재구성하는 사건이 아니므로 `schedule_dispatch.workflow_run_missing`을 사용한다. `target_type='schedule_dispatch_claim'`, system actor, canonical organization과 `reason='workflow_run_missing'`만 저장하며 engine이나 external effect를 replay하지 않는다 ([ADR-0029](ADR-0029-distributed-schedule-dispatch-claim.md)).
 
 ## 영향
 

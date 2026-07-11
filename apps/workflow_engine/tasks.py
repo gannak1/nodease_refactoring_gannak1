@@ -15,10 +15,19 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_trigger,
 )
+from apps.shared.domain.schedule_dispatch import REASON_EXECUTION_FAILED_AFTER_ADMISSION
+from apps.shared.services.schedule_dispatch_observability import (
+    emit_schedule_dispatch_signal,
+)
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
+from apps.workflow_engine.schedule_dispatch_settings import (
+    get_schedule_dispatch_settings,
+)
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
+
+_SCHEDULE_FINALIZATION_MAX_ATTEMPTS = 3
 
 _DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS = frozenset(
     {
@@ -364,6 +373,14 @@ def execute_by_deployment(
         if not isinstance(execution_context, dict):
             raise PermanentDeploymentExecutionError("실행 컨텍스트 형식이 올바르지 않습니다")
         queued_context = dict(execution_context)
+        if (
+            str(queued_context.get("trigger_mode", "")).strip().lower()
+            == "schedule"
+            and get_schedule_dispatch_settings().mode != "disabled"
+        ):
+            raise PermanentDeploymentExecutionError(
+                "claim mode requires the dedicated schedule task"
+            )
 
         deployment = (
             session.query(WorkflowDeployment)
@@ -445,6 +462,207 @@ def execute_by_deployment(
         if engine is not None:
             engine.cleanup()
         session.close()
+
+
+@celery_app.task(
+    name="workflow.execute_scheduled_deployment",
+    bind=True,
+    max_retries=0,
+    ignore_result=True,
+)
+def execute_scheduled_deployment(self, schedule_dispatch_claim_id: str):
+    """Execute one canonical schedule claim without Celery-level replay."""
+    task_id = str(getattr(self.request, "id", "") or "")
+    return _execute_scheduled_deployment_claim(
+        schedule_dispatch_claim_id,
+        task_id=task_id,
+    )
+
+
+def _finalize_scheduled_claim(
+    *,
+    use_case,
+    plan,
+    succeeded: bool,
+) -> bool:
+    """Retry only the terminal CAS write; never re-run the workflow engine."""
+    from apps.workflow_engine.composition.schedule_dispatch import (
+        build_schedule_admission_dependencies,
+    )
+
+    for attempt in range(1, _SCHEDULE_FINALIZATION_MAX_ATTEMPTS + 1):
+        session = SessionLocal()
+        try:
+            dependencies = build_schedule_admission_dependencies(session)
+            return use_case.finalize(
+                repository=dependencies.repository,
+                uow=dependencies.uow,
+                plan=plan,
+                succeeded=succeeded,
+            )
+        except Exception as exc:
+            logger.error(
+                "Schedule finalization unavailable: attempt=%s error_type=%s",
+                attempt,
+                type(exc).__name__,
+            )
+        finally:
+            session.close()
+    raise NonRetryableWorkflowError(
+        "scheduled workflow finalization is unavailable"
+    )
+
+
+def _execute_scheduled_deployment_claim(
+    schedule_dispatch_claim_id: str,
+    *,
+    task_id: str,
+):
+    from apps.workflow_engine.composition.schedule_dispatch import (
+        build_schedule_admission_dependencies,
+        build_scheduled_execution_use_case,
+        build_scheduled_workflow_engine,
+    )
+
+    try:
+        claim_id = uuid.UUID(str(schedule_dispatch_claim_id))
+    except (TypeError, ValueError):
+        raise PermanentDeploymentExecutionError("invalid schedule claim locator") from None
+    if not task_id.startswith("schedule:"):
+        raise PermanentDeploymentExecutionError("invalid schedule task identity")
+
+    try:
+        settings = get_schedule_dispatch_settings()
+    except Exception as exc:
+        logger.error(
+            "Schedule dispatch configuration is invalid: error_type=%s",
+            type(exc).__name__,
+        )
+        raise PermanentDeploymentExecutionError(
+            "schedule dispatch configuration is invalid"
+        ) from None
+    use_case = build_scheduled_execution_use_case(
+        settings=settings,
+        runtime_policy=get_deployment_runtime_policy(),
+    )
+    admission_owner = str(uuid.uuid4())
+    admission_session = SessionLocal()
+    try:
+        try:
+            dependencies = build_schedule_admission_dependencies(admission_session)
+            admission = use_case.admit(
+                repository=dependencies.repository,
+                budget=dependencies.budget,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
+                claim_id=claim_id,
+                task_id=task_id,
+                admission_owner=admission_owner,
+            )
+        except Exception as exc:
+            logger.error(
+                "Schedule admission unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            raise PermanentDeploymentExecutionError(
+                "schedule admission is unavailable"
+            ) from None
+    finally:
+        admission_session.close()
+
+    if admission.status != "admitted" or admission.plan is None:
+        if admission.dead_lettered_reason is not None:
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_dead_letter_total",
+                status="dead_lettered",
+                reason=admission.dead_lettered_reason,
+                mode=settings.mode,
+            )
+        if admission.status == "duplicate":
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_duplicate_delivery_suppressed_total",
+                status="duplicate",
+                reason=admission.reason,
+                mode=settings.mode,
+            )
+        return {
+            "status": admission.status,
+            "reason": admission.reason,
+            "claim_id": str(claim_id),
+        }
+
+    plan = admission.plan
+    sync_session = None
+    try:
+        sync_session = SessionLocal()
+        _sync_knowledge_bases_for_execution_subject(
+            sync_session,
+            plan.graph_snapshot,
+            plan.execution_context,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Scheduled knowledge sync skipped: error_type=%s",
+            type(exc).__name__,
+        )
+    finally:
+        if sync_session is not None:
+            sync_session.close()
+
+    engine_session = SessionLocal()
+    engine = None
+    execution_succeeded = False
+    try:
+        engine = build_scheduled_workflow_engine(
+            graph=plan.graph_snapshot,
+            user_input=plan.user_input,
+            execution_context=plan.execution_context,
+            is_deployed=True,
+            db=engine_session,
+        )
+        engine.execute()
+        execution_succeeded = True
+    except Exception as exc:
+        logger.error(
+            "Scheduled workflow execution failed: error_type=%s",
+            type(exc).__name__,
+        )
+    finally:
+        if engine is not None:
+            try:
+                engine.cleanup()
+            except Exception as exc:
+                # Cleanup is best-effort after the workflow result is known. It must
+                # not prevent the durable claim from reaching its terminal state.
+                logger.warning(
+                    "Scheduled workflow cleanup failed: error_type=%s",
+                    type(exc).__name__,
+                )
+        engine_session.close()
+
+    finalized = _finalize_scheduled_claim(
+        use_case=use_case,
+        plan=plan,
+        succeeded=execution_succeeded,
+    )
+    if finalized and not execution_succeeded:
+        emit_schedule_dispatch_signal(
+            logger,
+            "schedule_claim_dead_letter_total",
+            status="dead_lettered",
+            reason=REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+            mode=settings.mode,
+        )
+
+    if not execution_succeeded:
+        raise NonRetryableWorkflowError("scheduled workflow execution failed")
+    return {
+        "status": "success",
+        "claim_id": str(claim_id),
+        "finalized": finalized,
+    }
 
 
 @celery_app.task(name="workflow.stream", bind=True, max_retries=3)

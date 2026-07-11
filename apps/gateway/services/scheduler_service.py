@@ -1,314 +1,391 @@
-"""Scheduler Service - APScheduler를 사용한 워크플로우 스케줄 관리"""
+"""Durable distributed schedule dispatch composition and lifecycle facade."""
+
+from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
-from apps.shared.db.models.app import App
+from apps.gateway.application.deployment.schedule_dispatch import (
+    ScheduleDispatchUseCase,
+)
+from apps.gateway.application.deployment.schedule_models import SchedulePublishResult
+from apps.gateway.application.deployment.schedule_occurrence import (
+    ScheduleOccurrenceUseCase,
+)
+from apps.gateway.application.deployment.schedule_ports import (
+    BudgetDecisionPort,
+    NextFireCalculatorPort,
+    ScheduleDispatchAuditRecorderPort,
+    ScheduleDispatchRepositoryPort,
+    ScheduleDispatchUnitOfWork,
+    ScheduleTaskPublisherPort,
+)
 from apps.shared.db.models.schedule import Schedule
-from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
-from apps.shared.domain.deployment_runtime_policy import (
-    SURFACE_SCHEDULE_RUN,
-    DeploymentRuntimePolicy,
-    is_deployment_type_allowed_for_surface,
+from apps.shared.domain.deployment_runtime_policy import DeploymentRuntimePolicy
+from apps.shared.domain.schedule_dispatch import (
+    REASON_BUDGET_EVALUATION_FAILED,
+    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+    REASON_EXECUTION_OUTCOME_UNKNOWN,
+    ScheduleDispatchSettings,
+)
+from apps.shared.services.schedule_dispatch_observability import (
+    emit_schedule_dispatch_signal,
 )
 
 logger = logging.getLogger(__name__)
 
+SessionFactory = Callable[[], Session]
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleDispatchDependencies:
+    repository: ScheduleDispatchRepositoryPort
+    audit: ScheduleDispatchAuditRecorderPort
+    budget: BudgetDecisionPort
+    uow: ScheduleDispatchUnitOfWork
+
+
+ScheduleDependencyBuilder = Callable[[Session], ScheduleDispatchDependencies]
+
 
 class SchedulerService:
-    """
-    워크플로우 스케줄을 관리하는 서비스
-
-    동작 방식:
-    1. 서버 시작 시: load_schedules_from_db() 호출 → DB에서 활성 스케줄 로드
-    2. 배포 생성 시: add_schedule() 호출 → 새 스케줄 등록
-    3. APScheduler가 지정된 시간에 _run_workflow() 자동 호출
-    4. 서버 재시작해도 DB에서 스케줄 복구
-    """
+    """Own one process-local tick; PostgreSQL claims own cross-replica correctness."""
 
     def __init__(
         self,
         *,
         runtime_policy: DeploymentRuntimePolicy,
-    ):
-        """BackgroundScheduler 초기화"""
+        settings: ScheduleDispatchSettings,
+        session_factory: SessionFactory,
+        publisher: ScheduleTaskPublisherPort,
+        dependency_builder: ScheduleDependencyBuilder,
+        next_fire: NextFireCalculatorPort,
+        start_background: bool = True,
+        maintenance_enabled: bool = True,
+    ) -> None:
         self.runtime_policy = runtime_policy
-        self.scheduler = BackgroundScheduler(timezone="UTC")
-        self.scheduler.start()
-        logger.info("APScheduler 시작됨")
-
-    def load_schedules_from_db(self, db: Session):
-        """
-        서버 시작 시 DB에서 모든 스케줄을 로드하여 메모리에 등록
-        활성 배포(is_active=True)의 스케줄만 로드합니다.
-
-        Args:
-            db: 데이터베이스 세션
-        """
-        # 활성 배포만 필터링
-        schedules = (
-            db.query(Schedule)
-            .join(WorkflowDeployment, Schedule.deployment_id == WorkflowDeployment.id)
-            .join(App, App.id == WorkflowDeployment.app_id)
-            .filter(
-                WorkflowDeployment.is_active.is_(True),
-                WorkflowDeployment.type == DeploymentType.SCHEDULE,
-                App.active_deployment_id == WorkflowDeployment.id,
+        self.settings = settings
+        self.session_factory = session_factory
+        self.publisher = publisher
+        self.dependency_builder = dependency_builder
+        self.maintenance_enabled = maintenance_enabled
+        self.instance_id = str(uuid.uuid4())
+        self.next_fire = next_fire
+        self.occurrence_use_case = ScheduleOccurrenceUseCase(
+            settings=settings,
+            runtime_policy=runtime_policy,
+            next_fire=self.next_fire,
+        )
+        self.dispatch_use_case = ScheduleDispatchUseCase(
+            settings=settings,
+            runtime_policy=runtime_policy,
+        )
+        self.scheduler: BackgroundScheduler | None = None
+        if start_background and (
+            settings.processes_existing_claims or maintenance_enabled
+        ):
+            scheduler = BackgroundScheduler(timezone="UTC")
+            scheduler.add_job(
+                self._tick,
+                "interval",
+                seconds=settings.poll_seconds,
+                id="schedule-dispatch-tick",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+                next_run_time=datetime.now(timezone.utc),
             )
-            .all()
+            scheduler.start()
+            self.scheduler = scheduler
+        logger.info("Schedule dispatcher initialized: mode=%s", settings.mode)
+
+    def load_schedules_from_db(self, db: Session) -> None:
+        """Compatibility facade; durable reconciliation is owned by the tick."""
+        del db
+
+    def add_schedule(self, schedule: Schedule, db: Session) -> None:
+        """Validate configuration and initialize its cursor without committing."""
+        now = self.dependency_builder(db).repository.database_now()
+        schedule.next_run_at = self.next_fire.first_after(
+            cron_expression=schedule.cron_expression,
+            timezone_name=schedule.timezone,
+            now=now,
         )
+        schedule.configuration_error_code = None
 
-        for schedule in schedules:
-            try:
-                self.add_schedule(schedule, db)
-            except Exception as e:
-                logger.error(f"스케줄 로드 실패 ({schedule.id}): {e}")
-
-        logger.info("스케줄 로드 완료")
-
-    def add_schedule(self, schedule: Schedule, db: Session):
-        """
-        새 스케줄을 APScheduler에 등록
-
-        Args:
-            schedule: Schedule 모델 인스턴스
-            db: 데이터베이스 세션 (next_run_at 업데이트용, job 실행에는 사용되지 않음)
-
-        Note:
-            APScheduler job은 별도 스레드에서 실행되므로, job 실행 시에는
-            _run_workflow 내부에서 새 DB 세션을 생성합니다.
-        """
-        job_id = str(schedule.id)
-
-        # Cron 트리거 생성
-        trigger = CronTrigger.from_crontab(
-            schedule.cron_expression, timezone=schedule.timezone
-        )
-
-        # Job 등록 (db 세션은 전달하지 않음 - 스레드 안전성 문제)
-        self.scheduler.add_job(
-            func=self._run_workflow,
-            trigger=trigger,
-            id=job_id,
-            name=f"Schedule: {schedule.cron_expression}",
-            args=[schedule.deployment_id, schedule.id],  # db 제거
-            replace_existing=True,  # 같은 ID면 교체
-        )
-
-        # 다음 실행 시간 계산 및 DB 업데이트
-        job = self.scheduler.get_job(job_id)
-        if job and job.next_run_time:
-            schedule.next_run_at = job.next_run_time
-            db.commit()
-
-        logger.info(f"Job 등록: {job_id} | 다음 실행: {schedule.next_run_at}")
-
-    def remove_schedule(self, schedule_id: uuid.UUID):
-        """
-        스케줄을 APScheduler에서 제거
-
-        Args:
-            schedule_id: Schedule ID
-        """
-        job_id = str(schedule_id)
-
-        try:
-            self.scheduler.remove_job(job_id)
-            logger.info(f"Job 제거: {job_id}")
-        except Exception:
-            # APScheduler adapter 오류 원문은 job store/provider 내부 정보를
-            # 포함할 수 있으므로 식별자와 결과만 남긴다.
-            logger.warning("Job 제거 실패: %s", job_id)
-
-    def update_schedule(
-        self,
-        schedule: Schedule,
-        db: Session,
-    ):
-        """
-        스케줄 정보 업데이트 (Cron 표현식 또는 타임존 변경 시)
-
-        Args:
-            schedule: 업데이트된 Schedule 모델
-            db: 데이터베이스 세션
-        """
-        # 기존 Job 제거 후 다시 등록
-        self.remove_schedule(schedule.id)
+    def update_schedule(self, schedule: Schedule, db: Session) -> None:
         self.add_schedule(schedule, db)
 
-    def _run_workflow(
-        self,
-        deployment_id: uuid.UUID,
-        schedule_id: uuid.UUID,
-    ):
-        """
-        스케줄된 시간에 워크플로우를 실행하는 실제 함수
+    def remove_schedule(self, schedule_id: uuid.UUID) -> None:
+        """No local job exists; lifecycle rows exclude the schedule from future ticks."""
+        del schedule_id
 
-        Args:
-            deployment_id: 배포 ID
-            schedule_id: 스케줄 ID
+    def run_tick_once(self) -> None:
+        """Synchronous bounded tick for scheduler callback and deterministic tests."""
+        self._tick()
 
-        Note:
-            이 함수는 APScheduler가 별도 스레드에서 호출합니다.
-            Celery 태스크로 워크플로우 실행을 위임합니다.
-        """
-        # 각 job 실행마다 새로운 DB 세션 생성 (스레드 안전성 보장)
-        from apps.shared.celery_app import celery_app
-        from apps.shared.db.session import SessionLocal
-
-        db = SessionLocal()
-        triggered_at = datetime.now(timezone.utc).isoformat()
-
-        logger.info(f"워크플로우 실행 시작: {deployment_id} (스케줄: {schedule_id})")
-
-        try:
-            # APScheduler에는 남아 있지만 DB row가 이미 삭제되었거나 다른
-            # deployment를 가리키는 stale job이면 어떤 부수효과도 만들지 않는다.
-            schedule = (
-                db.query(Schedule)
-                .filter(
-                    Schedule.id == schedule_id,
-                    Schedule.deployment_id == deployment_id,
-                )
-                .first()
-            )
-            if schedule is None:
-                logger.warning("Stale schedule job ignored: %s", schedule_id)
-                self.remove_schedule(schedule_id)
-                return
-
-            # Deployment 조회
-            deployment = (
-                db.query(WorkflowDeployment)
-                .filter(WorkflowDeployment.id == deployment_id)
-                .first()
-            )
-
-            if not deployment:
-                logger.error(f"Deployment 없음: {deployment_id}")
-                return
-
-            if not deployment.is_active:
-                logger.error(f"Deployment 비활성화됨: {deployment_id}")
-                return
-            if not is_deployment_type_allowed_for_surface(
-                deployment.type,
-                SURFACE_SCHEDULE_RUN,
-                policy=self.runtime_policy,
-            ):
-                logger.error(
-                    f"Deployment is not a schedule deployment: {deployment_id}"
-                )
-                return
-
-            # App 조회하여 workflow_id 가져오기
-            app = db.query(App).filter(App.id == deployment.app_id).first()
-            if not app or str(getattr(app, "active_deployment_id", "")) != str(
-                deployment.id
-            ):
-                logger.warning(
-                    "Schedule deployment is not the current app deployment: %s",
-                    deployment_id,
-                )
-                return
-
-            # 예산 초과 차단 — 바깥 generic except가 삼켜 rollback하면 차단
-            # audit까지 사라지므로, 여기서 직접 잡고 dispatch만 생략한다.
+    def _tick(self) -> None:
+        if self.settings.processes_existing_claims:
             try:
-                WorkflowBudgetService.ensure_workflow_budget_allows_execution(
-                    db,
-                    workflow_id=app.workflow_id if app else None,
-                    trigger_mode="schedule",
-                    actor_id=None,
+                self._recover_critical()
+                if self.settings.claims_new_occurrences:
+                    self._reconcile_uninitialized()
+                    self._claim_due_occurrences()
+                batch = self._prepare_publish_batch()
+                self._emit_dead_letter_signal(
+                    batch.enqueue_attempts_exhausted,
+                    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
                 )
-            except HTTPException:
-                logger.warning(
-                    f"예산 초과로 스케줄 실행 차단: {deployment_id} (스케줄: {schedule_id})"
+                self._emit_dead_letter_signal(
+                    batch.budget_evaluation_failed,
+                    REASON_BUDGET_EVALUATION_FAILED,
                 )
-                return
+                for request in batch.requests:
+                    emit_schedule_dispatch_signal(
+                        logger,
+                        "schedule_enqueue_attempt_total",
+                        mode=self.settings.mode,
+                    )
+                    accepted = True
+                    try:
+                        self.publisher.publish(request)
+                    except Exception:
+                        accepted = False
+                        logger.warning("Schedule dispatch publish failed")
+                        emit_schedule_dispatch_signal(
+                            logger,
+                            "schedule_enqueue_failure_total",
+                            mode=self.settings.mode,
+                        )
+                    try:
+                        result = self._record_publish_result(
+                            request,
+                            accepted=accepted,
+                        )
+                        if result.dead_lettered_reason is not None:
+                            self._emit_dead_letter_signal(
+                                1,
+                                result.dead_lettered_reason,
+                            )
+                    except Exception as exc:
+                        # The dispatching lease remains the durable recovery source.
+                        # One claim's result-write failure must not strand the rest
+                        # of the already prepared batch.
+                        logger.error(
+                            "Schedule publish result write failed: error_type=%s",
+                            type(exc).__name__,
+                        )
+            except Exception as exc:
+                logger.error(
+                    "Schedule dispatch tick failed: error_type=%s",
+                    type(exc).__name__,
+                )
+        if not self.maintenance_enabled:
+            return
+        self._run_optional_maintenance(
+            self._maintain_visibility,
+            operation_name="visibility",
+        )
+        self._run_optional_maintenance(
+            self._cleanup_terminal_claims,
+            operation_name="cleanup",
+        )
+        self._run_optional_maintenance(
+            self._observe_claim_ages,
+            operation_name="claim_age",
+        )
 
-            # user_input에 스케줄 메타데이터 포함
-            user_input = {
-                "triggered_at": triggered_at,
-                "schedule_id": str(schedule_id),
-            }
-
-            # execution_context 구성
-            execution_context = {
-                "user_id": str(deployment.created_by),  # UUID를 문자열로 변환
-                "workflow_id": str(app.workflow_id)
-                if app and app.workflow_id
-                else None,
-                "organization_id": (
-                    str(app.organization_id) if app and app.organization_id else None
-                ),
-                "app_id": str(deployment.app_id),
-                "trigger_mode": "schedule",
-                "deployment_id": str(deployment_id),
-            }
-
-            # Celery 태스크로 워크플로우 실행 위임 (비동기, 결과 대기 안 함)
-            celery_app.send_task(
-                "workflow.execute_by_deployment",
-                args=[str(deployment.id), user_input, execution_context],
+    def _reconcile_uninitialized(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            self.occurrence_use_case.reconcile_uninitialized(
+                repository=dependencies.repository,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
             )
-
-            logger.info(f"Celery 태스크 전송 완료: {deployment_id}")
-
-            # Schedule 업데이트: last_run_at, next_run_at
-            schedule.last_run_at = datetime.now(timezone.utc)
-
-            # 다음 실행 시간 계산
-            job = self.scheduler.get_job(str(schedule_id))
-            if job and job.next_run_time:
-                schedule.next_run_at = job.next_run_time
-
-            db.commit()
-
-        except Exception as e:
-            logger.error(f"워크플로우 실행 실패: {e}")
-            logger.exception("워크플로우 실행 실패")
-            # 예외 발생 시 rollback
-            db.rollback()
-
         finally:
-            # 세션 반드시 닫기 (커넥션 풀 반환)
             db.close()
 
-    def shutdown(self):
-        """Scheduler 종료 (서버 종료 시 호출)"""
-        self.scheduler.shutdown()
-        logger.info("APScheduler 종료됨")
+    def _claim_due_occurrences(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            created = self.occurrence_use_case.claim_due_occurrences(
+                repository=dependencies.repository,
+                budget=dependencies.budget,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
+            )
+            if created:
+                emit_schedule_dispatch_signal(
+                    logger,
+                    "schedule_claim_created_total",
+                    value=created,
+                    mode=self.settings.mode,
+                )
+        except IntegrityError:
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_conflict_total",
+                mode=self.settings.mode,
+            )
+            raise
+        finally:
+            db.close()
+
+    def _prepare_publish_batch(self):
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            return self.dispatch_use_case.prepare_publish_batch(
+                repository=dependencies.repository,
+                budget=dependencies.budget,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
+                owner=self.instance_id,
+            )
+        finally:
+            db.close()
+
+    def _record_publish_result(
+        self,
+        request,
+        *,
+        accepted: bool,
+    ) -> SchedulePublishResult:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            return self.dispatch_use_case.record_publish_result(
+                repository=dependencies.repository,
+                uow=dependencies.uow,
+                request=request,
+                accepted=accepted,
+            )
+        finally:
+            db.close()
+
+    def _recover_critical(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            result = self.dispatch_use_case.recover_critical(
+                repository=dependencies.repository,
+                uow=dependencies.uow,
+            )
+            self._emit_dead_letter_signal(
+                result.enqueue_attempts_exhausted,
+                REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+            )
+            self._emit_dead_letter_signal(
+                result.execution_outcome_unknown,
+                REASON_EXECUTION_OUTCOME_UNKNOWN,
+            )
+        finally:
+            db.close()
+
+    def _maintain_visibility(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            missing = self.dispatch_use_case.maintain_visibility(
+                repository=dependencies.repository,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
+            )
+            if missing:
+                emit_schedule_dispatch_signal(
+                    logger,
+                    "schedule_claim_workflow_run_missing_total",
+                    value=missing,
+                    reason="workflow_run_missing",
+                    mode=self.settings.mode,
+                )
+        finally:
+            db.close()
+
+    def _cleanup_terminal_claims(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            self.dispatch_use_case.cleanup_terminal_claims(
+                repository=dependencies.repository,
+                uow=dependencies.uow,
+            )
+        finally:
+            db.close()
+
+    def _observe_claim_ages(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            now = dependencies.repository.database_now()
+            pending_age, running_age = dependencies.repository.claim_age_seconds(
+                now=now
+            )
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_pending_age_seconds",
+                value=pending_age,
+                status="pending",
+                mode=self.settings.mode,
+            )
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_running_age_seconds",
+                value=running_age,
+                status="running",
+                mode=self.settings.mode,
+            )
+        finally:
+            db.close()
+
+    @staticmethod
+    def _run_optional_maintenance(
+        callback: Callable[[], None], *, operation_name: str
+    ) -> None:
+        try:
+            callback()
+        except Exception as exc:
+            logger.warning(
+                "Schedule dispatch optional maintenance failed: "
+                "operation=%s error_type=%s",
+                operation_name,
+                type(exc).__name__,
+            )
+
+    def _emit_dead_letter_signal(self, value: int, reason: str) -> None:
+        if value <= 0:
+            return
+        emit_schedule_dispatch_signal(
+            logger,
+            "schedule_claim_dead_letter_total",
+            value=value,
+            status="dead_lettered",
+            reason=reason,
+            mode=self.settings.mode,
+        )
+
+    def shutdown(self) -> None:
+        if self.scheduler is not None:
+            self.scheduler.shutdown()
+            self.scheduler = None
 
 
-# 글로벌 SchedulerService 인스턴스 (서버 시작 시 초기화)
 scheduler_service: Optional[SchedulerService] = None
 
 
 def get_scheduler_service() -> SchedulerService:
-    """
-    글로벌 SchedulerService 인스턴스 반환
-
-    Returns:
-        SchedulerService 인스턴스
-
-    Raises:
-        RuntimeError: 서버 시작 전에 호출된 경우
-    """
-    global scheduler_service
     if scheduler_service is None:
-        raise RuntimeError(
-            "SchedulerService가 초기화되지 않았습니다. "
-            "서버 시작 시 init_scheduler_service()를 호출하세요."
-        )
+        raise RuntimeError("SchedulerService is not initialized")
     return scheduler_service
 
 
@@ -316,17 +393,23 @@ def init_scheduler_service(
     db: Session,
     *,
     runtime_policy: DeploymentRuntimePolicy,
+    settings: ScheduleDispatchSettings,
+    session_factory: SessionFactory,
+    publisher: ScheduleTaskPublisherPort,
+    dependency_builder: ScheduleDependencyBuilder,
+    next_fire: NextFireCalculatorPort,
+    maintenance_enabled: bool = True,
 ) -> SchedulerService:
-    """
-    서버 시작 시 SchedulerService 초기화 (main.py에서 호출)
-
-    Args:
-        db: 데이터베이스 세션
-
-    Returns:
-        초기화된 SchedulerService 인스턴스
-    """
     global scheduler_service
-    scheduler_service = SchedulerService(runtime_policy=runtime_policy)
+
+    scheduler_service = SchedulerService(
+        runtime_policy=runtime_policy,
+        settings=settings,
+        session_factory=session_factory,
+        publisher=publisher,
+        dependency_builder=dependency_builder,
+        next_fire=next_fire,
+        maintenance_enabled=maintenance_enabled,
+    )
     scheduler_service.load_schedules_from_db(db)
     return scheduler_service

@@ -17,6 +17,10 @@ env:
   EKS_CLUSTER_NAME: moduly-cluster
   DEPLOYMENT_NAME: worker
 
+concurrency:
+  group: production-schema-rollout
+  cancel-in-progress: false
+
 jobs:
   deploy-worker:
     name: Build & Deploy Workflow Engine to EKS
@@ -60,6 +64,66 @@ jobs:
     - name: Configure kubectl
       run: |
         aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+
+    - name: Verify shared schedule dispatch fingerprint
+      run: |
+        desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+          infra/k8s/namespaces/default/worker-deployment.yaml | head -n 1)
+        if [[ -z "$desired" ]]; then
+          echo "Schedule dispatch fingerprint is missing from the manifest."
+          exit 1
+        fi
+        for deployment in api-server worker; do
+          error_file=$(mktemp)
+          if current=$(kubectl get deployment "$deployment" \
+            -o jsonpath='{.spec.template.metadata.annotations.nodease\.io/schedule-dispatch-fingerprint}' \
+            2>"$error_file"); then
+            rm -f "$error_file"
+            if [[ -z "$current" ]]; then
+              if [[ "$desired" == v1\|disabled\|* ]]; then
+                continue
+              fi
+              echo "Schedule dispatch fingerprint is missing from a live deployment."
+              exit 1
+            fi
+          else
+            if grep -q '(NotFound)' "$error_file" && [[ "$desired" == v1\|disabled\|* ]]; then
+              rm -f "$error_file"
+              continue
+            fi
+            rm -f "$error_file"
+            echo "Unable to verify the live schedule dispatch fingerprint."
+            exit 1
+          fi
+          if [[ "$current" != "$desired" ]]; then
+            echo "Schedule dispatch settings require the coordinated rollout workflow."
+            exit 1
+          fi
+        done
+
+    # Shared schema changes must be applied before a Worker can consume tasks.
+    - name: Run Alembic Migration
+      run: |
+        kubectl run alembic-worker-migration-${{ github.run_id }} \
+          --image=${{ steps.build-image.outputs.image }} \
+          --restart=Never \
+          --attach=true \
+          --overrides='{
+            "spec": {
+              "containers": [{
+                "name": "alembic",
+                "image": "${{ steps.build-image.outputs.image }}",
+                "command": ["/bin/sh", "-c"],
+                "args": ["cd /app/apps/shared && alembic upgrade head"],
+                "envFrom": [
+                  {"configMapRef": {"name": "api-server-config"}},
+                  {"secretRef": {"name": "app-secrets"}}
+                ]
+              }]
+            }
+          }'
+        kubectl delete pod alembic-worker-migration-${{ github.run_id }} \
+          --ignore-not-found=true
     
     # 6. Deployment 전체 설정 적용
     - name: Apply deployment configuration

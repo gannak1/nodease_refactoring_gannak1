@@ -18,7 +18,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 ## Functional Requirements
 
 - Audit metadata는 raw secret, credential value, raw source content, raw source ACL, raw source id/url/path/title을 저장하지 않는다. Raw/compliance access audit도 safe reference, decision, reason code, retention/legal-hold summary 같은 allowlist만 저장한다.
-- RAG retrieval 성공은 `rag.retrieve`, standalone answer lifecycle은 `rag.answer.*`로 구분한다.
+- RAG retrieval 성공은 `rag.retrieve`, standalone answer lifecycle은 `rag.answer.*`로 구분한다. `rag.retrieve` metadata에는 canonical `organization_id`를 포함해 system schedule과 interactive 실행 모두 조직 scope 감사 조회에서 추적 가능해야 한다.
 - Standalone answer는 `rag_answer_runs`와 `correlation_id`로 trace/usage/audit을 느슨하게 연결하고, trace/usage table에 RAG 전용 FK를 만들지 않는다.
 - Knowledge source sync, source ACL mapping, partial result, egress guard failure는 sanitized reason code와 retryability 중심으로 기록한다.
 - Auto-ingested KB use provisioning audit은 source ACL fact를 KB `use`로 오해하지 않게 구분한다. Source authorization provenance update, explicit KB `use` grant provisioning, requester source ACL evaluation은 서로 다른 safe action/reason/metadata로 구분해야 한다.
@@ -36,6 +36,15 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - 모든 `policy.block` producer는 최상위 `audit_metadata.policy_reason`에 `{domain}.{reason}` canonical 값을 기록해야 한다. Legacy reason mapping과 Security Alert allowlist는 ADR-0028을 따른다.
 - Security Alert 최초 생성은 `security_alert.detected`, 관리자 확인·재개·해결은 `security_alert.acknowledged/reopened/resolved`로 기록해야 한다. Alert 최초 row/evidence/detected audit과 lifecycle mutation/audit은 각각 같은 transaction에 기록해야 하며 cooldown occurrence 갱신은 별도 action을 만들지 않는다.
 - Security Alert evidence는 `audit_logs` row를 연결만 하고 raw metadata/before/after를 복사하지 않아야 한다. Alert evidence API는 기존 audit allowlist를 따르는 safe projection만 반환해야 한다.
+- System schedule 실행 audit은 `actor_id=NULL`, `actor_type=system`을 사용하며 App/deployment creator나 workflow owner를 actor로 합성하지 않는다. Schedule WorkflowRun executor도 null이고 private RAG 권한은 ADR-0018의 anonymous public-only 경계를 따른다.
+- RAG retrieval 및 RAG evidence policy block audit은 실제 user형 execution subject만 user actor로 기록한다. System schedule은 동일한 system actor 계약을 사용하며, credential principal은 LLM 사용 주체일 수 있지만 RAG 조회/차단 행위자로 기록하지 않는다.
+- Schedule outcome unknown acknowledgment는 `schedule_dispatch.outcome_reviewed` action, `schedule_dispatch_claim` target과 exact claim id를 사용한다. Metadata는 durable `organization_id`, allowlisted `operation_correlation_id`, `outcome_resolution_code`만 허용하고 두 operation field는 정확한 action/target 조합에서만 detail에 표시한다. Raw incident note, provider response, workflow input/output를 저장하지 않는다 ([ADR-0029](../../decisions/ADR-0029-distributed-schedule-dispatch-claim.md)).
+- System schedule의 WorkflowRun 완료/실패 audit organization은 queue나 nullable run user가 아니라 exact task/run correlation을 통과한 durable schedule claim에서 가져온다. Deployment가 남아 있으면 claim/run/deployment/App provenance를 추가 검증하고 충돌 시 audit 생성을 fail-closed한다. 실행 중 deployment가 삭제되어 WorkflowRun FK가 null이 된 경우에는 exact task/run claim의 durable organization을 유지한다.
+- Schedule outcome review claim update와 AuditLog는 같은 UnitOfWork에서 commit한다. Recorder가 생성한 audit id만 claim에 연결하며 CLI가 audit id/actor id를 입력하거나 adapter가 독립 commit해서는 안 된다.
+- Schedule WorkflowRun visibility signal은 `schedule_dispatch.workflow_run_missing`, `schedule_dispatch_claim` exact target, `actor_id=NULL`, `actor_type=system`을 사용한다. Metadata는 canonical `organization_id`와 fixed reason만 허용하며 claim marker와 audit을 같은 UnitOfWork에서 한 번만 기록한다. 이는 Log System 지연/누락 관측이며 WorkflowRun 재생성, engine replay, raw run identity 또는 payload 보관을 의미하지 않는다.
+- Schedule-correlated WorkflowRun의 Log System create/finish/error 재시도는 raw storage/provider exception을 로그 또는 retry result에 전달하지 않고, static operation label과 exception type만 기록해야 한다.
+- Trace list/detail response의 `user_id`는 system schedule에서 null을 허용해야 한다. Client가 actor를 표시하는 경우 null을 App/deployment creator로 대체하지 않고 `System`으로 표현해야 한다.
+- `Schedule.next_run_at`/`last_run_at` system operational update는 generic configuration data-change audit에서 field-level 제외한다. Cron/timezone/activation/lifecycle 변경 audit과 unrelated tracked mutation은 유지하며 claim ledger를 generic listener 대상으로 추가하지 않는다.
 
 ## Policies And Edge Cases
 

@@ -20,6 +20,10 @@ from apps.shared.schemas.audit import (
 )
 from apps.shared.permissions import AUTH_STATE_NONE
 from apps.shared.schemas.permission import AUDIT_AUTH_STATE_RANK
+from apps.shared.domain.schedule_dispatch import (
+    validate_operation_correlation,
+    validate_outcome_resolution,
+)
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import has_organization_manager_permission
 
@@ -247,7 +251,7 @@ class AdminAuditLogService:
             raise HTTPException(status_code=404, detail="Audit log not found")
         return AuditLogDetailResponse(
             **_list_item(item).model_dump(),
-            audit_metadata=_detail_metadata(item.audit_metadata),
+            audit_metadata=_detail_metadata(item),
             change_summary=_change_summary(item, organization_id),
         )
 
@@ -349,8 +353,8 @@ def _list_item(item: AuditLog) -> AuditLogSchema:
     )
 
 
-def _detail_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
-    sanitized = AdminAuditLogService.sanitize_audit_metadata(metadata)
+def _detail_metadata(item: AuditLog) -> dict[str, Any]:
+    sanitized = AdminAuditLogService.sanitize_audit_metadata(item.audit_metadata)
     detail: dict[str, Any] = {}
     for key in DETAIL_METADATA_KEYS:
         if key not in sanitized:
@@ -358,6 +362,22 @@ def _detail_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         value = _safe_detail_metadata_value(key, sanitized[key])
         if value is not None:
             detail[key] = value
+    if (
+        item.action == "schedule_dispatch.outcome_reviewed"
+        and item.target_type == "schedule_dispatch_claim"
+    ):
+        correlation = sanitized.get("operation_correlation_id")
+        resolution = sanitized.get("outcome_resolution_code")
+        try:
+            detail["operation_correlation_id"] = validate_operation_correlation(
+                correlation
+            )
+            detail["outcome_resolution_code"] = validate_outcome_resolution(
+                resolution
+            )
+        except (TypeError, ValueError):
+            detail.pop("operation_correlation_id", None)
+            detail.pop("outcome_resolution_code", None)
     return detail
 
 
