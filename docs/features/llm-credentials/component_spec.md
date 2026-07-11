@@ -13,6 +13,7 @@ Status: Draft
 - `CredentialPermissionService`: credential visibility와 `use` permission을 평가한다.
 - `CredentialModelRelationResolver`: credential-model pair가 active이고 verified 상태인지 확인한다.
 - `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 standalone RAG answer flow용 safe option schema를 만든다.
+- `ProviderExecutionCapabilityIssuer`: canonical runtime scope, credential `use`, verified model relation, egress/pricing policy와 token·cost cap을 검증해 short-lived opaque capability를 발급한다. Raw credential을 application/Memory에 반환하지 않는다.
 
 ## 상태
 
@@ -26,6 +27,8 @@ Status: Draft
 - Standalone RAG answer는 answer-run 생성 전에 credential/model preflight를 호출한다.
 - Auto collection mode는 explicit KB mode와 같은 generation credential/model preflight를 사용한다.
 - Embedding credential readiness는 generation credential selection과 별개이며 `credential_id`에서 추론하면 안 된다.
+- Main generation과 Memory summary는 각각 purpose가 고정된 ProviderExecutionCapability를 사용한다. Summary는 `inherit_node`에서 별도 capability를 발급하고 organization default/owner credential을 추론하지 않는다.
+- Capability identity/revision은 Memory lease, Budget reservation, provider attempt와 usage reconciliation에 전달한다. Scope/expiry/revision mismatch는 provider SDK 호출 전에 거부한다.
 
 ## 접근성
 

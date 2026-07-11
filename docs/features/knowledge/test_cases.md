@@ -239,6 +239,12 @@ Status: Draft
 - KB hard delete는 Knowledge lifecycle service boundary를 통과하고, `team_knowledge_permissions`, `user_knowledge_permissions` direct grant row를 같은 transaction에서 먼저 정리해 orphan permission이나 FK failure를 남기지 않는다. Disposable PostgreSQL integration은 owner predicate, wrong-owner no-mutation, legacy cross-organization permission cleanup, document/chunk cascade와 실제 FK delete 성공을 검증한다.
 - Disposable PostgreSQL integration은 명시적 host/port/user/password를 요구하고 기본 credential을 사용하지 않는다. Loopback 밖 host는 exact host confirmation 없이는 연결하지 않으며, allowlist random DB name만 생성/삭제하고 subprocess에는 검증된 개별 DB 설정만 전달한다. 실패 출력과 config representation은 credential/connection detail을 노출하지 않는다.
 - Runtime/builder bulk KB permission evaluation은 team KB permission과 `user_knowledge_permissions` direct grant를 모두 합산해야 한다. User direct grant만 있는 경우에도 해당 user의 KB `use` 권한이 허용되어야 한다.
+- Conversation Memory authorization adapter는 decision/principal kind/authorization decision revision, KB lifecycle/resource, policy revision과 evaluated timestamp를 각 bulk result에 포함하고 source-managed KB의 source ACL revision을 decision revision에 반영한다.
+- Bulk result 일부가 누락되거나 revision을 만들 수 없으면 해당 dependency를 `unknown`으로 반환하고 allow로 채우지 않는다.
+- Permission revoke, membership state 변경, KB archive/delete와 source ACL version 변경은 관련 revision을 바꾸어 기존 Memory lease/context 재사용을 차단한다.
+- Public audience는 synthetic subject 없이 `anonymous_public_audience`로 평가하고 login cookie/Conversation Access Grant를 private KB permission으로 사용하지 않는다.
+- Knowledge retrieval result는 KB/document version, organization, sensitivity와 authorization-safe reference만 RuntimeDataDependencyEnvelope로 반환하고 raw title/path/URL/content/ACL을 포함하지 않는다.
+- Client/node가 Knowledge dependency를 위조하거나 optional로 낮춰도 canonical envelope를 변경하지 못한다. Answer에 영향을 준 KB dependency 하나가 revoke되면 derived Memory entry 전체를 제외한다.
 - Public visibility 전환은 organization manager와 explicit acknowledgement를 요구하고, 전환 audit에는 raw KB title/path/url, hidden KB id/name, exact denied count가 들어가지 않는다.
 - Public visibility가 켜져도 인증 사용자 KB `use` 권한이나 source ACL requester authorization이 생기지 않는다.
 - Source-managed KB는 collection public flag만으로 anonymous public-only 후보가 되지 않는다. Source/connector public exposure approval이 없거나 `approval_scope`와 target field가 맞지 않는 approval row만 있으면 후보에서 제외된다.

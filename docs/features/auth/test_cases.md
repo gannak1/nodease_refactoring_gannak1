@@ -1,6 +1,6 @@
 # Auth Test Cases
 
-Status: Verified
+Status: Draft
 Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 
 ## Minimum Failure Rule
@@ -121,6 +121,10 @@ Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 | AUTH-TC-P003 | Gateway 공통 인증 dependency는 쿠키 토큰을 AuthService로 위임해야 한다. | `get_current_user`가 `auth_token` 쿠키를 `AuthService.get_user_from_token`에 전달하지 않는다. | 테스트 실패. |
 | AUTH-TC-P004 | 인증 실패 401은 permission denied audit로 기록되어야 한다. | 인증 실패 응답이 401인데 `auth.permission_denied` 감사 이벤트가 없다. | 테스트 실패. |
 | AUTH-TC-P005 | 인증/권한 거부 403은 permission denied audit로 기록되어야 한다. | 인증 또는 권한 경계에서 403이 발생했는데 `auth.permission_denied` 감사 이벤트가 없다. | 테스트 실패. |
+| AUTH-TC-P006 | Conversation/Purge capability는 current user 인증으로 해석되지 않아야 한다. | Capability header만으로 `get_current_user` 또는 `/auth/me`가 user를 반환한다. | 401 또는 capability 전용 dependency에서만 처리. |
+| AUTH-TC-P007 | Public Chatbot은 login cookie가 있어도 anonymous audience를 유지해야 한다. | Public route가 cookie user를 execution subject로 승격해 private resource를 허용한다. | Public-only authorization. |
+| AUTH-TC-P008 | Authenticated internal surface는 public capability fallback을 허용하지 않아야 한다. | Expired/missing auth cookie를 valid Conversation grant로 대체한다. | 401/403, user identity 미생성. |
+| AUTH-TC-P009 | Public capability lifecycle audit은 synthetic user actor를 만들지 않아야 한다. | App/deployment owner, credential/billing principal 또는 grant reference가 `actor_id`로 기록된다. | `actor_id=null`, `actor_type='public'`. |
 
 ## Edge Cases
 

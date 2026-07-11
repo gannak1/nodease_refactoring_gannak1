@@ -1,8 +1,8 @@
 # Auth Requirements
 
-Status: Verified
+Status: Draft
 Verified Against: feature/mba-106 @ 120b79b81fd9552f528aebd6de5bf0dda5947d66
-Related Features: organization, audit-tracing
+Related Features: organization, audit-tracing, workflow, deployment, chatbot-deployment, conversation-memory
 
 ## Purpose
 
@@ -66,6 +66,10 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-041: 홈 화면의 인증 확인이 실패하면 공개 랜딩 화면을 렌더링할 수 있도록 로딩 상태를 해제해야 한다.
 - AUTH-REQ-042: 클라이언트 공통 API 인터셉터는 `/auth/*`와 `/`가 아닌 경로에서 401 응답을 받으면 `/auth/login`으로 이동시켜야 한다.
 - AUTH-REQ-043: 클라이언트 공통 API 인터셉터는 `/auth/*`와 `/`에서는 401 응답을 자동 리다이렉트하지 않아야 한다.
+- AUTH-REQ-044 (Target Runtime Contract): Auth가 검증한 current user identity만 user형 authenticated execution subject 후보가 될 수 있다. 향후 service account는 별도 Auth/RBAC lifecycle과 승인된 principal type이 필요하다. Resource/organization adapter가 current membership과 permission을 별도로 평가해야 하며 credential/billing principal을 user 또는 service-account identity로 해석해서는 안 된다.
+- AUTH-REQ-045 (Target Runtime Contract): Conversation Access Grant와 Purge Receipt는 사용자 authentication이 아닌 scoped capability다. Gateway 공통 `get_current_user` 또는 authenticated endpoint가 이를 JWT/session identity로 받아들여서는 안 된다.
+- AUTH-REQ-046 (Target Runtime Contract): Public Chatbot route는 valid login cookie가 함께 있어도 명시적으로 authenticated internal surface로 전환되지 않는 한 anonymous public audience를 유지해야 한다. Optional authentication으로 private Knowledge/Memory 권한을 높여서는 안 된다.
+- AUTH-REQ-047 (Target Runtime Contract): Authenticated request audit actor는 실제 current user에서 파생하고 public capability request lifecycle actor는 `actor_id=null`, `actor_type='public'`으로 표현해야 한다. 비동기 purge completion 같은 system operation은 별도 `system` actor를 사용한다. App/deployment owner, credential/billing principal 또는 Access Grant reference를 user actor로 합성해서는 안 된다.
 
 ## Policies And Edge Cases
 
@@ -79,6 +83,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - `LoginResponse`는 HTTP-only 쿠키와 별도로 JWT token 값을 응답 본문에도 포함한다.
 - Audit metadata에는 actor snapshot, 요청 metadata, 실패 email/error가 포함될 수 있지만, 세션 token 원문은 기록하지 않는다.
 - 로그아웃 엔드포인트는 현재 사용자 식별을 요구하지 않으며, cookie 삭제 시점에 actor id 없이 audit을 기록한다.
+- Conversation capability authorization header는 `auth_token` cookie/JWT와 다른 scheme·dependency에서 처리한다. Scheme 혼동은 authenticated fallback 없이 fail-closed한다.
 - 실제 로그아웃 사용자 경로는 서버 로그아웃 후 로그인 화면으로 이동해야 한다.
 - Frontend auth 타입에는 `emailVerified`, `role`, `isActive`, email verification, password reset 관련 타입이 있으나 현재 Gateway auth 응답과 구현된 화면/API는 그 전체 필드를 제공하지 않는다.
 - Google OAuth 설정은 `GOOGLE_CLIENT_ID`와 `GOOGLE_CLIENT_SECRET` 환경 변수에 의존한다.

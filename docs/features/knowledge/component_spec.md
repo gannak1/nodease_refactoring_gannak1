@@ -38,6 +38,10 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Audit/Trace Summarizer | Redaction-safe audit/trace/answer summary를 만든다 | Raw content/title/path/url은 제외하고, raw/compliance audit은 safe reference, decision, reason만 저장한다 |
 | RAG Answer Retention Worker | Terminal answer run의 retention purge를 수행하고 aggregate audit을 남긴다 | requested/running row를 삭제하지 않고 동시 purge를 row lock/marker로 방지한다 |
 
+Conversation Memory target adapter는 Knowledge Permission Helper의 bulk 결과를 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at` contract로 투영한다. Source-managed KB의 source ACL revision은 decision revision에 반영한다. Lifecycle, KB permission, source ACL 중 필요한 revision이 없으면 allow를 추정하지 않고 `unknown`을 반환한다. Anonymous public audience에는 subject ID/revision을 합성하지 않는다.
+
+Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organization, sensitivity와 authorization-safe reference를 `RuntimeDataDependencyEnvelope`로 발급한다. Raw title/path/URL/content/ACL은 envelope에 포함하지 않는다. Client나 Workflow node가 canonical Knowledge dependency를 발급할 수 없고, V1에서는 answer content에 영향을 준 모든 Knowledge dependency를 필수로 취급한다.
+
 ## UI Surfaces
 
 | Surface | 목적 |
@@ -48,7 +52,7 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Source Connector Setup | Connector config, egress-safe test/preview, ACL mapping status를 관리한다 |
 | Sync Remediation Queue | Stale/unmapped/ambiguous ACL, failed sync, tombstone, retry/dead-letter status를 표시한다 |
 | Agent Knowledge Settings | Collection routing scope 또는 explicit KB를 선택한다. 허용된 safe candidate만 표시한다 |
-| Skill Management / Playground Candidate | 향후 Skill version, freshness, eval status, publication/review 상태를 표시할 수 있는 후보 surface | 실제 작성/테스트/승인 요청 UX와 Workflow Playground 통합 여부는 아직 확정하지 않는다. 표시한다면 safe metadata만 사용한다 |
+| Skill Management / Playground Candidate | 향후 Skill version, freshness, eval status, publication/review 상태를 표시할 수 있는 후보 surface다. 실제 작성/테스트/승인 요청 UX와 Workflow Playground 통합 여부는 아직 확정하지 않으며, 표시한다면 safe metadata만 사용한다 |
 | Audit/Citation Detail | Redaction-safe citation과 retrieval summary를 표시한다. Raw content는 별도 raw/compliance surface에서만 사용한다 |
 | RAG A/B Compare | LLM node 단위 RAG strategy, token, cost, citation summary를 비교한다 |
 

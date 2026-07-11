@@ -131,6 +131,22 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - 매 호출마다 집계를 새로 조회한다 — 같은 helper 인스턴스/요청 컨텍스트에서 판정 캐시 없음 (BGT-REQ-034).
 - compare 경로 플래그/미호출 검증 (BGT-REQ-032).
 
+### Conversation Memory reservation target
+
+- 동일 ProviderExecutionCapability identity/revision + billing scope + idempotency key의 동시 reserve는 하나의 reservation만 만든다.
+- Reservation 거부 또는 adapter unavailable이면 summary provider를 호출하지 않는다.
+- Provider 미호출 실패는 reservation을 release하고 usage를 기록하지 않는다.
+- Provider 성공 후 commit retry는 actual usage를 한 번만 계상한다.
+- Provider outcome unknown은 reservation을 즉시 재사용하지 않고 reconciliation 상태로 전환한다.
+- Reservation expiry와 늦은 usage commit이 경합해도 실제 usage를 누락하거나 이중 계상하지 않는다.
+- Reservation capability가 없는 composition은 `window_then_summary`를 시작하지 않는다.
+- 가격 정보 누락, stale pricing lookup, invalid estimate와 unknown-zero model은 `budget.price_unavailable`로 거부하고 summary provider/usage를 만들지 않는다.
+- 명시적으로 가격이 0인 approved free model과 가격 미산정 때문에 0인 model을 구분하고, 후자만 fail-closed 한다.
+- Capability의 organization/workflow/deployment version/node invocation/provider/model/pricing revision/purpose/token·cost cap/expiry 중 하나가 reservation scope와 다르면 provider 호출 전에 거부한다.
+- Reservation, Memory context lease, provider attempt와 usage commit이 서로 다른 capability identity/revision을 사용하면 fail-closed하고 비용을 이중 계상하지 않는다.
+- Billing principal, execution subject, credential principal과 audit actor가 다른 fixture에서도 Conversation Access Grant/app owner를 임의 principal로 합성하지 않는다.
+- Stale pricing revision 또는 capability expiry와 concurrent reserve가 경합하면 old reservation을 새 provider call에 재사용하지 않고 safe reconciliation/re-reservation을 요구한다.
+
 ### 실행 경로별 차단 연결
 
 - `POST /workflows/{id}/execute`, `/stream` — 429 응답 shape(`budget.exceeded`), Celery `send_task` 미호출, stream은 SSE 시작 전 차단.

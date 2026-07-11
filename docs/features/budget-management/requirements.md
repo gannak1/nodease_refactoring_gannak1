@@ -1,7 +1,7 @@
 # Budget Management Requirements
 
 Status: Draft
-Related Features: admin-dashboard, workflow, app-management, deployment, audit-tracing, cost-optimizer
+Related Features: admin-dashboard, workflow, app-management, deployment, audit-tracing, cost-optimizer, conversation-memory
 
 ## Purpose
 
@@ -46,8 +46,12 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - BGT-REQ-032: LLM 노드 A/B 비교(`POST /workflows/{id}/compare`, cost-optimizer)는 차단 대상에서 제외한다. 초과 workflow의 비용 최적화 작업(PRD 시나리오 3)이 복구 경로이기 때문이다. compare 실행으로 발생한 LLM 비용은 사용률 집계에 포함된다.
 - BGT-REQ-033: 차단 판정은 fail-closed다. 활성 예산 workflow에서 당월 비용 집계에 실패하면 실행을 차단한다. 활성 예산이 없는 workflow는 판정 로직을 건너뛰어 기존 실행 경로가 깨지지 않아야 한다 (NFR-005).
 - BGT-REQ-034: 판정은 매 실행 요청마다 dispatch 직전에 DB 집계로 수행한다. 판정 결과를 캐시하거나 이전 요청의 판정을 재사용하지 않는다. 초과가 `llm_usage_logs`에 반영된 이후 도착하는 모든 신규 실행 요청은 경로와 무관하게 차단되어야 한다 (동시성 방어의 보장 하한선).
-- BGT-REQ-035: 동시 실행으로 인한 한시적 초과(overshoot)는 알려진 한계로 수용한다. 비용은 LLM 호출 완료 후 기록되므로 in-flight 실행의 비용은 dispatch 시점 판정에 반영될 수 없고, dispatch 직렬화(분산 락)로도 이 창은 닫히지 않는다. 초과 폭은 "차단 확정 전에 dispatch된 동시 실행들의 비용"으로 한정되며, 이미 시작된 실행은 중단하지 않는다. 실행 전 비용 예약(reservation) 모델은 1차 구현 범위 밖이다.
+- BGT-REQ-035: 일반 workflow 실행의 동시 실행으로 인한 한시적 초과(overshoot)는 알려진 한계로 수용한다. 비용은 LLM 호출 완료 후 기록되므로 in-flight 실행의 비용은 dispatch 시점 판정에 반영될 수 없고, dispatch 직렬화(분산 락)로도 이 창은 닫히지 않는다. 초과 폭은 "차단 확정 전에 dispatch된 동시 실행들의 비용"으로 한정되며, 이미 시작된 실행은 중단하지 않는다. 일반 실행 전체에 대한 예약 모델은 1차 구현 범위 밖이다.
 - BGT-REQ-036: Schedule dispatch/admission transaction 안의 예산 조회·집계는 nested transaction/savepoint로 격리해야 한다. DB statement 실패를 `unavailable`로 변환할 때 실패한 savepoint를 먼저 rollback하여 caller가 보유한 canonical row lock과 outer UnitOfWork를 유지하고 bounded retry/dead-letter 상태를 같은 transaction에서 기록할 수 있어야 한다.
+- BGT-REQ-037 (Conversation Memory Target Extension): Memory summary처럼 동일 logical operation의 provider 호출을 단일화해야 하는 consumer를 위해 예상 비용 reservation, actual usage commit, release와 unknown outcome reconciliation capability를 제공해야 한다. 이 capability가 구현되기 전 Conversation Memory는 summary provider 호출을 활성화하지 않고 window-only 또는 fail-closed로 동작해야 한다. 가격이 없거나 invalid/unknown 때문에 estimate가 0인 model은 `budget.price_unavailable`로 reservation을 거부하고 provider를 호출하지 않아야 한다.
+- BGT-REQ-038 (Conversation Memory Target Extension): Reservation은 server-issued `ProviderExecutionCapability` identity/revision, organization/workflow/deployment ID·version, billing principal, provider/model/pricing revision, `main_generation|memory_summary` purpose, token·cost cap, expiry와 idempotency scope를 canonical하게 받아야 한다. 같은 idempotency key/capability의 중복 예약·commit을 만들지 않아야 한다.
+- BGT-REQ-039 (Conversation Memory Target Extension): Reservation, Memory context lease, provider attempt와 usage reconciliation은 같은 ProviderExecutionCapability scope를 검증해야 한다. Wrong deployment/node/purpose/model/pricing revision, cap 초과 또는 expired capability는 provider 호출 전에 fail-closed해야 한다.
+- BGT-REQ-039A (Conversation Memory Target Extension): Billing principal은 execution subject, credential principal과 audit actor와 분리해야 한다. Conversation Access Grant나 app/deployment owner를 임의로 billing/execution/audit principal로 전환하지 않아야 한다. Reservation 만료와 늦은 usage commit 경합은 실제 비용을 누락하거나 동일 비용을 이중 계상하지 않도록 reconciliation해야 한다.
 
 ### Audit
 
@@ -68,7 +72,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - `GET /apps`/`GET /apps/operations`의 `budget_status` 조회와 예산 수정·비활성화·삭제가 경합하면 응답은 5xx 없이 완료되어야 한다. 각 row의 `usage_ratio`와 `status`는 같은 조회 스냅샷 기준으로 일관되면 되며, 경합 결과 활성 예산을 찾을 수 없으면 `budget_status=null`로 처리한다.
 - 예산 수정/비활성화가 진행 중인 실행에 소급 적용되지 않는다. 판정은 dispatch 시점 스냅샷이며, 판정과 동시에 예산이 수정되는 경합에서는 수정 전/후 어느 한쪽 기준으로 일관되게 판정되면 된다 (5xx 금지).
 - 월 경계(KST 자정) 근처의 실행 요청은 판정 시점의 KST가 속한 달을 기준으로 집계한다. 사용률 계산은 float 오차로 90%/100% 경계 판정이 뒤집히지 않도록 `Decimal`(원본 `NUMERIC` 정밀도)로 수행한다.
-- 가격 미산정 모델 호출이 `total_cost=0.0`으로 기록되는 admin-dashboard의 알려진 한계는 예산 집계에도 동일하게 적용된다. 실제 비용보다 낮게 집계되어 차단이 늦어질 수 있다 (수용).
+- 일반 실행에서 가격 미산정 모델 호출이 `total_cost=0.0`으로 기록되는 admin-dashboard의 알려진 한계는 예산 집계에도 동일하게 적용된다. 실제 비용보다 낮게 집계되어 차단이 늦어질 수 있다 (수용). 이 한계는 BGT-REQ-037의 Conversation Memory summary reservation에 적용하지 않으며, summary는 unknown price를 fail-closed 한다.
 - 프론트의 실행 버튼 차단은 UX 보조이며 최종 차단은 Gateway가 수행한다 (NFR-001).
 
 ## Open Questions

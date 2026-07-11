@@ -168,3 +168,7 @@ Status: Draft
 | ORG-TC-P007 | permission denied는 scope 안 denial에만 기록되고 scope 밖 resource는 숨겨야 한다. | scope 안 denial audit이 없거나 scope 밖 접근에 403/permission.denied audit이 발생한다. | audit recorded 또는 `404 resource.not_found`. |
 | ORG-TC-P008 | auth failure는 organization permission check보다 먼저 닫혀야 한다. | token 없음인데 organization query나 body validation이 먼저 실행된다. | `auth.required`. |
 | ORG-TC-P009 | Production workflow/Knowledge Base/LLM credential permission API는 target/team/user ORM model을 중앙 registry에서 해석해야 한다. | Endpoint가 registry와 별도 model import/switch를 사용하거나 unknown resource/grantee가 다른 permission table로 fallback한다. | Registry route와 API model identity 일치, unknown 값 fail-closed. |
+| ORG-TC-P010 | Runtime authorization result는 principal-neutral revision contract를 반환해야 한다. | principal kind, authorization decision/resource/policy revision 또는 evaluated_at이 빠진다. | Missing field는 unknown/fail-closed. |
+| ORG-TC-P011 | Relevant membership/permission mutation은 decision revision을 변경해야 한다. | User deactivation, membership suspend/remove/role change, team membership 또는 direct/team permission change 뒤 old revision이 그대로 allow된다. | New revision, stale consumer lease 거부. |
+| ORG-TC-P012 | Anonymous public audience는 synthetic subject를 만들지 않아야 한다. | App owner/user id 또는 subject revision을 public principal에 주입한다. | `anonymous_public_audience`, subject 없음. |
+| ORG-TC-P013 | Capability/credential/billing principal은 membership을 부여하지 않아야 한다. | Conversation grant나 credential owner만으로 internal membership/access가 허용된다. | Active current-user membership과 별도 permission 요구. |

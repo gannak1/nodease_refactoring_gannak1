@@ -1,7 +1,7 @@
 # Workflow Requirements
 
 Status: Draft
-Related Features: auth, organization, agent-builder, audit-tracing, knowledge
+Related Features: auth, organization, agent-builder, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
 
@@ -56,6 +56,16 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-014: Code node는 sandbox tenant/fairness context에 canonical `execution_context.organization_id`를 전달해야 한다. `user_id`를 organization tenant로 해석하거나 system schedule의 null executor 때문에 canonical organization을 누락해서는 안 된다.
 - FR-015: RAG retrieval 및 evidence policy block audit의 user actor는 실제 user형 `execution_subject`에서만 가져온다. System schedule은 `actor_id=NULL`, `actor_type=system`으로 기록하며, credential principal은 query embedding/LLM credential 선택에 사용할 수 있지만 RAG audit actor로 승격하지 않는다.
 - FR-016: 실행 전 Knowledge sync는 best-effort 전처리다. Connector 또는 DB 동기화가 일시적으로 실패해도 이미 색인된 evidence로 Workflow Engine 실행을 계속하며, task 결과와 로그에는 raw 예외 없이 safe sync failure reason만 남긴다.
+- FR-017 (Conversation Memory Target Integration): Memory-enabled task envelope은 memory contract/storage generation과 minimum Worker capability를 포함해야 한다. Worker는 외부 node side effect 전에 이를 검증하고 rolling migration에서는 capability 전용/versioned queue를 사용해야 한다. Preflight는 runtime task 검증을 대체하지 않는다.
+- FR-018 (Conversation Memory Target Integration): Duplicate Memory dispatch는 Memory-owned write를 idempotent하게 처리해야 한다. Tool/connector/custom node의 외부 side effect 재시도·중복 방지는 Workflow node별 idempotency 계약이 소유하며 Memory dispatcher가 arbitrary workflow execution을 무조건 재실행해서는 안 된다.
+- FR-019 (Conversation Memory Target Integration): Workflow application은 `AdmitExecution(dispatch_id)`을 durable/idempotent하게 수행해 같은 dispatch의 execution admission을 최대 하나만 생성하고 existing admission reference를 재반환해야 한다.
+- FR-020 (Conversation Memory Target Integration): Workflow application은 Memory reconciler가 acknowledgement 유실을 복구할 수 있는 `GetExecutionAdmission(dispatch_id)` port를 제공해야 한다. Workflow execution lease/heartbeat와 retry policy는 Workflow가 소유하고 Memory turn state는 safe projection만 받아야 한다.
+- FR-021 (Conversation Memory Target Integration): 모든 content-bearing node result는 server-derived `RuntimeDataDependencyEnvelope`와 completeness marker를 함께 전달해야 한다. Knowledge/connector/tool/system policy adapter는 자기 source dependency를 발급하고, subworkflow는 target deployment version과 child envelope 합집합을 반환해야 한다. Producer가 외부/private source 영향이 없음을 확인한 explicit complete empty envelope만 허용하고 missing/unknown envelope을 empty로 간주해서는 안 된다.
+- FR-022 (Conversation Memory Target Integration): Transform/code/LLM/final output은 내용에 영향을 준 모든 input dependency의 합집합을 보존해야 한다. LLM output은 prompt input뿐 아니라 Memory Context, retrieval과 tool dependency도 상속해야 한다. V1은 optional dependency를 지원하지 않으며 node/client가 canonical dependency를 삭제·발급하거나 required 의미를 낮출 수 없어야 한다.
+- FR-023 (Conversation Memory Target Integration): Provenance를 보존하지 못한 code/custom output은 public-only/non-sensitive라는 server-side 증명이 없으면 private/sensitive Memory write에서 fail-closed해야 한다.
+- FR-024 (Conversation Memory Target Integration): Memory task/admission은 deployment ID와 immutable version 또는 snapshot hash, conversation mapping/Memory policy version, contract/storage generation을 고정해야 한다. Worker가 current active deployment pointer로 기존 session task를 자동 rebind해서는 안 된다.
+- FR-025 (Conversation Memory Target Integration): Main/summary provider adapter는 LLM Credential/egress 경계가 발급한 `ProviderExecutionCapability`의 organization/workflow/deployment version/node invocation/purpose/provider/model/credential/egress·pricing revision/token·cost cap/expiry를 검증해야 한다.
+- FR-026 (Conversation Memory Target Integration): Execution subject, credential principal, billing principal, audit actor와 Conversation Access Grant는 runtime context에서 명시적으로 구분해야 한다. Public grant나 app/deployment owner를 Knowledge subject 또는 audit actor로 승격하지 않아야 한다.
 
 
 ### 1. 실행 편의성
@@ -195,7 +205,7 @@ Open Question 중요도는 다음 3단계로 나눈다.
 
 후속 확장 open question:
 - Service account의 데이터 접근 범위와 승인 절차를 Auth/RBAC에서 어떤 table과 helper로 표현할지.
-- Schedule/webhook/API trigger에서 private KB access가 필요할 때 `execution_subject` resolution reason enum과 audit action 이름을 어떻게 둘지.
+- Schedule/webhook/API trigger에서 private KB access가 필요할 때 service account/assigned operator `execution_subject` resolution reason enum과 audit action 이름을 어떻게 둘지. Conversation Access Grant나 credential principal은 후보가 아니다.
 - Workflow runtime outbound egress guard를 Knowledge source egress guard와 통합할지 별도 runtime ADR로 둘지.
 - Skill execution을 runtime node로 허용할지, 허용한다면 sandbox와 approval 경계를 어디에 둘지.
 - Workflow Playground, canvas 작업 공간/사용 공간, 배포 승인 요청에서 skill binding을 어떻게 표현하고 검토할지.

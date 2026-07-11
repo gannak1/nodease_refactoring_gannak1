@@ -47,6 +47,27 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 - Verified credential-model relation이 없으면 fail-closed로 처리하며, client는 fallback model/credential selection을 추론하면 안 된다.
 - Default credential/preset ambiguity는 향후 ADR/API 계약이 정의하기 전까지 이 API가 처리하지 않는다.
 
+## Target Provider Execution Capability Contract
+
+이 contract는 Workflow/Conversation Memory composition이 호출하는 internal application port이며 raw credential을 반환하는 public HTTP endpoint가 아니다.
+
+입력:
+
+- canonical organization/workflow/deployment ID와 immutable version 또는 snapshot hash
+- node/invocation reference
+- execution subject 또는 public audience
+- `purpose=main_generation | memory_summary`
+- requested bounded input/output token과 cost ceiling
+
+출력 opaque capability:
+
+- provider/model/credential safe reference와 verified relation revision
+- credential permission revision
+- egress policy revision과 pricing revision
+- approved token/cost cap, purpose와 expiry
+
+Memory summary 초기 정책은 `inherit_node`만 허용한다. Main node의 approved scope에서 별도 `memory_summary` capability를 발급하며 direct credential ID, name/order fallback과 `organization_default`를 거부한다. Credential revoke/permission loss, model relation/egress/pricing revision mismatch, wrong deployment/node/purpose 또는 expiry는 context materialization·budget reservation·provider call 전에 fail-closed한다. Capability, credential principal과 public Access Grant는 execution subject나 audit actor가 아니다.
+
 ## 권한
 
 - Credential 등록은 organization manager 전용이다. Credential `use`, credential `manage`, workflow manager, builder/operator 권한은 새 credential 등록 권한을 부여하지 않는다.
@@ -54,3 +75,4 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 - Agent answer generation preflight는 active organization scope, model visibility, credential visibility, credential `use`, verified credential-model relation을 검증해야 한다.
 - UI option API는 현재 active organization context에서 실행 가능한 safe pair만 보여줄 수 있다.
 - Credential 존재 또는 사용 가능 상태는 KB content permission, collection routing permission, source ACL authorization을 부여하지 않는다.
+- ProviderExecutionCapability는 credential secret을 포함하거나 client/API response에 노출되지 않는다. Consumer는 safe opaque reference/revision만 전달한다.

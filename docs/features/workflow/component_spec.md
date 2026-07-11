@@ -17,6 +17,37 @@ Verified Against: feature/mba-162 @ 419df74
 - Condition accepts only the Default handle or a configured case handle as an outgoing source handle.
 - Frontend handle visibility and graph validation provide immediate UX feedback, while Agent Builder backend preview/apply-save validation is the persistence boundary.
 
+## Conversation Memory Dispatch Admission Target
+
+Conversation Memory target task는 Workflow inbound adapter가 side effect 전에 application contract를 호출한다.
+
+- `AdmitExecution(dispatch_id, deployment_binding, task_contract, storage_generation, minimum_worker_capability)`: deployment ID/version 또는 snapshot hash, conversation mapping/Memory policy version과 capability를 검증하고 dispatch ID unique admission을 생성하거나 기존 admission을 반환한다.
+- `GetExecutionAdmission(dispatch_id)`: Memory dispatch reconciler가 publish/acknowledgement ambiguity를 복구할 safe admission state/reference를 반환한다.
+- Workflow가 execution lease, heartbeat, attempt와 node/tool retry policy를 소유한다.
+- Memory는 admission/running/terminal safe projection만 받고 Workflow execution row를 직접 변경하지 않는다.
+
+Celery task와 node runtime adapter가 admission table을 직접 insert/update하거나 capability 검증 전에 provider/tool/connector를 호출해서는 안 된다.
+
+### Runtime Data Dependency Envelope
+
+Workflow Runtime은 node value와 `RuntimeDataDependencyEnvelope`를 하나의 result contract로 전달한다.
+
+| Node/source | 책임 |
+| --- | --- |
+| Knowledge | Knowledge adapter가 KB/document version, sensitivity와 authorization-safe reference 발급 |
+| Connector/tool | 승인된 adapter가 resource/item, source ACL/egress policy revision 발급 |
+| Subworkflow | Target deployment version과 child output envelope 합집합 반환 |
+| LLM | Prompt input, Memory Context, retrieval와 tool dependency 합집합 상속 |
+| Transform/code | 모든 content input dependency 합집합을 그대로 상속하고 canonical dependency를 발급·제거하지 않음 |
+| Final output | Answer에 영향을 준 upstream dependency 전체 합집합 전달 |
+| System/privacy policy | Policy owner가 classification/redaction policy revision을 발급하고 Runtime이 result envelope에 합산 |
+
+V1에서는 content-influencing dependency를 모두 필수로 취급한다. Code/custom adapter가 provenance를 반환하지 못하면 result를 `provenance_incomplete`로 표시하고 private/sensitive Memory write를 차단한다.
+
+### Provider Execution Capability
+
+Main generation과 Memory summary provider adapter는 LLM Credential/egress port에서 server-issued capability를 받는다. Capability는 organization/workflow/deployment version/node invocation, provider/model/credential safe reference, `main_generation|memory_summary` purpose, egress/pricing revision, token·cost cap과 expiry를 고정한다. Runtime은 capability identity/revision을 Memory context lease, budget reservation, provider attempt와 usage reconciliation에 그대로 전달하고 client/Access Grant/owner 값으로 scope를 바꾸지 않는다.
+
 ## Screens
 
 - Workflow Builder 화면: 캔버스, 노드 라이브러리, 상단 액션, 테스트 실행 사이드바, 하단 캔버스 도구를 포함한다.

@@ -108,3 +108,10 @@ Verified Against: TBD
 - workflow-node 순환 또는 depth cap 초과는 safe blocked reason으로 닫는다.
 - workflow-node target이 현재 활성화 후보 app을 다시 참조하면 기존 active deployment가 아니라 candidate graph 기준으로 순환을 감지한다.
 - 일부 authorized KB의 operational failure는 Knowledge partial-result 정책으로만 표시하고 preflight permission denial과 섞지 않는다.
+- Conversation-capable activation preflight는 input/output mapping, node Memory policy, immutable deployment version/snapshot hash, contract/storage generation과 Worker capability 누락을 각각 fail-closed 한다.
+- Preflight 통과 뒤 active deployment pointer가 바뀌어도 old session task가 새 snapshot으로 자동 rebind되지 않고 pinned version을 실행하거나 side effect 전에 version conflict로 닫힌다.
+- Public `chatbot` preflight는 login cookie나 client audience hint가 있어도 anonymous public-only이며 private KB 후보를 차단한다.
+- Future authenticated internal Chatbot policy는 public route, public Access Grant, generic workflow execute 권한만으로 우회할 수 없고 별도 access permission/runtime namespace를 요구한다.
+- API/webapp/widget/MCP/workflow-node/schedule/webhook와 일반 authenticated deployment run은 explicit future contract 없이 Conversation Session을 생성하지 않는다.
+- Missing/null/unlisted Origin, wildcard, client config와 environment fallback은 public browser session activation/create를 허용하지 않는다. Versioned deployment allowlist만 통과한다.
+- Runtime principal mapping은 authenticated execution subject, credential principal, billing principal과 audit actor를 구분하며 public actor에 app/deployment creator를 합성하지 않는다.

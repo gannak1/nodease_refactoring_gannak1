@@ -387,7 +387,7 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | duration | FLOAT | NULL |
 | meta_info | JSONB | NULL |
 | correlation_id / request_id | VARCHAR(255) | NULL, INDEX |
-| conversation_id | VARCHAR(255) | NULL, INDEX — 챗봇 배포의 방문자별 대화 격리 키 ([chatbot-deployment](features/chatbot-deployment/requirements.md)) |
+| conversation_id | VARCHAR(255) | NULL, INDEX — **Legacy Current Implementation**의 browser-provided 챗봇 대화 격리 키. Target Conversation Memory session/access capability source of truth가 아님 ([chatbot-deployment](features/chatbot-deployment/requirements.md), [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)) |
 | workflow_task_id | VARCHAR(255) | NULL — Celery task id |
 | trace_metadata | JSONB | NULL — redaction-safe summary만 |
 | redaction_applied / pii_detected | BOOLEAN | NOT NULL |
@@ -421,6 +421,26 @@ node 단위 실행 이력.
 | parent_node_run_id | UUID | NULL, FK→workflow_node_runs.id (SET NULL) — loop/중첩 실행 |
 | sequence | INTEGER | NULL |
 | retry_count | INTEGER | NOT NULL |
+
+### Target Conversation Memory Logical Model
+
+아래 항목은 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)의 목표 logical model이다. 물리 table 이름, column 타입, aggregate별 table 분할과 retention partition은 구현 PR의 migration/API 계약에서 확정한다. 아직 현재 활성 table 34개와 위 도메인별 현재 table 목록에는 포함하지 않는다.
+
+| Logical record | 핵심 binding과 제약 |
+| --- | --- |
+| Conversation Session | organization/app/workflow, deployment ID와 immutable version 또는 snapshot hash, conversation mapping/Memory policy version, execution subject 또는 public audience, lifecycle/content revision, active turn, contract/storage generation |
+| Conversation Access Grant | Public session, deployment ID/version/audience, verifier hash, expiry, rotation/revoke state. Raw token과 identity/subject를 저장하지 않음 |
+| Conversation Turn | Session, canonical request/fingerprint, sequence/version, dispatch/execution reference, bounded display/Memory projection, terminal state |
+| Conversation Memory Entry | Final 또는 provisional projection, channel, content revision, privacy classification과 server-derived dependency set. Provisional entry는 CompleteTurn 전 다음 turn에서 조회하지 않음 |
+| Conversation Memory Summary | Source entry/revision과 dependency 합집합, summarizer capability/model policy version, generation/usage reconciliation state |
+| Memory Data Dependency | Source kind/organization/canonical resource and version, sensitivity, authorization-safe reference. V1은 content-influencing dependency를 모두 필수로 처리 |
+| Turn Dispatch Job | Turn과 같은 admission UnitOfWork에서 생성되는 durable publish/claim/admission reconciliation state |
+| Summary Generation Job | Fenced generation, Provider Execution Capability, budget reservation, provider attempt, summary CAS와 usage reconciliation state |
+| Context Materialization Plan / Lease / Provider Attempt | Raw context를 복제하지 않는 ordered reference plan, authorization decision revision, capability-bound short-lived claim과 durable provider-start/outcome state |
+| Conversation Purge Job / Receipt | Delete tombstone, session/access/content/operational record purge progress, legal-hold isolation, terminal status와 verifier-hash receipt expiry. Session subject/audience binding과 Conversation grant verifier를 제거한 뒤 최소 opaque tombstone만 receipt expiry까지 유지 |
+| Idempotency / secret replay record | Scope/fingerprint/status와 bounded encrypted response replay. Content/secret ciphertext는 TTL 뒤 irreversible delete |
+
+Session의 deployment binding은 active deployment pointer 변경으로 자동 갱신하지 않는다. Audit/usage는 Memory content record가 아니며 각 소유 도메인의 retention을 따르되 raw transcript, token/hash, prompt와 private source identity를 포함하지 않는다. `completed_with_hold`는 public purge의 compliance 격리 terminal 상태이고 실제 physical erasure 완료를 뜻하지 않는다. Hold 해제 erasure는 별도 compliance process가 소유하며 public terminal row를 `completed`로 되돌리지 않는다.
 
 ### 추적/감사
 
@@ -495,6 +515,7 @@ canonical 감사 로그. action 값은 [ADR-0008](decisions/ADR-0008-audit-actio
 | audit_metadata | JSONB | NULL — policy_result, correlation_id 등 |
 
 - 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`.
+- ADR-0030 Target public Conversation request lifecycle event는 `actor_id=NULL`, `actor_type='public'`을 사용한다. `public`은 현재 `VARCHAR(6)`에 맞는 explicit anonymous request actor kind이며 App/deployment owner나 Access Grant를 user actor로 합성하지 않는다. 비동기 physical purge/compliance completion은 `actor_id=NULL`, `actor_type='system'`이다.
 
 Security Alert 탐지 대상 audit는 추가로 다음 application contract를 만족해야 한다.
 

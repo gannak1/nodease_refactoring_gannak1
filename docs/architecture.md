@@ -44,6 +44,17 @@ Knowledge 통합 목표 구조에서는 Gateway/Shared 경계에 다음 domain s
 | Skill Context Loader | 후속 target component로, 빌더 단계에서 safe skill metadata와 필요한 checklist/body를 gate 통과 후 점진적으로 로드한다. MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않고 ADR-0017 기본 RAG option 후보와 KB safe metadata만 사용한다. Raw skill body, hidden source reference, raw source title/path/url은 Builder input으로 제공하지 않는다. |
 | Source-of-Truth Catalog | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 source tier와 safe reference를 관리하는 target component다. Retrieval에서는 authorized evidence 안의 ranking/tie-break/conflict hint로만 사용한다. |
 
+Conversation Memory 목표 구조는 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)를 따른다. 이는 현재 별도 network service가 추가되었다는 뜻이 아니라 Gateway와 Workflow Engine이 같은 domain/application contract를 사용하는 in-process bounded context다.
+
+| 구성요소 | 책임 |
+| --- | --- |
+| Memory Domain/Application | Conversation Session, Turn, Access Grant, final/provisional entry와 summary, dependency, lifecycle과 retention policy의 단일 업무 mutation owner |
+| Turn Dispatch Job/Dispatcher | StartTurn과 원자적으로 저장된 durable dispatch를 application command로 claim/publish/reconcile하고 Gateway crash, broker ambiguity와 Workflow admission acknowledgement 유실을 복구 |
+| Memory Persistence Adapter | Memory-owned aggregate/revision/outbox를 PostgreSQL에 저장. 다른 production module의 Memory table 직접 mutation을 허용하지 않음 |
+| Source Authorization Adapter | Knowledge/connector/subworkflow의 current decision과 principal-neutral authorization decision/resource/policy revision을 bulk contract로 변환 |
+| Memory Provider Adapter | Reference-only materialization plan, `ProviderExecutionCapability`에 binding된 provider attempt/lease claim, current authorization 재검증, raw bounded context materialization과 provider-start marker를 main provider 호출 직전에 결합 |
+| Summary Process Adapter | Fenced generation lease, approved provider execution capability/egress, capability-bound budget reservation, provider usage와 reconciliation 조정 |
+
 ### 구성도
 
 ```mermaid
@@ -68,11 +79,12 @@ graph LR
 ### 요청 흐름
 
 1. 모든 외부 요청은 Nginx 단일 진입점을 지나 Client(`/`) 또는 Gateway(`/api`, `/ws`)로 라우팅된다.
-2. Gateway는 인증과 organization scope, resource permission을 판정한 뒤 동기 응답하거나 Celery task를 발행한다.
+2. Gateway는 인증과 organization scope, resource permission을 판정한 뒤 동기 응답하거나 Celery task를 발행한다. Turn admission처럼 DB mutation과 task 발행 사이 유실을 허용할 수 없는 target flow는 직접 publish 대신 같은 transaction의 durable outbox/dispatch job을 사용한다.
 3. Workflow 실행은 Workflow Engine이 수행하고, 실행 시 user/organization/workflow/run/node 식별자를 포함한 execution context를 전달받는다.
 4. audit/trace 기록은 Log System worker가 비동기로 처리한다.
 5. Security Alert target flow는 audit 저장 성공 뒤 detector가 eligible event를 평가하고 alert/evidence/`security_alert.detected` audit을 같은 transaction에 기록한다. Commit 뒤 Redis notification 갱신 신호를 발행하며, periodic reconciler가 실시간 누락을 같은 evaluator와 idempotency key로 복구한다.
 6. Knowledge 자동 수집은 connector adapter가 직접 네트워크를 열지 않고 `OutboundEgressGuard` 또는 승인된 client/dialer factory를 통과한다. MCP/API source도 LLM 임의 tool-use가 아니라 server-side Knowledge Source Connector allowlist adapter로만 호출한다. Retrieval/Agent 요청은 collection routing scope와 KB permission helper/source ACL helper 결과로 만든 safe candidate set만 사용한다.
+7. Target Conversation Memory session은 canonical deployment ID/version 또는 snapshot hash, conversation mapping과 node Memory policy version에 고정한다. Gateway가 pending Turn과 durable dispatch job을 같은 transaction에 저장한 뒤 Dispatcher가 versioned Worker task를 발행한다. Workflow Engine은 `AdmitExecution(dispatch_id)`으로 중복 admission을 제거하고 task capability를 side effect 전에 검증한다. LLM Credential/egress 경계가 main-generation `ProviderExecutionCapability`를 먼저 발급하고 Memory는 같은 capability에 binding된 context lease를 만든다. Provider adapter는 해당 capability와 provider attempt로 lease를 claim하고 current authorization을 재검증한 뒤 reference-only plan을 materialize하며 outbound 호출 직전에 provider-start marker를 기록한다. Log System은 observer이며 conversation source of truth가 아니다.
 
 ### 경계 규칙
 
@@ -109,6 +121,7 @@ Package 기준:
 | `apps/workflow_engine/application/` | Workflow runtime use case를 둔다. runtime 실행 책임은 `execution`, runtime RAG 책임은 `runtime_retrieval`처럼 명명한다 |
 | `apps/workflow_engine/tasks.py` | Workflow Engine inbound adapter. Celery task는 외부 실행 이벤트를 받아 application use case로 전달한다 |
 | `apps/workflow_engine/adapters/` | DB run repository, execution queue, node runtime/provider adapter 등 workflow runtime outbound adapter를 둔다 |
+| `apps/memory/domain/`, `apps/memory/application/`, `apps/memory/adapters/` | ADR-0030 target Memory bounded context. 첫 실제 use case와 함께 추가하며 Gateway/Workflow concrete module을 import하지 않는다 |
 | `apps/shared/domain/` | Gateway와 Workflow Engine이 함께 쓰는 순수 policy 또는 contract만 둔다 |
 
 초기 pilot과 이후 package 규칙:
@@ -122,6 +135,7 @@ Package 기준:
 - `apps/gateway/adapters/db/access_management_*`와 `apps/gateway/adapters/audit/*`는 SQLAlchemy projection/mutation/lock, transaction-bound audit와 management reason redaction을 구현한다. `apps/gateway/composition/access_management.py`가 이를 조립한다.
 - 기존 member/team/user-direct/App 생성 권한 경로는 일괄 이동하지 않고 같은 subject lock protocol과 transaction-bound audit을 사용하는 compatibility path로 보강한다. 기존 authorization, response/status와 latent-row 정책은 유지한다.
 - 다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다. `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다.
+- Conversation Memory는 Gateway 또는 Workflow Engine 하위 helper로 중복 구현하지 않는다. 첫 Memory use case와 함께 `apps/memory/` 최소 package를 만들고 `apps/gateway/composition/memory.py`, `apps/workflow_engine/composition/memory.py`가 runtime별 adapter를 조립한다. 현재 global `memory_mode`/execution-log memory가 이미 이 구조로 이관됐다고 간주하지 않는다.
 - Deployment preflight pilot을 이후 도메인 리팩터링의 reference implementation으로 사용하되, mutation 도메인은 별도 UnitOfWork와 transaction-bound audit 요구를 추가해야 한다.
 - `apps/shared/domain/*` 하위 도메인 package는 실제 cross-runtime pure policy가 생길 때만 만든다.
 - Gateway workflow 관리 책임은 `workflow_management`처럼 API 관리 책임을 드러내고, Workflow Engine 실행 책임과 혼동하지 않는다.
