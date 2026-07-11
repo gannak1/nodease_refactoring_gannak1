@@ -60,6 +60,7 @@ def test_budget_block_uses_canonical_policy_action_and_workflow_target():
     assert row.audit_metadata == {
         "organization_id": str(organization_id),
         "reason": "budget.exceeded",
+        "policy_reason": "budget.exceeded",
         "trigger_mode": "scheduler",
         "schedule_dispatch_claim_id": str(claim_id),
     }

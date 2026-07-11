@@ -38,6 +38,7 @@ def test_worker_budget_block_uses_system_policy_audit():
     assert row.target_id == str(workflow_id)
     assert row.status == AuditStatus.FAILURE
     assert row.audit_metadata["reason"] == "budget.exceeded"
+    assert row.audit_metadata["policy_reason"] == "budget.exceeded"
     assert row.audit_metadata["trigger_mode"] == "scheduler"
 
 

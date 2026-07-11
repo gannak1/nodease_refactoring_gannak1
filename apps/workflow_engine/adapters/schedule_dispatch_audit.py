@@ -10,6 +10,7 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
+from apps.shared.domain.policy_reason import BUDGET_EXCEEDED_POLICY_REASON
 from apps.shared.domain.schedule_dispatch import SCHEDULE_DISPATCH_REASONS
 
 _CLAIM_ACTIONS = frozenset(
@@ -45,7 +46,8 @@ class SqlAlchemyScheduleAdmissionAuditRecorder:
                 status=AuditStatus.FAILURE,
                 audit_metadata={
                     "organization_id": str(organization_id),
-                    "reason": "budget.exceeded",
+                    "reason": BUDGET_EXCEEDED_POLICY_REASON,
+                    "policy_reason": BUDGET_EXCEEDED_POLICY_REASON,
                     "trigger_mode": "scheduler",
                     "schedule_dispatch_claim_id": str(claim_id),
                 },

@@ -13,16 +13,8 @@ from apps.gateway.application.access_management.models import (
 )
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.domain.policy_reason import ACCESS_MANAGEMENT_POLICY_REASONS
 from apps.shared.services.permission_audit import record_resource_permission_denied
-
-_POLICY_REASONS = {
-    "access_management.self_control_forbidden",
-    "access_management.last_active_manager",
-    "access_management.manager_override_active",
-    "access_management.member_state_not_manageable",
-    "access_management.target_user_inactive",
-    "access_management.stale_state",
-}
 
 
 class SqlAlchemyAccessManagementAuditRecorder:
@@ -65,7 +57,7 @@ class SqlAlchemyAccessManagementAuditRecorder:
         policy_reason: str,
         reason: str | None,
     ) -> None:
-        if policy_reason not in _POLICY_REASONS:
+        if policy_reason not in ACCESS_MANAGEMENT_POLICY_REASONS:
             raise ValueError("Unsupported access-management policy reason")
         metadata = self._policy_block_metadata(command.organization_id, reason)
         metadata.update(
