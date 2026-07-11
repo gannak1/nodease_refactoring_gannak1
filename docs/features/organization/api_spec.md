@@ -837,6 +837,14 @@ DELETE permission endpoints는 request body를 사용하지 않는다.
 
 ## Permissions
 
+### Target Internal Authorization Contract
+
+Conversation Memory와 Workflow Runtime이 사용하는 organization authorization adapter는 HTTP member profile 전체나 permission ORM row를 반환하지 않는다. 각 resource item에 대해 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at`만 반환한다. Source ACL이 있는 resource는 source-owning adapter가 ACL revision을 decision revision에 반영한다.
+
+Authenticated user의 global active state, organization lifecycle, membership state/role, relevant team membership와 direct/team permission이 바뀌면 revision이 바뀐다. Anonymous public audience는 `principal_kind=anonymous_public_audience`로 평가하고 subject ID/revision을 합성하지 않는다. Conversation Access Grant와 credential/billing principal은 membership 근거가 아니다. 이 contract는 internal application port이며 public HTTP endpoint가 아니다.
+
+### HTTP Endpoint Permission Rules
+
 - `/organizations`, `/organizations/memberships`, `/organizations/{organization_id}`, `/organizations/{organization_id}/members/me/accept`는 현재 사용자 인증을 요구하지만 organization manager 권한은 요구하지 않는다.
 - `/organizations/current`, organization PATCH, member management, team management, permission management는 `X-Organization-Id` 기반 active organization scope를 사용한다.
 - organization PATCH와 member/team 관리 API는 organization manager만 허용한다.

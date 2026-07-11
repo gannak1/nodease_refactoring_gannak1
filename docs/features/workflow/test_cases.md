@@ -19,6 +19,27 @@ Status: Draft
 
 Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정책과 parity를 유지해야 한다. Start/Webhook/Schedule incoming, Answer outgoing, 잘못된 Condition source handle을 거부하고, Agent Builder apply/save도 같은 graph를 다시 거부하는지 검증한다.
 
+## Conversation Memory Runtime Target Tests
+
+- Memory-enabled task는 contract version, storage generation과 minimum Worker capability가 일치할 때만 외부 node side effect를 시작한다.
+- Rolling deployment의 versioned/capability queue에서 구버전 Worker가 target task를 소비하지 않는다.
+- 잘못 라우팅된 target task는 runtime admission에서 fail-closed하고 node/tool/provider를 호출하지 않는다.
+- 같은 Memory dispatch가 중복 전달되어도 하나의 Workflow execution admission만 생성된다.
+- `AdmitExecution` same-dispatch retry는 같은 admission reference를 반환하고 다른 dispatch는 별도 admission을 만든다.
+- Memory acknowledgement가 유실되면 `GetExecutionAdmission(dispatch_id)`으로 queued/running/terminal safe projection을 복구한다.
+- Memory adapter는 Workflow execution lease/heartbeat를 갱신할 수 없다.
+- Workflow node/tool의 외부 side effect retry는 해당 node idempotency 계약을 따르며 Memory dispatcher가 arbitrary execution을 무조건 재실행하지 않는다.
+- Knowledge, connector/tool, subworkflow, LLM, transform/code와 final output은 RuntimeDataDependencyEnvelope source-owner/union contract를 보존한다.
+- LLM output은 Memory Context dependency를 prompt/retrieval/tool dependency와 합산해 final output까지 전달한다.
+- Transform/code node가 dependency를 제거하거나 canonical dependency를 발급하면 거부하고, provenance-incomplete private/sensitive output은 Memory write 전에 fail-closed 한다.
+- Optional dependency flag를 주입해도 V1은 모든 content-influencing dependency를 필수로 평가한다.
+- Explicit complete empty envelope은 source 없는 pure input/transform에서 허용하지만 missing/unknown envelope을 empty로 승격하지 않는다.
+- Subworkflow는 target deployment version과 child envelope 합집합을 parent output에 전달한다.
+- Memory admission/task는 deployment version/snapshot과 mapping/Memory policy version에 고정되고 active deployment 교체 후 새 graph로 자동 rebind하지 않는다.
+- Main/summary provider는 purpose와 deployment/node/model/pricing scope가 일치하는 ProviderExecutionCapability만 사용한다.
+- Public Access Grant, credential/billing principal과 app owner는 execution subject 또는 audit actor로 승격되지 않는다.
+- Preflight 뒤 Worker pool capability가 바뀌어도 runtime guard가 incompatible task를 거부한다.
+
 ## Spec Document Mapping
 
 `Demo Test Priority` 표의 `영역` 컬럼은 아래 spec 문서 섹션과 대응된다. 테스트를 구현하거나 우선순위를 바꿀 때는 대응하는 `requirements.md`, `api_spec.md`, `component_spec.md`를 함께 확인한다.
@@ -384,7 +405,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - LLM node RAG 선택 UI는 legacy owner-filtered `/knowledge` 목록이 아니라 active organization, KB `use` 권한, completed retrieval-visible document chunk 기준을 통과한 LLM-selectable 후보만 표시한다. 빈 KB 또는 `pending`/`failed` 문서만 있는 KB는 경고 없이 선택 가능한 후보로 노출하지 않는다. 후보가 없으면 "완료된 문서가 있는 지식 베이스가 없습니다." 같은 safe 안내를 표시한다.
 - 인증 배포 실행 화면은 `GET /deployments/{deployment_id}/run-info` safe metadata만 사용하고, `auth_secret` 또는 `graph_snapshot`을 받지 않는다.
 - 로그인 사용자의 배포 실행 요청(`/deployments/{deployment_id}/run`)은 workflow `execute` 권한을 재검증하고, active deployment snapshot을 `execution_subject=current_user`로 실행한다.
-- 인증 배포 실행의 `conversation_id`는 서버에서 deployment와 execution subject 기준으로 namespace 처리되어 다른 사용자 memory context와 섞이지 않는다.
+- Legacy 인증 배포 실행의 `conversation_id`는 서버에서 deployment와 execution subject 기준으로 namespace 처리되어 다른 사용자 execution-log memory context와 섞이지 않는다. Target Conversation Session은 별도 server-issued session과 immutable deployment binding을 사용한다.
 - `/run-public/{url_slug}` 공개 실행은 `execution_subject`를 주입하지 않으며 workflow owner 권한으로 private RAG를 fallback하지 않는다.
 - Execution subject가 없으면 public collection 소속 active KB는 검색 가능하고 private collection 소속 KB는 검색되지 않는다. Source-managed KB는 valid source/connector public exposure approval이 없으면 public collection에 연결되어도 검색되지 않는다.
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
@@ -413,6 +434,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Workflow owner가 KB `use` 권한을 갖고 있어도 execution subject가 권한을 갖지 않으면 RAG retrieval은 실패하거나 resource-hidden/no-result matrix를 따른다. Execution subject가 없으면 owner 권한 대신 public-only 후보만 사용한다.
 - Skill visibility 또는 workflow 작성 권한만으로 runtime KB permission/source ACL gate가 충족되지 않는다.
 - RAG를 포함한 workflow compare/A-B 실행도 로그인 실행에서는 일반 workflow 실행과 같은 execution subject를 사용하고, subject가 없으면 public-only gate를 사용한다.
+- Public Chatbot route에 login cookie가 있어도 anonymous public audience를 유지하고 private KB/Memory를 허용하지 않는다. Target authenticated internal Chatbot은 별도 access policy/runtime namespace가 구현된 경우에만 user execution subject를 사용한다.
+- Active deployment 변경과 queued old-session task 경합에서 Worker는 pinned deployment snapshot을 사용하거나 side effect 전에 version conflict로 닫고 current graph를 임의 실행하지 않는다.
+- ProviderExecutionCapability의 purpose/credential/model/pricing revision/expiry mismatch는 context materialization, provider call과 budget reservation 전에 fail-closed 한다.
 
 ## Edge Cases
 

@@ -1,7 +1,7 @@
 # Audit Tracing Requirements
 
 Status: Draft
-Related Features: auth, organization, workflow, llm-credentials, deployment, knowledge
+Related Features: auth, organization, workflow, llm-credentials, deployment, knowledge, conversation-memory
 
 ## Purpose
 
@@ -45,6 +45,14 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Schedule-correlated WorkflowRun의 Log System create/finish/error 재시도는 raw storage/provider exception을 로그 또는 retry result에 전달하지 않고, static operation label과 exception type만 기록해야 한다.
 - Trace list/detail response의 `user_id`는 system schedule에서 null을 허용해야 한다. Client가 actor를 표시하는 경우 null을 App/deployment creator로 대체하지 않고 `System`으로 표현해야 한다.
 - `Schedule.next_run_at`/`last_run_at` system operational update는 generic configuration data-change audit에서 field-level 제외한다. Cron/timezone/activation/lifecycle 변경 audit과 unrelated tracked mutation은 유지하며 claim ledger를 generic listener 대상으로 추가하지 않는다.
+- Conversation Memory AuditLog는 ADR-0008의 `memory.session.*`, `memory.grant.*` action만 사용한다. 정상 turn/summary 상태는 operational trace/metric으로 기록하고 AuditLog row를 만들지 않는다. Permission·policy 차단은 `permission.denied`/`policy.block`, provider 호출은 `llm.call`, workflow 실행은 `workflow.execute`를 재사용한다. Organization-scoped event는 관리자 조회 필터를 위해 safe `organization_id`를 필수 metadata로 포함하고 raw transcript/Memory content, public grant token/hash, prompt와 private source identity를 저장하지 않는다.
+- Conversation Memory security/lifecycle mutation은 audit 또는 durable outbox와 원자적으로 기록한다. Summary/dispatch reconciliation의 반복 operational event는 logical operation과 terminal transition별 idempotency로 중복 trace/metric을 만들지 않는다.
+- Conversation Memory lifecycle audit cardinality는 다음과 같아야 한다: authenticated create는 `memory.session.created` 1건, public create는 session created + `memory.grant.issued` 각 1건, close는 `memory.session.closed` 1건만 기록한다. Reset은 old session reset과 new session created를 각 1건 기록하고 public session에서만 old grant revoke와 new grant issue를 각 1건 추가한다. Reset에서 별도 closed를 중복 기록하지 않는다. Delete request는 session delete_requested와 active public grant가 있을 때 revoke를 기록한다.
+- `memory.session.purged`는 content의 실제 물리 erasure가 완료된 시점에만 한 번 기록한다. `completed_with_hold`와 `terminal_failure`는 operational/compliance status와 alert 대상이며 purged action을 만들지 않는다. Hold 해제 후 실제 erasure 완료가 별도 purged 사건이다.
+- Authenticated Memory request lifecycle actor는 실제 current user다. Public create/close/reset/delete request와 grant actor는 `actor_id=null`, `actor_type='public'`을 사용한다. 비동기 physical purge/compliance erasure completion은 `actor_id=null`, `actor_type='system'`을 사용한다. App/deployment owner, credential/billing principal과 Access Grant reference를 user actor로 합성하지 않는다.
+- Target Memory cutover 전 Audit actor validator/schema, sanitizer, list/detail filter와 UI label은 `public` actor kind를 명시적으로 지원해야 한다. `public` Memory lifecycle row를 `system`이나 `user`로 재분류하지 않으며 user-only Security Alert detector의 actor 조건을 자동 충족시키지 않는다.
+- ProviderExecutionCapability, Memory context lease와 budget reservation은 AuditLog payload가 아니다. `llm.call`, usage와 operational trace가 필요한 경우 safe opaque capability reference/revision, purpose와 status만 저장하고 raw capability/credential/scope, prompt와 private source를 저장하지 않는다.
+- 위 Memory target은 MBA-188의 현재 synchronous manual audit이나 MBA-189의 generic producer 이관 완료를 주장하지 않는다. Memory 구현은 사용 가능한 transaction-bound recorder 또는 Memory-owned outbox를 명시적으로 선택하고 성공 경로의 audit 유실을 허용하지 않는다.
 
 ## Policies And Edge Cases
 

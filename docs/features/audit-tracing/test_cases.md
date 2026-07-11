@@ -8,6 +8,7 @@ Status: Draft
 - Audit metadata sanitizer는 raw source id/url/path/title, raw source principal, raw source ACL row, raw chunk content, raw prompt/completion, credential value, `encrypted_config`, raw exception을 제거한다.
 - Authorized retrieval summary allowlist는 KB id, document version id, chunk id, citation id, optional collection id, rank/score, safe metadata summary, policy result, latency/cost/token aggregate, retryability, opaque correlation/request id, `retrieval_strategy`, `rag_mode`, authorized/selected/retrieved count summary, `context_token_estimate`, `permission_filter_applied`, `safe_exclusion_summary`, `query_rewrite_applied`, `query_rewrite_strategy`, `evidence_sufficient`, `insufficiency_reason`, `source_tier_policy`, `source_tier_used`, `fanout_concurrency`, `fanout_timeout_seconds`, `failure_policy`만 허용한다.
 - Audit/trace metadata sanitizer는 raw rewritten query를 raw prompt와 같은 민감 입력으로 보고 durable metadata와 log에서 제거한다.
+- Conversation Memory sanitizer는 raw transcript/Memory content, Access Grant token/hash, prompt, private source identity와 provider raw error를 제거하고 session/grant lifecycle의 safe opaque reference, audience, status, reason과 bucketed count만 허용한다.
 - Hidden/denied/resource-hidden summary allowlist는 sanitized reason class, actor/org scope, request/correlation id, coarse retryability만 허용하고 exact hidden/denied count나 hidden KB id를 거부한다.
 - Partial result summary는 `partial_result=true`, bucketed reason summary, retryability, request/correlation id만 허용한다.
 
@@ -39,6 +40,19 @@ Status: Draft
 - Schedule operational timestamp만 갱신하면 generic `schedule.updated`가 생성되지 않지만 cron/timezone/lifecycle 변경과 같은 transaction의 unrelated tracked mutation audit은 유지된다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.
 - RAG strategy/A-B summary API는 query rewrite 적용 여부, evidence sufficiency 결과, source tier summary를 safe field로 반환할 수 있지만 raw rewritten query와 hidden source reference를 반환하지 않는다.
+- Organization-scoped `memory.*` event는 safe `organization_id`를 포함해 관리자 audit list/detail에서 조회되고 다른 organization에서는 숨겨진다.
+- Memory session/grant lifecycle audit detail은 `change_summary=null`이며 action별 safe metadata allowlist 밖 field를 반환하지 않는다.
+- Memory lifecycle mutation과 required audit/outbox가 같은 transaction에서 실패하면 mutation도 rollback한다.
+- 정상 turn/summary 상태는 AuditLog row를 만들지 않고 operational trace/metric으로만 기록한다. Permission/policy/provider/workflow 사건은 기존 canonical action을 재사용한다.
+- Dispatch/summary reconciliation retry는 같은 logical terminal transition operational event를 중복 기록하지 않는다.
+- Authenticated/public create는 각각 session created 1건, session created + grant issued 각 1건을 정확히 기록한다.
+- Close는 session closed 1건만 기록하고 transcript-only grant 때문에 issued/rotated/revoked를 만들지 않는다.
+- Reset은 old reset + new created를 각 1건 기록하고 public session에서만 old revoke + new issue를 각 1건 추가한다. Authenticated reset은 grant action을 만들지 않고, 어느 경우에도 old closed를 중복 기록하지 않는다. Same-key replay와 outbox retry도 cardinality를 유지한다.
+- Delete request는 delete_requested와 active grant revoke를 기록하며 purge pending/retry는 purged를 만들지 않는다.
+- `completed_with_hold`와 `terminal_failure`는 `memory.session.purged`를 만들지 않고 hold 해제 후 실제 erasure 완료가 정확히 한 번 purged를 만든다.
+- Public create/close/reset/delete request와 grant action은 `actor_id=null`, `actor_type='public'`, async physical purge/compliance completion은 `actor_id=null`, `actor_type='system'`을 사용한다. App/deployment owner, credential/billing principal과 grant reference를 actor로 기록하면 실패한다.
+- Audit schema/sanitizer/list/detail/UI는 `actor_type='public'`을 안전한 익명 public actor로 round-trip하고 `System`/user name으로 오표시하지 않는다. User-only alert detector는 이 row를 user actor로 포함하지 않는다.
+- ProviderExecutionCapability/lease/reservation의 raw token/scope/credential은 AuditLog/trace/metric에 없고 safe opaque reference/revision/purpose만 operational record에 허용된다.
 
 ## E2E Tests
 
@@ -52,6 +66,7 @@ Status: Draft
 - System schedule 실행 중 deployment가 삭제되어 WorkflowRun deployment FK가 null이 되어도 exact task/run claim의 durable organization으로 완료/실패 audit을 기록한다. Live deployment가 남아 있는데 run/claim/deployment/App provenance가 충돌하면 fail-closed한다.
 - System schedule의 RAG retrieval과 evidence policy block audit은 credential principal을 user actor로 기록하지 않고 `actor_id=null`, `actor_type=system`을 사용한다.
 - Trace list/detail schema는 system schedule의 null `user_id`를 response validation 500 없이 반환하고, 기존 interactive trace의 non-null user actor를 유지한다.
+- Conversation create/close/reset/delete/physical purge E2E는 canonical action matrix의 target/action/count/status/actor 순서를 검증하고 raw transcript와 grant token을 audit tab/detail에 표시하지 않는다.
 
 ## Permission Tests
 
@@ -68,6 +83,7 @@ Status: Draft
 - Generic AuditLog before/after에 allowlist 밖 column 또는 nested secret이 있어도 change summary에 포함하지 않는다.
 - Stored organization provenance가 request organization과 다르거나 필요한 snapshot에 없으면 change summary는 null이고, historical same-org target은 opaque id만 반환하며 name/path를 resolve하지 않는다.
 - Concurrent last-manager 또는 permission mutation은 applied mutation당 canonical audit 한 건만 남긴다.
+- Memory event에 `organization_id`가 누락되면 organization-scoped 성공 event로 수용하지 않고 mutation 또는 outbox가 fail-closed 한다.
 - Management reason은 blank를 null로 정규화하고 500자 초과 또는 forbidden control character를 거부한다.
 - Management reason의 CRLF/trim/Unicode code-point 경계와 bidi control을 검증하고, common secret/PII는 durable audit 전에 redacted한다.
 - Reason redaction/sanitization 실패는 raw fallback 없이 access mutation과 audit을 모두 rollback한다.

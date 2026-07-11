@@ -45,7 +45,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-018: 초대 수락은 초대받은 본인만 수행할 수 있으며 manager 권한을 요구하지 않아야 한다.
 - ORG-REQ-019: active 초대를 다시 수락하면 현재 membership을 반환해야 하고, suspended/removed 초대 수락은 거부해야 한다.
 - ORG-REQ-020: 초대 수락 성공은 `organization.member.accept` audit을 기록해야 한다.
-- ORG-REQ-056: 초대 거절은 초대받은 본인만 수행할 수 있으며 manager 권한을 요구하지 않아야 한다. 거절 성공은 membership을 `removed`로 전환하고 `organization.member.decline` audit을 기록해야 한다.
+- ORG-REQ-019A: 초대 거절은 초대받은 본인만 수행할 수 있으며 manager 권한을 요구하지 않아야 한다. 거절 성공은 membership을 `removed`로 전환하고 `organization.member.decline` audit을 기록해야 한다.
 - ORG-REQ-021: organization manager는 active member를 suspended로 변경하거나 suspended member를 active로 되돌릴 수 있어야 한다.
 - ORG-REQ-022: organization manager는 active member의 `organization_auth_state`를 `member` 또는 `manager`로 변경할 수 있어야 한다.
 - ORG-REQ-023: member update는 invited member의 강제 active/suspended 전환, removed member update, 자기 자신의 상태/권한 변경, 마지막 active manager 제거/강등을 거부해야 한다.
@@ -100,10 +100,15 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-072: 모든 actor action은 `expected_user_active`를 포함하고 target User row를 lock해야 한다. Lock 시점 이전에 global active state가 달라졌으면 no-op보다 먼저 stale로 차단하고, actor action transaction 이후의 별도 global account lifecycle 변경까지 이 기능이 금지한다고 간주해서는 안 된다.
 - ORG-REQ-073: last active manager count는 globally active User + active membership + manager role을 모두 만족하는 row만 포함해야 한다. Active manager membership을 id 순으로 먼저 잠근 뒤 대응 User row를 같은 membership 순서로 잠그고 count를 다시 계산해야 한다. 향후 global account lifecycle mutation이 last-manager invariant도 보장해야 한다면 해당 경계가 같은 lock protocol과 별도 정책을 채택해야 한다.
 - ORG-REQ-074: access-management application은 actor query, membership/global-user lock, team membership, user-direct resource permission, App creation permission, resource scope/catalog를 capability별 port로 분리해야 한다. Concrete SQLAlchemy adapter 하나가 여러 port를 구현할 수 있지만 application use case가 모든 저장 책임을 가진 단일 god-repository protocol에 의존해서는 안 된다. ORM object/listener suppression token은 adapter 안에 남기고 application/audit port에는 framework-independent mutation descriptor만 전달해야 한다.
+- ORG-REQ-075 (Target Runtime Contract): Organization authorization adapter는 authenticated user와 anonymous public audience를 공통으로 표현하는 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at`을 반환해야 한다. Public audience에 synthetic subject ID/revision을 만들지 않아야 한다.
+- ORG-REQ-076 (Target Runtime Contract): User active state, organization lifecycle, membership 생성/상태/role, team membership과 relevant direct/team permission처럼 authorization 결과에 영향을 주는 변경은 decision revision을 바꿔야 한다. Stale revision은 current allow 근거로 재사용할 수 없어야 한다.
+- ORG-REQ-077 (Target Runtime Contract): Authorization decision revision은 client가 제공하거나 Memory가 조합하는 값이 아니라 source-owning adapter가 발급하는 opaque value여야 한다. Email, name, raw permission row, team 목록과 secret을 포함하지 않아야 한다.
+- ORG-REQ-078 (Target Runtime Contract): Conversation Access Grant, credential principal과 billing principal은 organization membership을 증명하지 않는다. Authenticated internal Chatbot은 current user의 active membership과 별도 access permission을 통과해야 하며 public route는 anonymous audience로 평가해야 한다.
 
 ## Policies And Edge Cases
 
 - Organization scope 판정과 resource permission 판정 순서는 [data_model.md](../../data_model.md)의 RBAC 요약을 따른다. active membership row가 우선이며, invited/suspended/removed membership은 fail-closed다.
+- Runtime authorization result는 decision revision으로 snapshot freshness를 표현하되 revision 자체가 permission을 부여하지 않는다. Consumer는 current decision과 resource/source policy revision을 함께 검증한다.
 - membership row가 없는 legacy organization `created_by` 또는 `managed_by` user만 manager fallback을 받는다.
 - Organization membership 권한은 `member`와 `manager`만 사용한다. Resource permission `auth_state`(`none/viewer/operator/builder/manager`, audit용 `auditor/raw_auditor`)와 혼동하지 않는다.
 - user direct permission은 additive allow 전용이다. team 권한을 낮추지 못하고 explicit deny는 없다.

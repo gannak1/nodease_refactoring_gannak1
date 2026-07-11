@@ -14,6 +14,9 @@ Verified Against: TBD
 - If preview returns `blocked`, deployment creation is not attempted and the existing error step displays safe reason labels and required actions.
 - Existing activation toggle controls surface `deployment.preflight.blocked` responses without showing hidden KB identity.
 - Active delete controls do not need preflight display in MBA-176 because delete no longer auto-promotes another deployment.
+- Target Conversation Memory preflight snapshot includes immutable deployment version/snapshot hash, conversation mapping and node Memory policy version, contract/storage generation and required Worker capability. Runtime revalidates the same binding and never resolves an existing session through the latest active deployment pointer.
+- Public Chatbot and future authenticated internal Chatbot use separate runtime policy/composition dependencies. They may share a visual Client component, but not auth/CORS/Origin, access permission, preflight audience or session namespace.
+- Exact public Origin/embed/CSP allowlist is a deployment-owned versioned policy adapter. Memory or Client code must not read environment fallback to widen it.
 
 ### Internal Schedule Dispatch Components
 

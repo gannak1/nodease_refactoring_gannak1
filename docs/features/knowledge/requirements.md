@@ -1,7 +1,7 @@
 # Knowledge Requirements
 
 Status: Draft
-Related Features: auth, organization, workflow, agent-builder, connectors, audit-tracing, llm-credentials
+Related Features: auth, organization, workflow, agent-builder, connectors, audit-tracing, llm-credentials, conversation-memory
 
 ## Purpose
 
@@ -102,6 +102,11 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-078: Knowledge Base archive/delete lifecycle mutation은 endpoint에서 직접 permission cleanup, storage cleanup, retrieval exclusion, audit orchestration을 조합하지 않고 lifecycle service boundary를 통과해야 한다. Hard delete는 해당 KB를 참조하는 `team_knowledge_permissions`와 `user_knowledge_permissions` direct grant row를 같은 transaction에서 먼저 정리해 legacy organization mismatch row를 포함한 orphan permission이나 FK failure를 남기지 않아야 한다. FR-048의 cleanup outbox/reconciler가 구현되기 전 MBA-182 current hard-delete baseline에서는 기존 best-effort physical storage cleanup을 lifecycle service 안에서 유지할 수 있지만, storage path/raw exception을 API나 durable log에 노출하면 안 되며 이 baseline을 target cleanup architecture로 간주하지 않는다. Durable lifecycle audit/outbox, idempotent cleanup retry, dead-letter/redrive cutover는 MBA-184에서 구현한다.
 - FR-079: Generic resource permission routing에서 `resource_type="knowledge_base"`는 workflow 또는 LLM credential fallback으로 흐르지 않아야 한다. Gateway registry/service boundary가 resource type별 target model, organization lookup, effective auth resolver, team/user permission table mapping을 소유하고 schema enum과의 contract를 테스트로 고정한다.
 - FR-080: Storage physical delete adapter는 DB의 `file_path` 문자열을 직접 신뢰하지 않는다. S3는 configured bucket/region의 승인된 URL 또는 canonical `uploads/` key만 decode/normalize한 뒤 삭제하고, Local은 service-owned upload root 내부의 resolved file만 삭제한다. Bucket/host mismatch, root escape, symlink escape, control/dot segment, unsupported scheme은 provider 호출 전에 safe typed error로 거부하며 raw reference를 로그에 남기지 않는다.
+- FR-081 (Conversation Memory Target Integration): Knowledge authorization adapter는 각 KB/source dependency에 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at`을 반환해야 한다. KB lifecycle과 source-managed KB의 source ACL revision은 decision revision에 반영해야 한다. Required revision을 만들 수 없거나 일부 bulk result가 누락되면 `unknown`으로 fail-closed 하며 Memory가 Knowledge revision을 자체 합성하지 않는다.
+- FR-082 (Conversation Memory Target Integration): Knowledge retrieval adapter는 final evidence에 영향을 준 KB/document version, organization, sensitivity와 authorization-safe reference를 completeness marker가 있는 server-derived `RuntimeDataDependencyEnvelope`로 반환해야 한다. Raw title/path/URL/content/ACL과 client-provided dependency를 포함하지 않아야 한다.
+- FR-083 (Conversation Memory Target Integration): KB lifecycle, collection public visibility, team/user direct KB permission, organization membership/manager override, source ACL/public exposure policy가 authorization 결과에 영향을 주면 Knowledge authorization decision revision이 변경되어야 한다.
+- FR-084 (Conversation Memory Target Integration): Anonymous public audience는 synthetic subject ID/revision 없이 `anonymous_public_audience` principal kind로 public collection, active KB와 source public exposure gate를 평가해야 한다. Login cookie나 Conversation Access Grant로 private KB 권한을 높이지 않아야 한다.
+- FR-085 (Conversation Memory Target Integration): V1 Memory dependency는 optional 의미를 지원하지 않는다. Knowledge evidence가 answer에 영향을 주면 해당 dependency는 모두 필수이며 하나라도 current authorization을 잃으면 derived entry 전체를 제외해야 한다.
 
 ## Policies And Edge Cases
 

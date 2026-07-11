@@ -2,7 +2,7 @@
 
 Status: Draft
 Verified Against: feature/mba-120 @ 7a7032e
-Related Features: workflow, organization, audit-tracing, knowledge
+Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
 
@@ -84,6 +84,10 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-KNOW-REQ-010: Connector는 source별 raw payload를 Knowledge가 소비할 safe normalized shape로 변환해야 하며, 변환 전 raw payload는 connector debug/error log, retry/dead-letter payload, audit, trace에 남기지 않아야 한다.
 - CONN-KNOW-REQ-011: Connector가 source-side search를 Live-linked mode에 제공하려면 requester-scoped search이거나 opaque source ref-only result여야 한다. Broad service-account search가 authorization 전 title, snippet, count, score를 반환하는 flow는 기본 구현으로 허용하지 않는다.
 - CONN-KNOW-REQ-012: File/page artifact를 가져오는 Knowledge source connector는 egress guard 이후에도 content를 untrusted로 취급해야 한다. Connector 또는 ingestion boundary는 지원 file type/content type allowlist, archive depth/expanded-size/file-count cap, macro/script/embedded object/executable 차단, parser sandbox/least-privilege 실행, malware/content scan hook을 redacted canonical text 생성 전에 적용해야 한다. Scan failure, timeout, unsupported type, active content detection은 indexing-visible artifact를 만들지 않고 fail-closed 또는 remediation으로 처리한다.
+- CONN-KNOW-REQ-013 (Conversation Memory Target Integration): `check_access_batch` 결과는 item별 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at`을 반환해야 한다. Source ACL revision과 connector policy revision은 authorization decision revision 산정에 반영해야 한다. Source가 stable revision을 제공하지 못하거나 partial result가 누락되면 private/sensitive dependency는 `unknown`으로 fail-closed 한다.
+- CONN-KNOW-REQ-014 (Conversation Memory Target Integration): Connector/tool result가 output content에 영향을 주면 adapter는 canonical connector/source item version, organization, sensitivity와 authorization-safe reference를 completeness marker가 있는 `RuntimeDataDependencyEnvelope`로 발급해야 한다. Raw source identity/payload/ACL은 포함하지 않아야 한다.
+- CONN-KNOW-REQ-015 (Conversation Memory Target Integration): Source ACL, mapping epoch, connector policy, resource lifecycle 또는 public exposure approval이 authorization 결과에 영향을 주면 decision revision이 변경되어야 한다. Stale result/cache는 current allow 근거로 재사용할 수 없어야 한다.
+- CONN-KNOW-REQ-016 (Conversation Memory Target Integration): Anonymous public audience는 synthetic subject/ACL revision 없이 explicit source public exposure policy로 평가해야 한다. Bot/app installation visibility와 Conversation Access Grant를 requester authorization으로 사용하지 않아야 한다.
 
 ## Knowledge Source Connector Policies
 

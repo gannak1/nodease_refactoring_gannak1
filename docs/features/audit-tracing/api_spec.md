@@ -54,6 +54,22 @@ Security Alert의 검색·summary·상세·safe evidence·lifecycle API는 [Secu
 | `user_llm_permission.created/updated/deleted` | `user_llm_permission` | `grantee_organization_id`, `user_id`, `llm_credential_id`, `auth_state` |
 | `user_app_creation_permission.created`, `user_app_creation_permission.deleted` | `user_app_creation_permission` | `user_id`, `grantee_organization_id` |
 
+Conversation Memory의 `memory.session.*`/`memory.grant.*` action은 row before/after를 노출하는 `change_summary` 대상이 아니다. Audit detail의 safe metadata allowlist는 `organization_id`, opaque `session_ref`, audience, status, safe reason, bucketed count와 request/correlation id만 허용한다. 정상 turn/summary의 `turn_ref`, `generation_ref`, usage purpose는 operational trace/metric에 두고 AuditLog detail 계약에 추가하지 않는다. Raw content, token/hash, prompt, private source reference와 provider raw error는 허용하지 않는다.
+
+Memory lifecycle action cardinality와 actor는 다음 target contract를 따른다.
+
+| Operation | AuditLog rows |
+| --- | --- |
+| Authenticated create | `memory.session.created` 1건, current user actor |
+| Public create | `memory.session.created` + `memory.grant.issued` 각 1건, `actor_id=null`, `actor_type='public'` |
+| Close | `memory.session.closed` 1건. Transcript-only grant 상태에서 grant rotation/issue row 없음 |
+| Reset | Old `memory.session.reset` + public이면 old grant revoke + new session created + public이면 new grant issued. `closed` 중복 없음 |
+| Delete request | `memory.session.delete_requested` + active public grant revoke |
+| Physical erasure complete | `memory.session.purged` 1건, `actor_id=null`, `actor_type='system'` |
+| `completed_with_hold` / `terminal_failure` | Purged row 없음. Operational/compliance status와 alert만 |
+
+Retry/idempotency/reconciliation은 위 logical action을 중복 생성하지 않는다. Public request actor나 async system purge actor를 App/deployment owner, credential/billing principal이나 Access Grant reference로 대체하지 않는다. ProviderExecutionCapability와 reservation/lease raw scope는 Memory AuditLog metadata에 포함하지 않고, provider/usage operational record에도 safe opaque reference/revision과 purpose만 허용한다.
+
 Target/action이 allowlist에 없거나 safe field가 없으면 null을 반환한다. DB `before`/`after`의 allowlist 밖 key, nested payload, secret 계열 값은 반환하지 않는다.
 
 MBA-188 manual audit은 update에도 target별 complete safe snapshot을 저장한다. Create는 `after`, delete는 `before`, update는 `before`와 `after`의 `organization_id`/`grantee_organization_id`가 모두 request organization과 일치해야 summary를 반환한다. Historical same-organization opaque UUID는 유지할 수 있지만 current resource name/path를 resolve하지 않는다. 필요한 snapshot의 organization provenance가 없거나 다르면 null이다.

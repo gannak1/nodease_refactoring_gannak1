@@ -1,6 +1,6 @@
 # Auth API Spec
 
-Status: Verified
+Status: Draft
 Verified Against: dev @ dc756c0
 
 기본 경로: `/api/v1`
@@ -179,3 +179,12 @@ HTTP 예외는 다음 형식으로 반환된다.
 `GET /auth/me`는 `AuthService.get_user_from_token`을 통해 `auth_token` 쿠키를 검증해서 인증한다.
 
 회원가입, 로그인, 로그아웃, Google OAuth 진입/콜백은 공개 인증 생명주기 엔드포인트이다. 회원가입, 로그인, 로그아웃, Google 로그인 성공, 인증 실패는 Gateway에 감사 이벤트를 기록한다.
+
+## Target Runtime Principal Boundary
+
+- `auth_token` cookie/JWT가 검증한 current user만 authenticated identity를 제공한다. Organization membership, resource permission, LLM credential과 billing scope는 각 소유 도메인이 별도로 평가한다.
+- `Authorization: Conversation <token>`과 `Authorization: Purge <receipt>`는 public Conversation Memory capability이며 `get_current_user`, `/auth/me`와 authenticated route의 user identity로 수용하지 않는다.
+- Public Chatbot route는 login cookie가 함께 있어도 anonymous public audience를 유지한다. Authenticated internal Chatbot은 별도 route, cookie auth/CSRF/Origin과 access permission을 사용한다.
+- Public create/close/reset/delete request와 capability lifecycle AuditLog는 `actor_id=null`, `actor_type='public'`을 사용한다. 비동기 purge completion은 `system` actor를 사용한다. App/deployment owner, credential/billing principal과 capability reference를 user actor로 합성하지 않는다.
+
+이 section은 ADR-0030 target integration contract이며 현재 auth endpoint 구현이 Conversation Memory capability를 이미 제공한다는 뜻이 아니다.

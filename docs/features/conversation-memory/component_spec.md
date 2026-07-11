@@ -1,0 +1,513 @@
+# Conversation Memory Component Specification
+
+Status: Draft
+
+## Architecture
+
+Conversation Memory는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)의 독립 bounded context다. 초기에는 별도 network service가 아닌 in-process 모듈러 모놀리스 package로 구현한다.
+
+```text
+Gateway/Chat Inbound Adapter
+  -> Memory application use case
+       -> Memory domain aggregate/policy
+       -> Repository/UnitOfWork port
+       -> Source authorization port
+        -> Provider execution capability/egress port
+        -> Summary execution policy/summarizer port
+        -> Budget/usage port
+        -> Privacy classification/redaction port
+        -> Audit/outbox port
+
+Workflow Runtime Inbound Adapter
+  -> StartTurn / BuildMemoryContext / CompleteTurn
+```
+
+FastAPI request/response, Celery task, SQLAlchemy expression와 provider SDK는 Memory domain/application policy 안으로 들어오지 않는다.
+
+## Target Package Direction
+
+```text
+apps/memory/
+  domain/
+    models.py
+    policies.py
+    events.py
+    errors.py
+  application/
+    commands.py
+    queries.py
+    models.py
+    ports.py
+    use_cases/
+  adapters/
+    persistence/
+    authorization/
+    summarization/
+    usage/
+    audit/
+
+apps/gateway/composition/memory.py
+apps/workflow_engine/composition/memory.py
+```
+
+목표 shape이며 빈 package를 먼저 생성하지 않는다. 첫 구현 PR은 실제 aggregate/use case/port와 필요한 최소 파일만 추가한다.
+
+SQLAlchemy persistence model은 기존 Alembic metadata registry와의 호환을 위해 `apps/shared/db/models/`에 둘 수 있다. Memory persistence adapter 외 production code가 해당 model을 직접 query/mutate해서는 안 된다.
+
+## Domain Model
+
+### Aggregate Boundaries
+
+다음 객체는 bounded aggregate root다.
+
+| Aggregate root | Transaction/CAS boundary | 다른 root 연결 |
+| --- | --- | --- |
+| `ConversationSession` | Lifecycle, active turn claim과 session revisions | Opaque turn/grant ID |
+| `ConversationTurn` | Request idempotency, dispatch/attempt와 terminal transition | Session ID, entry ID |
+| `ConversationAccessGrant` | Issue/rotate/revoke/expiry와 verifier hash | Session/deployment ID |
+| `TurnDispatchJob` | Claim/publish/ack/reconcile | Turn/session ID |
+| `ConversationPurgeJob` | Tombstone 이후 bounded batch purge/retry/terminal receipt | Session ID |
+| `SummaryGenerationJob` | Lease fencing, budget/provider/summary/usage state | Session/channel/source revision |
+| `MemoryContextLease` | Issue/single-attempt claim/invalidate/expiry | Session/turn/node/context plan |
+| `MemoryContextProviderAttempt` | Lease claim/provider-start/outcome/reconcile | Lease/context handle/node invocation |
+
+`ConversationMemoryEntry`는 content가 immutable인 append-oriented record이며 provisional/approved/rejected status만 CAS로 전이한다. `ConversationMemorySummary`는 source revision에 대한 materialized projection, dependency는 normalized relation으로 관리한다. 구현이 이들을 별도 aggregate root로 승격할 수 있지만 Session aggregate object graph에 전체 turn/entry/summary collection을 적재해서는 안 된다. Aggregate 사이에는 opaque ID와 immutable/revision snapshot만 전달한다.
+
+`StartTurn`은 single-active-turn claim, Turn, TurnDispatchJob과 required outbox가 함께 존재해야 하므로 명시적 cross-aggregate UoW다. `CompleteTurn`은 Turn terminal 전이, Session active-turn 해제/content revision, final entry/projection 승격과 required outbox를 같은 UoW에 둔다. Reset의 old close + new session/grant, Delete의 tombstone + grant revoke + purge job/outbox도 접근 차단 유실을 막는 lifecycle UoW다. 이 예외를 generic multi-aggregate transaction service로 확장하지 않는다. Summary 상태 전이는 각 root의 version/CAS와 process manager로 조정한다.
+
+### ConversationSession Aggregate
+
+소유:
+
+- organization/app/workflow, deployment ID와 immutable version 또는 snapshot hash binding
+- conversation mapping/Memory policy version과 execution subject 또는 public audience binding
+- memory contract와 storage generation
+- active/closed/delete-pending/deleted lifecycle
+- lifecycle/content revision
+- active turn reference
+- retention/expiry
+
+주요 불변식:
+
+1. Active session만 turn을 시작할 수 있다.
+2. 초기 policy에서는 session당 active turn은 최대 하나다.
+3. Close/reset/delete 이후 pending completion은 terminal session을 변경할 수 없다.
+4. Lifecycle revision은 content/summary 변경으로 증가하지 않는다.
+5. Content revision은 completed turn/approved projection에만 증가한다.
+6. Organization/audience/deployment version/mapping/Memory policy/storage generation은 session lifecycle 중 바뀌지 않는다.
+7. Active deployment pointer 변경은 기존 session을 자동 rebind하지 않는다.
+
+### ConversationAccessGrant
+
+Public session bearer capability의 server-side hash와 lifecycle을 관리한다.
+
+- raw token 비저장
+- session/deployment ID·version/audience binding
+- issue/expire/revoke/rotate
+- optional grace-period policy
+- rotated grant chain
+- idempotency/replay record reference
+
+Authenticated session은 Access Grant가 아니라 current authentication/authorization과 session subject binding으로 접근한다.
+
+### ConversationTurn
+
+- canonical request ID/fingerprint
+- execution ID/latest attempt ID
+- sequence/turn version
+- started lifecycle revision
+- pending_dispatch/queued/running/completed/failed/cancelled state
+- user/final assistant entry reference
+- safe failure reason
+
+User turn은 StartTurn에서 한 번 기록하고 assistant turn은 mapped final output을 CompleteTurn에서 한 번 기록한다. 개별 LLM node가 user/final assistant turn을 중복 저장하지 않는다.
+
+### TurnDispatchJob
+
+Pending turn과 같은 transaction에서 생성되는 durable outbox/process record다.
+
+- dispatch id와 turn/session opaque reference
+- task contract/storage generation과 minimum worker capability
+- pending/claimed/published/acknowledged/reconcile-required/terminal 상태
+- monotonic claim generation, claim owner와 deadline
+- bounded publish attempt, next-attempt timestamp와 safe failure reason
+- broker message ID/correlation reference
+
+Dispatcher는 skip-locked 또는 동등한 atomic claim을 사용한다. Publish 성공 응답을 잃은 경우 같은 dispatch ID로 재발행할 수 있으며 Worker의 durable StartExecution admission이 중복을 제거한다. Admission 전에는 같은 dispatch를 재발행할 수 있지만 admission 이후 heartbeat/outcome이 불명확하면 Workflow execution reconciliation에 위임하고 Memory가 임의 workflow node side effect를 직접 재실행하지 않는다. Reconciliation 결과가 bounded deadline 안에 없으면 turn을 safe terminal failure로 닫아 session 점유를 해제한다.
+
+Workflow execution admission과 lease/heartbeat는 Workflow domain이 소유한다. Memory는 admission reference와 safe state projection만 보존한다. Admission 성공 뒤 Memory acknowledgement가 유실되면 dispatch reconciler가 dispatch ID로 Workflow admission lookup port를 호출해 복구한다.
+
+### ConversationMemoryEntry
+
+Raw trace 전체가 아니라 승인된 redacted/bounded projection이다.
+
+- entry type: user turn, assistant turn, explicit node projection
+- producer node/channel
+- display content와 model projection의 분리 가능성
+- sensitivity/expiry/invalidation
+- provisional/approved/rejected lifecycle
+- idempotency key
+- Data Dependency references
+
+### ConversationMemorySummary
+
+Source entry에서 재생성 가능한 projection이다.
+
+- cache identity: session + channel + source revision + policy version + summarizer version
+- source sequence range
+- redacted summary
+- aggregate dependency
+- model/usage safe reference
+- expiry/invalidation
+
+Source entry보다 오래 보존하거나 current authorization을 확장할 수 없다.
+
+### MemoryDataDependency
+
+- source kind
+- organization
+- canonical resource/version
+- authorization-safe reference
+- sensitivity
+- source/resource/policy와 authorization decision revision
+
+V1에서는 content에 영향을 준 dependency를 모두 필수로 취급하며 optional 의미를 저장하거나 평가하지 않는다. Dependency는 reverse invalidation과 tenant constraint를 지원하는 normalized relation을 기본 권고로 한다. Provider-specific safe metadata만 bounded JSONB 후보로 둔다.
+
+### RuntimeDataDependencyEnvelope
+
+Workflow Runtime의 모든 content-bearing node result는 bounded dependency 집합과 server-derived completeness marker를 함께 전달한다. 외부/private source 영향이 없음을 producer가 확인한 explicit complete empty envelope은 유효하지만 missing/unknown envelope은 empty가 아니다.
+
+| Producer | 발급/전파 책임 |
+| --- | --- |
+| Knowledge retrieval | Knowledge adapter가 KB/document version, sensitivity와 authorization-safe reference 발급 |
+| Connector/tool | 승인된 adapter가 connector resource/item revision, source ACL/egress policy revision 발급 |
+| Subworkflow | Workflow Runtime이 target deployment version과 child envelope 합집합 반환 |
+| LLM | Prompt input/Memory Context/retrieval/tool dependency 합집합 상속 |
+| Transform/code | 모든 content input dependency 합집합을 보존하고 canonical dependency를 발급·삭제하지 않음 |
+| System/privacy policy | Policy owner가 classification/redaction policy revision 발급 |
+
+Client 또는 arbitrary node는 canonical dependency를 만들 수 없다. Code/custom result가 lineage를 보존하지 못하면 public-only/non-sensitive임을 server policy가 증명하지 않는 한 private/sensitive Memory write를 거부한다.
+
+### SummaryGenerationJob
+
+Provider 호출을 DB transaction 안에 넣지 않기 위한 durable process manager다.
+
+```text
+lease_acquired
+  -> budget_reserved
+  -> provider_started
+  -> provider_succeeded
+  -> summary_committed
+  -> usage_committed
+
+non-terminal -> reconcile_required | failed
+```
+
+Provider 성공 후 summary CAS 실패는 content를 저장하지 않되 usage를 정산한다. Summary commit 후 usage commit 실패는 provider를 재호출하지 않고 reconciliation한다.
+
+Lease를 재획득할 때마다 `lease_generation`을 증가시킨다. Summary projection CAS와 generation state 전이는 현재 generation과 source revision을 함께 검증한다. Generation job은 ProviderExecutionCapability와 capability-bound reservation reference를 보존한다. 만료된 이전 owner의 늦은 완료는 summary content를 commit하지 않는다. 다만 provider 호출이 실제 발생했다면 provider attempt idempotency key와 reservation reference를 reconciliation에 전달해 actual usage를 정확히 한 번 정산한다.
+
+### MemoryContextLease
+
+BuildMemoryContext 결과를 main provider가 소비할 때 사용하는 short-lived authorization lease다.
+
+- session/execution subject 또는 audience/node invocation binding
+- lifecycle/content revision
+- authorization decision revision set hash
+- ProviderExecutionCapability reference
+- issue/claim generation/claim deadline/invalidation/expiry
+- opaque ContextMaterializationPlan handle
+
+Context handle은 raw content를 복제 저장하지 않는 short-lived `ContextMaterializationPlan`을 가리킨다. Plan에는 ordered entry/summary reference, policy version, server-keyed content digest, lifecycle/content/source revision, authorization decision revision set과 expiry만 저장한다. Digest는 client/trace/metric에 노출하지 않는다.
+
+Permission/source invalidation event는 plan과 미사용 또는 claimed-not-started lease를 무효화한다. Build 단계는 raw context를 caller에 반환하지 않는다. Main provider adapter가 lease를 server-issued provider attempt ID와 matching ProviderExecutionCapability로 claim하고 current authorization을 재검증한 같은 trusted operation 안에서 Memory store의 projection을 materialize한다. Claim result는 materialized context와 정확히 대응하는 server-derived RuntimeDataDependencyEnvelope를 함께 반환해 LLM output provenance에 합산한다. Lease는 완전한 distributed transaction을 의미하지 않고 stale authorization window를 제한한다.
+
+### MemoryContextProviderAttempt
+
+- server-issued provider attempt ID와 node invocation binding
+- lease/context plan reference와 claim generation/deadline
+- ProviderExecutionCapability identity/revision과 purpose
+- `claimed`, `provider_started`, `succeeded`, `failed`, `outcome_unknown`, `reconciled` 상태
+- provider request idempotency/correlation safe reference와 usage result
+
+같은 attempt의 claim retry는 같은 plan/version에 대해 idempotent하고 다른 attempt는 활성 claim을 탈취할 수 없다. Provider adapter는 outbound 호출 직전에 `provider_started`를 durable하게 기록하며 marker commit이 실패하면 provider를 호출하지 않는다. Claim 뒤 start 전 crash는 claim expiry 후 current authorization을 다시 평가해 새 lease/attempt를 발급할 수 있다. `provider_started` 이후 crash/timeout은 실제 호출 여부를 낙관하지 않고 `outcome_unknown`으로 두며 provider를 자동 재호출하지 않는다.
+
+Main provider usage와 `llm.call` 감사는 기존 LLM/Workflow 경계가 소유한다. MemoryContextProviderAttempt는 해당 safe usage/correlation reference만 보존하고 별도 비용이나 중복 `llm.call` AuditLog를 만들지 않는다.
+
+### ConversationPurgeJob
+
+Delete tombstone 뒤 content-bearing record를 지우고 operational record를 content-free bounded 상태로 정리하는 durable process다.
+
+- purge request/session opaque reference
+- pending/running/completed/completed_with_hold/retryable_failure/terminal_failure 상태
+- monotonic claim generation, cursor, attempt와 next-attempt timestamp
+- legal-hold/backup erasure policy reference와 safe terminal reason
+
+| Record class | 처리 |
+| --- | --- |
+| Content-bearing | Turn content, final/provisional Entry·projection, Summary, sensitive dependency reference, raw/materialized context cache·plan, transcript/result와 conversation access-token replay ciphertext를 물리 삭제 또는 irreversible erasure |
+| Session/access | Session subject/audience binding과 Access Grant verifier/source row를 제거하고 Purge Job/receipt용 최소 opaque tombstone만 receipt expiry까지 유지 |
+| Operational | Dispatch/Summary Job, Provider Attempt, Context Lease, idempotency/replay record에서 content와 민감 reference를 제거하고 bounded state/timestamp/safe reason만 제한 보존 후 삭제 |
+| Audit/usage | 소유 도메인 retention을 따르며 raw content/token/hash/prompt/private source 미포함 |
+| Purge control | Purge Job, verifier-hash receipt와 delete 응답 유실 복구용 encrypted receipt replay를 각각 정해진 TTL/receipt expiry까지만 유지 |
+
+Legal hold는 runtime/session 접근을 되살리지 않는다. 보존이 강제된 content는 runtime query와 provider context에서 분리된 compliance boundary에 격리하고 public status에는 hold의 내부 사유를 노출하지 않는다. Purge receipt는 content access가 아니라 job status만 허용한다.
+
+Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_failure 중 하나로 닫는다. Retryable failure가 7일을 넘으면 dead-letter와 운영 alert를 남기고 terminal failure로 승격한다. Receipt는 terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. Legal hold는 compliance 격리가 durable해진 시점에 completed_with_hold로 terminal 처리하며 hold 해제까지 public job을 running으로 유지하지 않는다. `completed_with_hold`와 `terminal_failure`에는 `memory.session.purged`를 만들지 않는다. Hold 해제 후 별도 compliance erasure process가 실제 삭제를 완료한 시점에만 physical purge complete를 기록하고 public terminal status/receipt는 재개하지 않는다.
+
+`completed`는 configured content-bearing live store/cache, conversation access-token replay와 backup/export retention contract가 삭제 또는 승인된 irreversible crypto-erasure marker를 모두 반환한 경우에만 허용한다. 위 표의 최소 purge-control tombstone, receipt verifier와 encrypted delete-response replay만 정해진 TTL/receipt expiry까지 예외로 남길 수 있으며 raw session content 접근에는 사용할 수 없다. Unknown/partial marker는 낙관적으로 완료 처리하지 않는다.
+
+## Application Use Cases
+
+### ResolveOrCreateSession
+
+- canonical runtime identity 검증
+- authenticated/public audience binding
+- deployment ID/version 또는 snapshot hash와 conversation mapping/Memory policy version 고정
+- Access Grant 검증·발급
+- retention policy 적용
+- contract/storage generation 고정
+
+기존 session과 요청 deployment binding이 다르면 active deployment를 따라 자동 rebind하지 않는다. Public은 resource-hiding 후 새 conversation 흐름, authenticated internal surface는 typed version conflict와 명시적 new-session 흐름을 사용한다.
+
+### StartTurn
+
+- lifecycle/active-turn 검증
+- request idempotency와 fingerprint conflict 처리
+- sequence 할당
+- user display/memory projection redaction
+- pending turn 생성
+- 같은 UoW에서 TurnDispatchJob과 required audit/outbox 저장
+
+Commit 뒤 HTTP adapter가 Celery에 직접 publish하지 않는다. Dispatcher가 durable job을 claim/publish하고 HTTP wait budget 안에 완료되지 않으면 caller는 accepted turn 상태를 받는다.
+
+### Dispatch Processing
+
+- `ClaimTurnDispatch`: current fencing generation으로 pending/retry job claim
+- `MarkTurnDispatchPublished`: broker message reference와 publish outcome 기록
+- `ObserveWorkflowAdmission`: Workflow domain의 durable admission reference를 검증하고 acknowledged/queued 상태 반영
+- `ObserveTurnExecutionState`: Workflow-owned running/terminal state의 safe projection 반영
+- `ReconcileTurnDispatch`: publish ambiguity와 acknowledgement 유실을 dispatch/admission lookup으로 복구
+
+Celery/persistence adapter는 위 command를 호출할 뿐 state transition을 직접 결정하거나 commit하지 않는다. Workflow `AdmitExecution(dispatch_id)`은 별도 Workflow application contract이며 Memory command가 execution lease를 소유하지 않는다.
+
+### BuildMemoryContext
+
+1. Node config와 session/channel 검증
+2. Bounded candidate snapshot 조회
+3. Approved/completed/non-expired entry 선택
+4. Source authorization bulk 평가
+5. Token/turn budget 적용
+6. Window 또는 summary strategy 실행
+7. ContextMaterializationPlan handle 생성
+8. Context authorization lease 발급
+9. Safe decision/usage result 반환
+
+Window-only path는 read-only다. Summary path는 generation job, budget reservation, provider call, projection/usage reconciliation side effect를 포함하므로 순수 query가 아니다.
+
+### AppendNodeProjection
+
+- Configured producer/channel allowlist 검증
+- Bounded output/redaction/provenance 검증
+- Turn version과 idempotency를 적용해 provisional projection 저장
+- User/final assistant turn과 중복되지 않게 저장
+
+중간 projection은 현재 turn의 작업 메모리에는 사용할 수 있지만 cross-turn candidate에는 포함하지 않는다. `CompleteTurn`이 성공하면 config와 final provenance에 따라 approved로 승격한다. Turn failed/cancelled 또는 lifecycle mismatch이면 rejected/expired 처리하고 content revision을 증가시키지 않는다.
+
+### CompleteTurn
+
+- Turn version/start lifecycle 검증
+- Final output mapping 검증
+- RuntimeDataDependencyEnvelope와 completeness 검증
+- Completed/failed/cancelled 전이
+- Final assistant entry와 content revision commit
+- 허용된 provisional projection 승격과 나머지 폐기
+- Audit/outbox를 같은 transaction 또는 durable outbox로 기록
+
+위 변경은 하나의 cross-aggregate UnitOfWork에서 commit/rollback한다. Mapped user/final assistant write는 conversational surface의 required contract다. CompleteTurn이 실패하면 성공 또는 `memory_status=applied`를 반환하지 않는다. Workflow의 durable execution result가 이미 있으면 reconciliation/retry는 provider나 arbitrary node를 재실행하지 않고 CompleteTurn만 idempotent하게 재시도한다.
+
+### Lifecycle Use Cases
+
+- Create/new
+- Close
+- Reset
+- Delete/tombstone
+- Retention expiry
+- Durable purge
+- Access Grant rotate/revoke
+- Source invalidation/revalidation
+
+Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 grant rotation/issue audit을 만들지 않는다. Reset/delete는 old grant를 revoke하며 delete status는 별도 purge receipt가 소유한다.
+
+## Ports And Adapters
+
+### Repository And UnitOfWork
+
+Capability 중심 API를 사용하고 generic table CRUD를 노출하지 않는다.
+
+- get session/turn/access grant
+- append turn if lifecycle/active-turn matches
+- append turn and dispatch job atomically
+- complete turn/session/entry/projection/outbox atomically if versions match
+- list bounded candidate snapshots
+- append entry if absent
+- acquire/observe summary generation job
+- compare-and-swap summary projection
+- invalidate by source/version
+- close/delete/expire/purge
+- claim/publish/reconcile dispatch job with fencing generation
+
+Repository adapter는 commit/rollback을 소유하지 않는다. Mutation use case 또는 UnitOfWork가 session lock, entry write와 audit/outbox를 조율한다.
+
+### Secret Response Replay Store
+
+Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
+
+- Scope/idempotency fingerprint를 associated data로 사용하는 application-level envelope encryption
+- 승인된 key-management capability와 key version
+- Access Grant token 최대 10분, Purge receipt 최대 24시간의 bounded TTL, read-on-replay와 irreversible delete
+- Same scope/fingerprint만 decrypt 가능
+
+Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
+
+Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
+
+### Source Authorization
+
+Source kind별 domain capability를 호출한다.
+
+- Organization membership/subject state
+- Knowledge `use`, source ACL와 lifecycle
+- Connector/tool resource access
+- Subworkflow/app/deployment scope
+- System policy/version validity
+
+Memory가 permission row, connector ACL 또는 deployment audience 규칙을 직접 조합하지 않는다.
+
+Bulk authorization result는 dependency별 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at`을 반환한다. Source ACL이 있는 resource는 ACL revision을 decision revision에 반영한다. Public audience는 `anonymous_public_audience` principal kind를 사용하며 subject revision을 합성하지 않는다. Required field가 없거나 adapter timeout/unknown이면 fail-closed 한다. Memory가 source domain의 revision을 자체 합성하지 않는다.
+
+### Runtime Provenance
+
+Knowledge/tool/connector/subworkflow adapter는 node output과 함께 server-derived `RuntimeDataDependencyEnvelope`를 제공한다. Workflow Runtime은 transform/code/LLM/final output에서 모든 content-influencing dependency 합집합을 전파한다. V1은 optional dependency를 지원하지 않는다.
+
+Code/custom node가 dependency를 보존하지 못하면 `provenance_incomplete`로 표시한다. Private/sensitive result는 fail-closed하고 public-only/non-sensitive임을 server policy가 증명한 projection만 별도 allow policy 아래 저장한다.
+
+### Summary Execution Policy And Summarizer
+
+LLM Credential/egress port가 organization/workflow/deployment version/node invocation/provider/model/credential/purpose/egress revision/pricing revision/token·cost cap/expiry에 binding된 `ProviderExecutionCapability`를 반환한다. 초기 summary policy는 `inherit_node`만 지원한다. Summarizer adapter는 승인된 capability와 bounded prompt로 provider를 호출하고 normalized usage/cost를 반환한다. Adapter가 model fallback, 조직 기본 credential 또는 permission policy를 독자 결정하지 않는다.
+
+Summary generation lease는 source authorization decision revision set에 binding한다. Lease owner는 summary provider 호출 직전에 current authorization과 lease validity를 재검증하며, revoke/expiry/unknown이면 raw history를 provider에 보내지 않는다.
+
+### Privacy Classification And Redaction
+
+Shared privacy boundary는 bounded content에 대해 classification, redacted projection, policy version과 safe reason을 반환한다. Memory는 source-specific PII/secret detector를 복제하지 않고 결과와 policy version만 보존한다. Detector unavailable 또는 unsupported sensitive content는 fail-closed 한다.
+
+### Budget And Usage
+
+- ProviderExecutionCapability의 model/pricing revision/purpose/token·cost cap에 binding된 예상 비용 reserve
+- actual usage commit
+- 명확한 미호출/실패 release
+- unknown provider outcome reconcile
+- billing principal/organization/workflow/deployment/purpose attribution
+
+기존 Budget adapter가 atomic reservation을 제공하지 않으면 summary strategy는 `window`로 제한한다. Reservation capability를 지원한다고 선언한 adapter만 `window_then_summary` composition에 주입할 수 있다.
+
+Price estimate가 unavailable, invalid 또는 unknown 때문에 zero이면 reservation을 거부하고 `budget.price_unavailable`을 반환한다. Summary provider는 호출하지 않으며 Memory/Budget adapter가 임의 가격 fallback을 만들지 않는다.
+
+### Audit And Outbox
+
+Raw Memory content/token/source를 제외한 lifecycle, decision, status와 safe reason을 기록한다. Security/lifecycle mutation은 audit 또는 durable outbox 기록 실패 후 성공으로 처리하지 않는다. Authenticated request actor는 실제 요청 사용자이고 public request actor는 `actor_id=null`, `actor_type='public'`이다. 비동기 physical purge/compliance completion은 `actor_id=null`, `actor_type='system'`으로 기록한다. Access Grant, execution/credential/billing principal과 app/deployment owner를 audit actor로 대체하지 않는다.
+
+AuditLog canonical action은 `memory.session.created/closed/reset/delete_requested/purged`, `memory.grant.issued/rotated/revoked`만 사용한다. Public create는 session created + grant issued, close는 session closed만 기록한다. Reset은 old session reset/grant revoke와 new session created/public grant issued를 각각 한 번 기록하고 closed를 중복 생성하지 않는다. Delete request는 session delete_requested와 active public grant revoke를 기록한다. Physical erasure 완료만 session purged를 기록하며 completed_with_hold/terminal_failure에는 금지한다. Organization-scoped row는 safe `organization_id`를 필수 metadata로 포함한다. 정상 turn/summary 상태는 high-cardinality operational event/trace/metric으로 기록하고 AuditLog row를 만들지 않는다. Permission/policy 차단은 `permission.denied`/`policy.block`, provider 호출은 `llm.call`, workflow 실행은 `workflow.execute`를 재사용한다.
+
+## Runtime Sequence
+
+```text
+Gateway resolves canonical execution subject/audience, principal roles and version-pinned session
+  -> Memory.StartTurn atomically stores pending turn + dispatch job
+  -> Dispatcher claims job and publishes versioned task
+  -> Worker validates contract/storage/capability before side effects
+  -> Workflow admission deduplicates dispatch/execution attempt
+  -> LLM node evaluates versioned MemoryConfig
+  -> LLM Credential/egress resolves main-generation ProviderExecutionCapability
+  -> Memory.BuildMemoryContext with capability reference
+       -> candidate snapshot
+       -> current source authorization
+       -> optional summary generation job
+       -> materialization plan handle + context lease
+  -> Provider adapter claims lease with provider attempt + ProviderExecutionCapability
+       -> revalidates authorization and materializes raw context
+       -> durably marks provider_started immediately before outbound call
+  -> LLM node consumes untrusted Memory Context
+  -> Workflow propagates RuntimeDataDependencyEnvelope
+  -> optional explicit node projection
+  -> Workflow maps final assistant output
+  -> Memory.CompleteTurn
+  -> Log System observes safe event
+```
+
+## Client Components
+
+### LLM Node Detail
+
+- Memory enable toggle
+- Source/channel and selected node allowlist
+- Turn/token limit
+- Window/summary strategy
+- Failure policy
+- Cost/privacy notice
+
+Memory controls are saved in graph/deployment snapshot. Canvas local state만으로 runtime behavior를 결정하지 않는다.
+
+### Conversation Controls
+
+- New conversation
+- Continue current conversation
+- Close/reset/delete
+- Retention and public/internal scope indicator
+- Degraded Memory status
+- Conflict/retry state
+
+Public/internal Chatbot은 visual component를 재사용할 수 있지만 backend runtime surface, API/auth adapter, CORS/Origin, deployment access policy와 session namespace를 분리한다. Authenticated internal surface는 별도 기능이 구현된 뒤에만 제공한다. Public UI가 authenticated history나 private source 상태를 추론하게 해서는 안 된다.
+
+Authenticated adapter는 bootstrap에서 받은 session-bound CSRF token을 `X-CSRF-Token`으로 전송하고 public adapter는 authentication cookie나 CSRF token을 conversation credential로 사용하지 않는다. Public grant는 탭 단위 sessionStorage에만 보관한다.
+
+Public delete 성공 시 Client는 conversation grant를 즉시 제거하고 별도 purge receipt만 탭 단위 sessionStorage에 보관한다. Purge terminal/expiry 뒤 receipt도 제거하며 grant와 receipt를 같은 header/storage key로 혼용하지 않는다.
+
+### Abuse Protection Adapter
+
+Public session create/run 전에 distributed atomic rate/concurrency limiter를 호출한다. Trusted proxy configuration으로 canonical network source를 만들고 grant/deployment/network/organization scope를 함께 평가한다. Limiter unavailable은 public create/run을 fail-closed하며 client-provided forwarding header를 그대로 신뢰하지 않는다.
+
+### Transcript
+
+Server `ConversationTranscriptView`를 사용하고 client React state를 source of truth로 간주하지 않는다. Refresh/reset/delete 후 server lifecycle과 visible messages가 일치해야 한다. Transcript에 보이는 turn과 model Memory Context가 다를 수 있음을 safe 상태로 표현한다.
+
+## Observability
+
+허용:
+
+- session/turn/entry safe opaque reference
+- public/authenticated audience
+- action/status/safe reason
+- latency/cache hit/usage purpose
+- bucketed excluded dependency count
+- generation/reconciliation state
+
+금지:
+
+- raw Memory/transcript/prompt
+- public access token/hash
+- credential/provider raw error
+- private source title/path/url
+- exact denied source count
+- arbitrary user input in metric label
+
+## Migration Boundary
+
+- New graph는 versioned node Memory config와 conversational mapping을 사용한다.
+- Legacy flag request는 실행 compatibility를 위해 정규화할 수 있지만 log-derived history는 기본 context에서 제외한다.
+- Deployment preflight는 Worker capability와 contract/storage generation을 검증한다.
+- Same session은 하나의 reader/writer generation만 사용한다.
+- Same session은 생성 시 deployment version/snapshot과 conversation mapping/Memory policy version에 고정하며 active deployment 변경에 자동 rebind하지 않는다.
+- Target task는 versioned queue 또는 capability 전용 worker pool에서만 소비하고 개별 Worker가 envelope을 재검증한다.
+- Global canvas toggle, Chatbot all-node forced ON과 reserved business input는 migration gate 이후 제거한다.

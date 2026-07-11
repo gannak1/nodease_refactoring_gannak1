@@ -54,6 +54,8 @@ Request body:
 | `graph_snapshot` | no | If omitted, server resolves the current app/workflow deployment snapshot candidate |
 | `audience` | no | UI hint only. Security decisions use server-derived audience in create/enable paths |
 
+Conversation-capable target snapshot은 별도 server-derived metadata로 immutable deployment version 또는 snapshot hash, conversation mapping version, node Memory policy version, `memory_contract_version`, `storage_generation`을 포함한다. Client `config`나 `audience`가 이 binding을 선택하거나 기존 session을 current active deployment로 rebind할 수 없다.
+
 Preview response uses `200 OK` even when blocked:
 
 When `is_active=false`, preview reflects inactive-save context by returning activation blockers as `status="warning"` while keeping safe reason codes and required actions. Create with `is_active=true` and later activation/toggle still use blocking `409` enforcement.
@@ -101,6 +103,10 @@ Response는 hidden KB id/name/path, exact denied count, raw source metadata, raw
 `POST /api/v1/deployments`에서 `is_active=true`이거나, `PATCH /api/v1/deployments/{deployment_id}/toggle`이 inactive deployment를 active로 바꾸는 경우 server-derived audience로 blocking preflight를 실행한다.
 
 `is_active=false` 생성은 저장 가능하지만 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않는다.
+
+Public `type="chatbot"`은 항상 `public_chatbot` audience로 preflight하므로 private KB 후보가 있으면 activation이 차단된다. 별도 authenticated internal Chatbot surface는 public Chatbot audience를 완화하거나 login cookie를 public route에 선택적으로 붙이는 방식으로 제공하지 않는다. 해당 기능은 별도 deployment access policy와 runtime/session namespace가 구현된 뒤 독립 preflight를 사용한다.
+
+Conversation Memory target activation은 explicit input/output mapping, node Memory policy, immutable deployment/snapshot binding, Memory contract/storage generation과 capable Worker routing을 함께 검사한다. Schedule/webhook/API batch, workflow-node direct run과 일반 authenticated deployment run은 target session을 암묵적으로 생성하지 않는다.
 
 Schedule records and scheduler jobs are created only for active `type="schedule"` deployments. A `scheduleTrigger` node inside any other deployment type, including `workflow_node`, does not create a schedule surface.
 
@@ -208,6 +214,8 @@ Blocking preflight failure:
 
 - Preflight preview requires the same active organization and workflow deploy/manage permission as deployment create.
 - Public/API/webhook/schedule/chatbot/mcp surfaces do not receive user KB permission unless a future service account/assigned operator policy explicitly provides an execution subject.
+- Public Chatbot exact Origin/embed/CSP allowlist is deployment-owned versioned configuration. Client hints, wildcard, or environment fallback cannot widen it; the browser Conversation Session surface remains unavailable until this contract is implemented.
+- Conversation Access Grant proves only public session access. It cannot become an execution subject, credential/billing principal, or audit actor.
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces or authenticated deployment `run`/`run-info` endpoints. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
 - Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.
 - Public webhook trigger execution uses app secret authentication.

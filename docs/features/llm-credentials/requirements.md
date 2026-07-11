@@ -1,7 +1,7 @@
 # LLM Credentials Requirements
 
 Status: Draft
-Related Features: auth, organization, cost-optimizer, audit-tracing, knowledge, agent-builder
+Related Features: auth, organization, cost-optimizer, audit-tracing, knowledge, agent-builder, workflow, conversation-memory, budget-management
 
 ## Purpose
 
@@ -22,6 +22,10 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Knowledge retrieval embedding은 KB embedding model readiness와 usable embedding credential을 preflight로 확인한다. 이 credential은 generation credential과 같다고 가정하지 않는다.
 - Credential option API는 실행 가능한 safe option schema만 반환하고, credential value, encrypted config, user quota, raw timestamps처럼 실행 선택에 불필요한 metadata를 기본 노출하지 않는다.
 - LLM node RAG option의 `llm_assisted` query rewrite는 별도 승인 전까지 비활성이다. 승인 시 rewrite LLM call도 execution subject, model/credential visibility, credential `use`, verified relation, timeout, token/cost budget, usage logging을 통과해야 한다.
+- Workflow/Conversation Memory provider call은 raw credential이나 client-selected owner가 아니라 server-issued `ProviderExecutionCapability`를 사용해야 한다. Capability는 organization, workflow, deployment ID/version, node/invocation, provider/model/credential safe reference, `main_generation|memory_summary` purpose, egress policy revision, pricing revision, token·cost cap과 expiry에 binding되어야 한다.
+- Main/summary provider adapter, Memory context lease, Budget reservation과 usage reconciliation은 같은 capability identity/revision을 검증해야 한다. Capability는 short-lived single invocation scope이고 credential revoke/permission loss/model relation/egress policy change 후 새 호출 근거로 재사용할 수 없어야 한다.
+- Conversation Memory 초기 summary model policy는 `inherit_node`만 지원해야 한다. Node의 approved provider/model/credential scope에서 `purpose=memory_summary` capability를 별도로 발급하며, 조직 기본 credential/model preset이나 owner fallback을 추론해서는 안 된다.
+- Credential principal은 execution subject, billing principal과 audit actor와 구분해야 한다. Deployment creator는 명시 deployment policy가 canonical credential principal로 고정한 경우에만 capability 발급 근거가 될 수 있고 Knowledge subject나 public audit actor로 승격되지 않아야 한다.
 
 ## Policies And Edge Cases
 
@@ -29,6 +33,7 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Organization manager가 credential을 등록하더라도 raw API key는 organization member, credential `use` 권한자, workflow runtime 응답에 노출하지 않는다.
 - Credential `manage`/`use` 권한은 기존 credential의 권한 관리와 실행 사용을 위한 권한이며, 새 credential 등록 권한을 의미하지 않는다.
 - Default credential/preset 자동 선택은 별도 ADR/API 계약 전에는 허용하지 않는다.
+- `organization_default` summary policy는 위 preset ADR/API 계약과 구현 전까지 unsupported다. Client가 해당 key 또는 direct credential ID를 Memory node config로 보내면 fail-closed한다.
 - Credential 권한 부족은 KB permission/source ACL 실패와 독립적으로 기록한다. Credential이 있다고 해서 KB content permission이나 source ACL authorization을 대체하지 않는다.
 - Usage summary는 model/provider/credential 식별자와 token/cost/latency 집계만 포함한다.
 - Auto collection answer와 LLM node RAG option runtime은 generation model/credential visibility, credential `use`, verified credential-model relation 실패를 Knowledge permission/source ACL 실패와 구분해 반환하고 기록한다. Raw credential value 또는 provider raw response는 audit/trace/usage에 저장하지 않는다.

@@ -1,7 +1,7 @@
 # Deployment Requirements
 
 Status: Draft
-Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment
+Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
 
 ## Purpose
 
@@ -9,7 +9,7 @@ Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, 
 
 이 feature의 범위에는 배포된 앱의 공개 실행 표면 — 임베드 챗 UI(`app/embed/chat`), public run/webhook endpoint(app secret Bearer 인증) — 을 포함한다.
 
-배포 타입 `chatbot`(공개 채팅 웹페이지, 기억모드 항상 ON, 방문자별 대화 격리)의 상세는 [chatbot-deployment](../chatbot-deployment/requirements.md)를 참조한다.
+배포 타입 `chatbot`의 공개 채팅 웹페이지와 현재 visitor 격리 동작은 [chatbot-deployment](../chatbot-deployment/requirements.md)를 참조한다. 현재의 기억모드 항상 ON은 Legacy Current Implementation이며 목표 Memory 계약은 [Conversation Memory](../conversation-memory/requirements.md)의 node별 기본 OFF, server-issued session/grant와 versioned Worker 경계를 따른다.
 
 Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한 배포 권한자의 디버그 도구다. Capture start/status/cancel은 user session과 대상 workflow `deploy` 권한을 요구하며, app secret 인증만으로는 사용할 수 없다. Capture session은 short TTL과 server-issued `capture_id` nonce를 사용하고, status 응답은 raw webhook payload 원문이 아니라 known secret patterns와 sensitive keys가 redacted/capped 처리된 preview만 반환한다. 사용자가 capture를 취소하면 서버 session도 삭제되어 이후 webhook은 normal execution path를 따른다.
 
@@ -67,6 +67,13 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-044: Schedule schema downgrade는 기본 비지원이다. 공통 Alembic graph의 sibling feature data를 함께 제거할 수 있으므로 일반 rollback은 `claim -> drain -> disabled` application rollback만 사용하며 파괴적 schema downgrade는 명시적 opt-in과 백업 절차가 필요하다.
 - DEP-REQ-045: Schedule 전용 Celery task는 result backend에 workflow output, RAG evidence, sync 상세를 저장하지 않고 비민감 claim outcome만 반환한다.
 - DEP-REQ-046: Schedule 운영 signal은 low-cardinality event name/status/reason/mode/value만 사용하며 claim/organization/user UUID, idempotency key, raw payload와 raw exception을 포함하지 않는다. Scheduler와 Worker의 일반 오류 로그도 operation, bounded attempt와 exception type만 기록하고 claim UUID 또는 raw exception message를 남기지 않는다.
+- DEP-REQ-047 (Target Memory): Conversation-capable deployment snapshot은 deployment ID와 immutable version 또는 snapshot hash, conversation input/output mapping, node Memory policy version, Memory contract/storage generation을 함께 고정해야 한다.
+- DEP-REQ-048 (Target Memory): Session resolution과 Worker task는 위 version binding을 전달·검증해야 하며 app의 current `active_deployment_id`로 기존 session을 자동 rebind하지 않아야 한다. Active version 변경 시 기존 session은 surface별 새 session 계약을 따라야 한다.
+- DEP-REQ-049 (Target Memory): Activation preflight는 conversation mapping, node Memory config, Worker contract/capability와 해당 runtime surface의 session 지원 여부를 검증해야 한다. Preflight 통과는 runtime envelope/capability 검증을 대체하지 않는다.
+- DEP-REQ-050 (Target Memory): V1 session 생성 surface는 `public_chatbot`, explicit Workflow Editor test와 별도 정책이 구현된 `authenticated_internal_chatbot`으로 제한한다. API/webapp/widget/MCP/workflow-node/schedule/webhook와 일반 authenticated deployment run은 명시적 후속 contract 없이 session을 만들지 않는다.
+- DEP-REQ-051 (Target Memory): Public `chatbot` activation은 public-only audience로 preflight하고 private KB 후보를 계속 차단해야 한다. 별도 authenticated internal Chatbot 기능은 public route의 audience나 optional authentication을 완화하는 방식이 아니라 별도 runtime policy, access permission과 deployment/session namespace를 가져야 한다.
+- DEP-REQ-052 (Target Memory): Public browser Chatbot의 exact Origin/embed/CSP allowlist는 deployment-owned versioned config여야 하며 client hint, wildcard 또는 environment fallback이 enforcement를 완화하지 않아야 한다. 이 config contract가 구현되기 전 browser session surface를 허용해서는 안 된다.
+- DEP-REQ-053 (Target Memory): Deployment runtime은 execution subject, credential principal, billing principal과 audit actor를 별도로 서버에서 파생해야 한다. App/deployment creator를 subject 또는 public audit actor로 합성하지 않아야 하며 Conversation Access Grant는 session 접근에만 사용해야 한다.
 
 ## Runtime Audience Matrix
 
@@ -75,7 +82,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 | `api` | Public/app secret 호출에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `webapp` | Public web app surface에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `widget` | Embedded widget surface에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
-| `chatbot` | `/run-public` 공개 실행에는 사용자 subject가 없다. 인증 내부 실행 endpoint만 로그인 사용자를 subject로 사용한다 | 공개 실행은 anonymous public-only. 인증 내부 실행은 current user 권한 |
+| `chatbot` | `/run-public` 공개 실행에는 사용자 subject가 없다. 현재 generic authenticated deployment run은 로그인 사용자를 subject로 사용할 수 있지만 Target Conversation Session을 자동 생성하지 않는다. 별도 `authenticated_internal_chatbot` surface는 후속 접근 정책 구현에 의존한다 | 공개 실행은 anonymous public-only이고 private KB activation을 차단. 별도 내부 surface만 current user 권한 사용 |
 | `mcp` | 별도 authenticated operator/service account가 없으면 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `workflow_node` | Public/API/webhook 및 authenticated run/run-info 같은 direct execution surface는 지원하지 않는다. Subworkflow 실행은 parent workflow의 execution context를 상속한다 | Parent subject 기준 KB permission/source ACL. Parent subject가 없으면 anonymous public-only로 평가되어 private KB blocked |
 | `schedule` | 예약 실행에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |

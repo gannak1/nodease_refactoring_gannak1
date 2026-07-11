@@ -42,6 +42,35 @@ Status: Draft
 | Schedule | Deployment 실행을 정해진 시간/주기로 트리거하는 설정. DB에서는 `schedules` table을 사용하며 deployment와 1:1 관계다. |
 | Webhook | 외부 시스템이 HTTP 요청으로 Workflow를 실행하게 하는 인바운드 트리거. |
 | Public Run API | 배포된 workflow를 app secret 기반 Bearer 인증으로 실행하는 public endpoint 계열. 일반 사용자 세션 인증과 구분한다. |
+| Execution Subject | 실행 시점에 Knowledge/source 등 데이터 권한을 평가할 principal. Interactive user 또는 향후 승인된 service account가 될 수 있으며 credential/billing principal, App owner와 Conversation Access Grant를 대신 사용하지 않는다. |
+| Anonymous Public Audience | Execution Subject가 없는 public runtime의 principal kind. Public visibility/exposure policy만 평가하며 synthetic user/subject ID나 private permission을 만들지 않는다. |
+| Credential Principal | Provider credential 사용 근거가 되는 server-derived principal. Credential 선택·사용에만 쓰며 Knowledge Execution Subject나 Audit Actor로 승격하지 않는다. |
+| Billing Principal | Provider usage와 budget을 귀속할 organization/workflow/deployment 주체. Execution Subject, Credential Principal과 Audit Actor와 별도로 파생한다. |
+| Audit Actor | 관리·보안 사건을 실제로 요청하거나 수행한 user/system/public 주체. Public Conversation request lifecycle은 `actor_id=null`, `actor_type='public'`, 비동기 physical purge/compliance completion은 `actor_type='system'`을 사용한다. App/deployment owner나 Access Grant를 actor로 합성하지 않는다. |
+
+## Memory And Conversation
+
+| 용어 | 정의 |
+| --- | --- |
+| Memory Bounded Context | Conversation session, turn, entry, summary, provenance와 retention lifecycle을 전문적으로 소유하는 독립 업무 경계. Gateway와 Workflow Engine은 Memory application contract로 협업하며 Memory table을 직접 변경하지 않는다. 초기에는 별도 network service가 아닌 모듈러 모놀리스 package로 도입한다 ([ADR-0030](decisions/ADR-0030-memory-bounded-context.md)). |
+| Conversation Session | 특정 organization/app/workflow/deployment ID와 immutable deployment version 또는 snapshot hash, conversation mapping/Memory policy version, authenticated execution subject 또는 public audience에 binding된 여러 turn의 lifecycle aggregate. New, close, reset, delete, expiry와 retention 상태를 가지며 active deployment 변경에 자동 rebind하지 않는다. |
+| Conversation Turn | 하나의 user request와 그 Workflow 실행 결과를 연결하는 logical 대화 단위. Queue delivery attempt와 구분하며 pending_dispatch/queued/running/completed/failed/cancelled 상태, request idempotency와 turn version을 가진다. |
+| Conversation Memory | Conversation Session에서 생성된 completed turn과 승인된 bounded projection. Workflow execution log나 node 설정 자체가 아니며 current authorization, retention과 provenance policy를 적용받는다. |
+| Node Memory | 특정 LLM node가 Conversation Memory의 어떤 channel/source를 어느 turn/token/summary/failure policy로 사용할지 정하는 versioned graph/deployment 설정. 기본값은 OFF다. |
+| Memory Context | Current session/subject/audience, node policy, source authorization과 token budget을 적용해 LLM에 제공하는 bounded untrusted context. 사용자 transcript와 동일한 projection이 아니다. |
+| Conversation Access Grant | Public conversation을 이어갈 권한을 주는 server-issued bearer capability. 사용자 identity, execution subject, credential/billing principal 또는 audit actor가 아니다. Secret으로 취급하며 grant source-of-truth에는 verifier hash, session/deployment ID·version/audience binding, expiry, rotation과 revoke state만 저장한다. 응답 복구용 token 원문은 별도 암호화 replay store에 최대 10분만 보관하고 이후 same-key retry는 새 grant 없이 `memory.secret_replay_expired`로 닫는다. |
+| Memory Data Dependency | Memory Entry가 어떤 source와 권한에 의존해 생성됐는지를 나타내는 server-derived provenance reference. Source kind, organization, canonical resource/version, sensitivity와 authorization-safe reference를 포함하며 raw source payload/path는 포함하지 않는다. V1에서는 내용에 영향을 준 dependency를 모두 필수로 취급한다. |
+| Runtime Data Dependency Envelope | Knowledge, connector/tool, subworkflow, LLM, transform/code 결과가 content lineage를 잃지 않도록 Workflow Runtime에서 전달하는 bounded dependency 집합과 server-derived completeness marker. Client나 임의 node가 canonical dependency를 발급할 수 없고 각 node output은 모든 content input dependency의 합집합을 상속한다. Explicit complete empty envelope은 허용하지만 missing/unknown envelope은 empty가 아니다. |
+| Authorization Decision Revision | Source-owning authorization adapter가 특정 execution principal/resource에 내린 결정을 표현하는 opaque revision. Authenticated subject와 anonymous public audience에 공통으로 쓰며 membership, permission, visibility, source ACL 또는 lifecycle이 바뀌면 함께 변경한다. |
+| Provider Execution Capability | LLM Credential/egress 경계가 발급하는 short-lived opaque capability. Organization, workflow, deployment version, node/invocation, provider/model/credential safe reference, main/summary purpose, egress/pricing revision, token/cost cap과 expiry를 고정하며 Memory lease와 budget reservation이 같은 scope를 검증한다. |
+| Turn Dispatch Job | Pending Conversation Turn과 같은 transaction에서 저장되고 Worker task publish/claim/Workflow admission observation/reconciliation을 조정하는 durable outbox/process state. Gateway의 일회성 broker publish 성공 여부를 실행 접수의 source of truth로 사용하지 않게 한다. |
+| Provisional Memory Projection | 현재 turn 안에서는 작업 맥락으로 사용할 수 있지만 CompleteTurn 성공 전에는 다음 turn의 Conversation Memory 후보가 아닌 중간 node projection. |
+| Summary Generation Job | Fenced generation lease, budget reservation, provider 호출, summary CAS, usage commit과 reconciliation을 durable하고 idempotent하게 조정하는 Memory process state. |
+| Context Materialization Plan | Raw text를 복제하지 않고 ordered entry/summary reference, policy version, server-keyed content digest, lifecycle/content/source revision과 authorization decision revision set만 보존하는 short-lived Memory Context 조립 계획. Digest는 client/telemetry에 노출하지 않는다. |
+| Memory Context Lease | Context Materialization Plan을 main provider adapter가 provider attempt와 Provider Execution Capability로 claim하고 current authorization을 재검증할 때 사용하는 short-lived authorization lease. Session/execution subject 또는 audience/node와 authorization decision revision에 binding되며 stale permission window를 제한한다. |
+| Memory Context Provider Attempt | Context lease claim, durable provider-start marker, main provider outcome과 usage reconciliation을 연결하는 실행 단위. Start marker 전 crash와 start 이후 unknown outcome의 재시도 정책을 구분한다. Summary provider process는 별도 Summary Generation Job이 소유한다. |
+| Purge Receipt | Conversation grant/session 접근이 즉시 차단된 뒤 비동기 purge 상태만 조회하도록 발급하는 scoped capability 또는 authenticated reference. Raw session content 접근 권한을 부여하지 않으며 public purge terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. `completed_with_hold`는 compliance 격리 완료이지 물리 삭제 완료가 아니다. |
+| Personal Agent Memory | 여러 conversation/workflow를 넘어 사용자 장기 선호·업무 맥락을 저장하는 향후 capability. Conversation Memory와 다른 opt-in, ownership, privacy와 view/edit/delete 정책이 필요하며 현재 구현 범위가 아니다. |
 
 ## Agent And Generation
 

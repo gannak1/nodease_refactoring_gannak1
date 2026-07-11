@@ -7,26 +7,32 @@ Status: Draft
 - 워크플로우 에디터 상단 "게시하기" 드롭다운 (`components/editor/NodeCanvas.tsx`)
 - 배포 플로우 모달 (`components/deployment/DeploymentFlowModal.tsx` → `SuccessStep.tsx`)
 - 공개 챗봇 페이지 (`app/embed/chat/[urlSlug]/page.tsx`) — 기존 임베드 챗 UI 재사용
-- 인증 내부 실행 페이지 (`app/modules/[id]/run/page.tsx`) — 로그인 사용자 권한으로 배포 snapshot 실행
+- Current generic 인증 실행 페이지 (`app/modules/[id]/run/page.tsx`) — 로그인 사용자 권한으로 배포 snapshot 실행. Target 내부 Chatbot access/session surface가 아님
 
 ## Components
 
 - "게시하기" 드롭다운: 시작 노드가 `startNode`일 때 "공개 웹페이지 생성"과 "사이트에 임베드" 사이에 **"챗봇 배포"** 항목을 노출한다. 클릭 시 `handlePublishAsChatbot`(`hooks/useDeployment.ts`)이 `deploymentType='chatbot'`으로 모달을 연다.
 - `useDeployment.handleDeploy`: `deploymentType === 'chatbot'`이면 결과의 `webAppUrl`을 `${origin}/embed/chat/{url_slug}`로 설정하고, `internalRunUrl`을 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}`로 설정한다.
 - `DeploymentFlowModal.getDeploymentTypeName`: `chatbot` → `"챗봇"`.
-- `SuccessStep`: `deploymentType === 'chatbot'`이면 공개 챗봇 공유 링크와 사내 인증 실행 링크를 별도 카드로 표시한다. 공개 링크 설명은 anonymous public-only RAG 경계를 명시하고, 사내 인증 실행 링크 설명은 로그인 사용자 권한 실행임을 명시한다.
+- `SuccessStep` (Current): `deploymentType === 'chatbot'`이면 공개 챗봇 공유 링크와 generic 사내 인증 실행 링크를 별도 카드로 표시한다. Target 전환에서는 별도 내부 Chatbot access mode가 실제 생성된 경우에만 내부 Chatbot 링크를 표시하며 generic workflow run을 완성된 내부 Chatbot으로 오표시하지 않는다.
 - 챗봇 페이지(`app/embed/chat/[urlSlug]/page.tsx`): 메시지 버블/입력창/환영 메시지/입력 중 표시(기존). 전송 시 `POST /api/v1/run-public/{urlSlug}`를 사용하며, private Knowledge/RAG 후보를 workflow owner 권한으로 넓히지 않는다.
-- 인증 내부 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. LLM node RAG는 로그인 사용자를 execution subject로 전달받는다.
+- Current generic 인증 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. LLM node RAG는 로그인 사용자를 execution subject로 전달받지만 Target 내부 Chatbot session/permission 계약은 별도다.
 
 ## States
 
 - `conversationId`: 방문자별 대화 격리 키. 마운트 시 `localStorage['nodease_chat_conv_' + urlSlug]`에서 읽고 없으면 `crypto.randomUUID()`로 생성/저장한다. `localStorage` 접근 불가(프라이빗 모드 등) 시 세션 한정 임시 id를 사용한다.
 - `messages`: 현재 브라우저 세션의 대화 표시용(React state). 서버 기억은 `conversation_id` 기반 실행 이력 요약으로 별도 유지된다.
 
+두 state 설명은 Legacy Current Implementation이다. Target Client는 [Conversation Memory component spec](../conversation-memory/component_spec.md)의 server-issued Access Grant/session 및 transcript projection을 사용한다. 같은 채팅 시각 컴포넌트는 재사용하되 public/authenticated backend surface, API/auth adapter, CORS/Origin, deployment access policy, session namespace와 secret storage는 분리한다.
+
 ## Interactions
 
 - 메시지 전송: 사용자 입력을 첫 입력 변수에 매핑하고, `inputs.memory_mode = true`, `inputs.conversation_id = conversationId`를 추가하여 전송한다. 두 값은 서버에서 pop된다.
 - 응답 추출: `results`에서 `answer` 필드를 가진 노드 결과를 찾아 assistant 메시지로 표시한다(기존 로직 유지).
+
+Target interaction은 conversation envelope과 idempotency key를 사용하고 node별 Memory config를 deployment snapshot에서 읽는다. UI가 모든 node Memory를 강제하거나 client state를 transcript source of truth로 사용하지 않는다.
+
+Public Client는 deployment-owned exact Origin/embed/CSP policy가 확인된 surface만 사용한다. Login 상태를 감지해 public adapter를 authenticated mode로 바꾸지 않으며, 내부 Chatbot link/component는 별도 access bootstrap 성공 후에만 렌더링한다.
 
 ## Accessibility
 

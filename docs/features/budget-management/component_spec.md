@@ -66,6 +66,21 @@ Verified Against: feature/mba-147 @ e1a04e9
 - 예산 설정 API의 403(owner/manager 아님)은 안내 문구로 처리한다. UI 노출 제어(비용 탭 자체가 owner/manager 전용)가 선행하지만 서버 응답 처리도 유지한다.
 - 429 `budget.exceeded` 처리 후에도 다른 실행 오류 처리(기존 timeout/500 처리)는 그대로 유지한다.
 
+## Conversation Memory Reservation Target
+
+현재 구현의 사후 집계·차단 helper와 별도인 application capability다. Conversation Memory summary 구현 전에 다음 port를 additive로 제공한다.
+
+- `reserve_estimated_cost(provider_execution_capability, billing_scope, idempotency_key, estimate)`
+- `commit_actual_usage(reservation_id, idempotency_key, actual_usage)`
+- `release_unused_reservation(reservation_id, reason)`
+- `reconcile_unknown_outcome(reservation_id, provider_attempt_ref)`
+
+Reservation adapter는 ProviderExecutionCapability의 organization/workflow/deployment ID·version/node invocation/provider/model/pricing revision/purpose/token·cost cap/expiry와 server-derived billing principal을 검증한 뒤 provider 호출 전에 durable approval을 반환하고 중복 key에 같은 결과를 재생한다. Memory context lease, provider attempt와 usage reconciliation은 같은 capability identity/revision을 사용한다. Memory가 Budget table을 직접 query하거나 reservation 미지원 adapter에서 summary를 실행해서는 안 된다. 일반 workflow 실행 전체의 BGT-REQ-035 overshoot 정책은 이 target extension 때문에 자동 변경되지 않는다.
+
+Pricing lookup이 unavailable하거나 estimate가 invalid/unknown-zero이면 `reserve_estimated_cost`는 typed `budget.price_unavailable`을 반환한다. Memory adapter가 0원 또는 임의 보수 가격을 자체 생성하지 않으며 summary provider를 호출하지 않는다.
+
+Execution subject, credential principal, billing principal과 audit actor는 별도 typed input이다. Public Conversation Access Grant는 reservation principal이 아니며 app/deployment creator는 canonical deployment policy가 billing/credential principal로 명시한 경우에만 그 역할로 사용한다.
+
 ## 관련 기존 문서
 
 - [admin-dashboard component_spec](../admin-dashboard/component_spec.md): `AdminSummaryCards` 실데이터 표시와 비용 탭 예산 컬럼을 함께 정의한다.

@@ -44,6 +44,8 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | RAG Agent answer 실패 | `rag.answer.failed` | RAG 확장 3단계 목표 |
 | RAG Agent answer 취소 | `rag.answer.cancelled` | RAG 확장 3단계 목표 |
 | RAG Agent answer retention purge | `rag.answer.purge` | RAG 확장 3단계 목표. aggregate purge 결과만 기록 |
+| Conversation Memory session lifecycle | `memory.session.created/closed/reset/delete_requested/purged` | Conversation Memory 목표 ([ADR-0030](ADR-0030-memory-bounded-context.md)). `purged`는 실제 물리 erasure 완료에만 사용 |
+| Conversation Memory public grant lifecycle | `memory.grant.issued/rotated/revoked` | Conversation Memory 목표 |
 | 인증 전 또는 resource helper 밖의 전역 401/403 | `auth.permission_denied` | MVP 1 |
 | deployment 생성 | `workflow.deploy` | MVP 1 |
 | deployment 일반 활성/비활성 toggle | `deployment.toggle` | MVP 1 |
@@ -83,6 +85,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Schedule의 occurrence 생성, Gateway dispatch, Worker 최종 admission 중 어느 단계에서 예산 초과가 확인되더라도 `policy.block`, `target_type='workflow'`, `trigger_mode='scheduler'` 계약을 동일하게 사용한다. Claim의 operational 상태는 별도 `schedule_dispatch.*` action으로 기록할 수 있지만 예산 차단 원인 action을 대체하지 않는다.
 - Schedule dispatch의 outcome unknown acknowledgment는 workflow 실행 성공/실패를 다시 판정하는 action이 아니라 운영 검토 완료 사건이므로 `schedule_dispatch.outcome_reviewed`를 사용한다. `target_type='schedule_dispatch_claim'`, system actor, organization/operation correlation/resolution allowlist만 저장하며 자동 redrive를 의미하지 않는다 ([ADR-0029](ADR-0029-distributed-schedule-dispatch-claim.md)).
 - Schedule WorkflowRun visibility grace를 넘긴 signal은 실행 성공/실패를 판정하거나 Log System row를 재구성하는 사건이 아니므로 `schedule_dispatch.workflow_run_missing`을 사용한다. `target_type='schedule_dispatch_claim'`, system actor, canonical organization과 `reason='workflow_run_missing'`만 저장하며 engine이나 external effect를 replay하지 않는다 ([ADR-0029](ADR-0029-distributed-schedule-dispatch-claim.md)).
+- Conversation Memory AuditLog lifecycle은 `memory.session.*`, `memory.grant.*`만 사용한다. Public create는 `memory.session.created`와 `memory.grant.issued`, close는 `memory.session.closed`만 기록한다. Reset은 old `memory.session.reset`/grant revoke와 new `memory.session.created`/public grant issue를 각각 한 번 기록하고 별도 `closed`를 중복 생성하지 않는다. Delete request는 `memory.session.delete_requested`와 active public grant revoke를 기록한다. `memory.session.purged`는 content의 실제 물리 erasure 완료에만 기록하며 `completed_with_hold`와 `terminal_failure`에는 기록하지 않는다. 정상 turn/summary 상태는 high-cardinality operational trace/metric이며 AuditLog row를 만들지 않는다. Turn/summary permission·policy 차단은 `permission.denied`/`policy.block`, provider 호출은 `llm.call`, workflow 실행은 `workflow.execute`를 재사용한다. Organization-scoped event는 safe `organization_id`를 필수 metadata로 기록하며 raw transcript/Memory content, public grant token/hash와 private source identity를 저장하지 않는다. Authenticated request actor는 실제 요청 사용자이고 public request/grant actor는 `actor_id=null`, `actor_type='public'`을 사용한다. 비동기 physical purge/compliance completion은 `actor_id=null`, `actor_type='system'`을 사용한다. App/deployment owner를 actor로 합성하지 않는다. 현재 코드 구현 상태가 아니라 ADR-0030 target contract다.
 
 ## 영향
 
