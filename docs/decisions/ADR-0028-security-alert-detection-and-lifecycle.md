@@ -1,8 +1,6 @@
 # ADR-0028: Security Alert 탐지와 lifecycle 경계
 
 Status: Accepted
-Date: 2026-07-11 KST
-Verified Against: feature/mba-210 @ 7cfe9118c3c7252c14ee36dddbb3429e61893be0 (audit producer inventory baseline)
 Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0010](ADR-0010-resource-access-403-404-policy.md), [ADR-0023](ADR-0023-audit-actor-access-management-boundary.md)
 
 ## 배경

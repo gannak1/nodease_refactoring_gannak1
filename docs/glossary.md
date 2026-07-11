@@ -150,13 +150,22 @@ Status: Draft
 | Redacted Payload | secret, credential, raw content 등 민감 값을 제거하거나 마스킹한 payload. 일반 조회는 redacted 기준을 우선한다. |
 | Trace Payload Access Event | raw payload 등 민감 trace 접근을 별도로 기록하는 감사 이벤트. DB에서는 `trace_payload_access_events` table을 사용한다. |
 | Policy Result | 정책 평가 결과. `pass`, `warn`, `block` 같은 값을 `audit_logs.audit_metadata.policy_result`에 저장한다. |
+| Policy Reason | 정책 차단 원인을 나타내는 `{domain}.{reason}` 형식의 canonical machine code. Security Alert 대상 `policy.block`은 최상위 `audit_metadata.policy_reason`에 기록하며 사용자 표시 문구와 구분한다. |
 | Correlation ID | FK가 아닌 application-level 연결 식별자. standalone RAG answer와 trace/usage/audit을 느슨하게 연결하는 데 사용하며 권한 판정 기준으로 쓰지 않는다. |
+| Eligible Audit Event | Security Alert rule 평가에 사용할 수 있는 audit. 인증 actor, 검증된 organization, failure action과 action별 safe target/reason 계약을 모두 만족해야 한다. |
+| Security Alert | Eligible Audit Event의 반복 패턴이 임계값을 충족했을 때 생성되는 organization-scoped 위험 신호와 관리자 대응 기록. 실제 침해 확정을 의미하지 않으며 자동 사용자 차단을 수행하지 않는다. |
+| Detection Rule | 어떤 eligible audit를 어떤 시간 window와 threshold로 묶어 Security Alert를 만들지 정의하는 versioned 규칙. |
+| Detection Key | Organization, actor, rule/version, 필요한 경우 policy reason을 조합한 내부 집계 key. 같은 key의 활성 alert 중복 방지에 사용하며 API에 노출하지 않는다. |
+| Rule Version | Threshold나 detection key 의미 변경 전후의 alert를 섞지 않기 위한 rule 계약 버전. Security Alert MVP는 `v1`을 사용한다. |
+| Alert Evidence | Security Alert 판단 근거가 된 `audit_logs` row와 alert의 연결. 원본 metadata를 복사하지 않고 safe audit projection으로 조회한다. |
+| Cooldown | 같은 detection key의 반복 event가 alert를 계속 새로 만들지 않도록 기존 활성 alert에 occurrence와 evidence를 모으는 기간. Security Alert MVP는 마지막 탐지 기준 30분 sliding cooldown을 사용한다. |
+| Reconciliation | 실시간 탐지 task가 놓친 audit를 durable cursor와 overlap window로 다시 처리하는 복구 작업. 동일 evaluator와 idempotency 계약을 사용하며 기능 활성화 이전 audit은 backfill하지 않는다. |
 
 ## Operations And Integrations
 
 | 용어 | 정의 |
 | --- | --- |
-| Admin Dashboard | 플랫폼 관리자와 감사자가 audit log, LLM usage/cost, 비정상 접근 시도, 사용자 비활성화 상태를 확인하는 운영 화면이다. |
+| Admin Dashboard | Organization 관리자와 권한을 가진 감사자가 audit log, LLM usage/cost, 사용자 접근 상태를 확인하는 운영 화면이다. Security Alert 탭의 조회·상태 변경은 현재 organization owner/manager에게만 허용하며 audit 전용 권한과 구분한다. |
 | Gateway | `apps/gateway/` FastAPI 서비스. 인증된 API 진입점과 resource permission enforcement 경계다. |
 | Workflow Engine | `apps/workflow_engine/` Celery worker. Workflow 실행과 node runtime을 담당한다. |
 | Log System | `apps/log_system/` Celery worker. audit/trace/log 계열 비동기 처리를 담당한다. |

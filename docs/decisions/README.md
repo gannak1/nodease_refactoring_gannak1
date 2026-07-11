@@ -47,6 +47,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0025](ADR-0025-agent-builder-intent-model-selection.md) | Accepted | Agent Builder 내부 intent model 선택 경계 | Active organization의 valid credential, active chat model, verified relation, `use` 권한을 통과한 조합만 header에 표시하고 선택값을 매 message request에서 재검증한다. 선택 상태는 session/draft/workflow에 저장하지 않고 permission 차단 audit에는 safe ID와 reason만 허용하며 workflow node credential 자동 설정 금지는 유지한다. |
 | [ADR-0026](ADR-0026-agent-builder-intent-and-connection-validation.md) | Accepted | Agent Builder intent 및 graph 연결 검증 | Schema-valid LLM 의미 후보를 semantic invariant로 재검증하고 최대 1회 safe-code repair 후 fail-closed한다. Catalog v2 연결 정책을 preview/apply-save 양쪽에서 검증하며 `loopNode`는 Builder 제품 가용성에서 제외한다. |
 | [ADR-0027](ADR-0027-agent-builder-pre-intent-safe-kb-context.md) | Accepted | Agent Builder pre-intent safe KB context | Intent LLM 호출 전에 권한과 retrieval-visible gate를 통과한 KB metadata 후보를 조회하고 상위 20개의 opaque handle, safe label/topics/description, runtime availability, bounded relevance만 prompt에 제공한다. LLM handle은 hint이며 backend가 다시 ranking·권한·materialization을 검증한다. |
+| [ADR-0028](ADR-0028-security-alert-detection-and-lifecycle.md) | Accepted | Security Alert 탐지와 lifecycle 경계 | 조직·actor가 검증된 `permission.denied`와 allowlist `policy.block`을 규칙 기반 alert로 탐지하는 정책을 확정했다. Alert/evidence 모델, 실시간 detector, reconciliation, 관리자 API/UI는 MBA-211~214, audit producer 정규화는 MBA-223 구현 전이다. |
 
 ## 참고 보고서
 

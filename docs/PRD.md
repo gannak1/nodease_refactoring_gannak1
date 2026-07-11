@@ -88,19 +88,22 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 시연에서 사용하는 Agent Builder workflow는 사내 지식 통합 질의 workflow다. 이 workflow는 직원의 질문을 입력으로 받아, 사내 복지/휴가/인사 정책 문서가 색인된 Knowledge Base를 검색하고, LLM이 권한이 허용된 문서 근거를 바탕으로 답변을 생성한다. Slack 등 외부 채널 연동은 이번 시연에서 제외하고, Nodease 내부 입력 노드와 응답 노드로 결과를 확인한다.
 
-### 시나리오 2: 감사 로그와 운영 위험 관측 (플랫폼 관리자)
+### 시나리오 2: 감사 로그와 보안·운영 위험 관측 (조직 관리자)
 
-1. 플랫폼 관리자는 admin 계정으로 로그인한다.
+1. 조직 관리자는 admin 계정으로 로그인한다.
 2. 관리자는 관리자 화면에서 audit 목록 탭으로 이동한다.
 3. 관리자는 권한 신청, 권한 승인, workflow 생성, workflow 배포, workflow 실행 기록을 확인한다.
 4. 관리자는 이번 달 조직에서 사용한 LLM 비용을 숫자로 확인한다.
 5. 관리자는 예산을 초과했거나 예산 위험 구간에 들어간 workflow 비율을 확인한다.
 6. 관리자는 필요하면 특정 audit log를 열어본다. 
-7. 구체적으로 구현되었다면: 열어서 actor, action, target, status, timestamp를 확인한다.
+7. 관리자는 상세에서 actor, action, target, status, timestamp를 확인한다.
 8. 관리자는 user actor를 선택해 current organization의 membership, role, team/direct permission source를 확인한다.
 9. 관리자는 필요한 경우 항목별 확인과 선택 사유를 거쳐 member를 정지·재활성화하거나 role/resource access를 회수·재부여하고, 결과 audit의 안전한 변경 전후 상태를 확인한다.
-
-후순위: 조직 운영 상태를 요약하는 상단 긴급 알림 패널과 부적절한 접근/행동 탐지 건수 확인은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
+10. 같은 사용자의 권한 거부 또는 보안 allowlist 정책 차단이 임계값을 넘으면 Sidebar의 open 보안 알림 badge를 확인한다.
+11. 관리자는 알림 overlay에서 최근 위험 신호를 선택해 Admin Dashboard의 `보안 알림` 탭과 해당 alert 상세로 이동한다.
+12. 관리자는 탐지 규칙, 심각도, 발생 횟수, 최초·최근 탐지 시각과 안전한 관련 audit를 확인한다.
+13. 관리자는 alert를 확인 상태로 바꾸고, 필요하면 기존 사용자 접근 관리 화면에서 current organization membership 또는 권한을 수동 조치한다.
+14. 대응 완료, 오탐 또는 위험 수용 사유를 남겨 alert를 해결하고 해당 lifecycle audit을 확인한다.
 
 이 시나리오는 Nodease가 workflow 생성 도구에 그치지 않고, 기업 내부 AI workflow 운영에 필요한 감사 가능성과 비용/위험 관측 표면을 제공한다는 점을 보여준다.
 
@@ -175,7 +178,7 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 23. 이번 달 조직 LLM 사용 비용을 확인한다.
 24. 예산 초과 workflow 비율을 확인한다.
 
-후순위: 상단 긴급 알림 패널 확인은 후순위 구현 항목이다. 구현이 완료되면 이 막에 단계로 다시 추가한다.
+보안 이상 접근 탐지와 관리자 대응 흐름은 시나리오 2에서 별도로 확인한다. 비용 위험 알림은 Security Alert와 섞지 않는다.
 
 **4막 — 비용 위험 workflow 최적화**
 
@@ -213,9 +216,9 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 - FR-011: audit log 검색/필터 (행위자, action, 대상, 기간)와 개별 로그 상세 조회 (actor, action, target, status, timestamp)
 - FR-012: workflow별 LLM 사용량/비용 집계 표시
-- FR-013 (후순위): 권한 차단(`permission.denied`) 등 비정상 접근 시도 표시. 현재 시나리오에서 사용하지 않으며, 구현이 완료되면 시나리오와 함께 복원한다.
+- FR-013: 검증된 organization과 인증 actor가 있는 `permission.denied` 및 보안 allowlist `policy.block`을 시간 window와 임계값 기준으로 탐지해 영속 Security Alert로 저장한다. Organization owner/manager는 Sidebar open badge와 Admin Dashboard `보안 알림` 탭에서 alert와 안전한 audit 근거를 확인하고 `open/acknowledged/resolved` lifecycle을 관리한다. 자동 사용자 차단은 하지 않고 기존 actor access management를 통한 수동 조치만 제공한다 ([ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md), [Security Alert requirements](features/security-alert/requirements.md)).
 - FR-014: workflow 생성/배포 권한 신청 목록 조회와 승인/거절, 부여된 App 생성 권한의 목록 조회와 회수
-- FR-015: 조직 월간 비용, 예산 위험 workflow 비율 요약 (부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이며, 구현 완료 시 시나리오 2에 단계로 복원한다)
+- FR-015: 조직 월간 비용, 예산 위험 workflow 비율 요약. 비용·예산 위험은 FR-013 Security Alert 탐지 입력과 분리한다.
 - FR-016: Audit log의 user actor를 current organization member access profile과 연결하고 membership, role, team/App-creation/direct/team-inherited permission source를 조회
 - FR-017: Organization manager가 actor access 항목을 하나씩 정지·재활성화, role 변경, team/direct/App-creation 권한 회수·재부여하고 optional reason을 기록. Audit `auditor`/`raw_auditor`는 조회 전용
 - FR-018: Access-management audit detail에 target별 allowlist로 만든 안전한 변경 전후 상태를 표시하고 raw before/after, secret, hidden resource는 제외
@@ -256,6 +259,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 | NFR-005 | 기존 경로 보존 | workflow 생성/저장/실행/배포의 기존 경로가 깨지지 않는다. |
 | NFR-006 | 성능 목표 | TBD (데모 환경 기준 목표치 확정 필요) |
 | NFR-007 | RAG 권한 경계 | 모든 RAG 검색 모드는 권한 검사를 통과한 문서만 검색 후보로 사용한다. 권한 없는 문서는 검색 후보, prompt, citation, trace 어디에도 포함되지 않는다. 권한/정책상 제외된 문서를 화면에 표시할 때는 문서명과 정확한 건수를 노출하지 않는 안전한 요약(bucketed summary)으로만 표시한다. |
+| NFR-008 | Security Alert 반영 | 정상 worker와 notification 경로에서 eligible event가 임계값에 도달한 뒤 관리자 UI에 1분 이내 반영한다. 탐지 실패는 원래 authorization 결과나 사용자 응답을 변경하지 않는다. |
 
 ## 7. 성공 지표
 
@@ -263,7 +267,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 - [ ] 시나리오 1 (권한 신청): 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
 - [ ] 시나리오 1 (Agent Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 초안을 만들고, Preview Mode에서 내부 설정을 확인한 뒤 `적용 및 저장`으로 저장하고, 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
-- [ ] 시나리오 2: 관리자가 관리자 화면에서 권한 신청/승인, workflow 생성/배포/실행 audit 기록과 조직 비용/예산 위험 요약을 확인하고, user actor의 current organization access를 항목별로 제어한 뒤 결과 audit을 확인
+- [ ] 시나리오 2: 조직 관리자가 audit와 비용/예산 위험 요약을 확인하고, 반복 권한·정책 차단에서 생성된 Security Alert를 Sidebar와 Admin Dashboard에서 확인·조사·해결하며 필요한 경우 current organization user access를 수동 조치
 - [ ] 시나리오 3: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
 
 ## 8. Open Questions
@@ -274,4 +278,4 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - NFR-006 성능 목표치
 - 통합 RAG의 destructive production cutover/reset, raw artifact opt-in, code-bearing Knowledge Skill, platform-wide Workflow egress guard는 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md) 범위 밖이며 별도 승인 전까지 구현하지 않는다.
 
-후순위와 함께 미뤄진 질문: Admin 대시보드의 "비정상 접근" 판정 기준(차단 횟수 임계값 등)은 FR-013 복원 시 다시 논의한다.
+Security Alert의 탐지 대상, 임계값, cooldown, lifecycle, organization 권한과 비범위는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)에서 확정한다. 인증 전/IP 기반 탐지, 플랫폼 운영자 경보, 비용·실행 실패·대량 삭제 같은 운영 이상과 외부 전달 채널은 후속 범위다.
