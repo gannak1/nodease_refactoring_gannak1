@@ -1,10 +1,4 @@
-import type { BudgetUsageStatus } from '../types';
-
-const statusLabel: Record<BudgetUsageStatus, string> = {
-  normal: '정상',
-  at_risk: '위험',
-  exceeded: '초과',
-};
+import { budgetStatusLabel, type BudgetUsageStatus } from '../types';
 
 const statusTone: Record<BudgetUsageStatus, string> = {
   normal: 'border-emerald-200 bg-emerald-50 text-emerald-700',
@@ -30,7 +24,7 @@ export function BudgetStatusBadge({
     <span
       className={`inline-flex w-fit items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold ${statusTone[normalizedStatus]}`}
     >
-      <span>{statusLabel[normalizedStatus]}</span>
+      <span>{budgetStatusLabel[normalizedStatus]}</span>
       {usageRatio !== undefined && usageRatio !== null && (
         <span>{Math.round(usageRatio * 100)}%</span>
       )}

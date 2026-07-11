@@ -27,6 +27,11 @@ import { appApi, type App } from '@/app/features/app/api/appApi';
 import { BudgetStatusBadge } from '@/app/features/budget/components/BudgetStatusBadge';
 import { budgetRunBlockMessage } from '@/app/features/budget/utils/budgetGuard';
 import {
+  budgetStatusLabel,
+  isBudgetAtRisk,
+  type BudgetUsageStatus,
+} from '@/app/features/budget/types';
+import {
   moduleOperationsApi,
   type ModuleOperationRow,
   type ModuleOperationsListParams,
@@ -112,8 +117,27 @@ type CostOptimizationSignal = {
   monthlyCost: number | null;
   trendPercent: number | null;
   budgetUsageRatio: number | null;
+  budgetStatus: BudgetUsageStatus | null;
   recommended: boolean;
   reason: string;
+};
+
+const budgetStatusPresentation: Record<
+  BudgetUsageStatus,
+  { textClassName: string; barClassName: string }
+> = {
+  normal: {
+    textClassName: 'text-emerald-600',
+    barClassName: 'bg-emerald-500',
+  },
+  at_risk: {
+    textClassName: 'text-amber-600',
+    barClassName: 'bg-amber-500',
+  },
+  exceeded: {
+    textClassName: 'text-red-600',
+    barClassName: 'bg-red-500',
+  },
 };
 
 const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
@@ -122,6 +146,7 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
       monthlyCost: 0,
       trendPercent: null,
       budgetUsageRatio: row.app.budget_status?.usage_ratio ?? null,
+      budgetStatus: row.app.budget_status?.status ?? null,
       recommended: false,
       reason: '배포 중인 워크플로우가 아닙니다.',
     };
@@ -132,11 +157,11 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
     metrics?.projected_month_cost ?? metrics?.current_month_cost ?? null;
   const trendPercent = metrics?.trend_percent ?? null;
   const budgetUsageRatio = row.app.budget_status?.usage_ratio ?? null;
-  const budgetStatus = row.app.budget_status?.status;
+  const budgetStatus = row.app.budget_status?.status ?? null;
   const hasCostData =
     metrics != null &&
     ((metrics.current_month_cost ?? 0) > 0 || (monthlyCost ?? 0) > 0);
-  const budgetAtRisk = budgetStatus === 'at_risk' || budgetStatus === 'exceeded';
+  const budgetAtRisk = isBudgetAtRisk(budgetStatus);
   const trendAtRisk = trendPercent != null && trendPercent >= 20;
   const recommended = budgetAtRisk || trendAtRisk;
 
@@ -156,6 +181,7 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
     monthlyCost,
     trendPercent,
     budgetUsageRatio,
+    budgetStatus,
     recommended,
     reason,
   };
@@ -361,8 +387,7 @@ export default function MyModulePage() {
       );
       const recommended = costSignals.filter((signal) => signal.recommended);
       const atRiskBudget = costSignals.filter(
-        (signal) =>
-          signal.budgetUsageRatio != null && signal.budgetUsageRatio >= 0.8,
+        (signal) => isBudgetAtRisk(signal.budgetStatus),
       );
       const averageTrend =
         trendSignals.length > 0
@@ -781,6 +806,9 @@ function ModuleOperationTableRow({
     costSignal.budgetUsageRatio == null
       ? null
       : Math.round(costSignal.budgetUsageRatio * 100);
+  const budgetPresentation = costSignal.budgetStatus
+    ? budgetStatusPresentation[costSignal.budgetStatus]
+    : null;
   const trendPercent = costSignal.trendPercent;
 
   return (
@@ -861,30 +889,16 @@ function ModuleOperationTableRow({
           <div className="min-w-28">
             <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-700">
               <span>{budgetPercent}%</span>
-              <span
-                className={
-                  budgetPercent >= 100
-                    ? 'text-red-600'
-                    : budgetPercent >= 80
-                      ? 'text-amber-600'
-                      : 'text-emerald-600'
-                }
-              >
-                {budgetPercent >= 100
-                  ? '초과'
-                  : budgetPercent >= 80
-                    ? '위험'
-                    : '정상'}
+              <span className={budgetPresentation?.textClassName}>
+                {costSignal.budgetStatus
+                  ? budgetStatusLabel[costSignal.budgetStatus]
+                  : '확인 필요'}
               </span>
             </div>
             <div className="mt-2 h-2 rounded-full bg-slate-100">
               <div
                 className={`h-2 rounded-full ${
-                  budgetPercent >= 100
-                    ? 'bg-red-500'
-                    : budgetPercent >= 80
-                      ? 'bg-amber-500'
-                      : 'bg-emerald-500'
+                  budgetPresentation?.barClassName ?? 'bg-slate-300'
                 }`}
                 style={{ width: `${Math.min(budgetPercent, 100)}%` }}
               />

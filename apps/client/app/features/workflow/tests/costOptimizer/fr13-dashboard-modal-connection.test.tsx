@@ -141,4 +141,43 @@ describe('FR-013 내 모듈 추천 모달 연결', () => {
     });
     expect(routerMock.push).not.toHaveBeenCalled();
   });
+
+  it('예산 사용률 숫자가 아닌 API status로 운영 목록의 위험 상태를 표시한다', async () => {
+    vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValueOnce([
+      {
+        app: {
+          id: 'app-1',
+          name: '서버 상태 기준 워크플로우',
+          workflow_id: 'workflow-1',
+          created_at: '2026-07-11T00:00:00.000Z',
+          updated_at: '2026-07-11T00:00:00.000Z',
+          budget_status: { status: 'normal', usage_ratio: 0.81 },
+          operation_metrics: {
+            current_month_cost: 10,
+            projected_month_cost: 20,
+            previous_month_cost: 8,
+          },
+        },
+        deployment: { state: 'active', deployment_id: 'deployment-1' },
+        deploymentState: 'active',
+        latestRun: { state: 'success' },
+        permissionStatus: 'loaded',
+        permissionSources: [],
+        dataQuality: {
+          permissionSourcesUnavailable: false,
+          latestRunUnavailable: false,
+        },
+      },
+    ] as never);
+
+    render(<MyModulePage />);
+
+    const usage = (await screen.findAllByText('81%')).at(-1);
+    expect(usage).toBeDefined();
+    expect(usage.parentElement).toHaveTextContent('정상');
+    expect(usage.parentElement).not.toHaveTextContent('위험');
+    expect(
+      screen.queryByRole('button', { name: '최적화 권장' }),
+    ).not.toBeInTheDocument();
+  });
 });
