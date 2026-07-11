@@ -17,7 +17,7 @@ Status: Draft
 | POST | `/api/v1/mail/credentials` | Mail credential 등록 | Organization manager |
 | GET | `/api/v1/mail/credentials` | 사용 가능한 safe option 목록 | `use` 이상 또는 manager |
 | GET | `/api/v1/mail/credentials/{credential_id}` | Safe metadata 조회 | `read` 이상 또는 manager |
-| PATCH | `/api/v1/mail/credentials/{credential_id}` | 이름 또는 secret 교체 | `manage` 또는 manager |
+| PATCH | `/api/v1/mail/credentials/{credential_id}` | 이름 또는 non-OAuth secret 교체 | `manage` 또는 manager |
 | DELETE | `/api/v1/mail/credentials/{credential_id}` | Credential revoke | `manage` 또는 manager |
 | GET | `/api/v1/mail/credentials/{credential_id}/permissions` | User/team 권한 목록 | `manage` 또는 manager |
 | PUT | `/api/v1/mail/credentials/{credential_id}/permissions/users/{user_id}` | User direct 권한 부여·변경 | `manage` 또는 manager |
@@ -55,6 +55,7 @@ Status: Draft
   "id": "00000000-0000-0000-0000-000000000000",
   "credential_name": "업무용 메일",
   "provider": "gmail",
+  "auth_type": "oauth2",
   "email_preview": "m***@example.com",
   "status": "active"
 }
@@ -79,7 +80,7 @@ Status: Draft
 
 ## PATCH 계약
 
-PATCH는 `credential_name`, `secret` 중 하나 이상을 요구한다. `email_address`, provider, auth type, `imap_host`, `imap_port`, `use_ssl` 변경은 mailbox identity 또는 secret 전송 endpoint 변경으로 간주하므로 새 credential 등록을 사용한다. Unknown field와 null field는 `validation.failed`로 거부한다.
+PATCH는 `credential_name`, `secret` 중 하나 이상을 요구한다. OAuth credential의 `secret` 교체는 OAuth authorization flow만 사용하며 일반 PATCH에서는 `mail.oauth_credential_managed`로 거부한다. `email_address`, provider, auth type, `imap_host`, `imap_port`, `use_ssl` 변경은 mailbox identity 또는 secret 전송 endpoint 변경으로 간주하므로 새 credential 등록을 사용한다. Unknown field와 null field는 `validation.failed`로 거부한다.
 
 ## Permission 계약
 
@@ -105,11 +106,15 @@ Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager
 
 ## Gmail OAuth 계약
 
-`POST /oauth/google/start` body는 `credential_name`만 허용한다. Server는 인증 사용자와 active organization을 pending flow에 묶고 Google authorization URL을 반환한다. URL은 `gmail.compose` restricted scope, offline access와 명시 consent를 요청한다. Client가 organization, redirect URI, scope 또는 provider endpoint를 임의 지정할 수 없다.
+`POST /oauth/google/start` body는 `credential_name`만 허용한다. Server는 인증 사용자와 active organization을 pending flow에 묶고 Google authorization URL을 반환한다. URL은 `gmail.modify` restricted scope, offline access와 명시 consent를 요청한다. Client가 organization, redirect URI, scope 또는 provider endpoint를 임의 지정할 수 없다.
 
-Callback은 server-issued state, PKCE verifier, pending flow actor와 만료를 검증한다. Google token response의 refresh/access token은 response나 redirect query에 포함하지 않는다. Refresh token과 승인 scope는 Mail credential encryption envelope에 저장하며 mailbox identity는 provider userinfo에서 검증한다. 성공 redirect에는 opaque credential id 또는 safe outcome만 허용한다.
+Callback은 server-issued state, PKCE verifier, pending flow actor와 만료를 검증한다. Google token response의 refresh/access token은 response나 redirect query에 포함하지 않는다. Refresh token과 승인 scope는 Mail credential encryption envelope에 저장하며 mailbox identity는 provider userinfo에서 검증한다. 성공 후 동일 출처의 정적 완료 화면으로 `303` 전환하며 credential id를 query나 HTML에 포함하지 않는다.
 
-OAuth 실패는 `mail.oauth_state_invalid`, `mail.oauth_flow_expired`, `mail.oauth_token_exchange_failed`, `mail.oauth_scope_insufficient`, `mail.oauth_refresh_token_required` 중 safe code로 반환하며 provider raw response를 노출하지 않는다.
+Production은 `GOOGLE_OAUTH_REDIRECT_URI`에 사전 등록된 HTTPS callback URI를 명시하고 안전한 `SECRET_KEY`를 제공해야 한다. Local development에서만 `localhost` 또는 `127.0.0.1` callback을 요청 URL로 유도할 수 있다.
+
+OAuth 취소 또는 실패는 `mail.oauth_cancelled`, `mail.oauth_state_invalid`, `mail.oauth_flow_expired`, `mail.oauth_token_exchange_failed`, `mail.oauth_scope_insufficient`, `mail.oauth_refresh_token_required` 중 safe code로 반환하며 provider raw response를 노출하지 않는다. Provider `error` 원문은 응답 detail에 반영하지 않는다.
+
+OAuth Gmail credential의 Mail 조회와 읽음 처리는 고정 Gmail REST API만 사용한다. 저장된 scope에 `gmail.modify`가 없으면 token refresh/provider 호출 전에 `mail.oauth_scope_insufficient`로 실패하고 재인가를 요구한다. OAuth credential은 IMAP XOAUTH2 fallback을 사용하지 않는다.
 
 ## Workflow Runtime Reference 계약
 

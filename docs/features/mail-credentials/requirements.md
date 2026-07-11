@@ -40,9 +40,10 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - MAIL-CRED-REQ-029: Gmail OAuth credential은 로그인 OAuth와 분리된 organization Mail credential이어야 하며 refresh token은 기존 versioned encryption envelope로 저장해야 한다.
 - MAIL-CRED-REQ-030: Gmail OAuth callback은 인증 사용자, active organization, manager 권한, state와 PKCE를 검증한 뒤에만 credential을 생성해야 한다.
 - MAIL-CRED-REQ-031: Gmail Draft runtime은 `use` 권한과 active/revoked 상태를 외부 호출 직전에 다시 확인하고 access token과 refresh token을 API, graph, audit, trace, log에 노출하지 않아야 한다.
+- MAIL-CRED-REQ-031A: OAuth credential의 secret은 일반 PATCH로 교체할 수 없으며 OAuth authorization flow를 통해서만 갱신해야 한다. Local revoke는 다음 runtime부터 즉시 fail-closed해야 한다.
 - MAIL-CRED-REQ-032: Gmail Draft adapter는 `users.drafts.create`만 허용하며 Gmail send endpoint와 arbitrary method/URL 실행 surface를 제공하지 않아야 한다.
 - MAIL-CRED-REQ-033: Durable processing identity는 organization, workflow, stable source node, credential과 provider message identity에 묶여야 하며 동일 logical consumer의 중복 실행을 하나의 processing row로 수렴해야 한다.
-- MAIL-CRED-REQ-034: IMAP sequence id 단독 사용을 금지하고 RFC Message-ID, UID/UIDVALIDITY와 provider canonical lookup을 사용해야 한다.
+- MAIL-CRED-REQ-034: IMAP sequence id 단독 사용을 금지하고 canonical folder, RFC Message-ID, UID/UIDVALIDITY와 provider canonical lookup을 사용해야 한다.
 - MAIL-CRED-REQ-035: Gmail Draft effect는 provider 호출 전에 durable admission을 완료하고 `succeeded`, `failed_before_effect`, `outcome_unknown`을 구분해야 한다.
 - MAIL-CRED-REQ-036: `outcome_unknown`은 자동 replay하지 않아야 한다. Provider 호출 전 실패가 확정된 경우에만 bounded retry할 수 있다.
 - MAIL-CRED-REQ-037: Terminal acknowledgement는 required effect가 모두 성공한 뒤 서버가 검증한 opaque reference를 기준으로 수행해야 한다.
@@ -53,6 +54,17 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - MAIL-CRED-REQ-042: Processing/effect durable row와 telemetry에는 Mail body, subject, recipient, MIME, token, raw provider id/response/error를 저장하지 않아야 한다.
 - MAIL-CRED-REQ-043: Client와 Agent Builder는 Gmail Draft credential을 자동 선택하지 않고 unresolved reference와 safe configuration issue만 생성해야 한다.
 - MAIL-CRED-REQ-044: Gmail OAuth restricted scope와 application no-send 경계는 운영 승인 및 배포 설정에서 명시적으로 검증해야 한다.
+- MAIL-CRED-REQ-045: Gmail OAuth Mail 조회, 읽음 변경과 Draft 생성은 `gmail.modify` scope의 고정 Gmail REST adapter를 사용해야 하며 OAuth credential을 IMAP XOAUTH2로 연결하지 않아야 한다. Password/app-password credential만 제한된 IMAP egress 경로를 사용한다.
+- MAIL-CRED-REQ-046: Gmail REST provider message id는 최소 source reference envelope에만 암호화 저장하고 Mail node output, API, audit, trace, log에 노출하지 않아야 한다. Draft와 acknowledgement는 이 id를 서버에서 복호화하고 canonical RFC Message-ID를 재검증해야 한다.
+- MAIL-CRED-REQ-047: IMAP Mail fetch와 Gmail REST body decode는 명시한 byte 상한을 적용하고 과도한 원문은 MIME/attachment 처리 전에 safe error로 거부해야 한다.
+- MAIL-CRED-REQ-048: Retry 가능한 Draft 실패는 durable `next_attempt_at`과 attempt cap을 가져야 한다. Cap 소진은 effect `exhausted`와 parent processing `failed`를 원자적으로 terminal 처리해야 한다.
+- MAIL-CRED-REQ-049: Terminal acknowledgement는 deployment와 graph selector에서 계산한 required-effect contract hash를 processing row에 고정하고 다른 contract의 완료 시도를 거부해야 한다.
+- MAIL-CRED-REQ-050: Mail processing/effect는 workflow 운영 상태이며 workflow 삭제 시 함께 cascade 정리한다. 감사 보존은 별도 append-only audit log가 담당한다.
+- MAIL-CRED-REQ-051: Mail 처리 metric과 구조화 상태 로그는 고정된 저카디널리티 event/outcome만 사용하고 raw message/draft/tenant/provider 식별자와 사용자 입력을 포함하지 않아야 한다.
+- MAIL-CRED-REQ-052: OAuth access token refresh는 짧은 durable credential lease로 직렬화하고 외부 token HTTP 동안 DB row lock이나 transaction을 유지하지 않아야 한다. Replacement refresh token rotation과 `invalid_grant` local revoke는 lease owner 확인 후 audit와 같은 transaction에서 finalize해야 하며, 다른 provider 오류는 credential을 자동 revoke하지 않아야 한다.
+- MAIL-CRED-REQ-053: 이미 성공한 terminal acknowledgement와 활성 acknowledgement lease를 본 중복 실행은 Gmail/IMAP provider acknowledgement를 다시 호출하지 않아야 한다.
+- MAIL-CRED-REQ-054: Deployment 전환 시 effect가 없는 `pending` processing만 새 deployment로 재귀속할 수 있다. Active/effect-bearing processing은 conflict로 차단하고 terminal success는 provider 호출 없이 재사용해야 한다.
+- MAIL-CRED-REQ-055: Mail trace lineage는 control edge와 selector data dependency를 모두 따라 downstream durable payload를 구조 요약으로 최소화해야 한다.
 
 ## Policies And Edge Cases
 
@@ -65,4 +77,6 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - Credential 삭제 API는 hard delete가 아니라 revoke semantics를 사용한다.
 - Revoked credential을 다시 사용하려면 기존 row를 수정하는 대신 새 credential을 등록한다.
 - OAuth refresh/token exchange, Gmail draft 생성, Message ID idempotency와 terminal acknowledgement는 MBA-217 통합 범위다.
+- Production OAuth start는 명시된 HTTPS callback URI와 안전한 session signing key가 없으면 실패해야 한다. 요청 Host 헤더로 public callback URI를 구성하지 않는다.
+- 기존 `gmail.compose`만 승인한 credential은 runtime scope 검증에서 fail-closed하며 `gmail.modify` 재인가가 필요하다.
 - Schedule Mail 실행에 필요한 service account 또는 assigned operator 정책은 MBA-219 또는 별도 ADR에서 확정한다.

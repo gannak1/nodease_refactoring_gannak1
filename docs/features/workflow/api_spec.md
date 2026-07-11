@@ -239,6 +239,10 @@ Example detail response:
 - Non-null `credential_id`는 active organization의 active Mail credential이어야 하며 저장 요청자에게 `use` 권한이 있어야 한다. Organization 밖 reference는 `404`, 같은 organization의 권한 부족은 `403`으로 처리한다.
 - `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있지만 deployment snapshot 생성과 기존 deployment 활성화는 `422 mail.credential_reference_required`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 같은 reason으로 차단한다.
 - `mailNode.processing_mode`는 `search_only | durable`이며 누락 시 `search_only`다. `durable`과 `mark_as_read=true` 조합은 `422 mail.processing_configuration_invalid`로 거부한다.
+- 단일 `gmailDraftNode`에 직접 연결되는 source Mail node는 `processing_mode=durable`, `max_results=1`이어야 하며 `processing_ref_selector=[mail_node_id, "processing_ref"]`를 사용한다.
 - `gmailDraftNode` data는 `credential_id`, `configuration_state`, `processing_ref_selector`, `reply_body_selector`와 제한된 UI metadata만 허용한다.
 - `mailAcknowledgeNode` data는 `processing_ref_selector`, `required_effect_ref_selectors`와 제한된 UI metadata만 허용한다.
 - Draft/Acknowledge node에 raw provider message/draft id, recipient override, MIME, token, arbitrary status boolean이나 non-empty `parameters`가 있으면 `422 mail.processing_configuration_invalid`로 거부한다.
+- Draft/Acknowledge selector가 존재하지 않는 node, 잘못된 output key, 선행 경로 밖 node 또는 서로 다른 Mail processing source를 가리키면 배포를 `422 mail.processing_configuration_invalid`로 거부한다. Gmail Draft credential은 source Mail credential과 같고 `provider=gmail`, `auth_type=oauth2`여야 한다.
+- OAuth Gmail credential의 Mail 조회와 acknowledgement는 `gmail.modify` 기반 고정 Gmail REST API를 사용한다. `gmail.compose`-only credential은 재인가 전 실행할 수 없고 OAuth credential에는 IMAP fallback이 없다.
+- Gmail REST message id는 durable source reference에 암호화 저장되며 `mailNode` output에는 포함되지 않는다.

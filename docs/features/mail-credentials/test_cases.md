@@ -72,3 +72,19 @@ Status: Draft
 - MAIL-CRED-TC-062: Production adapter와 catalog에는 Gmail send endpoint/capability가 존재하지 않는다.
 - MAIL-CRED-TC-063: Processing/effect row, API, graph, audit, trace, log와 fixture에 body, MIME, token, raw provider id/response/error가 없다.
 - MAIL-CRED-TC-064: Migration은 최신 단일 head를 유지하고 기존 IMAP credential/workflow를 보존한다.
+- MAIL-CRED-TC-065: OAuth start는 `gmail.modify`만 요청하고 기존 `gmail.compose`-only secret은 provider 호출 전에 scope 부족으로 거부한다.
+- MAIL-CRED-TC-066: OAuth Gmail Mail node는 고정 Gmail REST API로 검색·조회하며 IMAP socket/XOAUTH2를 호출하지 않는다. Password/app-password credential은 기존 IMAP TLS 경로를 유지한다.
+- MAIL-CRED-TC-067: Gmail REST 검색의 provider message id는 Mail output에 없고 암호화 source reference와 identity hash에만 반영된다.
+- MAIL-CRED-TC-068: Gmail REST 메시지 상세 조회가 하나라도 실패하면 search-only 일괄 읽음 처리를 호출하지 않는다. 성공한 전체 집합만 `batchModify`로 읽음 처리한다.
+- MAIL-CRED-TC-069: Gmail provider 401/403은 재인가 필요, 429/5xx/timeout은 safe unavailable code로 분류하며 provider raw response/error는 노출하지 않는다.
+- MAIL-CRED-TC-070: OAuth terminal acknowledgement는 암호화 source reference의 provider message id로 고정 `messages.modify`를 호출하고 IMAP UID 경로를 사용하지 않는다.
+- MAIL-CRED-TC-071: 과도한 IMAP raw message와 Gmail REST body payload는 MIME/attachment 처리 전에 size limit으로 거부된다.
+- MAIL-CRED-TC-072: `failed_before_effect`는 `next_attempt_at` 전에 reclaim되지 않고 attempt cap 소진 시 effect/processing이 `exhausted`/`failed` terminal 상태가 된다.
+- MAIL-CRED-TC-073: 같은 processing을 다른 deployment 또는 다른 required-effect selector contract로 acknowledge하면 provider 호출 전에 거부된다.
+- MAIL-CRED-TC-074: Workflow 삭제 시 processing/effect operational row는 cascade 정리되고 별도 audit row lifecycle에는 영향을 주지 않는다.
+- MAIL-CRED-TC-075: Mail processing metric에 임의 event/outcome을 전달하면 `unknown`으로 정규화하며 raw message/draft/tenant/provider 값이 label이나 구조화 로그에 남지 않는다.
+- MAIL-CRED-TC-076: selector로만 Mail output을 참조하는 downstream LLM/template node와 그 후손도 Mail-sensitive lineage로 분류되어 durable trace가 구조 요약으로 치환된다.
+- MAIL-CRED-TC-077: 이미 성공한 acknowledgement 또는 다른 실행의 활성 ack lease를 만나면 provider acknowledgement 호출 수는 증가하지 않는다. Ack 실패는 lease를 해제하고 Draft를 재생성하지 않는다.
+- MAIL-CRED-TC-078: 재배포 후 effect 없는 pending processing은 현재 deployment로 재귀속되지만 active/effect-bearing processing은 conflict로 차단되고 terminal success는 재사용된다.
+- MAIL-CRED-TC-079: 동시 OAuth refresh는 짧은 credential lease winner만 provider를 호출하고 외부 HTTP 동안 DB transaction을 유지하지 않는다. Replacement token rotation과 audit은 lease owner를 확인한 finalize transaction에서 commit하며 `invalid_grant`만 local revoke한다.
+- MAIL-CRED-TC-080: Opt-in disposable PostgreSQL race에서 동일 message registration은 한 processing id로 수렴하고 동시 Draft admission의 acquired winner는 하나다.

@@ -51,6 +51,12 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Gmail Draft node는 processing/reply selectors와 OAuth credential만 허용하고 send/recipient/MIME/provider id field를 거부한다.
 - Mail Acknowledge node는 같은 organization/workflow processing/effect reference만 허용하고 client success boolean을 거부한다.
 - 동일 processing/effect task 재전달과 provider outcome-unknown에서 Gmail create 호출 횟수는 1회를 넘지 않는다.
+- 기존 활성 Draft claim을 본 중복 실행은 Gmail provider를 호출하지 않는다.
+- OAuth Gmail Mail node는 REST provider를 사용하고 IMAP/XOAUTH2를 열지 않으며 provider message id를 node output에 노출하지 않는다.
+- OAuth Gmail acknowledgement는 REST `messages.modify`를 사용하고, provider 401/403/429/5xx/timeout은 safe code로 분류한다.
+- Mail node output이 downstream LLM/Draft input에 중첩되어도 durable trace에는 body/subject/recipient/processing ref가 없고 count/folder 또는 input count 요약만 남는다.
+- 단일 Gmail Draft source가 `max_results != 1`이거나 top-level `processing_ref` output을 제공하지 않으면 배포를 거부한다.
+- Unresolved Draft/Acknowledge node는 편집 draft로 저장할 수 있지만 source/effect selector, graph path, 동일 Gmail OAuth credential이 해결되지 않으면 배포할 수 없다.
 - Runtime은 인증 test/deployment 표면에서 canonical organization, 명시 execution subject, active 상태와 `use` 권한을 재검증한다. Public/schedule 표면은 App/workflow owner의 `user_id`로 fallback하지 않고 명시 주체가 없으면 차단한다.
 - IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
 - Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
