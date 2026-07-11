@@ -50,7 +50,7 @@ def _state(fingerprint, image):
         ),
         (
             CLAIM,
-            DRAIN,
+            CLAIM,
             _state(CLAIM, "registry/gateway:old"),
             _state(CLAIM, WORKER_IMAGE),
             "all",
@@ -98,6 +98,18 @@ def test_rollout_state_matrix(desired, previous, gateway, worker, expected):
             CLAIM,
             _state(CLAIM, "registry/gateway:old"),
             _state(CLAIM, "registry/worker:old"),
+        ),
+        (
+            "v1|claim|6",
+            CLAIM,
+            _state("v1|claim|6", GATEWAY_IMAGE),
+            _state("v1|claim|6", WORKER_IMAGE),
+        ),
+        (
+            CLAIM,
+            DRAIN,
+            _state(CLAIM, "registry/gateway:old"),
+            _state(CLAIM, WORKER_IMAGE),
         ),
     ],
 )

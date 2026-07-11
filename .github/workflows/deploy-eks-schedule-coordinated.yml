@@ -113,6 +113,11 @@ jobs:
 
       - name: Run Alembic Migration
         run: |
+          migration_pod=alembic-coordinated-${{ github.run_id }}-${{ github.run_attempt }}
+          cleanup_migration_pod() {
+            kubectl delete pod "$migration_pod" --ignore-not-found=true >/dev/null
+          }
+          trap cleanup_migration_pod EXIT
           overrides=$(jq -cn --arg image "$gateway_image" '{
             apiVersion: "v1",
             spec: {
@@ -128,12 +133,13 @@ jobs:
               }]
             }
           }')
-          kubectl run alembic-coordinated-${{ github.run_id }} \
+          kubectl run "$migration_pod" \
             --image="$gateway_image" \
             --restart=Never \
             --attach=true \
             --overrides="$overrides"
-          kubectl delete pod alembic-coordinated-${{ github.run_id }} --ignore-not-found=true
+          cleanup_migration_pod
+          trap - EXIT
 
       - name: Render commit images and apply staged rollout
         run: |

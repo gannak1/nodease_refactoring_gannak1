@@ -119,6 +119,8 @@ def test_eks_gateway_and_worker_share_rollout_lock_and_fingerprint_preflight():
     assert "name: Run Alembic Migration" in coordinated
     assert "name: Render commit images and apply staged rollout" in coordinated
     assert "apiVersion: \"v1\"" in coordinated
+    assert "github.run_attempt" in coordinated
+    assert "trap cleanup_migration_pod EXIT" in coordinated
     assert "kubectl kustomize" in coordinated
     assert 'target_mode" == "claim"' in coordinated
     assert "previous_fingerprint:" in coordinated

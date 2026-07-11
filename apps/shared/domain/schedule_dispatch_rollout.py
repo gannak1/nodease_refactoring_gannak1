@@ -27,6 +27,12 @@ def evaluate_schedule_dispatch_rollout(
     if not desired_fingerprint or not previous_fingerprint:
         raise ScheduleDispatchRolloutError("rollout fingerprints are required")
     target_mode = _mode(desired_fingerprint)
+    previous_mode = _mode(previous_fingerprint)
+    settings_changed = desired_fingerprint != previous_fingerprint
+    if previous_mode == "claim" and target_mode == "claim" and settings_changed:
+        raise ScheduleDispatchRolloutError(
+            "drain mode is required before changing active claim settings"
+        )
 
     if gateway is None or worker is None:
         if target_mode != "disabled":
@@ -49,16 +55,16 @@ def evaluate_schedule_dispatch_rollout(
             and worker.image == desired_worker_image
         ):
             return "none"
+        if settings_changed:
+            raise ScheduleDispatchRolloutError(
+                "completed settings rollout has an unexpected image identity"
+            )
         return "all"
 
     if gateway.fingerprint == worker.fingerprint:
         if gateway.fingerprint != previous_fingerprint:
             raise ScheduleDispatchRolloutError(
                 "live fingerprint does not match the approved previous value"
-            )
-        if _mode(previous_fingerprint) == "claim" and target_mode == "claim":
-            raise ScheduleDispatchRolloutError(
-                "drain mode is required before changing active claim settings"
             )
         return "all"
 
