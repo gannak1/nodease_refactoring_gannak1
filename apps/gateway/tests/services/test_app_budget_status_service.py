@@ -47,13 +47,13 @@ def test_app_budget_status_boundaries_and_null_conditions():
             _usage_log(
                 organization_id,
                 workflow_ids["normal"],
-                total_cost=Decimal("89.99"),
+                total_cost=Decimal("79.99"),
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
             ),
             _usage_log(
                 organization_id,
                 workflow_ids["at_risk"],
-                total_cost=Decimal("90.00"),
+                total_cost=Decimal("80.00"),
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
             ),
             _usage_log(
@@ -85,11 +85,11 @@ def test_app_budget_status_boundaries_and_null_conditions():
     )
 
     assert statuses[workflow_ids["normal"]] == {
-        "usage_ratio": pytest.approx(0.8999),
+        "usage_ratio": pytest.approx(0.7999),
         "status": "normal",
     }
     assert statuses[workflow_ids["at_risk"]] == {
-        "usage_ratio": pytest.approx(0.9),
+        "usage_ratio": pytest.approx(0.8),
         "status": "at_risk",
     }
     assert statuses[workflow_ids["exact_budget"]] == {

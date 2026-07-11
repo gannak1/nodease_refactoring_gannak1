@@ -37,8 +37,8 @@ Verified Against: TBD
 
 ### AC-5. 예산 상태 경계값
 
-- Given 예산 100 USD와 당월 비용 89.99 USD인 App, When `GET /apps` 또는 `GET /apps/operations`를 호출한다, Then `budget_status.status`는 `normal`이고 `usage_ratio`는 0.8999다.
-- Given 예산 100 USD와 당월 비용 90.00 USD인 App, When 조회한다, Then `status`는 `at_risk`이고 `usage_ratio`는 0.9다.
+- Given 예산 100 USD와 당월 비용 79.99 USD인 App, When `GET /apps` 또는 `GET /apps/operations`를 호출한다, Then `budget_status.status`는 `normal`이고 `usage_ratio`는 0.7999다.
+- Given 예산 100 USD와 당월 비용 80.00 USD인 App, When 조회한다, Then `status`는 `at_risk`이고 `usage_ratio`는 0.8다.
 - Given 예산 100 USD와 당월 비용 100.00 USD인 App, When 조회한다, Then `status`는 `at_risk`이고 실행 차단 표시는 표시하지 않는다.
 - Given 예산 100 USD와 당월 비용 100.000001 USD인 App, When 조회한다, Then `status`는 `exceeded`이고 `/dashboard/mymodule`은 "실행 차단" 표시를 보여준다.
 - Given `total_cost`가 NULL인 usage row만 있는 App, When 조회한다, Then 비용은 0으로 합산되어 `usage_ratio=0`, `status=normal`이다.
@@ -53,7 +53,7 @@ Verified Against: TBD
   - Given 여러 App을 조회, When `budget_status`를 계산하면, Then primary workflow별 당월 비용은 grouped query로 계산하고 App별 개별 집계 쿼리를 반복하지 않는다.
   - Given primary workflow의 당월 usage 중 `organization_id`가 NULL인 기존 로그가 있다, When `budget_status`를 계산하면, Then 해당 비용도 포함한다.
   - Given 예산 수정/비활성화가 App 목록 조회와 경합한다, When service가 `budget_status`를 붙인다, Then 예외를 전파하지 않고 일관된 before/after 상태 또는 null 중 하나를 반환한다.
-  - Given 경계 비용(89.99/90.00/100.00/100.000001, 예산 100), When `budget_status`를 계산하면, Then `normal`/`at_risk`/`at_risk`/`exceeded`를 반환한다.
+  - Given 경계 비용(79.99/80.00/100.00/100.000001, 예산 100), When `budget_status`를 계산하면, Then `normal`/`at_risk`/`at_risk`/`exceeded`를 반환한다.
 - `AppService.list_app_operations`
   - Given 활성 예산이 있는 App의 primary workflow, When operations row를 생성하면, Then `row.app.budget_status`는 `GET /apps`와 같은 shape다.
   - Given App의 `workflow_id`가 null이고 같은 `app_id`의 보조 workflow에 예산이 있다, When operations row를 생성하면, Then `row.app.budget_status`는 null이다.
