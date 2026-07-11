@@ -363,7 +363,7 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 | claimed_at / enqueued_at / started_at / completed_at | DATETIME(timezone) | 상태별 monotonic/non-null check |
 | created_at / updated_at | DATETIME(timezone) | NOT NULL |
 
-Claim은 raw input, graph snapshot, prompt/evidence, credential, provider response, raw exception을 저장하지 않는다. Terminal row는 bounded retention 대상이고 nonterminal row는 cleanup하지 않는다.
+Claim은 raw input, graph snapshot, prompt/evidence, credential, provider response, raw exception을 저장하지 않는다. 일반 terminal row와 검토 완료 `execution_outcome_unknown`은 bounded retention 대상이고, nonterminal 및 검토되지 않은 `execution_outcome_unknown`은 cleanup하지 않는다.
 
 #### `workflow_runs`
 

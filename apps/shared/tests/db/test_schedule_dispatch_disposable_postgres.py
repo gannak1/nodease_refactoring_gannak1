@@ -12,6 +12,10 @@ from pathlib import Path
 from threading import Barrier, Event
 
 import pytest
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
+
 from apps.gateway.adapters.audit.sqlalchemy_schedule_dispatch_audit import (
     SqlAlchemyScheduleDispatchAuditRecorder,
 )
@@ -29,6 +33,7 @@ from apps.gateway.services.workflow_budget_service import (
     WorkflowBudgetDecisionAdapter,
 )
 from apps.shared.alembic.migration_lock import migration_advisory_lock
+from apps.shared.alembic.schedule_dispatch_downgrade import DESTRUCTIVE_DOWNGRADE_ENV
 from apps.shared.db.models.app import App
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.schedule import Schedule
@@ -48,6 +53,9 @@ from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
+from apps.workflow_engine.adapters.schedule_dispatch_audit import (
+    SqlAlchemyScheduleAdmissionAuditRecorder,
+)
 from apps.workflow_engine.adapters.schedule_dispatch_repository import (
     SharedWorkflowBudgetDecisionAdapter,
     SqlAlchemyScheduleAdmissionRepository,
@@ -56,15 +64,12 @@ from apps.workflow_engine.adapters.schedule_dispatch_repository import (
 from apps.workflow_engine.application.schedule_dispatch import (
     ScheduledDeploymentExecutionUseCase,
 )
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
 HEAD_REVISION = "ff5c6d7e8f90"
-PRE_CLAIM_REVISION = "fa7b8c9d0e12"
+MERGE_REVISION = "ff4b5c6d7e89"
 
 
 def _run_alembic(
@@ -72,11 +77,17 @@ def _run_alembic(
     database: str,
     config: DisposablePostgresConfig,
     expect_success: bool,
+    allow_destructive_downgrade: bool = False,
 ) -> None:
+    environment = config.subprocess_environment(database=database, root_dir=ROOT_DIR)
+    environment.pop(DESTRUCTIVE_DOWNGRADE_ENV, None)
+    if allow_destructive_downgrade:
+        environment[DESTRUCTIVE_DOWNGRADE_ENV] = "1"
+
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", "apps/shared/alembic.ini", *args],
         cwd=ROOT_DIR,
-        env=config.subprocess_environment(database=database, root_dir=ROOT_DIR),
+        env=environment,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -106,7 +117,39 @@ def _revision(database: str, config: DisposablePostgresConfig) -> str:
     engine = create_engine(config.database_url(database))
     try:
         with engine.connect() as connection:
-            return connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            return connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+
+def _column_exists(
+    database: str,
+    config: DisposablePostgresConfig,
+    *,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.connect() as connection:
+            return bool(
+                connection.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = current_schema()
+                              AND table_name = :table_name
+                              AND column_name = :column_name
+                        )
+                        """
+                    ),
+                    {"table_name": table_name, "column_name": column_name},
+                ).scalar_one()
+            )
     finally:
         engine.dispose()
 
@@ -149,15 +192,6 @@ def _insert_pending_claim(database: str, config: DisposablePostgresConfig) -> No
                     "claimed_at": datetime.now(timezone.utc),
                 },
             )
-    finally:
-        engine.dispose()
-
-
-def _delete_claims(database: str, config: DisposablePostgresConfig) -> None:
-    engine = create_engine(config.database_url(database))
-    try:
-        with engine.begin() as connection:
-            connection.execute(text("DELETE FROM schedule_dispatch_claims"))
     finally:
         engine.dispose()
 
@@ -247,7 +281,7 @@ def _seed_active_schedule(database: str, config: DisposablePostgresConfig):
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL schedule migration smoke",
 )
-def test_schedule_dispatch_migrations_refuse_partial_downgrade_and_reupgrade():
+def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
     try:
         config = DisposablePostgresConfig.from_environment()
     except DisposablePostgresConfigurationError:
@@ -270,30 +304,50 @@ def test_schedule_dispatch_migrations_refuse_partial_downgrade_and_reupgrade():
         database_created = True
 
         _enable_vector_extension(database, config)
-        _run_alembic("upgrade", "heads", database=database, config=config, expect_success=True)
+        _run_alembic(
+            "upgrade", "heads", database=database, config=config, expect_success=True
+        )
         assert _revision(database, config) == HEAD_REVISION
 
-        _insert_pending_claim(database, config)
         _run_alembic(
             "downgrade",
-            PRE_CLAIM_REVISION,
+            "-1",
             database=database,
             config=config,
             expect_success=False,
         )
         assert _revision(database, config) == HEAD_REVISION
 
-        _delete_claims(database, config)
         _run_alembic(
             "downgrade",
-            PRE_CLAIM_REVISION,
+            "-1",
             database=database,
             config=config,
             expect_success=True,
+            allow_destructive_downgrade=True,
         )
-        assert _revision(database, config) == PRE_CLAIM_REVISION
+        assert _revision(database, config) == MERGE_REVISION
+        assert _column_exists(
+            database,
+            config,
+            table_name="knowledge_bases",
+            column_name="safe_metadata",
+        )
 
-        _run_alembic("upgrade", "heads", database=database, config=config, expect_success=True)
+        _run_alembic(
+            "upgrade", "heads", database=database, config=config, expect_success=True
+        )
+        assert _revision(database, config) == HEAD_REVISION
+
+        _insert_pending_claim(database, config)
+        _run_alembic(
+            "downgrade",
+            "-1",
+            database=database,
+            config=config,
+            expect_success=False,
+            allow_destructive_downgrade=True,
+        )
         assert _revision(database, config) == HEAD_REVISION
     except OperationalError:
         raise pytest.fail.Exception(
@@ -316,7 +370,9 @@ def test_schedule_dispatch_migrations_refuse_partial_downgrade_and_reupgrade():
                         ),
                         {"database": database},
                     )
-                    connection.execute(text(f"DROP DATABASE IF EXISTS {quoted_database}"))
+                    connection.execute(
+                        text(f"DROP DATABASE IF EXISTS {quoted_database}")
+                    )
             except OperationalError:
                 raise pytest.fail.Exception(
                     "disposable PostgreSQL cleanup could not connect; "
@@ -352,7 +408,9 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
             connection.execute(text(f"CREATE DATABASE {quoted_database}"))
         database_created = True
         _enable_vector_extension(database, config)
-        _run_alembic("upgrade", "heads", database=database, config=config, expect_success=True)
+        _run_alembic(
+            "upgrade", "heads", database=database, config=config, expect_success=True
+        )
         readiness_engine = create_engine(config.database_url(database))
         try:
             require_schedule_dispatch_migration_ready(
@@ -584,6 +642,7 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
                     ).admit(
                         repository=SqlAlchemyScheduleAdmissionRepository(session),
                         budget=SharedWorkflowBudgetDecisionAdapter(session),
+                        audit=SqlAlchemyScheduleAdmissionAuditRecorder(session),
                         uow=SqlAlchemyScheduleAdmissionUnitOfWork(session),
                         claim_id=claim_id,
                         task_id=task_id,
@@ -594,9 +653,7 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
                 worker_engine.dispose()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            admission_results = list(
-                executor.map(lambda _item: admit_once(), range(2))
-            )
+            admission_results = list(executor.map(lambda _item: admit_once(), range(2)))
 
         assert sorted(admission_results) == ["admitted", "duplicate"]
         engine = create_engine(config.database_url(database))
@@ -687,7 +744,9 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
                         ),
                         {"database": database},
                     )
-                    connection.execute(text(f"DROP DATABASE IF EXISTS {quoted_database}"))
+                    connection.execute(
+                        text(f"DROP DATABASE IF EXISTS {quoted_database}")
+                    )
             except OperationalError:
                 raise pytest.fail.Exception(
                     "disposable PostgreSQL cleanup could not connect; "
@@ -779,7 +838,9 @@ def test_migration_advisory_lock_has_one_database_session_owner():
                         ),
                         {"database": database},
                     )
-                    connection.execute(text(f"DROP DATABASE IF EXISTS {quoted_database}"))
+                    connection.execute(
+                        text(f"DROP DATABASE IF EXISTS {quoted_database}")
+                    )
             except OperationalError:
                 raise pytest.fail.Exception(
                     "disposable PostgreSQL cleanup could not connect; "

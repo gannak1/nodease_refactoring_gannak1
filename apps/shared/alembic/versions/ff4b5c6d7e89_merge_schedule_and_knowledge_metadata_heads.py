@@ -6,6 +6,13 @@ Revises: ff3a4b5c6d78, fa7c8d9e0f12
 
 from typing import Sequence, Union
 
+from alembic import op
+
+from apps.shared.alembic.schedule_dispatch_downgrade import (
+    assert_schedule_configuration_quarantine_downgrade_is_safe,
+    assert_schedule_dispatch_downgrade_is_safe,
+)
+
 revision: str = "ff4b5c6d7e89"
 down_revision: Union[str, Sequence[str], None] = (
     "ff3a4b5c6d78",
@@ -20,4 +27,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Restore both parent revisions without schema mutation."""
+    """Guard the graph split even though this revision has no DDL."""
+    assert_schedule_dispatch_downgrade_is_safe(op.get_bind())
+    assert_schedule_configuration_quarantine_downgrade_is_safe(op.get_bind())

@@ -12,6 +12,7 @@ class ScheduleDispatchRolloutError(ValueError):
 class ScheduleDispatchRolloutState:
     fingerprint: str
     image: str
+    ready: bool = True
 
 
 def evaluate_schedule_dispatch_rollout(
@@ -53,38 +54,71 @@ def evaluate_schedule_dispatch_rollout(
             )
         return "all"
 
-    if gateway.fingerprint == worker.fingerprint == desired_fingerprint:
-        if (
-            gateway.image == desired_gateway_image
-            and worker.image == desired_worker_image
-        ):
-            return "none"
-        if settings_changed:
-            raise ScheduleDispatchRolloutError(
-                "completed settings rollout has an unexpected image identity"
-            )
-        return "all"
-
-    if gateway.fingerprint == worker.fingerprint:
-        if gateway.fingerprint != previous_fingerprint:
-            raise ScheduleDispatchRolloutError(
-                "live fingerprint does not match the approved previous value"
-            )
-        return "all"
-
-    if target_mode == "claim":
-        if (
-            worker.fingerprint == desired_fingerprint
-            and worker.image == desired_worker_image
-            and gateway.fingerprint == previous_fingerprint
-        ):
-            return "gateway"
-    elif (
+    gateway_desired = (
         gateway.fingerprint == desired_fingerprint
         and gateway.image == desired_gateway_image
-        and worker.fingerprint == previous_fingerprint
+        and gateway.ready
+    )
+    worker_desired = (
+        worker.fingerprint == desired_fingerprint
+        and worker.image == desired_worker_image
+        and worker.ready
+    )
+    if gateway_desired and worker_desired:
+        return "none"
+
+    recognized_fingerprints = {desired_fingerprint, previous_fingerprint}
+    if (
+        gateway.fingerprint not in recognized_fingerprints
+        or worker.fingerprint not in recognized_fingerprints
     ):
-        return "worker"
+        raise ScheduleDispatchRolloutError(
+            "live fingerprint does not match a resumable rollout state"
+        )
+    if (
+        settings_changed
+        and gateway.fingerprint == desired_fingerprint
+        and gateway.image != desired_gateway_image
+    ):
+        raise ScheduleDispatchRolloutError(
+            "desired gateway fingerprint has an unexpected image identity"
+        )
+    if (
+        settings_changed
+        and worker.fingerprint == desired_fingerprint
+        and worker.image != desired_worker_image
+    ):
+        raise ScheduleDispatchRolloutError(
+            "desired worker fingerprint has an unexpected image identity"
+        )
+    if settings_changed and target_mode == "claim":
+        if (
+            gateway.fingerprint == desired_fingerprint
+            and worker.fingerprint == previous_fingerprint
+        ):
+            raise ScheduleDispatchRolloutError(
+                "claim rollout cannot advance gateway before worker"
+            )
+    elif settings_changed and (
+        worker.fingerprint == desired_fingerprint
+        and gateway.fingerprint == previous_fingerprint
+    ):
+        raise ScheduleDispatchRolloutError(
+            "non-claim rollout cannot advance worker before gateway"
+        )
+
+    # A desired Deployment spec is not a completed stage until its Pods have
+    # converged. Re-apply the incomplete stage in the safe service order.
+    if target_mode == "claim":
+        if not worker_desired:
+            return "all"
+        if not gateway_desired:
+            return "gateway"
+    else:
+        if not gateway_desired:
+            return "all"
+        if not worker_desired:
+            return "worker"
 
     raise ScheduleDispatchRolloutError(
         "live fingerprints do not match a resumable staged rollout"
@@ -112,6 +146,8 @@ def main() -> int:
     parser.add_argument("--gateway-image", default="")
     parser.add_argument("--worker-fingerprint", default="")
     parser.add_argument("--worker-image", default="")
+    parser.add_argument("--gateway-ready", choices=("true", "false"), default="true")
+    parser.add_argument("--worker-ready", choices=("true", "false"), default="true")
     args = parser.parse_args()
     try:
         action = evaluate_schedule_dispatch_rollout(
@@ -123,6 +159,7 @@ def main() -> int:
                 ScheduleDispatchRolloutState(
                     fingerprint=args.gateway_fingerprint,
                     image=args.gateway_image,
+                    ready=args.gateway_ready == "true",
                 )
                 if args.gateway_fingerprint
                 else None
@@ -131,6 +168,7 @@ def main() -> int:
                 ScheduleDispatchRolloutState(
                     fingerprint=args.worker_fingerprint,
                     image=args.worker_image,
+                    ready=args.worker_ready == "true",
                 )
                 if args.worker_fingerprint
                 else None

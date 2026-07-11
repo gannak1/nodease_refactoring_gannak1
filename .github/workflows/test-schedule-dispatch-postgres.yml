@@ -4,24 +4,44 @@ on:
   pull_request:
     paths:
       - "apps/gateway/adapters/db/schedule_dispatch_repository.py"
+      - "apps/gateway/adapters/audit/sqlalchemy_schedule_dispatch_audit.py"
       - "apps/gateway/application/deployment/schedule_occurrence.py"
+      - "apps/gateway/application/deployment/schedule_dispatch.py"
+      - "apps/gateway/services/scheduler_service.py"
       - "apps/shared/alembic/**"
+      - "apps/shared/celery_app.py"
       - "apps/shared/db/models/schedule_dispatch.py"
+      - "apps/shared/domain/schedule_dispatch.py"
+      - "apps/shared/services/schedule_dispatch_*.py"
       - "apps/shared/tests/db/test_schedule_dispatch_disposable_postgres.py"
       - "apps/workflow_engine/adapters/schedule_dispatch_repository.py"
+      - "apps/workflow_engine/adapters/schedule_dispatch_audit.py"
       - "apps/workflow_engine/application/schedule_dispatch.py"
+      - "apps/workflow_engine/tasks.py"
+      - "scripts/check_schedule_dispatch_rollback.py"
+      - ".github/workflows/deploy-eks-schedule-coordinated.yml"
       - ".github/workflows/test-schedule-dispatch-postgres.yml"
   push:
     branches:
       - dev
     paths:
       - "apps/gateway/adapters/db/schedule_dispatch_repository.py"
+      - "apps/gateway/adapters/audit/sqlalchemy_schedule_dispatch_audit.py"
       - "apps/gateway/application/deployment/schedule_occurrence.py"
+      - "apps/gateway/application/deployment/schedule_dispatch.py"
+      - "apps/gateway/services/scheduler_service.py"
       - "apps/shared/alembic/**"
+      - "apps/shared/celery_app.py"
       - "apps/shared/db/models/schedule_dispatch.py"
+      - "apps/shared/domain/schedule_dispatch.py"
+      - "apps/shared/services/schedule_dispatch_*.py"
       - "apps/shared/tests/db/test_schedule_dispatch_disposable_postgres.py"
       - "apps/workflow_engine/adapters/schedule_dispatch_repository.py"
+      - "apps/workflow_engine/adapters/schedule_dispatch_audit.py"
       - "apps/workflow_engine/application/schedule_dispatch.py"
+      - "apps/workflow_engine/tasks.py"
+      - "scripts/check_schedule_dispatch_rollback.py"
+      - ".github/workflows/deploy-eks-schedule-coordinated.yml"
       - ".github/workflows/test-schedule-dispatch-postgres.yml"
 
 permissions:

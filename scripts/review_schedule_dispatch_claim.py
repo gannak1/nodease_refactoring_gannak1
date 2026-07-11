@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import uuid
 from pathlib import Path
@@ -25,6 +26,11 @@ from apps.gateway.application.deployment.review_schedule_outcome import (  # noq
 )
 from apps.shared.db.session import SessionLocal  # noqa: E402
 from apps.shared.domain.schedule_dispatch import OUTCOME_RESOLUTIONS  # noqa: E402
+from apps.shared.services.schedule_dispatch_observability import (  # noqa: E402
+    emit_schedule_dispatch_signal,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _arguments() -> argparse.Namespace:
@@ -58,6 +64,12 @@ def main() -> int:
     print(
         "schedule outcome review recorded: "
         f"claim_id={result.claim_id} resolution={result.resolution}"
+    )
+    emit_schedule_dispatch_signal(
+        logger,
+        "schedule_claim_outcome_reviewed_total",
+        status="dead_lettered",
+        reason=result.resolution,
     )
     return 0
 

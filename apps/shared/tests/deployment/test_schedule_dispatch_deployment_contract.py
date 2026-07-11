@@ -48,6 +48,13 @@ def test_helm_gateway_and_worker_use_one_schedule_dispatch_environment_contract(
     assert "nodease.io/schedule-dispatch-fingerprint:" in gateway
     assert "nodease.io/schedule-dispatch-fingerprint:" in worker
     assert 'define "moduly.scheduleDispatchFingerprint"' in helper
+    assert 'define "moduly.validateScheduleDispatchMode"' in helper
+    assert (
+        "non-disabled schedule dispatch requires the coordinated rollout workflow"
+        in helper
+    )
+    assert 'include "moduly.validateScheduleDispatchMode"' in gateway
+    assert 'include "moduly.validateScheduleDispatchMode"' in worker
     assert (
         "metadata.annotations['nodease.io/schedule-dispatch-fingerprint']" in helper
     )
@@ -86,6 +93,83 @@ def test_dev_deploy_runs_migration_before_application_rollout():
     migration = workflow.index("name: Run Alembic Migration")
     deployment = workflow.index("name: Deploy to dev namespace")
     assert migration < deployment
+    assert "name: Reject non-coordinated schedule mode transitions" in workflow
+    assert (
+        "Non-disabled schedule mode requires the coordinated rollout workflow."
+        in workflow
+    )
+    assert "query_live_schedule_state api-server" in workflow
+    assert "query_live_schedule_state worker" in workflow
+    assert "Live claim/drain schedule mode requires" in workflow
+    assert "A partial service deployment cannot bootstrap only one" in workflow
+    assert (
+        "A disabled schedule settings change must deploy Gateway and Worker together."
+        in workflow
+    )
+    assert "Selected services do not change schedule dispatch components." in workflow
+    assert (
+        "kubectl rollout status deployment/api-server -n dev --timeout=5m || true"
+        not in workflow
+    )
+    assert (
+        "kubectl rollout status deployment/worker -n dev --timeout=5m || true"
+        not in workflow
+    )
+
+
+def test_dev_schedule_guard_requires_live_gateway_and_worker_pod_convergence():
+    workflow = _read(".github/workflows/deploy-dev-namespace.yml")
+
+    assert "query_live_schedule_state()" in workflow
+    assert 'state=$(kubectl get deployment "$deployment"' in workflow
+    assert "observedGeneration" in workflow
+    assert "updatedReplicas" in workflow
+    assert "readyReplicas" in workflow
+    assert "availableReplicas" in workflow
+    assert "unavailableReplicas" in workflow
+    assert 'kubectl get pods \\' in workflow
+    assert '-n "$NAMESPACE" \\' in workflow
+    assert '-l app="$deployment" \\' in workflow
+    assert "select(.metadata.deletionTimestamp == null)" in workflow
+    assert '.status.phase == "Running"' in workflow
+    assert '.type == "Ready" and .status == "True"' in workflow
+    assert (
+        '.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] '
+        "== $fingerprint"
+    ) in workflow
+    assert '"$generation" != "$observed_generation"' in workflow
+    assert '"$updated_replicas" != "$desired_replicas"' in workflow
+    assert '"$ready_replicas" != "$desired_replicas"' in workflow
+    assert '"$available_replicas" != "$desired_replicas"' in workflow
+    assert '"$unavailable_replicas" != "0"' in workflow
+    assert '"$desired_replicas" == "0"' in workflow
+    assert '"$pod_count" != "$desired_replicas"' in workflow
+    assert '"$pods_converged" != "true"' in workflow
+    assert "A live schedule dispatch deployment is not fully converged." in workflow
+
+
+def test_dev_schedule_guard_preserves_safe_service_selection_contract():
+    workflow = _read(".github/workflows/deploy-dev-namespace.yml")
+
+    unrelated_exit = workflow.index(
+        "Selected services do not change schedule dispatch components."
+    )
+    desired_fingerprint = workflow.index("gateway_desired=$(sed")
+    gateway_query = workflow.index("query_live_schedule_state api-server")
+    worker_query = workflow.index("query_live_schedule_state worker")
+    assert unrelated_exit < desired_fingerprint < gateway_query < worker_query
+    assert '"$gateway_live_exists" == "false"' in workflow
+    assert '"$worker_live_exists" == "false"' in workflow
+    assert '"$deploy_gateway" != "$deploy_worker"' in workflow
+    assert '"$gateway_live_exists" != "true"' in workflow
+    assert '"$worker_live_exists" != "true"' in workflow
+    assert '"$gateway_live" != "$worker_live"' in workflow
+    assert '"$live_mode" == "claim" || "$live_mode" == "drain"' in workflow
+    assert '"$live_mode" != "disabled"' in workflow
+    assert (
+        '( "$deploy_gateway" != "true" || "$deploy_worker" != "true" )'
+        in workflow
+    )
 
 
 def test_eks_gateway_deploy_runs_migration_before_application_rollout():
@@ -127,18 +211,36 @@ def test_eks_gateway_and_worker_share_rollout_lock_and_fingerprint_preflight():
     assert "group: production-schema-rollout" in coordinated
     assert "environment: production" in coordinated
     assert "name: Validate current and desired fingerprints" in coordinated
-    assert "Build and push Gateway, Worker, and Logger images" in coordinated
+    assert "Build or reuse Gateway, Worker, and Logger images" in coordinated
     assert "docker/log_system/Dockerfile" in coordinated
+    assert "aws ecr describe-images" in coordinated
+    assert '--image-ids imageTag="$IMAGE_TAG"' in coordinated
+    assert 'if digest=$(lookup_ecr_digest "$repository_name")' in coordinated
+    assert 'docker build -t "$tagged_image"' in coordinated
+    assert 'gateway_image="$gateway_repository@$gateway_digest"' in coordinated
+    assert 'worker_image="$worker_repository@$worker_digest"' in coordinated
+    assert 'logger_image="$logger_repository@$logger_digest"' in coordinated
     assert "name: Run Alembic Migration" in coordinated
-    assert "name: Render commit images and apply staged rollout" in coordinated
+    assert "name: Render immutable deployment manifests" in coordinated
+    assert "name: Apply and verify Logger prerequisite" in coordinated
+    assert "name: Check final schedule ledger and transition drain" in coordinated
+    assert "name: Apply staged Gateway and Worker rollout" in coordinated
     assert "apiVersion: \"v1\"" in coordinated
     assert "github.run_attempt" in coordinated
     assert "trap cleanup_migration_pod EXIT" in coordinated
     assert "kubectl kustomize" in coordinated
+    assert "digest: $gateway_digest" in coordinated
+    assert "digest: $worker_digest" in coordinated
+    assert "digest: $logger_digest" in coordinated
     assert "/tmp/logger-rendered.yaml" in coordinated
     assert "apply_logger_and_verify" in coordinated
-    logger_rollout = coordinated.index("\n          apply_logger_and_verify\n")
-    assert logger_rollout < coordinated.index('case "$schedule_rollout_action"')
+    logger_rollout = coordinated.index("name: Apply and verify Logger prerequisite")
+    final_drain = coordinated.index(
+        "name: Check final schedule ledger and transition drain"
+    )
+    staged_apply = coordinated.index("name: Apply staged Gateway and Worker rollout")
+    assert coordinated.index("name: Run Alembic Migration") < logger_rollout
+    assert logger_rollout < final_drain < staged_apply
     missing_annotation = coordinated.index('if [[ -z "$live_fingerprint" ]]')
     bootstrap_guard = coordinated.index(
         '"$gateway_desired" == v1\\|disabled\\|*', missing_annotation
@@ -149,18 +251,32 @@ def test_eks_gateway_and_worker_share_rollout_lock_and_fingerprint_preflight():
     assert bootstrap_guard < missing_error
     assert 'target_mode" == "claim"' in coordinated
     assert "previous_fingerprint:" in coordinated
-    assert "apps.shared.domain.schedule_dispatch_rollout" in coordinated
+    assert "python -S apps/shared/domain/schedule_dispatch_rollout.py" in coordinated
+    assert "python -m apps.shared.domain.schedule_dispatch_rollout" not in coordinated
+    assert '--gateway-ready "$gateway_current_ready"' in coordinated
+    assert '--worker-ready "$worker_current_ready"' in coordinated
     assert 'case "$schedule_rollout_action"' in coordinated
-    assert "name: Check disabled rollback blockers" in coordinated
-    assert "name: Check claim activation drain" in coordinated
     assert "check_schedule_dispatch_rollback.py" in coordinated
-    assert coordinated.index("name: Run Alembic Migration") < coordinated.index(
-        "name: Check claim activation drain"
-    )
-    assert coordinated.index("name: Run Alembic Migration") < coordinated.index(
-        "name: Check disabled rollback blockers"
-    )
-    assert '"--purpose", "activation"' in coordinated
-    assert '"--purpose", "rollback"' in coordinated
+    transition_preflight = _read("scripts/check_schedule_dispatch_rollback.py")
+    assert 'if args.purpose == "rollback":' not in transition_preflight
+    assert "blockers = ScheduleRollbackPreflightUseCase().evaluate(" in transition_preflight
+    assert "preflight_purpose=activation" in coordinated
+    assert "preflight_purpose=rollback" in coordinated
+    assert '"--purpose", $purpose' in coordinated
+    assert '"--expected-worker-nodes", $expectedWorkers' in coordinated
+    assert '"--stable-observations", "2"' in coordinated
+    assert "Transition drain requires the complete Ready Worker set." in coordinated
     assert '"$previous_mode" != "drain"' in coordinated
-    assert "name: Verify both rollouts and fingerprints" in coordinated
+    assert "name: Verify Logger, Gateway, and Worker convergence" in coordinated
+    assert 'kubectl rollout status deployment/"$deployment"' in coordinated
+    assert "observedGeneration" in coordinated
+    assert "readyReplicas" in coordinated
+    assert 'kubectl get pods -l app="$deployment" -o json' in coordinated
+    assert ".status.containerStatuses" in coordinated
+    assert ".imageID" in coordinated
+    assert (
+        "[.items[] | select(.metadata.deletionTimestamp == null)] as $pods"
+        in coordinated
+    )
+    assert "pods_converged" in coordinated
+    assert coordinated.count('verify_converged logger "$logger_image"') >= 2

@@ -31,7 +31,7 @@ Gateway replica는 PostgreSQL row lock, `SKIP LOCKED`, lease와 compare-and-set�
 
 Workflow Engine은 claim row를 잠그고 canonical Schedule/Deployment/App/runtime policy를 재검증한다. `enqueued` 또는 허용된 early-delivery `dispatching` claim을 `running`으로 원자적으로 전이한 Worker만 engine을 시작한다. Queue가 전달한 organization, workflow, app, deployment, version, execution subject는 권한 source of truth가 아니다.
 
-Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 새 run identity를 만들거나 engine을 다시 시작하지 않는다.
+Admission winner가 claim을 `running`으로 바꾸는 같은 원자적 write에서 stable `workflow_run_id`를 생성·저장한다. `pending`, `dispatching`, `enqueued`에는 run id가 없으며 duplicate delivery는 새 run identity를 만들거나 engine을 다시 시작하지 않는다.
 
 `running`, `succeeded`, admission 이후 `dead_lettered` claim의 stable `workflow_run_id`가 configured visibility grace 이후에도 Log System의 `WorkflowRun` row로 확인되지 않으면 recovery scanner는 claim에 one-time reported timestamp와 safe audit을 기록한다. 이 signal은 queue 지연/누락의 관측 근거이며 Log System row, workflow, node, provider effect를 재구성하거나 replay하지 않는다.
 
@@ -62,6 +62,8 @@ Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 �
 Schedule occurrence, budget decision, claim, next-run advancement와 필요한 policy audit는 application use case가 소유하는 한 UnitOfWork에서 commit한다. Repository, queue adapter, audit adapter는 commit/rollback을 호출하지 않는다.
 
 Schedule audit은 access-management command/recorder를 재사용하지 않고 deployment application의 전용 audit port와 SQLAlchemy adapter를 사용한다. Adapter는 system actor와 strict metadata allowlist만 기록한다.
+
+예산 차단은 occurrence, Gateway dispatch, Worker admission 어느 단계에서 확인되더라도 canonical `policy.block`, workflow target, `reason='budget.exceeded'`, `trigger_mode='scheduler'`로 같은 transaction에 기록한다. 재시도 한도 소진 claim은 `schedule_dispatch.failed`와 failure status를 사용하며 재평가 예정인 `schedule_dispatch.deferred`와 구분한다.
 
 Outcome review의 canonical audit은 다음과 같다.
 
@@ -97,13 +99,25 @@ Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다.
 
 `disabled`는 명시적인 kill switch이자 rollout 중간 상태다. 이 모드에서 신규 claim 또는 legacy APScheduler enqueue를 수행하지 않는다. Legacy fallback을 되살리면 다중 Gateway replica가 같은 occurrence를 중복 실행할 수 있으므로 허용하지 않으며, 지속적인 schedule 실행이 필요한 환경은 승인된 drain 검증 뒤 `claim` mode로 전환해야 한다.
 
-Claim activation preflight는 legacy/new schedule task의 active/reserved/scheduled 상태와 Redis workflow priority queue depth를 확인한다. Broker queue payload는 파싱하거나 보관하지 않으며 inspection/queue depth 확인 불가 또는 non-zero이면 fail-closed한다. Rollback preflight는 migration 이후 `drain -> disabled`에서만 실행한다. 신규 disabled bootstrap과 disabled image-only rollout은 Worker 부재를 오류로 오인하지 않도록 rollback preflight를 생략한다.
+`disabled`/`drain -> claim` activation과 `drain -> disabled` rollback preflight는 모두 nonterminal claim과 미검토 `execution_outcome_unknown`이 없는 durable ledger를 먼저 확인한다. Activation은 legacy/new schedule task, rollback은 new schedule task의 active/reserved/scheduled 상태와 Redis workflow priority queue depth도 확인한다. Broker queue payload는 파싱하거나 보관하지 않으며 DB/inspection/queue depth 확인 불가 또는 non-zero이면 fail-closed한다. 신규 disabled bootstrap과 disabled image-only rollout은 Worker 부재를 오류로 오인하지 않도록 transition preflight를 생략한다.
 
 Gateway startup은 migration-managed table/enum을 `create_all()`로 생성하거나 보정하지 않는다. Demo/test bootstrap만 명시적으로 `create_all()`을 사용할 수 있다.
 
 Gateway와 Worker는 공통 schema readiness service로 Alembic head, runtime 필수 column과 claim check/unique constraint를 검사한다. Online migration은 동일 DB connection의 bounded-wait PostgreSQL advisory lock과 production rollout 공통 concurrency group으로 직렬화한다. Helm/raw Kubernetes pod는 mode와 모든 dispatch 설정을 포함한 canonical fingerprint annotation을 Downward API로 process에 전달하며 `claim`/`drain`에서 fingerprint 누락 또는 실제 설정 불일치가 있으면 startup을 중단한다. 기존 Deployment에 annotation이 없는 최초 도입은 desired mode가 `disabled`일 때만 bootstrap으로 허용한다. 일반 독립 service rollout은 desired 값과 live Gateway/Worker fingerprint가 모두 일치할 때만 허용한다. 설정 변경은 승인된 이전 공통 fingerprint, 양쪽 desired/current, migration, 동일 commit Logger/Gateway/Worker image가 포함된 최종 manifest render, staged apply와 최종 검증을 한 coordinated workflow가 소유한다. Logger는 nullable system actor와 canonical schedule trigger 계약을 이해하는 동일 commit image로 먼저 배포하고, `claim` 활성화는 Worker 다음 Gateway 순서로 진행한다. `drain`/`disabled` 전환은 Gateway를 먼저 멈추며, active claim 상태의 설정 변경은 drain을 선행한다. 중간 실패 재실행은 선행 서비스가 동일 commit image/desired fingerprint이고 나머지가 승인된 이전 fingerprint인 경우만 재개한다.
 
+Deployment spec의 image/fingerprint가 desired 값이라는 사실만으로 rollout 완료를 판정하지 않는다. Coordinated workflow는 commit tag가 이미 ECR에 있으면 기존 digest를 재사용하고, 없을 때만 build/push한 뒤 manifest를 immutable `repository@sha256`로 렌더링한다. `observedGeneration`, desired/updated/Ready/available replica 수, unavailable replica, 실제 non-terminating Pod의 spec image, container `imageID`, fingerprint와 Ready condition을 모두 검증한다. Logger도 같은 digest 수렴을 확인한 뒤 mode drain을 수행한다. 실패 후 재실행은 desired spec이 남아 있어도 Pod가 수렴하지 않았다면 해당 단계를 다시 수행한다. Dev 일반 배포도 live Gateway/Worker의 generation, replica와 실제 Pod Running/Ready/fingerprint가 수렴하지 않으면 disabled rollout을 시작하지 않는다. Activation/rollback drain은 Kubernetes의 전체 Ready Worker 집합과 Celery inspect 응답 집합이 일치해야 하며, queue와 active/reserved/scheduled 상태를 양방향으로 재관측한 연속 두 안정 구간이 모두 0일 때만 통과한다.
+
 핵심 recovery는 expired dispatch/enqueue와 running deadline 격리를 먼저 처리한다. WorkflowRun visibility와 retention cleanup은 별도 UnitOfWork의 optional maintenance라서 실패가 claim/dispatch 진행을 막지 않는다. Outcome review는 acknowledgment 전용이며 rollback preflight와 redrive에서 분리한다.
+
+`disabled`는 신규 claim/admission을 중지하지만 이미 생성된 operational ledger의 visibility와 retention 의무까지 해제하지 않는다. Schema가 준비된 환경에서는 visibility, terminal cleanup과 age signal을 계속 실행하며, schema가 준비되지 않은 최초 bootstrap에서는 maintenance를 시작하지 않는다.
+
+검토되지 않은 `dead_lettered/execution_outcome_unknown`은 retention 기간이 지나도 cleanup하지 않는다. Exact claim outcome review가 기록된 뒤에만 dead-letter retention 대상이 되며, 일반 terminal row와 검토 완료 outcome unknown은 bounded retention으로 정리한다.
+
+Schedule 전용 Celery task는 result backend에 workflow output, RAG evidence 또는 sync 상세를 저장하지 않는다. Publisher와 task 양쪽이 result 저장을 비활성화하고 task 반환값은 claim/status/finalization 같은 비민감 요약으로 제한한다. `rag.retrieve` 감사에는 canonical organization을 포함해 조직별 감사 조회에서 추적 가능해야 한다.
+
+Schema rollback은 application rollback과 다르다. Schedule migration이 merge된 공통 Alembic graph에서 과거 공통 선조로 downgrade하면 sibling feature migration도 함께 제거될 수 있으므로 기본 schema downgrade는 지원하지 않는다. 파괴적 downgrade는 명시적 opt-in, 전체 백업과 영향 검토가 있는 복구 절차에서만 허용하며 일반 rollout 문서는 `claim -> drain -> disabled` application rollback만 안내한다.
+
+운영 관측은 claim DB state를 source of truth로 유지하면서 created/conflict/enqueue/failure/duplicate/dead-letter/pending age/running age/missing run/outcome review의 low-cardinality structured signal을 best-effort로 남긴다. Signal에는 UUID, tenant/user id, idempotency key, raw input/output/exception을 label이나 message로 넣지 않는다. Scheduler와 Worker의 오류 로그도 static operation, bounded attempt와 exception type만 남기며 claim UUID와 raw exception message는 durable audit 대용으로 기록하지 않는다.
 
 ## Non-Goals
 

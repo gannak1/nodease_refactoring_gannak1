@@ -1,4 +1,5 @@
 {{- if .Values.worker.enabled }}
+{{- include "moduly.validateScheduleDispatchMode" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

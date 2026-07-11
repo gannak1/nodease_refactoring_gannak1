@@ -59,6 +59,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "v1|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v" .Values.scheduleDispatch.mode .Values.scheduleDispatch.pollSeconds .Values.scheduleDispatch.occurrenceBatchSize .Values.scheduleDispatch.dispatchBatchSize .Values.scheduleDispatch.recoveryBatchSize .Values.scheduleDispatch.cleanupBatchSize .Values.scheduleDispatch.leaseSeconds .Values.scheduleDispatch.deliveryTimeoutSeconds .Values.scheduleDispatch.executionDeadlineSeconds .Values.scheduleDispatch.workflowRunVisibilityTimeoutSeconds .Values.scheduleDispatch.maxAttempts .Values.scheduleDispatch.retryBaseSeconds .Values.scheduleDispatch.retentionDays .Values.scheduleDispatch.deadLetterRetentionDays -}}
 {{- end }}
 
+{{- define "moduly.validateScheduleDispatchMode" -}}
+{{- if ne .Values.scheduleDispatch.mode "disabled" -}}
+{{- fail "non-disabled schedule dispatch requires the coordinated rollout workflow" -}}
+{{- end -}}
+{{- end }}
+
 {{- define "moduly.scheduleDispatchEnv" -}}
 - name: SCHEDULE_DISPATCH_MODE
   value: {{ .Values.scheduleDispatch.mode | quote }}

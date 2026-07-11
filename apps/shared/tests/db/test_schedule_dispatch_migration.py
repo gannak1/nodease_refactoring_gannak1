@@ -4,7 +4,9 @@ import importlib
 import inspect
 
 import pytest
+
 from apps.shared.alembic.schedule_dispatch_downgrade import (
+    DESTRUCTIVE_DOWNGRADE_ENV,
     assert_schedule_configuration_quarantine_downgrade_is_safe,
     assert_schedule_dispatch_downgrade_is_safe,
 )
@@ -95,7 +97,9 @@ def test_schedule_dispatch_migration_extends_pre_schedule_base_revision():
 
     assert migration.revision == "fa8b9c0d1e23"
     assert migration.down_revision == "fa7b8c9d0e12"
-    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    assert (
+        "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    )
     assert (
         "status = 'dead_lettered' AND safe_reason_code IS NOT NULL"
         in migration._SAFE_REASON
@@ -133,7 +137,12 @@ class _DowngradeConnection:
         return _DowngradeResult(self.has_blocking_claim)
 
 
-def test_claim_migration_downgrade_refuses_to_fabricate_system_executor():
+def test_claim_migration_downgrade_requires_explicit_destructive_opt_in(monkeypatch):
+    monkeypatch.delenv(DESTRUCTIVE_DOWNGRADE_ENV, raising=False)
+    with pytest.raises(RuntimeError, match="schema downgrade is unsupported"):
+        assert_schedule_dispatch_downgrade_is_safe(_DowngradeConnection(False))
+
+    monkeypatch.setenv(DESTRUCTIVE_DOWNGRADE_ENV, "1")
     assert_schedule_dispatch_downgrade_is_safe(_DowngradeConnection(False))
 
     with pytest.raises(RuntimeError, match="system workflow runs"):
@@ -221,7 +230,9 @@ def test_schedule_admission_correlation_migration_extends_merge_head():
     assert migration.down_revision == "fe2f3a4b5c67"
     assert "workflow_run_id IS NOT NULL" in migration._STATUS_FIELDS
     assert "execution_outcome_unknown" in migration._SAFE_REASON
-    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    assert (
+        "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    )
     assert (
         "status = 'dead_lettered' AND safe_reason_code IS NOT NULL"
         in migration._SAFE_REASON
@@ -246,28 +257,33 @@ def test_schedule_and_knowledge_metadata_heads_are_merged_without_ddl():
 
 def test_schedule_null_constraint_hardening_extends_the_single_merge_head():
     migration = importlib.import_module(
-        "apps.shared.alembic.versions."
-        "ff5c6d7e8f90_harden_schedule_null_constraints"
+        "apps.shared.alembic.versions.ff5c6d7e8f90_harden_schedule_null_constraints"
     )
 
     assert migration.revision == "ff5c6d7e8f90"
     assert migration.down_revision == "ff4b5c6d7e89"
     assert "workflow_task_id IS NOT NULL" in migration._WORKFLOW_RUN_EXECUTOR
-    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    assert (
+        "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    )
     assert (
         "status = 'dead_lettered' AND safe_reason_code IS NOT NULL"
         in migration._SAFE_REASON
     )
     assert "outcome_resolution_code IS NOT NULL" in migration._OUTCOME_REVIEW
+    assert "assert_schedule_dispatch_downgrade_is_safe" in inspect.getsource(
+        migration.downgrade
+    )
 
 
 class _MigrationOperations:
-    def __init__(self, calls: list[str]):
+    def __init__(self, calls: list[str], *, connection=None):
         self.calls = calls
+        self.connection = connection
 
     def get_bind(self):
         self.calls.append("get_bind")
-        return object()
+        return self.connection if self.connection is not None else object()
 
     def __getattr__(self, name):
         def operation(*_args, **_kwargs):
@@ -277,8 +293,126 @@ class _MigrationOperations:
 
 
 @pytest.mark.parametrize(
+    ("allow_destructive", "has_blocking_claim", "expected_error"),
+    (
+        (False, False, "schema downgrade is unsupported"),
+        (True, True, "active, admitted, or unreviewed claims"),
+        (True, False, None),
+    ),
+)
+def test_initial_schedule_claim_downgrade_is_fail_closed_before_ddl(
+    monkeypatch,
+    allow_destructive,
+    has_blocking_claim,
+    expected_error,
+):
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions.fa8b9c0d1e23_add_schedule_dispatch_claims"
+    )
+    calls: list[str] = []
+    connection = _DowngradeConnection(
+        False,
+        has_blocking_claim=has_blocking_claim,
+    )
+    monkeypatch.setattr(
+        migration,
+        "op",
+        _MigrationOperations(calls, connection=connection),
+    )
+    if allow_destructive:
+        monkeypatch.setenv(DESTRUCTIVE_DOWNGRADE_ENV, "1")
+    else:
+        monkeypatch.delenv(DESTRUCTIVE_DOWNGRADE_ENV, raising=False)
+
+    if expected_error is not None:
+        with pytest.raises(RuntimeError, match=expected_error):
+            migration.downgrade()
+        assert calls == ["get_bind"]
+        return
+
+    migration.downgrade()
+
+    assert calls[0] == "get_bind"
+    assert calls[1] == "drop_index"
+    assert "drop_table" in calls
+    assert calls[-1] == "alter_column"
+
+
+def test_schedule_head_downgrade_guards_noop_graph_move(monkeypatch):
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions.ff5c6d7e8f90_harden_schedule_null_constraints"
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(migration, "op", _MigrationOperations(calls))
+    monkeypatch.setattr(
+        migration,
+        "assert_schedule_dispatch_downgrade_is_safe",
+        lambda _connection: calls.append("assert_schedule_dispatch_downgrade_is_safe"),
+    )
+    monkeypatch.setattr(
+        migration,
+        "assert_schedule_configuration_quarantine_downgrade_is_safe",
+        lambda _connection: calls.append(
+            "assert_schedule_configuration_quarantine_downgrade_is_safe"
+        ),
+    )
+
+    migration.downgrade()
+
+    assert calls == [
+        "get_bind",
+        "assert_schedule_dispatch_downgrade_is_safe",
+        "get_bind",
+        "assert_schedule_configuration_quarantine_downgrade_is_safe",
+    ]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "apps.shared.alembic.versions."
+        "ff4b5c6d7e89_merge_schedule_and_knowledge_metadata_heads",
+        "apps.shared.alembic.versions."
+        "fe2f3a4b5c67_merge_schedule_dispatch_and_model_routing_heads",
+    ),
+)
+def test_schedule_merge_downgrade_guards_graph_split(monkeypatch, module_name):
+    migration = importlib.import_module(module_name)
+    calls: list[str] = []
+
+    monkeypatch.setattr(migration, "op", _MigrationOperations(calls))
+    monkeypatch.setattr(
+        migration,
+        "assert_schedule_dispatch_downgrade_is_safe",
+        lambda _connection: calls.append("assert_schedule_dispatch_downgrade_is_safe"),
+    )
+    monkeypatch.setattr(
+        migration,
+        "assert_schedule_configuration_quarantine_downgrade_is_safe",
+        lambda _connection: calls.append(
+            "assert_schedule_configuration_quarantine_downgrade_is_safe"
+        ),
+    )
+
+    migration.downgrade()
+
+    assert calls == [
+        "get_bind",
+        "assert_schedule_dispatch_downgrade_is_safe",
+        "get_bind",
+        "assert_schedule_configuration_quarantine_downgrade_is_safe",
+    ]
+
+
+@pytest.mark.parametrize(
     ("module_name", "expected_guards"),
     (
+        (
+            "apps.shared.alembic.versions."
+            "fa8b9c0d1e23_add_schedule_dispatch_claims",
+            ("assert_schedule_dispatch_downgrade_is_safe",),
+        ),
         (
             "apps.shared.alembic.versions."
             "fb9c0d1e2f34_quarantine_invalid_schedule_configuration",
@@ -335,7 +469,5 @@ def test_every_schedule_downgrade_runs_guards_before_schema_mutation(
         if call not in {"get_bind", *expected_guards}
     )
     assert calls[:first_mutation] == [
-        item
-        for guard in expected_guards
-        for item in ("get_bind", guard)
+        item for guard in expected_guards for item in ("get_bind", guard)
     ]

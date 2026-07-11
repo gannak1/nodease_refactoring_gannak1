@@ -6,6 +6,13 @@ Revises: fd1e2f3a4b56, fb8c9d0e1f23
 
 from typing import Sequence, Union
 
+from alembic import op
+
+from apps.shared.alembic.schedule_dispatch_downgrade import (
+    assert_schedule_configuration_quarantine_downgrade_is_safe,
+    assert_schedule_dispatch_downgrade_is_safe,
+)
+
 revision: str = "fe2f3a4b5c67"
 down_revision: Union[str, Sequence[str], None] = (
     "fd1e2f3a4b56",
@@ -20,4 +27,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Restore both parent revisions; guards run in the schedule branch."""
+    """Guard the graph split before entering either parent branch."""
+    assert_schedule_dispatch_downgrade_is_safe(op.get_bind())
+    assert_schedule_configuration_quarantine_downgrade_is_safe(op.get_bind())

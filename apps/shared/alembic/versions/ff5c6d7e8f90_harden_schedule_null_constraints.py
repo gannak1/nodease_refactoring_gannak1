@@ -8,6 +8,11 @@ from typing import Sequence, Union
 
 from alembic import op
 
+from apps.shared.alembic.schedule_dispatch_downgrade import (
+    assert_schedule_configuration_quarantine_downgrade_is_safe,
+    assert_schedule_dispatch_downgrade_is_safe,
+)
+
 revision: str = "ff5c6d7e8f90"
 down_revision: Union[str, Sequence[str], None] = "ff4b5c6d7e89"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -88,4 +93,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """The predecessor definitions are equally strict; no schema change is needed."""
+    """Keep the strict definitions while guarding the Alembic graph move."""
+    assert_schedule_dispatch_downgrade_is_safe(op.get_bind())
+    assert_schedule_configuration_quarantine_downgrade_is_safe(op.get_bind())

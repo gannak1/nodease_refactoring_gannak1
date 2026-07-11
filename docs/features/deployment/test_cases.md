@@ -68,8 +68,8 @@ Verified Against: TBD
 - Broker publish 전후 장애와 Worker admission 전 종료는 bounded recovery되고, admission 후 종료는 outcome unknown으로 격리되어 자동 replay되지 않는다.
 - Migration-first, disabled rollout, drain, claim activation과 역순 rollback rehearsal에서 legacy direct dispatcher와 claim dispatcher가 동시에 활성화되지 않는다.
 - Coordinated rollout이 첫 서비스 적용 뒤 실패하면 같은 commit image와 desired fingerprint를 가진 선행 서비스, 승인된 previous fingerprint를 가진 나머지 서비스 조합만 재개한다. 반대 순서, 다른 image, 임의 third fingerprint, active claim 상태의 direct settings 변경은 fail-closed한다.
-- `claim -> disabled` 직접 전환은 evaluator가 거부한다. `drain -> disabled`는 rollback preflight가 nonterminal/unreviewed outcome/active task 중 하나라도 찾거나 Celery inspection을 완료하지 못하면 두 deployment 적용 전에 중단한다.
-- `disabled`/`drain -> claim` activation preflight는 legacy/new schedule task가 active/reserved/scheduled이거나 Redis workflow queue depth가 0이 아니면 중단한다. Redis inspection 실패도 fail-closed하며 payload/body를 파싱하거나 로그에 남기지 않는다.
+- `claim -> disabled` 직접 전환은 evaluator가 거부한다. `disabled`/`drain -> claim` activation과 `drain -> disabled` rollback은 transition preflight가 nonterminal/unreviewed outcome을 하나라도 찾거나 DB 검사를 완료하지 못하면 두 deployment 적용 전에 중단한다.
+- Activation preflight는 legacy/new schedule task, rollback preflight는 new schedule task가 active/reserved/scheduled이거나 Redis workflow queue depth가 0이 아니면 중단한다. Redis inspection 실패도 fail-closed하며 payload/body를 파싱하거나 로그에 남기지 않는다.
 
 ## Migration And Persistence Tests
 
@@ -83,6 +83,14 @@ Verified Against: TBD
 - Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
 - 기존 운영 Deployment에 fingerprint annotation이 없는 최초 `disabled` rollout은 bootstrap으로 진행되지만, `drain`/`claim` desired mode에서 annotation 누락은 fail-closed한다.
 - Coordinated claim rollout은 동일 commit Logger image를 Gateway/Worker보다 먼저 배포하고 image identity를 검증한다. 이전 Logger가 남아 있거나 Logger rollout이 실패하면 claim admission을 활성화하지 않는다.
+- Coordinated rollout 첫 시도에서 일부 image push 또는 Deployment 적용 후 실패한 뒤 같은 commit으로 재실행하면, 이미 존재하는 ECR digest를 재사용하고 immutable image identity로 남은 단계를 수행한다. 최종 성공은 Logger/Gateway/Worker의 observed generation, desired/updated/Ready/available replica와 non-terminating Pod spec image/container imageID/fingerprint/Ready condition이 모두 일치할 때만 허용한다.
+- Activation/rollback preflight에서 일부 Worker가 inspect에 응답하지 않거나 task가 queue 확인 사이 active로 이동하면 전환을 차단한다. 기대 Ready Worker 집합과 응답 집합이 일치하고 앞뒤 task/queue 관측이 연속 두 번 0일 때만 통과한다.
+- Lock 대기 또는 느린 budget 평가가 transaction 시작 뒤 발생해도 dispatch lease와 execution deadline은 전환 직전 DB wall clock 이후로 설정되고 commit 직후 만료되지 않는다.
+- `disabled` mode에서 신규 occurrence/dispatch/admission은 0건이지만 schema-ready DB의 visibility, terminal cleanup, pending/running age 관측은 계속 실행된다. Schema가 없는 최초 bootstrap에서는 maintenance를 시작하지 않는다.
+- Dev 일반 배포와 Helm render에서 non-disabled mode를 요청하면 coordinated workflow 안내와 함께 실패한다. Live Gateway/Worker가 claim/drain/mixed이거나 한쪽만 없는 bootstrap 상태, Deployment generation/replica 미수렴, terminating Pod를 제외한 실제 Pod의 Running/Ready/fingerprint 불일치 상태에서도 단독 disabled 전환을 거부한다. 양쪽이 이미 수렴한 disabled 상태이면 Gateway/Worker를 함께 배포할 때만 disabled fingerprint 설정 변경을 허용하고, 단독 service deploy는 live/desired fingerprint가 같아야 한다. Unrelated service만 배포할 때는 schedule component를 조회하거나 변경하지 않는다. Rollout status 실패는 무시되지 않는다.
+- 기본 환경에서 schedule schema downgrade를 시도하면 sibling migration DDL 전에 실패하고 Alembic head가 유지된다. 파괴적 opt-in 없는 성공 downgrade/re-upgrade는 안전성 증거로 인정하지 않는다.
+- Schedule Celery task의 producer와 task registration은 모두 `ignore_result=True`이고 `task_store_errors_even_if_ignored=False`다. 성공과 실패 실행 뒤 Redis result backend에는 workflow output, RAG evidence, sync 상세 또는 raw exception이 생성되지 않으며 task outcome은 claim/status/finalization summary로 제한된다. 실제 Redis key 부재는 opt-in integration evidence로 별도 실행한다.
+- Schedule structured signal capture와 Scheduler/Worker 오류 log capture에는 정의된 event/value/status/reason/mode 또는 operation/attempt/exception type만 존재하고 UUID, idempotency key, raw payload와 raw exception message가 없다.
 - 1024회를 넘는 고빈도 missed occurrence도 quarantine 없이 현재 시각 이후 첫 fire time으로 coalesce하고, 미래 cursor를 과거로 되돌리지 않는다.
 
 ## Permission Tests

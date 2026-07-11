@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
+
 import sqlalchemy as sa
+
+DESTRUCTIVE_DOWNGRADE_ENV = "NODEASE_ALLOW_DESTRUCTIVE_SCHEMA_DOWNGRADE"
 
 
 def assert_schedule_dispatch_downgrade_is_safe(connection) -> None:
     """Protect execution provenance and nonterminal claim evidence."""
+    if os.getenv(DESTRUCTIVE_DOWNGRADE_ENV) != "1":
+        raise RuntimeError(
+            "schedule dispatch schema downgrade is unsupported; "
+            "use application rollback instead"
+        )
     has_null_executor = connection.execute(
         sa.text("SELECT EXISTS (SELECT 1 FROM workflow_runs WHERE user_id IS NULL)")
     ).scalar()

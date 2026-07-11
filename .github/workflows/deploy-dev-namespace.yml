@@ -159,6 +159,162 @@ jobs:
         run: |
           kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Reject non-coordinated schedule mode transitions
+        env:
+          REQUESTED_SERVICES: ${{ github.event.inputs.services }}
+        run: |
+          deploy_gateway=false
+          deploy_worker=false
+          case "${REQUESTED_SERVICES:-all}" in
+            all)
+              deploy_gateway=true
+              deploy_worker=true
+              ;;
+            gateway)
+              deploy_gateway=true
+              ;;
+            worker)
+              deploy_worker=true
+              ;;
+            logger|frontend|sandbox)
+              ;;
+            *)
+              echo "Unsupported service selection."
+              exit 1
+              ;;
+          esac
+
+          if [[ "$deploy_gateway" == "false" && "$deploy_worker" == "false" ]]; then
+            echo "Selected services do not change schedule dispatch components."
+            exit 0
+          fi
+
+          gateway_desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+            infra/k8s/namespaces/dev/gateway-deployment.yaml | head -n 1)
+          worker_desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+            infra/k8s/namespaces/dev/worker-deployment.yaml | head -n 1)
+          if [[ -z "$gateway_desired" || "$gateway_desired" != "$worker_desired" ]]; then
+            echo "Gateway and Worker schedule fingerprints must match."
+            exit 1
+          fi
+          target_mode=$(printf '%s' "$gateway_desired" | cut -d'|' -f2)
+          if [[ "$target_mode" != "disabled" ]]; then
+            echo "Non-disabled schedule mode requires the coordinated rollout workflow."
+            exit 1
+          fi
+
+          query_live_schedule_state() {
+            local deployment=$1
+            local state
+            local pods
+            local desired_replicas
+            local generation
+            local observed_generation
+            local updated_replicas
+            local ready_replicas
+            local available_replicas
+            local unavailable_replicas
+            local pod_count
+            local pods_converged
+            if ! state=$(kubectl get deployment "$deployment" \
+              -n "$NAMESPACE" \
+              --ignore-not-found \
+              -o json \
+              2>/dev/null); then
+              echo "Unable to verify a live schedule dispatch deployment."
+              exit 1
+            fi
+            if [[ -z "$state" ]]; then
+              live_exists=false
+              live_fingerprint=""
+              return
+            fi
+
+            live_exists=true
+            live_fingerprint=$(jq -r \
+              '.spec.template.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] // ""' \
+              <<< "$state")
+            desired_replicas=$(jq -r '.spec.replicas // 1' <<< "$state")
+            generation=$(jq -r '.metadata.generation // 0' <<< "$state")
+            observed_generation=$(jq -r '.status.observedGeneration // 0' <<< "$state")
+            updated_replicas=$(jq -r '.status.updatedReplicas // 0' <<< "$state")
+            ready_replicas=$(jq -r '.status.readyReplicas // 0' <<< "$state")
+            available_replicas=$(jq -r '.status.availableReplicas // 0' <<< "$state")
+            unavailable_replicas=$(jq -r '.status.unavailableReplicas // 0' <<< "$state")
+            if ! pods=$(kubectl get pods \
+              -n "$NAMESPACE" \
+              -l app="$deployment" \
+              -o json 2>/dev/null); then
+              echo "Unable to verify live schedule dispatch Pods."
+              exit 1
+            fi
+            pod_count=$(jq -r \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] | length' \
+              <<< "$pods")
+            pods_converged=$(jq -r \
+              --arg fingerprint "$live_fingerprint" \
+              '[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+              all($pods[];
+                (.status.phase == "Running") and
+                (.metadata.annotations["nodease.io/schedule-dispatch-fingerprint"] == $fingerprint) and
+                any(.status.conditions[]?; .type == "Ready" and .status == "True"))' \
+              <<< "$pods")
+
+            if [[ -z "$live_fingerprint" || \
+                  "$generation" != "$observed_generation" || \
+                  "$updated_replicas" != "$desired_replicas" || \
+                  "$ready_replicas" != "$desired_replicas" || \
+                  "$available_replicas" != "$desired_replicas" || \
+                  "$unavailable_replicas" != "0" || \
+                  "$desired_replicas" == "0" || \
+                  "$pod_count" != "$desired_replicas" || \
+                  "$pods_converged" != "true" ]]; then
+              echo "A live schedule dispatch deployment is not fully converged."
+              exit 1
+            fi
+          }
+
+          query_live_schedule_state api-server
+          gateway_live_exists=$live_exists
+          gateway_live=$live_fingerprint
+          query_live_schedule_state worker
+          worker_live_exists=$live_exists
+          worker_live=$live_fingerprint
+
+          if [[ "$gateway_live_exists" == "false" && \
+                "$worker_live_exists" == "false" ]]; then
+            if [[ "$deploy_gateway" != "$deploy_worker" ]]; then
+              echo "A partial service deployment cannot bootstrap only one schedule side to disabled."
+              exit 1
+            fi
+            echo "No live schedule fingerprints found; disabled bootstrap is safe."
+            exit 0
+          fi
+
+          if [[ "$gateway_live_exists" != "true" || \
+                "$worker_live_exists" != "true" || \
+                "$gateway_live" != "$worker_live" ]]; then
+            echo "Live Gateway and Worker schedule fingerprints are mixed; use the coordinated rollout workflow."
+            exit 1
+          fi
+
+          live_mode=$(printf '%s' "$gateway_live" | cut -d'|' -f2)
+          if [[ "$live_mode" == "claim" || "$live_mode" == "drain" ]]; then
+            echo "Live claim/drain schedule mode requires the coordinated rollout workflow."
+            exit 1
+          fi
+          if [[ "$live_mode" != "disabled" ]]; then
+            echo "Live schedule mode is not disabled; use the coordinated rollout workflow."
+            exit 1
+          fi
+          if [[ "$gateway_live" != "$gateway_desired" && \
+                ( "$deploy_gateway" != "true" || "$deploy_worker" != "true" ) ]]; then
+            echo "A disabled schedule settings change must deploy Gateway and Worker together."
+            exit 1
+          fi
+
+          echo "The disabled schedule deployment is safe for the selected service set."
+
       # 10. Database Migration (before any application rollout)
       - name: Run Alembic Migration
         if: github.event.inputs.services == 'gateway' || github.event.inputs.services == 'worker' || github.event.inputs.services == 'all' || github.event.inputs.services == ''
@@ -247,23 +403,23 @@ jobs:
           echo "Waiting for deployments to be ready..."
 
           if [[ "${{ github.event.inputs.services }}" == "gateway" || "${{ github.event.inputs.services }}" == "all" || "${{ github.event.inputs.services }}" == "" ]]; then
-            kubectl rollout status deployment/api-server -n dev --timeout=5m || true
+            kubectl rollout status deployment/api-server -n dev --timeout=5m
           fi
 
           if [[ "${{ github.event.inputs.services }}" == "worker" || "${{ github.event.inputs.services }}" == "all" || "${{ github.event.inputs.services }}" == "" ]]; then
-            kubectl rollout status deployment/worker -n dev --timeout=5m || true
+            kubectl rollout status deployment/worker -n dev --timeout=5m
           fi
 
           if [[ "${{ github.event.inputs.services }}" == "logger" || "${{ github.event.inputs.services }}" == "all" || "${{ github.event.inputs.services }}" == "" ]]; then
-            kubectl rollout status deployment/logger -n dev --timeout=5m || true
+            kubectl rollout status deployment/logger -n dev --timeout=5m
           fi
 
           if [[ "${{ github.event.inputs.services }}" == "frontend" || "${{ github.event.inputs.services }}" == "all" || "${{ github.event.inputs.services }}" == "" ]]; then
-            kubectl rollout status deployment/frontend -n dev --timeout=5m || true
+            kubectl rollout status deployment/frontend -n dev --timeout=5m
           fi
 
           if [[ "${{ github.event.inputs.services }}" == "sandbox" || "${{ github.event.inputs.services }}" == "all" || "${{ github.event.inputs.services }}" == "" ]]; then
-            kubectl rollout status deployment/sandbox -n dev --timeout=5m || true
+            kubectl rollout status deployment/sandbox -n dev --timeout=5m
           fi
 
       # 12. 배포 검증
