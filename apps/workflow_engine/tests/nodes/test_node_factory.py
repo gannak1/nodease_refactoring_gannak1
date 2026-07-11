@@ -5,6 +5,7 @@ NodeFactory 테스트: 노드가 올바르게 생성되는지 검증 [GEVENT] Sy
 import pytest
 
 from apps.shared.schemas.workflow import NodeSchema, Position
+from apps.shared.services.workflow_node_catalog import implemented_node_types
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.start import StartNode, StartNodeData
@@ -118,6 +119,10 @@ def test_factory_registry_contains_start_node():
     # Then
     assert "startNode" in NodeFactory.NODE_REGISTRY
     assert NodeFactory.NODE_REGISTRY["startNode"] == (StartNode, StartNodeData)
+
+
+def test_factory_registry_matches_the_canonical_workflow_node_catalog():
+    assert set(NodeFactory.NODE_REGISTRY) == implemented_node_types()
 
 
 def test_factory_creates_multiple_nodes():

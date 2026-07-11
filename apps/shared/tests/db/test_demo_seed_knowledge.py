@@ -199,6 +199,30 @@ def test_demo_seed_runtime_credential_opt_in_requires_openai_key(
         demo_seed.validate_demo_seed_prerequisites()
 
 
+def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
+    upserts = []
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed._seed_runtime_llm_permissions(object())
+
+    user_permissions = {
+        values["user_id"]: values
+        for model, _row_id, values in upserts
+        if model is demo_seed.UserLLMPermission
+    }
+    assert set(user_permissions) == {
+        demo_seed.USER_IDS["author"],
+        demo_seed.USER_IDS["tester_builder"],
+    }
+    assert user_permissions[demo_seed.USER_IDS["tester_builder"]]["auth_state"] == (
+        "operator"
+    )
+
+
 def test_demo_seed_chat_models_use_gpt_5_4_family():
     assert demo_seed.DEMO_CHAT_MODEL == "gpt-5.4"
     assert demo_seed.DEMO_CHAT_MINI_MODEL == "gpt-5.4-mini"
@@ -343,6 +367,15 @@ def test_alembic_readiness_reports_split_code_heads():
     assert "multiple code heads" in message
 
 
+def test_knowledge_safe_metadata_migration_follows_user_permission_head():
+    script = seed_demo_script._alembic_script_directory()
+
+    safe_metadata_revision = script.get_revision("fa7c8d9e0f12")
+
+    assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
+    assert script.get_heads() == ["fa7c8d9e0f12"]
+
+
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
     document_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
     public_keys = {
@@ -397,6 +430,12 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "hr_knowledge_users",
         "operator",
     ) in permission_specs
+    for key in (
+        "internal_onboarding",
+        "internal_leave_attendance",
+        "internal_benefits",
+    ):
+        assert (key, "tester_builder", "operator") in permission_specs
 
     collection_permission_specs = set(
         demo_seed._demo_team_knowledge_collection_permission_specs()
@@ -406,6 +445,16 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "internal_onboarding",
         "customer_support_ops",
         "read",
+    ) in collection_permission_specs
+    assert (
+        "internal_onboarding",
+        "tester_builder",
+        "read",
+    ) in collection_permission_specs
+    assert (
+        "internal_onboarding",
+        "tester_builder",
+        "route",
     ) in collection_permission_specs
 
 

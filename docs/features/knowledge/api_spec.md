@@ -10,7 +10,9 @@ Status: Draft
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 `knowledge_bases.organization_id`로 범위를 좁힌다. Header가 없으면 기존 owner-only 동작을 유지한다 |
 | GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. 일반 관리 목록의 owner filtering을 사용하지 않고 active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | `X-Organization-Id`가 있으면 active organization validation 후 해당 organization에 귀속한다. Header가 없으면 기존 primary organization fallback을 유지한다. 최신 Knowledge schema 필수 컬럼이 없거나 schema introspection이 실패하면 500 대신 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
-| GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 같은 organization KB만 반환한다. Detail 응답은 최신 `KnowledgeBase` ORM 전체 로드에 의존하지 않아 stale local DB에서 신규 lifecycle/sync 컬럼 누락으로 500이 나지 않아야 한다 |
+| GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | owner 또는 같은 active organization에서 KB `manage`. Detail 응답의 `can_edit_settings`는 owner에게만 true이고 `can_manage_safe_metadata`는 owner 또는 KB manager에게 true다. 최신 `KnowledgeBase` ORM 전체 로드에 의존하지 않아 stale local DB에서 신규 lifecycle/sync 컬럼 누락으로 500이 나지 않아야 한다 |
+| GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
+| PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
 | POST | `/api/v1/knowledge/rag-recommendations` | Workflow Builder용 LLM node RAG option 추천 | active organization, candidate resolver safe set, KB 단위 recommendation |
 | POST | `/api/v1/rag/upload` | KB 문서 업로드/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 일치하고 KB write/manage 권한을 통과해야 한다 |
@@ -116,6 +118,7 @@ Public HTTP boundary에서는 client가 raw KB id를 보내 `explicit_kb` mode�
 | `node_purpose_summary` | LLM node 목적 safe 요약. Raw text는 durable metadata에 저장하지 않는다 |
 | `safe_workflow_context_summary` | 현재 workflow 목적, 기존 KB 참조, 관련 노드 역할을 요약한 safe context. Raw graph payload, hidden source 정보, raw KB content를 포함하지 않는다 |
 | `knowledge_requirement` | `requirement_id`, `query_topics`, `expected_evidence_type`, `required` 같은 지식 요구사항 |
+| `safe_query_topics` | Agent Builder 구조화 단계에서 생성한 KB 추천용 safe topics. Adapter는 이 값을 1차 relevance 입력으로 사용하고 raw workflow/action term은 점수 입력에서 제외한다 |
 | `pending_resolution_ref` | `resolution_id`, `slot_type=knowledge_base`, `slot_key`, `blocking` 같은 unresolved slot reference |
 | `authorized_safe_candidate_set_ref` | 선택. KnowledgeCandidateResolver가 만든 safe candidate set의 server-issued reference. 없으면 Knowledge domain이 아래 scope hint를 기준으로 candidate resolver를 먼저 수행하고, recommendation ranking은 그 결과만 사용한다 |
 | `mode` | `auto`, `auto_collection`, `explicit_kb`. `auto`는 adapter 내부 편의값이며 resolver 호출 전 bounded mode로 변환한다. Public HTTP boundary에서 `explicit_kb`는 허용하지 않으며 trusted backend/internal service boundary에서만 사용할 수 있다 |
@@ -138,7 +141,7 @@ Response는 Agent Builder 내부 adapter 계약과 같은 top-level envelope를 
 | `resolution_id` | 해결 대상 pending resolution id |
 | `requirement_id` | 해결 대상 knowledge requirement id |
 | `recommendations` | safe KB recommendation item 목록. `status=recommended`일 때 포함하며 각 item은 아래 허용 response field를 따른다 |
-| `clarification_options` | 후보가 여러 개이거나 score가 근접한 경우, 또는 adapter unavailable fallback에서 사용자에게 표시할 safe option 목록 |
+| `clarification_options` | 권한 확인된 추천 후보가 있는 경우, 또는 adapter unavailable fallback에서 사용자에게 표시할 safe option 목록. Agent Builder는 후보가 1개여도 이 목록을 사용자 선택 UI로 표시한다 |
 | `user_safe_warning` | partial access, runtime availability, unavailable fallback 같은 사용자 표시 경고 |
 | `fallback_reason` | `adapter_unavailable`, `no_candidate` 같은 safe reason code. Hidden resource identity나 exact count를 포함하지 않는다 |
 
@@ -159,9 +162,9 @@ Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과�
 | `safe_label` | Display-policy-approved label. 없으면 raw KB name fallback 금지, `null` 또는 generic label만 허용 |
 | `materialized_knowledge_bases` | HTTP response에서는 empty/suppressed여야 한다. 같은 backend 내부 service call에서만 LLM node `knowledgeBases`로 변환 가능한 권한 확인 runtime KB ref list를 포함할 수 있으며, `MAX_RAG_RETRIEVAL_KBS=20` 이하로 제한한다 |
 | `score` | Recommendation ranking에 사용한 normalized score. Raw retrieval/provider score를 직접 노출하지 않는다 |
-| `confidence` | `high`, `medium`, `low` 중 하나. 후보 1개 high confidence 자동 해결과 clarification 분기를 구분한다 |
+| `confidence` | `high`, `medium`, `low` 중 하나. 추천 강도를 표시하며 Agent Builder는 이 값만으로 KB를 자동 선택하지 않는다 |
 | `reason_category` | 추천 근거의 safe category. 예: topic keyword match, metadata match, collection context match |
-| `threshold_result` | `high_confidence`, `close_score`, `below_threshold` 등 자동 해결, clarification, failure 분기를 설명하는 safe 결과 |
+| `threshold_result` | `high_confidence`, `close_score`, `below_threshold` 등 추천 강도, warning, failure 분기를 설명하는 safe 결과 |
 | `recommended_options` | `queryRewriteMode`, `queryRewriteTemplate`, `evidenceSufficiencyPolicy`, `ragFailurePolicy`, `sourceTierPolicy`, `scoreThreshold`, `topK` allowlist만 허용 |
 | `source_collection_summary` | Safe collection id/label, route scope type, bucketed linked KB count 정도만 허용 |
 | `provenance` | `recommendation_strategy`, `safe_reason_code`, `used_signals`, `matched_safe_terms`, bucketed counts 같은 redaction-safe summary |
@@ -169,6 +172,10 @@ Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과�
 | `warnings` | Safe warning code/message만 허용 |
 | `summary` | Candidate/recommendation/warning/hidden-or-unavailable count는 bucketed 값만 포함한다 |
 | `reason_code` | Recommendation이 없을 때만 safe reason code를 반환한다. Hidden resource identity나 exact count는 포함하지 않는다 |
+
+`score`는 DB 저장값이 아니라 추천 요청 시점에 계산한 KB 단위 ranking 값이다. Ranking은 `safe_query_topics`와 KB safe metadata의 `kb_relevance`를 0.70 비중으로 두고, `source_tier`, `runtime_availability`, `sync_freshness`를 각각 0.10 비중으로 더한다. Relevance 입력은 KB candidate의 `safe_label`, `kb_safe_description`, `kb_safe_topics` 같은 allowlisted safe comparison text로 제한한다. `collection_safe_label`, `collection_safe_topics`, Collection name/description, collection id/count는 route/permission boundary와 `source_collection_summary`에만 사용하며 KB relevance score 계산에는 사용하지 않는다. Manual KB의 `name`/`description`은 sanitizer, length cap, secret/url/path 제거를 통과한 뒤 safe label/topics comparison text로 자동 생성할 수 있다. Source-managed KB는 display-policy-approved source safe metadata만 이 경로에 사용할 수 있다.
+
+Manual KB는 `KnowledgeBaseResponse.safe_metadata`로 allowlisted safe metadata를 반환할 수 있다. Safe metadata 조회·수정은 `GET/PATCH /api/v1/knowledge/{kb_id}/safe-metadata`를 사용하며 `safe_label`, `kb_safe_description`, `kb_safe_topics`만 저장 대상으로 허용하고 secret/url/path/raw source key는 sanitizer 또는 allowlist에서 제거한다. 일반 `PATCH /api/v1/knowledge/{kb_id}`는 owner-only 이름·설명·embedding model 경로이며 `safe_metadata` payload를 422로 거부한다. Detail 응답은 `can_edit_settings`와 `can_manage_safe_metadata`를 분리한다. Safe metadata 변경의 action/data-change audit은 KB target id와 마스킹된 변경 필드를 남기고 metadata 원문 값은 저장하지 않는다. Source-managed KB recommendation은 저장된 manual override가 아니라 display-policy-approved source safe metadata만 사용한다.
 
 KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active ready document version과 legacy unversioned retrieval-visible chunk가 모두 없는 KB는 recommendation candidate에서 제외한다. Active document version이 있으나 `ready`가 아니고 legacy retrieval-visible artifact도 없는 KB는 selectable ready candidate가 아니며, response는 이를 권한 없음이나 hidden resource로 표현하지 않고 safe `candidate_not_ready` 또는 `indexing_in_progress` warning/fallback reason으로 표시할 수 있어야 한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
 

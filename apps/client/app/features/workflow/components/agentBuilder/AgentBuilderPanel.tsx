@@ -3,12 +3,25 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, Bot, Eye, Loader2, Minus, Send, X } from 'lucide-react';
+import {
+  AlertCircle,
+  Bot,
+  Check,
+  ChevronDown,
+  Eye,
+  Loader2,
+  Minus,
+  Send,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { useReactFlow, type Edge, type Viewport } from '@xyflow/react';
 import {
   agentBuilderApi,
   type AgentBuilderDraftPreview,
+  type AgentBuilderIntentModelOption,
+  type AgentBuilderIntentModelProvider,
+  type AgentBuilderIntentModelSelection,
   type AgentBuilderKnowledgeCandidateSelection,
   type AgentBuilderMessageResponse,
   type AgentBuilderSessionMessage,
@@ -16,7 +29,6 @@ import {
 import { workflowApi } from '../../api/workflowApi';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { Node } from '../../types/Workflow';
-import { calculateAutoLayout } from '../../utils/layoutHelpers';
 
 type Props = {
   workflowId: string;
@@ -33,6 +45,7 @@ type ConversationItem =
   | { kind: 'assistant'; id: string; response: AgentBuilderMessageResponse };
 
 const DEFAULT_WORKFLOW_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
+const NO_KB_CANDIDATE_ID = '__agent_builder_no_kb__';
 
 const UI_ONLY_NODE_DATA_KEYS = new Set([
   'selected',
@@ -118,23 +131,6 @@ const canonicalEditorGraph = (nodes: Node[], edges: Edge[]) => {
   return { nodes: realNodes, edges: realEdges };
 };
 
-const optimizeSavedWorkflowLayout = (workflow: {
-  nodes?: Node[];
-  edges?: Edge[];
-  viewport?: Viewport;
-  features?: Record<string, unknown>;
-}) => {
-  const workflowNodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
-  const workflowEdges = Array.isArray(workflow.edges) ? workflow.edges : [];
-
-  return {
-    ...workflow,
-    nodes: calculateAutoLayout(workflowNodes, workflowEdges) as Node[],
-    edges: workflowEdges,
-    viewport: workflow.viewport ?? DEFAULT_WORKFLOW_VIEWPORT,
-  };
-};
-
 const isAgentBuilderMessageResponse = (
   value: unknown,
 ): value is AgentBuilderMessageResponse => {
@@ -196,6 +192,45 @@ const lastUserMessageFromConversation = (items: ConversationItem[]) => {
   return '';
 };
 
+const isWorkflowNodeClarificationOption = (option: Record<string, unknown>) =>
+  option.type === 'workflow_node' && typeof option.node_id === 'string';
+
+const isKnowledgeClarificationOption = (option: Record<string, unknown>) =>
+  !isWorkflowNodeClarificationOption(option) &&
+  (typeof option.candidate_id === 'string' || option.type === 'knowledge_base');
+
+const latestKnowledgeClarification = (
+  items: ConversationItem[],
+): AgentBuilderMessageResponse | null => {
+  const latestItem = items[items.length - 1];
+  if (
+    !latestItem ||
+    latestItem.kind !== 'assistant' ||
+    latestItem.response.status !== 'clarification_required' ||
+    !latestItem.response.clarification_options?.some(isKnowledgeClarificationOption)
+  ) {
+    return null;
+  }
+  return latestItem.response;
+};
+
+const latestWorkflowTargetClarification = (
+  items: ConversationItem[],
+): AgentBuilderMessageResponse | null => {
+  const latestItem = items[items.length - 1];
+  if (
+    !latestItem ||
+    latestItem.kind !== 'assistant' ||
+    latestItem.response.status !== 'clarification_required' ||
+    !latestItem.response.clarification_options?.some(
+      isWorkflowNodeClarificationOption,
+    )
+  ) {
+    return null;
+  }
+  return latestItem.response;
+};
+
 const responseFromSessionDraftPreview = (
   draftPreview: AgentBuilderDraftPreview | null | undefined,
 ): AgentBuilderMessageResponse | null => {
@@ -245,6 +280,18 @@ const knowledgeCandidateSelectionFromOption = (
   };
 };
 
+const isSameKnowledgeCandidateSelection = (
+  left: AgentBuilderKnowledgeCandidateSelection,
+  right: AgentBuilderKnowledgeCandidateSelection,
+) =>
+  left.candidate_id === right.candidate_id &&
+  left.resolution_id === right.resolution_id &&
+  left.requirement_id === right.requirement_id;
+
+const isNoKnowledgeBaseOption = (option: Record<string, unknown>) =>
+  formatClarificationOptionValue(option.candidate_id) === NO_KB_CANDIDATE_ID ||
+  formatClarificationOptionValue(option.type) === 'no_knowledge_base';
+
 export function AgentBuilderPanel({
   workflowId,
   appId,
@@ -265,13 +312,19 @@ export function AgentBuilderPanel({
   const [conversationItems, setConversationItems] = useState<ConversationItem[]>([]);
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
   const [prePreviewViewport, setPrePreviewViewport] = useState<Viewport | null>(null);
-  const [selectedKnowledgeCandidate, setSelectedKnowledgeCandidate] =
-    useState<(AgentBuilderKnowledgeCandidateSelection & { label?: string | null }) | null>(
-      null,
-    );
+  const [selectedKnowledgeCandidates, setSelectedKnowledgeCandidates] = useState<
+    Array<AgentBuilderKnowledgeCandidateSelection & { label?: string | null }>
+  >([]);
   const [lastSubmittedMessage, setLastSubmittedMessage] = useState('');
+  const [intentModelGroups, setIntentModelGroups] = useState<
+    AgentBuilderIntentModelProvider[]
+  >([]);
+  const [selectedIntentModel, setSelectedIntentModel] = useState<
+    AgentBuilderIntentModelOption | null
+  >(null);
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const router = useRouter();
-  const { getViewport, setViewport } = useReactFlow();
+  const { fitView, getViewport, setViewport } = useReactFlow();
   const agentBuilderPreview = useWorkflowStore((state) => state.agentBuilderPreview);
   const setAgentBuilderPreview = useWorkflowStore(
     (state) => state.setAgentBuilderPreview,
@@ -286,8 +339,43 @@ export function AgentBuilderPanel({
   const envVariables = useWorkflowStore((state) => state.envVariables);
   const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
 
-  const storageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
+  const storageKey = workflowId
+    ? `agent-builder:workflow:${workflowId}`
+    : `agent-builder:app:${appId ?? 'none'}`;
+  const legacyStorageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
   const scopeRef = useRef(storageKey);
+  const panelInstanceId = useRef(createLocalUserMessageId()).current;
+  const conversationScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let isCanceled = false;
+    agentBuilderApi
+      .getModelOptions()
+      .then((groups) => {
+        if (isCanceled) return;
+        setIntentModelGroups(groups);
+        setSelectedIntentModel((current) => {
+          const options = groups.flatMap((group) => group.options);
+          const currentOption = current
+            ? options.find(
+                (option) =>
+                  option.model.id === current.model.id &&
+                  option.credential.id === current.credential.id,
+              )
+            : null;
+          return currentOption ?? options[0] ?? null;
+        });
+      })
+      .catch(() => {
+        if (isCanceled) return;
+        setIntentModelGroups([]);
+        setSelectedIntentModel(null);
+      });
+    return () => {
+      isCanceled = true;
+    };
+  }, [isOpen, storageKey]);
 
   const appendResponse = (response: AgentBuilderMessageResponse) => {
     setResponses((items) =>
@@ -326,15 +414,54 @@ export function AgentBuilderPanel({
     setConversationItems([]);
     setPendingRequestId(null);
     setPrePreviewViewport(null);
-    setSelectedKnowledgeCandidate(null);
+    setSelectedKnowledgeCandidates([]);
     setLastSubmittedMessage('');
+    setIsModelMenuOpen(false);
     clearAgentBuilderPreview();
   }, [storageKey, clearAgentBuilderPreview]);
 
   useEffect(() => {
+    if (!workflowId || typeof window === 'undefined') return;
+    const reopenKey = `agent-builder:reopen:${workflowId}`;
+    const rawMarker = window.sessionStorage.getItem(reopenKey);
+    if (!rawMarker) return;
+    let marker = { sessionId: rawMarker, sourceInstanceId: null as string | null };
+    try {
+      const parsed = JSON.parse(rawMarker) as unknown;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof (parsed as { sessionId?: unknown }).sessionId === 'string'
+      ) {
+        marker = {
+          sessionId: (parsed as { sessionId: string }).sessionId,
+          sourceInstanceId:
+            typeof (parsed as { sourceInstanceId?: unknown }).sourceInstanceId ===
+            'string'
+              ? (parsed as { sourceInstanceId: string }).sourceInstanceId
+              : null,
+        };
+      }
+    } catch {
+      marker = { sessionId: rawMarker, sourceInstanceId: null };
+    }
+    if (!marker.sessionId || marker.sourceInstanceId === panelInstanceId) return;
+    if (window.localStorage.getItem(storageKey) !== marker.sessionId) {
+      window.sessionStorage.removeItem(reopenKey);
+      return;
+    }
+    window.sessionStorage.removeItem(reopenKey);
+    setIsOpen(true);
+    setIsMinimized(false);
+  }, [panelInstanceId, storageKey, workflowId]);
+
+  useEffect(() => {
     if (!isOpen || sessionId || typeof window === 'undefined') return;
-    const storedSessionId = window.localStorage.getItem(storageKey);
+    const storedSessionId =
+      window.localStorage.getItem(storageKey) ??
+      window.localStorage.getItem(legacyStorageKey);
     if (!storedSessionId) return;
+    window.localStorage.setItem(storageKey, storedSessionId);
     let isCanceled = false;
     agentBuilderApi
       .getSession(storedSessionId)
@@ -345,17 +472,21 @@ export function AgentBuilderPanel({
         const topLevelDraftResponse = responseFromSessionDraftPreview(
           session.draft_preview,
         );
+        const latestRestoredResponse =
+          restored.responses[restored.responses.length - 1];
+        const canRestoreTopLevelDraft =
+          !latestRestoredResponse || latestRestoredResponse.status === 'draft_ready';
         const hasRestoredDraft = restored.responses.some(
           (response) =>
             response.draft_preview?.draft_id ===
             topLevelDraftResponse?.draft_preview?.draft_id,
         );
         const restoredResponses =
-          topLevelDraftResponse && !hasRestoredDraft
+          topLevelDraftResponse && canRestoreTopLevelDraft && !hasRestoredDraft
             ? [...restored.responses, topLevelDraftResponse]
             : restored.responses;
         const restoredConversationItems =
-          topLevelDraftResponse && !hasRestoredDraft
+          topLevelDraftResponse && canRestoreTopLevelDraft && !hasRestoredDraft
             ? [
                 ...restored.conversationItems,
                 {
@@ -379,7 +510,14 @@ export function AgentBuilderPanel({
     return () => {
       isCanceled = true;
     };
-  }, [isOpen, sessionId, storageKey]);
+  }, [isOpen, legacyStorageKey, sessionId, storageKey]);
+
+  useEffect(() => {
+    if (!isOpen || isMinimized) return;
+    const element = conversationScrollRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+  }, [conversationItems.length, pendingRequestId, isOpen, isMinimized]);
 
   const ensureSession = async () => {
     if (sessionId) return sessionId;
@@ -397,12 +535,35 @@ export function AgentBuilderPanel({
       selectedKnowledgeCandidate?: AgentBuilderKnowledgeCandidateSelection & {
         label?: string | null;
       };
+      selectedKnowledgeCandidates?: Array<
+        AgentBuilderKnowledgeCandidateSelection & { label?: string | null }
+      >;
+      selectedNodeId?: string | null;
+      displayContent?: string;
       clearInput?: boolean;
     },
   ) => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage || isSubmitting) return;
-    const selectedCandidate = options?.selectedKnowledgeCandidate;
+    let intentModel = selectedIntentModel;
+    if (!intentModel) {
+      try {
+        const groups = await agentBuilderApi.getModelOptions();
+        intentModel = groups.flatMap((group) => group.options)[0] ?? null;
+        setIntentModelGroups(groups);
+        setSelectedIntentModel(intentModel);
+      } catch {
+        toast.error('Agent Builder 모델 목록을 불러오지 못했습니다.');
+        return;
+      }
+    }
+    if (!intentModel) {
+      toast.warning('Agent Builder에서 사용할 수 있는 LLM 모델이 없습니다.');
+      return;
+    }
+    const selectedCandidates =
+      options?.selectedKnowledgeCandidates ??
+      (options?.selectedKnowledgeCandidate ? [options.selectedKnowledgeCandidate] : undefined);
     if (hasUnsavedChanges) {
       toast.warning('저장되지 않은 변경이 있어 Agent Builder를 시작할 수 없습니다.');
       return;
@@ -421,9 +582,15 @@ export function AgentBuilderPanel({
       {
         kind: 'user',
         id: createLocalUserMessageId(),
-        content: selectedCandidate?.label
-          ? `Knowledge Base 선택: ${selectedCandidate.label}`
-          : trimmedMessage,
+        content:
+          options?.displayContent ??
+          (selectedCandidates && selectedCandidates.length > 0
+            ? `Knowledge Base 선택: ${selectedCandidates
+                .map((candidate) => candidate.label || candidate.candidate_id)
+                .join(', ')}`
+            : selectedCandidates
+              ? 'Knowledge Base 선택 없이 생성'
+              : trimmedMessage),
       },
     ]);
     try {
@@ -433,20 +600,32 @@ export function AgentBuilderPanel({
         message: trimmedMessage,
         workflowId,
         appId,
-        selectedNodeId,
+        selectedNodeId: options?.selectedNodeId ?? selectedNodeId,
         selectedEdgeId,
-        selectedKnowledgeCandidate: selectedCandidate
-          ? {
-              candidate_id: selectedCandidate.candidate_id,
-              resolution_id: selectedCandidate.resolution_id,
-              requirement_id: selectedCandidate.requirement_id,
-            }
+        selectedKnowledgeCandidate:
+          selectedCandidates && selectedCandidates.length === 1
+            ? {
+                candidate_id: selectedCandidates[0].candidate_id,
+                resolution_id: selectedCandidates[0].resolution_id,
+                requirement_id: selectedCandidates[0].requirement_id,
+              }
+            : undefined,
+        selectedKnowledgeCandidates: selectedCandidates?.map((candidate) => ({
+          candidate_id: candidate.candidate_id,
+          resolution_id: candidate.resolution_id,
+          requirement_id: candidate.requirement_id,
+        })),
+        intentModelSelection: intentModel
+          ? ({
+              credentialId: intentModel.credential.id,
+              modelId: intentModel.model.id,
+            } satisfies AgentBuilderIntentModelSelection)
           : undefined,
       });
       appendResponse(response);
       setPendingRequestId(null);
       setLastSubmittedMessage(trimmedMessage);
-      setSelectedKnowledgeCandidate(null);
+      setSelectedKnowledgeCandidates([]);
       if (options?.clearInput !== false) {
         setInput('');
       }
@@ -459,10 +638,19 @@ export function AgentBuilderPanel({
   };
 
   const submit = async () => {
+    const activeKnowledgeClarification = latestKnowledgeClarification(
+      conversationItems,
+    );
+    const typedMessage = input.trim();
+    const isResolvingKnowledgeClarification =
+      !typedMessage && Boolean(activeKnowledgeClarification);
     const message =
-      input.trim() || (selectedKnowledgeCandidate ? lastSubmittedMessage : '');
+      typedMessage ||
+      (isResolvingKnowledgeClarification ? lastSubmittedMessage : '');
     await submitAgentBuilderMessage(message, {
-      selectedKnowledgeCandidate: selectedKnowledgeCandidate ?? undefined,
+      selectedKnowledgeCandidates: isResolvingKnowledgeClarification
+        ? selectedKnowledgeCandidates
+        : undefined,
       clearInput: true,
     });
   };
@@ -580,27 +768,37 @@ export function AgentBuilderPanel({
         const isSameWorkflow = savedWorkflowId === workflowId;
         const savedEnvVariables = isSameWorkflow ? envVariables : [];
         const savedRuntimeVariables = isSameWorkflow ? runtimeVariables : [];
-        const optimizedWorkflow = optimizeSavedWorkflowLayout(savedWorkflow);
-        await workflowApi.syncDraftWorkflow(savedWorkflowId, {
-          nodes: optimizedWorkflow.nodes,
-          edges: optimizedWorkflow.edges,
-          viewport: optimizedWorkflow.viewport,
-          features: optimizedWorkflow.features,
-          envVariables: savedEnvVariables,
-          runtimeVariables: savedRuntimeVariables,
-        });
+        const savedWorkflowGraph = {
+          ...savedWorkflow,
+          viewport: savedWorkflow.viewport ?? DEFAULT_WORKFLOW_VIEWPORT,
+        };
         if (!isSameWorkflow) {
+          if (sessionId && typeof window !== 'undefined') {
+            const nextStorageKey = `agent-builder:workflow:${savedWorkflowId}`;
+            window.localStorage.setItem(nextStorageKey, sessionId);
+            window.localStorage.removeItem(storageKey);
+            window.sessionStorage.setItem(
+              `agent-builder:reopen:${savedWorkflowId}`,
+              JSON.stringify({
+                sessionId,
+                sourceInstanceId: panelInstanceId,
+              }),
+            );
+          }
           setActiveWorkflowIdSafe(savedWorkflowId);
         }
         setWorkflowData(
           {
-            ...optimizedWorkflow,
+            ...savedWorkflowGraph,
             appId: savedWorkflowMeta.app_id,
             envVariables: savedEnvVariables,
             runtimeVariables: savedRuntimeVariables,
           },
           savedWorkflowId,
         );
+        window.setTimeout(() => {
+          fitView({ padding: 0.2, duration: 300, maxZoom: 1 });
+        }, 0);
         toast.success('Agent Builder 초안을 저장했습니다.');
         setPrePreviewViewport(null);
         clearAgentBuilderPreview();
@@ -651,8 +849,19 @@ export function AgentBuilderPanel({
     }
   };
 
+  const activeKnowledgeClarification = latestKnowledgeClarification(
+    conversationItems,
+  );
+  const activeKnowledgeClarificationRequestId =
+    activeKnowledgeClarification?.request_id ?? null;
+  const activeWorkflowTargetClarification = latestWorkflowTargetClarification(
+    conversationItems,
+  );
+  const activeWorkflowTargetClarificationRequestId =
+    activeWorkflowTargetClarification?.request_id ?? null;
   const canSubmitMessage = Boolean(
-    input.trim() || (selectedKnowledgeCandidate && lastSubmittedMessage),
+    input.trim() ||
+      (lastSubmittedMessage && activeKnowledgeClarificationRequestId),
   );
 
   const toggleAgentBuilder = () => {
@@ -668,17 +877,89 @@ export function AgentBuilderPanel({
     <div className="fixed bottom-[72px] right-5 z-50 flex flex-col items-end gap-3">
       {isOpen && !isMinimized && (
         <section className="flex h-[520px] w-[380px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
-          <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-            <div className="flex items-center gap-2">
+          <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
               <Bot className="h-4 w-4 text-slate-700" />
-              <span className="text-sm font-semibold text-slate-900">
+              <span className="shrink-0 text-sm font-semibold text-slate-900">
                 Agent Builder
               </span>
+              <div className="relative min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setIsModelMenuOpen((value) => !value)}
+                  className="flex h-7 max-w-40 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                  aria-label={`Agent Builder 모델: ${selectedIntentModel?.model.name ?? '선택 필요'}`}
+                  disabled={isSubmitting}
+                >
+                  <span className="truncate">
+                    {selectedIntentModel?.model.name ?? '모델 선택'}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                </button>
+                {isModelMenuOpen && (
+                  <div
+                    data-testid="agent-builder-model-menu"
+                    className="absolute right-0 top-8 z-20 max-h-[264px] w-[190px] overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+                  >
+                    {intentModelGroups.map((group) => (
+                      <div key={group.provider_name} className="py-1">
+                        <div
+                          data-testid="agent-builder-model-provider"
+                          className="px-3 py-1 text-xs font-semibold text-slate-500"
+                        >
+                          {group.provider_name}
+                        </div>
+                        {group.options.map((option) => {
+                          const isSelected =
+                            selectedIntentModel?.model.id === option.model.id &&
+                            selectedIntentModel.credential.id ===
+                              option.credential.id;
+                          return (
+                            <button
+                              key={`${option.credential.id}:${option.model.id}`}
+                              type="button"
+                              onClick={() => {
+                                setSelectedIntentModel(option);
+                                setIsModelMenuOpen(false);
+                              }}
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-slate-50"
+                              aria-label={`${option.model.name}, ${option.credential.credential_name}`}
+                            >
+                              <Check
+                                className={`h-3.5 w-3.5 shrink-0 ${isSelected ? 'text-slate-900' : 'text-transparent'}`}
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate font-medium text-slate-800">
+                                  {option.model.name}
+                                </span>
+                                <span className="block truncate text-slate-500">
+                                  {option.credential.credential_name}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {group.options.length === 0 && (
+                          <p className="px-3 py-2 text-xs text-slate-400">
+                            {group.unavailable_reason ===
+                            'chat_model_not_supported'
+                              ? '채팅 모델을 지원하지 않음'
+                              : '사용 가능한 모델 없음'}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setIsMinimized(true)}
+                onClick={() => {
+                  setIsModelMenuOpen(false);
+                  setIsMinimized(true);
+                }}
                 className="rounded-md p-1 text-slate-500 hover:bg-slate-100"
                 aria-label="Agent Builder 최소화"
               >
@@ -688,6 +969,7 @@ export function AgentBuilderPanel({
                 type="button"
                 onClick={() => {
                   if (!agentBuilderPreview) {
+                    setIsModelMenuOpen(false);
                     setIsOpen(false);
                     setIsMinimized(false);
                   }
@@ -701,7 +983,11 @@ export function AgentBuilderPanel({
             </div>
           </header>
 
-          <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
+          <div
+            ref={conversationScrollRef}
+            data-testid="agent-builder-conversation"
+            className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm"
+          >
             {hasUnsavedChanges && (
               <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -738,6 +1024,10 @@ export function AgentBuilderPanel({
                 );
               }
               const response = item.response;
+              const isActiveKnowledgeClarification =
+                response.request_id === activeKnowledgeClarificationRequestId;
+              const isActiveWorkflowTargetClarification =
+                response.request_id === activeWorkflowTargetClarificationRequestId;
               return (
                 <div
                   key={item.id}
@@ -763,6 +1053,34 @@ export function AgentBuilderPanel({
                           도안 생성 미리보기
                         </button>
                       ) : null}
+                      {(response.draft_preview.configuration_issues?.length ?? 0) >
+                      0 ? (
+                        <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
+                          {response.draft_preview.configuration_issues?.map(
+                            (issue) => (
+                              <section
+                                key={issue.node_id}
+                                data-testid="agent-builder-node-configuration-issue"
+                                className="py-2.5"
+                              >
+                                <p className="font-semibold text-slate-900">
+                                  {issue.node_label}
+                                </p>
+                                <p className="mt-1 text-xs font-medium text-slate-600">
+                                  필요한 파라미터
+                                </p>
+                                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-amber-800">
+                                  {issue.missing_parameters.map((parameter) => (
+                                    <li key={`${issue.node_id}-${parameter.key}`}>
+                                      {parameter.label}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </section>
+                            ),
+                          )}
+                        </div>
+                      ) : null}
                     </>
                   ) : null}
                   {response.clarification_questions?.map((question) => (
@@ -770,9 +1088,22 @@ export function AgentBuilderPanel({
                       {question}
                     </p>
                   ))}
-                  {response.clarification_options?.length ? (
-                    <div className="mt-3 space-y-2">
-                      {response.clarification_options.map((option, index) => {
+                  {response.clarification_options?.some(
+                    (option) =>
+                      isKnowledgeClarificationOption(option) &&
+                      !isNoKnowledgeBaseOption(option),
+                  ) ? (
+                    <div
+                      data-testid="agent-builder-kb-candidate-list"
+                      className="mt-3 max-h-[13.5rem] space-y-2 overflow-y-auto pr-1"
+                    >
+                      {response.clarification_options
+                        .filter(
+                          (option) =>
+                            isKnowledgeClarificationOption(option) &&
+                            !isNoKnowledgeBaseOption(option),
+                        )
+                        .map((option, index) => {
                         const selection = knowledgeCandidateSelectionFromOption(option);
                         const label =
                           formatClarificationOptionValue(option.label) ??
@@ -785,24 +1116,44 @@ export function AgentBuilderPanel({
                         const reason = formatClarificationOptionValue(
                           option.reason_category,
                         );
-                        const isSelected =
-                          Boolean(selection) &&
-                          selectedKnowledgeCandidate?.candidate_id ===
-                            selection?.candidate_id &&
-                          selectedKnowledgeCandidate?.resolution_id ===
-                            selection?.resolution_id;
+                        const isSelected = selection
+                          ? selectedKnowledgeCandidates.some((candidate) =>
+                              isSameKnowledgeCandidateSelection(candidate, selection),
+                            )
+                          : false;
                         return (
                           <button
                             type="button"
                             key={`${option.candidate_id ?? label}-${index}`}
                             onClick={() => {
                               if (selection) {
-                                setSelectedKnowledgeCandidate(selection);
+                                setSelectedKnowledgeCandidates((current) => {
+                                  const alreadySelected = current.some((candidate) =>
+                                    isSameKnowledgeCandidateSelection(
+                                      candidate,
+                                      selection,
+                                    ),
+                                  );
+                                  if (alreadySelected) {
+                                    return current.filter(
+                                      (candidate) =>
+                                        !isSameKnowledgeCandidateSelection(
+                                          candidate,
+                                          selection,
+                                        ),
+                                    );
+                                  }
+                                  return [...current, selection];
+                                });
                               }
                             }}
-                            disabled={!selection || isSubmitting}
+                            disabled={
+                              !selection ||
+                              isSubmitting ||
+                              !isActiveKnowledgeClarification
+                            }
                             aria-pressed={isSelected}
-                            className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
+                            className={`min-h-16 w-full rounded-md border px-3 py-2 text-left text-sm ${
                               isSelected
                                 ? 'border-slate-900 bg-slate-100'
                                 : 'border-slate-200 bg-white'
@@ -821,6 +1172,55 @@ export function AgentBuilderPanel({
                           </button>
                         );
                       })}
+                    </div>
+                  ) : null}
+                  {response.clarification_options?.some(
+                    isWorkflowNodeClarificationOption,
+                  ) ? (
+                    <div
+                      data-testid="agent-builder-workflow-target-list"
+                      className="mt-3 max-h-[13.5rem] space-y-2 overflow-y-auto pr-1"
+                    >
+                      {response.clarification_options
+                        .filter(isWorkflowNodeClarificationOption)
+                        .map((option, index) => {
+                          const nodeId = formatClarificationOptionValue(
+                            option.node_id,
+                          );
+                          const label =
+                            formatClarificationOptionValue(option.label) ??
+                            `Workflow node 후보 ${index + 1}`;
+                          const nodeType = formatClarificationOptionValue(
+                            option.node_type,
+                          );
+                          return (
+                            <button
+                              type="button"
+                              key={`${nodeId ?? label}-${index}`}
+                              disabled={
+                                !nodeId ||
+                                isSubmitting ||
+                                !isActiveWorkflowTargetClarification
+                              }
+                              onClick={() => {
+                                if (!nodeId || !lastSubmittedMessage) return;
+                                void submitAgentBuilderMessage(lastSubmittedMessage, {
+                                  selectedNodeId: nodeId,
+                                  displayContent: `수정 대상 선택: ${label}`,
+                                  clearInput: false,
+                                });
+                              }}
+                              className="min-h-14 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              <div className="font-medium text-slate-900">{label}</div>
+                              {nodeType ? (
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {nodeType}
+                                </div>
+                              ) : null}
+                            </button>
+                          );
+                        })}
                     </div>
                   ) : null}
                   {response.validation_result?.issues?.map((issue) => (

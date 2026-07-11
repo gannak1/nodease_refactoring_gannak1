@@ -25,9 +25,10 @@ def test_agent_builder_session_uses_header_resolved_organization(monkeypatch):
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             captured["user_id"] = user.id
             captured["organization_id"] = organization_id
+            captured["intent_extractor"] = intent_extractor
 
         def create_or_restore_session(self, payload):
             captured["payload_has_organization_id"] = hasattr(payload, "organization_id")
@@ -71,8 +72,9 @@ def test_agent_builder_message_contract_does_not_accept_body_organization(monkey
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             captured["organization_id"] = organization_id
+            captured["intent_extractor"] = intent_extractor
 
         def submit_message(self, session_id_arg, payload):
             captured["session_id"] = session_id_arg
@@ -106,6 +108,103 @@ def test_agent_builder_message_contract_does_not_accept_body_organization(monkey
     assert captured["message"] == "휴가 정책 기반 workflow를 만들어줘"
 
 
+def test_agent_builder_model_options_use_active_organization(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    captured = {}
+    expected = [
+        {
+            "provider_name": "openai",
+            "options": [],
+            "unavailable_reason": "no_authorized_model",
+        }
+    ]
+
+    monkeypatch.setattr(
+        agent_builder_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    def get_options(db, checked_user_id, checked_organization_id):
+        captured["args"] = (checked_user_id, checked_organization_id)
+        return expected
+
+    monkeypatch.setattr(
+        agent_builder_endpoint.LLMService,
+        "get_agent_builder_model_option_groups",
+        get_options,
+    )
+    app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).get(
+            "/api/v1/agent-builder/model-options",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert captured["args"] == (user_id, organization_id)
+
+
+def test_agent_builder_message_passes_explicit_intent_model_selection(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    captured = {}
+
+    monkeypatch.setattr(
+        agent_builder_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakeExtractor:
+        def __init__(self, **kwargs):
+            captured["extractor"] = kwargs
+
+    class FakeService:
+        def __init__(self, db, *, user, organization_id, intent_extractor):
+            pass
+
+        def submit_message(self, session_id_arg, payload):
+            return AgentBuilderMessageResponse(
+                request_id=uuid.uuid4(),
+                status="validation_failed",
+                warnings=["테스트"],
+            )
+
+    monkeypatch.setattr(
+        agent_builder_endpoint, "LLMAgentBuilderIntentExtractor", FakeExtractor
+    )
+    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
+    app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).post(
+            f"/api/v1/agent-builder/sessions/{session_id}/messages",
+            json={
+                "message": "입력과 응답 노드를 만들어줘",
+                "intent_model_selection": {
+                    "credential_id": str(credential_id),
+                    "model_id": str(model_id),
+                },
+            },
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert captured["extractor"]["credential_id"] == credential_id
+    assert captured["extractor"]["model_id"] == model_id
+
+
 def test_agent_builder_message_rejects_raw_graph_payload_without_echo(monkeypatch):
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -119,7 +218,7 @@ def test_agent_builder_message_rejects_raw_graph_payload_without_echo(monkeypatc
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             pass
 
         def submit_message(self, session_id_arg, payload):
@@ -161,7 +260,7 @@ def test_agent_builder_apply_rejects_raw_graph_payload_without_echo(monkeypatch)
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             pass
 
         def apply_draft(self, draft_id_arg, payload):
@@ -203,7 +302,7 @@ def test_agent_builder_apply_response_can_save_only_with_audit_recorded(monkeypa
     )
 
     class FakeService:
-        def __init__(self, db, *, user, organization_id):
+        def __init__(self, db, *, user, organization_id, intent_extractor):
             pass
 
         def apply_draft(self, draft_id_arg, payload):

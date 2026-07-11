@@ -4,15 +4,20 @@ Status: Draft
 
 ## Test File Mapping
 
+- Top-aligned workflow ranks, boundary-centered BaseNode handles, Default/input alignment, and downward Condition branches: `apps/client/app/features/workflow/utils/nodeHandleLayout.test.ts`, `apps/client/app/features/workflow/utils/arrangeConditionNodes.test.ts`, `apps/shared/tests/test_workflow_layout.py`
+
 - 실행 편의성: `apps/client/app/features/workflow/tests/execution-convenience.test.ts`
 - 노드 조작 편의성: `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`
 - 워크플로우 조작 편의성: `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx`
 - 노드 실행 기록 패널 추가: `apps/client/app/features/workflow/tests/node-execution-log-panel.todo.test.ts`
 - 공통 그래프 검증: `apps/client/app/features/workflow/tests/utils/validateWorkflowGraph.test.ts`
+- 공통 catalog/Backend 연결 정책: `apps/shared/tests/test_workflow_node_catalog.py`, `apps/gateway/tests/services/test_agent_builder_service.py`
 - 인증 배포 실행/RAG 경계: `apps/gateway/tests/services/test_chatbot_deployment_run.py`, `apps/gateway/tests/api/test_deployment_permissions.py`, `apps/client/app/features/app/tests/moduleRunNavigation.test.ts`, `apps/client/app/features/workflow/tests/deploymentRunResult.test.ts`
 - 동시성 처리: TBD. 구현/API 경계 확정 후 `apps/client/app/features/workflow/tests/workflow-concurrency.test.ts` 또는 Gateway integration test로 분리한다.
 
 `*.todo.test.ts`의 `it.todo` 항목은 아직 대응 구현 또는 API 계약이 없는 테스트 케이스다. 구현 시 같은 파일에서 실제 assertion 테스트로 전환한다.
+
+Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정책과 parity를 유지해야 한다. Start/Webhook/Schedule incoming, Answer outgoing, 잘못된 Condition source handle을 거부하고, Agent Builder apply/save도 같은 graph를 다시 거부하는지 검증한다.
 
 ## Spec Document Mapping
 

@@ -96,6 +96,12 @@ class LLMCredentialModelOptionResponse(BaseModel):
     relation_priority: int = 0
 
 
+class LLMIntentModelProviderResponse(BaseModel):
+    provider_name: str
+    options: List[LLMCredentialModelOptionResponse] = Field(default_factory=list)
+    unavailable_reason: Optional[str] = None
+
+
 class LLMUsageLogResponse(BaseModel):
     id: uuid.UUID
     prompt_tokens: int

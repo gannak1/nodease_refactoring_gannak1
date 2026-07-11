@@ -18,6 +18,13 @@ AgentBuilderDraftMode = Literal["new_workflow", "modify_workflow", "replace_work
 AgentBuilderApplyAction = Literal["apply_and_save", "cancel"]
 AgentBuilderApplyOutcome = Literal["saved", "blocked", "canceled", "failed"]
 AgentBuilderPendingSlotType = Literal["knowledge_base", "target", "capability", "other"]
+AgentBuilderEditOperationType = Literal["insert"]
+AgentBuilderEditPlacement = Literal["before", "after", "between"]
+AgentBuilderTargetReferenceType = Literal[
+    "natural_language_node",
+    "selected_node",
+    "selected_edge",
+]
 
 
 class AgentBuilderSessionCreateRequest(BaseModel):
@@ -41,6 +48,13 @@ class AgentBuilderKnowledgeCandidateSelection(BaseModel):
     requirement_id: str | None = Field(default=None, max_length=255)
 
 
+class AgentBuilderIntentModelSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    credential_id: UUID
+    model_id: UUID
+
+
 class AgentBuilderMessageRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -51,6 +65,10 @@ class AgentBuilderMessageRequest(BaseModel):
     selected_edge_id: str | None = Field(default=None, max_length=255)
     conversation_context_id: str | None = Field(default=None, max_length=255)
     selected_knowledge_candidate: AgentBuilderKnowledgeCandidateSelection | None = None
+    selected_knowledge_candidates: (
+        list[AgentBuilderKnowledgeCandidateSelection] | None
+    ) = None
+    intent_model_selection: AgentBuilderIntentModelSelection | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -82,6 +100,7 @@ class AgentBuilderPlannedStep(BaseModel):
 class AgentBuilderKnowledgeRequirement(BaseModel):
     requirement_id: str
     query_topics: list[str] = Field(default_factory=list)
+    suggested_candidate_handles: list[str] = Field(default_factory=list, max_length=20)
     expected_evidence_type: str = "policy_or_reference"
     required: bool = True
     target_step_ref: str | None = None
@@ -93,6 +112,21 @@ class AgentBuilderPendingResolution(BaseModel):
     slot_key: str
     blocking: bool = True
     target_step_ref: str | None = None
+
+
+class AgentBuilderEditTargetReference(BaseModel):
+    reference_type: AgentBuilderTargetReferenceType
+    query: str | None = Field(default=None, max_length=255)
+    capabilities: list[str] = Field(default_factory=list)
+    node_types: list[str] = Field(default_factory=list)
+
+
+class AgentBuilderEditOperation(BaseModel):
+    operation_id: str
+    operation: AgentBuilderEditOperationType
+    placement: AgentBuilderEditPlacement
+    step_refs: list[str] = Field(default_factory=list)
+    target: AgentBuilderEditTargetReference
 
 
 class AgentBuilderStructuredRequest(BaseModel):
@@ -113,6 +147,7 @@ class AgentBuilderStructuredRequest(BaseModel):
     pending_resolution: list[AgentBuilderPendingResolution] = Field(
         default_factory=list
     )
+    edit_operations: list[AgentBuilderEditOperation] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     unsupported_requests: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
@@ -129,6 +164,21 @@ class AgentBuilderValidationResult(BaseModel):
     issues: list[AgentBuilderValidationIssue] = Field(default_factory=list)
 
 
+class AgentBuilderMissingParameter(BaseModel):
+    key: str
+    label: str
+
+
+class AgentBuilderNodeConfigurationIssue(BaseModel):
+    node_id: str
+    node_type: str
+    node_label: str
+    capability: str
+    missing_parameters: list[AgentBuilderMissingParameter] = Field(
+        default_factory=list
+    )
+
+
 class AgentBuilderDraftPreview(BaseModel):
     draft_id: UUID
     preview_graph: dict[str, Any]
@@ -138,6 +188,9 @@ class AgentBuilderDraftPreview(BaseModel):
     node_detail_previews: list[dict[str, Any]] = Field(default_factory=list)
     validation_result: AgentBuilderValidationResult
     safety_notices: list[str] = Field(default_factory=list)
+    configuration_issues: list[AgentBuilderNodeConfigurationIssue] = Field(
+        default_factory=list
+    )
 
 
 class AgentBuilderMessageResponse(BaseModel):

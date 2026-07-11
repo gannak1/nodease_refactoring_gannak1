@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Database,
@@ -30,6 +30,12 @@ import {
 import CreateKnowledgeModal from '@/app/features/knowledge/components/create-knowledge-modal';
 import KnowledgeSearchModal from '@/app/features/knowledge/components/knowledge-search-modal';
 import ChangeEmbeddingModelModal from '@/app/features/knowledge/components/change-embedding-model-modal';
+import {
+  generateKnowledgeSafeLabel,
+  generateKnowledgeSafeTopics,
+  readKnowledgeSafeLabel,
+  readKnowledgeSafeTopics,
+} from '@/app/features/knowledge/utils/knowledgeSafeMetadata';
 import { toast } from 'sonner';
 import Link from 'next/link';
 
@@ -53,8 +59,13 @@ export default function KnowledgeDetailPage() {
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [isEditingDesc, setIsEditingDesc] = useState(false);
+  const [isEditingSafeMetadata, setIsEditingSafeMetadata] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [safeLabelInput, setSafeLabelInput] = useState('');
+  const [safeTopicsInput, setSafeTopicsInput] = useState('');
+  const [isSavingSafeMetadata, setIsSavingSafeMetadata] = useState(false);
+  const isEditingSafeMetadataRef = useRef(false);
 
   // Delete Modal State (Knowledge Base)
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -71,6 +82,10 @@ export default function KnowledgeDetailPage() {
   // Embedding Model Change Modal State
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
 
+  useEffect(() => {
+    isEditingSafeMetadataRef.current = isEditingSafeMetadata;
+  }, [isEditingSafeMetadata]);
+
   // 데이터 조회
   const fetchKnowledgeBase = useCallback(
     async (isBackground = false) => {
@@ -86,6 +101,12 @@ export default function KnowledgeDetailPage() {
         }
         if (!isEditingDesc) {
           setEditDesc(data.description || '');
+        }
+        if (!isEditingSafeMetadataRef.current) {
+          setSafeLabelInput(readKnowledgeSafeLabel(data.safe_metadata));
+          setSafeTopicsInput(
+            readKnowledgeSafeTopics(data.safe_metadata).join(', '),
+          );
         }
       } catch (error) {
         if (!isBackground) {
@@ -335,6 +356,45 @@ export default function KnowledgeDetailPage() {
     }
   };
 
+  const handleGenerateSafeLabel = () => {
+    if (!knowledgeBase) return;
+    setSafeLabelInput(generateKnowledgeSafeLabel(knowledgeBase.name));
+    setIsEditingSafeMetadata(true);
+  };
+
+  const handleGenerateSafeTopics = () => {
+    if (!knowledgeBase) return;
+    setSafeTopicsInput(
+      generateKnowledgeSafeTopics({
+        name: knowledgeBase.name,
+        description: knowledgeBase.description,
+      }).join(', '),
+    );
+    setIsEditingSafeMetadata(true);
+  };
+
+  const handleSafeMetadataSave = async () => {
+    if (!knowledgeBase) return;
+    const safeTopics = safeTopicsInput
+      .split(/[,;\n\r]+/)
+      .map((topic) => topic.trim())
+      .filter(Boolean);
+    try {
+      setIsSavingSafeMetadata(true);
+      await knowledgeApi.updateKnowledgeSafeMetadata(id, {
+        safe_label: safeLabelInput,
+        kb_safe_topics: safeTopics,
+      });
+      setIsEditingSafeMetadata(false);
+      toast.success('KB safe metadata saved.');
+      fetchKnowledgeBase();
+    } catch {
+      toast.error('KB safe metadata save failed.');
+    } finally {
+      setIsSavingSafeMetadata(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -380,6 +440,10 @@ export default function KnowledgeDetailPage() {
       </div>
     );
   }
+
+  const canEditSettings = knowledgeBase.can_edit_settings !== false;
+  const canManageSafeMetadata =
+    knowledgeBase.can_manage_safe_metadata ?? canEditSettings;
 
   return (
     <div className="p-8 bg-gray-50/30 dark:bg-gray-900 min-h-full">
@@ -432,9 +496,13 @@ export default function KnowledgeDetailPage() {
                 />
               ) : (
                 <h1
-                  onClick={() => setIsEditingName(true)}
-                  className="text-base font-bold text-gray-900 dark:text-white cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded px-1 -ml-1 transition-colors truncate"
-                  title="클릭하여 이름 수정"
+                  onClick={() => canEditSettings && setIsEditingName(true)}
+                  className={`text-base font-bold text-gray-900 dark:text-white rounded px-1 -ml-1 transition-colors truncate ${
+                    canEditSettings
+                      ? 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800'
+                      : ''
+                  }`}
+                  title={canEditSettings ? '클릭하여 이름 수정' : undefined}
                 >
                   {knowledgeBase.name}
                 </h1>
@@ -456,13 +524,17 @@ export default function KnowledgeDetailPage() {
                 />
               ) : (
                 <p
-                  onClick={() => setIsEditingDesc(true)}
-                  className={`text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded px-1 -ml-1 transition-colors truncate ${
+                  onClick={() => canEditSettings && setIsEditingDesc(true)}
+                  className={`text-sm rounded px-1 -ml-1 transition-colors truncate ${
+                    canEditSettings
+                      ? 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800'
+                      : ''
+                  } ${
                     knowledgeBase.description
                       ? 'text-gray-500 dark:text-gray-400'
                       : 'text-gray-400 dark:text-gray-500 italic'
                   }`}
-                  title="클릭하여 설명 수정"
+                  title={canEditSettings ? '클릭하여 설명 수정' : undefined}
                 >
                   {knowledgeBase.description || '설명을 입력하세요'}
                 </p>
@@ -472,9 +544,10 @@ export default function KnowledgeDetailPage() {
             {/* Model Badge - Clean Badge UI */}
             <div className="flex items-center gap-2 mt-2">
               <button
-                onClick={() => setIsModelModalOpen(true)}
+                onClick={() => canEditSettings && setIsModelModalOpen(true)}
+                disabled={!canEditSettings}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 text-xs font-medium rounded-full border border-gray-200 dark:border-gray-600 transition-colors"
-                title="클릭하여 모델 변경"
+                title={canEditSettings ? '클릭하여 모델 변경' : undefined}
               >
                 <Cpu className="w-3.5 h-3.5 text-blue-500" />
                 <span>{knowledgeBase.embedding_model}</span>
@@ -493,22 +566,101 @@ export default function KnowledgeDetailPage() {
             <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             AI 답변 테스트
           </button>
-          <button
-            onClick={() => setIsUploadModalOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4" />
-            소스 추가
-          </button>
-          <button
-            onClick={() => setIsDeleteModalOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm rounded-lg transition-colors"
-          >
-            <Trash2 className="w-4 h-4" />
-            삭제
-          </button>
+          {canEditSettings && (
+            <>
+              <button
+                onClick={() => setIsUploadModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+              >
+                <Plus className="w-4 h-4" />
+                소스 추가
+              </button>
+              <button
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm rounded-lg transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                삭제
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {canManageSafeMetadata && (
+      <section className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="grid gap-3 lg:grid-cols-[1fr_1.5fr_auto] lg:items-end">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              추천 표시명
+            </span>
+            <div className="flex gap-2">
+              <input
+                aria-label="KB safe label"
+                value={safeLabelInput}
+                onChange={(event) => {
+                  setSafeLabelInput(event.target.value);
+                  setIsEditingSafeMetadata(true);
+                }}
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                placeholder="Knowledge Base"
+              />
+              <button
+                type="button"
+                aria-label="generate safe label"
+                onClick={handleGenerateSafeLabel}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-300 text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                title="추천 표시명 자동 생성"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+            </div>
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              추천 토픽
+            </span>
+            <div className="flex gap-2">
+              <input
+                aria-label="KB safe topics"
+                value={safeTopicsInput}
+                onChange={(event) => {
+                  setSafeTopicsInput(event.target.value);
+                  setIsEditingSafeMetadata(true);
+                }}
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                placeholder="topic1, topic2"
+              />
+              <button
+                type="button"
+                aria-label="generate safe topics"
+                onClick={handleGenerateSafeTopics}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-300 text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                title="추천 토픽 자동 생성"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+            </div>
+          </label>
+
+          <button
+            type="button"
+            aria-label="save safe metadata"
+            onClick={handleSafeMetadataSave}
+            disabled={isSavingSafeMetadata}
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSavingSafeMetadata ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle className="h-4 w-4" />
+            )}
+            저장
+          </button>
+        </div>
+      </section>
+      )}
 
       {/* Source List */}
       <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden shadow-sm">
@@ -549,13 +701,15 @@ export default function KnowledgeDetailPage() {
                       <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
                         AI가 학습할 문서를 추가해보세요.
                       </p>
-                      <button
-                        onClick={() => setIsUploadModalOpen(true)}
-                        className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-                      >
-                        <Plus className="w-4 h-4 mr-1.5" />
-                        첫번째 소스 추가하기
-                      </button>
+                      {canEditSettings && (
+                        <button
+                          onClick={() => setIsUploadModalOpen(true)}
+                          className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+                        >
+                          <Plus className="w-4 h-4 mr-1.5" />
+                          첫번째 소스 추가하기
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -652,8 +806,9 @@ export default function KnowledgeDetailPage() {
                     </td>
                     <td className="px-5 py-2.5">
                       <div className="flex items-center justify-end gap-1.5">
-                        {(doc.status === 'pending' ||
-                          doc.status === 'failed') && (
+                        {canEditSettings &&
+                          (doc.status === 'pending' ||
+                            doc.status === 'failed') && (
                           <button
                             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
                             onClick={() => openDocumentSettings(doc.id)}
@@ -673,13 +828,15 @@ export default function KnowledgeDetailPage() {
                             </span>
                           </button>
                         )}
-                        <button
-                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all"
-                          onClick={() => handleDeleteDocument(doc.id)}
-                          title="삭제"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        {canEditSettings && (
+                          <button
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all"
+                            onClick={() => handleDeleteDocument(doc.id)}
+                            title="삭제"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

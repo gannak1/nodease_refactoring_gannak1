@@ -481,11 +481,28 @@ Agent Builder message history를 사용자 경험 복구 목적으로 보존할 
 | organization_id | UUID | NULL, FK→organization.id |
 | name | VARCHAR(255) | NOT NULL |
 | description | TEXT | NULL |
+| safe_metadata | JSONB | NOT NULL, default `{}` |
 | embedding_model | VARCHAR(50) | NOT NULL |
 | top_k | INTEGER | NOT NULL |
 | similarity_threshold | FLOAT | NOT NULL |
 | user_id | UUID | NOT NULL, FK→users.id — owner |
 | created_at / updated_at | DATETIME | NOT NULL |
+
+`knowledge_bases.safe_metadata`는 Agent Builder와 Knowledge recommendation에
+사용할 수 있는 redaction-safe KB 표시·비교 metadata만 저장한다. 현재 허용
+키는 `safe_label`, `kb_safe_description`, `kb_safe_topics`이며, 저장 전
+sanitizer, 길이 제한, control character 정규화, secret/token, URL, email,
+filesystem path 제거 규칙을 통과해야 한다. 이 값은 KB permission, source
+ACL, organization scope, retrieval-visible 상태를 부여하거나 우회하는
+근거가 아니다.
+
+추천 요청의 `keyword_score`, 최종 recommendation score/confidence,
+사용자 요청 원문, raw source title/path/url, raw document/chunk content는 이
+컬럼에 저장하지 않는다. Recommendation score는 요청 시점의 structured
+safe query topics와 저장된 safe metadata를 사용해 계산한다. Migration 전
+호환 read 경로는 컬럼이 없거나 값이 비어 있으면 `{}`로 취급하며,
+`safe_metadata`를 영속화하는 write 경로는 해당 migration 적용을 전제로
+한다.
 
 #### `documents`
 

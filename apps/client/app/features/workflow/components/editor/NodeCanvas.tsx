@@ -64,7 +64,7 @@ import { AgentBuilderPanel } from '../agentBuilder/AgentBuilderPanel';
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
 
-function AgentBuilderPreviewNode({ data, type }: NodeProps) {
+export function AgentBuilderPreviewNode({ data, type }: NodeProps) {
   const title = typeof data?.title === 'string' ? data.title : type;
   const displayType =
     typeof data?.original_type === 'string' ? data.original_type : type;
@@ -87,6 +87,53 @@ function AgentBuilderPreviewNode({ data, type }: NodeProps) {
       />
     </div>
   );
+}
+
+export function AgentBuilderPreviewNodeDetail({
+  detail,
+  onClose,
+}: {
+  detail: Record<string, unknown>;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="absolute left-4 top-16 z-40 max-h-[calc(100%-5rem)] w-80 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-xl">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-slate-900">Node Detail</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+        >
+          닫기
+        </button>
+      </div>
+      <dl className="mt-3 space-y-2">
+        {Object.entries(detail).map(([key, value]) => (
+          <div key={key}>
+            <dt className="text-xs font-medium uppercase text-slate-400">
+              {key}
+            </dt>
+            <dd className="mt-0.5 break-words text-slate-700">
+              {typeof value === 'string' ||
+              typeof value === 'number' ||
+              typeof value === 'boolean'
+                ? String(value)
+                : JSON.stringify(value)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </aside>
+  );
+}
+
+export function resolveAgentBuilderDisplayedGraph<TNode, TEdge>(
+  actualNodes: TNode[],
+  actualEdges: TEdge[],
+  preview: { previewGraph: { nodes: TNode[]; edges: TEdge[] } } | null,
+) {
+  return preview?.previewGraph ?? { nodes: actualNodes, edges: actualEdges };
 }
 
 const agentBuilderPreviewNodeTypes = {
@@ -215,8 +262,13 @@ export default function NodeCanvas() {
   const canExecute = workflowAccess?.can_execute !== false;
   const isAgentBuilderPreviewMode = agentBuilderPreview !== null;
   const canPublish = rawCanPublish && !isAgentBuilderPreviewMode;
-  const displayedNodes = agentBuilderPreview?.previewGraph.nodes ?? nodes;
-  const displayedEdges = agentBuilderPreview?.previewGraph.edges ?? edges;
+  const displayedGraph = resolveAgentBuilderDisplayedGraph(
+    nodes,
+    edges,
+    agentBuilderPreview,
+  );
+  const displayedNodes = displayedGraph.nodes;
+  const displayedEdges = displayedGraph.edges;
 
   useEffect(() => {
     if (!numberConnection || isAgentBuilderPreviewMode) return;
@@ -1365,36 +1417,10 @@ export default function NodeCanvas() {
                 )}
 
                 {selectedPreviewNode && (
-                  <aside className="absolute left-4 top-16 z-40 max-h-[calc(100%-5rem)] w-80 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-xl">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-slate-900">
-                        Node Detail
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedPreviewNodeId(null)}
-                        className="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
-                      >
-                        닫기
-                      </button>
-                    </div>
-                    <dl className="mt-3 space-y-2">
-                      {Object.entries(selectedPreviewNode).map(([key, value]) => (
-                        <div key={key}>
-                          <dt className="text-xs font-medium uppercase text-slate-400">
-                            {key}
-                          </dt>
-                          <dd className="mt-0.5 break-words text-slate-700">
-                            {typeof value === 'string' ||
-                            typeof value === 'number' ||
-                            typeof value === 'boolean'
-                              ? String(value)
-                              : JSON.stringify(value)}
-                          </dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </aside>
+                  <AgentBuilderPreviewNodeDetail
+                    detail={selectedPreviewNode}
+                    onClose={() => setSelectedPreviewNodeId(null)}
+                  />
                 )}
 
                 {numberConnection && (
@@ -1554,7 +1580,6 @@ export default function NodeCanvas() {
 
       {!isReadOnly && (
         <AgentBuilderPanel
-          key={`${activeWorkflowId}:${currentAppId ?? 'none'}`}
           workflowId={activeWorkflowId}
           appId={currentAppId}
           nodes={nodes}

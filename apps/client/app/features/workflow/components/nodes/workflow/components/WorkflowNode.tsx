@@ -412,12 +412,6 @@ export const WorkflowNode = memo(
         iconColor="#14b8a6" // teal-500
         targetHandleId={targetHandleId}
         sourceHandleId={sourceHandleId}
-        targetHandleStyle={
-          isExpanded ? { top: '56px', left: '-12px' } : undefined
-        }
-        sourceHandleStyle={
-          isExpanded ? { top: '56px', right: '-12px' } : undefined
-        }
         titleClassName={isExpanded ? '' : undefined}
         showBodyContent
         sizeMode={isExpanded ? 'auto' : 'fixed'}

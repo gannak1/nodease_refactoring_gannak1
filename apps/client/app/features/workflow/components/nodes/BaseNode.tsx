@@ -15,6 +15,7 @@ import { BaseNodeData } from '../../types/Nodes';
 import { useNodeIO } from '../../hooks/useNodeIO';
 import { buildOutputLabelPatch } from '../../utils/nodeOutputLabels';
 import { NodeOutputVariable } from '../../utils/nodeVariablePorts';
+import { getStandardNodeHandleStyle } from '../../utils/nodeHandleLayout';
 import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 import { VisiblePropertySummary } from './VisiblePropertySummary';
 
@@ -22,6 +23,7 @@ interface BaseNodeProps {
   id?: string;
   data: BaseNodeData;
   children?: React.ReactNode;
+  additionalHandles?: React.ReactNode;
 
   showSourceHandle?: boolean;
   showTargetHandle?: boolean;
@@ -42,6 +44,7 @@ interface BaseNodeProps {
   showDetailsToggle?: boolean;
   showBodyContent?: boolean;
   sizeMode?: 'fixed' | 'auto';
+  minimumHeight?: number;
 }
 
 const INPUT_CHIP_COLORS = [
@@ -196,6 +199,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   id,
   data,
   children,
+  additionalHandles,
   showSourceHandle = true,
   showTargetHandle = true,
   className,
@@ -210,6 +214,7 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   showDetailsToggle = true,
   showBodyContent = true,
   sizeMode = 'fixed',
+  minimumHeight,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -400,11 +405,10 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
   }, [clearOutputPanelCloseTimer, isOutputPanelOpen, scheduleOutputPanelClose]);
 
   const getHandleStyle = (side: 'left' | 'right') => {
-    if (side === 'left') {
-      return { left: '-20px', ...targetHandleStyle };
-    } else {
-      return { right: '-20px', ...sourceHandleStyle };
-    }
+    return getStandardNodeHandleStyle(
+      side,
+      side === 'left' ? targetHandleStyle : sourceHandleStyle,
+    );
   };
 
   const getTargetNumberClassName = () => {
@@ -554,7 +558,12 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
         width: WORKFLOW_NODE_SIZE.width,
         ...(resolvedSizeMode === 'fixed'
           ? { height: WORKFLOW_NODE_SIZE.height }
-          : { minHeight: WORKFLOW_NODE_SIZE.height }),
+          : {
+              minHeight: Math.max(
+                WORKFLOW_NODE_SIZE.height,
+                minimumHeight ?? 0,
+              ),
+            }),
       }}
     >
       <JigsawBackground
@@ -563,6 +572,34 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
         selected={selected}
         status={data.status}
       />
+
+      {showTargetHandle && (
+        <SmartHandle
+          id={targetHandleId}
+          type="target"
+          position={Position.Left}
+          style={getHandleStyle('left')}
+          displayNumber={data.displayNumber}
+          showPlusButton={showTargetHandle}
+          numberClassName={getTargetNumberClassName()}
+          onNumberClick={numberConnection ? handleTargetNumberClick : undefined}
+        />
+      )}
+
+      {showSourceHandle && (
+        <SmartHandle
+          id={sourceHandleId}
+          type="source"
+          position={Position.Right}
+          style={getHandleStyle('right')}
+          displayNumber={data.displayNumber}
+          showPlusButton={showSourceHandle}
+          numberClassName={getSourceNumberClassName()}
+          onNumberClick={handleSourceNumberClick}
+        />
+      )}
+
+      {additionalHandles}
 
       {inputVariables.length > 0 && (
         <div
@@ -712,22 +749,6 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
       )}
 
       <div className="relative z-10">
-        {showTargetHandle && (
-          <SmartHandle
-            id={targetHandleId}
-            type="target"
-            position={Position.Left}
-            className="-ml-2"
-            style={getHandleStyle('left')}
-            displayNumber={data.displayNumber}
-            showPlusButton={showTargetHandle}
-            numberClassName={getTargetNumberClassName()}
-            onNumberClick={
-              numberConnection ? handleTargetNumberClick : undefined
-            }
-          />
-        )}
-
         <div className="mb-4 flex items-start gap-4 pr-8">
           {icon && (
             <div
@@ -842,20 +863,6 @@ export const BaseNode: React.FC<BaseNodeProps> = ({
         )}
 
         {node && <VisiblePropertySummary node={node} />}
-
-        {showSourceHandle && (
-          <SmartHandle
-            id={sourceHandleId}
-            type="source"
-            position={Position.Right}
-            className="-mr-2"
-            style={getHandleStyle('right')}
-            displayNumber={data.displayNumber}
-            showPlusButton={showSourceHandle}
-            numberClassName={getSourceNumberClassName()}
-            onNumberClick={handleSourceNumberClick}
-          />
-        )}
       </div>
     </div>
   );

@@ -13,8 +13,12 @@ from apps.gateway.services.agent_builder_service import (
 from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderApplyResponse,
+    AgentBuilderEditOperation,
+    AgentBuilderEditTargetReference,
     AgentBuilderMessageResponse,
     AgentBuilderMessageRequest,
+    AgentBuilderPlannedStep,
+    AgentBuilderStructuredRequest,
 )
 from apps.shared.schemas.knowledge import (
     KnowledgeRAGRecommendation,
@@ -23,6 +27,8 @@ from apps.shared.schemas.knowledge import (
     KnowledgeRAGRecommendationSummary,
     KnowledgeRAGRecommendedOptions,
 )
+from apps.shared.schemas.workflow import NodeSchema
+from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 
 
 class FakeDb:
@@ -464,6 +470,423 @@ def test_structured_request_modifies_existing_workflow_only_for_targeted_insert(
     assert structured.draft_mode == "modify_workflow"
 
 
+def test_structured_request_keeps_existing_target_out_of_new_capabilities():
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {"id": "start", "type": "startNode", "data": {"title": "Start"}},
+                {
+                    "id": "github-read",
+                    "type": "githubNode",
+                    "data": {"title": "GitHub PR 조회", "action": "get_pr"},
+                },
+                {"id": "answer", "type": "answerNode", "data": {"title": "응답"}},
+            ],
+            "edges": [
+                {"id": "edge-start-github", "source": "start", "target": "github-read"},
+                {"id": "edge-github-answer", "source": "github-read", "target": "answer"},
+            ],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="github 노드 뒤에 LLM 노드를 추가해줘",
+        ),
+        workflow=workflow,
+    )
+
+    assert structured.request_type == "modify_workflow"
+    assert structured.required_capabilities == ["llm"]
+    assert [step.capability for step in structured.planned_steps] == ["llm"]
+    assert len(structured.edit_operations) == 1
+    operation = structured.edit_operations[0]
+    assert operation.operation == "insert"
+    assert operation.placement == "after"
+    assert operation.step_refs == ["step_llm"]
+    assert operation.target.node_types == ["githubNode"]
+
+
+def test_named_existing_node_target_is_resolved_and_only_requested_node_is_spliced(
+    monkeypatch,
+):
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {"id": "start", "type": "startNode", "data": {"title": "Start"}},
+                {
+                    "id": "github-read",
+                    "type": "githubNode",
+                    "data": {"title": "GitHub PR 조회", "action": "get_pr"},
+                },
+                {"id": "answer", "type": "answerNode", "data": {"title": "응답"}},
+            ],
+            "edges": [
+                {"id": "edge-start-github", "source": "start", "target": "github-read"},
+                {"id": "edge-github-answer", "source": "github-read", "target": "answer"},
+            ],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="github 노드 뒤에 LLM 노드를 추가해줘"),
+        workflow=workflow,
+    )
+
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        kb_bindings=[],
+        target_resolution=resolution,
+    )
+
+    assert resolution["status"] == "resolved"
+    assert resolution["node_id"] == "github-read"
+    generated_nodes = [
+        node for node in preview["nodes"] if str(node["id"]).startswith("agent-")
+    ]
+    assert [node["type"] for node in generated_nodes] == ["llmNode"]
+    assert not any(node["type"] == "startNode" for node in generated_nodes)
+    assert not any(node["type"] == "answerNode" for node in generated_nodes)
+    generated_llm_id = generated_nodes[0]["id"]
+    edge_pairs = {(edge["source"], edge["target"]) for edge in preview["edges"]}
+    assert ("github-read", "answer") not in edge_pairs
+    assert ("github-read", generated_llm_id) in edge_pairs
+    assert (generated_llm_id, "answer") in edge_pairs
+
+
+def test_named_target_with_multiple_matching_nodes_requires_clarification():
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {
+                    "id": "github-read-1",
+                    "type": "githubNode",
+                    "data": {"title": "GitHub PR 조회 1", "action": "get_pr"},
+                },
+                {
+                    "id": "github-read-2",
+                    "type": "githubNode",
+                    "data": {"title": "GitHub PR 조회 2", "action": "get_pr"},
+                },
+            ],
+            "edges": [],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="github 노드 뒤에 LLM 노드를 추가해줘"),
+        workflow=workflow,
+    )
+
+    unresolved = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+    resolved = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id="github-read-2",
+        selected_edge_id=None,
+    )
+
+    assert unresolved["status"] == "clarification_required"
+    assert [option["node_id"] for option in unresolved["options"]] == [
+        "github-read-1",
+        "github-read-2",
+    ]
+    assert resolved["status"] == "resolved"
+    assert resolved["node_id"] == "github-read-2"
+
+
+@pytest.mark.parametrize(
+    ("target_label", "target_type"),
+    [
+        ("GitHub", "githubNode"),
+        ("Slack", "slackPostNode"),
+        ("LLM", "llmNode"),
+        ("HTTP", "httpRequestNode"),
+    ],
+)
+def test_named_target_resolution_uses_catalog_node_type_for_multiple_node_kinds(
+    target_label,
+    target_type,
+):
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {
+                    "id": "target",
+                    "type": target_type,
+                    "data": {"title": f"{target_label} 작업"},
+                },
+                {"id": "answer", "type": "answerNode", "data": {"title": "응답"}},
+            ],
+            "edges": [{"id": "edge-target-answer", "source": "target", "target": "answer"}],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message=f"{target_label} 노드 뒤에 LLM 노드를 추가해줘"
+        ),
+        workflow=workflow,
+    )
+
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+
+    assert structured.edit_operations[0].target.node_types == [target_type]
+    assert resolution["status"] == "resolved"
+    assert resolution["node_id"] == "target"
+
+
+def test_modify_request_does_not_inject_unrequested_llm_before_new_slack_node():
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {"id": "llm", "type": "llmNode", "data": {"title": "LLM"}},
+                {"id": "answer", "type": "answerNode", "data": {"title": "응답"}},
+            ],
+            "edges": [{"id": "edge-llm-answer", "source": "llm", "target": "answer"}],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="LLM 노드 뒤에 Slack 노드를 추가해줘"),
+        workflow=workflow,
+    )
+
+    assert structured.required_capabilities == ["slack_send"]
+    assert [step.capability for step in structured.planned_steps] == ["slack_send"]
+    assert structured.edit_operations[0].target.node_types == ["llmNode"]
+
+
+def test_modify_preview_rejects_generated_component_detached_from_existing_graph():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    graph = {
+        "nodes": [
+            {"id": "existing", "type": "startNode", "data": {}},
+            {
+                "id": "agent-llm",
+                "type": "llmNode",
+                "data": {"model_id": "model-1"},
+            },
+        ],
+        "edges": [],
+    }
+
+    validation = svc.validate_preview_graph(
+        graph,
+        generated_node_ids={"agent-llm"},
+    )
+
+    assert validation.valid is False
+    assert "DETACHED_GENERATED_COMPONENT" in {
+        issue.code for issue in validation.issues
+    }
+
+
+@pytest.mark.parametrize(
+    ("nodes", "edge", "expected_code"),
+    [
+        (
+            [
+                {"id": "llm", "type": "llmNode", "data": {}},
+                {"id": "start", "type": "startNode", "data": {}},
+            ],
+            {"id": "bad", "source": "llm", "target": "start"},
+            "START_NODE_HAS_INCOMING_EDGE",
+        ),
+        (
+            [
+                {"id": "llm", "type": "llmNode", "data": {}},
+                {"id": "webhook", "type": "webhookTrigger", "data": {}},
+            ],
+            {"id": "bad", "source": "llm", "target": "webhook"},
+            "TRIGGER_NODE_HAS_INCOMING_EDGE",
+        ),
+        (
+            [
+                {"id": "answer", "type": "answerNode", "data": {}},
+                {"id": "llm", "type": "llmNode", "data": {}},
+            ],
+            {"id": "bad", "source": "answer", "target": "llm"},
+            "TERMINAL_NODE_HAS_OUTGOING_EDGE",
+        ),
+        (
+            [
+                {
+                    "id": "condition",
+                    "type": "conditionNode",
+                    "data": {"cases": [{"id": "case-1"}]},
+                },
+                {"id": "llm", "type": "llmNode", "data": {}},
+            ],
+            {
+                "id": "bad",
+                "source": "condition",
+                "sourceHandle": "missing-case",
+                "target": "llm",
+            },
+            "INVALID_CONDITION_SOURCE_HANDLE",
+        ),
+    ],
+)
+def test_agent_builder_backend_rejects_invalid_connection_policy(
+    nodes, edge, expected_code
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    result = svc.validate_preview_graph({"nodes": nodes, "edges": [edge]})
+
+    assert result.valid is False
+    assert expected_code in {issue.code for issue in result.issues}
+
+
+def test_modify_request_inserts_answer_node_after_existing_llm():
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {
+                    "id": "llm-review",
+                    "type": "llmNode",
+                    "data": {"title": "LLM", "model_id": "model-1"},
+                },
+                {
+                    "id": "github-comment",
+                    "type": "githubNode",
+                    "data": {
+                        "title": "GitHub PR 댓글 등록",
+                        "action": "comment_pr",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "edge-llm-comment",
+                    "source": "llm-review",
+                    "target": "github-comment",
+                }
+            ],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="llm 뒤에 응답 노드 하나 추가"),
+        workflow=workflow,
+    )
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        kb_bindings=[],
+        target_resolution=resolution,
+    )
+
+    assert structured.required_capabilities == ["answer"]
+    assert [step.capability for step in structured.planned_steps] == ["answer"]
+    assert resolution["status"] == "resolved"
+    generated_nodes = [
+        node for node in preview["nodes"] if str(node["id"]).startswith("agent-")
+    ]
+    assert [node["type"] for node in generated_nodes] == ["answerNode"]
+    generated_answer_id = generated_nodes[0]["id"]
+    edge_pairs = {(edge["source"], edge["target"]) for edge in preview["edges"]}
+    assert ("llm-review", "github-comment") not in edge_pairs
+    assert ("llm-review", generated_answer_id) in edge_pairs
+    assert (generated_answer_id, "github-comment") in edge_pairs
+
+
+def test_modify_request_with_unknown_new_node_reports_missing_capability_not_target():
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {
+                    "id": "llm-review",
+                    "type": "llmNode",
+                    "data": {"title": "LLM", "model_id": "model-1"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="llm 뒤에 알 수 없는 노드 추가"),
+        workflow=workflow,
+    )
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+
+    assert structured.missing_information == [
+        "새로 추가할 node capability를 지정해주세요."
+    ]
+    assert resolution["status"] == "not_required"
+
+
 def test_structured_request_rejects_non_workflow_message_with_hints():
     svc = AgentBuilderService(
         FakeDb(),
@@ -510,8 +933,7 @@ def test_structured_request_rejects_guardrail_node_in_mvp():
     assert validation.issues[0].code == "UNSUPPORTED_REQUEST"
 
 
-def test_input_output_request_builds_without_llm_model_route(monkeypatch):
-    monkeypatch.delenv(service_module.APPROVED_DRAFT_MODEL_ENV, raising=False)
+def test_input_output_request_builds_without_llm_model_recommendation():
     svc = AgentBuilderService(
         FakeDb(),
         user=SimpleNamespace(id=uuid.uuid4()),
@@ -544,7 +966,7 @@ def test_webhook_request_builds_webhook_trigger_preview(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
@@ -574,7 +996,520 @@ def test_webhook_request_builds_webhook_trigger_preview(monkeypatch):
     assert svc.validate_preview_graph(preview_graph).valid is True
 
 
-def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warning():
+def test_github_pr_review_request_builds_read_review_and_comment_nodes(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="웹훅 노드로 받아서 PR 리뷰를 깃허브에 올려주는 워크플로우를 만들어줘"
+        ),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    assert "github_pr_read" in structured.required_capabilities
+    assert "github_pr_comment" in structured.required_capabilities
+    node_types = [node["type"] for node in preview_graph["nodes"]]
+    assert node_types == [
+        "webhookTrigger",
+        "githubNode",
+        "llmNode",
+        "githubNode",
+        "answerNode",
+    ]
+    github_nodes = [
+        node for node in preview_graph["nodes"] if node["type"] == "githubNode"
+    ]
+    assert [node["data"]["action"] for node in github_nodes] == [
+        "get_pr",
+        "comment_pr",
+    ]
+    assert all(node["data"]["api_token"] == "" for node in github_nodes)
+    assert all(
+        node["data"]["configuration_state"] == "unresolved"
+        for node in github_nodes
+    )
+    configuration_issues = svc._node_configuration_issues(  # noqa: SLF001
+        preview_graph
+    )
+    assert [issue.node_label for issue in configuration_issues] == [
+        "GitHub PR 조회",
+        "GitHub PR 댓글 등록",
+    ]
+    assert [issue.capability for issue in configuration_issues] == [
+        "github_pr_read",
+        "github_pr_comment",
+    ]
+    assert [
+        [parameter.label for parameter in issue.missing_parameters]
+        for issue in configuration_issues
+    ] == [
+        ["GitHub credential", "Repository owner", "Repository name", "PR 번호"],
+        ["GitHub credential", "Repository owner", "Repository name", "PR 번호"],
+    ]
+    assert svc.validate_preview_graph(preview_graph).valid is True
+
+
+def test_explicit_new_workflow_supports_github_comment_registration_phrase(
+    monkeypatch,
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message=(
+                "새 워크플로우로 웹훅에서 요청을 받고 GitHub PR을 조회한 뒤 "
+                "LLM으로 리뷰해서 GitHub PR에 댓글을 등록해줘"
+            )
+        ),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    assert structured.request_type == "new_workflow"
+    assert structured.required_capabilities == [
+        "webhook_trigger",
+        "github_pr_read",
+        "llm",
+        "github_pr_comment",
+        "answer",
+    ]
+    assert [node["type"] for node in preview_graph["nodes"]] == [
+        "webhookTrigger",
+        "githubNode",
+        "llmNode",
+        "githubNode",
+        "answerNode",
+    ]
+    assert [
+        node["data"]["action"]
+        for node in preview_graph["nodes"]
+        if node["type"] == "githubNode"
+    ] == ["get_pr", "comment_pr"]
+
+
+def test_github_llm_review_without_comment_intent_does_not_add_comment_node(
+    monkeypatch,
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="새 워크플로우로 GitHub PR을 조회한 뒤 LLM으로 리뷰해줘"
+        ),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    assert structured.request_type == "new_workflow"
+    assert "github_pr_read" in structured.required_capabilities
+    assert "llm" in structured.required_capabilities
+    assert "github_pr_comment" not in structured.required_capabilities
+    github_nodes = [
+        node for node in preview_graph["nodes"] if node["type"] == "githubNode"
+    ]
+    assert [node["data"]["action"] for node in github_nodes] == ["get_pr"]
+
+
+def test_spaced_korean_webhook_and_explicit_github_comment_builds_two_github_nodes(
+    monkeypatch,
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR에 리뷰 댓글을 올리는 노드를 생성해줘"
+        ),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    assert structured.required_capabilities == [
+        "webhook_trigger",
+        "github_pr_read",
+        "llm",
+        "github_pr_comment",
+        "answer",
+    ]
+    assert [node["type"] for node in preview_graph["nodes"]] == [
+        "webhookTrigger",
+        "githubNode",
+        "llmNode",
+        "githubNode",
+        "answerNode",
+    ]
+
+
+def test_submit_message_preserves_explicit_github_comment_capabilities(
+    monkeypatch,
+):
+    db = FakeDb()
+    session_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=None,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(svc, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(svc, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(svc, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(
+        svc,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
+
+    response = svc.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(
+            message="웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR에 리뷰 댓글을 올리는 노드를 생성해줘"
+        ),
+    )
+
+    assert response.status == "draft_ready"
+    assert response.structured_request is not None
+    assert response.structured_request.required_capabilities == [
+        "webhook_trigger",
+        "github_pr_read",
+        "llm",
+        "github_pr_comment",
+        "answer",
+    ]
+    assert response.draft_preview is not None
+    preview_nodes = response.draft_preview.preview_graph["nodes"]
+    assert [node["type"] for node in preview_nodes] == [
+        "webhookTrigger",
+        "githubNode",
+        "llmNode",
+        "githubNode",
+        "answerNode",
+    ]
+    assert [
+        node["data"]["action"]
+        for node in preview_nodes
+        if node["type"] == "githubNode"
+    ] == ["get_pr", "comment_pr"]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_node_types"),
+    [
+        (
+            "입력 출력 노드 생성해줘",
+            ["startNode", "answerNode"],
+        ),
+        (
+            "새 워크플로우로 schedule trigger에서 시작해서 REST API를 호출하고 "
+            "LLM으로 결과를 요약한 뒤 Slack으로 보내줘",
+            [
+                "scheduleTrigger",
+                "httpRequestNode",
+                "llmNode",
+                "slackPostNode",
+                "answerNode",
+            ],
+        ),
+    ],
+)
+def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context(
+    monkeypatch,
+    message,
+    expected_node_types,
+):
+    db = FakeDb()
+    session_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        updated_at=None,
+        graph={
+            "nodes": [
+                {
+                    "id": "existing-start",
+                    "type": "startNode",
+                    "data": {"title": "Existing Start"},
+                },
+                {
+                    "id": "existing-answer",
+                    "type": "answerNode",
+                    "data": {"title": "Existing Answer"},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "existing-edge",
+                    "source": "existing-start",
+                    "target": "existing-answer",
+                }
+            ],
+        },
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=workflow_id,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(svc, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(svc, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(svc, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _: workflow)
+    monkeypatch.setattr(
+        svc,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args: None)
+    monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
+
+    response = svc.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(message=message, workflow_id=workflow_id),
+    )
+
+    assert response.status == "draft_ready"
+    assert response.structured_request is not None
+    assert response.structured_request.draft_mode == "new_workflow"
+    assert response.draft_preview is not None
+    assert [
+        node["type"] for node in response.draft_preview.preview_graph["nodes"]
+    ] == expected_node_types
+    draft = next(row for row in db.added if hasattr(row, "draft_metadata"))
+    assert draft.workflow_id is None
+    assert draft.base_workflow_updated_at is None
+    assert draft.draft_metadata["workflow_id"] is None
+    assert draft.draft_metadata["workflow_scope"] == "new_workflow"
+
+
+def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge(
+    monkeypatch,
+):
+    db = FakeDb()
+    session_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        updated_at=None,
+        graph={
+            "nodes": [
+                {"id": "start", "type": "startNode", "data": {"title": "Start"}},
+                {
+                    "id": "github-read",
+                    "type": "githubNode",
+                    "data": {"title": "GitHub PR 조회", "action": "get_pr"},
+                },
+                {"id": "answer", "type": "answerNode", "data": {"title": "응답"}},
+            ],
+            "edges": [
+                {"id": "edge-start-github", "source": "start", "target": "github-read"},
+                {"id": "edge-github-answer", "source": "github-read", "target": "answer"},
+            ],
+        },
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=workflow_id,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(svc, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(svc, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(svc, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _: workflow)
+    monkeypatch.setattr(
+        svc,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args: None)
+    monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
+
+    response = svc.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(
+            message="github 노드 뒤에 LLM 노드를 추가해줘",
+            workflow_id=workflow_id,
+        ),
+    )
+
+    assert response.status == "draft_ready"
+    assert response.draft_preview is not None
+    generated_nodes = [
+        node
+        for node in response.draft_preview.preview_graph["nodes"]
+        if str(node["id"]).startswith("agent-")
+    ]
+    assert [node["type"] for node in generated_nodes] == ["llmNode"]
+    draft = next(row for row in db.added if hasattr(row, "draft_metadata"))
+    assert draft.draft_metadata["target_resolution"]["replaced_edge_ids"] == [
+        "edge-github-answer"
+    ]
+
+    saved_graph = svc._graph_for_apply(  # noqa: SLF001
+        draft,
+        workflow,
+        runtime_kb_bindings=[],
+    )
+    saved_edge_pairs = {
+        (edge["source"], edge["target"]) for edge in saved_graph["edges"]
+    }
+    generated_llm_id = generated_nodes[0]["id"]
+    assert ("github-read", "answer") not in saved_edge_pairs
+    assert ("github-read", generated_llm_id) in saved_edge_pairs
+    assert (generated_llm_id, "answer") in saved_edge_pairs
+
+
+@pytest.mark.parametrize(
+    ("capability", "expected_node_type"),
+    [
+        ("start_input", "startNode"),
+        ("webhook_trigger", "webhookTrigger"),
+        ("schedule_trigger", "scheduleTrigger"),
+        ("llm", "llmNode"),
+        ("workflow_call", "workflowNode"),
+        ("code_execution", "codeNode"),
+        ("condition", "conditionNode"),
+        ("file_extraction", "fileExtractionNode"),
+        ("variable_extraction", "variableExtractionNode"),
+        ("answer", "answerNode"),
+        ("http_request", "httpRequestNode"),
+        ("slack_send", "slackPostNode"),
+        ("template_render", "templateNode"),
+        ("github_pr_read", "githubNode"),
+        ("github_pr_comment", "githubNode"),
+        ("mail_search", "mailNode"),
+    ],
+)
+def test_agent_builder_has_draft_template_for_every_supported_capability(
+    monkeypatch,
+    capability,
+    expected_node_type,
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="catalog capability",
+        required_capabilities=[capability],
+    )
+
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    matching_nodes = [
+        node for node in preview["nodes"] if node["type"] == expected_node_type
+    ]
+    assert matching_nodes
+    NodeFactory.create(NodeSchema.model_validate(matching_nodes[0]))
+
+
+def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warning(
+    monkeypatch,
+):
     svc = AgentBuilderService(
         FakeDb(),
         user=SimpleNamespace(id=uuid.uuid4()),
@@ -585,10 +1520,25 @@ def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warnin
         AgentBuilderMessageRequest(message="Analyze the input and send it to Slack"),
         workflow=None,
     )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
 
     assert structured.missing_information == []
     assert "slack_send" in structured.required_capabilities
     assert "slack_channel_unresolved" in structured.risk_flags
+    configuration_issues = svc._node_configuration_issues(  # noqa: SLF001
+        preview_graph
+    )
+    assert len(configuration_issues) == 1
+    assert configuration_issues[0].node_label == "Slack 전송"
+    assert [
+        parameter.label
+        for parameter in configuration_issues[0].missing_parameters
+    ] == ["Slack credential", "Slack channel"]
     slack_resolution = next(
         item
         for item in structured.pending_resolution
@@ -600,7 +1550,20 @@ def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warnin
 
 
 def test_session_message_payload_rehydrates_ready_draft_preview():
-    graph = {"nodes": [], "edges": []}
+    graph = {
+        "nodes": [
+            {
+                "id": "slack-1",
+                "type": "slackPostNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "Slack 전송",
+                    "configuration_state": "unresolved",
+                },
+            }
+        ],
+        "edges": [],
+    }
     request_id = uuid.uuid4()
     draft = SimpleNamespace(
         id=uuid.uuid4(),
@@ -612,6 +1575,7 @@ def test_session_message_payload_rehydrates_ready_draft_preview():
         draft_mode="new_workflow",
         node_detail_previews=[],
         validation_result={"valid": True, "issues": []},
+        draft_metadata={},
         expires_at=None,
     )
     request_row = SimpleNamespace(
@@ -628,6 +1592,139 @@ def test_session_message_payload_rehydrates_ready_draft_preview():
 
     assert payload["draft_preview"]["draft_id"] == str(draft.id)
     assert payload["draft_preview"]["preview_graph"] == graph
+    assert payload["draft_preview"]["safety_notices"] == [
+        service_module.SAFE_SIDE_EFFECT_NOTICE
+    ]
+    assert payload["draft_preview"]["configuration_issues"] == [
+        {
+            "node_id": "slack-1",
+            "node_type": "slackPostNode",
+            "node_label": "Slack 전송",
+            "capability": "slack_send",
+            "missing_parameters": [
+                {"key": "credential", "label": "Slack credential"},
+                {"key": "channel", "label": "Slack channel"},
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize("latest_status", ["failed", "unsupported", "validation_failed"])
+def test_session_response_hides_draft_from_an_older_request(latest_status):
+    latest_request_id = uuid.uuid4()
+    graph = {
+        "nodes": [
+            {
+                "id": "http-old",
+                "type": "httpRequestNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"title": "이전 HTTP 요청"},
+            }
+        ],
+        "edges": [],
+    }
+    latest_request = SimpleNamespace(
+        id=latest_request_id,
+        status=latest_status,
+        message_summary="기존 LLM 노드 뒤에 GitHub PR 생성 노드를 삽입",
+        response_payload={
+            "request_id": str(latest_request_id),
+            "status": latest_status,
+            "warnings": [],
+        },
+        created_at=None,
+    )
+    older_draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        status="ready",
+        preview_graph=graph,
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        draft_mode="modify_workflow",
+        node_detail_previews=[],
+        validation_result={"valid": True, "issues": []},
+        draft_metadata={},
+        expires_at=None,
+    )
+
+    class SessionDb(FakeDb):
+        def query(self, model):
+            if model is service_module.AgentBuilderRequest:
+                return FakeQuery(latest_request)
+            if model is service_module.AgentBuilderDraft:
+                return FakeQuery(older_draft)
+            raise AssertionError(f"unexpected model: {model}")
+
+    svc = AgentBuilderService(
+        SessionDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    response = svc._session_response(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            workflow_id=uuid.uuid4(),
+            app_id=None,
+            status="active",
+        )
+    )
+
+    assert response.draft_preview is None
+    assert response.messages[-1]["response"]["status"] == latest_status
+    assert response.messages[-1]["response"].get("draft_preview") is None
+
+
+def test_session_response_restores_draft_for_the_latest_request():
+    request_id = uuid.uuid4()
+    latest_request = SimpleNamespace(
+        id=request_id,
+        status="completed",
+        message_summary="입력과 응답 노드를 만들어줘",
+        response_payload={
+            "request_id": str(request_id),
+            "status": "draft_ready",
+        },
+        created_at=None,
+    )
+    latest_draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=request_id,
+        status="ready",
+        preview_graph={"nodes": [], "edges": []},
+        base_graph_hash="latest-graph",
+        base_workflow_updated_at=None,
+        draft_mode="new_workflow",
+        node_detail_previews=[],
+        validation_result={"valid": True, "issues": []},
+        draft_metadata={},
+        expires_at=None,
+    )
+
+    class SessionDb(FakeDb):
+        def query(self, model):
+            if model is service_module.AgentBuilderRequest:
+                return FakeQuery(latest_request)
+            if model is service_module.AgentBuilderDraft:
+                return FakeQuery(latest_draft)
+            raise AssertionError(f"unexpected model: {model}")
+
+    svc = AgentBuilderService(
+        SessionDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    response = svc._session_response(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            workflow_id=None,
+            app_id=uuid.uuid4(),
+            status="active",
+        )
+    )
+
+    assert response.draft_preview is not None
+    assert response.draft_preview["draft_id"] == str(latest_draft.id)
 
 
 def test_agent_builder_validator_rejects_unsupported_node_type():
@@ -662,6 +1759,7 @@ def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(m
         def recommend_for_builder(self, request, **_kwargs):
             captured["workflow_intent"] = request.workflow_intent
             captured["node_purpose"] = request.node_purpose
+            captured["max_recommendations"] = request.max_recommendations
             return KnowledgeRAGRecommendationResponse(
                 recommendations=[
                     KnowledgeRAGRecommendation(
@@ -705,12 +1803,39 @@ def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(m
 
     result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
 
-    assert result["status"] == "recommended"
-    assert result["bindings"][0]["safe_handle"] == "safe-rec-1"
-    assert "knowledge_base_id" not in result["bindings"][0]
+    assert result["status"] == "clarification_required"
+    assert result["bindings"] == []
+    assert result["options"][0]["candidate_id"] == "safe-rec-1"
+    assert result["options"][0]["confidence"] == "high"
+    assert result["options"][0]["score"] == 0.82
+    assert len(result["options"]) == 1
     assert captured["user_id"] == user_id
     assert captured["organization_id"] == organization_id
+    assert (
+        captured["max_recommendations"]
+        == service_module.AGENT_BUILDER_KB_RECOMMENDATION_LIMIT
+    )
     assert "sk-" not in captured["workflow_intent"]
+
+
+def test_agent_builder_structures_kb_query_topics_without_workflow_noise():
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘"
+        ),
+        workflow=None,
+    )
+
+    topics = structured.knowledge_requirements[0].query_topics
+    assert topics[:3] == ["사내 문서", "내부 문서", "문서 질의"]
+    assert "웹훅" not in topics
+    assert "워크플로우" not in topics
 
 
 def test_agent_builder_kb_recommendation_close_score_requires_clarification(monkeypatch):
@@ -809,23 +1934,99 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
             "requirement_id": "kr_1",
             "resolution_id": "res_kb_1",
         },
-        {
-            "type": "no_knowledge_base",
-            "candidate_id": service_module.NO_KB_CANDIDATE_ID,
-            "label": service_module.NO_KB_CANDIDATE_LABEL,
-            "safe_label": service_module.NO_KB_CANDIDATE_LABEL,
-            "confidence": "user_choice",
-            "score": None,
-            "reason_category": "user_selected_no_kb",
-            "threshold_result": "user_selected",
-            "runtime_availability": "not_applicable",
-            "requirement_id": "kr_1",
-            "resolution_id": "res_kb_1",
-        },
     ]
 
 
-def test_agent_builder_single_close_score_kb_candidate_is_bound(monkeypatch):
+def test_agent_builder_multiple_kb_candidates_require_clarification_even_when_top_is_clear(
+    monkeypatch,
+):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                recommendations=[
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-1",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-1",
+                        candidate_handle="safe-rec-1",
+                        safe_label="Policy KB",
+                        confidence="high",
+                        score=0.92,
+                        threshold_result="high_confidence",
+                        safe_reason_code="structured_intent_matches_safe_metadata",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="structured_intent_matches_safe_metadata",
+                        ),
+                        runtime_availability="available",
+                    ),
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="safe-rec-2",
+                        recommendation_mode="auto_collection",
+                        candidate_id="safe-rec-2",
+                        candidate_handle="safe-rec-2",
+                        safe_label="Benefits KB",
+                        confidence="medium",
+                        score=0.45,
+                        threshold_result="close_score",
+                        safe_reason_code="structured_intent_matches_safe_metadata",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="structured_intent_matches_safe_metadata",
+                        ),
+                        runtime_availability="available",
+                    ),
+                ],
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="2",
+                    recommendation_count_bucket="2",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="Create a workflow from internal policy knowledge",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["policy"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+
+    result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
+
+    assert result["status"] == "clarification_required"
+    assert result["options"][0]["candidate_id"] == "safe-rec-1"
+    assert result["options"][1]["candidate_id"] == "safe-rec-2"
+    assert len(result["options"]) == 2
+    assert result["bindings"] == []
+
+
+def test_agent_builder_single_close_score_kb_candidate_requires_clarification(monkeypatch):
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -874,20 +2075,16 @@ def test_agent_builder_single_close_score_kb_candidate_is_bound(monkeypatch):
 
     result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
 
-    assert result["status"] == "recommended"
-    assert result["bindings"] == [
-        {
-            "safe_handle": "safe-rec-1",
-            "name": "사내 문서",
-            "confidence": "medium",
-            "score": 0.5,
-            "reason_category": "intent_matches_safe_metadata",
-            "threshold_result": "close_score",
-        }
-    ]
+    assert result["status"] == "clarification_required"
+    assert result["bindings"] == []
+    assert result["options"][0]["candidate_id"] == "safe-rec-1"
+    assert result["options"][0]["confidence"] == "medium"
+    assert result["options"][0]["score"] == 0.5
+    assert result["options"][0]["threshold_result"] == "close_score"
+    assert len(result["options"]) == 1
 
 
-def test_agent_builder_selected_kb_candidate_uses_selected_safe_handle(monkeypatch):
+def test_agent_builder_selected_kb_candidates_use_selected_safe_handles(monkeypatch):
     kb_id_a = uuid.uuid4()
     kb_id_b = uuid.uuid4()
 
@@ -959,12 +2156,21 @@ def test_agent_builder_selected_kb_candidate_uses_selected_safe_handle(monkeypat
 
     result = svc._resolve_knowledge_requirements(  # noqa: SLF001
         structured,
-        selected_candidate_handles={"safe-rec-2"},
+        selected_candidate_handles={"safe-rec-1", "safe-rec-2"},
         include_materialized_refs=True,
     )
 
     assert result["status"] == "recommended"
     assert result["bindings"] == [
+        {
+            "safe_handle": "safe-rec-1",
+            "name": "휴가 정책",
+            "confidence": "high",
+            "score": 0.7,
+            "reason_category": "topic_keyword_match",
+            "threshold_result": "high_confidence",
+            "knowledge_base_id": str(kb_id_a),
+        },
         {
             "safe_handle": "safe-rec-2",
             "name": "인사 정책",
@@ -1273,8 +2479,6 @@ def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypa
 
 
 def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkeypatch):
-    monkeypatch.setenv(service_module.APPROVED_DRAFT_MODEL_ENV, "approved-draft-route")
-
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -1371,6 +2575,7 @@ def test_agent_builder_selected_kb_candidate_validates_prior_clarification_conte
         ],
     )
     previous_request = SimpleNamespace(
+        status="clarification_required",
         response_payload={
             "clarification_options": [
                 {
@@ -1408,6 +2613,130 @@ def test_agent_builder_selected_kb_candidate_validates_prior_clarification_conte
     assert context["structured_request"].knowledge_requirements[0].requirement_id == "kr_1"
 
 
+def test_agent_builder_selected_kb_candidates_accepts_multiple_safe_handles():
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="휴가 정책",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["휴가 정책"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+    previous_request = SimpleNamespace(
+        status="clarification_required",
+        response_payload={
+            "clarification_options": [
+                {
+                    "candidate_id": "safe-rec-1",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                },
+                {
+                    "candidate_id": "safe-rec-2",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                },
+            ],
+            "structured_request": structured.model_dump(mode="json"),
+        },
+        structured_request=structured.model_dump(mode="json"),
+    )
+    db = FakeDb()
+    db.query_result = FakeQuery(previous_request)
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    context = svc._selected_knowledge_candidate_context(  # noqa: SLF001
+        SimpleNamespace(id=uuid.uuid4()),
+        AgentBuilderMessageRequest(
+            message="선택한 Knowledge Base로 도안을 생성해줘",
+            selected_knowledge_candidates=[
+                {
+                    "candidate_id": "safe-rec-1",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                },
+                {
+                    "candidate_id": "safe-rec-2",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                },
+            ],
+        ),
+    )
+
+    assert context["candidate_handles"] == {"safe-rec-1", "safe-rec-2"}
+
+
+def test_agent_builder_empty_kb_selection_uses_no_kb_internal_handle():
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="휴가 정책",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["휴가 정책"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+    previous_request = SimpleNamespace(
+        status="clarification_required",
+        response_payload={
+            "clarification_options": [
+                {
+                    "candidate_id": "safe-rec-1",
+                    "resolution_id": "res_kb_1",
+                    "requirement_id": "kr_1",
+                }
+            ],
+            "structured_request": structured.model_dump(mode="json"),
+        },
+        structured_request=structured.model_dump(mode="json"),
+    )
+    db = FakeDb()
+    db.query_result = FakeQuery(previous_request)
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    context = svc._selected_knowledge_candidate_context(  # noqa: SLF001
+        SimpleNamespace(id=uuid.uuid4()),
+        AgentBuilderMessageRequest(
+            message="Knowledge Base 선택 없이 도안을 생성해줘",
+            selected_knowledge_candidates=[],
+        ),
+    )
+
+    assert context["candidate_handles"] == {service_module.NO_KB_CANDIDATE_ID}
+
+
 def test_agent_builder_selected_kb_candidate_rejects_mismatched_context():
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
@@ -1417,6 +2746,7 @@ def test_agent_builder_selected_kb_candidate_rejects_mismatched_context():
         pending_resolution=[],
     )
     previous_request = SimpleNamespace(
+        status="clarification_required",
         response_payload={
             "clarification_options": [
                 {
@@ -1450,6 +2780,61 @@ def test_agent_builder_selected_kb_candidate_rejects_mismatched_context():
     )
 
     assert context == {"error": "candidate_not_in_prior_options"}
+
+
+def test_agent_builder_selected_kb_candidate_rejects_resolved_clarification():
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="휴가 정책",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["휴가 정책"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+    db = FakeDb()
+    db.query_result = FakeQuery(
+        SimpleNamespace(
+            status="draft_ready",
+            response_payload={
+                "clarification_options": [
+                    {
+                        "candidate_id": "safe-rec-1",
+                        "resolution_id": "res_kb_1",
+                        "requirement_id": "kr_1",
+                    }
+                ],
+                "structured_request": structured.model_dump(mode="json"),
+            },
+            structured_request=structured.model_dump(mode="json"),
+        )
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    context = svc._selected_knowledge_candidate_context(  # noqa: SLF001
+        SimpleNamespace(id=uuid.uuid4()),
+        AgentBuilderMessageRequest(
+            message="Knowledge Base 선택 없이 도안을 생성해줘",
+            selected_knowledge_candidates=[],
+        ),
+    )
+
+    assert context == {"error": "prior_clarification_not_pending"}
 
 
 def test_agent_builder_apply_blocks_missing_client_preview_hash(monkeypatch):
@@ -1917,11 +3302,19 @@ def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkey
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
-    structured = service_module.AgentBuilderStructuredRequest(
-        request_type="modify_workflow",
-        draft_mode="modify_workflow",
-        intent_summary="insert",
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="이 연결 사이에 LLM 노드를 추가해줘",
+            selected_edge_id="edge-start-answer",
+        ),
+        workflow=workflow,
+    )
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id="edge-start-answer",
     )
 
     preview = svc._build_preview_graph(  # noqa: SLF001
@@ -1929,12 +3322,19 @@ def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkey
         workflow=workflow,
         kb_bindings=[],
         selected_edge_id="edge-start-answer",
+        target_resolution=resolution,
     )
 
     edge_ids = {edge.get("id") for edge in preview["edges"]}
     assert "edge-start-answer" not in edge_ids
-    assert any(edge.get("source") == "start" for edge in preview["edges"])
-    assert any(edge.get("target") == "answer" for edge in preview["edges"])
+    generated_nodes = [
+        node for node in preview["nodes"] if str(node["id"]).startswith("agent-")
+    ]
+    assert [node["type"] for node in generated_nodes] == ["llmNode"]
+    generated_id = generated_nodes[0]["id"]
+    assert {("start", generated_id), (generated_id, "answer")} <= {
+        (edge.get("source"), edge.get("target")) for edge in preview["edges"]
+    }
 
 
 def test_agent_builder_preview_auto_layouts_new_workflow_chain(monkeypatch):
@@ -1943,7 +3343,7 @@ def test_agent_builder_preview_auto_layouts_new_workflow_chain(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
         draft_mode="new_workflow",
@@ -1972,7 +3372,7 @@ def test_agent_builder_preview_generates_valid_slack_node_when_requested(monkeyp
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
         draft_mode="new_workflow",
@@ -2024,12 +3424,19 @@ def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypa
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_default_model_id", lambda: "model-1")
-    structured = service_module.AgentBuilderStructuredRequest(
-        request_type="modify_workflow",
-        draft_mode="modify_workflow",
-        intent_summary="append",
-        required_capabilities=["start_input", "llm", "answer"],
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="이 노드 뒤에 LLM 노드를 추가해줘",
+            selected_node_id="selected",
+        ),
+        workflow=workflow,
+    )
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id="selected",
+        selected_edge_id=None,
     )
 
     preview = svc._build_preview_graph(  # noqa: SLF001
@@ -2037,6 +3444,7 @@ def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypa
         workflow=workflow,
         kb_bindings=[],
         selected_node_id="selected",
+        target_resolution=resolution,
     )
 
     generated_nodes = [
@@ -2044,15 +3452,10 @@ def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypa
     ]
     generated_positions = [node["position"] for node in generated_nodes]
 
-    assert {position["y"] for position in generated_positions} == {220}
-    assert sorted(position["x"] for position in generated_positions) == [
-        360,
-        720,
-        1080,
-    ]
+    assert generated_positions == [{"x": 360.0, "y": 220.0}]
 
 
-def test_agent_builder_selected_edge_requires_edge_context_in_message():
+def test_agent_builder_selected_edge_uses_structured_target_without_message_regex():
     workflow = SimpleNamespace(
         graph={
             "nodes": [],
@@ -2065,19 +3468,34 @@ def test_agent_builder_selected_edge_requires_edge_context_in_message():
         organization_id=uuid.uuid4(),
     )
 
-    assert (
-        svc._selected_edge_id_for_message(  # noqa: SLF001
-            workflow,
-            "edge-start-answer",
-            "이 노드 뒤에 LLM을 추가해줘",
-        )
-        is None
+    structured = AgentBuilderStructuredRequest(
+        request_type="modify_workflow",
+        draft_mode="modify_workflow",
+        intent_summary="선택된 연결에 LLM을 추가합니다.",
+        planned_steps=[
+            AgentBuilderPlannedStep(
+                step_id="step_llm", capability="llm", purpose="LLM"
+            )
+        ],
+        required_capabilities=["llm"],
+        edit_operations=[
+            AgentBuilderEditOperation(
+                operation_id="edit_1",
+                operation="insert",
+                placement="between",
+                step_refs=["step_llm"],
+                target=AgentBuilderEditTargetReference(
+                    reference_type="selected_edge"
+                ),
+            )
+        ],
     )
+
     assert (
-        svc._selected_edge_id_for_message(  # noqa: SLF001
+        svc._selected_edge_id_for_structured_request(  # noqa: SLF001
             workflow,
             "edge-start-answer",
-            "이 연결 사이에 LLM을 추가해줘",
+            structured,
         )
         == "edge-start-answer"
     )
@@ -2182,21 +3600,27 @@ def test_agent_builder_graph_for_apply_optimizes_layout_before_save():
 def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     db = FakeDb()
     workflow_id = uuid.uuid4()
-    base_graph = {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}
+    base_graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {}},
+            {"id": "answer", "type": "answerNode", "position": {"x": 0, "y": 0}, "data": {}},
+        ],
+        "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
     preview_graph = {
         "nodes": [
-            {"id": "agent-input", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {}},
+            *copy.deepcopy(base_graph["nodes"]),
             {
                 "id": "agent-llm",
                 "type": "llmNode",
                 "position": {"x": 0, "y": 0},
                 "data": {"model_id": "model-1"},
             },
-            {"id": "agent-answer", "type": "answerNode", "position": {"x": 0, "y": 0}, "data": {}},
         ],
         "edges": [
-            {"id": "edge-agent-input-agent-llm", "source": "agent-input", "target": "agent-llm"},
-            {"id": "edge-agent-llm-agent-answer", "source": "agent-llm", "target": "agent-answer"},
+            {"id": "edge-start-agent-llm", "source": "start", "target": "agent-llm"},
+            {"id": "edge-agent-llm-answer", "source": "agent-llm", "target": "answer"},
         ],
     }
     workflow = SimpleNamespace(
@@ -2219,11 +3643,14 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
         app_id=None,
         draft_metadata={
             "workflow_id": str(workflow_id),
-            "generated_node_ids": ["agent-input", "agent-llm", "agent-answer"],
+            "generated_node_ids": ["agent-llm"],
             "generated_edge_ids": [
-                "edge-agent-input-agent-llm",
-                "edge-agent-llm-agent-answer",
+                "edge-start-agent-llm",
+                "edge-agent-llm-answer",
             ],
+            "target_resolution": {
+                "replaced_edge_ids": ["edge-start-answer"],
+            },
         },
         expires_at=None,
     )
@@ -2249,34 +3676,135 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     assert response.outcome == "saved"
     assert response.layout_optimization_applied is True
     positions = {node["id"]: node["position"] for node in workflow.graph["nodes"]}
-    assert positions["agent-input"]["x"] < positions["agent-llm"]["x"]
-    assert positions["agent-llm"]["x"] < positions["agent-answer"]["x"]
+    assert positions["start"]["x"] < positions["agent-llm"]["x"]
+    assert positions["agent-llm"]["x"] < positions["answer"]["x"]
     assert {position["y"] for position in positions.values()} == {0}
 
 
-def test_agent_builder_model_route_requires_explicit_approved_env(monkeypatch):
+def test_agent_builder_apply_rejects_invalid_connection_policy(monkeypatch):
+    db = FakeDb()
+    workflow_id = uuid.uuid4()
+    base_graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "answer", "type": "answerNode", "data": {}},
+        ],
+        "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    preview_graph = {
+        "nodes": [
+            *copy.deepcopy(base_graph["nodes"]),
+            {
+                "id": "agent-llm",
+                "type": "llmNode",
+                "data": {"model_id": "model-1"},
+            },
+        ],
+        "edges": [
+            *copy.deepcopy(base_graph["edges"]),
+            {"id": "edge-answer-llm", "source": "answer", "target": "agent-llm"},
+        ],
+    }
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        graph=copy.deepcopy(base_graph),
+        updated_at=None,
+        app_id=uuid.uuid4(),
+        updated_by=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="modify_workflow",
+        base_graph_hash=calculate_graph_hash(base_graph),
+        base_workflow_updated_at=None,
+        preview_graph=preview_graph,
+        status="ready",
+        workflow_id=workflow_id,
+        app_id=None,
+        draft_metadata={
+            "workflow_id": str(workflow_id),
+            "generated_node_ids": ["agent-llm"],
+            "generated_edge_ids": ["edge-answer-llm"],
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
+    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(preview_graph),
+            client_latest_graph_hash=calculate_graph_hash(base_graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "DRAFT_VALIDATION_FAILED"
+    assert workflow.graph == base_graph
+
+
+def test_agent_builder_draft_without_recommended_model_stays_unresolved():
     svc = AgentBuilderService(
         FakeDb(),
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.delenv(service_module.APPROVED_DRAFT_MODEL_ENV, raising=False)
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="LLM으로 입력을 요약하는 워크플로우를 만들어줘"),
+        workflow=None,
+    )
+    preview_graph = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+    llm_node = next(
+        node for node in preview_graph["nodes"] if node["type"] == "llmNode"
+    )
+    validation = svc.validate_preview_graph(preview_graph)
+    configuration_issues = svc._node_configuration_issues(  # noqa: SLF001
+        preview_graph
+    )
 
-    with pytest.raises(service_module.HTTPException) as exc:
-        svc._default_model_id()  # noqa: SLF001
+    assert llm_node["data"]["model_id"] is None
+    assert llm_node["data"]["configuration_state"] == "unresolved"
+    assert validation.valid is True
+    assert any(
+        issue.node_id == llm_node["id"]
+        and "model_id" in {parameter.key for parameter in issue.missing_parameters}
+        for issue in configuration_issues
+    )
 
-    assert exc.value.detail == "DRAFT_MODEL_ROUTE_REQUIRED"
 
-
-def test_agent_builder_model_route_uses_explicit_approved_env(monkeypatch):
+def test_agent_builder_draft_uses_permission_aware_model_recommendation(monkeypatch):
+    db = service_module.Session()
     svc = AgentBuilderService(
-        FakeDb(),
+        db,
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setenv(service_module.APPROVED_DRAFT_MODEL_ENV, "approved-draft-route")
+    monkeypatch.setattr(
+        service_module.LLMService,
+        "get_agent_builder_draft_model_recommendation",
+        lambda *args, **kwargs: SimpleNamespace(
+            model=SimpleNamespace(model_id_for_api_call="gpt-5.5-mini")
+        ),
+    )
 
-    assert svc._default_model_id() == "approved-draft-route"  # noqa: SLF001
+    assert svc._recommended_draft_model_id() == "gpt-5.5-mini"  # noqa: SLF001
+    db.close()
 
 
 def test_agent_builder_apply_save_failure_returns_safe_failure(monkeypatch):

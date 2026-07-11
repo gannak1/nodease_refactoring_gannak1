@@ -94,7 +94,7 @@ SENSITIVE_FIELDS = {
         "username",
     },
     LLMCredential: {"encrypted_config"},
-    KnowledgeBase: set(),
+    KnowledgeBase: {"safe_metadata"},
     Organization: set(),
     Schedule: set(),
     Team: set(),

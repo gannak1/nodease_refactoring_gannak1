@@ -42,6 +42,7 @@ export interface KnowledgeBaseResponse {
   organization_id?: string;
   name: string;
   description?: string;
+  safe_metadata?: Record<string, unknown>;
   document_count: number;
   created_at: string;
   updated_at?: string;
@@ -85,6 +86,13 @@ export interface DocumentResponse {
 
 export interface KnowledgeBaseDetailResponse extends KnowledgeBaseResponse {
   documents: DocumentResponse[];
+  can_edit_settings?: boolean;
+  can_manage_safe_metadata?: boolean;
+}
+
+export interface KnowledgeSafeMetadataResponse {
+  safe_metadata: Record<string, unknown>;
+  can_manage_safe_metadata: boolean;
 }
 
 export type KnowledgeCollectionAction = 'read' | 'route' | 'manage' | 'sync';

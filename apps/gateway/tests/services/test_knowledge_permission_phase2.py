@@ -31,6 +31,9 @@ def _collection(collection_id: uuid.UUID | None = None, *, actions=None, safe_me
 def _kb(
     kb_id: uuid.UUID | None = None,
     *,
+    name: str = "Manual KB",
+    description: str | None = None,
+    safe_metadata: dict | None = None,
     source_managed=False,
     source_tier: str | None = None,
     version_status: str | None = "ready",
@@ -39,7 +42,9 @@ def _kb(
     return SimpleNamespace(
         id=kb_id or uuid.uuid4(),
         organization_id=ORG_ID,
-        name="Manual KB",
+        name=name,
+        description=description,
+        safe_metadata=safe_metadata or {},
         lifecycle_state="active",
         sync_state=sync_state,
         source_identity_id=uuid.uuid4() if source_managed else None,
@@ -740,6 +745,72 @@ def test_builder_candidate_uses_approved_safe_display_label_only():
 
     assert len(result.candidates) == 1
     assert result.candidates[0].safe_label == "Safe approved label"
+
+
+def test_builder_candidate_auto_generates_manual_kb_safe_label_and_topics():
+    kb = _kb(
+        name="사내문서1",
+        description="사내 문서 온보딩 가이드",
+    )
+    helper = FakePermissionHelper(kb_auth_state=AUTH_STATE_OPERATOR)
+    resolver = FakeResolver(helper=helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.safe_label == "사내문서1"
+    assert candidate.safe_metadata["kb_safe_topics"] == [
+        "사내문서1",
+        "사내",
+        "문서",
+        "온보딩",
+        "가이드",
+    ]
+    assert candidate.safe_metadata["kb_safe_description"] == "사내 문서 온보딩 가이드"
+
+
+def test_builder_candidate_sanitizes_manual_kb_safe_text():
+    kb = _kb(
+        name="인사 KB https://internal.example/private",
+        description="api_key=sk-secret-token 사내 문서 C:\\secret\\policy.pdf",
+    )
+    helper = FakePermissionHelper(kb_auth_state=AUTH_STATE_OPERATOR)
+    resolver = FakeResolver(helper=helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    candidate = result.candidates[0]
+    rendered = str(candidate.model_dump())
+    assert candidate.safe_label == "인사 KB"
+    assert "사내" in candidate.safe_metadata["kb_safe_topics"]
+    assert "문서" in candidate.safe_metadata["kb_safe_topics"]
+    assert "internal.example" not in rendered
+    assert "sk-secret-token" not in rendered
+    assert "C:\\secret" not in rendered
+
+
+def test_builder_candidate_uses_persisted_manual_kb_safe_label_and_topics():
+    kb = _kb(
+        name="Fallback KB",
+        description="fallback description",
+        safe_metadata={
+            "safe_label": "People Ops",
+            "kb_safe_topics": ["onboarding", "benefits"],
+            "raw_source_url": "https://internal.example/private",
+        },
+    )
+    helper = FakePermissionHelper(kb_auth_state=AUTH_STATE_OPERATOR)
+    resolver = FakeResolver(helper=helper, kbs=[kb])
+
+    result = resolver.resolve_explicit_kbs([kb.id])
+
+    candidate = result.candidates[0]
+    assert candidate.safe_label == "People Ops"
+    assert candidate.safe_metadata["kb_safe_topics"] == ["onboarding", "benefits"]
+    rendered = str(candidate.model_dump())
+    assert "raw_source_url" not in rendered
+    assert "internal.example" not in rendered
 
 
 def test_builder_candidate_runtime_availability_unknown_without_intended_subject():

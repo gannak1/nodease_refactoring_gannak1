@@ -150,6 +150,48 @@ def test_recommendation_uses_generic_label_without_raw_kb_name():
     assert "safe_label_unavailable" in recommendation.warnings
 
 
+def test_safe_intent_candidate_context_is_bounded_and_excludes_raw_identity():
+    raw_kb_id = uuid.uuid4()
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    candidate_id=raw_kb_id,
+                    safe_label="사내 인사 문서",
+                    runtime_availability="available",
+                    safe_metadata={
+                        "kb_safe_topics": ["인사", "온보딩"],
+                        "kb_safe_description": "사내 인사 정책",
+                        "raw_source_path": "/secret/hr.md",
+                        "collection_id": str(uuid.uuid4()),
+                    },
+                )
+            ]
+        )
+    )
+
+    context = _service(resolver).safe_intent_candidates_for_builder(
+        "사내 인사 문서 챗봇을 만들어줘",
+        max_candidates=20,
+    )
+
+    assert context == [
+        {
+            "candidate_handle": context[0]["candidate_handle"],
+            "safe_label": "사내 인사 문서",
+            "safe_topics": ["인사", "온보딩"],
+            "safe_description": "사내 인사 정책",
+            "runtime_availability": "available",
+            "relevance_score": context[0]["relevance_score"],
+        }
+    ]
+    serialized = str(context)
+    assert context[0]["candidate_handle"].startswith("rec-")
+    assert str(raw_kb_id) not in serialized
+    assert "/secret/hr.md" not in serialized
+    assert "collection_id" not in serialized
+
+
 def test_high_risk_domain_only_changes_recommended_options():
     resolver = FakeResolver(
         KnowledgeCandidateResolution(candidates=[_candidate(runtime_availability="available")])
@@ -196,6 +238,99 @@ def test_threshold_result_uses_documented_values():
     assert values <= {"high_confidence", "close_score", "below_threshold"}
     assert "medium_confidence" not in values
     assert "low_confidence" not in values
+
+
+def test_korean_tokenizer_extracts_builder_intent_terms():
+    service = _service(FakeResolver(KnowledgeCandidateResolution(candidates=[])))
+
+    terms = service._terms(  # noqa: SLF001
+        "사내문서1 KB와 웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘",
+        "사내 문서 챗봇",
+    )
+
+    assert "사내문서1" in terms
+    assert "kb" in terms
+    assert "웹훅" in terms
+    assert "사내" in terms
+    assert "문서" in terms
+    assert "챗봇" in terms
+
+
+def test_kb_ranking_ignores_collection_metadata_for_relevance_score():
+    collection_only = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        safe_label=None,
+        runtime_availability="available",
+        safe_metadata={
+            "collection_safe_label": "사내문서1 묶음",
+            "collection_safe_topics": ["사내문서1", "사내 문서"],
+            "kb_safe_topics": ["재무", "정산"],
+        },
+    )
+    kb_match = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+        safe_label=None,
+        runtime_availability="available",
+        safe_metadata={
+            "collection_safe_label": "일반 묶음",
+            "collection_safe_topics": ["일반"],
+            "kb_safe_topics": ["사내문서1", "사내 문서", "온보딩"],
+        },
+    )
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[collection_only, kb_match])
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="사내문서1 KB와 웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘",
+            node_purpose="사내 문서 챗봇",
+            max_recommendations=2,
+        ),
+        include_materialized_refs=True,
+    )
+
+    assert result.recommendations[0].materialized_knowledge_bases[0].id == kb_match.candidate_id
+    assert result.recommendations[0].provenance.matched_safe_terms
+
+
+def test_structured_query_topics_drive_kb_relevance_and_ignore_workflow_noise():
+    kb_match = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000021"),
+        safe_label="사내문서 1",
+        runtime_availability="unknown",
+        safe_metadata={
+            "kb_safe_topics": ["사내 문서"],
+            "sync_state": "synced",
+        },
+    )
+    workflow_noise = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000022"),
+        safe_label="웹훅 챗봇 워크플로우",
+        runtime_availability="available",
+        safe_metadata={"sync_state": "synced"},
+    )
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[workflow_noise, kb_match])
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘",
+            node_purpose="사내 문서 챗봇",
+            safe_query_topics=["사내 문서", "내부 문서", "문서 질의"],
+            max_recommendations=2,
+        ),
+        include_materialized_refs=True,
+    )
+
+    recommendation = result.recommendations[0]
+    assert recommendation.materialized_knowledge_bases[0].id == kb_match.candidate_id
+    assert recommendation.score >= 0.70
+    assert recommendation.safe_reason_code == "structured_intent_matches_safe_metadata"
+    assert "structured_safe_query" in recommendation.provenance.used_signals
+    assert "kb_relevance_match" in recommendation.provenance.used_signals
+    assert recommendation.provenance.matched_safe_terms == ["사내 문서"]
 
 
 def test_threshold_result_can_emit_all_documented_buckets():
@@ -389,6 +524,34 @@ def test_recommendation_cap_and_stable_ranking():
         higher.candidate_id
     )
     assert result.summary.recommendation_count_bucket == "1"
+
+
+def test_recommendation_exposes_up_to_twenty_clarification_options():
+    candidates = [
+        _candidate(
+            candidate_id=uuid.UUID(f"00000000-0000-0000-0000-{index:012d}"),
+            safe_label=f"policy kb {index}",
+            runtime_availability="available",
+            safe_metadata={"source_tier": "company_policy", "sync_state": "synced"},
+        )
+        for index in range(1, 26)
+    ]
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=candidates))
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="policy",
+            safe_query_topics=["policy"],
+            max_recommendations=20,
+        )
+    )
+
+    assert len(result.recommendations) == 20
+    assert len(result.clarification_options) == 20
+    assert result.clarification_options[0]["type"] == "knowledge_base"
+    assert result.clarification_options[0]["candidate_id"].startswith("rec-")
+    assert result.clarification_options[0]["score"] is not None
+    assert result.summary.recommendation_count_bucket == "11-100"
 
 
 def test_auto_collection_omitted_scope_and_explicit_empty_scope_are_distinct():

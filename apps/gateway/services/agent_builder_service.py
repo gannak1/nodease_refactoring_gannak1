@@ -1,7 +1,6 @@
 import copy
 import hashlib
 import json
-import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -13,10 +12,18 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.permissions import ensure_workflow_permission
 from apps.gateway.services.app_service import AppService
+from apps.gateway.services.agent_builder_intent_service import (
+    AgentBuilderIntentExtraction,
+    AgentBuilderIntentExtractionError,
+    AgentBuilderIntentExtractor,
+    AgentBuilderIntentRuntimeUnavailableError,
+    validate_intent_semantics,
+)
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
+from apps.gateway.services.llm_service import LLMService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -30,9 +37,13 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderApplyResponse,
     AgentBuilderDraftPreview,
+    AgentBuilderEditOperation,
+    AgentBuilderEditTargetReference,
     AgentBuilderKnowledgeRequirement,
     AgentBuilderMessageRequest,
     AgentBuilderMessageResponse,
+    AgentBuilderMissingParameter,
+    AgentBuilderNodeConfigurationIssue,
     AgentBuilderPendingResolution,
     AgentBuilderPlannedStep,
     AgentBuilderSessionCreateRequest,
@@ -45,31 +56,139 @@ from apps.shared.schemas.knowledge import KnowledgeRAGRecommendationRequest
 from apps.shared.services.permissions import (
     has_workflow_permission,
 )
+from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
+from apps.shared.services.workflow_node_catalog import (
+    agent_builder_supported_capabilities,
+    agent_builder_supported_node_types,
+    node_definition,
+    node_type_for_capability,
+    validate_workflow_graph_connections,
+)
 from apps.shared.services.permission_audit import record_resource_permission_denied
 
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
-MVP_SUPPORTED_NODE_TYPES = {
-    "startNode",
-    "webhookTrigger",
-    "llmNode",
-    "answerNode",
-    "slackPostNode",
-}
+AGENT_BUILDER_SUPPORTED_NODE_TYPES = agent_builder_supported_node_types()
+AGENT_BUILDER_SUPPORTED_CAPABILITIES = agent_builder_supported_capabilities()
 NO_KB_CANDIDATE_ID = "__agent_builder_no_kb__"
 NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = (
     "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 )
+AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
 SAFE_SIDE_EFFECT_NOTICE = (
     "초안 생성, 미리보기, 적용 및 저장 중에는 workflow 실행, Knowledge Base 검색, "
-    "Slack 전송, credential 사용/변경, 외부 시스템 변경을 수행하지 않습니다."
+    "Slack/GitHub/HTTP/Mail 외부 호출, workflow node credential 사용/변경, "
+    "외부 시스템 변경을 수행하지 않습니다."
 )
 SLACK_CHANNEL_UNRESOLVED_WARNING = (
     "Slack 채널이 아직 선택되지 않아 Slack node는 채널 미정 상태로 생성됩니다. "
     "저장 후 실행 전에 Slack 채널과 credential 참조를 확인해야 합니다."
 )
+GITHUB_CONFIGURATION_UNRESOLVED_WARNING = (
+    "GitHub credential과 repository와 PR 대상이 설정되지 않아 GitHub node는 미설정 상태로 생성됩니다. "
+    "저장 후 실행 전에 GitHub credential, repository, PR 번호를 확인해야 합니다."
+)
+EXTERNAL_NODE_CONFIGURATION_WARNING = (
+    "외부 연동 node의 credential과 target 설정은 자동으로 채우지 않았습니다. "
+    "저장 후 실제 실행 전에 미설정 항목을 확인해야 합니다."
+)
+CAPABILITY_GENERATION_ORDER = (
+    "file_extraction",
+    "variable_extraction",
+    "github_pr_read",
+    "mail_search",
+    "http_request",
+    "workflow_call",
+    "code_execution",
+    "template_render",
+    "condition",
+    "loop",
+    "llm",
+    "knowledge_backed_llm",
+    "github_pr_comment",
+    "slack_send",
+    "answer",
+)
+CAPABILITY_STEP_IDS = {
+    "file_extraction": "step_file_extraction",
+    "variable_extraction": "step_variable_extraction",
+    "github_pr_read": "step_github_read",
+    "mail_search": "step_mail",
+    "http_request": "step_http",
+    "workflow_call": "step_workflow",
+    "code_execution": "step_code",
+    "template_render": "step_template",
+    "condition": "step_condition",
+    "loop": "step_loop",
+    "llm": "step_llm",
+    "knowledge_backed_llm": "step_llm",
+    "github_pr_comment": "step_github_comment",
+    "slack_send": "step_slack",
+    "answer": "step_answer",
+}
+CAPABILITY_NODE_PREFIXES = {
+    "file_extraction": "agent-file-extraction",
+    "variable_extraction": "agent-variable-extraction",
+    "github_pr_read": "agent-github-read",
+    "mail_search": "agent-mail",
+    "http_request": "agent-http",
+    "workflow_call": "agent-workflow",
+    "code_execution": "agent-code",
+    "template_render": "agent-template",
+    "condition": "agent-condition",
+    "loop": "agent-loop",
+    "llm": "agent-llm",
+    "knowledge_backed_llm": "agent-llm",
+    "github_pr_comment": "agent-github-comment",
+    "slack_send": "agent-slack",
+    "answer": "agent-answer",
+}
+CAPABILITY_OUTPUT_KEYS = {
+    "start_input": "question",
+    "webhook_trigger": "payload",
+    "schedule_trigger": "triggered_at",
+    "file_extraction": "text",
+    "variable_extraction": "result",
+    "github_pr_read": "files",
+    "mail_search": "emails",
+    "http_request": "data",
+    "workflow_call": "result",
+    "code_execution": "result",
+    "template_render": "text",
+    "condition": "result",
+    "loop": "results",
+    "llm": "text",
+    "knowledge_backed_llm": "text",
+    "github_pr_comment": "comment_url",
+    "slack_send": "data",
+    "answer": "answer",
+}
+CAPABILITY_PURPOSES = {
+    "start_input": "사용자 입력을 받습니다.",
+    "webhook_trigger": "Webhook payload를 받습니다.",
+    "schedule_trigger": "설정된 일정에 따라 workflow를 시작합니다.",
+    "file_extraction": "입력 파일에서 텍스트를 추출합니다.",
+    "variable_extraction": "입력 데이터에서 필요한 변수를 추출합니다.",
+    "github_pr_read": "GitHub Pull Request와 변경 파일을 조회합니다.",
+    "mail_search": "메일을 검색합니다.",
+    "http_request": "외부 HTTP API를 호출합니다.",
+    "workflow_call": "다른 workflow를 호출합니다.",
+    "code_execution": "sandbox에서 코드를 실행합니다.",
+    "template_render": "입력값으로 템플릿을 렌더링합니다.",
+    "condition": "조건에 따라 흐름을 분기합니다.",
+    "loop": "목록의 각 항목을 반복 처리합니다.",
+    "llm": "입력을 분석하고 결과를 생성합니다.",
+    "knowledge_backed_llm": "Knowledge Base 근거로 입력을 분석하고 결과를 생성합니다.",
+    "github_pr_comment": "생성한 내용을 GitHub Pull Request 댓글로 등록합니다.",
+    "slack_send": "이전 단계 결과를 Slack 메시지로 전송합니다.",
+    "answer": "이전 단계 결과를 응답으로 반환합니다.",
+}
+CAPABILITY_NODE_ACTIONS = {
+    "github_pr_read": "get_pr",
+    "github_pr_comment": "comment_pr",
+}
 _SECRET_LIKE_RE = re.compile(
     r"(sk-[A-Za-z0-9_\-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|"
     r"bearer\s+[A-Za-z0-9._\-]{8,}|eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+|"
@@ -166,7 +285,8 @@ WORKFLOW_REQUEST_INTENT_RE = re.compile(
 )
 WORKFLOW_BUILD_ACTION_RE = re.compile(
     r"(만들|생성|작성|구성|설계|추가|연결|붙여|자동|보내|전송|요약|분석|답변|"
-    r"찾아|검색|create|build|make|generate|add|connect|send|summari[sz]e|analy[sz]e)",
+    r"찾아|검색|리뷰(?:해|하)|등록(?:해|하)|create|build|make|generate|add|connect|"
+    r"send|summari[sz]e|analy[sz]e)",
     re.IGNORECASE,
 )
 SIMPLE_INPUT_OUTPUT_RE = re.compile(
@@ -174,8 +294,21 @@ SIMPLE_INPUT_OUTPUT_RE = re.compile(
     r"((출력|output)\s*(?:-|←|<-)?\s*(입력|input))",
     re.IGNORECASE,
 )
-WEBHOOK_TRIGGER_RE = re.compile(r"(webhook|web\s*hook|웹훅)", re.IGNORECASE)
-APPROVED_DRAFT_MODEL_ENV = "AGENT_BUILDER_DRAFT_MODEL_ID"
+WEBHOOK_TRIGGER_RE = re.compile(r"(webhook|web\s*hook|웹\s*훅)", re.IGNORECASE)
+KOREAN_NODE_INSERT_RE = re.compile(
+    r"(?P<target>.+?)\s*(?P<placement>뒤에|다음에|후에|앞에|이전에|전에)"
+    r"\s*(?P<new_steps>.+?)\s*(?:추가|삽입|넣|붙)",
+    re.IGNORECASE,
+)
+KOREAN_EDGE_INSERT_RE = re.compile(
+    r"(?:사이에|연결에)\s*(?P<new_steps>.+?)\s*(?:추가|삽입|넣|붙)",
+    re.IGNORECASE,
+)
+ENGLISH_NODE_INSERT_RE = re.compile(
+    r"(?:add|insert)\s+(?P<new_steps>.+?)\s+"
+    r"(?P<placement>after|before)\s+(?P<target>.+?)(?:[.!?]|$)",
+    re.IGNORECASE,
+)
 SAFE_TRIGGER_TYPES = {"manual", "schedule", "api", "webhook"}
 
 
@@ -228,6 +361,201 @@ def _message_requests_simple_input_output(message: str) -> bool:
 
 def _message_requests_webhook_trigger(message: str) -> bool:
     return bool(WEBHOOK_TRIGGER_RE.search(message or ""))
+
+
+def _extract_workflow_edit_spec(
+    message: str,
+    *,
+    selected_edge_id: str | None,
+) -> dict[str, str] | None:
+    text = " ".join((message or "").split())
+    match = KOREAN_NODE_INSERT_RE.search(text)
+    if match:
+        placement_token = match.group("placement")
+        placement = "after" if placement_token in {"뒤에", "다음에", "후에"} else "before"
+        target_text = match.group("target").strip()
+        normalized_target = target_text.casefold()
+        reference_type = (
+            "selected_node"
+            if any(
+                token in normalized_target
+                for token in ("선택한", "이 노드", "여기", "현재 노드")
+            )
+            else "natural_language_node"
+        )
+        return {
+            "placement": placement,
+            "target_text": target_text,
+            "new_steps_text": match.group("new_steps").strip(),
+            "reference_type": reference_type,
+        }
+
+    match = ENGLISH_NODE_INSERT_RE.search(text)
+    if match:
+        target_text = match.group("target").strip()
+        reference_type = (
+            "selected_node"
+            if re.search(r"\b(?:this|selected|current)\s+node\b", target_text, re.I)
+            else "natural_language_node"
+        )
+        return {
+            "placement": match.group("placement").casefold(),
+            "target_text": target_text,
+            "new_steps_text": match.group("new_steps").strip(),
+            "reference_type": reference_type,
+        }
+
+    if selected_edge_id and _message_mentions_edge_context(text):
+        edge_match = KOREAN_EDGE_INSERT_RE.search(text)
+        return {
+            "placement": "between",
+            "target_text": "selected edge",
+            "new_steps_text": (
+                edge_match.group("new_steps").strip() if edge_match else text
+            ),
+            "reference_type": "selected_edge",
+        }
+    return None
+
+
+def _message_requests_llm_processing(message: str) -> bool:
+    text = (message or "").casefold()
+    return any(
+        token in text
+        for token in (
+            "llm",
+            " ai ",
+            "챗봇",
+            "답변",
+            "분석",
+            "요약",
+            "리뷰",
+            "review",
+            "analyze",
+            "analyse",
+            "summarize",
+        )
+    )
+
+
+def _message_requested_catalog_capabilities(message: str) -> list[str]:
+    text = (message or "").casefold()
+    requested: list[str] = []
+
+    def add(capability: str) -> None:
+        if (
+            capability in AGENT_BUILDER_SUPPORTED_CAPABILITIES
+            and capability not in requested
+        ):
+            requested.append(capability)
+
+    if _message_requests_webhook_trigger(message):
+        add("webhook_trigger")
+    if any(token in text for token in ("schedule", "cron", "스케줄", "예약 실행")):
+        add("schedule_trigger")
+    if any(
+        token in text
+        for token in ("서브 워크플로우", "하위 워크플로우", "sub workflow", "subworkflow")
+    ):
+        add("workflow_call")
+    if any(token in text for token in ("python", "파이썬", "코드 실행", "스크립트 실행")):
+        add("code_execution")
+    if any(token in text for token in ("조건 분기", "조건문", "if/else", "condition")):
+        add("condition")
+    if any(token in text for token in ("파일 추출", "문서 추출", "file extraction")):
+        add("file_extraction")
+    if any(token in text for token in ("변수 추출", "json 추출", "variable extraction")):
+        add("variable_extraction")
+    if any(token in text for token in ("반복", "루프", "loop")):
+        add("loop")
+    if any(token in text for token in ("http 요청", "http request", "rest api", "api 호출")):
+        add("http_request")
+    if any(token in text for token in ("slack", "슬랙")):
+        add("slack_send")
+    if any(token in text for token in ("template", "템플릿")):
+        add("template_render")
+
+    mentions_github = any(
+        token in text for token in ("github", "깃허브", "pull request")
+    ) or bool(re.search(r"\bpr\b", text, re.IGNORECASE))
+    if mentions_github:
+        add("github_pr_read")
+        if any(
+            token in text
+            for token in (
+                "댓글",
+                "코멘트",
+                "comment",
+                "올리",
+                "올려",
+                "등록",
+                "게시",
+                "post",
+            )
+        ):
+            add("github_pr_comment")
+
+    if any(token in text for token in ("메일", "이메일", "email", "imap")):
+        add("mail_search")
+    if re.search(r"(?:응답|출력|answer)\s*(?:노드|node)", text, re.IGNORECASE):
+        add("answer")
+    if _message_requests_llm_processing(message):
+        add("llm")
+    return requested
+
+
+def _target_node_types_for_text(
+    target_text: str,
+    target_capabilities: list[str],
+) -> list[str]:
+    node_types: list[str] = []
+    for capability in target_capabilities:
+        node_type = node_type_for_capability(capability)
+        if node_type and node_type not in node_types:
+            node_types.append(node_type)
+
+    normalized_target = str(target_text or "").casefold()
+    for node_type in sorted(AGENT_BUILDER_SUPPORTED_NODE_TYPES):
+        if node_type in node_types:
+            continue
+        separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", node_type).casefold()
+        semantic_tokens = [
+            token
+            for token in re.findall(r"[a-z0-9]+", separated)
+            if token not in {"node", "trigger", "post"} and len(token) >= 3
+        ]
+        if semantic_tokens and any(token in normalized_target for token in semantic_tokens):
+            node_types.append(node_type)
+    return node_types
+
+
+def _knowledge_query_topics(message: str) -> list[str]:
+    safe_message = _safe_summary(message, limit=400)
+    text = safe_message.lower()
+    topics: list[str] = []
+
+    def add(*values: str) -> None:
+        for value in values:
+            normalized = _safe_summary(value, limit=80)
+            if normalized and normalized not in topics:
+                topics.append(normalized)
+
+    if any(token in text for token in ("사내 문서", "사내문서", "내부 문서", "내부문서")):
+        add("사내 문서", "내부 문서", "문서 질의")
+    if any(token in text for token in ("hr", "인사", "휴가", "복지", "온보딩")):
+        add("인사", "복지", "온보딩")
+    if any(token in text for token in ("재무", "정산", "회계", "finance")):
+        add("재무", "정산")
+    if any(token in text for token in ("계약", "contract")):
+        add("계약")
+    if any(token in text for token in ("정책", "규정", "내규", "policy")):
+        add("정책", "규정")
+    if any(token in text for token in ("문서", "자료", "근거", "document")):
+        add("문서 질의")
+
+    if not topics:
+        add(safe_message[:80])
+    return topics[:10]
 
 
 def _redact_kb_refs(value: Any) -> list[dict[str, Any]]:
@@ -526,10 +854,12 @@ class AgentBuilderService:
         *,
         user: User,
         organization_id: uuid.UUID,
+        intent_extractor: AgentBuilderIntentExtractor | None = None,
     ) -> None:
         self.db = db
         self.user = user
         self.organization_id = organization_id
+        self.intent_extractor = intent_extractor
 
     def create_or_restore_session(
         self,
@@ -683,6 +1013,7 @@ class AgentBuilderService:
             selected_kb_context = self._selected_knowledge_candidate_context(
                 session,
                 message_request,
+                current_request_id=request_row.id,
             )
             if selected_kb_context and selected_kb_context.get("error"):
                 issue = AgentBuilderValidationIssue(
@@ -705,8 +1036,41 @@ class AgentBuilderService:
             structured = (
                 selected_kb_context["structured_request"]
                 if selected_kb_context
-                else self._build_structured_request(message_request, workflow)
+                else self._structure_request(message_request, workflow)
             )
+            effective_selected_edge_id = self._selected_edge_id_for_structured_request(
+                workflow,
+                message_request.selected_edge_id,
+                structured,
+            )
+            target_resolution = self._resolve_edit_target(
+                structured,
+                workflow=workflow,
+                selected_node_id=message_request.selected_node_id,
+                selected_edge_id=effective_selected_edge_id,
+            )
+            if target_resolution["status"] == "clarification_required":
+                response = AgentBuilderMessageResponse(
+                    request_id=request_row.id,
+                    status="clarification_required",
+                    structured_request=structured,
+                    clarification_questions=target_resolution.get("questions", []),
+                    clarification_options=target_resolution.get("options", []),
+                    validation_result=AgentBuilderValidationResult(
+                        valid=False,
+                        issues=[
+                            AgentBuilderValidationIssue(
+                                code="WORKFLOW_TARGET_UNRESOLVED",
+                                message="기존 workflow 수정 대상을 확인해야 합니다.",
+                                path="edit_operations.0.target",
+                            )
+                        ],
+                    ),
+                    warnings=[SAFE_SIDE_EFFECT_NOTICE],
+                )
+                self._finish_request(request_row, response)
+                self.db.commit()
+                return response
             validation = self._validate_structured_request(structured, app_id=app_id)
             recommendations = self._resolve_knowledge_requirements(
                 structured,
@@ -716,9 +1080,48 @@ class AgentBuilderService:
                     else None
                 ),
             )
+        except AgentBuilderIntentRuntimeUnavailableError:
+            response = AgentBuilderMessageResponse(
+                request_id=request_row.id,
+                status="configuration_required",
+                validation_result=AgentBuilderValidationResult(
+                    valid=False,
+                    issues=[
+                        AgentBuilderValidationIssue(
+                            code="INTENT_MODEL_ROUTE_REQUIRED",
+                            message="Agent Builder 요청 구조화에 사용할 LLM credential과 model route가 필요합니다.",
+                            path="message",
+                        )
+                    ],
+                ),
+                warnings=[SAFE_SIDE_EFFECT_NOTICE],
+            )
+            self._finish_request(request_row, response)
+            self.db.commit()
+            return response
+        except AgentBuilderIntentExtractionError:
+            response = AgentBuilderMessageResponse(
+                request_id=request_row.id,
+                status="failed",
+                validation_result=AgentBuilderValidationResult(
+                    valid=False,
+                    issues=[
+                        AgentBuilderValidationIssue(
+                            code="INTENT_EXTRACTION_FAILED",
+                            message="Agent Builder가 요청을 안전한 workflow 구조로 변환하지 못했습니다.",
+                            path="message",
+                        )
+                    ],
+                ),
+                warnings=[SAFE_SIDE_EFFECT_NOTICE],
+            )
+            self._finish_request(request_row, response)
+            self.db.commit()
+            return response
         except Exception:
             return self._fail_processing_request(request_row)
         structured_warnings = self._structured_request_warnings(structured)
+        draft_safety_notices = self._draft_safety_notices(structured)
         if structured.request_type == "unsupported":
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
@@ -791,12 +1194,6 @@ class AgentBuilderService:
             self.db.commit()
             return response
 
-        effective_selected_edge_id = self._selected_edge_id_for_message(
-            workflow,
-            message_request.selected_edge_id,
-            message_request.message,
-        )
-
         try:
             preview_graph = self._build_preview_graph(
                 structured,
@@ -804,35 +1201,17 @@ class AgentBuilderService:
                 kb_bindings=recommendations["bindings"],
                 selected_node_id=message_request.selected_node_id,
                 selected_edge_id=effective_selected_edge_id,
+                target_resolution=target_resolution,
             )
         except HTTPException as exc:
-            if exc.detail == "DRAFT_MODEL_ROUTE_REQUIRED":
-                response = AgentBuilderMessageResponse(
-                    request_id=request_row.id,
-                    status="configuration_required",
-                    structured_request=structured,
-                    validation_result=AgentBuilderValidationResult(
-                        valid=False,
-                        issues=[
-                            AgentBuilderValidationIssue(
-                                code="DRAFT_MODEL_ROUTE_REQUIRED",
-                                message="승인된 draft generation model route가 필요합니다.",
-                                path="llm.model_id",
-                            )
-                        ],
-                    ),
-                    warnings=[
-                        "모델 route가 구성되지 않아 초안을 확정하지 않았습니다.",
-                        *structured_warnings,
-                    ],
-                )
-                self._finish_request(request_row, response)
-                self.db.commit()
-                return response
             raise
         except Exception:
             return self._fail_processing_request(request_row)
-        base_graph = workflow.graph if workflow else _empty_graph()
+        uses_existing_workflow_base = workflow is not None and structured.draft_mode in {
+            "modify_workflow",
+            "replace_workflow",
+        }
+        base_graph = workflow.graph if uses_existing_workflow_base else _empty_graph()
         base_node_ids = _graph_node_ids(base_graph)
         base_edge_ids = {
             str(edge.get("id"))
@@ -851,7 +1230,11 @@ class AgentBuilderService:
         ]
         draft_validation = self.validate_preview_graph(
             preview_graph,
-            generated_node_ids=set(generated_node_ids) if workflow else None,
+            generated_node_ids=(
+                set(generated_node_ids)
+                if workflow is not None and structured.draft_mode == "modify_workflow"
+                else None
+            ),
         )
         if not draft_validation.valid:
             response = AgentBuilderMessageResponse(
@@ -872,7 +1255,7 @@ class AgentBuilderService:
             organization_id=self.organization_id,
             user_id=self.user.id,
             draft_mode=structured.draft_mode,
-            workflow_id=workflow.id if workflow else None,
+            workflow_id=workflow.id if uses_existing_workflow_base else None,
             app_id=app_id,
             preview_graph=preview_graph,
             node_detail_previews=self._node_detail_previews(preview_graph),
@@ -880,7 +1263,7 @@ class AgentBuilderService:
             draft_metadata={
                 "base_graph_hash": base_hash,
                 "base_workflow_updated_at": workflow.updated_at.isoformat()
-                if workflow and workflow.updated_at
+                if uses_existing_workflow_base and workflow.updated_at
                 else None,
                 "safe_kb_bindings": self._safe_kb_bindings(recommendations["bindings"]),
                 "selected_kb_handles": list(
@@ -889,18 +1272,26 @@ class AgentBuilderService:
                 if selected_kb_context
                 else [],
                 "structured_request": structured.model_dump(mode="json"),
+                "safety_notices": draft_safety_notices,
                 "generated_node_ids": generated_node_ids,
                 "generated_edge_ids": generated_edge_ids,
                 "target_resolution": {
+                    **target_resolution,
                     "selected_node_id": message_request.selected_node_id,
                     "selected_edge_id": effective_selected_edge_id,
                 },
                 "app_id": str(app_id) if app_id else None,
-                "workflow_id": str(workflow.id) if workflow else None,
-                "workflow_scope": "existing_workflow" if workflow else "new_workflow",
+                "workflow_id": str(workflow.id) if uses_existing_workflow_base else None,
+                "workflow_scope": (
+                    "existing_workflow"
+                    if uses_existing_workflow_base
+                    else "new_workflow"
+                ),
             },
             base_graph_hash=base_hash,
-            base_workflow_updated_at=workflow.updated_at if workflow else None,
+            base_workflow_updated_at=(
+                workflow.updated_at if uses_existing_workflow_base else None
+            ),
             status="ready",
             expires_at=_now() + DRAFT_TTL,
         )
@@ -917,7 +1308,8 @@ class AgentBuilderService:
             draft_mode=structured.draft_mode,
             node_detail_previews=draft.node_detail_previews,
             validation_result=draft_validation,
-            safety_notices=[SAFE_SIDE_EFFECT_NOTICE],
+            safety_notices=draft_safety_notices,
+            configuration_issues=self._node_configuration_issues(preview_graph),
         )
         response = AgentBuilderMessageResponse(
             request_id=request_row.id,
@@ -926,7 +1318,7 @@ class AgentBuilderService:
             draft_preview=preview,
             validation_result=draft_validation,
             preview_prompt="도안 생성 미리보기",
-            warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
+            warnings=draft_safety_notices,
         )
         if self._finish_request(request_row, response) is not False:
             add_action_audit(
@@ -1418,6 +1810,8 @@ class AgentBuilderService:
             else:
                 workflow.graph = save_graph
                 workflow.updated_by = self.user.id
+            if draft.draft_mode == "new_workflow":
+                self._rebind_session_after_new_workflow_apply(draft, workflow)
             draft.status = "applied"
             draft.workflow_id = workflow.id
             saved_hash = calculate_graph_hash(save_graph)
@@ -1521,6 +1915,29 @@ class AgentBuilderService:
             raise HTTPException(status_code=404, detail="Agent Builder draft not found")
         return locked
 
+    def _rebind_session_after_new_workflow_apply(
+        self,
+        draft: AgentBuilderDraft,
+        workflow: Workflow,
+    ) -> None:
+        if not isinstance(self.db, Session):
+            return
+        session = (
+            self.db.query(AgentBuilderSession)
+            .filter(
+                AgentBuilderSession.id == draft.session_id,
+                AgentBuilderSession.user_id == self.user.id,
+                AgentBuilderSession.organization_id == self.organization_id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if session is None:
+            raise RuntimeError("Agent Builder session not found during apply")
+        session.workflow_id = workflow.id
+        session.app_id = workflow.app_id
+        session.updated_at = _now()
+
     def validate_preview_graph(
         self,
         graph: dict[str, Any] | None,
@@ -1537,7 +1954,7 @@ class AgentBuilderService:
             if generated_node_ids is not None and node_id not in generated_node_ids:
                 continue
             node_type = node.get("type")
-            if node_type not in MVP_SUPPORTED_NODE_TYPES:
+            if node_type not in AGENT_BUILDER_SUPPORTED_NODE_TYPES:
                 issues.append(
                     AgentBuilderValidationIssue(
                         code="UNSUPPORTED_NODE_TYPE",
@@ -1547,7 +1964,10 @@ class AgentBuilderService:
                 )
             if node_type == "llmNode":
                 data = node.get("data") or {}
-                if not data.get("model_id"):
+                if (
+                    not data.get("model_id")
+                    and data.get("configuration_state") != "unresolved"
+                ):
                     issues.append(
                         AgentBuilderValidationIssue(
                             code="MISSING_LLM_MODEL",
@@ -1564,6 +1984,56 @@ class AgentBuilderService:
                         path=f"edges.{edge.get('id')}",
                     )
                 )
+        connection_messages = {
+            "START_NODE_HAS_INCOMING_EDGE": "입력 node에는 incoming edge를 연결할 수 없습니다.",
+            "TRIGGER_NODE_HAS_INCOMING_EDGE": "Trigger node에는 incoming edge를 연결할 수 없습니다.",
+            "TERMINAL_NODE_HAS_OUTGOING_EDGE": "응답 node에는 outgoing edge를 연결할 수 없습니다.",
+            "INVALID_CONDITION_SOURCE_HANDLE": "Condition edge가 존재하지 않는 분기 handle을 사용합니다.",
+        }
+        for connection_issue in validate_workflow_graph_connections(graph):
+            issues.append(
+                AgentBuilderValidationIssue(
+                    code=connection_issue.code,
+                    message=connection_messages[connection_issue.code],
+                    path=f"edges.{connection_issue.edge_id or 'unknown'}",
+                )
+            )
+        if generated_node_ids:
+            generated_ids = set(generated_node_ids)
+            existing_ids = node_ids - generated_ids
+            generated_adjacency = {node_id: set() for node_id in generated_ids}
+            attached_to_existing: set[str] = set()
+            for edge in edges:
+                source = str(edge.get("source") or "")
+                target = str(edge.get("target") or "")
+                if source in generated_ids and target in generated_ids:
+                    generated_adjacency[source].add(target)
+                    generated_adjacency[target].add(source)
+                elif source in generated_ids and target in existing_ids:
+                    attached_to_existing.add(source)
+                elif target in generated_ids and source in existing_ids:
+                    attached_to_existing.add(target)
+
+            unchecked = set(generated_ids)
+            while unchecked:
+                root = next(iter(unchecked))
+                component: set[str] = set()
+                stack = [root]
+                while stack:
+                    current = stack.pop()
+                    if current in component:
+                        continue
+                    component.add(current)
+                    stack.extend(generated_adjacency.get(current, set()) - component)
+                unchecked -= component
+                if component.isdisjoint(attached_to_existing):
+                    issues.append(
+                        AgentBuilderValidationIssue(
+                            code="DETACHED_GENERATED_COMPONENT",
+                            message="새로 생성된 node가 기존 workflow graph에 연결되지 않았습니다.",
+                            path=f"nodes.{root}",
+                        )
+                    )
         return AgentBuilderValidationResult(valid=not issues, issues=issues)
 
     def _block_apply(
@@ -1615,11 +2085,392 @@ class AgentBuilderService:
             notices=[notice],
         )
 
+    def _safe_intent_workflow_context(
+        self,
+        workflow: Workflow | None,
+        request: AgentBuilderMessageRequest,
+    ) -> dict[str, Any]:
+        safe_nodes: list[dict[str, str]] = []
+        if workflow is not None:
+            for node in ((workflow.graph or {}).get("nodes") or [])[:50]:
+                if not isinstance(node, dict):
+                    continue
+                data = node.get("data") if isinstance(node.get("data"), dict) else {}
+                node_type = str(node.get("type") or "")
+                safe_node_type = (
+                    node_type
+                    if node_type in AGENT_BUILDER_SUPPORTED_NODE_TYPES
+                    else "unsupportedNode"
+                )
+                safe_node = {
+                    "node_type": safe_node_type,
+                    "title": _safe_display_label(
+                        data.get("title") or safe_node_type or "Workflow node",
+                        fallback="Workflow node",
+                    ),
+                }
+                action = str(data.get("action") or "")
+                if action in {"get_pr", "comment_pr"}:
+                    safe_node["role"] = action
+                safe_nodes.append(safe_node)
+        return {
+            "workflow_present": workflow is not None,
+            "selected_node_present": bool(request.selected_node_id),
+            "selected_edge_present": bool(request.selected_edge_id),
+            "nodes": safe_nodes,
+        }
+
+    def _structure_request(
+        self,
+        request: AgentBuilderMessageRequest,
+        workflow: Workflow | None,
+    ) -> AgentBuilderStructuredRequest:
+        if self.intent_extractor is None:
+            raise AgentBuilderIntentRuntimeUnavailableError(
+                "Agent Builder intent extractor is not configured"
+            )
+        workflow_context = self._safe_intent_workflow_context(workflow, request)
+        safe_message = _safe_summary(request.message, limit=2000)
+        extraction = self.intent_extractor.extract(
+            safe_message=safe_message,
+            workflow_context=workflow_context,
+        )
+        validate_intent_semantics(
+            extraction,
+            workflow_context,
+            safe_message=safe_message,
+        )
+        return self._normalize_intent_extraction(
+            extraction,
+            request=request,
+            workflow=workflow,
+        )
+
+    def _normalize_intent_extraction(
+        self,
+        extraction: AgentBuilderIntentExtraction,
+        *,
+        request: AgentBuilderMessageRequest,
+        workflow: Workflow | None,
+    ) -> AgentBuilderStructuredRequest:
+        intent_summary = _safe_summary(extraction.intent_summary, limit=240)
+        if not intent_summary:
+            intent_summary = _safe_summary(request.message)
+
+        unsupported_integration_requests = []
+        if any(
+            action.provider == "github"
+            and action.resource == "pull_request"
+            and action.operation == "create"
+            for action in extraction.integration_actions
+        ):
+            unsupported_integration_requests.append(
+                "GitHub Pull Request 생성은 현재 지원되지 않습니다."
+            )
+
+        requested = [
+            str(capability).strip()
+            for capability in extraction.ordered_capabilities
+            if str(capability).strip()
+        ]
+        target_requested = (
+            [
+                str(capability).strip()
+                for capability in extraction.edit.target_capabilities
+                if str(capability).strip()
+            ]
+            if extraction.edit
+            else []
+        )
+        unsupported_capabilities = [
+            capability
+            for capability in [*requested, *target_requested]
+            if capability not in AGENT_BUILDER_SUPPORTED_CAPABILITIES
+        ]
+        mode_matches_request = (
+            extraction.request_type == "unsupported"
+            or (
+                extraction.request_type == "new_workflow"
+                and extraction.draft_mode == "new_workflow"
+            )
+            or (
+                extraction.request_type == "modify_workflow"
+                and extraction.draft_mode in {"modify_workflow", "replace_workflow"}
+            )
+        )
+        if (
+            extraction.request_type == "unsupported"
+            or unsupported_capabilities
+            or unsupported_integration_requests
+            or not mode_matches_request
+        ):
+            reasons = [
+                _safe_summary(reason, limit=160)
+                for reason in extraction.unsupported_requests
+                if _safe_summary(reason, limit=160)
+            ]
+            reasons.extend(unsupported_integration_requests)
+            if unsupported_capabilities:
+                reasons.append("지원 capability allowlist 밖의 요청이 포함되어 있습니다.")
+            if not mode_matches_request:
+                reasons.append("요청 유형과 workflow 변경 모드가 일치하지 않습니다.")
+            if not reasons:
+                reasons.append("지원하는 workflow 생성 또는 수정 요청으로 구조화할 수 없습니다.")
+            return AgentBuilderStructuredRequest(
+                request_type="unsupported",
+                draft_mode="new_workflow",
+                intent_summary=intent_summary,
+                planned_steps=[],
+                knowledge_requirements=[],
+                required_capabilities=[],
+                pending_resolution=[],
+                unsupported_requests=reasons,
+                risk_flags=["unsupported_capability"],
+            )
+
+        draft_mode = extraction.draft_mode
+        entry_capabilities = {
+            "start_input",
+            "webhook_trigger",
+            "schedule_trigger",
+        }
+        knowledge_required = extraction.knowledge_required or (
+            "knowledge_backed_llm" in requested
+        )
+        normalized_capabilities: list[str] = []
+        knowledge_capability_added = False
+        for capability in requested:
+            normalized = capability
+            if knowledge_required and capability == "llm" and not knowledge_capability_added:
+                normalized = "knowledge_backed_llm"
+                knowledge_capability_added = True
+            elif capability == "knowledge_backed_llm":
+                knowledge_capability_added = True
+            normalized_capabilities.append(normalized)
+
+        if knowledge_required and not knowledge_capability_added:
+            answer_index = next(
+                (
+                    index
+                    for index, capability in enumerate(normalized_capabilities)
+                    if capability == "answer"
+                ),
+                len(normalized_capabilities),
+            )
+            normalized_capabilities.insert(answer_index, "knowledge_backed_llm")
+
+        missing_information: list[str] = []
+        if draft_mode in {"new_workflow", "replace_workflow"}:
+            entries = [
+                capability
+                for capability in normalized_capabilities
+                if capability in entry_capabilities
+            ]
+            if len(entries) > 1:
+                return AgentBuilderStructuredRequest(
+                    request_type="unsupported",
+                    draft_mode="new_workflow",
+                    intent_summary=intent_summary,
+                    unsupported_requests=[
+                        "한 workflow에 여러 entry trigger가 요청되었습니다."
+                    ],
+                    risk_flags=["unsupported_capability"],
+                )
+            entry = entries[0] if entries else "start_input"
+            normalized_capabilities = [
+                capability
+                for capability in normalized_capabilities
+                if capability not in entry_capabilities and capability != "answer"
+            ]
+            normalized_capabilities = [entry, *normalized_capabilities, "answer"]
+        elif draft_mode == "modify_workflow":
+            normalized_capabilities = [
+                capability
+                for capability in normalized_capabilities
+                if capability not in entry_capabilities
+            ]
+            if workflow is None:
+                missing_information.append("수정할 기존 workflow가 필요합니다.")
+            if extraction.edit is None:
+                missing_information.append(
+                    "수정할 기존 node 또는 edge와 삽입 위치를 지정해주세요."
+                )
+            if not normalized_capabilities:
+                missing_information.append("새로 추가할 node capability를 지정해주세요.")
+
+        planned_steps: list[AgentBuilderPlannedStep] = []
+        required_capabilities: list[str] = []
+        step_counts: dict[str, int] = {}
+        dependency_step_id: str | None = None
+        knowledge_step_id: str | None = None
+        for index, capability in enumerate(normalized_capabilities):
+            if capability in entry_capabilities:
+                base_step_id = "step_input"
+            else:
+                base_step_id = CAPABILITY_STEP_IDS[capability]
+            step_counts[base_step_id] = step_counts.get(base_step_id, 0) + 1
+            count = step_counts[base_step_id]
+            step_id = base_step_id if count == 1 else f"{base_step_id}_{count}"
+            planned_steps.append(
+                AgentBuilderPlannedStep(
+                    step_id=step_id,
+                    capability=capability,
+                    purpose=CAPABILITY_PURPOSES[capability],
+                    depends_on=[dependency_step_id] if dependency_step_id else [],
+                )
+            )
+            dependency_step_id = step_id
+            if capability == "knowledge_backed_llm":
+                knowledge_step_id = knowledge_step_id or step_id
+                for required in ("llm", "knowledge_base"):
+                    if required not in required_capabilities:
+                        required_capabilities.append(required)
+            elif capability not in required_capabilities:
+                required_capabilities.append(capability)
+
+        pending_resolution: list[AgentBuilderPendingResolution] = []
+        knowledge_requirements: list[AgentBuilderKnowledgeRequirement] = []
+        if knowledge_required and knowledge_step_id:
+            topics = []
+            for topic in extraction.knowledge_topics:
+                safe_topic = _safe_summary(str(topic), limit=80)
+                if safe_topic and safe_topic not in topics:
+                    topics.append(safe_topic)
+            if not topics:
+                topics = _knowledge_query_topics(intent_summary)
+            knowledge_requirements.append(
+                AgentBuilderKnowledgeRequirement(
+                    requirement_id="kr_1",
+                    query_topics=topics,
+                    suggested_candidate_handles=list(
+                        dict.fromkeys(
+                            handle.strip()[:255]
+                            for handle in extraction.knowledge_candidate_handles
+                            if isinstance(handle, str)
+                            and handle.strip().startswith("rec-")
+                        )
+                    )[:20],
+                    expected_evidence_type="policy_or_reference",
+                    required=True,
+                    target_step_ref=knowledge_step_id,
+                )
+            )
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_kb_1",
+                    slot_type="knowledge_base",
+                    slot_key="llm.knowledgeBases",
+                    blocking=True,
+                    target_step_ref=knowledge_step_id,
+                )
+            )
+
+        capability_set = set(normalized_capabilities)
+        risk_flags: list[str] = []
+        if "slack_send" in capability_set:
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_slack_channel_1",
+                    slot_type="other",
+                    slot_key="slack.channel",
+                    blocking=False,
+                    target_step_ref=CAPABILITY_STEP_IDS["slack_send"],
+                )
+            )
+            risk_flags.extend(
+                ["external_action_requested", "slack_channel_unresolved"]
+            )
+        if {"github_pr_read", "github_pr_comment"} & capability_set:
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_github_configuration_1",
+                    slot_type="other",
+                    slot_key="github.credential_and_target",
+                    blocking=False,
+                    target_step_ref=(
+                        CAPABILITY_STEP_IDS["github_pr_read"]
+                        if "github_pr_read" in capability_set
+                        else CAPABILITY_STEP_IDS["github_pr_comment"]
+                    ),
+                )
+            )
+            if "external_action_requested" not in risk_flags:
+                risk_flags.append("external_action_requested")
+            risk_flags.append("github_configuration_unresolved")
+        if {
+            "workflow_call",
+            "http_request",
+            "slack_send",
+            "github_pr_read",
+            "github_pr_comment",
+            "mail_search",
+        } & capability_set:
+            risk_flags.append("external_configuration_unresolved")
+
+        edit_operations: list[AgentBuilderEditOperation] = []
+        if draft_mode == "modify_workflow" and extraction.edit and planned_steps:
+            target = extraction.edit
+            target_capabilities = list(dict.fromkeys(target_requested))
+            target_node_types = list(
+                dict.fromkeys(
+                    node_type
+                    for capability in target_capabilities
+                    if (node_type := node_type_for_capability(capability)) is not None
+                )
+            )
+            target_query = _safe_summary(target.target_query or "", limit=255) or None
+            if (
+                target.target_reference_type == "natural_language_node"
+                and not target_query
+                and not target_capabilities
+            ):
+                missing_information.append(
+                    "수정할 기존 node의 이름 또는 역할을 지정해주세요."
+                )
+            else:
+                edit_operations.append(
+                    AgentBuilderEditOperation(
+                        operation_id="edit_1",
+                        operation="insert",
+                        placement=target.placement,
+                        step_refs=[step.step_id for step in planned_steps],
+                        target=AgentBuilderEditTargetReference(
+                            reference_type=target.target_reference_type,
+                            query=target_query,
+                            capabilities=target_capabilities,
+                            node_types=target_node_types,
+                        ),
+                    )
+                )
+                pending_resolution.append(
+                    AgentBuilderPendingResolution(
+                        resolution_id="res_target_1",
+                        slot_type="target",
+                        slot_key="edit_operations.0.target",
+                        blocking=True,
+                        target_step_ref=planned_steps[0].step_id,
+                    )
+                )
+
+        return AgentBuilderStructuredRequest(
+            request_type=extraction.request_type,
+            draft_mode=draft_mode,
+            intent_summary=intent_summary,
+            planned_steps=planned_steps,
+            knowledge_requirements=knowledge_requirements,
+            required_capabilities=required_capabilities,
+            pending_resolution=pending_resolution,
+            edit_operations=edit_operations,
+            missing_information=list(dict.fromkeys(missing_information)),
+            risk_flags=list(dict.fromkeys(risk_flags)),
+        )
+
     def _build_structured_request(
         self,
         request: AgentBuilderMessageRequest,
         workflow: Workflow | None,
     ) -> AgentBuilderStructuredRequest:
+        """Legacy deterministic compatibility helper; not a production parser."""
         if not _message_looks_like_workflow_request(request.message):
             return AgentBuilderStructuredRequest(
                 request_type="unsupported",
@@ -1652,20 +2503,51 @@ class AgentBuilderService:
                 ],
                 risk_flags=["unsupported_capability"],
             )
+        explicit_new_workflow = _message_requests_new_workflow(request.message)
+        edit_spec = (
+            _extract_workflow_edit_spec(
+                request.message,
+                selected_edge_id=request.selected_edge_id,
+            )
+            if workflow is not None and not explicit_new_workflow
+            else None
+        )
+        targeted_modify = (
+            workflow is not None
+            and not explicit_new_workflow
+            and (
+                edit_spec is not None
+                or _message_requests_targeted_modify(request.message)
+                or (
+                    request.selected_edge_id is not None
+                    and _message_mentions_edge_context(request.message)
+                )
+            )
+        )
+        draft_mode = "modify_workflow" if targeted_modify else "new_workflow"
+        capability_text = (
+            edit_spec["new_steps_text"] if targeted_modify and edit_spec else request.message
+        )
         needs_kb = any(
-            token in request.message
+            token in capability_text
             for token in ["정책", "규정", "내규", "문서", "자료", "근거", "찾아", "검색", "Knowledge", "KB"]
         )
-        wants_slack = "slack" in text or "슬랙" in request.message
-        wants_webhook = _message_requests_webhook_trigger(request.message)
-        simple_input_output = _message_requests_simple_input_output(request.message)
+        requested_capabilities = _message_requested_catalog_capabilities(capability_text)
+        wants_slack = "slack_send" in requested_capabilities
+        wants_webhook = "webhook_trigger" in requested_capabilities
+        wants_schedule = "schedule_trigger" in requested_capabilities
+        simple_input_output = (
+            not targeted_modify
+            and _message_requests_simple_input_output(request.message)
+        )
         knowledge_requirements: list[AgentBuilderKnowledgeRequirement] = []
         pending_resolution: list[AgentBuilderPendingResolution] = []
         if needs_kb:
+            query_topics = _knowledge_query_topics(request.message)
             knowledge_requirements.append(
                 AgentBuilderKnowledgeRequirement(
                     requirement_id="kr_1",
-                    query_topics=[_safe_summary(request.message, limit=80)],
+                    query_topics=query_topics,
                     expected_evidence_type="policy_or_reference",
                     required=True,
                     target_step_ref="step_llm",
@@ -1680,8 +2562,97 @@ class AgentBuilderService:
                     target_step_ref="step_llm",
                 )
             )
-        missing_information = []
-        if wants_slack:
+        missing_information: list[str] = []
+        entry_capability = (
+            "webhook_trigger"
+            if wants_webhook
+            else "schedule_trigger"
+            if wants_schedule
+            else "start_input"
+        )
+        entry_purpose = {
+            "webhook_trigger": "웹훅 payload를 받습니다.",
+            "schedule_trigger": "설정된 일정에 따라 workflow를 시작합니다.",
+            "start_input": "사용자 입력을 받습니다.",
+        }[entry_capability]
+        planned_steps = (
+            []
+            if targeted_modify
+            else [
+                AgentBuilderPlannedStep(
+                    step_id="step_input",
+                    capability=entry_capability,
+                    purpose=entry_purpose,
+                )
+            ]
+        )
+        required_capabilities = [] if targeted_modify else [entry_capability]
+        risk_flags: list[str] = []
+
+        uses_llm = not simple_input_output and (
+            needs_kb
+            or _message_requests_llm_processing(capability_text)
+            or (
+                not targeted_modify
+                and (
+                    wants_slack
+                    or "github_pr_comment" in requested_capabilities
+                )
+            )
+            or (not requested_capabilities and not targeted_modify)
+        )
+        selected_capabilities = set() if simple_input_output else set(requested_capabilities)
+        selected_capabilities.discard("start_input")
+        selected_capabilities.discard("webhook_trigger")
+        selected_capabilities.discard("schedule_trigger")
+        selected_capabilities.discard("llm")
+        if not targeted_modify:
+            selected_capabilities.discard("answer")
+        if uses_llm:
+            selected_capabilities.add(
+                "knowledge_backed_llm" if needs_kb else "llm"
+            )
+
+        ordered_capabilities = [
+            capability
+            for capability in CAPABILITY_GENERATION_ORDER
+            if capability in selected_capabilities
+        ]
+        dependency_step_id: str | None = None if targeted_modify else "step_input"
+        purpose_by_capability = {
+            "file_extraction": "입력 파일에서 텍스트를 추출하도록 설정합니다.",
+            "variable_extraction": "입력 데이터에서 필요한 변수를 추출하도록 설정합니다.",
+            "github_pr_read": "GitHub Pull Request와 변경 파일을 조회하도록 설정합니다.",
+            "mail_search": "메일을 검색하도록 설정합니다.",
+            "http_request": "외부 HTTP API를 호출하도록 설정합니다.",
+            "workflow_call": "다른 workflow를 호출하도록 설정합니다.",
+            "code_execution": "sandbox에서 코드를 실행하도록 설정합니다.",
+            "template_render": "입력값으로 템플릿을 렌더링하도록 설정합니다.",
+            "condition": "조건에 따라 흐름을 분기하도록 설정합니다.",
+            "loop": "목록의 각 항목을 반복 처리하도록 설정합니다.",
+            "llm": "입력을 분석하고 답변을 생성합니다.",
+            "knowledge_backed_llm": "Knowledge Base 근거로 입력을 분석하고 답변을 생성합니다.",
+            "github_pr_comment": "생성된 리뷰를 GitHub Pull Request에 댓글로 등록하도록 설정합니다.",
+            "slack_send": "이전 단계 결과를 Slack 메시지로 전송하도록 설정합니다.",
+            "answer": "이전 단계 결과를 응답으로 반환하도록 설정합니다.",
+        }
+        for capability in ordered_capabilities:
+            step_id = CAPABILITY_STEP_IDS[capability]
+            planned_steps.append(
+                AgentBuilderPlannedStep(
+                    step_id=step_id,
+                    capability=capability,
+                    purpose=purpose_by_capability[capability],
+                    depends_on=[dependency_step_id] if dependency_step_id else [],
+                )
+            )
+            dependency_step_id = step_id
+            if capability == "knowledge_backed_llm":
+                required_capabilities.extend(["llm", "knowledge_base"])
+            else:
+                required_capabilities.append(capability)
+
+        if "slack_send" in selected_capabilities:
             pending_resolution.append(
                 AgentBuilderPendingResolution(
                     resolution_id="res_slack_channel_1",
@@ -1691,67 +2662,84 @@ class AgentBuilderService:
                     target_step_ref="step_slack",
                 )
             )
-        explicit_new_workflow = _message_requests_new_workflow(request.message)
-        targeted_modify = (
-            workflow is not None
-            and not explicit_new_workflow
-            and (
-                _message_requests_targeted_modify(request.message)
-                or (
-                    request.selected_edge_id is not None
-                    and _message_mentions_edge_context(request.message)
+            risk_flags.extend(
+                ["external_action_requested", "slack_channel_unresolved"]
+            )
+        if {
+            "github_pr_read",
+            "github_pr_comment",
+        } & selected_capabilities:
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_github_configuration_1",
+                    slot_type="other",
+                    slot_key="github.credential_and_target",
+                    blocking=False,
+                    target_step_ref="step_github_read"
+                    if "github_pr_read" in selected_capabilities
+                    else "step_github_comment",
                 )
             )
-        )
-        draft_mode = (
-            "modify_workflow" if targeted_modify else "new_workflow"
-        )
-        entry_capability = "webhook_trigger" if wants_webhook else "start_input"
-        planned_steps = [
-            AgentBuilderPlannedStep(
-                step_id="step_input",
-                capability=entry_capability,
-                purpose="웹훅 payload를 받습니다."
-                if wants_webhook
-                else "사용자 입력을 받습니다.",
+            risk_flags.extend(
+                ["external_action_requested", "github_configuration_unresolved"]
             )
-        ]
-        answer_depends_on = ["step_input"]
-        required_capabilities = [entry_capability, "answer"]
-        risk_flags: list[str] = []
-        if not simple_input_output:
+        if {
+            "workflow_call",
+            "http_request",
+            "slack_send",
+            "github_pr_read",
+            "github_pr_comment",
+            "mail_search",
+        } & selected_capabilities:
+            if "external_configuration_unresolved" not in risk_flags:
+                risk_flags.append("external_configuration_unresolved")
+        edit_operations: list[AgentBuilderEditOperation] = []
+        if targeted_modify:
+            if edit_spec is None:
+                missing_information.append("수정할 기존 node 또는 edge와 삽입 위치를 지정해주세요.")
+            elif not planned_steps:
+                missing_information.append("새로 추가할 node capability를 지정해주세요.")
+            else:
+                target_capabilities = _message_requested_catalog_capabilities(
+                    edit_spec["target_text"]
+                )
+                target_node_types = _target_node_types_for_text(
+                    edit_spec["target_text"],
+                    target_capabilities,
+                )
+                edit_operations.append(
+                    AgentBuilderEditOperation(
+                        operation_id="edit_1",
+                        operation="insert",
+                        placement=edit_spec["placement"],
+                        step_refs=[step.step_id for step in planned_steps],
+                        target=AgentBuilderEditTargetReference(
+                            reference_type=edit_spec["reference_type"],
+                            query=_safe_summary(edit_spec["target_text"], limit=255),
+                            capabilities=target_capabilities,
+                            node_types=target_node_types,
+                        ),
+                    )
+                )
+                pending_resolution.append(
+                    AgentBuilderPendingResolution(
+                        resolution_id="res_target_1",
+                        slot_type="target",
+                        slot_key="edit_operations.0.target",
+                        blocking=True,
+                        target_step_ref=planned_steps[0].step_id,
+                    )
+                )
+        else:
             planned_steps.append(
                 AgentBuilderPlannedStep(
-                    step_id="step_llm",
-                    capability="knowledge_backed_llm" if needs_kb else "llm",
-                    purpose="입력을 분석하고 답변을 생성합니다.",
-                    depends_on=["step_input"],
+                    step_id="step_answer",
+                    capability="answer",
+                    purpose="결과를 사용자에게 반환합니다.",
+                    depends_on=[dependency_step_id] if dependency_step_id else [],
                 )
             )
-            answer_depends_on = ["step_llm"]
-            required_capabilities.append("llm")
-        if needs_kb and not simple_input_output:
-            required_capabilities.append("knowledge_base")
-        if wants_slack and not simple_input_output:
-            planned_steps.append(
-                AgentBuilderPlannedStep(
-                    step_id="step_slack",
-                    capability="slack_send",
-                    purpose="LLM 결과를 Slack 메시지로 전송하도록 설정합니다.",
-                    depends_on=["step_llm"],
-                )
-            )
-            answer_depends_on = ["step_slack"]
-            required_capabilities.append("slack_send")
-            risk_flags.extend(["external_action_requested", "slack_channel_unresolved"])
-        planned_steps.append(
-            AgentBuilderPlannedStep(
-                step_id="step_answer",
-                capability="answer",
-                purpose="결과를 사용자에게 반환합니다.",
-                depends_on=answer_depends_on,
-            )
-        )
+            required_capabilities.append("answer")
         return AgentBuilderStructuredRequest(
             request_type=draft_mode,
             draft_mode=draft_mode,
@@ -1760,19 +2748,201 @@ class AgentBuilderService:
             knowledge_requirements=knowledge_requirements,
             required_capabilities=required_capabilities,
             pending_resolution=pending_resolution,
+            edit_operations=edit_operations,
             missing_information=missing_information,
             risk_flags=risk_flags,
         )
 
-    def _selected_edge_id_for_message(
+    def _resolve_edit_target(
+        self,
+        structured: AgentBuilderStructuredRequest,
+        *,
+        workflow: Workflow | None,
+        selected_node_id: str | None,
+        selected_edge_id: str | None,
+    ) -> dict[str, Any]:
+        if structured.draft_mode != "modify_workflow":
+            return {"status": "not_required", "replaced_edge_ids": []}
+        if structured.missing_information:
+            return {"status": "not_required", "replaced_edge_ids": []}
+        if workflow is None or not structured.edit_operations:
+            return {
+                "status": "clarification_required",
+                "questions": ["수정할 기존 node 또는 edge와 삽입 위치를 지정해주세요."],
+                "options": [],
+            }
+
+        operation = structured.edit_operations[0]
+        target = operation.target
+        graph = workflow.graph or _empty_graph()
+        nodes = graph.get("nodes") or []
+        edges = graph.get("edges") or []
+        node_by_id = {
+            str(node.get("id")): node for node in nodes if node.get("id")
+        }
+        edge_by_id = {
+            str(edge.get("id")): edge for edge in edges if edge.get("id")
+        }
+
+        if target.reference_type == "selected_edge":
+            edge = edge_by_id.get(str(selected_edge_id or ""))
+            if edge is None:
+                return {
+                    "status": "clarification_required",
+                    "questions": ["삽입할 기존 연결을 선택해주세요."],
+                    "options": [],
+                }
+            return {
+                "status": "resolved",
+                "operation_id": operation.operation_id,
+                "placement": "between",
+                "edge_id": str(edge["id"]),
+                "node_id": None,
+                "source_node_id": str(edge["source"]),
+                "destination_node_id": str(edge["target"]),
+                "replaced_edge_ids": [str(edge["id"])],
+            }
+
+        if target.reference_type == "selected_node":
+            selected_node = node_by_id.get(str(selected_node_id or ""))
+            candidates = [selected_node] if selected_node else []
+        else:
+            target_node_types = set(target.node_types)
+            target_actions = {
+                action
+                for capability in target.capabilities
+                if (action := CAPABILITY_NODE_ACTIONS.get(capability)) is not None
+            }
+            normalized_query = re.sub(
+                r"[^0-9a-z가-힣]+",
+                "",
+                str(target.query or "").casefold(),
+            )
+            type_candidates = []
+            title_candidates = []
+            role_candidates = []
+            for node in nodes:
+                node_type = str(node.get("type") or "")
+                data = node.get("data") if isinstance(node.get("data"), dict) else {}
+                normalized_title = re.sub(
+                    r"[^0-9a-z가-힣]+",
+                    "",
+                    str(data.get("title") or "").casefold(),
+                )
+                title_matches = bool(
+                    normalized_query
+                    and normalized_title
+                    and (
+                        normalized_query in normalized_title
+                        or normalized_title in normalized_query
+                    )
+                )
+                if node_type in target_node_types:
+                    type_candidates.append(node)
+                if title_matches:
+                    title_candidates.append(node)
+                if target_actions and str(data.get("action") or "") in target_actions:
+                    role_candidates.append(node)
+
+            if role_candidates and title_candidates:
+                role_ids = {str(node.get("id")) for node in role_candidates}
+                candidates = [
+                    node
+                    for node in title_candidates
+                    if str(node.get("id")) in role_ids
+                ]
+            elif role_candidates:
+                candidates = role_candidates
+            elif title_candidates:
+                candidates = title_candidates
+            else:
+                candidates = type_candidates
+
+        candidate_ids = {str(node.get("id")) for node in candidates}
+        if selected_node_id and str(selected_node_id) in candidate_ids:
+            candidates = [node_by_id[str(selected_node_id)]]
+        if len(candidates) != 1:
+            options = [
+                {
+                    "type": "workflow_node",
+                    "node_id": str(node.get("id")),
+                    "node_type": str(node.get("type") or "node"),
+                    "label": _safe_display_label(
+                        (node.get("data") or {}).get("title"),
+                        fallback=str(node.get("type") or "Workflow node"),
+                    ),
+                }
+                for node in candidates
+            ]
+            return {
+                "status": "clarification_required",
+                "questions": [
+                    "수정 대상 node를 하나로 특정할 수 없습니다. 사용할 node를 선택해주세요."
+                    if candidates
+                    else "요청한 수정 대상 node를 현재 workflow에서 찾을 수 없습니다."
+                ],
+                "options": options,
+            }
+
+        node_id = str(candidates[0]["id"])
+        if operation.placement == "after":
+            adjacent_edges = [
+                edge for edge in edges if str(edge.get("source")) == node_id
+            ]
+            source_node_id = node_id
+            destination_node_id = (
+                str(adjacent_edges[0].get("target")) if len(adjacent_edges) == 1 else None
+            )
+        else:
+            adjacent_edges = [
+                edge for edge in edges if str(edge.get("target")) == node_id
+            ]
+            source_node_id = (
+                str(adjacent_edges[0].get("source")) if len(adjacent_edges) == 1 else None
+            )
+            destination_node_id = node_id
+
+        if len(adjacent_edges) > 1:
+            return {
+                "status": "clarification_required",
+                "questions": [
+                    "대상 node에 연결이 여러 개입니다. '이 연결 사이에'처럼 삽입할 분기를 지칭해 다시 요청해주세요."
+                ],
+                "options": [],
+            }
+        if operation.placement == "before" and not adjacent_edges:
+            return {
+                "status": "clarification_required",
+                "questions": ["대상 node 앞에 연결된 node가 없어 삽입 위치를 정할 수 없습니다."],
+                "options": [],
+            }
+
+        replaced_edge_ids = (
+            [str(adjacent_edges[0]["id"])] if adjacent_edges else []
+        )
+        return {
+            "status": "resolved",
+            "operation_id": operation.operation_id,
+            "placement": operation.placement,
+            "node_id": node_id,
+            "edge_id": replaced_edge_ids[0] if replaced_edge_ids else None,
+            "source_node_id": source_node_id,
+            "destination_node_id": destination_node_id,
+            "replaced_edge_ids": replaced_edge_ids,
+        }
+
+    def _selected_edge_id_for_structured_request(
         self,
         workflow: Workflow | None,
         selected_edge_id: str | None,
-        message: str,
+        structured: AgentBuilderStructuredRequest,
     ) -> str | None:
         if not workflow or not selected_edge_id:
             return None
-        if not _message_mentions_edge_context(message):
+        if not any(
+            operation.target.reference_type == "selected_edge"
+            for operation in structured.edit_operations
+        ):
             return None
         return (
             selected_edge_id
@@ -1823,7 +2993,22 @@ class AgentBuilderService:
         warnings: list[str] = []
         if "slack_channel_unresolved" in structured.risk_flags:
             warnings.append(SLACK_CHANNEL_UNRESOLVED_WARNING)
+        if "github_configuration_unresolved" in structured.risk_flags:
+            warnings.append(GITHUB_CONFIGURATION_UNRESOLVED_WARNING)
+        if "external_configuration_unresolved" in structured.risk_flags:
+            warnings.append(EXTERNAL_NODE_CONFIGURATION_WARNING)
         return warnings
+
+    def _draft_safety_notices(
+        self,
+        structured: AgentBuilderStructuredRequest,
+    ) -> list[str]:
+        _ = structured
+        return [SAFE_SIDE_EFFECT_NOTICE]
+
+    def _safety_notices_for_draft(self, draft: AgentBuilderDraft) -> list[str]:
+        _ = draft
+        return [SAFE_SIDE_EFFECT_NOTICE]
 
     def _resolve_knowledge_requirements(
         self,
@@ -1859,6 +3044,7 @@ class AgentBuilderService:
                     workflow_intent=structured.intent_summary,
                     node_purpose="; ".join(requirement.query_topics) or requirement.expected_evidence_type,
                     knowledge_requirement=requirement.model_dump(mode="json"),
+                    safe_query_topics=requirement.query_topics,
                     pending_resolution_ref=pending_by_step.get(requirement.target_step_ref),
                     safe_workflow_context_summary={
                         "planned_step_count": len(structured.planned_steps),
@@ -1866,7 +3052,7 @@ class AgentBuilderService:
                     },
                     intended_execution_subject_id=self.user.id,
                     mode="auto",
-                    max_recommendations=3,
+                    max_recommendations=AGENT_BUILDER_KB_RECOMMENDATION_LIMIT,
                 ),
                 include_materialized_refs=include_materialized_refs,
             )
@@ -2039,58 +3225,22 @@ class AgentBuilderService:
                         "권한 확인된 Knowledge Base 후보가 없어 Knowledge Base 없이 LLM node 초안을 생성합니다."
                     ],
                 }
-            top = recommendations[0]
-            top_score = top.score if top.score is not None else 0.0
-            second_score = (
-                recommendations[1].score
-                if len(recommendations) > 1
-                and recommendations[1].score is not None
-                else 0.0
-            )
-            high_confidence = (
-                top.confidence == "high"
-                and top.threshold_result == "high_confidence"
-            ) and (
-                len(recommendations) == 1
-                or top_score - second_score >= 0.1
-            )
-            single_clear_candidate = (
-                len(recommendations) == 1
-                and top.threshold_result in {"high_confidence", "close_score"}
-                and top_score >= 0.45
-            )
-            if not (high_confidence or single_clear_candidate):
-                return {
-                    "status": "clarification_required",
-                    "bindings": [],
-                    "questions": ["추천 후보가 여러 개입니다. 사용할 Knowledge Base를 선택해주세요."],
-                    "options": self._kb_clarification_options(
+            return {
+                "status": "clarification_required",
+                "bindings": [],
+                "questions": ["추천 후보를 확인하고 사용할 Knowledge Base를 선택해주세요."],
+                "options": self._kb_options_with_requirement_context(
+                    response.clarification_options
+                    or self._kb_clarification_options(
                         recommendations,
                         requirement=requirement,
                         resolution_id=resolution_id,
                     ),
-                    "warnings": ["Knowledge Base 후보가 비슷해 자동 선택하지 않았습니다."],
-                }
-            binding_base = {
-                "safe_handle": top.candidate_handle or top.recommendation_id,
-                "name": _safe_display_label(top.safe_label),
-                "confidence": top.confidence,
-                "score": top_score,
-                "reason_category": top.reason_category or top.safe_reason_code,
-                "threshold_result": top.threshold_result or "high_confidence",
+                    requirement=requirement,
+                    resolution_id=resolution_id,
+                ),
+                "warnings": ["Knowledge Base 후보를 확인하고 선택해주세요."],
             }
-            if include_materialized_refs:
-                for ref in top.materialized_knowledge_bases:
-                    bindings.append(
-                        {
-                            **binding_base,
-                            "knowledge_base_id": str(ref.id),
-                            "name": _safe_display_label(ref.name),
-                        }
-                    )
-            else:
-                bindings.append(binding_base)
-            warnings.extend(top.warnings)
         return {"status": "recommended", "bindings": bindings, "questions": [], "options": [], "warnings": warnings}
 
     def _kb_clarification_options(
@@ -2136,25 +3286,6 @@ class AgentBuilderService:
             }
             for option in options
         ]
-        if not any(
-            str(option.get("candidate_id")) == NO_KB_CANDIDATE_ID
-            for option in contextualized
-        ):
-            contextualized.append(
-                {
-                    "type": "no_knowledge_base",
-                    "candidate_id": NO_KB_CANDIDATE_ID,
-                    "label": NO_KB_CANDIDATE_LABEL,
-                    "safe_label": NO_KB_CANDIDATE_LABEL,
-                    "confidence": "user_choice",
-                    "score": None,
-                    "reason_category": "user_selected_no_kb",
-                    "threshold_result": "user_selected",
-                    "runtime_availability": "not_applicable",
-                    "requirement_id": requirement.requirement_id,
-                    "resolution_id": resolution_id,
-                }
-            )
         return contextualized
 
     def _safe_kb_bindings(self, bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2217,6 +3348,7 @@ class AgentBuilderService:
                         node_purpose="; ".join(requirement.query_topics)
                         or requirement.expected_evidence_type,
                         knowledge_requirement=requirement.model_dump(mode="json"),
+                        safe_query_topics=requirement.query_topics,
                         pending_resolution_ref=pending_by_step.get(
                             requirement.target_step_ref
                         ),
@@ -2226,7 +3358,7 @@ class AgentBuilderService:
                         },
                         intended_execution_subject_id=self.user.id,
                         mode="auto",
-                        max_recommendations=3,
+                        max_recommendations=AGENT_BUILDER_KB_RECOMMENDATION_LIMIT,
                     ),
                     required_handles,
                 )
@@ -2285,6 +3417,9 @@ class AgentBuilderService:
         generated_edge_ids = set((draft.draft_metadata or {}).get("generated_edge_ids") or [])
         target_resolution = (draft.draft_metadata or {}).get("target_resolution") or {}
         selected_edge_id = target_resolution.get("selected_edge_id")
+        replaced_edge_ids = set(target_resolution.get("replaced_edge_ids") or [])
+        if selected_edge_id:
+            replaced_edge_ids.add(str(selected_edge_id))
         existing_node_ids = _graph_node_ids(save_graph)
         existing_edge_ids = {
             str(edge.get("id"))
@@ -2297,11 +3432,11 @@ class AgentBuilderService:
             if str(node.get("id")) in generated_node_id_set
             and str(node.get("id")) not in existing_node_ids
         ]
-        if selected_edge_id:
+        if replaced_edge_ids:
             save_graph["edges"] = [
                 edge
                 for edge in save_graph.get("edges") or []
-                if str(edge.get("id")) != str(selected_edge_id)
+                if str(edge.get("id")) not in replaced_edge_ids
             ]
         save_graph["edges"] = (save_graph.get("edges") or []) + [
             edge
@@ -2324,67 +3459,392 @@ class AgentBuilderService:
         *,
         generated_node_ids: list[str],
     ) -> dict[str, Any]:
-        layout_node_ids = generated_node_ids or [
-            str(node.get("id"))
-            for node in graph.get("nodes") or []
-            if node.get("id") and node.get("type") != "note"
+        _ = generated_node_ids
+        return calculate_workflow_auto_layout(graph)
+
+    def _ordered_preview_capabilities(
+        self,
+        structured: AgentBuilderStructuredRequest,
+    ) -> tuple[str, list[str]]:
+        planned_capabilities = [
+            step.capability for step in structured.planned_steps
         ]
-        return _layout_generated_preview_nodes(
-            graph,
-            layout_node_ids,
-            anchor_node_id=None,
+        required = set(structured.required_capabilities)
+        entry_capability = next(
+            (
+                capability
+                for capability in planned_capabilities
+                if capability
+                in {"start_input", "webhook_trigger", "schedule_trigger"}
+            ),
+            (
+                "webhook_trigger"
+                if "webhook_trigger" in required
+                else "schedule_trigger"
+                if "schedule_trigger" in required
+                else "start_input"
+            ),
+        )
+        body_capabilities = [
+            capability
+            for capability in planned_capabilities
+            if capability
+            not in {"start_input", "webhook_trigger", "schedule_trigger"}
+        ]
+        if not body_capabilities:
+            body_capabilities = [
+                capability
+                for capability in CAPABILITY_GENERATION_ORDER
+                if capability in required
+            ]
+        if structured.draft_mode != "modify_workflow":
+            body_capabilities = [
+                capability for capability in body_capabilities if capability != "answer"
+            ]
+        if "knowledge_backed_llm" in body_capabilities:
+            body_capabilities = [
+                capability
+                for capability in body_capabilities
+                if capability != "llm"
+            ]
+        return entry_capability, body_capabilities
+
+    def _build_entry_preview_node(
+        self,
+        capability: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        if capability == "webhook_trigger":
+            data = {
+                "title": "웹훅 입력",
+                "provider": "custom",
+                "variable_mappings": [
+                    {"variable_name": "payload", "json_path": "$"}
+                ],
+            }
+        elif capability == "schedule_trigger":
+            data = {
+                "title": "스케줄 트리거",
+                "cron_expression": "0 9 * * *",
+                "timezone": "UTC",
+            }
+        else:
+            data = {
+                "title": "입력",
+                "triggerType": "manual",
+                "variables": [
+                    {
+                        "id": "question",
+                        "name": "question",
+                        "label": "질문",
+                        "type": "paragraph",
+                        "required": True,
+                    }
+                ],
+            }
+        node_type = node_type_for_capability(capability)
+        if node_type is None:
+            raise ValueError(f"Unsupported entry capability: {capability}")
+        return {
+            "id": node_id,
+            "type": node_type,
+            "position": {"x": 0, "y": 0},
+            "data": data,
+        }
+
+    def _github_target_configuration(
+        self,
+        *,
+        entry_id: str,
+        entry_capability: str,
+    ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+        if entry_capability != "webhook_trigger":
+            return {"repo_owner": "", "repo_name": "", "pr_number": ""}, []
+        return (
+            {
+                "repo_owner": "{{repo_owner}}",
+                "repo_name": "{{repo_name}}",
+                "pr_number": "{{pr_number}}",
+            },
+            [
+                {
+                    "name": "repo_owner",
+                    "value_selector": [
+                        entry_id,
+                        "payload",
+                        "repository",
+                        "owner",
+                        "login",
+                    ],
+                },
+                {
+                    "name": "repo_name",
+                    "value_selector": [entry_id, "payload", "repository", "name"],
+                },
+                {
+                    "name": "pr_number",
+                    "value_selector": [entry_id, "payload", "number"],
+                },
+            ],
         )
 
-    def _build_preview_graph(
+    def _build_capability_preview_node(
+        self,
+        capability: str,
+        node_id: str,
+        *,
+        source_id: str,
+        source_output_key: str,
+        entry_id: str,
+        entry_capability: str,
+        model_id: str | None,
+        kb_refs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        source_selector = [source_id, source_output_key]
+        configuration_state = "unresolved"
+        if capability in {"llm", "knowledge_backed_llm"}:
+            data: dict[str, Any] = {
+                "title": "Knowledge Base-backed LLM" if kb_refs else "LLM",
+                "provider": "configured",
+                "model_id": model_id,
+                "configuration_state": (
+                    "resolved" if model_id else configuration_state
+                ),
+                "task_type": "answer",
+                "system_prompt": "입력을 안전하게 분석하고 결과를 생성합니다.",
+                "user_prompt": f"{{{{{source_output_key}}}}}",
+                "referenced_variables": [
+                    {"name": source_output_key, "value_selector": source_selector}
+                ],
+                "parameters": {},
+                "output_format": {"type": "text"},
+                "knowledgeBases": kb_refs,
+                "scoreThreshold": 0.5,
+                "topK": 3,
+            }
+        elif capability == "workflow_call":
+            data = {
+                "title": "서브 워크플로우",
+                "workflowId": "",
+                "appId": "",
+                "inputs": [
+                    {"name": "input", "value_selector": source_selector}
+                ],
+                "outputs": [],
+                "configuration_state": configuration_state,
+            }
+        elif capability == "code_execution":
+            data = {
+                "title": "코드 실행",
+                "code": "def main(inputs):\n    return {'result': inputs}",
+                "inputs": [
+                    {"name": "input", "source": f"{source_id}.{source_output_key}"}
+                ],
+                "timeout": 10,
+            }
+        elif capability == "condition":
+            data = {
+                "title": "IF/ELSE",
+                "cases": [],
+                "conditions": [],
+                "configuration_state": configuration_state,
+            }
+        elif capability == "file_extraction":
+            data = {
+                "title": "문서 추출",
+                "referenced_variables": [
+                    {"name": "file", "value_selector": source_selector}
+                ],
+            }
+        elif capability == "variable_extraction":
+            data = {
+                "title": "변수 추출",
+                "source_selector": source_selector,
+                "mappings": [],
+                "configuration_state": configuration_state,
+            }
+        elif capability == "loop":
+            data = {
+                "title": "반복",
+                "loop_key": "",
+                "inputs": [
+                    {"name": "items", "value_selector": source_selector}
+                ],
+                "outputs": [],
+                "max_iterations": 100,
+                "parallel_mode": False,
+                "error_strategy": "end",
+                "flatten_output": True,
+                "subGraph": {"nodes": [], "edges": []},
+                "configuration_state": configuration_state,
+            }
+        elif capability == "http_request":
+            data = {
+                "title": "HTTP 요청",
+                "method": "GET",
+                "url": "",
+                "headers": [],
+                "body": "",
+                "timeout": 5000,
+                "authType": "none",
+                "authConfig": {},
+                "referenced_variables": [
+                    {"name": "input", "value_selector": source_selector}
+                ],
+                "configuration_state": configuration_state,
+            }
+        elif capability == "slack_send":
+            data = {
+                "title": "Slack 전송",
+                "method": "POST",
+                "url": "https://slack.com/api/chat.postMessage",
+                "headers": [{"key": "Content-Type", "value": "application/json"}],
+                "body": json.dumps({"text": "{{result}}"}, ensure_ascii=False),
+                "timeout": 5000,
+                "authType": "bearer",
+                "authConfig": {},
+                "referenced_variables": [
+                    {"name": "result", "value_selector": source_selector}
+                ],
+                "message": "{{result}}",
+                "channel": "",
+                "blocks": "",
+                "slackMode": "api",
+                "channel_resolution_state": configuration_state,
+                "configuration_state": configuration_state,
+            }
+        elif capability == "template_render":
+            data = {
+                "title": "템플릿",
+                "template": "{{input}}",
+                "variables": [
+                    {"name": "input", "value_selector": source_selector}
+                ],
+            }
+        elif capability in {"github_pr_read", "github_pr_comment"}:
+            target_config, referenced_variables = self._github_target_configuration(
+                entry_id=entry_id,
+                entry_capability=entry_capability,
+            )
+            data = {
+                "title": "GitHub PR 조회"
+                if capability == "github_pr_read"
+                else "GitHub PR 댓글 등록",
+                "action": "get_pr"
+                if capability == "github_pr_read"
+                else "comment_pr",
+                "api_token": "",
+                **target_config,
+                "comment_body": None,
+                "referenced_variables": referenced_variables,
+                "configuration_state": configuration_state,
+            }
+            if capability == "github_pr_comment":
+                data["comment_body"] = "{{review}}"
+                data["referenced_variables"] = [
+                    *referenced_variables,
+                    {"name": "review", "value_selector": source_selector},
+                ]
+        elif capability == "mail_search":
+            data = {
+                "title": "메일 검색",
+                "email": "",
+                "password": "",
+                "provider": "gmail",
+                "imap_server": "imap.gmail.com",
+                "imap_port": 993,
+                "use_ssl": True,
+                "keyword": None,
+                "sender": None,
+                "subject": None,
+                "start_date": None,
+                "end_date": None,
+                "folder": "INBOX",
+                "max_results": 10,
+                "unread_only": False,
+                "mark_as_read": False,
+                "referenced_variables": [],
+                "configuration_state": configuration_state,
+            }
+        elif capability == "answer":
+            data = {
+                "title": "응답",
+                "outputs": [
+                    {
+                        "variable": "answer",
+                        "value_selector": source_selector,
+                    }
+                ],
+            }
+        else:
+            raise ValueError(f"Unsupported draft capability: {capability}")
+
+        node_type = node_type_for_capability(capability)
+        if node_type is None or node_type not in AGENT_BUILDER_SUPPORTED_NODE_TYPES:
+            raise ValueError(f"Capability is not in the Agent Builder allowlist: {capability}")
+        return {
+            "id": node_id,
+            "type": node_type,
+            "position": {"x": 0, "y": 0},
+            "data": data,
+        }
+
+    def _existing_node_capability(self, node: dict[str, Any]) -> str:
+        node_type = str(node.get("type") or "")
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        if node_type == "githubNode":
+            return (
+                "github_pr_comment"
+                if data.get("action") == "comment_pr"
+                else "github_pr_read"
+            )
+        definition = node_definition(node_type) or {}
+        capabilities = definition.get("capabilities") or []
+        return str(capabilities[0]) if capabilities else "unknown"
+
+    def _build_modify_preview_graph(
         self,
         structured: AgentBuilderStructuredRequest,
         *,
-        workflow: Workflow | None,
+        workflow: Workflow,
         kb_bindings: list[dict[str, Any]],
-        selected_node_id: str | None = None,
-        selected_edge_id: str | None = None,
+        target_resolution: dict[str, Any],
     ) -> dict[str, Any]:
-        graph = _redact_graph_for_preview(workflow.graph if workflow else _empty_graph())
-        if structured.draft_mode == "new_workflow":
-            graph = _empty_graph()
+        if target_resolution.get("status") != "resolved":
+            raise ValueError("Workflow edit target is not resolved")
+
+        raw_graph = workflow.graph or _empty_graph()
+        graph = _redact_graph_for_preview(raw_graph)
+        raw_node_by_id = {
+            str(node.get("id")): node
+            for node in raw_graph.get("nodes") or []
+            if node.get("id")
+        }
+        raw_edge_by_id = {
+            str(edge.get("id")): edge
+            for edge in raw_graph.get("edges") or []
+            if edge.get("id")
+        }
+        source_id = str(target_resolution.get("source_node_id") or "")
+        destination_id = target_resolution.get("destination_node_id")
+        source_node = raw_node_by_id.get(source_id)
+        if source_node is None:
+            raise ValueError("Workflow edit source node is not available")
+
+        _entry_capability, body_capabilities = self._ordered_preview_capabilities(
+            structured
+        )
+        if not body_capabilities:
+            raise ValueError("Workflow edit has no new capability")
+
         existing_ids = _graph_node_ids(graph)
+        reserved_ids = set(existing_ids)
         suffix = uuid.uuid4().hex[:8]
-        input_id = self._unique_node_id("agent-input", existing_ids, suffix)
-        uses_webhook_trigger = (
-            "webhook_trigger" in structured.required_capabilities
-            or any(
-                step.capability == "webhook_trigger"
-                for step in structured.planned_steps
-            )
+        uses_llm = any(
+            capability in {"llm", "knowledge_backed_llm"}
+            for capability in body_capabilities
         )
-        input_output_key = "payload" if uses_webhook_trigger else "question"
-        input_output_label = "웹훅 페이로드" if uses_webhook_trigger else "질문"
-        uses_llm = "llm" in structured.required_capabilities or any(
-            step.capability in {"llm", "knowledge_backed_llm"}
-            for step in structured.planned_steps
-        )
-        llm_id = (
-            self._unique_node_id("agent-llm", existing_ids | {input_id}, suffix)
-            if uses_llm
-            else None
-        )
-        wants_slack = "slack_send" in structured.required_capabilities or any(
-            step.capability == "slack_send" for step in structured.planned_steps
-        )
-        reserved_ids = existing_ids | {input_id}
-        if llm_id:
-            reserved_ids.add(llm_id)
-        slack_id = (
-            self._unique_node_id("agent-slack", reserved_ids, suffix)
-            if wants_slack and llm_id
-            else None
-        )
-        if slack_id:
-            reserved_ids = reserved_ids | {slack_id}
-        answer_id = self._unique_node_id(
-            "agent-answer", reserved_ids, suffix
-        )
-        model_id = self._default_model_id() if llm_id else None
+        model_id = self._recommended_draft_model_id() if uses_llm else None
         kb_refs = (
             [
                 {
@@ -2394,223 +3854,271 @@ class AgentBuilderService:
                 }
                 for item in kb_bindings
             ]
-            if llm_id
+            if uses_llm
             else []
         )
-        generated_nodes = [
-            {
-                "id": input_id,
-                "type": "webhookTrigger" if uses_webhook_trigger else "startNode",
-                "position": {"x": 0, "y": 0},
-                "data": {
-                    **(
-                        {
-                            "title": "웹훅 입력",
-                            "provider": "custom",
-                            "variable_mappings": [
-                                {
-                                    "variable_name": input_output_key,
-                                    "json_path": "$",
-                                }
-                            ],
-                        }
-                        if uses_webhook_trigger
-                        else {
-                            "title": "입력",
-                            "triggerType": "manual",
-                            "variables": [
-                                {
-                                    "id": input_output_key,
-                                    "name": input_output_key,
-                                    "label": input_output_label,
-                                    "type": "paragraph",
-                                    "required": True,
-                                }
-                            ],
-                        }
-                    )
-                },
-            },
-        ]
-        if llm_id:
-            generated_nodes.append(
-                {
-                    "id": llm_id,
-                    "type": "llmNode",
-                    "position": {"x": 360, "y": 0},
-                    "data": {
-                        "title": "Knowledge Base-backed LLM" if kb_refs else "LLM",
-                        "provider": "configured",
-                        "model_id": model_id,
-                        "task_type": "answer",
-                        "system_prompt": "사용자 질문에 안전하게 답변합니다.",
-                        "user_prompt": f"{{{{{input_output_key}}}}}",
-                        "referenced_variables": [
-                            {
-                                "name": input_output_key,
-                                "value_selector": [input_id, input_output_key],
-                            }
-                        ],
-                        "parameters": {},
-                        "output_format": {"type": "text"},
-                        "knowledgeBases": kb_refs,
-                        "scoreThreshold": 0.5,
-                        "topK": 3,
-                    },
-                }
-            )
-        generated_nodes.append(
-            {
-                "id": answer_id,
-                "type": "answerNode",
-                "position": {"x": 720 if llm_id else 360, "y": 0},
-                "data": {
-                    "title": "응답",
-                    "outputs": [
-                        {
-                            "variable": "answer",
-                            "value_selector": [llm_id, "text"]
-                            if llm_id
-                            else [input_id, input_output_key],
-                        }
-                    ],
-                },
-            },
-        )
-        generated_node_ids_for_layout = (
-            [input_id, llm_id, answer_id] if llm_id else [input_id, answer_id]
-        )
-        if slack_id:
-            generated_nodes.insert(
-                2,
-                {
-                    "id": slack_id,
-                    "type": "slackPostNode",
-                    "position": {"x": 720, "y": 0},
-                    "data": {
-                        "title": "Slack 전송",
-                        "method": "POST",
-                        "url": "https://slack.com/api/chat.postMessage",
-                        "headers": [{"key": "Content-Type", "value": "application/json"}],
-                        "body": json.dumps({"text": "{{answer}}"}, ensure_ascii=False),
-                        "timeout": 5000,
-                        "authType": "bearer",
-                        "authConfig": {},
-                        "referenced_variables": [
-                            {"name": "answer", "value_selector": [llm_id, "text"]}
-                        ],
-                        "message": "{{answer}}",
-                        "channel": "",
-                        "blocks": "",
-                        "slackMode": "api",
-                        "channel_resolution_state": "unresolved",
-                    },
-                },
-            )
-            generated_nodes[-1]["position"] = {"x": 1080, "y": 0}
-            generated_node_ids_for_layout = [input_id, llm_id, slack_id, answer_id]
 
-        if llm_id:
-            generated_edges = [
-                {
-                    "id": f"edge-{input_id}-{llm_id}",
-                    "source": input_id,
-                    "target": llm_id,
-                }
-            ]
-        else:
-            generated_edges = [
-                {
-                    "id": f"edge-{input_id}-{answer_id}",
-                    "source": input_id,
-                    "target": answer_id,
-                }
-            ]
-        if slack_id and llm_id:
-            generated_edges.extend(
-                [
-                    {
-                        "id": f"edge-{llm_id}-{slack_id}",
-                        "source": llm_id,
-                        "target": slack_id,
-                    },
-                    {
-                        "id": f"edge-{slack_id}-{answer_id}",
-                        "source": slack_id,
-                        "target": answer_id,
-                    },
-                ]
+        source_capability = self._existing_node_capability(source_node)
+        source_output_key = CAPABILITY_OUTPUT_KEYS.get(source_capability, "result")
+        generated_nodes: list[dict[str, Any]] = []
+        generated_node_ids: list[str] = []
+        current_source_id = source_id
+        current_output_key = source_output_key
+        for capability in body_capabilities:
+            node_id = self._unique_node_id(
+                CAPABILITY_NODE_PREFIXES[capability],
+                reserved_ids,
+                suffix,
             )
-        elif llm_id:
+            generated_nodes.append(
+                self._build_capability_preview_node(
+                    capability,
+                    node_id,
+                    source_id=current_source_id,
+                    source_output_key=current_output_key,
+                    entry_id=source_id,
+                    entry_capability=source_capability,
+                    model_id=model_id,
+                    kb_refs=kb_refs,
+                )
+            )
+            generated_node_ids.append(node_id)
+            reserved_ids.add(node_id)
+            current_source_id = node_id
+            current_output_key = CAPABILITY_OUTPUT_KEYS[capability]
+
+        replaced_edge_ids = set(target_resolution.get("replaced_edge_ids") or [])
+        replaced_edge = next(
+            (
+                raw_edge_by_id[edge_id]
+                for edge_id in replaced_edge_ids
+                if edge_id in raw_edge_by_id
+            ),
+            None,
+        )
+        graph["edges"] = [
+            edge
+            for edge in graph.get("edges") or []
+            if str(edge.get("id")) not in replaced_edge_ids
+        ]
+        generated_edges: list[dict[str, Any]] = [
+            {
+                "id": f"edge-{source_id}-{generated_node_ids[0]}",
+                "source": source_id,
+                "sourceHandle": replaced_edge.get("sourceHandle")
+                if replaced_edge
+                else None,
+                "target": generated_node_ids[0],
+            }
+        ]
+        generated_edges.extend(
+            {
+                "id": f"edge-{left}-{right}",
+                "source": left,
+                "target": right,
+            }
+            for left, right in zip(generated_node_ids, generated_node_ids[1:])
+        )
+        if destination_id:
             generated_edges.append(
                 {
-                    "id": f"edge-{llm_id}-{answer_id}",
-                    "source": llm_id,
-                    "target": answer_id,
+                    "id": f"edge-{generated_node_ids[-1]}-{destination_id}",
+                    "source": generated_node_ids[-1],
+                    "target": str(destination_id),
+                    "targetHandle": replaced_edge.get("targetHandle")
+                    if replaced_edge
+                    else None,
                 }
             )
-        layout_anchor_node_id = None
-        if structured.draft_mode == "modify_workflow":
-            selected_edge = next(
-                (
-                    edge
-                    for edge in graph.get("edges") or []
-                    if selected_edge_id and str(edge.get("id")) == selected_edge_id
-                ),
-                None,
-            )
-            selected_node_exists = any(
-                selected_node_id and str(node.get("id")) == selected_node_id
-                for node in graph.get("nodes") or []
-            )
-            if selected_edge:
-                graph["edges"] = [
-                    edge
-                    for edge in graph.get("edges") or []
-                    if str(edge.get("id")) != selected_edge_id
-                ]
-                layout_anchor_node_id = str(selected_edge.get("source") or "")
-                generated_edges = [
-                    {
-                        "id": f"edge-{selected_edge['source']}-{input_id}",
-                        "source": selected_edge["source"],
-                        "sourceHandle": selected_edge.get("sourceHandle"),
-                        "target": input_id,
-                    },
-                    *generated_edges,
-                    {
-                        "id": f"edge-{answer_id}-{selected_edge['target']}",
-                        "source": answer_id,
-                        "target": selected_edge["target"],
-                        "targetHandle": selected_edge.get("targetHandle"),
-                    },
-                ]
-            elif selected_node_exists and selected_node_id:
-                layout_anchor_node_id = selected_node_id
-                generated_edges = [
-                    {
-                        "id": f"edge-{selected_node_id}-{input_id}",
-                        "source": selected_node_id,
-                        "target": input_id,
-                    },
-                    *generated_edges,
-                ]
 
         graph["nodes"] = (graph.get("nodes") or []) + generated_nodes
         graph["edges"] = (graph.get("edges") or []) + generated_edges
         graph = _layout_generated_preview_nodes(
             graph,
-            generated_node_ids_for_layout,
-            anchor_node_id=layout_anchor_node_id,
+            generated_node_ids,
+            anchor_node_id=source_id,
         )
         graph.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})
         return graph
 
-    def _default_model_id(self) -> str:
-        model_id = os.getenv(APPROVED_DRAFT_MODEL_ENV, "").strip()
-        if model_id:
-            return model_id
-        raise HTTPException(status_code=409, detail="DRAFT_MODEL_ROUTE_REQUIRED")
+    def _build_preview_graph(
+        self,
+        structured: AgentBuilderStructuredRequest,
+        *,
+        workflow: Workflow | None,
+        kb_bindings: list[dict[str, Any]],
+        selected_node_id: str | None = None,
+        selected_edge_id: str | None = None,
+        target_resolution: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if structured.draft_mode == "modify_workflow":
+            if workflow is None:
+                raise ValueError("Workflow edit requires an existing workflow")
+            if target_resolution is None:
+                target_resolution = self._resolve_edit_target(
+                    structured,
+                    workflow=workflow,
+                    selected_node_id=selected_node_id,
+                    selected_edge_id=selected_edge_id,
+                )
+            return self._build_modify_preview_graph(
+                structured,
+                workflow=workflow,
+                kb_bindings=kb_bindings,
+                target_resolution=target_resolution,
+            )
+
+        graph = _redact_graph_for_preview(workflow.graph if workflow else _empty_graph())
+        graph = _empty_graph()
+        existing_ids = _graph_node_ids(graph)
+        suffix = uuid.uuid4().hex[:8]
+        entry_capability, body_capabilities = self._ordered_preview_capabilities(
+            structured
+        )
+        input_id = self._unique_node_id("agent-input", existing_ids, suffix)
+        input_output_key = CAPABILITY_OUTPUT_KEYS[entry_capability]
+        generated_nodes = [
+            self._build_entry_preview_node(entry_capability, input_id)
+        ]
+        generated_node_ids_for_layout = [input_id]
+        reserved_ids = existing_ids | {input_id}
+
+        uses_llm = any(
+            capability in {"llm", "knowledge_backed_llm"}
+            for capability in body_capabilities
+        )
+        model_id = self._recommended_draft_model_id() if uses_llm else None
+        kb_refs = (
+            [
+                {
+                    "id": item["safe_handle"],
+                    "name": _safe_display_label(item.get("name")),
+                    "reference_type": "safe_candidate_handle",
+                }
+                for item in kb_bindings
+            ]
+            if uses_llm
+            else []
+        )
+        source_id = input_id
+        source_output_key = input_output_key
+        for capability in body_capabilities:
+            prefix = CAPABILITY_NODE_PREFIXES[capability]
+            node_id = self._unique_node_id(prefix, reserved_ids, suffix)
+            generated_nodes.append(
+                self._build_capability_preview_node(
+                    capability,
+                    node_id,
+                    source_id=source_id,
+                    source_output_key=source_output_key,
+                    entry_id=input_id,
+                    entry_capability=entry_capability,
+                    model_id=model_id,
+                    kb_refs=kb_refs,
+                )
+            )
+            reserved_ids.add(node_id)
+            generated_node_ids_for_layout.append(node_id)
+            source_id = node_id
+            source_output_key = CAPABILITY_OUTPUT_KEYS[capability]
+
+        answer_id = self._unique_node_id("agent-answer", reserved_ids, suffix)
+        generated_nodes.append(
+            {
+                "id": answer_id,
+                "type": "answerNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "응답",
+                    "outputs": [
+                        {
+                            "variable": "answer",
+                            "value_selector": [source_id, source_output_key],
+                        }
+                    ],
+                },
+            }
+        )
+        generated_node_ids_for_layout.append(answer_id)
+        generated_edges = [
+            {
+                "id": f"edge-{source['id']}-{target['id']}",
+                "source": source["id"],
+                "target": target["id"],
+            }
+            for source, target in zip(generated_nodes, generated_nodes[1:])
+        ]
+        graph["nodes"] = (graph.get("nodes") or []) + generated_nodes
+        graph["edges"] = (graph.get("edges") or []) + generated_edges
+        graph = _layout_generated_preview_nodes(
+            graph,
+            generated_node_ids_for_layout,
+            anchor_node_id=None,
+        )
+        graph.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})
+        return graph
+
+    def _recommended_draft_model_id(self) -> str | None:
+        if not isinstance(self.db, Session):
+            return None
+        recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+            self.db,
+            self.user.id,
+            self.organization_id,
+        )
+        if recommendation is None:
+            return None
+        return recommendation.model.model_id_for_api_call
+
+    def _node_configuration_issues(
+        self,
+        graph: dict[str, Any],
+    ) -> list[AgentBuilderNodeConfigurationIssue]:
+        issues: list[AgentBuilderNodeConfigurationIssue] = []
+        for node in graph.get("nodes") or []:
+            data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            if data.get("configuration_state") != "unresolved":
+                continue
+
+            node_type = str(node.get("type") or "")
+            definition = node_definition(node_type)
+            if not definition or not definition.get("agent_builder_supported"):
+                continue
+            required_parameters = definition.get("required_configuration") or []
+            parameter_labels = definition.get("configuration_labels") or {}
+            capabilities = definition.get("capabilities") or []
+            if node_type == "githubNode":
+                capability = (
+                    "github_pr_comment"
+                    if data.get("action") == "comment_pr"
+                    else "github_pr_read"
+                )
+            else:
+                capability = str(capabilities[0]) if capabilities else node_type
+
+            node_id = str(node.get("id") or "")
+            if not node_id:
+                continue
+            issues.append(
+                AgentBuilderNodeConfigurationIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    node_label=_safe_display_label(
+                        data.get("title") or definition.get("node_type")
+                    ),
+                    capability=capability,
+                    missing_parameters=[
+                        AgentBuilderMissingParameter(
+                            key=str(parameter),
+                            label=str(
+                                parameter_labels.get(parameter) or parameter
+                            )[:120],
+                        )
+                        for parameter in required_parameters
+                    ],
+                )
+            )
+        return issues
 
     def _node_detail_previews(self, graph: dict[str, Any]) -> list[dict[str, Any]]:
         previews = []
@@ -2688,16 +4196,27 @@ class AgentBuilderService:
             .order_by(AgentBuilderDraft.created_at.desc())
             .first()
         )
+        latest_request_draft = (
+            latest_draft
+            if latest_request is not None
+            and latest_draft is not None
+            and latest_draft.request_id == latest_request.id
+            else None
+        )
         return AgentBuilderSessionResponse(
             session_id=session.id,
             workflow_id=session.workflow_id,
             app_id=session.app_id,
             status=session.status,
-            messages=self._session_messages(latest_request, latest_draft),
+            messages=self._session_messages(latest_request, latest_request_draft),
             pending_request=self._request_summary(latest_request)
             if latest_request and latest_request.status == "processing"
             else None,
-            draft_preview=self._draft_summary(latest_draft) if latest_draft else None,
+            draft_preview=(
+                self._draft_summary(latest_request_draft)
+                if latest_request_draft
+                else None
+            ),
         )
 
     def _session_messages(
@@ -2783,7 +4302,10 @@ class AgentBuilderService:
                 validation_result=AgentBuilderValidationResult.model_validate(
                     draft.validation_result
                 ),
-                safety_notices=[SAFE_SIDE_EFFECT_NOTICE],
+                safety_notices=self._safety_notices_for_draft(draft),
+                configuration_issues=self._node_configuration_issues(
+                    draft.preview_graph
+                ),
             ).model_dump(mode="json")
         return {
             "draft_id": str(draft.id),
@@ -2816,7 +4338,10 @@ class AgentBuilderService:
                 validation_result=AgentBuilderValidationResult.model_validate(
                     draft.validation_result
                 ),
-                safety_notices=[SAFE_SIDE_EFFECT_NOTICE],
+                safety_notices=self._safety_notices_for_draft(draft),
+                configuration_issues=self._node_configuration_issues(
+                    draft.preview_graph
+                ),
             ).model_dump(mode="json")
         return payload
 
@@ -2824,49 +4349,40 @@ class AgentBuilderService:
         self,
         session: AgentBuilderSession,
         message_request: AgentBuilderMessageRequest,
+        *,
+        current_request_id: uuid.UUID | None = None,
     ) -> dict[str, Any] | None:
-        selection = message_request.selected_knowledge_candidate
-        if selection is None:
+        if message_request.selected_knowledge_candidates is not None:
+            selections = list(message_request.selected_knowledge_candidates)
+        elif message_request.selected_knowledge_candidate is not None:
+            selections = [message_request.selected_knowledge_candidate]
+        else:
             return None
         now = _now()
-        candidate_id = selection.candidate_id
+        request_filters = [
+            AgentBuilderRequest.session_id == session.id,
+            AgentBuilderRequest.user_id == self.user.id,
+            AgentBuilderRequest.organization_id == self.organization_id,
+            or_(
+                AgentBuilderRequest.expires_at.is_(None),
+                AgentBuilderRequest.expires_at > now,
+            ),
+        ]
+        if current_request_id is not None:
+            request_filters.append(AgentBuilderRequest.id != current_request_id)
         previous_request = (
             self.db.query(AgentBuilderRequest)
-            .filter(
-                AgentBuilderRequest.session_id == session.id,
-                AgentBuilderRequest.user_id == self.user.id,
-                AgentBuilderRequest.organization_id == self.organization_id,
-                AgentBuilderRequest.status == "clarification_required",
-                or_(
-                    AgentBuilderRequest.expires_at.is_(None),
-                    AgentBuilderRequest.expires_at > now,
-                ),
-            )
+            .filter(*request_filters)
             .order_by(AgentBuilderRequest.created_at.desc())
             .first()
         )
         if previous_request is None:
             return {"error": "missing_prior_clarification"}
+        if getattr(previous_request, "status", None) != "clarification_required":
+            return {"error": "prior_clarification_not_pending"}
 
         response_payload = previous_request.response_payload or {}
         options = response_payload.get("clarification_options") or []
-        matched = None
-        for option in options:
-            if str(option.get("candidate_id")) != candidate_id:
-                continue
-            if selection.resolution_id and str(option.get("resolution_id")) != str(
-                selection.resolution_id
-            ):
-                continue
-            if selection.requirement_id and str(option.get("requirement_id")) != str(
-                selection.requirement_id
-            ):
-                continue
-            matched = option
-            break
-        if matched is None:
-            return {"error": "candidate_not_in_prior_options"}
-
         structured_payload = previous_request.structured_request or response_payload.get(
             "structured_request"
         )
@@ -2876,9 +4392,34 @@ class AgentBuilderService:
             )
         except Exception:
             return {"error": "structured_request_unavailable"}
+        if not selections:
+            return {
+                "structured_request": structured,
+                "candidate_handles": {NO_KB_CANDIDATE_ID},
+            }
+        candidate_handles: set[str] = set()
+        for selection in selections:
+            matched = None
+            candidate_id = selection.candidate_id
+            for option in options:
+                if str(option.get("candidate_id")) != candidate_id:
+                    continue
+                if selection.resolution_id and str(option.get("resolution_id")) != str(
+                    selection.resolution_id
+                ):
+                    continue
+                if selection.requirement_id and str(option.get("requirement_id")) != str(
+                    selection.requirement_id
+                ):
+                    continue
+                matched = option
+                break
+            if matched is None:
+                return {"error": "candidate_not_in_prior_options"}
+            candidate_handles.add(candidate_id)
         return {
             "structured_request": structured,
-            "candidate_handles": {candidate_id},
+            "candidate_handles": candidate_handles,
         }
 
     def _finish_request(

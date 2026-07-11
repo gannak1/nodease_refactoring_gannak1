@@ -1,0 +1,195 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "node_type": "startNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "entry", "incoming": "forbidden", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["start_input"],
+      "side_effect": "none",
+      "required_configuration": []
+    },
+    {
+      "node_type": "webhookTrigger",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "entry", "incoming": "forbidden", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["webhook_trigger"],
+      "side_effect": "none",
+      "required_configuration": []
+    },
+    {
+      "node_type": "scheduleTrigger",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "entry", "incoming": "forbidden", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["schedule_trigger"],
+      "side_effect": "none",
+      "required_configuration": ["cron_expression", "timezone"],
+      "configuration_labels": {
+        "cron_expression": "실행 일정",
+        "timezone": "Timezone"
+      }
+    },
+    {
+      "node_type": "llmNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["llm", "knowledge_backed_llm"],
+      "side_effect": "external_read",
+      "required_configuration": ["model_id"],
+      "configuration_labels": {"model_id": "LLM model"}
+    },
+    {
+      "node_type": "workflowNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["workflow_call"],
+      "side_effect": "local_execution",
+      "required_configuration": ["workflowId", "appId"],
+      "configuration_labels": {
+        "workflowId": "Target workflow",
+        "appId": "Target app"
+      }
+    },
+    {
+      "node_type": "codeNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["code_execution"],
+      "side_effect": "local_execution",
+      "required_configuration": ["code"],
+      "configuration_labels": {"code": "실행 코드"}
+    },
+    {
+      "node_type": "conditionNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "branch", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "condition_cases"},
+      "capabilities": ["condition"],
+      "side_effect": "none",
+      "required_configuration": ["cases"],
+      "configuration_labels": {"cases": "분기 조건"}
+    },
+    {
+      "node_type": "fileExtractionNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["file_extraction"],
+      "side_effect": "none",
+      "required_configuration": ["referenced_variables"],
+      "configuration_labels": {"referenced_variables": "입력 파일"}
+    },
+    {
+      "node_type": "variableExtractionNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["variable_extraction"],
+      "side_effect": "none",
+      "required_configuration": ["source_selector", "mappings"],
+      "configuration_labels": {
+        "source_selector": "입력 변수",
+        "mappings": "추출 규칙"
+      }
+    },
+    {
+      "node_type": "answerNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "terminal", "incoming": "allowed", "outgoing": "forbidden", "outgoing_handles": "standard"},
+      "capabilities": ["answer"],
+      "side_effect": "none",
+      "required_configuration": ["outputs"],
+      "configuration_labels": {"outputs": "응답 출력"}
+    },
+    {
+      "node_type": "loopNode",
+      "implemented": true,
+      "agent_builder_supported": false,
+      "connection_policy": {"role": "branch", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "unrestricted"},
+      "capabilities": ["loop"],
+      "side_effect": "local_execution",
+      "required_configuration": ["loop_key", "subGraph"],
+      "configuration_labels": {
+        "loop_key": "반복 대상",
+        "subGraph": "반복 내부 workflow"
+      }
+    },
+    {
+      "node_type": "httpRequestNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["http_request"],
+      "side_effect": "external_write",
+      "required_configuration": ["url"],
+      "configuration_labels": {"url": "Request URL"}
+    },
+    {
+      "node_type": "slackPostNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["slack_send"],
+      "side_effect": "external_write",
+      "required_configuration": ["credential", "channel"],
+      "configuration_labels": {
+        "credential": "Slack credential",
+        "channel": "Slack channel"
+      }
+    },
+    {
+      "node_type": "templateNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["template_render"],
+      "side_effect": "none",
+      "required_configuration": ["template"],
+      "configuration_labels": {"template": "Template"}
+    },
+    {
+      "node_type": "githubNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["github_pr_read", "github_pr_comment"],
+      "side_effect": "external_write",
+      "required_configuration": ["credential", "repo_owner", "repo_name", "pr_number"],
+      "configuration_labels": {
+        "credential": "GitHub credential",
+        "repo_owner": "Repository owner",
+        "repo_name": "Repository name",
+        "pr_number": "PR 번호"
+      }
+    },
+    {
+      "node_type": "mailNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["mail_search"],
+      "side_effect": "external_read",
+      "required_configuration": ["credential", "email"],
+      "configuration_labels": {
+        "credential": "Mail credential",
+        "email": "Mail account"
+      }
+    },
+    {
+      "node_type": "pluginNode",
+      "implemented": false,
+      "agent_builder_supported": false,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": [],
+      "side_effect": "external_write",
+      "required_configuration": ["pluginId"]
+    }
+  ]
+}
