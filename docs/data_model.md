@@ -341,7 +341,7 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 | configuration_error_code | VARCHAR(64) | NULL, allowlisted legacy configuration quarantine code; valid schedule update clears it |
 | created_at / updated_at | DATETIME | NOT NULL |
 
-#### Target `schedule_dispatch_claims` (MBA-187)
+#### `schedule_dispatch_claims` (MBA-187)
 
 [ADR-0024](decisions/ADR-0024-distributed-schedule-dispatch-claim.md)의 분산 schedule operational ledger다. Claim schema는 Alembic migration으로 관리되며 raw workflow/prompt/evidence payload를 포함하지 않는다.
 
@@ -357,6 +357,7 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 | attempt_count / next_attempt_at | INTEGER / DATETIME(timezone) | bounded retry. next attempt는 pending에서만 허용 |
 | celery_task_id | VARCHAR(128) | deterministic idempotency key와 동일 |
 | workflow_run_id | UUID | NULL, UNIQUE, FK 없음. Admission 전 stable run correlation |
+| workflow_run_missing_reported_at | DATETIME(timezone) | NULL. visibility grace 이후 Log System row가 아직 없을 때 한 번만 signal을 기록하는 timestamp |
 | safe_reason_code | VARCHAR(64) | NULL, 상태별 allowlist |
 | outcome_reviewed_at / outcome_review_audit_id / outcome_resolution_code | DATETIME / UUID / VARCHAR(64) | outcome unknown에서 all-or-none. Audit FK 없음 |
 | claimed_at / enqueued_at / started_at / completed_at | DATETIME(timezone) | 상태별 monotonic/non-null check |
@@ -396,7 +397,7 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | total_tokens | INTEGER | NULL |
 | total_cost | NUMERIC(10,6) | NULL |
 
-System schedule 실행 이력이 하나라도 존재하면 `user_id`를 다시 NOT NULL로 바꾸는 과거 schema downgrade는 의미를 보존할 수 없다. migration downgrade는 임의 사용자 귀속이나 이력 삭제 대신 fail-closed하며, 운영 rollback은 schema downgrade가 아니라 `claim -> drain -> disabled` mode 전환으로 수행한다.
+System schedule 실행 이력이 하나라도 존재하면 `user_id`를 다시 NOT NULL로 바꾸는 과거 schema downgrade는 의미를 보존할 수 없다. 비동기 Log System row가 아직 없더라도 admitted claim의 `workflow_run_id`는 실행 근거이므로 schedule branch의 migration downgrade는 이를 포함해 fail-closed한다. 후속 quarantine/visibility/allowlist migration도 partial DDL rollback으로 history 또는 operational state를 분리하지 않도록 같은 guard를 적용한다. 운영 rollback은 schema downgrade가 아니라 `claim -> drain -> disabled` mode 전환으로 수행한다.
 
 #### `workflow_node_runs`
 

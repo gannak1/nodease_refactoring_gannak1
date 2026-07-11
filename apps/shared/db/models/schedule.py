@@ -19,9 +19,10 @@ class Schedule(Base):
     - deployment_id는 UNIQUE 제약 조건
 
     동작 방식:
-    - 서버 시작 시: DB에서 모든 활성 스케줄 로드 → APScheduler 메모리 등록
-    - 배포 생성 시: Schedule 레코드 생성 → APScheduler에 즉시 등록
-    - 배포 삭제 시: ON DELETE CASCADE로 자동 삭제
+    - Gateway periodic tick이 active/current Schedule의 persisted cursor를 DB에서 claim한다.
+    - 배포 생성/설정 변경 시: typed cron/timezone validation 뒤 next_run_at을 계산한다.
+    - 잘못된 legacy configuration은 safe quarantine code로 후보에서 제외한다.
+    - 배포 삭제 시: ON DELETE CASCADE로 자동 삭제된다.
     """
 
     __tablename__ = "schedules"

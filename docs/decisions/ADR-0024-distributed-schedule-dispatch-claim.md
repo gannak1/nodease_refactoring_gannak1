@@ -33,6 +33,8 @@ Workflow Engine은 claim row를 잠그고 canonical Schedule/Deployment/App/runt
 
 Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 새 run identity를 만들거나 engine을 다시 시작하지 않는다.
 
+`running`, `succeeded`, admission 이후 `dead_lettered` claim의 stable `workflow_run_id`가 configured visibility grace 이후에도 Log System의 `WorkflowRun` row로 확인되지 않으면 recovery scanner는 claim에 one-time reported timestamp와 safe audit을 기록한다. 이 signal은 queue 지연/누락의 관측 근거이며 Log System row, workflow, node, provider effect를 재구성하거나 replay하지 않는다.
+
 ### Failure and replay
 
 - Admission 전 publish/budget transient failure만 bounded retry한다.
@@ -64,6 +66,8 @@ Outcome review의 canonical audit은 다음과 같다.
 
 Audit recorder가 생성한 id만 claim의 `outcome_review_audit_id`로 저장한다. CLI는 audit id나 임의 actor id를 입력받지 않는다. Human operator identity와 승인은 protected GitHub Environment 또는 Kubernetes IAM audit가 소유한다.
 
+WorkflowRun visibility signal의 canonical audit은 `schedule_dispatch.workflow_run_missing`이며 target은 exact `schedule_dispatch_claim`이다. Metadata는 canonical `organization_id`와 `reason='workflow_run_missing'`만 허용한다. Signal 기록과 claim marker update는 같은 UnitOfWork에서 한 번만 commit하며 raw run id, input, output, provider response 또는 exception을 저장하지 않는다.
+
 `Schedule.next_run_at`과 `last_run_at`은 system operational cursor다. Generic ORM configuration audit에서는 이 두 field만 제외하고 cron, timezone, activation/lifecycle 변경 audit은 유지한다. Claim model은 generic ORM audit listener 대상에 추가하지 않는다.
 
 ### Layer and composition
@@ -80,7 +84,7 @@ Gateway schedule application은 access-management application model/port/recorde
 
 ### Rollout
 
-Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다. 구버전 direct dispatcher와 신버전 claim dispatcher가 동시에 활성화되지 않도록 queue/task drain 뒤 `claim` mode를 활성화한다. Rollback은 `claim -> drain -> disabled` 순서로 수행한다. Nonterminal claim, review되지 않은 outcome unknown, active/queued/reserved schedule task가 남아 있으면 rollback을 중단한다. 이는 application rollout rollback이며, `user_id=NULL` system schedule 실행 이력이 생긴 DB를 과거 NOT NULL schema로 내리는 migration downgrade는 임의 사용자 귀속이나 이력 삭제 대신 fail-closed한다.
+Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다. 구버전 direct dispatcher와 신버전 claim dispatcher가 동시에 활성화되지 않도록 queue/task drain 뒤 `claim` mode를 활성화한다. Rollback은 `claim -> drain -> disabled` 순서로 수행한다. Nonterminal claim, review되지 않은 outcome unknown, active/queued/reserved schedule task가 남아 있으면 rollback을 중단한다. 이는 application rollout rollback이며, schedule branch의 migration downgrade는 system schedule executor history, Log System row가 아직 없는 admitted claim, active/unreviewed claim, quarantine state를 임의로 버리지 않도록 모든 schedule revision의 첫 DDL 전에 fail-closed한다.
 
 Gateway startup은 migration-managed table/enum을 `create_all()`로 생성하거나 보정하지 않는다. Demo/test bootstrap만 명시적으로 `create_all()`을 사용할 수 있다.
 

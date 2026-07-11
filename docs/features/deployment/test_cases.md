@@ -69,7 +69,7 @@ Verified Against: TBD
 
 ## Migration And Persistence Tests
 
-- Alembic 기준 head에서 upgrade/downgrade/re-upgrade가 single head를 유지하고 claim table/constraint/index와 schedule-only nullable WorkflowRun executor를 정확히 반영한다.
+- Alembic 기준 merge head에서 upgrade는 single head를 유지하고 claim table/constraint/index와 schedule-only nullable WorkflowRun executor를 정확히 반영한다. Controlled downgrade/re-upgrade는 system WorkflowRun 이력, active/unreviewed claim, configuration quarantine이 모두 없는 경우에만 성공하며, 하나라도 있으면 첫 schedule DDL 전에 fail-closed하고 revision을 보존한다.
 - Claim `organization_id`는 non-null이고 canonical App과 일치하며 lifecycle FK cascade가 없다. Schedule/Deployment 삭제 뒤에도 outcome review organization provenance를 유지한다.
 - Claim 생성, `next_run_at`, budget policy audit은 한 commit이며 audit/claim/next-run 중 하나가 실패하면 모두 rollback한다.
 - Claim model은 generic ORM audit listener 대상이 아니며 raw input, graph, prompt/evidence, credential/provider response와 raw exception column이 없다.
