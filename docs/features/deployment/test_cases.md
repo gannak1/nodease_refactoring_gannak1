@@ -91,6 +91,7 @@ Verified Against: TBD
 - Organization member이지만 KB `use` 권한이 없는 사용자의 private KB 후보는 authenticated run에서는 denied 또는 unavailable로 표시되고, anonymous deployment에서는 blocked로 표시된다.
 - Client-supplied `audience` hint는 create/activation의 server-derived audience 차단을 완화하지 못한다.
 - System schedule의 LLM credential permission denial은 credential principal을 user audit actor로 사용하지 않고 system actor로 기록한다.
+- Terminal cleanup은 retention을 지난 일반 dead-letter와 검토 완료 `execution_outcome_unknown` claim을 정리하지만, `outcome_reviewed_at`이 null인 `execution_outcome_unknown` claim은 보존한다.
 - `disabled` mode는 BackgroundScheduler job 또는 legacy direct enqueue를 만들지 않는다. Schedule 실행이 필요한 환경은 drain 검증 없이 fallback하지 않고 `claim` mode activation 절차를 사용한다.
 
 ## Edge Cases

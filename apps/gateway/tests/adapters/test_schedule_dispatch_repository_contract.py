@@ -47,3 +47,12 @@ def test_outcome_review_repository_uses_exact_claim_lock_and_db_blocker_counts()
     assert "STATUS_DISPATCHING" in blocker_source
     assert "REASON_EXECUTION_OUTCOME_UNKNOWN" in blocker_source
     assert "outcome_reviewed_at.is_(None)" in blocker_source
+
+
+def test_terminal_cleanup_keeps_unreviewed_outcome_unknown_claims():
+    source = __import__("inspect").getsource(
+        SqlAlchemyScheduleDispatchRepository.cleanup_terminal_claims
+    )
+
+    assert "REASON_EXECUTION_OUTCOME_UNKNOWN" in source
+    assert "outcome_reviewed_at.is_not(None)" in source

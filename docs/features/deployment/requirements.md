@@ -58,6 +58,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-035: 오래 밀린 valid schedule은 과거 occurrence 수와 무관하게 현재 시각 이후 첫 fire time으로 coalesce해야 한다. Catch-up iteration cap 초과를 configuration error로 분류하거나 schedule을 quarantine해서는 안 된다.
 - DEP-REQ-036: `canceled`/`dead_lettered` claim의 safe reason, completed outcome review의 resolution, nullable system schedule WorkflowRun의 claim task id는 DB CHECK에서도 명시적으로 non-null이어야 한다. PostgreSQL `UNKNOWN` 평가가 incomplete terminal/correlation row를 허용해서는 안 된다.
 - DEP-REQ-037: `disabled` schedule dispatch mode는 신규 claim과 legacy direct enqueue를 모두 중지하는 명시적 kill switch다. 다중 replica 중복 실행을 다시 허용하는 legacy fallback은 제공하지 않으며, schedule 실행을 재개하려면 coordinated rollout과 drain 검증을 거쳐 `claim` mode를 활성화해야 한다.
+- DEP-REQ-038: Terminal claim cleanup은 retention이 지났더라도 검토되지 않은 `execution_outcome_unknown` claim을 삭제하지 않아야 한다. 해당 claim은 allowlisted outcome review가 같은 row에 기록된 뒤에만 dead-letter retention 대상이 될 수 있으며, rollback/downgrade gate가 조사 전 correlation을 잃어서는 안 된다.
 
 ## Runtime Audience Matrix
 

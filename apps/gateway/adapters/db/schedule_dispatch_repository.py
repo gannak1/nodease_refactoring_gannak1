@@ -439,6 +439,11 @@ class SqlAlchemyScheduleDispatchRepository:
                         ScheduleDispatchClaim.status == STATUS_DEAD_LETTERED,
                         ScheduleDispatchClaim.completed_at
                         < now - timedelta(days=dead_letter_retention_days),
+                        or_(
+                            ScheduleDispatchClaim.safe_reason_code
+                            != REASON_EXECUTION_OUTCOME_UNKNOWN,
+                            ScheduleDispatchClaim.outcome_reviewed_at.is_not(None),
+                        ),
                     ),
                 )
             )

@@ -608,6 +608,64 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
                 assert claim.schedule_id == ids["schedule"]
         finally:
             engine.dispose()
+
+        cleanup_engine = create_engine(config.database_url(database))
+        try:
+            with Session(cleanup_engine) as session:
+                cleanup_now = datetime.now(timezone.utc)
+                completed_at = cleanup_now - timedelta(days=200)
+                unreviewed_id = uuid.uuid4()
+                reviewed_id = uuid.uuid4()
+                for claim_id_to_insert, reviewed in (
+                    (unreviewed_id, False),
+                    (reviewed_id, True),
+                ):
+                    idempotency_key = f"schedule:{uuid.uuid4()}"
+                    session.add(
+                        ScheduleDispatchClaim(
+                            id=claim_id_to_insert,
+                            schedule_id=ids["schedule"],
+                            organization_id=ids["organization"],
+                            deployment_id=ids["deployment"],
+                            scheduled_for=completed_at
+                            + timedelta(seconds=1 if reviewed else 0),
+                            idempotency_key=idempotency_key,
+                            status="dead_lettered",
+                            attempt_count=1,
+                            celery_task_id=idempotency_key,
+                            workflow_run_id=uuid.uuid4(),
+                            safe_reason_code="execution_outcome_unknown",
+                            outcome_reviewed_at=completed_at if reviewed else None,
+                            outcome_review_audit_id=(
+                                uuid.uuid4() if reviewed else None
+                            ),
+                            outcome_resolution_code=(
+                                "accepted_unknown_no_replay" if reviewed else None
+                            ),
+                            claimed_at=completed_at - timedelta(minutes=3),
+                            enqueued_at=completed_at - timedelta(minutes=2),
+                            started_at=completed_at - timedelta(minutes=1),
+                            completed_at=completed_at,
+                        )
+                    )
+                session.commit()
+
+                deleted = SqlAlchemyScheduleDispatchRepository(
+                    session
+                ).cleanup_terminal_claims(
+                    now=cleanup_now,
+                    retention_days=30,
+                    dead_letter_retention_days=180,
+                    limit=100,
+                )
+                session.commit()
+                session.expire_all()
+
+                assert deleted == 1
+                assert session.get(ScheduleDispatchClaim, reviewed_id) is None
+                assert session.get(ScheduleDispatchClaim, unreviewed_id) is not None
+        finally:
+            cleanup_engine.dispose()
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "

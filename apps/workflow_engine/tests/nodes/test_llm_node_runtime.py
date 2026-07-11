@@ -2897,6 +2897,87 @@ def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
     assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
 
 
+@pytest.mark.parametrize(
+    ("audit_method", "expected_action", "call_kwargs"),
+    [
+        ("_record_rag_retrieve_audit", "rag.retrieve", {}),
+        (
+            "_record_rag_policy_block_audit",
+            "policy.block",
+            {"reason_code": "pii_policy_blocked"},
+        ),
+    ],
+)
+def test_system_schedule_rag_audit_does_not_promote_credential_principal(
+    monkeypatch,
+    audit_method,
+    expected_action,
+    call_kwargs,
+):
+    credential_principal_id = uuid.uuid4()
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": None,
+        "trigger_mode": "schedule",
+        "workflow_task_id": f"schedule:{uuid.uuid4()}",
+        "workflow_id": str(uuid.uuid4()),
+        "workflow_run_id": str(uuid.uuid4()),
+        "organization_id": str(uuid.uuid4()),
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(credential_principal_id),
+        },
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    if audit_method == "_record_rag_retrieve_audit":
+        getattr(node, audit_method)(None, str(uuid.uuid4()), 1)
+    else:
+        getattr(node, audit_method)(None, **call_kwargs)
+
+    assert audit_calls[0]["action"] == expected_action
+    assert audit_calls[0]["actor_id"] is None
+    assert audit_calls[0]["actor_type"] == "system"
+
+
+def test_interactive_rag_audit_uses_execution_subject_not_credential_principal(
+    monkeypatch,
+):
+    execution_subject_id = uuid.uuid4()
+    credential_principal_id = uuid.uuid4()
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": str(execution_subject_id),
+        "trigger_mode": "manual",
+        "workflow_task_id": str(uuid.uuid4()),
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(credential_principal_id),
+        },
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    node._record_rag_retrieve_audit(  # noqa: SLF001 - audit actor contract
+        execution_subject_id,
+        str(uuid.uuid4()),
+        1,
+    )
+
+    assert audit_calls[0]["actor_id"] == execution_subject_id
+    assert audit_calls[0]["actor_id"] != credential_principal_id
+    assert audit_calls[0]["actor_type"] == "user"
+
+
 def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):
     node = LLMNode(
         "llm-1",
@@ -4082,6 +4163,7 @@ def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denie
     monkeypatch,
 ):
     user_id = uuid.uuid4()
+    credential_principal_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     allowed_kb_id = uuid.uuid4()
     denied_kb_id = uuid.uuid4()
@@ -4154,6 +4236,10 @@ def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denie
                 "subject_type": "user",
                 "subject_id": str(user_id),
             },
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(credential_principal_id),
+            },
             "workflow_id": str(uuid.uuid4()),
             "workflow_run_id": str(uuid.uuid4()),
         },
@@ -4193,6 +4279,8 @@ def test_knowledge_search_continues_with_allowed_evidence_when_selected_kb_denie
     assert result.trace_summary["authorized_kb_count"] == 1
     assert result.trace_summary["selected_kb_count"] == 1
     assert result.metadata[0]["knowledge_base_id"] == str(allowed_kb_id)
+    assert retrieve_audit_calls[0][0] == user_id
+    assert retrieve_audit_calls[0][0] != credential_principal_id
     assert retrieve_audit_calls[0][1] == str(allowed_kb_id)
 
 

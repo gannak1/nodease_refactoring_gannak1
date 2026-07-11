@@ -1393,7 +1393,7 @@ class LLMNode(Node[LLMNodeData]):
         if policy_block_reason:
             # 정책상 외부 LLM에 전달할 수 없는 evidence는 근거 충분성과 무관하게 차단한다.
             self._record_rag_policy_block_audit(
-                credential_user_id,
+                execution_subject_user_id,
                 reason_code=policy_block_reason,
             )
             blocked_trace_summary = self._rag_runtime_trace_summary(
@@ -1436,7 +1436,7 @@ class LLMNode(Node[LLMNodeData]):
             )
         for kb_id, result_count in rag_result_counts:
             self._record_rag_retrieve_audit(
-                credential_user_id,
+                execution_subject_user_id,
                 kb_id,
                 result_count,
             )
@@ -2203,7 +2203,7 @@ class LLMNode(Node[LLMNodeData]):
 
     def _record_rag_retrieve_audit(
         self,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         knowledge_base_id: str,
         result_count: int,
         *,
@@ -2221,11 +2221,12 @@ class LLMNode(Node[LLMNodeData]):
         }
         if reason_code:
             metadata["reason_code"] = reason_code
+        is_user_actor = user_id is not None and not self._is_system_schedule_execution()
         record_audit(
             action=AuditAction.RAG_RETRIEVE,
             category="action",
-            actor_id=user_id,
-            actor_type="user",
+            actor_id=user_id if is_user_actor else None,
+            actor_type="user" if is_user_actor else "system",
             target_type="knowledge_base",
             target_id=knowledge_base_id,
             status="success",
@@ -2234,7 +2235,7 @@ class LLMNode(Node[LLMNodeData]):
 
     def _record_rag_policy_block_audit(
         self,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         *,
         reason_code: str,
     ) -> None:
@@ -2250,11 +2251,12 @@ class LLMNode(Node[LLMNodeData]):
         organization_id = self.execution_context.get("organization_id")
         if organization_id:
             metadata["organization_id"] = str(organization_id)
+        is_user_actor = user_id is not None and not self._is_system_schedule_execution()
         record_audit(
             action=AuditAction.POLICY_BLOCK,
             category="action",
-            actor_id=user_id,
-            actor_type="user",
+            actor_id=user_id if is_user_actor else None,
+            actor_type="user" if is_user_actor else "system",
             target_type="workflow_node",
             target_id=self.id,
             status="failure",

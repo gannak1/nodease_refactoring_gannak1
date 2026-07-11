@@ -578,15 +578,29 @@ def _execute_scheduled_deployment_claim(
         }
 
     plan = admission.plan
+    sync_session = None
+    try:
+        sync_session = SessionLocal()
+        sync_result = _sync_knowledge_bases_for_execution_subject(
+            sync_session,
+            plan.graph_snapshot,
+            plan.execution_context,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Scheduled knowledge sync skipped: claim_id=%s error_type=%s",
+            claim_id,
+            type(exc).__name__,
+        )
+        sync_result = _sync_skipped_result("sync_failed")
+    finally:
+        if sync_session is not None:
+            sync_session.close()
+
     engine_session = SessionLocal()
     engine = None
     execution_succeeded = False
     try:
-        sync_result = _sync_knowledge_bases_for_execution_subject(
-            engine_session,
-            plan.graph_snapshot,
-            plan.execution_context,
-        )
         engine = WorkflowEngine(
             graph=plan.graph_snapshot,
             user_input=plan.user_input,
@@ -603,7 +617,6 @@ def _execute_scheduled_deployment_claim(
             type(exc).__name__,
         )
         result = None
-        sync_result = _sync_skipped_result("execution_failed")
     finally:
         if engine is not None:
             try:

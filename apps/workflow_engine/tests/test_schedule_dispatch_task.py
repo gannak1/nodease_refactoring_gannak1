@@ -54,7 +54,7 @@ def _plan(claim_id, task_id):
 def test_scheduled_task_runs_engine_only_after_admission_and_finalizes(monkeypatch):
     claim_id = uuid.uuid4()
     task_id = f"schedule:{uuid.uuid4()}"
-    sessions = [_Session(), _Session(), _Session()]
+    sessions = [_Session(), _Session(), _Session(), _Session()]
     calls = []
 
     class _UseCase:
@@ -138,6 +138,53 @@ def test_scheduled_task_cleanup_failure_keeps_successful_claim_finalization(
     assert finalized == [True]
 
 
+def test_scheduled_task_knowledge_sync_failure_does_not_skip_engine(monkeypatch):
+    claim_id = uuid.uuid4()
+    task_id = f"schedule:{uuid.uuid4()}"
+    finalized = []
+
+    class _UseCase:
+        def __init__(self, **kwargs):
+            pass
+
+        def admit(self, **kwargs):
+            return application.ScheduleAdmissionResult(
+                "admitted", plan=_plan(claim_id, task_id)
+            )
+
+        def finalize(self, **kwargs):
+            finalized.append(kwargs["succeeded"])
+            return True
+
+    monkeypatch.setattr(tasks, "SessionLocal", _Session)
+    monkeypatch.setattr(application, "ScheduledDeploymentExecutionUseCase", _UseCase)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine",
+        _Engine,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_sync_knowledge_bases_for_execution_subject",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("connector detail")),
+    )
+    _Engine.calls = []
+
+    result = tasks._execute_scheduled_deployment_claim(
+        str(claim_id),
+        task_id=task_id,
+    )
+
+    assert result["status"] == "success"
+    assert result["sync_status"] == {
+        "synced_count": 0,
+        "failed": [],
+        "skipped": True,
+        "reason": "sync_failed",
+    }
+    assert len(_Engine.calls) == 1
+    assert finalized == [True]
+
+
 def test_scheduled_task_retries_only_finalization_with_fresh_sessions(monkeypatch):
     claim_id = uuid.uuid4()
     task_id = f"schedule:{uuid.uuid4()}"
@@ -185,7 +232,7 @@ def test_scheduled_task_retries_only_finalization_with_fresh_sessions(monkeypatc
     assert result["status"] == "success"
     assert len(_Engine.calls) == 1
     assert finalization_attempts == [True, True]
-    assert len(sessions) == 4
+    assert len(sessions) == 5
     assert all(session.closed for session in sessions)
 
 
