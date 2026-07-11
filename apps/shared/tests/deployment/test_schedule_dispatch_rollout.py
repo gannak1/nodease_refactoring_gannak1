@@ -100,6 +100,12 @@ def test_rollout_state_matrix(desired, previous, gateway, worker, expected):
             _state(CLAIM, "registry/worker:old"),
         ),
         (
+            DISABLED,
+            CLAIM,
+            _state(CLAIM, "registry/gateway:old"),
+            _state(CLAIM, "registry/worker:old"),
+        ),
+        (
             "v1|claim|6",
             CLAIM,
             _state("v1|claim|6", GATEWAY_IMAGE),

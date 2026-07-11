@@ -126,4 +126,6 @@ def test_eks_gateway_and_worker_share_rollout_lock_and_fingerprint_preflight():
     assert "previous_fingerprint:" in coordinated
     assert "apps.shared.domain.schedule_dispatch_rollout" in coordinated
     assert 'case "$schedule_rollout_action"' in coordinated
+    assert "name: Check disabled rollback blockers" in coordinated
+    assert "check_schedule_dispatch_rollback.py" in coordinated
     assert "name: Verify both rollouts and fingerprints" in coordinated

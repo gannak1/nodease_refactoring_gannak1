@@ -33,6 +33,10 @@ def evaluate_schedule_dispatch_rollout(
         raise ScheduleDispatchRolloutError(
             "drain mode is required before changing active claim settings"
         )
+    if previous_mode == "claim" and target_mode == "disabled":
+        raise ScheduleDispatchRolloutError(
+            "drain mode is required before disabling schedule dispatch"
+        )
 
     if gateway is None or worker is None:
         if target_mode != "disabled":
