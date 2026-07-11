@@ -172,6 +172,38 @@ def test_fr13_quality_judge_tries_next_model_when_first_model_is_not_usable_in_o
     assert get_client.call_count == 2
 
 
+def test_fr13_quality_judge_skips_legacy_completion_models_mislabeled_as_chat():
+    db = MagicMock()
+    user_id = uuid4()
+    organization_id = uuid4()
+    client = _JudgeClient(_judge_response())
+
+    with (
+        patch(
+            "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.get_my_available_models",
+            return_value=[
+                SimpleNamespace(model_id_for_api_call="babbage-002", type="chat"),
+                SimpleNamespace(model_id_for_api_call="davinci-002", type="chat"),
+                SimpleNamespace(model_id_for_api_call="gpt-5.4", type="chat"),
+            ],
+        ),
+        patch(
+            "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.get_client_for_user",
+            return_value=client,
+        ) as get_client,
+    ):
+        model_id, selected_client = CostOptimizerOutputQualityService._select_judge_runtime(
+            db=db,
+            user_id=user_id,
+            organization_id=organization_id,
+            preferred_model_id=None,
+        )
+
+    assert model_id == "gpt-5.4"
+    assert selected_client is client
+    get_client.assert_called_once_with(db, user_id, "gpt-5.4", organization_id)
+
+
 def test_fr13_quality_judge_adds_groundedness_only_for_rag_variants():
     client = _JudgeClient(_judge_response())
 

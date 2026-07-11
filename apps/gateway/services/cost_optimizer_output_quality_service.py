@@ -23,6 +23,16 @@ class CostOptimizerOutputQualityService:
         "relevance_completeness",
         "clarity_consistency",
     )
+    LEGACY_COMPLETION_MODEL_PREFIXES = (
+        "text-davinci",
+        "text-curie",
+        "text-babbage",
+        "text-ada",
+        "davinci",
+        "curie",
+        "babbage",
+        "ada",
+    )
 
     @classmethod
     def evaluate(
@@ -137,7 +147,14 @@ class CostOptimizerOutputQualityService:
             for model in models
             if str(getattr(model, "type", "") or "").lower() == "chat"
         ]
-        candidate_ids = [model_id for model_id in candidate_ids if model_id]
+        candidate_ids = [
+            model_id
+            for model_id in candidate_ids
+            if model_id
+            and not model_id.lower().startswith(
+                cls.LEGACY_COMPLETION_MODEL_PREFIXES
+            )
+        ]
         if preferred_model_id:
             candidate_ids = [preferred_model_id]
         for model_id in candidate_ids:
